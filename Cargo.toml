@@ -20,6 +20,7 @@ dirs = "6"
 regex = "1"
 tempfile = "3"
 chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
 
 [dev-dependencies]
 assert_fs = "1"
