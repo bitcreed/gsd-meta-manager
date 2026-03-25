@@ -15,6 +15,7 @@ See the state of every GSD project at a glance and act on any of them without le
 - ✓ Project registration — add/remove existing GSD projects to track — Phase 1
 - ✓ Status detection — read project state from `.planning/` files without running GSD commands — Phase 1
 - ✓ Unified dashboard — color-coded project list with rich columns, aggregate status bar, vim navigation, search/filter, help overlay — Phase 2
+- ✓ Live state and detail view — file watcher auto-refresh, drill-down detail panel with phase breakdown and change summary — Phase 3
 
 ### Active
 
@@ -69,4 +70,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-25 after Phase 2 completion*
+*Last updated: 2026-03-25 after Phase 3 completion*
