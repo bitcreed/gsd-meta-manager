@@ -65,7 +65,12 @@ Plans:
   2. User can drill into a project and see: path, all roadmap phases, current phase, and task completion counts
   3. Detail view shows per-phase status (pending, in-progress, complete)
   4. A change summary shows what changed since last visit (e.g., "Phase 3 completed 2h ago")
-**Plans**: TBD
+**Plans:** 2 plans
+
+Plans:
+- [ ] 03-01-PLAN.md — File watcher with notify 8.x debouncer, auto-refresh on .planning/ changes
+- [ ] 03-02-PLAN.md — Detail view with phase breakdown, plan counts, status icons, and change summary
+
 **UI hint**: yes
 
 ### Phase 4: Visualization, Creation, and Enqueue
@@ -88,6 +93,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Core Infrastructure | 3/3 | Complete | - |
-| 2. Dashboard and Navigation | 0/2 | Not started | - |
-| 3. Live State and Detail View | 0/? | Not started | - |
+| 2. Dashboard and Navigation | 2/2 | Complete | - |
+| 3. Live State and Detail View | 0/2 | Not started | - |
 | 4. Visualization, Creation, and Enqueue | 0/? | Not started | - |
