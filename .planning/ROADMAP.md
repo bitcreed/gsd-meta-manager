@@ -48,7 +48,12 @@ Plans:
   3. User navigates with vim-style keys (j/k, Enter, Esc, q) and sees a help overlay on `?`
   4. User presses `/` to filter the project list by name or status
   5. TUI adapts to terminal size changes and exits cleanly with full terminal state restored
-**Plans**: TBD
+**Plans:** 2 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — Color-coded dashboard table with rich columns, aggregate status bar, and resize handling
+- [ ] 02-02-PLAN.md — Help overlay popup and search/filter visual verification
+
 **UI hint**: yes
 
 ### Phase 3: Live State and Detail View
@@ -82,7 +87,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Core Infrastructure | 0/3 | Not started | - |
-| 2. Dashboard and Navigation | 0/? | Not started | - |
+| 1. Core Infrastructure | 3/3 | Complete | - |
+| 2. Dashboard and Navigation | 0/2 | Not started | - |
 | 3. Live State and Detail View | 0/? | Not started | - |
 | 4. Visualization, Creation, and Enqueue | 0/? | Not started | - |
