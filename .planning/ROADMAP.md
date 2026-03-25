@@ -1,0 +1,82 @@
+# Roadmap: GSD Manager
+
+## Overview
+
+Build a Rust TUI dashboard that lets users see every GSD project's status at a glance and act on any of them without leaving the terminal. The journey starts by laying a correct async foundation (event loop, terminal lifecycle, state reader, registry) before adding the visible dashboard and navigation layer, then making it live with file watching and drill-down detail, and finally shipping the GSD-specific differentiators: roadmap visualization, project creation, and work enqueue.
+
+## Phases
+
+**Phase Numbering:**
+- Integer phases (1, 2, 3): Planned milestone work
+- Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
+
+Decimal phases appear between their surrounding integers in numeric order.
+
+- [ ] **Phase 1: Core Infrastructure** - Async TUI foundation, state reader, and project registry
+- [ ] **Phase 2: Dashboard and Navigation** - Main project list, status indicators, keyboard nav, search, and help overlay
+- [ ] **Phase 3: Live State and Detail View** - File-watcher auto-refresh and project drill-down
+- [ ] **Phase 4: Visualization, Creation, and Enqueue** - ASCII roadmap, new project creation, and work enqueue
+
+## Phase Details
+
+### Phase 1: Core Infrastructure
+**Goal**: The application starts, renders cleanly, and can read and persist GSD project state — the tested foundation everything else builds on
+**Depends on**: Nothing (first phase)
+**Requirements**: REG-01, REG-02, REG-03, STATE-01, STATE-02, STATE-03
+**Success Criteria** (what must be TRUE):
+  1. User can add a GSD project by path and it is validated and saved across restarts
+  2. User can remove a tracked project and it is gone on next launch
+  3. Typed ProjectState structs are parsed from `.planning/` files (STATE.md, ROADMAP.md, config.json) without invoking GSD
+  4. Phase progress and backlog item counts are readable from the parsed state
+  5. Terminal exits cleanly under all conditions including panic — no corrupted terminal state
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 2: Dashboard and Navigation
+**Goal**: Users can see all registered projects at a glance and navigate the TUI with keyboard-driven workflows
+**Depends on**: Phase 1
+**Requirements**: DASH-01, DASH-02, DASH-03, NAV-01, NAV-02, NAV-03, NAV-04, NAV-05
+**Success Criteria** (what must be TRUE):
+  1. User sees a scrollable project list with name, current phase, and status per row, color-coded by workflow state
+  2. A persistent status bar shows aggregate counts across all projects (e.g., "5 projects: 2 active, 1 blocked, 2 idle")
+  3. User navigates with vim-style keys (j/k, Enter, Esc, q) and sees a help overlay on `?`
+  4. User presses `/` to filter the project list by name or status
+  5. TUI adapts to terminal size changes and exits cleanly with full terminal state restored
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 3: Live State and Detail View
+**Goal**: The dashboard stays current without manual refresh, and users can drill into any project for a phase-level breakdown
+**Depends on**: Phase 2
+**Requirements**: STATE-04, STATE-05, DET-01, DET-02, DASH-05
+**Success Criteria** (what must be TRUE):
+  1. Dashboard auto-refreshes when any registered project's `.planning/` files change — no user action needed
+  2. User can drill into a project and see: path, all roadmap phases, current phase, and task completion counts
+  3. Detail view shows per-phase status (pending, in-progress, complete)
+  4. A change summary shows what changed since last visit (e.g., "Phase 3 completed 2h ago")
+**Plans**: TBD
+**UI hint**: yes
+
+### Phase 4: Visualization, Creation, and Enqueue
+**Goal**: Users can see a project's full roadmap visually, create new GSD projects from the TUI, and queue next actions
+**Depends on**: Phase 3
+**Requirements**: DASH-04, CREATE-01, CREATE-02, CREATE-03, ENQ-01, ENQ-02, ENQ-03
+**Success Criteria** (what must be TRUE):
+  1. User sees an ASCII roadmap visualization of a project's phases with progress markers for a selected project
+  2. User can create a new GSD project (name + path) from the TUI — directory, git repo, and GSD settings initialized automatically
+  3. Newly created project appears in the dashboard immediately after creation
+  4. User can enqueue a next action for a project, see it in the detail view, and copy the GSD command to clipboard
+**Plans**: TBD
+**UI hint**: yes
+
+## Progress
+
+**Execution Order:**
+Phases execute in numeric order: 1 → 2 → 3 → 4
+
+| Phase | Plans Complete | Status | Completed |
+|-------|----------------|--------|-----------|
+| 1. Core Infrastructure | 0/? | Not started | - |
+| 2. Dashboard and Navigation | 0/? | Not started | - |
+| 3. Live State and Detail View | 0/? | Not started | - |
+| 4. Visualization, Creation, and Enqueue | 0/? | Not started | - |
