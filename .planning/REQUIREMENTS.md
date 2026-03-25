@@ -15,19 +15,19 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Dashboard
 
-- [ ] **DASH-01**: User sees a scrollable project list with name, current phase, and status per row
-- [ ] **DASH-02**: Project rows are color-coded by workflow state (idle, active, blocked, complete)
-- [ ] **DASH-03**: A persistent status bar shows aggregate counts across all projects (e.g., "5 projects: 2 active, 1 blocked, 2 idle")
+- [x] **DASH-01**: User sees a scrollable project list with name, current phase, and status per row
+- [x] **DASH-02**: Project rows are color-coded by workflow state (idle, active, blocked, complete)
+- [x] **DASH-03**: A persistent status bar shows aggregate counts across all projects (e.g., "5 projects: 2 active, 1 blocked, 2 idle")
 - [ ] **DASH-04**: User sees an ASCII roadmap visualization showing phase structure and progress for a selected project
 - [ ] **DASH-05**: User sees a change summary showing what changed in a project since last visit (e.g., "Phase 3 completed 2h ago")
 
 ### Navigation & UX
 
-- [ ] **NAV-01**: User navigates with vim-style keys (j/k or arrows to move, Enter to select, q/Esc to go back)
-- [ ] **NAV-02**: User presses `?` to see a help overlay with all keybindings for the current view
-- [ ] **NAV-03**: User presses `/` to filter the project list by name or status
-- [ ] **NAV-04**: TUI layout adapts to terminal size without crashing or corrupting output
-- [ ] **NAV-05**: TUI exits cleanly on quit (q, Ctrl+C) — terminal state fully restored, including on panic
+- [x] **NAV-01**: User navigates with vim-style keys (j/k or arrows to move, Enter to select, q/Esc to go back)
+- [x] **NAV-02**: User presses `?` to see a help overlay with all keybindings for the current view
+- [x] **NAV-03**: User presses `/` to filter the project list by name or status
+- [x] **NAV-04**: TUI layout adapts to terminal size without crashing or corrupting output
+- [x] **NAV-05**: TUI exits cleanly on quit (q, Ctrl+C) — terminal state fully restored, including on panic
 
 ### State Reading
 
@@ -100,14 +100,14 @@ Which phases cover which requirements. Updated during roadmap creation.
 | STATE-01 | Phase 1 | Complete |
 | STATE-02 | Phase 1 | Complete |
 | STATE-03 | Phase 1 | Complete |
-| DASH-01 | Phase 2 | Pending |
-| DASH-02 | Phase 2 | Pending |
-| DASH-03 | Phase 2 | Pending |
-| NAV-01 | Phase 2 | Pending |
-| NAV-02 | Phase 2 | Pending |
-| NAV-03 | Phase 2 | Pending |
-| NAV-04 | Phase 2 | Pending |
-| NAV-05 | Phase 2 | Pending |
+| DASH-01 | Phase 2 | Complete |
+| DASH-02 | Phase 2 | Complete |
+| DASH-03 | Phase 2 | Complete |
+| NAV-01 | Phase 2 | Complete |
+| NAV-02 | Phase 2 | Complete |
+| NAV-03 | Phase 2 | Complete |
+| NAV-04 | Phase 2 | Complete |
+| NAV-05 | Phase 2 | Complete |
 | STATE-04 | Phase 3 | Pending |
 | STATE-05 | Phase 3 | Pending |
 | DET-01 | Phase 3 | Pending |

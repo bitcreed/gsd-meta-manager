@@ -51,8 +51,8 @@ Plans:
 **Plans:** 2 plans
 
 Plans:
-- [ ] 02-01-PLAN.md — Color-coded dashboard table with rich columns, aggregate status bar, and resize handling
-- [ ] 02-02-PLAN.md — Help overlay popup and search/filter visual verification
+- [x] 02-01-PLAN.md — Color-coded dashboard table with rich columns, aggregate status bar, and resize handling
+- [x] 02-02-PLAN.md — Help overlay popup and search/filter visual verification
 
 **UI hint**: yes
 
