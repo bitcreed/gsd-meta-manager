@@ -9,9 +9,9 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Registration
 
-- [ ] **REG-01**: User can add a GSD project by path (validates `.planning/` exists before registering)
-- [ ] **REG-02**: User can remove a tracked project from the manager
-- [ ] **REG-03**: Project registry persists across restarts (config file on disk)
+- [x] **REG-01**: User can add a GSD project by path (validates `.planning/` exists before registering)
+- [x] **REG-02**: User can remove a tracked project from the manager
+- [x] **REG-03**: Project registry persists across restarts (config file on disk)
 
 ### Dashboard
 
@@ -94,9 +94,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| REG-01 | Phase 1 | Pending |
-| REG-02 | Phase 1 | Pending |
-| REG-03 | Phase 1 | Pending |
+| REG-01 | Phase 1 | Complete |
+| REG-02 | Phase 1 | Complete |
+| REG-03 | Phase 1 | Complete |
 | STATE-01 | Phase 1 | Pending |
 | STATE-02 | Phase 1 | Pending |
 | STATE-03 | Phase 1 | Pending |

@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans:** 3 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — Project scaffold, config/registry, and CLI subcommands (add/remove/list)
+- [x] 01-01-PLAN.md — Project scaffold, config/registry, and CLI subcommands (add/remove/list)
 - [ ] 01-02-PLAN.md — State reader module parsing STATE.md, ROADMAP.md, config.json, and backlog count
 - [ ] 01-03-PLAN.md — Async event loop, TUI terminal lifecycle, and stub project list UI
 
