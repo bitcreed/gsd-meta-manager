@@ -68,7 +68,7 @@ Plans:
 **Plans:** 2 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — File watcher with notify 8.x debouncer, auto-refresh on .planning/ changes
+- [x] 03-01-PLAN.md — File watcher with notify 8.x debouncer, auto-refresh on .planning/ changes
 - [ ] 03-02-PLAN.md — Detail view with phase breakdown, plan counts, status icons, and change summary
 
 **UI hint**: yes
