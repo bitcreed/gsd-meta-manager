@@ -199,6 +199,9 @@ impl App {
             Action::RemoveProjectConfirm { alias } => {
                 self.do_remove_project(&alias);
             }
+            Action::FileChanged { project_path: _ } => {
+                // Handled in Task 2 -- wiring watcher refresh logic
+            }
             Action::ProjectLoaded { alias, state } => {
                 if let Some(s) = state {
                     self.project_states.insert(alias, s);

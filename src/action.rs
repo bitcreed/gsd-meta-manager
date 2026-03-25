@@ -17,5 +17,8 @@ pub enum Action {
         alias: String,
         state: Option<crate::state_reader::ProjectState>,
     },
+    FileChanged {
+        project_path: std::path::PathBuf,
+    },
     Noop,
 }
