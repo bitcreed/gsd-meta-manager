@@ -12,7 +12,8 @@ See the state of every GSD project at a glance and act on any of them without le
 
 ### Validated
 
-(None yet — ship to validate)
+- ✓ Project registration — add/remove existing GSD projects to track — Phase 1
+- ✓ Status detection — read project state from `.planning/` files without running GSD commands — Phase 1
 
 ### Active
 
@@ -20,8 +21,6 @@ See the state of every GSD project at a glance and act on any of them without le
 - [ ] Workflow visualization — ASCII rendering of each project's roadmap and progress
 - [ ] Enqueue work — queue next phases, tasks, or verification while current work runs
 - [ ] Create new project — spin up a new GSD project (directory, git, settings, kick off initialization)
-- [ ] Project registration — add/remove existing GSD projects to track
-- [ ] Status detection — read project state from `.planning/` files without running GSD commands
 
 ### Out of Scope
 
@@ -70,4 +69,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-24 after initialization*
+*Last updated: 2026-03-25 after Phase 1 completion*
