@@ -8,8 +8,10 @@ mod registry;
 mod state_reader;
 mod tui;
 mod ui;
+mod watcher;
 
 use app::App;
+use watcher::FileWatcher;
 use clap::Parser;
 use cli::{Cli, Commands};
 use config::{load_config, save_config, Config};
@@ -62,6 +64,22 @@ async fn main() -> anyhow::Result<()> {
             app.load_project_states();
 
             let event_bus = EventBus::new();
+
+            // Initialize file watcher for all registered projects
+            let mut _watcher = FileWatcher::new(event_bus.tx.clone())?;
+            for project in app.config.projects.values() {
+                let planning_dir = project.path.join(".planning");
+                if planning_dir.is_dir() {
+                    if let Err(e) = _watcher.watch(&planning_dir) {
+                        tracing::warn!(
+                            "Could not watch {}: {}",
+                            planning_dir.display(),
+                            e
+                        );
+                    }
+                }
+            }
+
             event_bus.spawn_crossterm_reader();
             event_bus.spawn_tick(250);
 

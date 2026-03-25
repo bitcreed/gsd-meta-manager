@@ -85,6 +85,7 @@ pub struct App {
     pub needs_redraw: bool,
     pub filter_text: String,
     pub filtered_aliases: Vec<String>,
+    pub last_refresh: HashMap<String, std::time::Instant>,
 }
 
 impl App {
@@ -108,6 +109,7 @@ impl App {
             needs_redraw: true,
             filter_text: String::new(),
             filtered_aliases: Vec::new(),
+            last_refresh: HashMap::new(),
         };
         app.filtered_aliases = app.sorted_aliases();
         Ok(app)
@@ -199,8 +201,36 @@ impl App {
             Action::RemoveProjectConfirm { alias } => {
                 self.do_remove_project(&alias);
             }
-            Action::FileChanged { project_path: _ } => {
-                // Handled in Task 2 -- wiring watcher refresh logic
+            Action::FileChanged { project_path } => {
+                // Find the alias matching this project path
+                let alias = self
+                    .config
+                    .projects
+                    .iter()
+                    .find(|(_, proj)| proj.path == project_path)
+                    .map(|(alias, _)| alias.clone());
+
+                if let Some(alias) = alias {
+                    // Dedup: skip if last refresh was less than 500ms ago
+                    let now = std::time::Instant::now();
+                    if let Some(last) = self.last_refresh.get(&alias) {
+                        if now.duration_since(*last) < std::time::Duration::from_millis(500) {
+                            return;
+                        }
+                    }
+
+                    // Re-parse only the changed project
+                    let planning_dir = project_path.join(".planning");
+                    let new_state = state_reader::parse_project_state(&planning_dir);
+                    self.project_states.insert(alias.clone(), new_state);
+                    self.last_refresh.insert(alias.clone(), now);
+                    self.recompute_filtered_aliases();
+                    self.status_message = Some((
+                        format!("Updated: {}", alias),
+                        std::time::Instant::now(),
+                    ));
+                    self.needs_redraw = true;
+                }
             }
             Action::ProjectLoaded { alias, state } => {
                 if let Some(s) = state {
