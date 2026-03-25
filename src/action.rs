@@ -5,6 +5,7 @@ pub enum Action {
     Tick,
     Quit,
     RawKey(KeyEvent),
+    Resize,
     AddProjectConfirm {
         alias: String,
         path: std::path::PathBuf,

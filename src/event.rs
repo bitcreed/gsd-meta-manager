@@ -53,6 +53,7 @@ fn map_event_to_action(event: Event) -> Option<Action> {
                 None
             }
         }
+        Event::Resize(_w, _h) => Some(Action::Resize),
         _ => None,
     }
 }

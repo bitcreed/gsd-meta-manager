@@ -179,6 +179,11 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             ));
             frame.render_widget(Paragraph::new(line), area);
         }
+        InputMode::Search | InputMode::HelpOverlay => {
+            // Stub -- will be fully implemented in Task 2
+            let line = Line::from(Span::raw(""));
+            frame.render_widget(Paragraph::new(line), area);
+        }
     }
 }
 

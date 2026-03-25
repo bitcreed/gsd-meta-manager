@@ -13,6 +13,63 @@ pub enum InputMode {
     AddAlias,
     AddPath { alias: String },
     DeleteConfirm { alias: String },
+    Search,
+    HelpOverlay,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FilterColumn {
+    All,
+    Name,
+    Phase,
+    Status,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StatusCategory {
+    Active,
+    Idle,
+    Blocked,
+    Complete,
+    Unknown,
+}
+
+pub fn parse_filter(input: &str) -> (String, FilterColumn) {
+    if let Some(term) = input.strip_suffix("/p") {
+        (term.to_string(), FilterColumn::Phase)
+    } else if let Some(term) = input.strip_suffix("/n") {
+        (term.to_string(), FilterColumn::Name)
+    } else if let Some(term) = input.strip_suffix("/s") {
+        (term.to_string(), FilterColumn::Status)
+    } else {
+        (input.to_string(), FilterColumn::All)
+    }
+}
+
+pub fn classify_status(status: &str) -> StatusCategory {
+    let s = status.to_lowercase();
+    if s.contains("executing") || s.contains("active") || s.contains("in progress") {
+        StatusCategory::Active
+    } else if s.contains("blocked") {
+        StatusCategory::Blocked
+    } else if s.contains("complete") || s.contains("done") {
+        StatusCategory::Complete
+    } else if s.contains("idle") || s.contains("ready") || s.contains("plan") {
+        StatusCategory::Idle
+    } else {
+        StatusCategory::Unknown
+    }
+}
+
+pub fn format_phase_display(state: &ProjectState) -> String {
+    let phase_num = state.completed_phases + 1;
+    let phase_name = state
+        .phases
+        .iter()
+        .find(|p| p.number == phase_num.to_string())
+        .map(|p| p.name.as_str())
+        .unwrap_or("Unknown");
+    format!("P{}: {}", phase_num, phase_name)
 }
 
 pub struct App {
@@ -26,6 +83,8 @@ pub struct App {
     pub status_message: Option<(String, std::time::Instant)>,
     pub error_message: Option<String>,
     pub needs_redraw: bool,
+    pub filter_text: String,
+    pub filtered_aliases: Vec<String>,
 }
 
 impl App {
@@ -36,7 +95,7 @@ impl App {
             table_state.select(Some(0));
         }
 
-        Ok(App {
+        let mut app = App {
             should_quit: false,
             config,
             config_path,
@@ -47,7 +106,11 @@ impl App {
             status_message: None,
             error_message: None,
             needs_redraw: true,
-        })
+            filter_text: String::new(),
+            filtered_aliases: Vec::new(),
+        };
+        app.filtered_aliases = app.sorted_aliases();
+        Ok(app)
     }
 
     /// Load project states for all registered projects synchronously.
@@ -58,6 +121,7 @@ impl App {
             let state = state_reader::parse_project_state(&planning_dir);
             self.project_states.insert(alias.clone(), state);
         }
+        self.recompute_filtered_aliases();
     }
 
     /// Get sorted project aliases for consistent ordering in the table.
@@ -69,10 +133,43 @@ impl App {
 
     /// Get the alias of the currently selected project, if any.
     pub fn selected_alias(&self) -> Option<String> {
-        let aliases = self.sorted_aliases();
         self.table_state
             .selected()
-            .and_then(|i| aliases.get(i).cloned())
+            .and_then(|i| self.filtered_aliases.get(i).cloned())
+    }
+
+    pub fn recompute_filtered_aliases(&mut self) {
+        let all = self.sorted_aliases();
+        if self.filter_text.is_empty() {
+            self.filtered_aliases = all;
+            return;
+        }
+        let (term, column) = parse_filter(&self.filter_text);
+        let term_lower = term.to_lowercase();
+        self.filtered_aliases = all
+            .into_iter()
+            .filter(|alias| {
+                let state = self.project_states.get(alias);
+                match column {
+                    FilterColumn::Name => alias.to_lowercase().contains(&term_lower),
+                    FilterColumn::Phase => state.map_or(false, |s| {
+                        format_phase_display(s).to_lowercase().contains(&term_lower)
+                    }),
+                    FilterColumn::Status => {
+                        state.map_or(false, |s| s.status.to_lowercase().contains(&term_lower))
+                    }
+                    FilterColumn::All => {
+                        alias.to_lowercase().contains(&term_lower)
+                            || state.map_or(false, |s| {
+                                s.status.to_lowercase().contains(&term_lower)
+                                    || format_phase_display(s)
+                                        .to_lowercase()
+                                        .contains(&term_lower)
+                            })
+                    }
+                }
+            })
+            .collect();
     }
 
     pub fn update(&mut self, action: Action) {
@@ -91,6 +188,9 @@ impl App {
             }
             Action::RawKey(key_event) => {
                 self.handle_key(key_event.code, key_event.modifiers);
+            }
+            Action::Resize => {
+                self.needs_redraw = true;
             }
             Action::Noop => {}
             Action::AddProjectConfirm { alias, path } => {
@@ -126,6 +226,8 @@ impl App {
                 let alias = alias.clone();
                 self.handle_delete_confirm_key(code, &alias);
             }
+            InputMode::Search => self.handle_search_key(code),
+            InputMode::HelpOverlay => self.handle_help_key(code),
         }
     }
 
@@ -152,7 +254,77 @@ impl App {
                     self.needs_redraw = true;
                 }
             }
+            KeyCode::Enter => {
+                self.status_message = Some((
+                    "Detail view coming in Phase 3".to_string(),
+                    std::time::Instant::now(),
+                ));
+                self.needs_redraw = true;
+            }
+            KeyCode::Char('/') => {
+                self.input_mode = InputMode::Search;
+                self.input_buffer.clear();
+                self.filter_text.clear();
+                self.recompute_filtered_aliases();
+                self.needs_redraw = true;
+            }
+            KeyCode::Char('?') => {
+                self.input_mode = InputMode::HelpOverlay;
+                self.needs_redraw = true;
+            }
             _ => {}
+        }
+    }
+
+    fn handle_search_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char(c) => {
+                self.filter_text.push(c);
+                self.recompute_filtered_aliases();
+                if !self.filtered_aliases.is_empty() {
+                    self.table_state.select(Some(0));
+                } else {
+                    self.table_state.select(None);
+                }
+                self.needs_redraw = true;
+            }
+            KeyCode::Backspace => {
+                self.filter_text.pop();
+                self.recompute_filtered_aliases();
+                if !self.filtered_aliases.is_empty() {
+                    self.table_state.select(Some(0));
+                } else {
+                    self.table_state.select(None);
+                }
+                self.needs_redraw = true;
+            }
+            KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+                self.filter_text.clear();
+                self.recompute_filtered_aliases();
+                if !self.filtered_aliases.is_empty() {
+                    self.table_state.select(Some(0));
+                } else {
+                    self.table_state.select(None);
+                }
+                self.needs_redraw = true;
+            }
+            KeyCode::Enter => {
+                // Confirm filter and return to normal mode (filter stays active)
+                self.input_mode = InputMode::Normal;
+                self.needs_redraw = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_help_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('?') | KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+                self.needs_redraw = true;
+            }
+            _ => {} // Consume all other keys -- do NOT fall through
         }
     }
 
@@ -267,9 +439,9 @@ impl App {
                 self.input_buffer.clear();
                 self.error_message = None;
 
-                // Select the newly added project
-                let aliases = self.sorted_aliases();
-                if let Some(pos) = aliases.iter().position(|a| a == alias) {
+                // Recompute filtered aliases and select the newly added project
+                self.recompute_filtered_aliases();
+                if let Some(pos) = self.filtered_aliases.iter().position(|a| a == alias) {
                     self.table_state.select(Some(pos));
                 }
                 self.needs_redraw = true;
@@ -296,16 +468,16 @@ impl App {
                 ));
                 self.input_mode = InputMode::Normal;
 
-                // Adjust table selection
-                let aliases = self.sorted_aliases();
-                if aliases.is_empty() {
+                // Recompute filtered aliases and adjust table selection
+                self.recompute_filtered_aliases();
+                if self.filtered_aliases.is_empty() {
                     self.table_state.select(None);
                 } else {
                     let selected = self
                         .table_state
                         .selected()
                         .unwrap_or(0)
-                        .min(aliases.len() - 1);
+                        .min(self.filtered_aliases.len() - 1);
                     self.table_state.select(Some(selected));
                 }
                 self.needs_redraw = true;
@@ -318,7 +490,7 @@ impl App {
     }
 
     fn move_selection_down(&mut self) {
-        let count = self.config.projects.len();
+        let count = self.filtered_aliases.len();
         if count == 0 {
             return;
         }
@@ -329,7 +501,7 @@ impl App {
     }
 
     fn move_selection_up(&mut self) {
-        let count = self.config.projects.len();
+        let count = self.filtered_aliases.len();
         if count == 0 {
             return;
         }
