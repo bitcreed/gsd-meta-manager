@@ -29,7 +29,13 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Typed ProjectState structs are parsed from `.planning/` files (STATE.md, ROADMAP.md, config.json) without invoking GSD
   4. Phase progress and backlog item counts are readable from the parsed state
   5. Terminal exits cleanly under all conditions including panic — no corrupted terminal state
-**Plans**: TBD
+**Plans:** 3 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Project scaffold, config/registry, and CLI subcommands (add/remove/list)
+- [ ] 01-02-PLAN.md — State reader module parsing STATE.md, ROADMAP.md, config.json, and backlog count
+- [ ] 01-03-PLAN.md — Async event loop, TUI terminal lifecycle, and stub project list UI
+
 **UI hint**: yes
 
 ### Phase 2: Dashboard and Navigation
@@ -76,7 +82,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Core Infrastructure | 0/? | Not started | - |
+| 1. Core Infrastructure | 0/3 | Not started | - |
 | 2. Dashboard and Navigation | 0/? | Not started | - |
 | 3. Live State and Detail View | 0/? | Not started | - |
 | 4. Visualization, Creation, and Enqueue | 0/? | Not started | - |
