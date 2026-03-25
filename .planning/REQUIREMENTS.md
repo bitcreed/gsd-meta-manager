@@ -31,9 +31,9 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### State Reading
 
-- [ ] **STATE-01**: Manager reads project state from `.planning/` files (STATE.md, ROADMAP.md, config.json) without running GSD commands
-- [ ] **STATE-02**: Manager shows phase progress indicators (completed vs total tasks from PLAN.md files)
-- [ ] **STATE-03**: Manager shows backlog item count per project (999.x directories in `.planning/`)
+- [x] **STATE-01**: Manager reads project state from `.planning/` files (STATE.md, ROADMAP.md, config.json) without running GSD commands
+- [x] **STATE-02**: Manager shows phase progress indicators (completed vs total tasks from PLAN.md files)
+- [x] **STATE-03**: Manager shows backlog item count per project (999.x directories in `.planning/`)
 - [ ] **STATE-04**: Manager auto-refreshes when `.planning/` files change via file system watcher (inotify/kqueue)
 - [ ] **STATE-05**: Research whether GSD hooks can push state updates to the manager instead of polling
 
@@ -97,9 +97,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | REG-01 | Phase 1 | Complete |
 | REG-02 | Phase 1 | Complete |
 | REG-03 | Phase 1 | Complete |
-| STATE-01 | Phase 1 | Pending |
-| STATE-02 | Phase 1 | Pending |
-| STATE-03 | Phase 1 | Pending |
+| STATE-01 | Phase 1 | Complete |
+| STATE-02 | Phase 1 | Complete |
+| STATE-03 | Phase 1 | Complete |
 | DASH-01 | Phase 2 | Pending |
 | DASH-02 | Phase 2 | Pending |
 | DASH-03 | Phase 2 | Pending |
