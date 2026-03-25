@@ -1,13 +1,30 @@
-use crate::app::{App, InputMode};
-use crate::registry;
-use ratatui::layout::{Constraint, Layout, Rect};
+use crate::app::{classify_status, format_phase_display, App, InputMode, StatusCategory};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
 use ratatui::Frame;
 
+fn status_color(status: &str) -> Color {
+    match classify_status(status) {
+        StatusCategory::Active => Color::Green,
+        StatusCategory::Idle => Color::Yellow,
+        StatusCategory::Blocked => Color::Red,
+        StatusCategory::Complete => Color::DarkGray,
+        StatusCategory::Unknown => Color::Magenta,
+    }
+}
+
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+
+    // Minimum terminal size guard (NAV-04)
+    if area.width < 40 || area.height < 8 {
+        let msg = Paragraph::new("Terminal too small. Resize to at least 40x8.")
+            .alignment(Alignment::Center);
+        frame.render_widget(msg, area);
+        return;
+    }
 
     // Split into main area and footer
     let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
@@ -38,8 +55,7 @@ fn render_main(frame: &mut Frame, app: &mut App, area: Rect) {
             Line::from("Press [a] to add your first GSD project"),
         ];
 
-        let paragraph = Paragraph::new(empty_text)
-            .alignment(ratatui::layout::Alignment::Center);
+        let paragraph = Paragraph::new(empty_text).alignment(Alignment::Center);
 
         // Center vertically
         let y_offset = if inner.height > 3 {
@@ -61,66 +77,98 @@ fn render_main(frame: &mut Frame, app: &mut App, area: Rect) {
         frame.render_widget(outer_block, area);
 
         let terminal_width = area.width;
-        let show_path = terminal_width >= 60;
 
-        let header_cells = if show_path {
-            vec!["Alias", "Phase", "Status", "Path"]
+        // Adaptive column layout based on terminal width
+        let (header_cells, widths) = if terminal_width >= 80 {
+            // Full 5-column layout
+            (
+                vec!["Alias", "Phase", "Status", "Progress", "Backlog"],
+                vec![
+                    Constraint::Percentage(25),
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(15),
+                    Constraint::Percentage(15),
+                    Constraint::Percentage(15),
+                ],
+            )
+        } else if terminal_width >= 60 {
+            // 4 columns -- hide Backlog
+            (
+                vec!["Alias", "Phase", "Status", "Progress"],
+                vec![
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(35),
+                    Constraint::Percentage(20),
+                    Constraint::Percentage(15),
+                ],
+            )
         } else {
-            vec!["Alias", "Phase", "Status"]
+            // 3 columns -- hide Backlog and Progress
+            (
+                vec!["Alias", "Phase", "Status"],
+                vec![
+                    Constraint::Percentage(35),
+                    Constraint::Percentage(35),
+                    Constraint::Percentage(30),
+                ],
+            )
         };
 
         let header = Row::new(header_cells)
             .style(Style::default().add_modifier(Modifier::BOLD))
             .bottom_margin(0);
 
-        let widths = if show_path {
-            vec![
-                Constraint::Percentage(20),
-                Constraint::Percentage(15),
-                Constraint::Percentage(15),
-                Constraint::Percentage(50),
-            ]
-        } else {
-            vec![
-                Constraint::Percentage(40),
-                Constraint::Percentage(30),
-                Constraint::Percentage(30),
-            ]
-        };
-
-        let aliases = app.sorted_aliases();
-        let rows: Vec<Row> = aliases
+        let rows: Vec<Row> = app
+            .filtered_aliases
             .iter()
             .map(|alias| {
-                let project = &app.config.projects[alias];
                 let state = app.project_states.get(alias);
 
-                let phase_cell = match state {
-                    Some(s) => format!("{} of {}", s.completed_phases, s.total_phases),
-                    None => "?".to_string(),
-                };
-
-                let status_cell = match state {
+                let status_str = match state {
                     Some(s) if !s.status.is_empty() => s.status.clone(),
                     _ => "unknown".to_string(),
                 };
 
-                if show_path {
-                    Row::new(vec![
+                let phase_cell = match state {
+                    Some(s) => format_phase_display(s),
+                    None => "?".to_string(),
+                };
+
+                let progress_cell = match state {
+                    Some(s) => format!("{}/{} phases", s.completed_phases, s.total_phases),
+                    None => "?".to_string(),
+                };
+
+                let backlog_cell = match state {
+                    Some(s) if s.backlog_count > 0 => s.backlog_count.to_string(),
+                    _ => "-".to_string(),
+                };
+
+                let row_color = status_color(&status_str);
+
+                let cells: Vec<String> = if terminal_width >= 80 {
+                    vec![
                         alias.clone(),
                         phase_cell,
-                        status_cell,
-                        project.path.display().to_string(),
-                    ])
+                        status_str,
+                        progress_cell,
+                        backlog_cell,
+                    ]
+                } else if terminal_width >= 60 {
+                    vec![alias.clone(), phase_cell, status_str, progress_cell]
                 } else {
-                    Row::new(vec![alias.clone(), phase_cell, status_cell])
-                }
+                    vec![alias.clone(), phase_cell, status_str]
+                };
+
+                Row::new(cells).style(Style::default().fg(row_color))
             })
             .collect();
 
         let table = Table::new(rows, &widths)
             .header(header)
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+            .row_highlight_style(
+                Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            )
             .highlight_symbol("> ");
 
         frame.render_stateful_widget(table, inner, &mut app.table_state);
@@ -129,12 +177,10 @@ fn render_main(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     match &app.input_mode {
-        InputMode::Normal => {
+        InputMode::Normal | InputMode::HelpOverlay => {
             // Check for status message first
             if let Some((msg, _)) = &app.status_message {
-                let color = if msg.starts_with("Added") {
-                    Color::Green
-                } else if msg.starts_with("Removed") {
+                let color = if msg.starts_with("Added") || msg.starts_with("Removed") {
                     Color::Green
                 } else {
                     Color::default()
@@ -142,25 +188,11 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                 let line = Line::from(Span::styled(msg.clone(), Style::default().fg(color)));
                 frame.render_widget(Paragraph::new(line), area);
             } else {
-                // Show keybind hints and project count
-                let project_count = app.config.projects.len();
-                let hints = format!("[a]dd  [d]elete  [q]uit");
-                let count_text = format!("{} project(s) tracked", project_count);
-
-                // Split footer into left and right
-                let footer_chunks = Layout::horizontal([
-                    Constraint::Min(0),
-                    Constraint::Length(count_text.len() as u16 + 1),
-                ])
-                .split(area);
-
-                let left = Paragraph::new(Line::from(Span::raw(hints)));
-                let right = Paragraph::new(Line::from(Span::raw(count_text)))
-                    .alignment(ratatui::layout::Alignment::Right);
-
-                frame.render_widget(left, footer_chunks[0]);
-                frame.render_widget(right, footer_chunks[1]);
+                render_normal_footer(frame, app, area);
             }
+        }
+        InputMode::Search => {
+            render_search_footer(frame, app, area);
         }
         InputMode::AddAlias => {
             render_input_footer(frame, app, area, "Alias");
@@ -173,18 +205,76 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                 "Remove \"{}\"? This only unregisters it \u{2014} project files are not deleted. [y/n]",
                 alias
             );
-            let line = Line::from(Span::styled(
-                prompt,
-                Style::default().fg(Color::Red),
-            ));
-            frame.render_widget(Paragraph::new(line), area);
-        }
-        InputMode::Search | InputMode::HelpOverlay => {
-            // Stub -- will be fully implemented in Task 2
-            let line = Line::from(Span::raw(""));
+            let line = Line::from(Span::styled(prompt, Style::default().fg(Color::Red)));
             frame.render_widget(Paragraph::new(line), area);
         }
     }
+}
+
+fn render_normal_footer(frame: &mut Frame, app: &App, area: Rect) {
+    // Left side: aggregate counts using icon shorthand (always from ALL projects)
+    let all_count = app.config.projects.len();
+    let mut active = 0u32;
+    let mut blocked = 0u32;
+    let mut idle = 0u32;
+    let mut complete = 0u32;
+
+    for state in app.project_states.values() {
+        match classify_status(&state.status) {
+            StatusCategory::Active => active += 1,
+            StatusCategory::Blocked => blocked += 1,
+            StatusCategory::Idle => idle += 1,
+            StatusCategory::Complete => complete += 1,
+            StatusCategory::Unknown => {} // not counted in shorthand
+        }
+    }
+
+    let left_text = format!(
+        "{} projects: {} > {} ! {} * {} +",
+        all_count, active, blocked, idle, complete
+    );
+
+    // Right side: keybind hints
+    let right_text = "[/]search [?]help [a]dd [d]el [q]uit";
+
+    let footer_chunks = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(right_text.len() as u16 + 1),
+    ])
+    .split(area);
+
+    let left = Paragraph::new(Line::from(Span::raw(left_text)));
+    let right =
+        Paragraph::new(Line::from(Span::raw(right_text))).alignment(Alignment::Right);
+
+    frame.render_widget(left, footer_chunks[0]);
+    frame.render_widget(right, footer_chunks[1]);
+}
+
+fn render_search_footer(frame: &mut Frame, app: &App, area: Rect) {
+    let left_spans = vec![
+        Span::raw("/ "),
+        Span::styled(
+            app.filter_text.clone(),
+            Style::default().add_modifier(Modifier::UNDERLINED),
+        ),
+        Span::raw("_"),
+    ];
+
+    let right_text = "[Esc]clear [Enter]keep";
+
+    let footer_chunks = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(right_text.len() as u16 + 1),
+    ])
+    .split(area);
+
+    let left = Paragraph::new(Line::from(left_spans));
+    let right =
+        Paragraph::new(Line::from(Span::raw(right_text))).alignment(Alignment::Right);
+
+    frame.render_widget(left, footer_chunks[0]);
+    frame.render_widget(right, footer_chunks[1]);
 }
 
 fn render_input_footer(frame: &mut Frame, app: &App, area: Rect, label: &str) {
