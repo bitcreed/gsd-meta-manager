@@ -1,4 +1,5 @@
 use crate::action::Action;
+use crate::change_tracker::ChangeTracker;
 use crate::config::{load_config, save_config, Config};
 use crate::registry;
 use crate::state_reader::{self, ProjectState};
@@ -15,6 +16,7 @@ pub enum InputMode {
     DeleteConfirm { alias: String },
     Search,
     HelpOverlay,
+    DetailView { alias: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -86,6 +88,8 @@ pub struct App {
     pub filter_text: String,
     pub filtered_aliases: Vec<String>,
     pub last_refresh: HashMap<String, std::time::Instant>,
+    pub detail_scroll_offset: u16,
+    pub change_tracker: ChangeTracker,
 }
 
 impl App {
@@ -110,6 +114,8 @@ impl App {
             filter_text: String::new(),
             filtered_aliases: Vec::new(),
             last_refresh: HashMap::new(),
+            detail_scroll_offset: 0,
+            change_tracker: ChangeTracker::new(),
         };
         app.filtered_aliases = app.sorted_aliases();
         Ok(app)
@@ -124,6 +130,13 @@ impl App {
             self.project_states.insert(alias.clone(), state);
         }
         self.recompute_filtered_aliases();
+    }
+
+    /// Record initial snapshots for all loaded project states (for change detection).
+    pub fn init_change_tracker(&mut self) {
+        for (alias, state) in &self.project_states {
+            self.change_tracker.record_initial(alias, state);
+        }
     }
 
     /// Get sorted project aliases for consistent ordering in the table.
@@ -222,6 +235,13 @@ impl App {
                     // Re-parse only the changed project
                     let planning_dir = project_path.join(".planning");
                     let new_state = state_reader::parse_project_state(&planning_dir);
+
+                    // Detect changes before replacing the old state
+                    if let Some(old_state) = self.project_states.get(&alias) {
+                        self.change_tracker
+                            .detect_changes(&alias, old_state, &new_state);
+                    }
+
                     self.project_states.insert(alias.clone(), new_state);
                     self.last_refresh.insert(alias.clone(), now);
                     self.recompute_filtered_aliases();
@@ -261,6 +281,7 @@ impl App {
             }
             InputMode::Search => self.handle_search_key(code),
             InputMode::HelpOverlay => self.handle_help_key(code),
+            InputMode::DetailView { .. } => self.handle_detail_key(code),
         }
     }
 
@@ -288,11 +309,11 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                self.status_message = Some((
-                    "Detail view coming in Phase 3".to_string(),
-                    std::time::Instant::now(),
-                ));
-                self.needs_redraw = true;
+                if let Some(alias) = self.selected_alias() {
+                    self.detail_scroll_offset = 0;
+                    self.input_mode = InputMode::DetailView { alias };
+                    self.needs_redraw = true;
+                }
             }
             KeyCode::Char('/') => {
                 self.input_mode = InputMode::Search;
@@ -358,6 +379,29 @@ impl App {
                 self.needs_redraw = true;
             }
             _ => {} // Consume all other keys -- do NOT fall through
+        }
+    }
+
+    fn handle_detail_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.input_mode = InputMode::Normal;
+                self.detail_scroll_offset = 0;
+                self.needs_redraw = true;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.detail_scroll_offset = self.detail_scroll_offset.saturating_add(1);
+                self.needs_redraw = true;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.detail_scroll_offset = self.detail_scroll_offset.saturating_sub(1);
+                self.needs_redraw = true;
+            }
+            KeyCode::Char('?') => {
+                self.input_mode = InputMode::HelpOverlay;
+                self.needs_redraw = true;
+            }
+            _ => {}
         }
     }
 

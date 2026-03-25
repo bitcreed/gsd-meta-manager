@@ -1,5 +1,6 @@
 mod action;
 mod app;
+mod change_tracker;
 mod cli;
 mod config;
 mod error;
@@ -62,6 +63,8 @@ async fn main() -> anyhow::Result<()> {
             let mut terminal = tui::init();
             let mut app = App::new(config_path)?;
             app.load_project_states();
+
+            app.init_change_tracker();
 
             let event_bus = EventBus::new();
 

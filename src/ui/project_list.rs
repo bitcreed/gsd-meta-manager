@@ -208,6 +208,9 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             let line = Line::from(Span::styled(prompt, Style::default().fg(Color::Red)));
             frame.render_widget(Paragraph::new(line), area);
         }
+        InputMode::DetailView { .. } => {
+            // Detail view renders its own footer; this arm should not be reached
+        }
     }
 }
 

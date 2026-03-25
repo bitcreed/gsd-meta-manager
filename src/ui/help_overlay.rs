@@ -24,7 +24,7 @@ pub fn render(frame: &mut Frame) {
         Line::from(""),
         Line::from("  j / Down      Move down"),
         Line::from("  k / Up        Move up"),
-        Line::from("  Enter         Open project detail (Phase 3)"),
+        Line::from("  Enter         Open project detail"),
         Line::from("  /             Filter projects"),
         Line::from("  a             Add project"),
         Line::from("  d             Delete project"),
