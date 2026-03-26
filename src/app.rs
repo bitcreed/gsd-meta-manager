@@ -3,7 +3,7 @@ use crate::change_tracker::ChangeTracker;
 use crate::config::{load_config, save_config, Config};
 use crate::project_creator;
 use crate::registry;
-use crate::state_reader::{self, ProjectState};
+use crate::state_reader::{self, queue_md, ProjectState};
 use crate::watcher::FileWatcher;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::widgets::TableState;
@@ -23,6 +23,7 @@ pub enum InputMode {
     CreateName,
     CreatePath { name: String },
     CreateConfirm { name: String, path: PathBuf },
+    EnqueueInput { alias: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -106,6 +107,7 @@ pub struct App {
     pub detail_sub_view_per_project: HashMap<String, DetailSubView>,
     pub event_tx: Option<UnboundedSender<Action>>,
     pub watcher: Option<FileWatcher>,
+    pub suggestion_index: usize,
 }
 
 impl App {
@@ -135,6 +137,7 @@ impl App {
             detail_sub_view_per_project: HashMap::new(),
             event_tx: None,
             watcher: None,
+            suggestion_index: 0,
         };
         app.filtered_aliases = app.sorted_aliases();
         Ok(app)
@@ -356,6 +359,10 @@ impl App {
             InputMode::Search => self.handle_search_key(code),
             InputMode::HelpOverlay => self.handle_help_key(code),
             InputMode::DetailView { .. } => self.handle_detail_key(code),
+            InputMode::EnqueueInput { alias } => {
+                let alias = alias.clone();
+                self.handle_enqueue_key(code, &alias);
+            }
             InputMode::CreateName => self.handle_create_name_key(code),
             InputMode::CreatePath { name } => {
                 let name = name.clone();
@@ -504,8 +511,114 @@ impl App {
                     self.needs_redraw = true;
                 }
             }
+            KeyCode::Char('e') => {
+                if let InputMode::DetailView { ref alias } = self.input_mode {
+                    let alias = alias.clone();
+                    // Check if project has .planning/ directory
+                    let has_planning = self
+                        .config
+                        .projects
+                        .get(&alias)
+                        .map(|p| p.path.join(".planning").is_dir())
+                        .unwrap_or(false);
+                    if !has_planning {
+                        self.status_message = Some((
+                            "Run GSD in this project first to enable queue".to_string(),
+                            std::time::Instant::now(),
+                        ));
+                        self.needs_redraw = true;
+                    } else {
+                        // Pre-populate with first suggestion if available
+                        if let Some(state) = self.project_states.get(&alias) {
+                            let suggestions = queue_md::suggest_next_commands(state);
+                            if !suggestions.is_empty() {
+                                self.input_buffer = suggestions[0].clone();
+                            } else {
+                                self.input_buffer.clear();
+                            }
+                        } else {
+                            self.input_buffer.clear();
+                        }
+                        self.suggestion_index = 0;
+                        self.input_mode = InputMode::EnqueueInput { alias };
+                        self.needs_redraw = true;
+                    }
+                }
+            }
             KeyCode::Char('?') => {
                 self.input_mode = InputMode::HelpOverlay;
+                self.needs_redraw = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_enqueue_key(&mut self, code: KeyCode, alias: &str) {
+        match code {
+            KeyCode::Enter => {
+                if !self.input_buffer.is_empty() {
+                    let alias = alias.to_string();
+                    if let Some(project) = self.config.projects.get(&alias) {
+                        let planning_dir = project.path.join(".planning");
+                        let mut actions = queue_md::load_queue(&planning_dir);
+                        actions.push(queue_md::QueuedAction {
+                            command: self.input_buffer.clone(),
+                        });
+                        if let Err(e) = queue_md::save_queue(&planning_dir, &actions) {
+                            self.status_message = Some((
+                                format!("Queue error: {}", e),
+                                std::time::Instant::now(),
+                            ));
+                        } else {
+                            self.status_message = Some((
+                                format!("Queued: {}", self.input_buffer),
+                                std::time::Instant::now(),
+                            ));
+                            // Reload project state so queued_actions is updated
+                            let new_state = state_reader::parse_project_state(&planning_dir);
+                            self.project_states.insert(alias.clone(), new_state);
+                        }
+                    }
+                    self.input_mode = InputMode::DetailView {
+                        alias: alias.clone(),
+                    };
+                    self.input_buffer.clear();
+                    self.needs_redraw = true;
+                }
+            }
+            KeyCode::Tab => {
+                if let Some(project_alias) = self
+                    .config
+                    .projects
+                    .get(alias)
+                    .map(|_| alias.to_string())
+                {
+                    if let Some(state) = self.project_states.get(&project_alias) {
+                        let suggestions = queue_md::suggest_next_commands(state);
+                        if !suggestions.is_empty() {
+                            self.suggestion_index =
+                                (self.suggestion_index + 1) % suggestions.len();
+                            self.input_buffer =
+                                suggestions[self.suggestion_index].clone();
+                            self.needs_redraw = true;
+                        }
+                    }
+                }
+            }
+            KeyCode::Esc => {
+                let alias = alias.to_string();
+                self.input_mode = InputMode::DetailView { alias };
+                self.input_buffer.clear();
+                self.needs_redraw = true;
+            }
+            KeyCode::Backspace => {
+                self.input_buffer.pop();
+                self.suggestion_index = 0;
+                self.needs_redraw = true;
+            }
+            KeyCode::Char(c) => {
+                self.input_buffer.push(c);
+                self.suggestion_index = 0;
                 self.needs_redraw = true;
             }
             _ => {}

@@ -18,8 +18,9 @@ fn status_color(category: &StatusCategory) -> Color {
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    let alias = match &app.input_mode {
-        InputMode::DetailView { alias } => alias.clone(),
+    let (alias, is_enqueue_mode) = match &app.input_mode {
+        InputMode::DetailView { alias } => (alias.clone(), false),
+        InputMode::EnqueueInput { alias } => (alias.clone(), true),
         _ => return,
     };
 
@@ -212,6 +213,24 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     state.backlog_count
                 )));
             }
+
+            // Queued actions section
+            if !state.queued_actions.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "  Queued:",
+                    Style::default().add_modifier(Modifier::BOLD),
+                )));
+                for (i, action) in state.queued_actions.iter().enumerate() {
+                    lines.push(Line::from(vec![
+                        Span::raw(format!("    {}. ", i + 1)),
+                        Span::styled(
+                            &action.command,
+                            Style::default().fg(Color::Cyan),
+                        ),
+                    ]));
+                }
+            }
         } else {
             lines.push(Line::from(""));
             lines.push(Line::from("  No state data available for this project."));
@@ -228,19 +247,35 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         frame.render_widget(paragraph, main_area);
     }
 
-    // Footer - show context-aware toggle hint
-    let toggle_hint = if show_roadmap { "phases" } else { "roadmap" };
-    let footer = Paragraph::new(Line::from(vec![
-        Span::raw("  "),
-        Span::styled("[Esc]", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("back  "),
-        Span::styled("[j/k]", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("scroll  "),
-        Span::styled("[r]", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(toggle_hint),
-        Span::raw("  "),
-        Span::styled("[?]", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("help"),
-    ]));
-    frame.render_widget(footer, footer_area);
+    // Footer
+    if is_enqueue_mode {
+        // Enqueue input bar
+        let footer = Paragraph::new(Line::from(vec![
+            Span::styled("  Enqueue> ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(&app.input_buffer),
+            Span::styled(
+                "  [Tab] suggestions  [Enter] queue  [Esc] cancel",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+        frame.render_widget(footer, footer_area);
+    } else {
+        // Normal detail view footer with context-aware toggle hint
+        let toggle_hint = if show_roadmap { "phases" } else { "roadmap" };
+        let footer = Paragraph::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("[Esc]", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("back  "),
+            Span::styled("[j/k]", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("scroll  "),
+            Span::styled("[r]", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(toggle_hint),
+            Span::raw("  "),
+            Span::styled("[e]", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("enqueue  "),
+            Span::styled("[?]", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("help"),
+        ]));
+        frame.render_widget(footer, footer_area);
+    }
 }

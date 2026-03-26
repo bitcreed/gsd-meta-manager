@@ -30,6 +30,7 @@ pub fn render(frame: &mut Frame) {
         Line::from("  c             Create new project"),
         Line::from("  d             Delete project"),
         Line::from("  ?             Toggle this help"),
+        Line::from("  e             Enqueue next action (detail view)"),
         Line::from("  r             Toggle roadmap visualization (detail view)"),
         Line::from("  q / Esc       Quit / Back"),
         Line::from("  Ctrl+C        Force quit"),
