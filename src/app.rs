@@ -263,6 +263,15 @@ impl App {
                         std::time::Instant::now(),
                     ));
                     self.needs_redraw = true;
+
+                    // Auto-start watcher if not yet watching (handles new project case)
+                    let planning_dir_check = project_path.join(".planning");
+                    if planning_dir_check.is_dir() {
+                        if let Some(ref mut watcher) = self.watcher {
+                            // watch() is idempotent for notify -- re-watching an already-watched path is a no-op
+                            let _ = watcher.watch(&planning_dir_check);
+                        }
+                    }
                 }
             }
             Action::CreateProjectResult {
@@ -292,10 +301,31 @@ impl App {
                         if let Some(ref mut watcher) = self.watcher {
                             let _ = watcher.watch(&planning_dir);
                         }
+                    } else {
+                        // .planning/ may not exist yet (GSD creates it later).
+                        // Spawn a background task that polls for it to appear, then triggers a refresh.
+                        if let Some(ref tx) = self.event_tx {
+                            let tx = tx.clone();
+                            let planning_poll = planning_dir.clone();
+                            tokio::spawn(async move {
+                                // Poll every 2 seconds for up to 60 seconds
+                                for _ in 0..30 {
+                                    if planning_poll.is_dir() {
+                                        let _ = tx.send(Action::FileChanged {
+                                            project_path: planning_poll
+                                                .parent()
+                                                .unwrap()
+                                                .to_path_buf(),
+                                        });
+                                        break;
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                }
+                            });
+                        }
                     }
 
                     // Load project state for the new alias
-                    let planning_dir = path.join(".planning");
                     let state = state_reader::parse_project_state(&planning_dir);
                     self.project_states.insert(alias.clone(), state);
 
@@ -879,6 +909,9 @@ impl App {
     }
 
     fn do_remove_project(&mut self, alias: &str) {
+        // Capture project path BEFORE removal (registry::remove_project deletes it from config)
+        let project_path = self.config.projects.get(alias).map(|p| p.path.clone());
+
         match registry::remove_project(&mut self.config, alias) {
             Ok(()) => {
                 if let Err(e) = save_config(&self.config, &self.config_path) {
@@ -886,7 +919,19 @@ impl App {
                     self.needs_redraw = true;
                     return;
                 }
+
+                // Unwatch the project's .planning/ directory to prevent inotify leaks
+                if let Some(ref path) = project_path {
+                    if let Some(ref mut watcher) = self.watcher {
+                        let planning_dir = path.join(".planning");
+                        let _ = watcher.unwatch(&planning_dir);
+                    }
+                }
+
                 self.project_states.remove(alias);
+                self.detail_sub_view_per_project.remove(alias);
+                self.last_refresh.remove(alias);
+
                 self.status_message = Some((
                     format!("Removed \"{}\"", alias),
                     std::time::Instant::now(),
