@@ -82,7 +82,13 @@ Plans:
   2. User can create a new GSD project (name + path) from the TUI — directory, git repo, and GSD settings initialized automatically
   3. Newly created project appears in the dashboard immediately after creation
   4. User can enqueue a next action for a project, see it in the detail view, and copy the GSD command to clipboard
-**Plans**: TBD
+**Plans:** 3 plans
+
+Plans:
+- [ ] 04-01-PLAN.md — ASCII roadmap widget with vertical pipeline and detail view toggle
+- [ ] 04-02-PLAN.md — Project creation flow with git init, hooks, and auto-registration
+- [ ] 04-03-PLAN.md — Work enqueue with QUEUE.md, command suggestions, and detail view display
+
 **UI hint**: yes
 
 ## Progress
@@ -95,4 +101,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | 1. Core Infrastructure | 3/3 | Complete | - |
 | 2. Dashboard and Navigation | 2/2 | Complete | - |
 | 3. Live State and Detail View | 0/2 | Not started | - |
-| 4. Visualization, Creation, and Enqueue | 0/? | Not started | - |
+| 4. Visualization, Creation, and Enqueue | 0/3 | Not started | - |
