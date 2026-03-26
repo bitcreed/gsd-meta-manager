@@ -26,6 +26,7 @@ pub trait Screen {
     fn name(&self) -> &str;
 }
 
+#[allow(dead_code)]
 pub enum ScreenAction {
     None,
     Push(Box<dyn Screen>),
