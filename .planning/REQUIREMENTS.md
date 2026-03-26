@@ -18,8 +18,8 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **DASH-01**: User sees a scrollable project list with name, current phase, and status per row
 - [x] **DASH-02**: Project rows are color-coded by workflow state (idle, active, blocked, complete)
 - [x] **DASH-03**: A persistent status bar shows aggregate counts across all projects (e.g., "5 projects: 2 active, 1 blocked, 2 idle")
-- [ ] **DASH-04**: User sees an ASCII roadmap visualization showing phase structure and progress for a selected project
-- [ ] **DASH-05**: User sees a change summary showing what changed in a project since last visit (e.g., "Phase 3 completed 2h ago")
+- [x] **DASH-04**: User sees an ASCII roadmap visualization showing phase structure and progress for a selected project
+- [x] **DASH-05**: User sees a change summary showing what changed in a project since last visit (e.g., "Phase 3 completed 2h ago")
 
 ### Navigation & UX
 
@@ -34,25 +34,25 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **STATE-01**: Manager reads project state from `.planning/` files (STATE.md, ROADMAP.md, config.json) without running GSD commands
 - [x] **STATE-02**: Manager shows phase progress indicators (completed vs total tasks from PLAN.md files)
 - [x] **STATE-03**: Manager shows backlog item count per project (999.x directories in `.planning/`)
-- [ ] **STATE-04**: Manager auto-refreshes when `.planning/` files change via file system watcher (inotify/kqueue)
-- [ ] **STATE-05**: Research whether GSD hooks can push state updates to the manager instead of polling
+- [x] **STATE-04**: Manager auto-refreshes when `.planning/` files change via file system watcher (inotify/kqueue)
+- [x] **STATE-05**: Research whether GSD hooks can push state updates to the manager instead of polling
 
 ### Detail View
 
-- [ ] **DET-01**: User can drill into a project to see: project path, all roadmap phases, current phase, and task completion counts
-- [ ] **DET-02**: Detail view shows phase-level breakdown with status per phase (pending, in-progress, complete)
+- [x] **DET-01**: User can drill into a project to see: project path, all roadmap phases, current phase, and task completion counts
+- [x] **DET-02**: Detail view shows phase-level breakdown with status per phase (pending, in-progress, complete)
 
 ### Project Creation
 
-- [ ] **CREATE-01**: User can create a new GSD project from the TUI (specify name, directory path)
-- [ ] **CREATE-02**: New project creation initializes directory, git repo, and imports global GSD settings
-- [ ] **CREATE-03**: Newly created project is automatically registered in the manager
+- [x] **CREATE-01**: User can create a new GSD project from the TUI (specify name, directory path)
+- [x] **CREATE-02**: New project creation initializes directory and git repo (user runs `/gsd:new-project` for full GSD init per D-05)
+- [x] **CREATE-03**: Newly created project is automatically registered in the manager
 
 ### Work Enqueue
 
-- [ ] **ENQ-01**: User can enqueue a next action for a project (next phase, task, or verification command)
-- [ ] **ENQ-02**: Enqueued actions are visible in the project detail view
-- [ ] **ENQ-03**: V1 enqueue mechanism copies the GSD command to clipboard (native queue integration deferred)
+- [x] **ENQ-01**: User can enqueue a next action for a project (next phase, task, or verification command)
+- [x] **ENQ-02**: Enqueued actions are visible in the project detail view
+- [x] **ENQ-03**: V1 enqueue mechanism stores commands in `.planning/QUEUE.md` for GSD pickup (clipboard dropped per D-12)
 
 ## v2 Requirements
 
@@ -108,18 +108,18 @@ Which phases cover which requirements. Updated during roadmap creation.
 | NAV-03 | Phase 2 | Complete |
 | NAV-04 | Phase 2 | Complete |
 | NAV-05 | Phase 2 | Complete |
-| STATE-04 | Phase 3 | Pending |
-| STATE-05 | Phase 3 | Pending |
-| DET-01 | Phase 3 | Pending |
-| DET-02 | Phase 3 | Pending |
-| DASH-05 | Phase 3 | Pending |
-| DASH-04 | Phase 4 | Pending |
-| CREATE-01 | Phase 4 | Pending |
-| CREATE-02 | Phase 4 | Pending |
-| CREATE-03 | Phase 4 | Pending |
-| ENQ-01 | Phase 4 | Pending |
-| ENQ-02 | Phase 4 | Pending |
-| ENQ-03 | Phase 4 | Pending |
+| STATE-04 | Phase 3 | Complete |
+| STATE-05 | Phase 3 | Complete |
+| DET-01 | Phase 3 | Complete |
+| DET-02 | Phase 3 | Complete |
+| DASH-05 | Phase 3 | Complete |
+| DASH-04 | Phase 4 | Complete |
+| CREATE-01 | Phase 4 | Complete |
+| CREATE-02 | Phase 4 | Complete |
+| CREATE-03 | Phase 4 | Complete |
+| ENQ-01 | Phase 4 | Complete |
+| ENQ-02 | Phase 4 | Complete |
+| ENQ-03 | Phase 4 | Complete |
 
 **Coverage:**
 - v1 requirements: 26 total
