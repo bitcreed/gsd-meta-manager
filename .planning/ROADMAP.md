@@ -102,3 +102,14 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | 2. Dashboard and Navigation | 2/2 | Complete | - |
 | 3. Live State and Detail View | 0/2 | Not started | - |
 | 4. Visualization, Creation, and Enqueue | 2/3 | In Progress|  |
+
+## Backlog
+
+### Phase 999.1: Execution Flow Graph View (BACKLOG)
+
+**Goal:** Per-project ASCII execution flow graph showing the full discuss→plan→execute→verify pipeline for each phase, with color-coded status. A third detail view tab (alongside PhaseList and RoadmapViz) toggled via a key. Scans each phase directory for `*-CONTEXT.md`, `*-PLAN.md`, `*-SUMMARY.md`, `*-VERIFICATION.md` to determine pipeline stage. Renders vertical flow with phases connected by arrows, each showing sub-stages (discuss, plan with count, execute with waves, verify with score). Colors: green=done, yellow=in-progress, dim=pending. Similar to the ASCII roadmap widget but focused on the GSD workflow pipeline rather than just phase status.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
