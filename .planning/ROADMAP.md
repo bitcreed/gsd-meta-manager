@@ -176,3 +176,12 @@ Plans:
 
 Plans:
 - [ ] TBD (promote with /gsd:review-backlog when ready)
+
+### Phase 999.9: Queue Execution Research (BACKLOG)
+
+**Goal:** QUEUE.md is currently a passive reminder list that GSD doesn't consume. Research how gsd-manager could actually execute queued commands: options include spawning `claude` CLI with the queued slash command as input, piping to stdin, using Claude Code's MCP or hooks to trigger workflows, or writing a sidecar file that GSD reads on startup. Related to 999.7 (GSD integration) — the integration hooks discovered there may enable queue execution. Key questions: Can claude CLI accept a slash command non-interactively? Can we launch a terminal session (tmux/screen/new PTY) with a pre-loaded command? Should queue execution be one-shot (run next item) or batch (run all sequentially)? What feedback does gsd-manager get when a queued command completes or fails?
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
