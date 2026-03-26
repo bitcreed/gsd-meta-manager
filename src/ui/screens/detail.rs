@@ -2,6 +2,7 @@ use super::{AppContext, Screen, ScreenAction};
 use super::enqueue::EnqueueScreen;
 use super::help::HelpScreen;
 use crate::app::{classify_status, DetailSubView, StatusCategory};
+use crate::state_reader::disk_status::DiskStatus;
 use crate::change_tracker::ChangeTracker;
 use crate::state_reader::queue_md;
 use crate::ui::roadmap_widget::RoadmapWidget;
@@ -33,6 +34,43 @@ fn status_color(category: &StatusCategory) -> Color {
         StatusCategory::Blocked => Color::Red,
         StatusCategory::Complete => Color::DarkGray,
         StatusCategory::Unknown => Color::Magenta,
+    }
+}
+
+/// Compute a disk-inferred status suffix for a phase line, e.g. " [Executing 2/3]".
+fn disk_suffix(phase_number: &str, phase_disk_statuses: &std::collections::HashMap<String, crate::state_reader::disk_status::DiskInference>) -> String {
+    let disk_inf = phase_disk_statuses.get(phase_number);
+    let disk_label = match disk_inf {
+        Some(inf) => match inf.status {
+            DiskStatus::NoDirectory => "Not started",
+            DiskStatus::Empty => "Empty",
+            DiskStatus::Discussed => "Discussed",
+            DiskStatus::Researched => "Researched",
+            DiskStatus::Planned => "Planned",
+            DiskStatus::Partial => "Executing",
+            DiskStatus::Complete => "Complete",
+        },
+        None => "",
+    };
+
+    if disk_label.is_empty() {
+        String::new()
+    } else if disk_label == "Executing" {
+        match disk_inf {
+            Some(inf) if inf.plan_count > 0 => {
+                format!(" [Executing {}/{}]", inf.summary_count, inf.plan_count)
+            }
+            _ => format!(" [{}]", disk_label),
+        }
+    } else if disk_label == "Planned" {
+        match disk_inf {
+            Some(inf) if inf.plan_count > 0 => {
+                format!(" [Planned ({} plans)]", inf.plan_count)
+            }
+            _ => format!(" [{}]", disk_label),
+        }
+    } else {
+        format!(" [{}]", disk_label)
     }
 }
 
@@ -249,9 +287,11 @@ impl Screen for DetailScreen {
                             format!("{}/{} plans", phase.completed_plans, phase.total_plans)
                         };
 
+                        let ds = disk_suffix(&phase.number, &state.phase_disk_statuses);
+
                         let line_text = format!(
-                            "  {} P{}: {}  {}",
-                            icon, phase.number, phase.name, plan_display
+                            "  {} P{}: {}  {}{}",
+                            icon, phase.number, phase.name, plan_display, ds
                         );
 
                         if is_current {
@@ -475,9 +515,11 @@ impl DetailScreen {
                             format!("{}/{} plans", phase.completed_plans, phase.total_plans)
                         };
 
+                        let ds = disk_suffix(&phase.number, &state.phase_disk_statuses);
+
                         let line_text = format!(
-                            "  {} P{}: {}  {}",
-                            icon, phase.number, phase.name, plan_display
+                            "  {} P{}: {}  {}{}",
+                            icon, phase.number, phase.name, plan_display, ds
                         );
 
                         if is_current {
