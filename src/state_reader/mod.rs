@@ -37,18 +37,25 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
             } else {
                 fm.status
             };
-            state.milestone = fm.milestone;
             state.total_phases = fm.progress.total_phases;
             state.completed_phases = fm.progress.completed_phases;
             state.total_plans = fm.progress.total_plans;
             state.completed_plans = fm.progress.completed_plans;
 
-            // Derive current_phase from stopped_at or completed_phases
+            // Derive current_phase from stopped_at, completion status, or phase number
             if !fm.stopped_at.is_empty() {
                 state.current_phase = fm.stopped_at.clone();
+            } else if fm.progress.completed_phases >= fm.progress.total_phases && fm.progress.total_phases > 0 {
+                state.current_phase = if !fm.milestone.is_empty() {
+                    format!("{} Complete", fm.milestone)
+                } else {
+                    "Complete".to_string()
+                };
             } else {
                 state.current_phase = format!("Phase {}", fm.progress.completed_phases + 1);
             }
+
+            state.milestone = fm.milestone;
         }
     }
 

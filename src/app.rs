@@ -78,6 +78,12 @@ pub fn classify_status(status: &str) -> StatusCategory {
 }
 
 pub fn format_phase_display(state: &ProjectState) -> String {
+    if state.completed_phases >= state.total_phases && state.total_phases > 0 {
+        if !state.milestone.is_empty() {
+            return format!("{} Complete", state.milestone);
+        }
+        return "Complete".to_string();
+    }
     let phase_num = state.completed_phases + 1;
     let phase_name = state
         .phases
@@ -979,5 +985,64 @@ impl App {
         let next = if current == 0 { count - 1 } else { current - 1 };
         self.table_state.select(Some(next));
         self.needs_redraw = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state_reader::roadmap_md::RoadmapPhase;
+
+    #[test]
+    fn test_format_phase_display_completed_milestone() {
+        let state = ProjectState {
+            completed_phases: 4,
+            total_phases: 4,
+            milestone: "v1.0".to_string(),
+            phases: vec![],
+            ..Default::default()
+        };
+        assert_eq!(format_phase_display(&state), "v1.0 Complete");
+    }
+
+    #[test]
+    fn test_format_phase_display_completed_no_milestone() {
+        let state = ProjectState {
+            completed_phases: 4,
+            total_phases: 4,
+            milestone: "".to_string(),
+            phases: vec![],
+            ..Default::default()
+        };
+        assert_eq!(format_phase_display(&state), "Complete");
+    }
+
+    #[test]
+    fn test_format_phase_display_in_progress() {
+        let state = ProjectState {
+            completed_phases: 1,
+            total_phases: 4,
+            milestone: "v1.0".to_string(),
+            phases: vec![
+                RoadmapPhase {
+                    number: "1".to_string(),
+                    name: "Foundation".to_string(),
+                    description: String::new(),
+                    completed: true,
+                    total_plans: 0,
+                    completed_plans: 0,
+                },
+                RoadmapPhase {
+                    number: "2".to_string(),
+                    name: "Dashboard".to_string(),
+                    description: String::new(),
+                    completed: false,
+                    total_plans: 0,
+                    completed_plans: 0,
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(format_phase_display(&state), "P2: Dashboard");
     }
 }
