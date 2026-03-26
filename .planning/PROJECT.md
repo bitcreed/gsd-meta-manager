@@ -19,9 +19,13 @@ See the state of every GSD project at a glance and act on any of them without le
 
 ### Active
 
-- [ ] Workflow visualization — ASCII rendering of each project's roadmap and progress
-- [ ] Enqueue work — queue next phases, tasks, or verification while current work runs
-- [ ] Create new project — spin up a new GSD project (directory, git, settings, kick off initialization)
+No active requirements — all v1 requirements validated.
+
+### Recently Validated
+
+- ✓ Workflow visualization — ASCII roadmap with phase boxes, status icons, progress markers — Phase 4
+- ✓ Enqueue work — free-form command queue with suggestions, stored in .planning/QUEUE.md — Phase 4
+- ✓ Create new project — TUI modal for name/path, git init, hook support, auto-register — Phase 4
 
 ### Out of Scope
 
@@ -70,4 +74,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-25 after Phase 3 completion*
+*Last updated: 2026-03-26 after Phase 4 completion — all v1 phases complete*
