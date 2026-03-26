@@ -1,6 +1,7 @@
 pub mod state_md;
 pub mod roadmap_md;
 pub mod config_json;
+pub mod queue_md;
 
 use std::path::Path;
 
@@ -16,6 +17,7 @@ pub struct ProjectState {
     pub backlog_count: u32,
     pub phases: Vec<roadmap_md::RoadmapPhase>,
     pub gsd_mode: String,
+    pub queued_actions: Vec<queue_md::QueuedAction>,
 }
 
 /// Parse a GSD project's .planning/ directory into a ProjectState.
@@ -66,6 +68,9 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
 
     // Count backlog items
     state.backlog_count = count_backlog_items(planning_dir);
+
+    // Load queued actions from QUEUE.md
+    state.queued_actions = queue_md::load_queue(planning_dir);
 
     state
 }
