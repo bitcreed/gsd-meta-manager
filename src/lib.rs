@@ -7,4 +7,5 @@ pub mod error;
 pub mod project_creator;
 pub mod registry;
 pub mod state_reader;
+pub mod ui;
 pub mod watcher;

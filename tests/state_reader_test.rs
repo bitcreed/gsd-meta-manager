@@ -1,7 +1,7 @@
-use gsd_manager::state_reader::config_json::parse_gsd_config;
-use gsd_manager::state_reader::roadmap_md::parse_roadmap_phases;
-use gsd_manager::state_reader::state_md::{extract_frontmatter, parse_state_md};
-use gsd_manager::state_reader::{count_backlog_items, parse_project_state};
+use gsd_meta_manager::state_reader::config_json::parse_gsd_config;
+use gsd_meta_manager::state_reader::roadmap_md::parse_roadmap_phases;
+use gsd_meta_manager::state_reader::state_md::{extract_frontmatter, parse_state_md};
+use gsd_meta_manager::state_reader::{count_backlog_items, parse_project_state};
 use std::fs;
 use tempfile::TempDir;
 

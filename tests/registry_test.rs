@@ -3,8 +3,8 @@ use assert_fs::TempDir;
 use std::path::PathBuf;
 
 // Import the library's modules
-use gsd_manager::config::{load_config, save_config, Config};
-use gsd_manager::registry::{add_project, list_projects, remove_project};
+use gsd_meta_manager::config::{load_config, save_config, Config};
+use gsd_meta_manager::registry::{add_project, list_projects, remove_project};
 
 #[test]
 fn add_project_with_valid_alias_and_planning_dir_succeeds() {
