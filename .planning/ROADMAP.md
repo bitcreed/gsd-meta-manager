@@ -131,3 +131,12 @@ Plans:
 
 Plans:
 - [ ] TBD (promote with /gsd:review-backlog when ready)
+
+### Phase 999.4: Fix Roadmap Parser Plan Counting (BACKLOG)
+
+**Goal:** Fix the `parse_roadmap_phases` function in `roadmap_md.rs` which incorrectly counts plans per phase. The parser scans lines between checklist headers for plan items, but plans live in `### Phase N:` detail subsections further down. P1-P3 get 0 plans (adjacent checklist lines), P4 captures all 10. Fix: parse plan items from the `## Phase Details` subsections keyed by phase number, or better yet, count `*-PLAN.md` and `*-SUMMARY.md` files on disk per phase directory instead of parsing the markdown.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
