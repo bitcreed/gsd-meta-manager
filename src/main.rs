@@ -38,9 +38,25 @@ async fn main() -> anyhow::Result<()> {
     let config_path = cli.config.unwrap_or_else(Config::default_path);
 
     match cli.command {
-        Some(Commands::Add { alias, path }) => {
+        Some(Commands::Add { path, alias }) => {
             let canonical_path = path.canonicalize().unwrap_or(path);
-            let mut config = load_config(&config_path)?;
+            let alias = alias.unwrap_or_else(|| {
+                canonical_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unnamed")
+                    .to_string()
+            });
+            let config = load_config(&config_path)?;
+            if config.projects.contains_key(&alias) {
+                eprintln!(
+                    "Error: alias '{}' already exists. Provide an explicit alias: gsd-manager add {} <alias>",
+                    alias,
+                    canonical_path.display()
+                );
+                std::process::exit(1);
+            }
+            let mut config = config;
             add_project(&mut config, &alias, &canonical_path)?;
             save_config(&config, &config_path)?;
             println!("Added project '{}' at {}", alias, canonical_path.display());

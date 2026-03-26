@@ -1,17 +1,15 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.1
-milestone_name: Polish & Power Features
-status: planning
-stopped_at: Phase 05 context gathered
-last_updated: "2026-03-26T21:21:23.788Z"
-last_activity: 2026-03-26 — Roadmap created for v1.1 milestone
+milestone: v1.0
+milestone_name: milestone
+status: v1.0 milestone complete
+stopped_at: Completed 05-01-PLAN.md
+last_updated: "2026-03-26T21:47:01.573Z"
 progress:
-  total_phases: 5
+  total_phases: 10
   completed_phases: 0
   total_plans: 0
-  completed_plans: 0
-  percent: 0
+  completed_plans: 1
 ---
 
 # Project State
@@ -21,23 +19,19 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-26)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 05 - State Reader Accuracy
+**Current focus:** Planning next milestone (v1.1)
 
 ## Current Position
 
-Phase: 05 of 09 (State Reader Accuracy)
-Plan: 0 of 0 in current phase
-Status: Ready to plan
-Last activity: 2026-03-26 — Roadmap created for v1.1 milestone
-
-Progress: [░░░░░░░░░░] 0%
+Phase: 04
+Plan: Not started
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 0 (v1.1)
-- Average duration: --
+- Total plans completed: 0
+- Average duration: —
 - Total execution time: 0 hours
 
 **By Phase:**
@@ -48,8 +42,8 @@ Progress: [░░░░░░░░░░] 0%
 
 **Recent Trend:**
 
-- Last 5 plans: --
-- Trend: --
+- Last 5 plans: —
+- Trend: —
 
 *Updated after each plan completion*
 | Phase 01 P01 | 3min | 2 tasks | 11 files |
@@ -62,6 +56,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 04 P01 | 4min | 2 tasks | 5 files |
 | Phase 04 P02 | 4min | 2 tasks | 9 files |
 | Phase 04 P03 | 4min | 2 tasks | 6 files |
+| Phase 05 P01 | 3min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -70,11 +65,33 @@ Progress: [░░░░░░░░░░] 0%
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- [v1.1 research]: Refactor InputMode to screen/component architecture before adding new screens (11 variants, will explode past 20)
-- [v1.1 research]: All new I/O must use spawn_blocking (existing sync parse_project_state is known debt)
-- [v1.1 research]: Two new deps only: sysinfo 0.38 (session detection), petgraph 0.8 (flow graph)
-- [v1.1 research]: No git2/gix -- use tokio::process::Command with null-byte git log format
-- [v1.1 research]: Terminal handoff via RAII guard (ratatui::restore/init) shared by queue execution and session launch
+- Stack confirmed: Rust + ratatui 0.30 + crossterm 0.29 + tokio 1.50 (research validated)
+- Architecture: TEA pattern — single App struct, Action enum, mpsc EventBus, stateless components
+- State reading: Parse `.planning/` files directly; StateReader is the only module that knows the schema
+- File watching: notify-debouncer-full 8.x with 200ms debounce (not raw notify, not 9.x rc)
+- [Phase 01]: Used anyhow::Result in main instead of color_eyre::Result for error type compatibility
+- [Phase 01]: Added --config global CLI flag for test isolation and scripting flexibility
+- [Phase 01]: Used serde_yml for YAML frontmatter deserialization with #[serde(default)] on all fields for graceful degradation
+- [Phase 01]: Used RawKey(KeyEvent) action variant so event reader is stateless; App::update handles mode-specific key interpretation
+- [Phase 01]: Render takes &mut App for TableState mutation; 250ms tick interval for status message expiry
+- [Phase 02]: Used bold+underline for selection highlight instead of reverse video to preserve status color
+- [Phase 02]: Aggregate footer counts reflect ALL projects, not filtered subset
+- [Phase 02]: Icon shorthand for status counts: > (active), ! (blocked), * (idle), + (complete)
+- [Phase 02]: Used Clear widget + manual centered_rect for popup positioning (ratatui 0.30 lacks Rect::inner_centered)
+- [Phase 03]: Used notify-debouncer-full 0.5.0 with callback-to-tokio-mpsc bridge for live file watching
+- [Phase 03]: STATE-05 resolved: file watching covers hook-based push use case without implementation
+- [Phase 03]: Used ASCII icons (+, *, o) for phase status in detail view
+- [Phase 03]: Change tracker is in-memory only, no persistence (D-07); tracks only phase completions and status transitions (D-08)
+- [Phase 03]: Detail view is full-screen replacement dispatched via InputMode::DetailView (D-01)
+- [Phase 04]: Used custom Widget trait impl with direct Buffer writes for roadmap rendering
+- [Phase 04]: Per-project sub-view state in HashMap<String, DetailSubView> on App struct
+- [Phase 04]: Used spawn_blocking for git init and hook execution to keep TUI responsive
+- [Phase 04]: Stored event_tx and watcher as Option fields on App for async communication and dynamic watching
+- [Phase 04]: Atomic QUEUE.md writes via tmp+rename for concurrent safety
+- [Phase 04]: Context-aware GSD command suggestions based on project status string matching
+- [Phase 04]: Suggestion index on App struct, reset on manual typing
+- [Phase 05]: CLI arg order changed from (alias, path) to (path, alias?) -- breaking change for scripts
+- [Phase 05]: Completion detection pattern: completed_phases >= total_phases && total_phases > 0
 
 ### Pending Todos
 
@@ -82,8 +99,7 @@ None yet.
 
 ### Blockers/Concerns
 
-- InputMode enum at 11 variants; needs refactor to screen/component architecture before adding new screens (Phase 05 scope)
-- Synchronous file I/O in parse_project_state() blocks render loop; must move to spawn_blocking universally
+None — v1.0 milestone complete.
 
 ### Quick Tasks Completed
 
@@ -93,6 +109,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-26T21:21:23.785Z
-Stopped at: Phase 05 context gathered
-Resume file: .planning/phases/05-state-reader-accuracy/05-CONTEXT.md
+Last session: 2026-03-26T21:47:01.571Z
+Stopped at: Completed 05-01-PLAN.md
+Resume file: None

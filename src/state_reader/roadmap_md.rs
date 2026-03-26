@@ -16,7 +16,7 @@ pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
         r"- \[([ xX])\] \*\*Phase ([0-9.]+): (.+?)\*\*\s*[-\x{2014}]\s*(.*)"
     ).unwrap();
     let plan_re = Regex::new(
-        r"^\s*- \[([ xX])\] \d+-\d+-PLAN\.md"
+        r"^\s*- \[([ xX])\] (?:\d+-\d+-)?PLAN\.md"
     ).unwrap();
 
     let lines: Vec<&str> = content.lines().collect();
@@ -126,6 +126,37 @@ Plans:
 
         assert_eq!(phases[1].total_plans, 2);
         assert_eq!(phases[1].completed_plans, 1);
+    }
+
+    #[test]
+    fn test_parse_roadmap_standalone_plan_md() {
+        let content = r#"# Roadmap
+
+- [x] **Phase 1: Solo Plan** - Single standalone plan
+
+Plans:
+- [x] PLAN.md -- solo plan
+"#;
+        let phases = parse_roadmap_phases(content);
+        assert_eq!(phases.len(), 1);
+        assert_eq!(phases[0].total_plans, 1);
+        assert_eq!(phases[0].completed_plans, 1);
+    }
+
+    #[test]
+    fn test_parse_roadmap_mixed_standalone_and_numbered() {
+        let content = r#"# Roadmap
+
+- [ ] **Phase 3: Mixed** - Both formats
+
+Plans:
+- [x] 03-01-PLAN.md -- numbered plan
+- [ ] PLAN.md -- standalone plan
+"#;
+        let phases = parse_roadmap_phases(content);
+        assert_eq!(phases.len(), 1);
+        assert_eq!(phases[0].total_plans, 2);
+        assert_eq!(phases[0].completed_plans, 1);
     }
 
     #[test]

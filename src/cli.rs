@@ -16,10 +16,10 @@ pub struct Cli {
 pub enum Commands {
     /// Add a GSD project to the registry
     Add {
-        /// Alias for the project (displayed in TUI)
-        alias: String,
         /// Path to the project root (must contain .planning/)
         path: PathBuf,
+        /// Optional alias (defaults to last folder component of path)
+        alias: Option<String>,
     },
     /// Remove a project from the registry
     Remove {
