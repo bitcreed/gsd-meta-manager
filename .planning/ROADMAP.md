@@ -158,3 +158,12 @@ Plans:
 
 Plans:
 - [ ] TBD (promote with /gsd:review-backlog when ready)
+
+### Phase 999.7: GSD Integration and Cached Status (BACKLOG)
+
+**Goal:** Research whether gsd-manager can hook into GSD workflows directly (e.g., post-phase-completion hooks, post-commit hooks on .planning/) to capture richer data. Capture output of `/gsd:progress` and cache it per project, invalidating whenever new work happens (git activity, file changes in .planning/). Introduce a fact vs assumption distinction in displayed status: "fact" = data from a recent /gsd:progress capture or hook event, "assumption" = inferred from stale file state. Show visual indicator (e.g., dim/italic for assumptions, bold for facts, or a staleness timestamp). Research areas: GSD hook system (pre/post phase, pre/post plan), Claude Code hooks API, whether we can spawn `/gsd:progress` non-interactively to capture structured output, and how to detect "work is happening" to invalidate cache.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
