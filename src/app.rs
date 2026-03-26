@@ -1,12 +1,15 @@
 use crate::action::Action;
 use crate::change_tracker::ChangeTracker;
 use crate::config::{load_config, save_config, Config};
+use crate::project_creator;
 use crate::registry;
 use crate::state_reader::{self, ProjectState};
+use crate::watcher::FileWatcher;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::widgets::TableState;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputMode {
@@ -17,6 +20,9 @@ pub enum InputMode {
     Search,
     HelpOverlay,
     DetailView { alias: String },
+    CreateName,
+    CreatePath { name: String },
+    CreateConfirm { name: String, path: PathBuf },
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -98,6 +104,8 @@ pub struct App {
     pub detail_scroll_offset: u16,
     pub change_tracker: ChangeTracker,
     pub detail_sub_view_per_project: HashMap<String, DetailSubView>,
+    pub event_tx: Option<UnboundedSender<Action>>,
+    pub watcher: Option<FileWatcher>,
 }
 
 impl App {
@@ -125,6 +133,8 @@ impl App {
             detail_scroll_offset: 0,
             change_tracker: ChangeTracker::new(),
             detail_sub_view_per_project: HashMap::new(),
+            event_tx: None,
+            watcher: None,
         };
         app.filtered_aliases = app.sorted_aliases();
         Ok(app)
@@ -261,6 +271,61 @@ impl App {
                     self.needs_redraw = true;
                 }
             }
+            Action::CreateProjectResult {
+                alias,
+                path,
+                success,
+                error,
+            } => {
+                if success {
+                    // Register the new project (no .planning/ check)
+                    if let Err(e) =
+                        registry::add_project_unchecked(&mut self.config, &alias, &path)
+                    {
+                        self.error_message = Some(format!("Failed to register: {}", e));
+                        self.needs_redraw = true;
+                        return;
+                    }
+                    if let Err(e) = save_config(&self.config, &self.config_path) {
+                        self.error_message = Some(format!("Failed to save config: {}", e));
+                        self.needs_redraw = true;
+                        return;
+                    }
+
+                    // Start file watcher on the new project's .planning/ dir (if it exists)
+                    let planning_dir = path.join(".planning");
+                    if planning_dir.is_dir() {
+                        if let Some(ref mut watcher) = self.watcher {
+                            let _ = watcher.watch(&planning_dir);
+                        }
+                    }
+
+                    // Load project state for the new alias
+                    let planning_dir = path.join(".planning");
+                    let state = state_reader::parse_project_state(&planning_dir);
+                    self.project_states.insert(alias.clone(), state);
+
+                    self.status_message = Some((
+                        format!("Created project \"{}\"", alias),
+                        std::time::Instant::now(),
+                    ));
+                    self.input_mode = InputMode::Normal;
+                    self.input_buffer.clear();
+                    self.error_message = None;
+                    self.recompute_filtered_aliases();
+                    if let Some(pos) = self.filtered_aliases.iter().position(|a| a == &alias) {
+                        self.table_state.select(Some(pos));
+                    }
+                    self.needs_redraw = true;
+                } else {
+                    self.error_message = Some(
+                        error.unwrap_or_else(|| "Unknown error creating project".to_string()),
+                    );
+                    self.input_mode = InputMode::Normal;
+                    self.input_buffer.clear();
+                    self.needs_redraw = true;
+                }
+            }
             Action::ProjectLoaded { alias, state } => {
                 if let Some(s) = state {
                     self.project_states.insert(alias, s);
@@ -291,6 +356,16 @@ impl App {
             InputMode::Search => self.handle_search_key(code),
             InputMode::HelpOverlay => self.handle_help_key(code),
             InputMode::DetailView { .. } => self.handle_detail_key(code),
+            InputMode::CreateName => self.handle_create_name_key(code),
+            InputMode::CreatePath { name } => {
+                let name = name.clone();
+                self.handle_create_path_key(code, &name);
+            }
+            InputMode::CreateConfirm { name, path } => {
+                let name = name.clone();
+                let path = path.clone();
+                self.handle_create_confirm_key(code, &name, &path);
+            }
         }
     }
 
@@ -307,6 +382,12 @@ impl App {
             }
             KeyCode::Char('a') => {
                 self.input_mode = InputMode::AddAlias;
+                self.input_buffer.clear();
+                self.error_message = None;
+                self.needs_redraw = true;
+            }
+            KeyCode::Char('c') => {
+                self.input_mode = InputMode::CreateName;
                 self.input_buffer.clear();
                 self.error_message = None;
                 self.needs_redraw = true;
@@ -496,6 +577,149 @@ impl App {
                 self.do_add_project(alias, &path);
             }
             KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+                self.input_buffer.clear();
+                self.error_message = None;
+                self.needs_redraw = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_create_name_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char(c) => {
+                self.input_buffer.push(c);
+                self.error_message = None;
+                self.needs_redraw = true;
+            }
+            KeyCode::Backspace => {
+                self.input_buffer.pop();
+                self.needs_redraw = true;
+            }
+            KeyCode::Enter => {
+                let name = self.input_buffer.trim().to_string();
+                if name.is_empty() {
+                    self.error_message = Some("Name cannot be empty.".to_string());
+                    self.needs_redraw = true;
+                    return;
+                }
+                // Check alias uniqueness (alias = lowercase, spaces to hyphens)
+                let alias = name.to_lowercase().replace(' ', "-");
+                if self.config.projects.contains_key(&alias) {
+                    self.error_message = Some(format!(
+                        "Alias \"{}\" already exists. Choose a different name.",
+                        alias
+                    ));
+                    self.needs_redraw = true;
+                    return;
+                }
+                self.input_mode = InputMode::CreatePath { name };
+                self.input_buffer.clear();
+                self.error_message = None;
+                self.needs_redraw = true;
+            }
+            KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+                self.input_buffer.clear();
+                self.error_message = None;
+                self.needs_redraw = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_create_path_key(&mut self, code: KeyCode, name: &str) {
+        match code {
+            KeyCode::Char(c) => {
+                self.input_buffer.push(c);
+                self.error_message = None;
+                self.needs_redraw = true;
+            }
+            KeyCode::Backspace => {
+                self.input_buffer.pop();
+                self.needs_redraw = true;
+            }
+            KeyCode::Tab => {
+                let completions = project_creator::tab_complete_path(&self.input_buffer);
+                if completions.len() == 1 {
+                    self.input_buffer = completions[0].clone();
+                    self.needs_redraw = true;
+                } else if completions.len() > 1 {
+                    self.status_message = Some((
+                        format!("{} matches", completions.len()),
+                        std::time::Instant::now(),
+                    ));
+                    self.needs_redraw = true;
+                }
+            }
+            KeyCode::Enter => {
+                let path = project_creator::resolve_path(&self.input_buffer);
+                if path.is_dir() {
+                    self.status_message = Some((
+                        "Directory exists; will git-init in it.".to_string(),
+                        std::time::Instant::now(),
+                    ));
+                }
+                self.input_mode = InputMode::CreateConfirm {
+                    name: name.to_string(),
+                    path,
+                };
+                self.input_buffer.clear();
+                self.error_message = None;
+                self.needs_redraw = true;
+            }
+            KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+                self.input_buffer.clear();
+                self.error_message = None;
+                self.needs_redraw = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_create_confirm_key(&mut self, code: KeyCode, name: &str, path: &PathBuf) {
+        match code {
+            KeyCode::Enter | KeyCode::Char('y') => {
+                let alias = name.to_lowercase().replace(' ', "-");
+                let hooks = self.config.preferences.hooks.clone();
+                let path_clone = path.clone();
+                let name_clone = name.to_string();
+                let alias_clone = alias.clone();
+
+                if let Some(tx) = self.event_tx.clone() {
+                    tokio::task::spawn_blocking(move || {
+                        let result = project_creator::create_project(
+                            &name_clone,
+                            &path_clone,
+                            &hooks,
+                        );
+                        let (success, error): (bool, Option<String>) = match result {
+                            Ok(()) => (true, None),
+                            Err(e) => (false, Some(format!("{}", e))),
+                        };
+                        let _ = tx.send(Action::CreateProjectResult {
+                            alias: alias_clone,
+                            path: path_clone,
+                            success,
+                            error,
+                        });
+                    });
+
+                    self.status_message = Some((
+                        format!("Creating project \"{}\"...", alias),
+                        std::time::Instant::now(),
+                    ));
+                    self.input_mode = InputMode::Normal;
+                    self.needs_redraw = true;
+                } else {
+                    self.error_message =
+                        Some("Event channel not available.".to_string());
+                    self.needs_redraw = true;
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Esc => {
                 self.input_mode = InputMode::Normal;
                 self.input_buffer.clear();
                 self.error_message = None;

@@ -20,5 +20,11 @@ pub enum Action {
     FileChanged {
         project_path: std::path::PathBuf,
     },
+    CreateProjectResult {
+        alias: String,
+        path: std::path::PathBuf,
+        success: bool,
+        error: Option<String>,
+    },
     Noop,
 }

@@ -208,6 +208,21 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             let line = Line::from(Span::styled(prompt, Style::default().fg(Color::Red)));
             frame.render_widget(Paragraph::new(line), area);
         }
+        InputMode::CreateName => {
+            render_input_footer(frame, app, area, "Project name");
+        }
+        InputMode::CreatePath { .. } => {
+            render_input_footer(frame, app, area, "Path (Tab to complete)");
+        }
+        InputMode::CreateConfirm { name, path } => {
+            let prompt = format!(
+                "Create \"{}\" at {}? [y/n]",
+                name,
+                path.display()
+            );
+            let line = Line::from(Span::styled(prompt, Style::default().fg(Color::Yellow)));
+            frame.render_widget(Paragraph::new(line), area);
+        }
         InputMode::DetailView { .. } => {
             // Detail view renders its own footer; this arm should not be reached
         }
@@ -238,7 +253,7 @@ fn render_normal_footer(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     // Right side: keybind hints
-    let right_text = "[/]search [?]help [a]dd [d]el [q]uit";
+    let right_text = "[/]search [?]help [a]dd [c]reate [d]el [q]uit";
 
     let footer_chunks = Layout::horizontal([
         Constraint::Min(0),
