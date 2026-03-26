@@ -132,6 +132,15 @@ Plans:
 Plans:
 - [ ] TBD (promote with /gsd:review-backlog when ready)
 
+### Phase 999.5: Fix P5 Unknown on Completed Milestones (BACKLOG)
+
+**Goal:** Fix `format_phase_display()` in `app.rs` and `detail_view.rs` which always calculates `completed_phases + 1` as the current phase. When all 4 phases are done, this shows "P5: Unknown" since no Phase 5 exists. Fix: guard with `if completed_phases >= total_phases` and show a completion state (e.g., "Complete" or the last phase with a checkmark) instead of incrementing past the end.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
+
 ### Phase 999.4: Fix Roadmap Parser Plan Counting (BACKLOG)
 
 **Goal:** Fix the `parse_roadmap_phases` function in `roadmap_md.rs` which incorrectly counts plans per phase. The parser scans lines between checklist headers for plan items, but plans live in `### Phase N:` detail subsections further down. P1-P3 get 0 plans (adjacent checklist lines), P4 captures all 10. Fix: parse plan items from the `## Phase Details` subsections keyed by phase number, or better yet, count `*-PLAN.md` and `*-SUMMARY.md` files on disk per phase directory instead of parsing the markdown.
