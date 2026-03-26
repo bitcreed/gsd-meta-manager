@@ -22,6 +22,16 @@ use registry::{add_project, list_projects, remove_project};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Initialize tracing subscriber with file appender before anything else
+    let log_dir = dirs::data_local_dir()
+        .map(|d| d.join("gsd-manager"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "gsd-manager.log");
+    tracing_subscriber::fmt()
+        .with_writer(file_appender)
+        .with_ansi(false)
+        .init();
+
     color_eyre::install().map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let cli = Cli::parse();

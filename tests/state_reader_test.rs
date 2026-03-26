@@ -247,7 +247,6 @@ progress:
     assert_eq!(state.phases.len(), 4);
     assert!(state.phases[0].completed);
     assert!(!state.phases[1].completed);
-    assert_eq!(state.gsd_mode, "yolo");
     assert_eq!(state.backlog_count, 1);
     assert_eq!(state.current_phase, "Phase 1 context gathered");
 }
@@ -261,7 +260,6 @@ fn test_parse_project_state_missing_files() {
     assert_eq!(state.total_phases, 0);
     assert_eq!(state.completed_phases, 0);
     assert!(state.phases.is_empty());
-    assert_eq!(state.gsd_mode, "");
     assert_eq!(state.backlog_count, 0);
     // No panic -- graceful degradation
 }

@@ -1,5 +1,6 @@
 pub mod state_md;
 pub mod roadmap_md;
+#[allow(dead_code)]
 pub mod config_json;
 pub mod queue_md;
 
@@ -16,7 +17,6 @@ pub struct ProjectState {
     pub milestone: String,
     pub backlog_count: u32,
     pub phases: Vec<roadmap_md::RoadmapPhase>,
-    pub gsd_mode: String,
     pub queued_actions: Vec<queue_md::QueuedAction>,
 }
 
@@ -56,14 +56,6 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
     let roadmap_path = planning_dir.join("ROADMAP.md");
     if let Ok(content) = std::fs::read_to_string(&roadmap_path) {
         state.phases = roadmap_md::parse_roadmap_phases(&content);
-    }
-
-    // Parse config.json
-    let config_path = planning_dir.join("config.json");
-    if let Ok(content) = std::fs::read_to_string(&config_path) {
-        if let Some(config) = config_json::parse_gsd_config(&content) {
-            state.gsd_mode = config.mode;
-        }
     }
 
     // Count backlog items

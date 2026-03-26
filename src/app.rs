@@ -220,9 +220,6 @@ impl App {
                     }
                 }
             }
-            Action::Quit => {
-                self.should_quit = true;
-            }
             Action::RawKey(key_event) => {
                 self.handle_key(key_event.code, key_event.modifiers);
             }
@@ -230,12 +227,6 @@ impl App {
                 self.needs_redraw = true;
             }
             Action::Noop => {}
-            Action::AddProjectConfirm { alias, path } => {
-                self.do_add_project(&alias, &path);
-            }
-            Action::RemoveProjectConfirm { alias } => {
-                self.do_remove_project(&alias);
-            }
             Action::FileChanged { project_path } => {
                 // Find the alias matching this project path
                 let alias = self
@@ -328,12 +319,6 @@ impl App {
                     self.input_buffer.clear();
                     self.needs_redraw = true;
                 }
-            }
-            Action::ProjectLoaded { alias, state } => {
-                if let Some(s) = state {
-                    self.project_states.insert(alias, s);
-                }
-                self.needs_redraw = true;
             }
         }
     }
