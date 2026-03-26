@@ -2,11 +2,11 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Polish & Power Features
-status: defining requirements
-stopped_at: ""
-last_updated: "2026-03-26T20:00:00.000Z"
+status: ready to plan
+stopped_at: "Roadmap created, ready to plan Phase 05"
+last_updated: "2026-03-26T21:00:00.000Z"
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -19,21 +19,23 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-26)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Defining requirements for v1.1
+**Current focus:** Phase 05 - State Reader Accuracy
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-03-26 — Milestone v1.1 started
+Phase: 05 of 09 (State Reader Accuracy)
+Plan: 0 of 0 in current phase
+Status: Ready to plan
+Last activity: 2026-03-26 — Roadmap created for v1.1 milestone
+
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 0
-- Average duration: —
+- Total plans completed: 0 (v1.1)
+- Average duration: --
 - Total execution time: 0 hours
 
 **By Phase:**
@@ -44,8 +46,8 @@ Last activity: 2026-03-26 — Milestone v1.1 started
 
 **Recent Trend:**
 
-- Last 5 plans: —
-- Trend: —
+- Last 5 plans: --
+- Trend: --
 
 *Updated after each plan completion*
 | Phase 01 P01 | 3min | 2 tasks | 11 files |
@@ -66,31 +68,11 @@ Last activity: 2026-03-26 — Milestone v1.1 started
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- Stack confirmed: Rust + ratatui 0.30 + crossterm 0.29 + tokio 1.50 (research validated)
-- Architecture: TEA pattern — single App struct, Action enum, mpsc EventBus, stateless components
-- State reading: Parse `.planning/` files directly; StateReader is the only module that knows the schema
-- File watching: notify-debouncer-full 8.x with 200ms debounce (not raw notify, not 9.x rc)
-- [Phase 01]: Used anyhow::Result in main instead of color_eyre::Result for error type compatibility
-- [Phase 01]: Added --config global CLI flag for test isolation and scripting flexibility
-- [Phase 01]: Used serde_yml for YAML frontmatter deserialization with #[serde(default)] on all fields for graceful degradation
-- [Phase 01]: Used RawKey(KeyEvent) action variant so event reader is stateless; App::update handles mode-specific key interpretation
-- [Phase 01]: Render takes &mut App for TableState mutation; 250ms tick interval for status message expiry
-- [Phase 02]: Used bold+underline for selection highlight instead of reverse video to preserve status color
-- [Phase 02]: Aggregate footer counts reflect ALL projects, not filtered subset
-- [Phase 02]: Icon shorthand for status counts: > (active), ! (blocked), * (idle), + (complete)
-- [Phase 02]: Used Clear widget + manual centered_rect for popup positioning (ratatui 0.30 lacks Rect::inner_centered)
-- [Phase 03]: Used notify-debouncer-full 0.5.0 with callback-to-tokio-mpsc bridge for live file watching
-- [Phase 03]: STATE-05 resolved: file watching covers hook-based push use case without implementation
-- [Phase 03]: Used ASCII icons (+, *, o) for phase status in detail view
-- [Phase 03]: Change tracker is in-memory only, no persistence (D-07); tracks only phase completions and status transitions (D-08)
-- [Phase 03]: Detail view is full-screen replacement dispatched via InputMode::DetailView (D-01)
-- [Phase 04]: Used custom Widget trait impl with direct Buffer writes for roadmap rendering
-- [Phase 04]: Per-project sub-view state in HashMap<String, DetailSubView> on App struct
-- [Phase 04]: Used spawn_blocking for git init and hook execution to keep TUI responsive
-- [Phase 04]: Stored event_tx and watcher as Option fields on App for async communication and dynamic watching
-- [Phase 04]: Atomic QUEUE.md writes via tmp+rename for concurrent safety
-- [Phase 04]: Context-aware GSD command suggestions based on project status string matching
-- [Phase 04]: Suggestion index on App struct, reset on manual typing
+- [v1.1 research]: Refactor InputMode to screen/component architecture before adding new screens (11 variants, will explode past 20)
+- [v1.1 research]: All new I/O must use spawn_blocking (existing sync parse_project_state is known debt)
+- [v1.1 research]: Two new deps only: sysinfo 0.38 (session detection), petgraph 0.8 (flow graph)
+- [v1.1 research]: No git2/gix -- use tokio::process::Command with null-byte git log format
+- [v1.1 research]: Terminal handoff via RAII guard (ratatui::restore/init) shared by queue execution and session launch
 
 ### Pending Todos
 
@@ -98,7 +80,8 @@ None yet.
 
 ### Blockers/Concerns
 
-None — v1.0 milestone complete.
+- InputMode enum at 11 variants; needs refactor to screen/component architecture before adding new screens (Phase 05 scope)
+- Synchronous file I/O in parse_project_state() blocks render loop; must move to spawn_blocking universally
 
 ### Quick Tasks Completed
 
@@ -108,6 +91,6 @@ None — v1.0 milestone complete.
 
 ## Session Continuity
 
-Last session: 2026-03-26T02:50:00.000Z
-Stopped at: Completed quick task 260325-reh: Fix 6 tech debt items
+Last session: 2026-03-26
+Stopped at: Roadmap created, ready to plan Phase 05
 Resume file: None

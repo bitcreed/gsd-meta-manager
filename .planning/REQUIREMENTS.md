@@ -13,6 +13,10 @@ Requirements for the v1.1 milestone. Each maps to roadmap phases.
 - [ ] **STATE-02**: User sees "Complete" instead of "P5: Unknown" when all phases are done
 - [ ] **STATE-03**: User sees phase status inferred from disk files (discuss/research/plan/execute/verify stages)
 
+### CLI Ergonomics
+
+- [ ] **CLI-01**: User can register a project by path only — name auto-derived from last folder component
+
 ### GSD Integration
 
 - [ ] **GSD-01**: User can opt into enriching state with cached gsd-tools.cjs JSON output
@@ -85,32 +89,33 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| STATE-01 | — | Pending |
-| STATE-02 | — | Pending |
-| STATE-03 | — | Pending |
-| GSD-01 | — | Pending |
-| GSD-02 | — | Pending |
-| BLOG-01 | — | Pending |
-| BLOG-02 | — | Pending |
-| BLOG-03 | — | Pending |
-| GIT-01 | — | Pending |
-| GIT-02 | — | Pending |
-| GIT-03 | — | Pending |
-| FLOW-01 | — | Pending |
-| FLOW-02 | — | Pending |
-| FLOW-03 | — | Pending |
-| QUEUE-01 | — | Pending |
-| QUEUE-02 | — | Pending |
-| QUEUE-03 | — | Pending |
-| SESS-01 | — | Pending |
-| SESS-02 | — | Pending |
-| SESS-03 | — | Pending |
+| STATE-01 | Phase 05 | Pending |
+| STATE-02 | Phase 05 | Pending |
+| STATE-03 | Phase 05 | Pending |
+| GSD-01 | Phase 07 | Pending |
+| GSD-02 | Phase 07 | Pending |
+| BLOG-01 | Phase 06 | Pending |
+| BLOG-02 | Phase 06 | Pending |
+| BLOG-03 | Phase 06 | Pending |
+| GIT-01 | Phase 06 | Pending |
+| GIT-02 | Phase 06 | Pending |
+| GIT-03 | Phase 06 | Pending |
+| FLOW-01 | Phase 07 | Pending |
+| FLOW-02 | Phase 07 | Pending |
+| FLOW-03 | Phase 07 | Pending |
+| QUEUE-01 | Phase 08 | Pending |
+| QUEUE-02 | Phase 08 | Pending |
+| QUEUE-03 | Phase 08 | Pending |
+| SESS-01 | Phase 09 | Pending |
+| SESS-02 | Phase 09 | Pending |
+| CLI-01 | Phase 05 | Pending |
+| SESS-03 | Phase 09 | Pending |
 
 **Coverage:**
-- v1.1 requirements: 20 total
-- Mapped to phases: 0
-- Unmapped: 20 ⚠️
+- v1.1 requirements: 21 total
+- Mapped to phases: 21
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-26*
-*Last updated: 2026-03-26 after initial definition*
+*Last updated: 2026-03-26 after roadmap creation*
