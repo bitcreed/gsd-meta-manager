@@ -1,234 +1,250 @@
 # Pitfalls Research
 
-**Domain:** TUI multi-project management dashboard (Rust/ratatui or Python/Textual)
-**Researched:** 2026-03-24
-**Confidence:** HIGH (ratatui pitfalls), MEDIUM (Textual pitfalls), HIGH (file-watching pitfalls)
-
----
+**Domain:** Adding process management, git integration, file editing, and graph visualization to an existing Rust TUI (ratatui) application
+**Researched:** 2026-03-26
+**Confidence:** HIGH (based on codebase analysis, official docs, and community patterns)
 
 ## Critical Pitfalls
 
-### Pitfall 1: Terminal Not Restored on Panic
+### Pitfall 1: InputMode Enum Explosion Collapses the App Architecture
 
 **What goes wrong:**
-The application crashes (panic in Rust, unhandled exception in Python) while in raw mode and on the alternate screen. The terminal is left in a broken state — no echo, garbled output, cursor missing. The user's shell is unusable until they run `reset` or open a new terminal.
+The current `InputMode` enum has 11 variants. Adding Claude session management, backlog browser, git history viewer, queue execution, and execution flow graph could push this to 20+ variants. Every new feature adds 2-3 modes (viewing, editing, confirming). The `handle_key` match arm becomes a 1000+ line function. Key binding conflicts emerge across modes. Testing becomes combinatorial.
 
 **Why it happens:**
-Raw mode and alternate screen must be explicitly restored. Developers write the happy path but forget that panics and signals bypass normal cleanup. In Rust, `Drop` implementations are not called during `abort` or certain signals. In Python, `atexit` handlers may not run under SIGKILL.
+v1.0 grew organically from 3 modes to 11 in two days. The flat enum pattern works for small apps but collapses when every feature needs its own input handling. The `App` struct already holds 18 fields -- each new feature adds more per-feature state (scroll offsets, selection indices, buffers).
 
 **How to avoid:**
-- **Rust/ratatui:** Use `ratatui::init()` and `ratatui::restore()` (available since 0.28.1) — these automatically install panic hooks. If on an older version, install a custom panic hook that calls `restore()` before the original hook runs. Wrap the main loop in a closure that restores on error.
-- **Python/Textual:** Textual handles this internally for normal exits, but test explicitly that `Ctrl+C` and unhandled exceptions leave the terminal clean. Use `try/finally` blocks around the `app.run()` call.
+Refactor to a screen/component architecture before adding new features. Each feature (git history, backlog browser, etc.) gets its own struct implementing a `Screen` trait with `handle_key()`, `render()`, and `update()` methods. The `App` holds a `Vec<Box<dyn Screen>>` stack. Push screens on entry, pop on Escape. This is the ratatui community's recommended pattern for apps with 5+ screens.
 
 **Warning signs:**
-- Terminal looks corrupt after killing the app during development
-- Tests kill the process mid-run and leave CI shells broken
-- The app handles `Ctrl+C` but does not handle `SIGTERM`
+- `handle_key` exceeds 200 lines
+- Adding a keybinding requires checking 5+ other modes for conflicts
+- New features require adding fields to `App` that are only used in one mode
+- `.clone()` on `InputMode` in match arms (already happening at line 363 of app.rs)
 
-**Phase to address:** Foundation / Setup phase — install before writing any application logic.
+**Phase to address:**
+Phase 1 -- refactor architecture BEFORE adding any new screens. This is the single highest-leverage change for v1.1.
 
 ---
 
-### Pitfall 2: Blocking the Event Loop with File I/O
+### Pitfall 2: Terminal State Corruption When Spawning Claude Sessions
 
 **What goes wrong:**
-Reading `.planning/` files for N projects happens synchronously in the render or event-handling thread. With even 10 projects, a slow disk, NFS mount, or unresponsive filesystem causes the UI to freeze noticeably. The TUI stops responding to keypresses while reads are in-flight.
+Spawning a Claude CLI process (`claude --resume <id>`) from inside a ratatui app requires leaving alternate screen and disabling raw mode first. If the spawn fails, panics, or the child process is killed, the terminal stays in a broken state -- no cursor, garbled input, alternate screen stuck. Users must `reset` their terminal.
 
 **Why it happens:**
-State reads feel "fast" on a local SSD during development. The problem surfaces on spinning disks, network shares, Docker volumes, or when one `.planning/` directory is inside a Git repository being indexed by an IDE. File reads are never truly instant and always unbounded in latency.
+ratatui owns the terminal (alternate screen + raw mode). Spawning an interactive child process (Claude CLI) that also needs terminal control creates a double-ownership problem. The `ratatui::restore()` / `ratatui::init()` dance must be airtight, including on all error paths. The ratatui docs have an explicit recipe for this (spawning vim), but it is easy to miss error paths.
 
 **How to avoid:**
-- **Rust:** Run all file reads on a dedicated Tokio task or `rayon` thread pool. Send results back via an `mpsc` channel to the main event loop. Never call `std::fs::read` or `serde_json::from_reader` inside the draw closure or the input handler.
-- **Python/Textual:** Use `@work(thread=True)` for all file system operations. Never `await` a file read on the main async loop — Python's asyncio file I/O is still blocking unless you use `aiofiles` or a thread worker.
-- **Both:** Cache parsed state in memory. File reads should only refresh the cache, not block widget rendering.
+1. Wrap terminal handoff in a RAII guard: `struct TerminalHandoff` that calls `ratatui::restore()` on creation and `ratatui::init()` on Drop.
+2. Use `std::panic::catch_unwind` around the spawn to ensure restoration.
+3. For Claude specifically: prefer `claude -p "command" --print` (non-interactive output mode) for status checks and queue execution, and only do full terminal handoff for interactive attach.
+4. Set `kill_on_drop(true)` on spawned `tokio::process::Command` to prevent orphan processes when the TUI is the parent.
 
 **Warning signs:**
-- Keypresses feel laggy when many projects are registered
-- Adding a project on a slow path causes a visible stutter
-- The draw function or event handler calls any filesystem API directly
+- Manual `restore()` / `init()` calls without error handling between them
+- Testing only the happy path (successful spawn + graceful exit)
+- Forgetting to restore on `Ctrl+C` during child process execution
 
-**Phase to address:** State reading / architecture phase — establish the async file-read pattern before connecting it to any UI widget.
+**Phase to address:**
+Queue execution and Claude session management phases. Build the terminal handoff abstraction first, then use it for both features.
 
 ---
 
-### Pitfall 3: File Watcher Event Storms and Debounce Neglect
+### Pitfall 3: Synchronous File I/O Blocking the Render Loop Gets Worse
 
 **What goes wrong:**
-A file watcher (`notify` in Rust, `watchfiles` in Python) is set up on `.planning/` directories. When GSD writes state (multiple files written in rapid succession), the watcher fires 5–20 events per save. Each event triggers a full state reload. CPU spikes, the UI redraws constantly, and the application may deadlock or drop events if the watcher's event queue overflows.
+The current `parse_project_state()` does synchronous `std::fs::read_to_string()` on the main thread (called from `load_project_states()` and the `FileChanged` handler in `app.rs` line 248-251). With v1.1 adding git log parsing (`git log` can take 100ms+ on large repos), backlog file reading (scanning all `999.*` directories and reading their content), and disk-based phase completion inference (stat-ing multiple files per phase), a single `FileChanged` event could block rendering for 500ms+.
 
 **Why it happens:**
-Editors and tools write files in stages (truncate, write, fsync, rename). Each stage generates an inotify event. Without debouncing, every intermediate write triggers a reload. The `notify` crate's raw watcher has no built-in debounce; developers assume one save = one event.
+v1.0's synchronous approach was pragmatic for parsing 3 small files. But git history shells out to `git log` (which can be slow on large repos), disk-based inference requires stat-ing N * M files (phases times expected artifacts), and backlog browsing reads N markdown files. All of these currently run in the event handler on the main thread.
 
 **How to avoid:**
-- **Rust:** Use `notify-debouncer-full` or `notify-debouncer-mini` instead of the raw `notify` watcher. Set a debounce window of 100–500ms. Handle the `EventKind::Any` overflow case gracefully by scheduling a full refresh rather than crashing.
-- **Python:** Use `watchfiles` with `awatch`, which batches events within a cycle. Apply an explicit debounce delay (100–300ms) before acting on changes.
-- **Both:** Treat the file watcher as a "cache invalidation hint" only. The watcher says "something changed" — a separate read task does the actual file I/O. Never do file I/O inside the watcher callback.
-- inotify watch limits default to 8192 on Linux. With many projects, each containing multiple files, you can hit this limit. Check `/proc/sys/fs/inotify/max_user_watches` and document the limit in user-facing error messages.
+Move all file I/O and `git` invocations to `tokio::task::spawn_blocking()`. Send results back through the event bus as a new `Action` variant like `Action::ProjectStateUpdated { alias, state }`. The render loop stays responsive. This pattern already exists in the codebase -- `CreateProjectResult` is dispatched from a `spawn_blocking` task (app.rs line 820).
+
+For git: use `tokio::process::Command` for `git log --format=<custom> -n 50` rather than the git2 crate (avoids C FFI dependency, matches the single-binary distribution constraint).
 
 **Warning signs:**
-- CPU is elevated even when no projects are actively running
-- A single GSD write triggers many rapid redraws
-- Application slows down as more projects are registered
+- UI freezes when a project with a large git history is selected
+- Typing feels laggy after adding backlog browsing
+- Multiple `FileChanged` events queue up and process one-by-one, causing a visible "catching up" delay
 
-**Phase to address:** File-watching / state sync phase.
+**Phase to address:**
+State reader accuracy fix phase (earliest v1.1 phase). Establish the async I/O pattern before git history and backlog features are built on top.
 
 ---
 
-### Pitfall 4: Rendering Everything on Every Tick (The Spinning Loop)
+### Pitfall 4: Zombie and Orphan Processes from Queue Execution
 
 **What goes wrong:**
-The app renders at a fixed tick rate (e.g., 60 FPS or every 16ms) regardless of whether anything changed. With 10+ projects displayed, the render function walks the project list, formats strings, and pushes buffer diffs on every frame. CPU usage is 10–40% idle — comparable to a video game. Users and CI pipelines notice immediately.
+Queue execution spawns Claude sessions (`claude -p "command" --cwd /path`) that can run for minutes to hours. If the TUI exits (quit, crash, SIGTERM), child processes either become orphans (still running but untracked) or zombies (exited but not reaped). If child handles are dropped without awaiting, tokio attempts best-effort reaping but makes no guarantees. If the TUI spawns multiple queue items concurrently, resource exhaustion is possible since Claude sessions are memory-heavy (each is a Node.js process with 200MB+ RSS).
 
 **Why it happens:**
-Early ratatui examples and templates default to a "tick + draw on every iteration" pattern because it is simple. It works fine for a clock widget. It does not work for a dashboard with stable state.
+Tokio's `Child` handle does not kill the child on drop by default -- the process continues running. The TUI has no graceful shutdown sequence that waits for or detaches children. Users expect to quit the TUI without killing their long-running Claude sessions, but the TUI also needs to track them for status display.
 
 **How to avoid:**
-- **Rust/ratatui:** Decouple tick rate from render rate. Use `tokio::select!` to wait on either a state-change event, a user input event, or a low-frequency render tick (200–500ms for stable dashboards). Only call `terminal.draw()` when state has actually changed or on the slow background tick for clock updates. Never call `terminal.draw()` more than once per event-loop iteration (ratatui's double-buffer assumption).
-- **Python/Textual:** Textual's reactive system handles this well when used correctly — only `refresh()` widgets when their data changes. Avoid polling loops that call `refresh()` unconditionally.
-- **Both:** Target 10–30 FPS for a management dashboard, not 60. This is not a game.
+1. Build a `ProcessManager` that tracks all spawned children with their PIDs, start times, and associated project/queue-item.
+2. On TUI exit, give users a choice: "2 Claude sessions running. Detach (keep running) or Kill?"
+3. Use `kill_on_drop(false)` intentionally for Claude sessions that should survive TUI restart.
+4. Store PIDs in a file (`~/.local/share/gsd-manager/sessions.json`) so the TUI can re-discover them on restart via `kill(pid, 0)` (signal 0 = existence check).
+5. Limit concurrent executions (max 2-3 Claude sessions) with a `tokio::sync::Semaphore`.
+6. Ensure `child.wait()` is always awaited for processes the TUI explicitly kills, to prevent zombies.
 
 **Warning signs:**
-- `htop` shows the process consuming >5% CPU while idle
-- The render function is called even when the user is not interacting
-- `terminal.draw()` is called outside of event handling (e.g., in a background tick unconditionally)
+- `ps aux | grep claude` shows dozens of orphan processes after TUI crashes
+- System memory climbs after repeated queue executions without explicit cleanup
+- PID file has stale entries that never get cleaned up
 
-**Phase to address:** Core event loop architecture — establish before any widgets are built.
+**Phase to address:**
+Queue execution phase. This is the core complexity of making QUEUE.md actionable.
 
 ---
 
-### Pitfall 5: Immediate-Mode Rendering Misapplied (God App Struct)
+### Pitfall 5: Markdown Round-Trip Corruption in Backlog and Queue Editing
 
 **What goes wrong:**
-All project state, UI state, input state, selected indices, and modal flags get merged into one `App` struct. As the application grows, every render function receives `&mut App` or `&App`, and every event handler needs mutable access to the same struct. Borrow checker errors proliferate in Rust. The struct becomes untestable.
+The backlog browser needs to read, edit, and write back `.planning/` markdown files (QUEUE.md, backlog item descriptions, potentially ROADMAP.md). Naive parse-modify-serialize loses formatting: extra blank lines vanish, indentation changes, frontmatter (the YAML-like header in STATE.md) gets mangled, emoji/Unicode in phase names breaks, and list markers change style. GSD reads these files too -- if the TUI's writes produce subtly different formatting, GSD may parse them differently or show unexpected diffs.
 
 **Why it happens:**
-Ratatui's immediate-mode model makes it tempting to put "everything the render function needs" into one place. Early tutorials show a minimal `App` struct, and developers grow it organically until it has 30 fields.
+Markdown has no canonical serialization. The same semantic content can be formatted many ways. Most markdown parsers produce an AST that loses whitespace details. The current `queue_md` module does line-by-line string manipulation and reconstruction -- workable for a single file format, but fragile when extended to editing arbitrary markdown sections.
 
 **How to avoid:**
-- Adopt The Elm Architecture (TEA) from the start: separate `Model` (pure data), `View` (render functions, no side effects), and `Update` (message-based state transitions). Ratatui's official documentation endorses TEA explicitly.
-- Keep UI state (selected row, scroll offset, focused panel) separate from domain state (project list, file-read results).
-- In Rust: use `Arc<RwLock<ProjectState>>` for the shared project data, passed to background tasks. UI-only state lives in the render context, not the shared state.
-- In Python/Textual: use `reactive` attributes scoped to individual widgets, not one mega-reactive on the App class.
+1. For structured files (QUEUE.md, STATE.md frontmatter): continue the line-by-line approach. Parse only the specific section being edited. Preserve everything else byte-for-byte by tracking byte offsets of the edited section.
+2. For backlog items: treat the TUI as "insert/append only." The TUI can add new items and mark items as promoted, but full editing should launch `$EDITOR` (using the terminal handoff pattern from Pitfall 2).
+3. Write integration tests that round-trip real GSD files: `read -> parse -> serialize -> diff` must produce zero changes when no edits were made.
+4. Never parse STATE.md's frontmatter with a full YAML/TOML parser for write-back -- use regex replacement on the specific field being updated.
 
 **Warning signs:**
-- The `App` struct has more than ~15 fields
-- Render functions take `&mut App` instead of read-only data
-- Adding a new view requires touching the central state struct
+- `git diff` shows whitespace-only changes in files the TUI "didn't edit"
+- GSD fails to parse a file after the TUI touched it
+- Tests pass on synthetic files but fail on real project files with Unicode or unusual formatting
 
-**Phase to address:** Architecture phase — before writing the first widget.
+**Phase to address:**
+Backlog browser phase. Build round-trip tests before implementing any write operations.
 
 ---
 
-### Pitfall 6: Unicode Width and Emoji Breaking Layout
+### Pitfall 6: Claude Session Detection is Inherently Fragile
 
 **What goes wrong:**
-Status indicators, project names, or phase labels containing emoji or East Asian characters cause columns to misalign. A "✓" or "🔄" symbol may render as 1 column wide in code but 2 columns wide in the terminal. Carefully laid-out tables become unreadable garbage.
+Detecting running Claude sessions via `pgrep -x claude` is unreliable: the Claude CLI process name is actually `node` (it is a Node.js application), multiple Claude instances may exist for different projects, and the process tree may include wrapper scripts. Matching PIDs to projects requires heuristics (checking `/proc/<pid>/cwd` or parsing command-line args from `/proc/<pid>/cmdline`) that break across OS updates, Claude CLI version changes, or when Claude is run through tmux/screen.
 
 **Why it happens:**
-`unicode-width` (used by both ratatui and Textual internally) applies UAX#11 "narrow/wide" classification, but multi-codepoint emoji sequences (ZWJ sequences, variation selectors) are not handled consistently across terminal emulators. What looks correct in Alacritty may break in tmux or VS Code's integrated terminal.
+Claude Code has no official API for external process discovery. The CLI stores sessions in `~/.claude/projects/<path-hash>/` as `.jsonl` files, but there is no lock file or PID file indicating "this session is currently active." Any detection method is reverse-engineering an undocumented internal. The session file structure may change between Claude CLI versions.
 
 **How to avoid:**
-- Stick to Unicode 9.0 single-codepoint emoji (e.g., ✓ U+2713, ✗ U+2717) for status indicators. Avoid newer multi-codepoint emoji.
-- Test in at least two terminal emulators: one modern (Alacritty, Kitty) and one common (gnome-terminal, tmux).
-- Provide ASCII-only fallbacks for all status symbols as a configuration option.
-- Audit the GSD `STATE.md` and `ROADMAP.md` formats for any emoji — the parser must handle them safely even if the TUI does not display them.
+1. Accept that detection is best-effort. Show "possibly active" with a visual confidence indicator, never "definitely running."
+2. Primary signal: check if `~/.claude/projects/<project-path-hash>/` has `.jsonl` files modified in the last 60 seconds. File modification time is more reliable than process detection.
+3. Secondary signal: `pgrep -f "claude.*<project-path>"` to find Claude processes associated with a specific project directory.
+4. For attaching: do not try to attach to a running terminal session programmatically. Instead, use `claude --resume <session-id> --cwd <path>` which creates a new terminal session that continues the conversation. This is the officially supported mechanism.
+5. Build an abstraction layer (`trait SessionDetector`) so the detection method can be swapped when Claude adds official tooling (likely).
 
 **Warning signs:**
-- Columns misalign when running inside tmux vs. a native terminal
-- Status icons look correct locally but break in CI output
-- Any use of emoji in row labels or status cells
+- Detection works on the developer's machine but fails for other users (different shell, different Claude install method)
+- False positives when multiple projects are active
+- Hardcoded assumptions about Claude CLI internals (process names, file paths, hashing algorithms)
 
-**Phase to address:** Display / rendering phase — as soon as tabular project lists are implemented.
+**Phase to address:**
+Claude session management phase. Mark this as a "best-effort feature" in the milestone plan, not a hard requirement.
 
 ---
 
-### Pitfall 7: Reading Partially-Written State Files
+### Pitfall 7: DAG Rendering That Fails at Real Terminal Sizes
 
 **What goes wrong:**
-GSD writes to `.planning/STATE.md` or `config.json` while the dashboard is reading them. The dashboard reads a truncated or mid-write file, fails to parse it, and either crashes or caches corrupted state that persists until the next successful read.
+The execution flow graph (discuss -> plan -> execute -> verify pipeline per phase) looks great at 120x40 terminal but is illegible at 80x24 (a common minimum). Node labels overlap, edges cross through boxes, and the layout algorithm picks a placement that wastes space or clips content. The current `RoadmapWidget` (a simple vertical stack) does not generalize to a multi-column DAG.
 
 **Why it happens:**
-GSD (or any editor/tool) does not write files atomically by default. A write operation involves truncating the file, then writing new content. If the reader observes the file between truncation and completion, it sees partial data.
+DAG layout is a fundamentally hard problem. The Sugiyama layered layout algorithm handles most cases but has pathological performance on "fan" topologies (one node connecting to many). Terminal rendering adds constraints: fixed-width characters, no sub-pixel positioning, and box-drawing characters that require exact alignment. Developers prototype with a 5-node graph and declare success, then the 15-phase project breaks the layout.
 
 **How to avoid:**
-- Treat parse failures as "transient, retry shortly" rather than "fatal error." Log the failure, keep the last good state in cache, and schedule a re-read after 1–2 seconds.
-- Implement exponential backoff for repeated parse failures on the same file.
-- Never propagate a parse error to the UI as "project broken" — distinguish "temporarily unreadable" from "persistently malformed."
-- If GSD ever writes these files itself: write to a `.planning/STATE.md.tmp` file and `rename()` atomically.
+1. For the execution flow graph specifically (discuss/plan/execute/verify per phase), this is NOT a general DAG. It is a fixed 4-stage pipeline. Render it as a horizontal 4-column layout, not a general graph. This sidesteps the entire DAG layout problem.
+2. If a general DAG is needed later (cross-phase dependencies), consider the `ascii-dag` crate which implements Sugiyama layout for terminals, or implement a simplified version for the limited topology.
+3. Detect terminal size and gracefully degrade: below 100 columns, switch from graphical boxes to a compact list view with indented stages.
+4. Set a maximum number of simultaneously visible nodes (e.g., 8 phases) with scrolling for the rest.
 
 **Warning signs:**
-- Occasional "invalid JSON/TOML" errors in logs that resolve on their own
-- Project status briefly shows as "unknown" then recovers
-- The parser panics or crashes rather than returning `Result::Err`
+- Graph looks correct only at the developer's terminal size
+- Edge routing breaks when two phases have the same pipeline stage active
+- No graceful fallback for small terminals -- just garbled output
+- Spending more than 2 days on layout algorithm for a 4-stage pipeline
 
-**Phase to address:** State reading / parsing phase.
+**Phase to address:**
+Execution flow graph phase. Start with the simple 4-column pipeline; do not build a general DAG renderer unless actually needed.
 
 ---
 
-### Pitfall 8: Textual Reactive Watcher Called Before Widget is Mounted
+### Pitfall 8: File Watcher Self-Triggering on TUI Writes
 
 **What goes wrong:**
-(Python/Textual only) A `reactive` attribute is assigned in `__init__` or the class body. Its watcher method (`watch_*`) tries to query child widgets via `self.query_one()`. The widget is not yet mounted, so `query_one` raises `NoMatches` and the app crashes on startup.
+The TUI writes to QUEUE.md (enqueue action, line 582 of app.rs) and potentially to backlog files. The file watcher detects these writes and fires a `FileChanged` event. The TUI re-parses the file it just wrote, which is wasted work. Worse, if the write and re-parse have slightly different timing, the TUI could read its own partially-written file and display incorrect state momentarily.
 
 **Why it happens:**
-Textual's reactive system fires watchers immediately when a reactive is set, even before the DOM is ready. Developers assume widget initialization order matches Python's usual `__init__` flow.
+The current `notify` watcher watches the entire `.planning/` directory recursively. It cannot distinguish between writes from the TUI and writes from GSD or other tools. The 200ms debounce helps but does not eliminate the issue.
 
 **How to avoid:**
-- Use `self.set_reactive(ClassName.attr, value)` in `__init__` to set initial values without triggering watchers.
-- Keep watchers defensive: check `if not self.is_mounted: return` before querying child widgets.
-- Prefer setting reactives in `on_mount` rather than `__init__` when the watcher touches the DOM.
+1. Set a per-project "self-write" timestamp. When the TUI writes a file, record `(project_alias, Instant::now())`. In the `FileChanged` handler, if a self-write happened within the last 500ms for that project, skip the re-parse (the TUI already has the correct state).
+2. After the self-write cooldown expires, do re-parse once to pick up any external changes that occurred during the window.
+3. For queue execution: this is especially important because Claude sessions may write to `.planning/` files while the TUI is also writing queue status updates.
 
 **Warning signs:**
-- App crashes with `NoMatches` on startup before any user interaction
-- Watcher methods reference `self.query_one()` or `self.query()`
-- Reactive attributes are initialized in the class body with data-dependent initial values
+- `tracing` logs show redundant re-parses immediately after TUI writes
+- Flicker in the UI after enqueueing an action (brief "old state" then "new state")
+- In extreme cases, infinite loop: write triggers parse, parse triggers UI update, UI update triggers write
 
-**Phase to address:** Widget development phase — as each widget is built.
+**Phase to address:**
+State reader fix phase, because this affects the foundation that all other features build on.
 
 ---
 
-### Pitfall 9: Calling UI Methods Directly from Thread Workers (Textual)
+### Pitfall 9: Git Log Output Parsing Breaks on Edge Cases
 
 **What goes wrong:**
-(Python/Textual only) A `@work(thread=True)` worker reads files and directly calls `self.some_widget.update()` or sets a reactive from the worker thread. Textual's asyncio event loop is not thread-safe. The result is intermittent UI corruption, silent dropped updates, or crashes that are difficult to reproduce.
+Parsing `git log` output with the default format is locale-dependent (date formats change), encoding-dependent (non-UTF8 commit messages), and ambiguous (commit messages can contain any characters including format separators). Using `--format=%H %s` and splitting on space breaks when the subject contains the separator. Merge commits, empty commits, and detached HEAD states produce unexpected output.
 
 **Why it happens:**
-`@work(thread=True)` runs in a real OS thread. It looks like a normal Python function. The worker can "see" the widget objects. Developers naturally call methods on them directly without realizing asyncio objects cannot be touched from outside the event loop thread.
+Developers test with their own clean git history, which has short ASCII commit messages and linear history. Real projects have merge commits, rebase artifacts, co-author trailers, signed commits, and multi-line subjects.
 
 **How to avoid:**
-- Use `self.app.call_from_thread(fn, *args)` for any UI update from a thread worker. This schedules `fn` to run on the event loop thread.
-- Alternatively, use `self.post_message(MyMessage(data))` from the worker — messages are thread-safe and handled on the event loop.
-- Prefer async workers (`@work` without `thread=True`) for file I/O if using `aiofiles`, reserving thread workers only for truly blocking APIs.
+1. Use `git log --format=%x00%H%x00%an%x00%aI%x00%s` with null byte (`%x00`) separators. Null bytes cannot appear in any git field, making parsing unambiguous.
+2. Use `--no-merges` for the initial view; add merge commit display as an enhancement later.
+3. Handle `git log` returning non-zero exit code (empty repo, detached HEAD, corrupted repo) by showing "Git history unavailable" rather than crashing.
+4. Limit output with `-n 100` and implement pagination rather than loading entire history.
+5. Use `--no-walk` with specific refs when scoping to `.planning/` changes: `git log -- .planning/`.
 
 **Warning signs:**
-- Thread workers contain `self.query_one(...)` or directly set reactive attributes
-- UI glitches that are intermittent and timing-dependent
-- No `call_from_thread` or `post_message` in any worker that touches UI state
+- Git history shows garbled entries after a merge commit
+- Non-ASCII author names or commit messages cause panics in the parser
+- Empty repos (no commits yet) crash the git history view
 
-**Phase to address:** Background task / worker phase.
+**Phase to address:**
+Git history viewer phase. Build the parser with null-byte separators from the start.
 
 ---
 
-### Pitfall 10: No Config for Project Registry — Storing Paths in Application State Only
+### Pitfall 10: Disk-Based Phase Completion Inference Has Ambiguous Signals
 
 **What goes wrong:**
-The list of registered project directories is kept only in memory or in a runtime state file that is not persisted between sessions. Restarting the TUI requires re-registering all projects. Alternatively, the registry is written to a file without atomic writes or schema versioning, so a single crash during a write corrupts the registry.
+Inferring phase completion from disk artifacts (presence of PLAN files, execution markers, verify results) produces false positives and false negatives. A phase directory might have plan files but no execution marker because execution is in progress. Archived phases (v1.0 phases were moved to `.planning/archive/`) create ghost signals. Phases with `autonomous: false` plans may be partially complete but waiting for human verification.
 
 **Why it happens:**
-Storing a path list seems trivial. Developers serialize it with a quick `serde_json::to_writer` or `json.dump()` directly to the file without considering concurrent writes, partial writes, or future schema changes.
+GSD's `.planning/` directory structure is an implicit state machine, not an explicit one. STATE.md has the authoritative progress counts, but they may be stale (written at session boundaries, not continuously). The disk-based approach tries to derive truth from artifacts, but the mapping from "files that exist" to "phase completion status" has many edge cases that depend on GSD workflow conventions that may evolve.
 
 **How to avoid:**
-- Store the project registry in a dedicated file (e.g., `~/.config/gsd-manager/registry.toml`).
-- Always write via atomic rename: write to `.registry.toml.tmp`, then `rename()` to `.registry.toml`.
-- Include a schema version field from day one. Even version `1` allows future migrations.
-- Validate the registry on load and surface actionable errors: "Project at `/path/foo` no longer has a `.planning/` directory — remove it from registry?"
+1. Make STATE.md the primary source of truth for phase counts. Only use disk-based inference as a fallback when STATE.md data is missing or clearly stale.
+2. Define explicit rules with confidence levels: "PLAN.md exists + all plans have `-DONE` markers = HIGH confidence complete", "PLAN.md exists + some done markers = MEDIUM confidence in-progress", "no PLAN.md = LOW confidence not-started."
+3. Display the confidence level to the user (fact vs. inference distinction mentioned in PROJECT.md).
+4. Write the inference rules as a separate, testable module with fixtures from real GSD projects (including the current project's own `.planning/` history).
+5. Handle archived phases: check `.planning/archive/` in addition to `.planning/phases/` for completed milestone phases.
 
 **Warning signs:**
-- Registry file is written with a direct `write()` call, not via temp-file-then-rename
-- No version field in the registry format
-- Removing an entry while the app is running could corrupt the file if the app crashes mid-write
+- Dashboard shows Phase 3 as "complete" when it is still executing
+- Archived phases from previous milestones appear as current work
+- Phase count disagrees between STATE.md and disk inference without any explanation
 
-**Phase to address:** Project registration / persistence phase.
+**Phase to address:**
+State reader accuracy fix phase (first v1.1 phase). This is the foundational fix that the PROJECT.md explicitly calls out.
 
 ---
 
@@ -236,126 +252,119 @@ Storing a path list seems trivial. Developers serialize it with a quick `serde_j
 
 | Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
 |----------|-------------------|----------------|-----------------|
-| Synchronous file reads in render loop | Simpler code, no channels | UI freezes as project count grows | Never — async from the start costs little extra |
-| One monolithic `App` struct for all state | Faster initial build | Untestable, borrow-checker pain, hard to split into modules | MVP only if the struct is explicitly planned for decomposition |
-| Fixed tick rate of 60 FPS | Simplest event loop | High idle CPU, visible in htop | Never for a management dashboard — use event-driven rendering |
-| Skipping panic hook setup | 5 minutes saved | Corrupt terminal on any panic during development | Never — 5 minutes to set up, infinite annoyance if skipped |
-| Polling files on a timer instead of using a file watcher | Simpler initial implementation | Misses rapid changes, wastes I/O on quiet periods | Acceptable for MVP; replace before v1 release |
-| No debounce on file watcher | Simpler watcher setup | CPU spike on every GSD write, event queue overflow | Never — debounce is one line with the right crate |
-| Direct reactive assignment in `__init__` (Textual) | Feels natural | Watcher fires before widget mounted, crashes on startup | Never — use `set_reactive()` for initialization |
-
----
+| Keep flat `InputMode` enum, add more variants | Fast to implement new screens | Unmaintainable past 15 variants; key conflicts; untestable combinatorial state | Never for v1.1 -- refactor first |
+| Sync `git log` in event handler | Simple implementation | UI freeze on large repos, up to 500ms+ on repos with 1000+ commits | Only if capped to `git log -n 10` and repos are small |
+| Shell out to `git` instead of using git2/gix | No C FFI, simpler build, single binary preserved | Slower than native, depends on git being installed, output parsing fragility | Acceptable -- `git` is a reasonable dependency for a dev tool; all GSD users have it |
+| Store process PIDs in memory only | No persistence code needed | Lose track of spawned sessions on TUI restart or crash | Never for queue execution -- must persist to disk |
+| Parse markdown with regex | No parser dependency | Breaks on edge cases (code blocks containing markdown syntax, nested lists) | Acceptable for known-format files (QUEUE.md checklist, STATE.md frontmatter) |
+| Hardcode Claude session paths (~/.claude/projects/) | Quick detection implementation | Breaks on Claude CLI updates, XDG compliance changes, non-standard installs | Only with version-detection fallback and trait abstraction |
+| General DAG layout for 4-stage pipeline | Looks impressive, future-proof | Weeks of layout work for a problem that doesn't exist yet | Never for v1.1 -- use fixed 4-column layout |
 
 ## Integration Gotchas
 
 | Integration | Common Mistake | Correct Approach |
 |-------------|----------------|------------------|
-| `.planning/STATE.md` parsing | Crash on malformed file | Return `Result::Err` / `None`, keep last good state, retry after delay |
-| `.planning/ROADMAP.md` parsing | Assume stable format across GSD versions | Version-check or use lenient parsing; log unparseable fields, don't crash |
-| `config.json` in project directories | Read once at startup | Watch for changes; GSD may update it during phase transitions |
-| `notify` file watcher | Use raw watcher, assume one event per save | Use `notify-debouncer-full`; assume burst events per save |
-| Atomic registry writes | Write directly to target file | Write to `.tmp`, then `fs::rename()` — atomic on POSIX |
-| Terminal resize events | Ignore `SIGWINCH` / resize events | Handle `Event::Resize` from crossterm; re-layout on terminal resize |
-
----
+| Claude CLI process spawning | Spawning `claude` without restoring terminal first | Use RAII terminal handoff guard; `ratatui::restore()` before spawn, `ratatui::init()` on Drop |
+| Git log parsing | Parsing default format (locale-dependent, ambiguous separators) | Use `git log --format=%x00%H%x00%an%x00%aI%x00%s` with null-byte separators |
+| File watcher + git operations | Git checkout/rebase triggers hundreds of file change events in a burst | Debounce at 200ms (already done), add burst detection: if 10+ events in 1s, wait 2s before re-parse |
+| STATE.md frontmatter | Using a TOML/YAML parser that normalizes whitespace on write-back | Parse with regex, modify specific fields, preserve surrounding bytes |
+| QUEUE.md concurrent write | Writing while GSD is also writing to the same file (race condition) | Use atomic rename (`write to .tmp` then `fs::rename()`) or advisory file locking (`flock`) |
+| Notify watcher + own writes | TUI writes to QUEUE.md, triggering its own FileChanged event, causing redundant re-parse | Set a self-write timestamp per project; ignore FileChanged events within 500ms of own writes |
+| Claude session JSONL files | Reading `.jsonl` session files while Claude is actively writing them | Read-only access only; use modification time for freshness check; never parse partially written last line |
+| Process stdout streaming | Collecting all of `git log` output before parsing | Stream line-by-line; use `BufReader::lines()` on the child's stdout to avoid buffering entire output |
 
 ## Performance Traps
 
 | Trap | Symptoms | Prevention | When It Breaks |
 |------|----------|------------|----------------|
-| Rendering every event including mouse moves | CPU 20-40% at idle while user moves mouse | Gate renders on state-change events only; use a render-interval channel | Immediately noticeable on any project with >5 widgets |
-| Re-reading all project files on any file change | I/O burst when GSD writes state | Debounce + only re-read the changed project's files | Visible with >5 projects on spinning disk |
-| Parsing Markdown on every render frame | High CPU even with event-driven rendering | Parse once, cache `ProjectState` structs, only re-parse on cache invalidation | With >3 projects and complex ROADMAP.md files |
-| inotify watch limit exceeded | Watcher silently fails to track new projects | Limit watches to key files per project (STATE.md, config.json), not entire trees | Linux default limit: 8192 watches, easily hit with 100+ projects |
-| String allocation in render hot path | Memory churn, GC pressure (Python) | Pre-format status strings when state changes, not per-frame | Mostly a Python concern; Rust allocator handles this better |
-
----
+| Parsing all backlog items on every FileChanged | UI lag proportional to backlog item count | Lazy-load backlog only when backlog browser is open; cache otherwise | 15+ backlog items with complex markdown content |
+| Running `git log` on every FileChanged in `.planning/` | Noticeable 100-500ms delay on each file change event | Cache git log; only re-run when `.git/` directory events fire (not `.planning/`) | Repos with 500+ commits |
+| Re-rendering full DAG on every tick | CPU spike when execution flow graph view is active | Only re-render DAG when underlying state changes, not on tick; cache the rendered `Buffer` | DAGs with 10+ phase nodes visible simultaneously |
+| Unbounded channel backpressure from process output | Memory grows if a spawned process writes faster than the TUI processes | Use bounded channel for process output; drop oldest entries if full; show "output truncated" | Process producing 1000+ lines/second |
+| Scanning `/proc/` for Claude detection on every tick (250ms) | 1-5ms per scan adds up, visible CPU at scale | Cache process detection results; re-scan on 5-10s interval or on explicit user refresh | Systems with 500+ running processes |
+| Re-parsing entire ROADMAP.md to get single phase status | Wasted work when only one phase's status is needed | Parse once, cache `Vec<RoadmapPhase>`, update individual entries on targeted changes | ROADMAP.md files with 15+ phases |
 
 ## Security Mistakes
 
 | Mistake | Risk | Prevention |
 |---------|------|------------|
-| Executing shell commands derived from project paths stored in registry | Path traversal, command injection if paths are user-supplied | Never execute paths directly; validate all registered paths are real directories with `.planning/` |
-| Storing registry world-readable if it contains sensitive project names | Information disclosure | Use `0600` permissions on the registry file |
-| Parsing untrusted `.planning/` files with `eval` or unsafe deserialization | Code execution if a malicious project is registered | Use strict parsers (serde with `deny_unknown_fields`, Python's `json` module, not `eval`) |
-
----
+| Executing queue items without user confirmation | Arbitrary command execution from QUEUE.md (any process with file access can modify it) | Always display the full command and require explicit y/n confirmation before spawning |
+| Passing unsanitized project paths to shell commands | Command injection via project names or paths containing shell metacharacters | Use `Command::new("git").arg(...)` (never `format!("git log {}", path)`); validate paths on registration |
+| Storing Claude API keys or session tokens in gsd-manager config | Credential exposure in plaintext config file | Never store credentials; rely on Claude CLI's own auth mechanism. Config should only contain project paths |
+| Backlog browser path traversal | If backlog item paths aren't validated, reading files outside `.planning/` | Restrict all file operations to within the project's `.planning/` directory; canonicalize paths and reject any containing `..` |
+| Running spawned Claude sessions with TUI's full environment | Environment variables (API keys, tokens) leak to child processes | Sanitize environment before spawning; only pass necessary vars |
 
 ## UX Pitfalls
 
 | Pitfall | User Impact | Better Approach |
 |---------|-------------|-----------------|
-| Showing "unknown" state with no explanation when a project file is unreadable | User can't tell if the project is broken or if the tool is broken | Show "unreadable (retrying...)" with the last-known state and a timestamp |
-| No visual indication that background file reads are in progress | User thinks the dashboard is frozen or showing stale data | Show a subtle spinner or "last updated: Xs ago" timestamp per project |
-| Crashing when a registered project directory is deleted | Loss of all other visible state | Detect missing directories on startup and on watch events; surface as a warning, not a crash |
-| Keyboard shortcuts not discoverable | Power users use the keyboard, but cannot discover bindings | Persistent footer with current context shortcuts; `?` opens help overlay |
-| Terminal size too small for dashboard layout | Layout breaks, widgets overflow each other | Detect minimum required size; show a clear "terminal too small" message rather than corrupt layout |
-| Phase names truncated without indicator | User cannot tell if a phase name is complete | Truncate with ellipsis `…` (U+2026); never silently clip text |
-
----
+| Launching Claude session without feedback | User thinks nothing happened, launches again, gets duplicate sessions | Show spinner in project row immediately; transition to "Claude active" when process confirms start |
+| Git history viewer blocks on initial load | User enters git view, sees blank screen for 2+ seconds on large repos | Show "Loading git history..." immediately; stream results as they arrive, render incrementally |
+| Backlog edit loses unsaved changes on accidental Escape | User accidentally hits Esc, loses typed content | Require confirmation ("Discard changes? y/n") if input buffer is non-empty |
+| Execution flow graph illegible at small terminal sizes | Graph overlaps, text truncates, becomes useless below 80x24 | Detect terminal size; switch to simplified list view below 100 columns for graph mode |
+| Queue execution gives no progress feedback | User queues 3 items, sees no output for minutes | Stream Claude's last output line to a status area; show elapsed time per running session |
+| "Fact vs assumption" distinction is invisible | User cannot tell if "Phase 3: executing" comes from STATE.md or is inferred from disk | Use visual markers: solid color for facts (STATE.md), dimmed/italic for inferred state (disk heuristics) |
+| Too many new keybindings without discoverability | User cannot remember how to access git history vs backlog vs graph | Context-sensitive footer showing available actions for current screen; consistent navigation (Esc always goes back) |
 
 ## "Looks Done But Isn't" Checklist
 
-- [ ] **Terminal cleanup:** Verify the terminal is restored after `Ctrl+C`, `SIGTERM`, and a deliberate panic — not just on normal exit
-- [ ] **File watcher edge cases:** Verify behavior when a registered project directory is deleted, renamed, or made unreadable while the app is running
-- [ ] **Parse resilience:** Verify the app continues running and shows last-known state when a `.planning/` file contains invalid content
-- [ ] **Resize handling:** Verify the layout redraws correctly after resizing the terminal window, including minimum-size protection
-- [ ] **Registry persistence:** Verify the registry survives a crash mid-write (test by killing with SIGKILL during a registration write)
-- [ ] **Unicode in project names/paths:** Verify project paths and names with spaces, Unicode, and special characters render and parse correctly
-- [ ] **High project count:** Verify performance and layout with 20+ registered projects, not just 2–3
-- [ ] **inotify limit:** Verify an informative error is shown (not a silent failure) when the inotify watch limit is approached
-
----
+- [ ] **State reader fix:** Verify against completed milestones (not just active ones) -- the "P5: Unknown" bug specifically happens when all phases are done and `completed_phases + 1` exceeds `total_phases`
+- [ ] **Disk-based inference:** Test with archived phases (v1.0 phases were moved), missing PLAN files, partially completed phases, and phases with `autonomous: false` markers
+- [ ] **Git history:** Test with repos that have zero commits, merge commits, detached HEAD, non-ASCII commit messages, and repos where `.planning/` was added mid-project
+- [ ] **Claude session detection:** Test when Claude CLI is not installed, when multiple versions exist (nvm/volta), when running through tmux, and when another user's Claude session is running
+- [ ] **Queue execution:** Test graceful shutdown (Ctrl+C during execution), TUI crash recovery (SIGKILL), and re-discovering sessions from PID file after restart
+- [ ] **Backlog browser:** Round-trip test with real GSD project files from at least 3 different projects -- `parse -> serialize (no edits) -> diff` must be empty
+- [ ] **Execution flow graph:** Test with 1 phase, 10+ phases, phases with very long names (40+ chars), and terminal sizes from 80x24 to 200x50
+- [ ] **Terminal handoff:** Test spawning Claude, killing Claude mid-session (SIGTERM, SIGKILL), and verifying TUI terminal state is restored correctly in both cases
+- [ ] **File watcher self-triggering:** Write to QUEUE.md from TUI, verify exactly one re-parse happens (not zero, not infinite loop)
+- [ ] **Concurrent access:** Have GSD actively running on a project while the TUI is displaying it -- verify no file corruption or parse errors
 
 ## Recovery Strategies
 
 | Pitfall | Recovery Cost | Recovery Steps |
 |---------|---------------|----------------|
-| Terminal left in raw mode | LOW | User runs `reset` in shell; no data loss |
-| God App struct requiring decomposition | HIGH | Refactor into TEA model; borrow-checker issues make this painful mid-project |
-| Corrupt project registry | LOW | Delete registry file; re-register projects manually |
-| Persistent stale state in cache | LOW | Implement a "force refresh" keybinding (e.g., `r`) to invalidate all caches |
-| inotify watch limit hit | MEDIUM | Reduce per-project watches to key files only; document Linux configuration change |
-| Textual reactive mount crash | LOW | Fix by switching `__init__` assignment to `set_reactive()` or moving to `on_mount` |
-
----
+| Terminal corruption from bad spawn | LOW | `reset` command restores terminal; add `gsd-manager --recover` CLI flag that just calls `ratatui::restore()` and exits |
+| Zombie/orphan Claude processes | LOW | `pkill -f "claude.*--cwd"` clears orphans; PID file allows TUI to clean up on next launch |
+| Markdown corruption in .planning/ files | MEDIUM | Files are in git; `git checkout -- .planning/QUEUE.md` recovers. If committed, requires `git revert` |
+| InputMode enum becomes unmaintainable | HIGH | Requires architecture refactor to screen/component system. 2-3 day effort once app is at 20+ modes. Better to prevent |
+| State reader inaccuracy cascading to UI | LOW | All state is derived from files; re-parse on demand with `r` to refresh. No persistent mutation means no data loss |
+| Git log parsing breaks on unusual commit | LOW | Graceful degradation to "git history unavailable" message; log the parsing error via tracing for debugging |
+| Stale PID file after crash | LOW | On startup, validate all PIDs with `kill(pid, 0)`; remove entries where process no longer exists |
+| DAG rendering garbled at small size | LOW | Automatic fallback to list view; user can resize terminal to restore graph view |
 
 ## Pitfall-to-Phase Mapping
 
 | Pitfall | Prevention Phase | Verification |
 |---------|------------------|--------------|
-| Terminal not restored on panic | Phase 1: Foundation | Kill app with SIGKILL; verify terminal is usable |
-| Blocking event loop with file I/O | Phase 1: Architecture | Profile with >10 projects; confirm 0 UI freezes during file reads |
-| File watcher event storms | Phase 2: State sync | Simulate rapid GSD writes; confirm CPU stays <5% idle |
-| Spinning render loop CPU waste | Phase 1: Event loop | Measure idle CPU; must be <2% with no activity |
-| God App struct | Phase 1: Architecture | Review struct field count; enforce TEA boundaries in code review |
-| Unicode width layout breakage | Phase 2: Display | Test in tmux and two terminal emulators; check all status symbols |
-| Partially-written file reads | Phase 2: State parsing | Inject truncated test files; confirm graceful degradation |
-| Textual reactive mount crash | Phase 2: Widget build | Verify app startup is clean with all reactive attributes set |
-| Thread worker UI mutation (Textual) | Phase 2: Background tasks | Code review: no direct widget access from thread workers |
-| Registry corruption on write | Phase 3: Persistence | Test SIGKILL during registration; verify registry integrity after |
-
----
+| InputMode enum explosion | Phase 1: Architecture refactor | New features add screens via trait impl, not new enum variants; `App` field count stays stable |
+| Terminal state corruption | Queue execution / Claude session phases | Integration test: spawn child, kill it, verify terminal is usable afterward |
+| Sync I/O blocking render | State reader fix phase | No function in render path calls `std::fs::*` or `std::process::Command`; all I/O through `spawn_blocking` |
+| Zombie/orphan processes | Queue execution phase | TUI exit with running processes shows confirmation dialog; PIDs persisted; restart re-discovers them |
+| Markdown round-trip corruption | Backlog browser phase | Automated round-trip test on 3+ real GSD `.planning/` directories passes with zero diff |
+| Claude detection fragility | Claude session management phase | Feature degrades gracefully to "unknown"; no crash when Claude is not installed |
+| DAG illegibility at small sizes | Execution flow graph phase | Render test at 80x24 produces readable list fallback; 120x40 shows full graph |
+| File watcher self-triggering | State reader fix phase | Write test: TUI writes file, verify one re-parse (not zero, not infinite loop) |
+| Git log parsing edge cases | Git history viewer phase | Parser tested with null-byte format on: empty repo, merge commits, non-ASCII messages, detached HEAD |
+| Disk inference ambiguity | State reader fix phase | Inference results carry confidence level; UI shows fact-vs-inference distinction; archived phases excluded |
 
 ## Sources
 
-- [Ratatui FAQ](https://ratatui.rs/faq/) — event handling on Windows, double-draw prohibition, async complexity warning
-- [Ratatui Rendering Concepts](https://ratatui.rs/concepts/rendering/) — immediate mode pitfalls, programmer responsibility for render triggers
-- [Ratatui Panic Hooks](https://ratatui.rs/recipes/apps/panic-hooks/) — terminal cleanup patterns, backend-specific requirements
-- [Ratatui Async Counter App Tutorial](https://ratatui.rs/tutorials/counter-async-app/) — blocking vs. event-driven event loop patterns
-- [Ratatui GitHub Issue #1338](https://github.com/ratatui/ratatui/issues/1338) — confirmed high CPU from unconditional draw at 60 FPS
-- [Ratatui GitHub Discussion #220](https://github.com/ratatui/ratatui/discussions/220) — best practices for app architecture
-- [Ratatui The Elm Architecture](https://ratatui.rs/concepts/application-patterns/the-elm-architecture/) — recommended state architecture
-- [notify-rs GitHub](https://github.com/notify-rs/notify) — file watcher behavior and debounce requirements
-- [notify-debouncer-mini docs](https://docs.rs/notify-debouncer-mini/latest/notify_debouncer_mini/) — debounce implementation
-- [inotify(7) Linux man page](https://man7.org/linux/man-pages/man7/inotify.7) — watch limits, non-recursive monitoring, event queue overflow
-- [Textual Workers Guide](https://textual.textualize.io/guide/workers/) — `call_from_thread` requirement, thread vs. async workers
-- [Textual Reactivity Guide](https://textual.textualize.io/guide/reactivity/) — watcher mount timing issue, `set_reactive()` fix, `recompose` state reset
-- [7 Things Learned Building a Modern TUI Framework](https://www.textualize.io/blog/7-things-ive-learned-building-a-modern-tui-framework/) — unicode width, emoji unpredictability, floating-point layout rounding
-- [Claude Code Issue #15608](https://github.com/anthropics/claude-code/issues/15608) — config file corruption from concurrent process writes
-- [Ratatui Unicode Width Issue #1271](https://github.com/ratatui/ratatui/issues/1271) — confirmed unicode width calculation bugs
-- [Ratatui Buffer Unicode/Emoji Discussion #1438](https://github.com/ratatui/ratatui/discussions/1438) — terminal inconsistency with emoji rendering
+- [Ratatui component architecture docs](https://ratatui.rs/concepts/application-patterns/component-architecture/) -- application pattern guidance for scaling beyond 5 screens (HIGH confidence)
+- [Ratatui: Spawn External Editor recipe](https://ratatui.rs/recipes/apps/spawn-vim/) -- terminal handoff pattern for spawning interactive child processes (HIGH confidence)
+- [Ratatui Elm Architecture](https://ratatui.rs/concepts/application-patterns/the-elm-architecture/) -- TEA state management for growing apps (HIGH confidence)
+- [Ratatui forum: ergonomic application state](https://forum.ratatui.rs/t/how-do-i-represent-application-state-ergonomically/54) -- community discussion on InputMode scaling (MEDIUM confidence)
+- [Tokio process::Child docs](https://docs.rs/tokio/latest/tokio/process/struct.Child.html) -- zombie process behavior, kill_on_drop semantics (HIGH confidence)
+- [Tokio issue #6797](https://github.com/tokio-rs/tokio/issues/6797) -- child process can spawn even when Command::spawn returns error (HIGH confidence)
+- [Rust forum: spawn process with timeout](https://users.rust-lang.org/t/spawn-process-with-timeout-and-capture-output-in-tokio/128305) -- timeout and output capture patterns (MEDIUM confidence)
+- [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference) -- session commands: --continue, --resume, --fork-session, -p for non-interactive (HIGH confidence)
+- [Claude Code session extractor gist](https://gist.github.com/gchamon/0949dc427086d387e9164b229271288b) -- ~/.claude/projects/<hash>/ session storage structure (MEDIUM confidence)
+- [Claude Code tmux integration](https://www.devas.life/how-to-run-claude-code-in-a-tmux-popup-window-with-persistent-sessions/) -- session persistence with tmux, pgrep detection pattern (MEDIUM confidence)
+- [ascii-dag crate](https://crates.io/crates/ascii-dag) -- Sugiyama layout for terminal DAG rendering, fan topology limitations (MEDIUM confidence)
+- [ascii-petgraph crate](https://github.com/elefthei/ascii-petgraph) -- force-directed graph rendering in terminal with ratatui (MEDIUM confidence)
+- Codebase analysis: `src/app.rs` -- InputMode enum (11 variants), App struct (18 fields), sync state parsing, existing spawn_blocking pattern (HIGH confidence, direct observation)
+- Codebase analysis: `src/watcher.rs` -- 200ms debounce, recursive watch, project root extraction (HIGH confidence, direct observation)
+- Codebase analysis: `src/state_reader/mod.rs` -- sync file I/O in parse_project_state, backlog counting pattern (HIGH confidence, direct observation)
 
 ---
-*Pitfalls research for: TUI multi-project management dashboard (gsd-manager)*
-*Researched: 2026-03-24*
+*Pitfalls research for: GSD Meta Manager v1.1 -- process management, git integration, file editing, graph visualization in Rust TUI*
+*Researched: 2026-03-26*

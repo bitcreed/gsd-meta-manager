@@ -1,158 +1,231 @@
-# Stack Research
+# Stack Research: v1.1 New Feature Dependencies
 
-**Domain:** TUI command center — multi-project orchestration dashboard
-**Researched:** 2026-03-24
-**Confidence:** HIGH (Rust ecosystem); MEDIUM (language selection tradeoffs)
+**Domain:** TUI project manager -- new capabilities for Claude session management, queue execution, git history, backlog browsing, execution flow graph
+**Researched:** 2026-03-26
+**Confidence:** HIGH (versions verified via crates.io and official docs)
 
----
+## Context
 
-## Language Decision: Rust
+This research covers ONLY new dependencies needed for v1.1 features. The existing stack (Rust 1.85+, ratatui 0.30, crossterm 0.29, tokio 1.50, notify 8, serde/serde_json/toml, anyhow/color-eyre, clap 4, tracing) is validated and not re-evaluated here.
 
-**Recommendation: Rust.** The primary distribution constraint settles this.
+## Recommended Stack Additions
 
-GSD Manager is a tool for *any GSD user*, not just the author. That means shipping a binary. Python requires users to have a matching Python version, manage a virtual environment, and install dependencies — a real installation burden for a CLI tool. Rust compiles to a single static binary with zero runtime dependencies. `cargo install gsd-manager` or a pre-built release artifact is the entire install story.
+### New Dependencies
 
-The second constraint reinforces this: the project already lives in a Rust workspace (`/home/blk/projects/rust/gsd-manager`). Starting in Rust avoids introducing a second language to maintain.
+| Library | Version | Purpose | Why Recommended |
+|---------|---------|---------|-----------------|
+| sysinfo | 0.38.3 | Process detection (Claude sessions) | Cross-platform process enumeration by name/PID/cmdline; 38M+ downloads; the standard Rust crate for process inspection. Needed to detect running `claude` processes and map them to project directories via their command-line arguments |
+| petgraph | 0.8.2 | Graph data structure (execution flow) | Standard Rust graph library; models the discuss/plan/execute/verify pipeline as a directed graph with status tracking. Provides topological sort, traversal, and dependency queries. Pure Rust, zero transitive bloat |
 
-Python's Textual is legitimately excellent for internal tools or scripts where the developer controls the environment. It is not the right choice when the distribution target is "any user's machine."
+### Libraries Explicitly NOT Needed
 
----
+| Library | Why Not | What to Do Instead |
+|---------|---------|-------------------|
+| git2 (0.20.4) | Adds libgit2 C dependency (~200MB build dep), requires cmake/pkg-config/openssl-dev on build host. Git history viewer only needs `git log` output | Shell out via `tokio::process::Command::new("git")` -- git is guaranteed present (GSD requires it); output parsing is trivial |
+| gix / gitoxide | Pure Rust git but pulls 50+ transitive crates. Only need log output | `tokio::process::Command::new("git")` |
+| ascii-petgraph (0.1) | Physics-based force-directed layout is wrong for a fixed 4-stage pipeline (discuss/plan/execute/verify). Only v0.1, immature | Custom ratatui `Widget` impl -- same pattern as existing `RoadmapWidget` |
+| ratatui-graph | Unclear maintenance, general-purpose graph widget for arbitrary graphs | Custom Widget impl -- execution flow is a known-shape horizontal pipeline |
+| tui-textarea / tui-input | For backlog text editing in TUI | Use ratatui's `Paragraph` with manual key handling for inline edits. Revisit only if editing grows complex |
+| Claude Agent SDK (Python/TS) | Would require bundling Node.js or Python runtime, violating single-binary constraint | `claude -p` CLI invocation via `tokio::process` |
+| nix / procfs | Low-level Unix-only process APIs | sysinfo 0.38 (cross-platform) |
 
-## Recommended Stack
+## Feature-by-Feature Stack Analysis
 
-### Core Technologies
+### 1. Claude Session Detection and Management
 
-| Technology | Version | Purpose | Why Recommended |
-|------------|---------|---------|-----------------|
-| Rust | 1.85+ (stable) | Language | Zero-cost abstractions, single-binary distribution, no GC pauses, Cargo ecosystem |
-| ratatui | 0.30.0 | TUI rendering | The de facto standard Rust TUI library, 11.9M+ downloads, active maintenance, modular since 0.30 |
-| crossterm | 0.29.0 | Terminal backend | Cross-platform (macOS/Linux/Windows), event stream support, ratatui's recommended backend |
-| tokio | 1.50.0 | Async runtime | Standard async runtime; required for concurrent file watching + event handling without blocking the render loop |
+**Approach:** Two-layer detection (filesystem + process)
 
-### Supporting Libraries
+**Layer 1 -- Filesystem detection (no new deps):**
+- Parse `~/.claude/history.jsonl` -- each line is JSON with `project`, `sessionId`, `timestamp` fields (already have serde_json)
+- Check `~/.claude/tasks/*/.lock` files for active task sessions (presence = running)
+- Check `~/.claude/ide/*.lock` for IDE-attached sessions
+- Read `~/.claude/projects/{encoded-path}/` for project-specific session data and subagent metadata
+- Watch `~/.claude/history.jsonl` via existing notify infrastructure for real-time updates
 
-| Library | Version | Purpose | When to Use |
-|---------|---------|---------|-------------|
-| notify | 8.0.0 | Filesystem watching | Watch `.planning/` directories for live state updates; use 8.x (stable), not 9.0 rc |
-| serde | 1.0.228 | Serialization | Deserialize `config.json`, `STATE.md` (JSON sections), any structured files |
-| serde_json | 1.0.149 | JSON parsing | Parse GSD's `config.json` and JSON-structured state files |
-| toml | 1.1.0 | TOML parsing | User config (`~/.config/gsd-manager/config.toml`) for registered project paths |
-| anyhow | 1.0.102 | Error handling | Ergonomic error propagation through TUI event/render loops; avoids boilerplate |
-| color-eyre | 0.6.5 | Error reporting | Rich terminal error reports with context; install as the panic/error handler at startup |
-| clap | 4.6.0 | CLI argument parsing | Handle `--config`, `--projects-dir`, `--version` flags on launch |
-| tracing | 0.1.44 | Structured logging | Log to a file (not stdout, which ratatui owns); critical for debugging render/state issues |
-| tracing-subscriber | 0.3.x | Log output routing | Route logs to `~/.local/share/gsd-manager/gsd-manager.log` instead of terminal |
+**Layer 2 -- Process detection (sysinfo 0.38.3):**
+- Enumerate processes named `claude` via `System::new_all()` + `system.processes_by_name()`
+- Extract command-line args to determine: project directory (cwd), session ID (`--resume` arg), mode (interactive vs `-p` headless)
+- Map running sessions to registered GSD projects by matching working directory to project paths
 
-### Development Tools
+**Session launching (no new deps):**
+- Spawn via `tokio::process::Command::new("claude")` with appropriate flags
+- Parse `--output-format stream-json` output line-by-line with serde_json for real-time progress
 
-| Tool | Purpose | Notes |
-|------|---------|-------|
-| cargo-watch | Live rebuild during development | `cargo watch -x run` — avoids manual restart cycle |
-| cargo-nextest | Faster test runner | Parallel test execution; better output than `cargo test` |
-| bacon | Background checker | Runs `cargo check` on save; surfaces errors without rebuilding |
+**Key CLI flags for programmatic use (verified from official docs):**
 
----
+| Flag | Purpose | Use Case |
+|------|---------|----------|
+| `-p "prompt"` | Headless/print mode, non-interactive | Queue execution |
+| `--bare` | Skip auto-discovery (hooks, MCP, CLAUDE.md) | Queue execution (faster, deterministic) |
+| `--resume <session-id>` | Continue specific session | Attaching to existing session |
+| `--continue` | Continue most recent session | Quick resume |
+| `--output-format json` | Structured JSON with session_id, result | Capturing completion results |
+| `--output-format stream-json` | Newline-delimited JSON streaming | Real-time progress display in TUI |
+| `--allowedTools "Read,Edit,Bash"` | Auto-approve specific tools | Unattended queue execution |
+| `--verbose` | Include all events in stream output | Progress monitoring |
 
-## Installation
+**Session data locations (verified on local filesystem):**
 
-```bash
-# Core (Cargo.toml [dependencies])
-ratatui = "0.30"
-crossterm = { version = "0.29", features = ["event-stream"] }
-tokio = { version = "1", features = ["full"] }
-notify = "8"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "1"
-anyhow = "1"
-color-eyre = "0.6"
-clap = { version = "4", features = ["derive"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+| Path | Contains | Format |
+|------|----------|--------|
+| `~/.claude/history.jsonl` | All prompts with project path, sessionId, timestamp | JSONL (one JSON object per line) |
+| `~/.claude/projects/{encoded-path}/` | Per-project session data, subagent metadata | Mixed JSON files |
+| `~/.claude/tasks/*/.lock` | Active task session indicators | Lock files (presence = running) |
+| `~/.claude/ide/*.lock` | IDE-attached session indicators | Lock files |
 
-# Dev dependencies (Cargo.toml [dev-dependencies])
-# (no additional dev deps required for this stack)
+### 2. Queue Execution
 
-# Dev tools (install once)
-cargo install cargo-watch bacon cargo-nextest
+**Approach:** Spawn `claude -p` via tokio::process (no new deps)
+
+**Implementation:**
+- `tokio::process::Command` to spawn Claude CLI in headless mode with `kill_on_drop(true)`
+- Stream `--output-format stream-json` output via `BufReader::new(child.stdout)` reading lines async
+- Send parsed events through existing `mpsc` channel to TUI event loop
+- Track `Child` process handle for cancellation
+
+**Queue item lifecycle:**
+```
+Pending -> Running (spawn claude -p --bare) -> Complete / Failed
+                                            -> Cancelled (child.kill())
 ```
 
----
+**No new dependencies.** tokio already provides `process::Command`, `sync::mpsc`, and `select!` for racing process output with TUI events.
+
+### 3. Git History Viewer
+
+**Approach:** Shell out to `git log` via tokio::process (no new deps)
+
+**Why not git2:** git2 pulls in the libgit2 C library, requiring cmake, pkg-config, and openssl-dev at build time. The only operation needed is `git log --format`. git is already a hard runtime dependency (GSD requires a git repo). Parsing pipe-delimited output is trivial.
+
+**Implementation:**
+```rust
+let output = tokio::process::Command::new("git")
+    .args(["log", "--format=%h|%s|%an|%ar", "-n", "100"])
+    .current_dir(&project_path)
+    .output()
+    .await?;
+```
+
+For `.planning/`-scoped view: append `-- .planning/` to args.
+
+**No new dependencies.**
+
+### 4. Backlog Browser
+
+**Approach:** Parse `.planning/phases/999.*` directories (no new deps)
+
+**What's needed:**
+- Read `.planning/phases/` directory entries matching `999.*` pattern (backlog convention)
+- Parse description files within each directory -- already have regex and serde
+- Display in ratatui's `List` or `Table` widget with scrolling
+- For promotion (backlog to active phase): file operations via `tokio::fs`
+
+**No new dependencies.** Existing stack handles file I/O, parsing, and rendering.
+
+### 5. Execution Flow Graph
+
+**Approach:** petgraph for data model, custom ratatui Widget for rendering
+
+**Why petgraph:**
+- Models the discuss -> plan -> execute -> verify pipeline as a `DiGraph<FlowStep, ()>`
+- Provides dependency semantics: "can't execute until plan is complete"
+- Topological ordering and traversal come free
+- Pure Rust, tiny footprint (single crate, no transitive bloat)
+- Future-proofs for more complex flows (parallel tracks, conditional steps)
+
+**Why custom Widget (not ascii-petgraph):**
+- Execution flow is a fixed 4-node horizontal pipeline, not an arbitrary graph
+- ascii-petgraph uses physics simulation with jitter/settling -- inappropriate for a static known layout
+- The codebase already has `RoadmapWidget` implementing custom box drawing -- same proven pattern
+- Rendering: `[Discuss] --> [Plan] --> [Execute] --> [Verify]` with status-colored boxes
+
+**Rendering approach:**
+- Horizontal layout: 4 boxes connected by Unicode arrows
+- Each box colored by status: gray (pending), yellow (active), green (complete), red (blocked)
+- Direct `Buffer` writes (existing pattern from `RoadmapWidget`)
+
+## Updated Cargo.toml Additions
+
+```toml
+[dependencies]
+# NEW for v1.1
+sysinfo = "0.38"        # Claude session process detection
+petgraph = "0.8"        # Execution flow graph data model
+```
+
+Two new crates total. Everything else uses existing dependencies or the standard library.
 
 ## Alternatives Considered
 
-| Recommended | Alternative | When to Use Alternative |
-|-------------|-------------|-------------------------|
-| Rust + ratatui | Python + Textual | Internal tool where distribution target is a controlled environment (e.g., team with enforced Python version); faster to prototype |
-| ratatui | cursive | If you need an older retained-mode widget API; cursive is slower to update and has less community momentum in 2025 |
-| ratatui | tui-realm (on top of ratatui) | If the app grows to 10+ distinct screens with complex component lifecycles; tui-realm adds React/Elm state machine overhead not justified for a focused dashboard |
-| tokio (async) | std::thread + channels | If the project had no I/O concurrency; this project watches N directories + handles input simultaneously, so async is warranted |
-| notify 8.x | notify 9.x rc | 9.0 is still in rc as of 2026-03-24; use 8.x for stable production behavior |
-| crossterm backend | termion backend | termion is Unix-only; crossterm works on Windows too, better for a tool targeting "any GSD user" |
-
----
+| Recommended | Alternative | Why Not Alternative |
+|-------------|-------------|---------------------|
+| sysinfo for process detection | `/proc` parsing (Linux only) | Not cross-platform; sysinfo abstracts this cleanly |
+| sysinfo for process detection | `Command::new("ps")` | Parsing ps output is fragile and platform-dependent; sysinfo gives typed data |
+| `Command::new("git")` for history | git2 crate (libgit2 bindings) | C FFI build complexity for a simple log query |
+| `Command::new("git")` for history | gix (gitoxide, pure Rust) | 50+ transitive crates for one command |
+| petgraph for flow graph | `Vec<FlowStep>` with manual ordering | Loses dependency semantics and traversal; petgraph is tiny |
+| petgraph for flow graph | ascii-petgraph for rendering | v0.1, physics layout wrong for fixed pipeline |
+| Custom ratatui Widget for flow | tui-realm component framework | Adds React/Elm overhead for a simple horizontal pipeline |
+| Manual key handling for backlog edit | tui-textarea crate | Extra dep for single-line input; revisit if editing grows complex |
 
 ## What NOT to Use
 
 | Avoid | Why | Use Instead |
 |-------|-----|-------------|
-| tui-rs (fdehau/tui-rs) | Archived/unmaintained; ratatui is the official fork and continuation | ratatui 0.30 |
-| Python + Textual | Requires users to manage Python runtime and virtualenv; unacceptable distribution burden for a tool targeting any user | Rust + ratatui |
-| ncurses / pancurses | C FFI dependency, platform-specific, notoriously painful to install on macOS, poor Rust ergonomics | crossterm |
-| termion | Unix-only; cross-platform portability matters for a tool distributed to arbitrary users | crossterm |
-| std::sync::Mutex in async code | Holding across `.await` points causes deadlocks | tokio::sync::Mutex |
-| env_logger | Only writes to stderr; ratatui owns the terminal — logs must go to a file | tracing + tracing-subscriber with file appender |
+| git2 / libgit2 | C FFI, cmake/openssl build requirements, ~200MB build overhead for a log query | `tokio::process::Command::new("git")` |
+| gix (gitoxide) | 50+ transitive crates, still stabilizing API | `tokio::process::Command::new("git")` |
+| ascii-petgraph | v0.1, physics-based force-directed layout wrong for fixed pipeline | Custom Widget impl |
+| Claude Agent SDK (Python/TS) | Requires bundling a runtime, violates single-binary constraint | `claude -p` CLI invocation |
+| nix crate | Low-level Unix API, not cross-platform | sysinfo 0.38 |
+| procfs crate | Linux-only, no macOS support | sysinfo 0.38 |
+| std::sync::Mutex with sysinfo in async | sysinfo calls are blocking; holding std mutex across await = deadlock | Call sysinfo in `spawn_blocking` or on a timer, not in async context |
 
----
+## Stack Patterns for v1.1
 
-## Stack Patterns by Variant
+**Pattern: Claude session detection as a periodic scan**
+- Do NOT continuously poll processes (expensive)
+- Scan every 5-10 seconds via `tokio::time::interval` + `spawn_blocking` for the sysinfo call
+- Cache results in `Arc<RwLock<Vec<ClaudeSession>>>`
+- Supplement with filesystem watching on `~/.claude/history.jsonl` via existing notify
 
-**Render loop pattern (ratatui + tokio + crossterm):**
-- Use `tokio::select!` to race between: crossterm event stream, notify filesystem events, tick interval
-- Never block the render loop — all I/O goes through tokio channels (mpsc)
-- Render is always driven by state; state is mutated only by message handlers
+**Pattern: Queue execution as supervised child processes**
+- Spawn via `tokio::process::Command` with `kill_on_drop(true)`
+- Stream `--output-format stream-json` via async `BufReader` on child stdout
+- Send parsed events through existing `mpsc` channel to TUI event loop
+- Never block the render loop -- all process I/O goes through tokio channels
 
-**If ASCII workflow chart rendering proves complex:**
-- Use ratatui's `Canvas` widget with custom `Shape` implementations for boxes and arrows
-- `Block` widget handles bordered panels without custom drawing
-- For directed graphs/DAG rendering, implement custom ratatui `Widget` trait; no suitable third-party crate exists yet for this specific use case
+**Pattern: Git commands as async one-shots**
+- Run `git log` via `Command::output()` (collect all stdout at once)
+- Parse in `spawn_blocking` if output is large
+- Cache results; invalidate on filesystem changes (existing notify watcher covers `.planning/`)
 
-**If file parsing becomes a performance bottleneck (many projects):**
-- Parse `.planning/` files lazily on demand, cache parsed state in `Arc<RwLock<HashMap<PathBuf, ProjectState>>>`
-- Invalidate cache entries when notify fires events for that project's directory
-
-**If distribution is via Homebrew or apt:**
-- Build with `cargo build --release --target x86_64-unknown-linux-gnu` (and `aarch64-apple-darwin`)
-- Consider `cargo-dist` for automated release artifact generation
-
----
+**Pattern: Execution flow as data-driven rendering**
+- `petgraph::DiGraph<FlowStep, ()>` models the pipeline per phase
+- Custom Widget reads graph state and renders boxes + arrows
+- State mutations go through message handlers (existing architecture pattern)
 
 ## Version Compatibility
 
-| Package | Compatible With | Notes |
-|---------|-----------------|-------|
-| ratatui 0.30 | crossterm 0.29 | ratatui 0.30 ships its own `ratatui-crossterm` backend crate in the modular workspace; use the feature flag `crossterm` on ratatui |
-| tokio 1.x | crossterm 0.29 event-stream | crossterm's `event-stream` feature requires tokio or async-std; use `crossterm = { version = "0.29", features = ["event-stream"] }` |
-| notify 8.x | tokio 1.x | notify 8 supports async watcher via `notify-debouncer-mini` or `notify-debouncer-full` companion crates |
-| serde 1.x | toml 1.x, serde_json 1.x | All use serde 1.0; no version conflicts |
-| color-eyre 0.6 | anyhow 1.x | Both compatible; use color-eyre for the top-level error handler, anyhow for internal error propagation |
-
----
+| New Package | Compatible With | Notes |
+|-------------|-----------------|-------|
+| sysinfo 0.38.3 | Rust 1.85+ | MSRV 1.74; no conflicts with existing deps |
+| sysinfo 0.38.3 | tokio 1.x | sysinfo is synchronous; wrap in `spawn_blocking` or use on interval timer |
+| petgraph 0.8.2 | Rust 1.85+ | Pure Rust, zero transitive conflicts |
+| petgraph 0.8.2 | ratatui 0.30 | No interaction -- petgraph is data model only; rendering is a separate custom Widget |
 
 ## Sources
 
-- cargo search / crates.io API — ratatui 0.30.0, crossterm 0.29.0, tokio 1.50.0, serde 1.0.228, anyhow 1.0.102, clap 4.6.0, toml 1.1.0, serde_json 1.0.149, tracing 0.1.44 (HIGH confidence, verified directly)
-- notify crates.io API — 8.0.0 stable confirmed, 9.0.0-rc.2 is pre-release (HIGH confidence)
-- [ratatui GitHub releases](https://github.com/ratatui/ratatui/releases) — 0.30.0 confirmed as latest stable (HIGH confidence)
-- [ratatui.rs official site](https://ratatui.rs/) — architecture patterns, backend recommendations (HIGH confidence)
-- [Textual PyPI](https://pypi.org/project/textual/) — 6.5.0 current version (MEDIUM confidence, not verified with official changelog)
-- [LibHunt: ratatui vs textual](https://www.libhunt.com/compare-ratatui-vs-textual) — performance comparison data (MEDIUM confidence, single source)
-- [DEV.to: Go vs Rust TUI Deep Dive](https://dev.to/dev-tngsh/go-vs-rust-for-tui-development-a-deep-dive-into-bubbletea-and-ratatui-2b7) — 30-40% memory advantage for Rust (LOW confidence, single benchmark article)
-- [tui-realm GitHub](https://github.com/veeso/tui-realm) — component architecture patterns, version 3.1.0 (MEDIUM confidence)
-- [ratatui component architecture docs](https://ratatui.rs/concepts/application-patterns/component-architecture/) — application pattern guidance (HIGH confidence)
-- [notify-rs GitHub](https://github.com/notify-rs/notify) — cross-platform filesystem watching, MSRV 1.85 (HIGH confidence)
+- [sysinfo 0.38.3 on crates.io](https://crates.io/crates/sysinfo) -- latest stable version verified 2026-03-02 release (HIGH confidence)
+- [sysinfo docs.rs](https://docs.rs/sysinfo/latest/sysinfo/) -- process enumeration API (HIGH confidence)
+- [petgraph 0.8.2 on crates.io](https://crates.io/crates/petgraph) -- latest stable version verified (HIGH confidence)
+- [git2 0.20.4 on crates.io](https://crates.io/crates/git2) -- evaluated and rejected due to C dependency (HIGH confidence)
+- [git2-rs log example](https://github.com/rust-lang/git2-rs/blob/master/examples/log.rs) -- complexity assessment (HIGH confidence)
+- [ascii-petgraph 0.1 on crates.io](https://crates.io/crates/ascii-petgraph) -- evaluated and rejected, physics layout wrong for use case (HIGH confidence)
+- [Claude Code headless/programmatic docs](https://code.claude.com/docs/en/headless) -- CLI flags, session management, output formats (HIGH confidence)
+- [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference) -- --resume, --continue, --output-format flags (HIGH confidence)
+- [tokio::process::Command docs](https://docs.rs/tokio/latest/tokio/process/struct.Command.html) -- async process spawning API (HIGH confidence)
+- Local filesystem inspection of `~/.claude/` -- session storage structure (history.jsonl format, tasks/.lock pattern, projects/ structure) verified on live installation (HIGH confidence)
 
 ---
-
-*Stack research for: GSD Manager — TUI multi-project dashboard*
-*Researched: 2026-03-24*
+*Stack research for: gsd-meta-manager v1.1 new feature dependencies*
+*Researched: 2026-03-26*
