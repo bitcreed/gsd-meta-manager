@@ -3,7 +3,9 @@ pub mod roadmap_md;
 #[allow(dead_code)]
 pub mod config_json;
 pub mod queue_md;
+pub mod disk_status;
 
+use std::collections::HashMap;
 use std::path::Path;
 
 #[derive(Debug, Clone, Default)]
@@ -18,6 +20,10 @@ pub struct ProjectState {
     pub backlog_count: u32,
     pub phases: Vec<roadmap_md::RoadmapPhase>,
     pub queued_actions: Vec<queue_md::QueuedAction>,
+    /// Per-phase disk inference keyed by phase number (e.g., "01", "05")
+    pub phase_disk_statuses: HashMap<String, disk_status::DiskInference>,
+    /// Disk inference for the current/active phase (first non-complete, or last if all complete)
+    pub current_phase_status: Option<disk_status::DiskInference>,
 }
 
 /// Parse a GSD project's .planning/ directory into a ProjectState.
@@ -64,6 +70,28 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
     if let Ok(content) = std::fs::read_to_string(&roadmap_path) {
         state.phases = roadmap_md::parse_roadmap_phases(&content);
     }
+
+    // Run disk inference for each phase
+    let mut current_phase_inference: Option<disk_status::DiskInference> = None;
+    for phase in &state.phases {
+        let inference = disk_status::infer_phase_status(planning_dir, &phase.number);
+        // Track first non-complete phase as the current phase status
+        if current_phase_inference.is_none()
+            && inference.status != disk_status::DiskStatus::Complete
+        {
+            current_phase_inference = Some(inference.clone());
+        }
+        state
+            .phase_disk_statuses
+            .insert(phase.number.clone(), inference);
+    }
+    // If all phases are complete, use the last phase's status
+    if current_phase_inference.is_none() && !state.phases.is_empty() {
+        if let Some(last) = state.phases.last() {
+            current_phase_inference = state.phase_disk_statuses.get(&last.number).cloned();
+        }
+    }
+    state.current_phase_status = current_phase_inference;
 
     // Count backlog items
     state.backlog_count = count_backlog_items(planning_dir);
