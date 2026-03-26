@@ -1,4 +1,5 @@
 use crate::app::{classify_status, format_phase_display, App, InputMode, StatusCategory};
+use crate::state_reader::disk_status::{DiskInference, DiskStatus};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -12,6 +13,63 @@ fn status_color(status: &str) -> Color {
         StatusCategory::Blocked => Color::Red,
         StatusCategory::Complete => Color::DarkGray,
         StatusCategory::Unknown => Color::Magenta,
+    }
+}
+
+/// Render the compact D-R-P-E-V pipeline for unfocused dashboard rows.
+/// Each letter is colored: green (completed), yellow (current), dark gray (not reached).
+fn compact_pipeline(status: &DiskStatus) -> Line<'static> {
+    let stages: [(&str, DiskStatus); 5] = [
+        ("D", DiskStatus::Discussed),
+        ("R", DiskStatus::Researched),
+        ("P", DiskStatus::Planned),
+        ("E", DiskStatus::Partial),
+        ("V", DiskStatus::Complete),
+    ];
+
+    let spans: Vec<Span> = stages
+        .iter()
+        .map(|(label, threshold)| {
+            let color = if *status >= *threshold {
+                Color::Green // completed stage
+            } else if *status == prev_status(*threshold) {
+                Color::Yellow // current stage (one step below threshold)
+            } else {
+                Color::DarkGray // not reached
+            };
+            Span::styled(format!(" {} ", label), Style::default().fg(color))
+        })
+        .collect();
+
+    Line::from(spans)
+}
+
+/// Return the DiskStatus one step below the given threshold.
+fn prev_status(threshold: DiskStatus) -> DiskStatus {
+    match threshold {
+        DiskStatus::Discussed => DiskStatus::Empty,
+        DiskStatus::Researched => DiskStatus::Discussed,
+        DiskStatus::Planned => DiskStatus::Researched,
+        DiskStatus::Partial => DiskStatus::Planned,
+        DiskStatus::Complete => DiskStatus::Partial,
+        // NoDirectory and Empty have no meaningful "previous" for pipeline context
+        _ => DiskStatus::NoDirectory,
+    }
+}
+
+/// Render expanded status text for the focused/selected row.
+fn expanded_status(inference: &DiskInference) -> String {
+    match inference.status {
+        DiskStatus::NoDirectory => "Not started".to_string(),
+        DiskStatus::Empty => "Empty".to_string(),
+        DiskStatus::Discussed => "Discussed".to_string(),
+        DiskStatus::Researched => "Researched".to_string(),
+        DiskStatus::Planned => format!("Planned ({} plans)", inference.plan_count),
+        DiskStatus::Partial => format!(
+            "Executing {}/{}",
+            inference.summary_count, inference.plan_count
+        ),
+        DiskStatus::Complete => "Complete".to_string(),
     }
 }
 
@@ -118,11 +176,15 @@ fn render_main(frame: &mut Frame, app: &mut App, area: Rect) {
             .style(Style::default().add_modifier(Modifier::BOLD))
             .bottom_margin(0);
 
+        let selected_idx = app.table_state.selected();
+
         let rows: Vec<Row> = app
             .filtered_aliases
             .iter()
-            .map(|alias| {
+            .enumerate()
+            .map(|(idx, alias)| {
                 let state = app.project_states.get(alias);
+                let is_selected = selected_idx == Some(idx);
 
                 let status_str = match state {
                     Some(s) if !s.status.is_empty() => s.status.clone(),
@@ -146,18 +208,71 @@ fn render_main(frame: &mut Frame, app: &mut App, area: Rect) {
 
                 let row_color = status_color(&status_str);
 
-                let cells: Vec<String> = if terminal_width >= 80 {
+                // Build status cell: D-03 milestone complete, D-02 pipeline, or expanded
+                let is_milestone_complete = match state {
+                    Some(s) => {
+                        s.completed_phases >= s.total_phases
+                            && s.total_phases > 0
+                    }
+                    None => false,
+                };
+
+                let status_cell: Line = if is_milestone_complete {
+                    // D-03: Show milestone name for completed milestones
+                    let milestone_text = match state {
+                        Some(s) if !s.milestone.is_empty() => {
+                            format!("{} Complete", s.milestone)
+                        }
+                        _ => "Complete".to_string(),
+                    };
+                    Line::from(Span::styled(
+                        milestone_text,
+                        Style::default().fg(Color::DarkGray),
+                    ))
+                } else if is_selected {
+                    // Focused row: show expanded status text
+                    match state.and_then(|s| s.current_phase_status.as_ref()) {
+                        Some(inference) => Line::from(Span::styled(
+                            expanded_status(inference),
+                            Style::default().fg(row_color),
+                        )),
+                        None => Line::from(Span::styled(
+                            status_str.clone(),
+                            Style::default().fg(row_color),
+                        )),
+                    }
+                } else {
+                    // Unfocused row: show compact pipeline
+                    match state.and_then(|s| s.current_phase_status.as_ref()) {
+                        Some(inference) => compact_pipeline(&inference.status),
+                        None => Line::from(Span::styled(
+                            status_str.clone(),
+                            Style::default().fg(row_color),
+                        )),
+                    }
+                };
+
+                let cells: Vec<Line> = if terminal_width >= 80 {
                     vec![
-                        alias.clone(),
-                        phase_cell,
-                        status_str,
-                        progress_cell,
-                        backlog_cell,
+                        Line::from(alias.clone()),
+                        Line::from(phase_cell),
+                        status_cell,
+                        Line::from(progress_cell),
+                        Line::from(backlog_cell),
                     ]
                 } else if terminal_width >= 60 {
-                    vec![alias.clone(), phase_cell, status_str, progress_cell]
+                    vec![
+                        Line::from(alias.clone()),
+                        Line::from(phase_cell),
+                        status_cell,
+                        Line::from(progress_cell),
+                    ]
                 } else {
-                    vec![alias.clone(), phase_cell, status_str]
+                    vec![
+                        Line::from(alias.clone()),
+                        Line::from(phase_cell),
+                        status_cell,
+                    ]
                 };
 
                 Row::new(cells).style(Style::default().fg(row_color))

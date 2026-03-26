@@ -1,5 +1,6 @@
 use crate::app::{classify_status, App, DetailSubView, InputMode, StatusCategory};
 use crate::change_tracker::ChangeTracker;
+use crate::state_reader::disk_status::DiskStatus;
 use crate::ui::roadmap_widget::RoadmapWidget;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -162,7 +163,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 let current_phase_num = (state.completed_phases + 1).to_string();
 
                 for phase in &state.phases {
-                    // Determine phase status
+                    // Determine phase status using disk inference if available
+                    let disk_inf = state.phase_disk_statuses.get(&phase.number);
+
                     let (icon, is_current) = if phase.completed {
                         ("+", false)
                     } else if phase.number == current_phase_num {
@@ -178,9 +181,44 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                         format!("{}/{} plans", phase.completed_plans, phase.total_plans)
                     };
 
+                    // Disk-inferred status label
+                    let disk_label = match disk_inf {
+                        Some(inf) => match inf.status {
+                            DiskStatus::NoDirectory => "Not started",
+                            DiskStatus::Empty => "Empty",
+                            DiskStatus::Discussed => "Discussed",
+                            DiskStatus::Researched => "Researched",
+                            DiskStatus::Planned => "Planned",
+                            DiskStatus::Partial => "Executing",
+                            DiskStatus::Complete => "Complete",
+                        },
+                        None => "",
+                    };
+
+                    let disk_suffix = if disk_label.is_empty() {
+                        String::new()
+                    } else if disk_label == "Executing" {
+                        // Show executing with counts from disk inference
+                        match disk_inf {
+                            Some(inf) if inf.plan_count > 0 => {
+                                format!(" [Executing {}/{}]", inf.summary_count, inf.plan_count)
+                            }
+                            _ => format!(" [{}]", disk_label),
+                        }
+                    } else if disk_label == "Planned" {
+                        match disk_inf {
+                            Some(inf) if inf.plan_count > 0 => {
+                                format!(" [Planned ({} plans)]", inf.plan_count)
+                            }
+                            _ => format!(" [{}]", disk_label),
+                        }
+                    } else {
+                        format!(" [{}]", disk_label)
+                    };
+
                     let line_text = format!(
-                        "  {} P{}: {}  {}",
-                        icon, phase.number, phase.name, plan_display
+                        "  {} P{}: {}  {}{}",
+                        icon, phase.number, phase.name, plan_display, disk_suffix
                     );
 
                     if is_current {
