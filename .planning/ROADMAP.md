@@ -46,12 +46,13 @@ Phase 04: Project Creation & Queue (2 plans, complete)
   2. User sees "Complete" status when all phases in a milestone are done (not "P5: Unknown")
   3. User sees phase status derived from disk artifacts (discuss/research/plan/execute/verify stages) with confidence indicators
   4. User can register a project by path only — name auto-derived from last folder component
-**Plans**: 3 plans
+**Plans**: 4 plans
 
 Plans:
 - [ ] 05-01-PLAN.md — Fix plan counting regex, milestone completion bug, and CLI alias auto-derive
-- [ ] 05-02-PLAN.md — Screen architecture refactor (InputMode to Screen trait) and async I/O migration
+- [x] 05-02-PLAN.md — Screen architecture refactor (InputMode to Screen trait) and async I/O migration
 - [ ] 05-03-PLAN.md — Disk inference module and compact pipeline display on dashboard
+- [ ] 05-04-PLAN.md — Gap closure: wire pipeline display and disk status brackets into active screen files
 
 ### Phase 06: Read-Only Views
 **Goal**: Users can browse backlog items and git history without leaving the TUI
@@ -107,7 +108,7 @@ Phases execute in numeric order: 05 -> 06 -> 07 -> 08 -> 09
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 5. State Reader Accuracy | v1.1 | 0/3 | Planning | - |
+| 5. State Reader Accuracy | v1.1 | 2/4 | Executing | - |
 | 6. Read-Only Views | v1.1 | 0/0 | Not started | - |
 | 7. Execution Flow & GSD Integration | v1.1 | 0/0 | Not started | - |
 | 8. Queue Execution | v1.1 | 0/0 | Not started | - |
