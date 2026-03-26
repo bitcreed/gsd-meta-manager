@@ -185,3 +185,12 @@ Plans:
 
 Plans:
 - [ ] TBD (promote with /gsd:review-backlog when ready)
+
+### Phase 999.10: Claude Session Detection and Attachment (BACKLOG)
+
+**Goal:** Research how gsd-manager can detect whether a Claude Code session is actively running on a registered project, and if so, attach to it; if not, launch one. Detection approaches: scan for `claude` processes with cwd matching project path, check for lock files or socket files Claude may create, poll `/proc` or `ps aux`, or use Claude Code's own IPC mechanism if one exists. Attachment approaches: tmux/screen session sharing (detect existing tmux session by name, attach with `tmux attach -t`), Unix domain sockets, PTY forwarding. Launch approaches: spawn `claude` in a new tmux/screen session, open a new terminal emulator window, SSH remoting (`ssh host -t 'cd /path && claude'`), Docker exec (`docker exec -it container claude`). Must handle: local sessions, remote sessions over SSH, containerized environments. Key questions: Does Claude Code expose any session discovery API or lock file? Can we reliably match a running `claude` PID to a project directory? What's the UX for "attach" vs "launch" in a TUI context — embedded terminal widget, or hand off to an external terminal?
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
