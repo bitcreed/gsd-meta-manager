@@ -167,3 +167,12 @@ Plans:
 
 Plans:
 - [ ] TBD (promote with /gsd:review-backlog when ready)
+
+### Phase 999.8: Git History Viewer (BACKLOG)
+
+**Goal:** Add a git log viewer to the detail view with two scopes: (1) full repo history (`git log`) and (2) planning-only history (`git log .planning/`). Read-only initially — no editing or state inference from git, just visibility. Render as a scrollable list showing commit hash, date, author, and message. Toggle between scopes with a key. Could be a new detail view tab alongside PhaseList, RoadmapViz, and the future ExecutionFlow. Use `std::process::Command` to run git and parse output, or a git2 crate for native access.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
