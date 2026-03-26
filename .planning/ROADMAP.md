@@ -149,3 +149,12 @@ Plans:
 
 Plans:
 - [ ] TBD (promote with /gsd:review-backlog when ready)
+
+### Phase 999.6: Disk-Based Phase Completion Inference (BACKLOG)
+
+**Goal:** Instead of relying solely on STATE.md's `completed_phases` count, infer phase status from actual files on disk. A phase with matching `*-PLAN.md` and `*-SUMMARY.md` pairs (e.g., 3 plans and 3 summaries) should show as complete. A phase with summaries < plans is in-progress. This makes the dashboard and roadmap self-correcting even when STATE.md is stale or missing, and fixes the "0/?" display for phases that clearly have plans on disk. Touches `state_reader/mod.rs` and `state_reader/roadmap_md.rs`.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
