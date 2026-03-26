@@ -113,3 +113,12 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 Plans:
 - [ ] TBD (promote with /gsd:review-backlog when ready)
+
+### Phase 999.2: Milestone Plan Editor with Claude Launch (BACKLOG)
+
+**Goal:** Navigate milestones and phases via Tab key, directly edit PLAN.md files inline in the TUI, and launch a Claude Code session into a specific phase's directory for hands-on work. Research needed on how to spawn/attach to a Claude terminal session — options include `std::process::Command` to launch `claude` CLI in a new terminal, tmux/screen session management, or embedded terminal widget. The editing piece is a text editor widget for PLAN.md files. The navigation piece extends the existing detail view with Tab cycling through milestones/phases.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
