@@ -95,12 +95,12 @@ async fn main() -> anyhow::Result<()> {
 
             let event_bus = EventBus::new();
 
-            // Store event_tx on App so creation flow can send actions back
-            app.event_tx = Some(event_bus.tx.clone());
+            // Store event_tx on App context so creation flow can send actions back
+            app.ctx.event_tx = Some(event_bus.tx.clone());
 
             // Initialize file watcher for all registered projects
             let mut watcher = FileWatcher::new(event_bus.tx.clone())?;
-            for project in app.config.projects.values() {
+            for project in app.ctx.config.projects.values() {
                 let planning_dir = project.path.join(".planning");
                 if planning_dir.is_dir() {
                     if let Err(e) = watcher.watch(&planning_dir) {
@@ -113,8 +113,8 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            // Store watcher on App so new projects can be watched dynamically
-            app.watcher = Some(watcher);
+            // Store watcher on App context so new projects can be watched dynamically
+            app.ctx.watcher = Some(watcher);
 
             event_bus.spawn_crossterm_reader();
             event_bus.spawn_tick(250);
@@ -138,6 +138,12 @@ async fn run_tui_loop(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<action::Action>,
 ) -> anyhow::Result<()> {
     loop {
+        // Sync needs_redraw from ctx (screens set ctx.needs_redraw)
+        if app.ctx.needs_redraw {
+            app.needs_redraw = true;
+            app.ctx.needs_redraw = false;
+        }
+
         if app.needs_redraw {
             terminal.draw(|frame| ui::render(frame, app))?;
             app.needs_redraw = false;

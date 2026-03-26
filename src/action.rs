@@ -1,3 +1,4 @@
+use crate::state_reader::ProjectState;
 use crossterm::event::KeyEvent;
 
 #[derive(Debug, Clone)]
@@ -13,6 +14,10 @@ pub enum Action {
         path: std::path::PathBuf,
         success: bool,
         error: Option<String>,
+    },
+    ProjectStateLoaded {
+        alias: String,
+        state: ProjectState,
     },
     Noop,
 }

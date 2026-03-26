@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: v1.0 milestone complete
-stopped_at: Completed 05-01-PLAN.md
-last_updated: "2026-03-26T21:47:01.573Z"
+stopped_at: Completed 05-02-PLAN.md
+last_updated: "2026-03-26T22:01:08.510Z"
 progress:
-  total_phases: 10
+  total_phases: 9
   completed_phases: 0
   total_plans: 0
-  completed_plans: 1
+  completed_plans: 0
 ---
 
 # Project State
@@ -56,7 +56,7 @@ Plan: Not started
 | Phase 04 P01 | 4min | 2 tasks | 5 files |
 | Phase 04 P02 | 4min | 2 tasks | 9 files |
 | Phase 04 P03 | 4min | 2 tasks | 6 files |
-| Phase 05 P01 | 3min | 2 tasks | 6 files |
+| Phase 05 P02 | 10min | 2 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -90,8 +90,7 @@ Recent decisions affecting current work:
 - [Phase 04]: Atomic QUEUE.md writes via tmp+rename for concurrent safety
 - [Phase 04]: Context-aware GSD command suggestions based on project status string matching
 - [Phase 04]: Suggestion index on App struct, reset on manual typing
-- [Phase 05]: CLI arg order changed from (alias, path) to (path, alias?) -- breaking change for scripts
-- [Phase 05]: Completion detection pattern: completed_phases >= total_phases && total_phases > 0
+- [Phase 05]: Search mode as boolean flag on NormalScreen; Help as overlay screen; AppContext.needs_redraw synced in main loop
 
 ### Pending Todos
 
@@ -109,6 +108,6 @@ None — v1.0 milestone complete.
 
 ## Session Continuity
 
-Last session: 2026-03-26T21:47:01.571Z
-Stopped at: Completed 05-01-PLAN.md
+Last session: 2026-03-26T22:01:08.508Z
+Stopped at: Completed 05-02-PLAN.md
 Resume file: None

@@ -1,0 +1,80 @@
+use super::{AppContext, Screen, ScreenAction};
+use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::Frame;
+
+pub struct HelpScreen;
+
+fn centered_rect(area: Rect, pct_width: u16, pct_height: u16) -> Rect {
+    let width = (area.width as u32 * pct_width as u32 / 100) as u16;
+    let height = (area.height as u32 * pct_height as u32 / 100) as u16;
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    Rect::new(x, y, width, height)
+}
+
+impl Screen for HelpScreen {
+    fn handle_key(&mut self, code: KeyCode, _modifiers: KeyModifiers, ctx: &mut AppContext) -> ScreenAction {
+        match code {
+            KeyCode::Char('?') | KeyCode::Esc => {
+                ctx.needs_redraw = true;
+                ScreenAction::Pop
+            }
+            _ => ScreenAction::None, // Consume all other keys
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, _ctx: &AppContext) {
+        // Help renders as an overlay on top of whatever is below
+        let popup_area = centered_rect(area, 60, 70);
+        frame.render_widget(Clear, popup_area);
+
+        let help_text = vec![
+            Line::from(Span::styled(
+                "Keybindings",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from("  j / Down      Move down"),
+            Line::from("  k / Up        Move up"),
+            Line::from("  Enter         Open project detail"),
+            Line::from("  /             Filter projects"),
+            Line::from("  a             Add project"),
+            Line::from("  c             Create new project"),
+            Line::from("  d             Delete project"),
+            Line::from("  ?             Toggle this help"),
+            Line::from("  e             Enqueue next action (detail view)"),
+            Line::from("  r             Toggle roadmap visualization (detail view)"),
+            Line::from("  q / Esc       Quit / Back"),
+            Line::from("  Ctrl+C        Force quit"),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Filter Syntax",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from("  /term         Search all columns"),
+            Line::from("  /term/n       Search name only"),
+            Line::from("  /term/p       Search phase only"),
+            Line::from("  /term/s       Search status only"),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Press ? or Esc to close",
+                Style::default().add_modifier(Modifier::DIM),
+            )),
+        ];
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Help ");
+        let paragraph = Paragraph::new(help_text).block(block);
+        frame.render_widget(paragraph, popup_area);
+    }
+
+    fn name(&self) -> &str {
+        "help"
+    }
+}
