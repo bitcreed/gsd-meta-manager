@@ -42,6 +42,34 @@ pub fn add_project(config: &mut Config, alias: &str, path: &Path) -> Result<()> 
     Ok(())
 }
 
+/// Add a project to the registry without checking for `.planning/` directory.
+/// Used for freshly created projects that don't yet have a `.planning/` folder.
+/// Validates alias is non-empty, has no whitespace, and is unique.
+pub fn add_project_unchecked(config: &mut Config, alias: &str, path: &Path) -> Result<()> {
+    if alias.is_empty() {
+        bail!("Alias cannot be empty");
+    }
+
+    if alias.contains(char::is_whitespace) {
+        bail!("Alias cannot contain whitespace");
+    }
+
+    if config.projects.contains_key(alias) {
+        bail!("Alias already exists");
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    config.projects.insert(
+        alias.to_string(),
+        RegisteredProject {
+            path: path.to_path_buf(),
+            added: now,
+        },
+    );
+
+    Ok(())
+}
+
 /// Remove a project from the registry by alias.
 pub fn remove_project(config: &mut Config, alias: &str) -> Result<()> {
     if config.projects.remove(alias).is_none() {

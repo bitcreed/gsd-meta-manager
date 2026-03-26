@@ -19,8 +19,17 @@ pub struct RegisteredProject {
     pub added: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
-pub struct Preferences {}
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct HooksConfig {
+    pub pre_create: Option<String>,
+    pub post_create: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct Preferences {
+    #[serde(default)]
+    pub hooks: HooksConfig,
+}
 
 impl Config {
     pub fn default_path() -> PathBuf {
