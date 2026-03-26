@@ -9,13 +9,13 @@ Requirements for the v1.1 milestone. Each maps to roadmap phases.
 
 ### State Reader
 
-- [ ] **STATE-01**: User sees accurate plan counts per phase on dashboard (fix regex for standalone PLAN.md)
-- [ ] **STATE-02**: User sees "Complete" instead of "P5: Unknown" when all phases are done
-- [ ] **STATE-03**: User sees phase status inferred from disk files (discuss/research/plan/execute/verify stages)
+- [x] **STATE-01**: User sees accurate plan counts per phase on dashboard (fix regex for standalone PLAN.md)
+- [x] **STATE-02**: User sees "Complete" instead of "P5: Unknown" when all phases are done
+- [x] **STATE-03**: User sees phase status inferred from disk files (discuss/research/plan/execute/verify stages)
 
 ### CLI Ergonomics
 
-- [ ] **CLI-01**: User can register a project by path only — name auto-derived from last folder component
+- [x] **CLI-01**: User can register a project by path only — name auto-derived from last folder component
 
 ### GSD Integration
 
@@ -89,9 +89,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| STATE-01 | Phase 05 | Pending |
-| STATE-02 | Phase 05 | Pending |
-| STATE-03 | Phase 05 | Pending |
+| STATE-01 | Phase 05 | Complete |
+| STATE-02 | Phase 05 | Complete |
+| STATE-03 | Phase 05 | Complete |
 | GSD-01 | Phase 07 | Pending |
 | GSD-02 | Phase 07 | Pending |
 | BLOG-01 | Phase 06 | Pending |
@@ -108,7 +108,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | QUEUE-03 | Phase 08 | Pending |
 | SESS-01 | Phase 09 | Pending |
 | SESS-02 | Phase 09 | Pending |
-| CLI-01 | Phase 05 | Pending |
+| CLI-01 | Phase 05 | Complete |
 | SESS-03 | Phase 09 | Pending |
 
 **Coverage:**

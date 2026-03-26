@@ -29,7 +29,7 @@ Phase 04: Project Creation & Queue (2 plans, complete)
 
 **Milestone Goal:** Fix state reader accuracy, add read-only project views (backlog, git, flow graph), GSD integration, and make the queue actionable with Claude session management.
 
-- [ ] **Phase 05: State Reader Accuracy** - Fix plan counting, completed-milestone display, and disk-based phase inference
+- [x] **Phase 05: State Reader Accuracy** - Fix plan counting, completed-milestone display, and disk-based phase inference (completed 2026-03-26)
 - [ ] **Phase 06: Read-Only Views** - Backlog browser and git history viewer as new detail-view screens
 - [ ] **Phase 07: Execution Flow & GSD Integration** - Per-phase pipeline visualization and verified-vs-inferred status badges
 - [ ] **Phase 08: Queue Execution** - Make queued items executable with confirmation, status tracking, and terminal handoff
@@ -49,10 +49,10 @@ Phase 04: Project Creation & Queue (2 plans, complete)
 **Plans**: 4 plans
 
 Plans:
-- [ ] 05-01-PLAN.md — Fix plan counting regex, milestone completion bug, and CLI alias auto-derive
+- [x] 05-01-PLAN.md — Fix plan counting regex, milestone completion bug, and CLI alias auto-derive
 - [x] 05-02-PLAN.md — Screen architecture refactor (InputMode to Screen trait) and async I/O migration
-- [ ] 05-03-PLAN.md — Disk inference module and compact pipeline display on dashboard
-- [ ] 05-04-PLAN.md — Gap closure: wire pipeline display and disk status brackets into active screen files
+- [x] 05-03-PLAN.md — Disk inference module and compact pipeline display on dashboard
+- [x] 05-04-PLAN.md — Gap closure: wire pipeline display and disk status brackets into active screen files
 
 ### Phase 06: Read-Only Views
 **Goal**: Users can browse backlog items and git history without leaving the TUI
