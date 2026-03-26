@@ -194,3 +194,12 @@ Plans:
 
 Plans:
 - [ ] TBD (promote with /gsd:review-backlog when ready)
+
+### Phase 999.11: Backlog Browser and Promotion UI (BACKLOG)
+
+**Goal:** Add a dedicated backlog view in the TUI that lists all 999.x items for a project with their goals and status. Users can browse backlog items, view/edit the associated markdown files (goal descriptions, notes, research). Once GSD session integration is available (see 999.10), add the ability to select/multi-select backlog items and launch a Claude session to promote them — either via `/gsd:review-backlog` (which starts a discussion on what to include in the next milestone) or a more targeted promotion command. The view should show item number, title, and a summary of accumulated context. Depends on: 999.10 for the launch capability, but the browse/view portion is standalone.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
