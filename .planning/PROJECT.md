@@ -36,6 +36,19 @@ See the state of every GSD project at a glance and act on any of them without le
 - Telegram bridge or external integrations — v2+
 - Remote project management (projects on different machines) — local first, SSH research in backlog
 
+## Current Milestone: v1.1 Polish & Power Features
+
+**Goal:** Fix state reader accuracy, add GSD integration hooks, Claude session management, queue execution, git history, backlog browser, and execution flow graph.
+
+**Target features:**
+- Fix state reader accuracy — plan counting, phase completion inference from disk
+- GSD integration — hooks, cached status, fact vs assumption distinction
+- Claude session management — detect, attach, launch sessions from TUI
+- Queue execution — make QUEUE.md actionable, not just a reminder list
+- Git history viewer — scrollable git log with repo and .planning/ scopes
+- Backlog browser — view/edit/promote backlog items from TUI
+- Execution flow graph — per-phase discuss/plan/execute/verify pipeline view
+
 ## Context
 
 - Shipped v1.0 with 3,887 LOC Rust, 83 commits over 2 days
@@ -79,4 +92,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-26 after v1.0 milestone*
+*Last updated: 2026-03-26 after v1.1 milestone start*
