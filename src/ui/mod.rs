@@ -1,6 +1,7 @@
 pub mod detail_view;
 pub mod help_overlay;
 pub mod project_list;
+pub mod roadmap_widget;
 
 use crate::app::{App, InputMode};
 use ratatui::Frame;

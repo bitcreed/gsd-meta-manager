@@ -19,6 +19,13 @@ pub enum InputMode {
     DetailView { alias: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum DetailSubView {
+    #[default]
+    PhaseList,
+    RoadmapViz,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilterColumn {
     All,
@@ -90,6 +97,7 @@ pub struct App {
     pub last_refresh: HashMap<String, std::time::Instant>,
     pub detail_scroll_offset: u16,
     pub change_tracker: ChangeTracker,
+    pub detail_sub_view_per_project: HashMap<String, DetailSubView>,
 }
 
 impl App {
@@ -116,6 +124,7 @@ impl App {
             last_refresh: HashMap::new(),
             detail_scroll_offset: 0,
             change_tracker: ChangeTracker::new(),
+            detail_sub_view_per_project: HashMap::new(),
         };
         app.filtered_aliases = app.sorted_aliases();
         Ok(app)
@@ -396,6 +405,23 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 self.detail_scroll_offset = self.detail_scroll_offset.saturating_sub(1);
                 self.needs_redraw = true;
+            }
+            KeyCode::Char('r') => {
+                if let InputMode::DetailView { ref alias } = self.input_mode {
+                    let alias = alias.clone();
+                    let current = self
+                        .detail_sub_view_per_project
+                        .get(&alias)
+                        .cloned()
+                        .unwrap_or_default();
+                    let next = match current {
+                        DetailSubView::PhaseList => DetailSubView::RoadmapViz,
+                        DetailSubView::RoadmapViz => DetailSubView::PhaseList,
+                    };
+                    self.detail_sub_view_per_project.insert(alias, next);
+                    self.detail_scroll_offset = 0;
+                    self.needs_redraw = true;
+                }
             }
             KeyCode::Char('?') => {
                 self.input_mode = InputMode::HelpOverlay;
