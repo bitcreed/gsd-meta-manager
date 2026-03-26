@@ -5,6 +5,7 @@ mod cli;
 mod config;
 mod error;
 mod event;
+mod project_creator;
 mod registry;
 mod state_reader;
 mod tui;
@@ -68,12 +69,15 @@ async fn main() -> anyhow::Result<()> {
 
             let event_bus = EventBus::new();
 
+            // Store event_tx on App so creation flow can send actions back
+            app.event_tx = Some(event_bus.tx.clone());
+
             // Initialize file watcher for all registered projects
-            let mut _watcher = FileWatcher::new(event_bus.tx.clone())?;
+            let mut watcher = FileWatcher::new(event_bus.tx.clone())?;
             for project in app.config.projects.values() {
                 let planning_dir = project.path.join(".planning");
                 if planning_dir.is_dir() {
-                    if let Err(e) = _watcher.watch(&planning_dir) {
+                    if let Err(e) = watcher.watch(&planning_dir) {
                         tracing::warn!(
                             "Could not watch {}: {}",
                             planning_dir.display(),
@@ -82,6 +86,9 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+
+            // Store watcher on App so new projects can be watched dynamically
+            app.watcher = Some(watcher);
 
             event_bus.spawn_crossterm_reader();
             event_bus.spawn_tick(250);

@@ -27,6 +27,7 @@ pub fn render(frame: &mut Frame) {
         Line::from("  Enter         Open project detail"),
         Line::from("  /             Filter projects"),
         Line::from("  a             Add project"),
+        Line::from("  c             Create new project"),
         Line::from("  d             Delete project"),
         Line::from("  ?             Toggle this help"),
         Line::from("  q / Esc       Quit / Back"),
