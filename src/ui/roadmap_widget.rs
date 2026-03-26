@@ -58,7 +58,7 @@ impl<'a> Widget for RoadmapWidget<'a> {
         let box_width = (area.width.saturating_sub(4)).min(40) as usize;
         // Horizontal centering: left margin to center the box (account for 2-char marker area)
         let marker_width: u16 = 2;
-        let total_box_area = marker_width as u16 + box_width as u16;
+        let total_box_area = marker_width + box_width as u16;
         let left_margin = area.x + (area.width.saturating_sub(total_box_area)) / 2;
         let box_x = left_margin + marker_width;
 
@@ -90,8 +90,7 @@ impl<'a> Widget for RoadmapWidget<'a> {
                 let border_str = format!(
                     "{}{}{}",
                     tl,
-                    std::iter::repeat(horiz)
-                        .take(box_width.saturating_sub(2))
+                    std::iter::repeat_n(horiz, box_width.saturating_sub(2))
                         .collect::<String>(),
                     tr
                 );
@@ -151,8 +150,7 @@ impl<'a> Widget for RoadmapWidget<'a> {
                 let border_str = format!(
                     "{}{}{}",
                     bl,
-                    std::iter::repeat(horiz)
-                        .take(box_width.saturating_sub(2))
+                    std::iter::repeat_n(horiz, box_width.saturating_sub(2))
                         .collect::<String>(),
                     br
                 );

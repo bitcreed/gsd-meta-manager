@@ -1,5 +1,6 @@
-use crate::app::{classify_status, App, InputMode, StatusCategory};
+use crate::app::{classify_status, App, DetailSubView, InputMode, StatusCategory};
 use crate::change_tracker::ChangeTracker;
+use crate::ui::roadmap_widget::RoadmapWidget;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -37,19 +38,28 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .map(|p| p.path.display().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let mut lines: Vec<Line> = Vec::new();
+    let sub_view = app
+        .detail_sub_view_per_project
+        .get(&alias)
+        .cloned()
+        .unwrap_or_default();
 
-    // Path line
-    lines.push(Line::from(vec![
-        Span::styled("  Path: ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(&project_path),
-    ]));
+    // Check if we should render roadmap visualization
+    let show_roadmap = sub_view == DetailSubView::RoadmapViz && state.is_some();
 
-    if let Some(state) = state {
-        // Status + Milestone line
+    if show_roadmap {
+        let state = state.unwrap();
+
+        // Build header lines (path, status, change banner)
+        let mut header_lines: Vec<Line> = Vec::new();
+        header_lines.push(Line::from(vec![
+            Span::styled("  Path: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(&project_path),
+        ]));
+
         let cat = classify_status(&state.status);
         let color = status_color(&cat);
-        lines.push(Line::from(vec![
+        header_lines.push(Line::from(vec![
             Span::styled("  Status: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::styled(&state.status, Style::default().fg(color)),
             Span::raw("    "),
@@ -57,108 +67,178 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             Span::raw(&state.milestone),
         ]));
 
-        // Blank line
-        lines.push(Line::from(""));
+        header_lines.push(Line::from(""));
 
-        // Change banner (per D-04)
         if let Some(event) = app.change_tracker.latest_change(&alias) {
             let elapsed = ChangeTracker::format_elapsed(event.timestamp);
             let banner = format!("  [ {} -- {} ]", event.description, elapsed);
-            lines.push(Line::from(Span::styled(
+            header_lines.push(Line::from(Span::styled(
                 banner,
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             )));
-            lines.push(Line::from(""));
+            header_lines.push(Line::from(""));
         }
 
-        // Phases header
-        lines.push(Line::from(Span::styled(
-            "  Phases:",
-            Style::default().add_modifier(Modifier::BOLD),
-        )));
+        // Calculate header height (lines + block border top)
+        let header_height = header_lines.len() as u16 + 2; // +2 for block top border + padding
 
-        if state.phases.is_empty() {
-            lines.push(Line::from("  No roadmap data available"));
-        } else {
-            // Determine current phase number from completed_phases
-            let current_phase_num = (state.completed_phases + 1).to_string();
+        // Split main_area: header (fixed) + roadmap (remaining)
+        let content_chunks = Layout::vertical([
+            Constraint::Length(header_height),
+            Constraint::Min(0),
+        ])
+        .split(main_area);
 
-            for phase in &state.phases {
-                // Determine phase status
-                let (icon, is_current) = if phase.completed {
-                    ("+", false)
-                } else if phase.number == current_phase_num {
-                    ("*", true)
-                } else {
-                    ("o", false)
-                };
+        let header_area = content_chunks[0];
+        let roadmap_area = content_chunks[1];
 
-                // Plan count display
-                let plan_display = if phase.total_plans == 0 {
-                    "0/? plans".to_string()
-                } else {
-                    format!("{}/{} plans", phase.completed_plans, phase.total_plans)
-                };
+        // Render header with block
+        let header_block = Block::default()
+            .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
+            .title(format!(" Project: {} (Roadmap) ", alias));
 
-                let line_text = format!(
-                    "  {} P{}: {}  {}",
-                    icon, phase.number, phase.name, plan_display
-                );
+        let header_paragraph = Paragraph::new(header_lines).block(header_block);
+        frame.render_widget(header_paragraph, header_area);
 
-                if is_current {
-                    let cat = classify_status(&state.status);
-                    let color = status_color(&cat);
-                    lines.push(Line::from(Span::styled(
-                        line_text,
-                        Style::default()
-                            .fg(color)
-                            .add_modifier(Modifier::BOLD),
-                    )));
-                } else if phase.completed {
-                    lines.push(Line::from(Span::styled(
-                        line_text,
-                        Style::default().fg(Color::DarkGray),
-                    )));
-                } else {
-                    lines.push(Line::from(Span::raw(line_text)));
+        // Render roadmap widget
+        let current_phase_num = state.completed_phases + 1;
+        let roadmap_widget = RoadmapWidget {
+            phases: &state.phases,
+            current_phase_num,
+            scroll_offset: app.detail_scroll_offset,
+        };
+        frame.render_widget(roadmap_widget, roadmap_area);
+    } else {
+        // Original phase list rendering
+        let mut lines: Vec<Line> = Vec::new();
+
+        // Path line
+        lines.push(Line::from(vec![
+            Span::styled("  Path: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(&project_path),
+        ]));
+
+        if let Some(state) = state {
+            // Status + Milestone line
+            let cat = classify_status(&state.status);
+            let color = status_color(&cat);
+            lines.push(Line::from(vec![
+                Span::styled("  Status: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(&state.status, Style::default().fg(color)),
+                Span::raw("    "),
+                Span::styled("Milestone: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(&state.milestone),
+            ]));
+
+            // Blank line
+            lines.push(Line::from(""));
+
+            // Change banner (per D-04)
+            if let Some(event) = app.change_tracker.latest_change(&alias) {
+                let elapsed = ChangeTracker::format_elapsed(event.timestamp);
+                let banner = format!("  [ {} -- {} ]", event.description, elapsed);
+                lines.push(Line::from(Span::styled(
+                    banner,
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(""));
+            }
+
+            // Phases header
+            lines.push(Line::from(Span::styled(
+                "  Phases:",
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+
+            if state.phases.is_empty() {
+                lines.push(Line::from("  No roadmap data available"));
+            } else {
+                // Determine current phase number from completed_phases
+                let current_phase_num = (state.completed_phases + 1).to_string();
+
+                for phase in &state.phases {
+                    // Determine phase status
+                    let (icon, is_current) = if phase.completed {
+                        ("+", false)
+                    } else if phase.number == current_phase_num {
+                        ("*", true)
+                    } else {
+                        ("o", false)
+                    };
+
+                    // Plan count display
+                    let plan_display = if phase.total_plans == 0 {
+                        "0/? plans".to_string()
+                    } else {
+                        format!("{}/{} plans", phase.completed_plans, phase.total_plans)
+                    };
+
+                    let line_text = format!(
+                        "  {} P{}: {}  {}",
+                        icon, phase.number, phase.name, plan_display
+                    );
+
+                    if is_current {
+                        let cat = classify_status(&state.status);
+                        let color = status_color(&cat);
+                        lines.push(Line::from(Span::styled(
+                            line_text,
+                            Style::default()
+                                .fg(color)
+                                .add_modifier(Modifier::BOLD),
+                        )));
+                    } else if phase.completed {
+                        lines.push(Line::from(Span::styled(
+                            line_text,
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    } else {
+                        lines.push(Line::from(Span::raw(line_text)));
+                    }
                 }
             }
+
+            // Blank line
+            lines.push(Line::from(""));
+
+            // Backlog line (if > 0)
+            if state.backlog_count > 0 {
+                lines.push(Line::from(format!(
+                    "  Backlog: {} items",
+                    state.backlog_count
+                )));
+            }
+        } else {
+            lines.push(Line::from(""));
+            lines.push(Line::from("  No state data available for this project."));
         }
 
-        // Blank line
-        lines.push(Line::from(""));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Project: {} ", alias));
 
-        // Backlog line (if > 0)
-        if state.backlog_count > 0 {
-            lines.push(Line::from(format!(
-                "  Backlog: {} items",
-                state.backlog_count
-            )));
-        }
-    } else {
-        lines.push(Line::from(""));
-        lines.push(Line::from("  No state data available for this project."));
+        let paragraph = Paragraph::new(lines)
+            .block(block)
+            .scroll((app.detail_scroll_offset, 0));
+
+        frame.render_widget(paragraph, main_area);
     }
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" Project: {} ", alias));
-
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .scroll((app.detail_scroll_offset, 0));
-
-    frame.render_widget(paragraph, main_area);
-
-    // Footer
+    // Footer - show context-aware toggle hint
+    let toggle_hint = if show_roadmap { "phases" } else { "roadmap" };
     let footer = Paragraph::new(Line::from(vec![
         Span::raw("  "),
         Span::styled("[Esc]", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("back  "),
         Span::styled("[j/k]", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("scroll  "),
+        Span::styled("[r]", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(toggle_hint),
+        Span::raw("  "),
         Span::styled("[?]", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("help"),
     ]));
