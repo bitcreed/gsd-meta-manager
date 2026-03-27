@@ -3,6 +3,7 @@ use crate::change_tracker::ChangeTracker;
 use crate::config::{load_config, save_config, Config};
 use crate::project_creator;
 use crate::registry;
+use crate::session_detector::ClaudeSession;
 use crate::state_reader::{self, queue_md, ProjectState};
 use crate::watcher::FileWatcher;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -108,6 +109,8 @@ pub struct App {
     pub event_tx: Option<UnboundedSender<Action>>,
     pub watcher: Option<FileWatcher>,
     pub suggestion_index: usize,
+    pub active_sessions: Vec<ClaudeSession>,
+    pub session_poll_counter: u32,
 }
 
 impl App {
@@ -138,6 +141,8 @@ impl App {
             event_tx: None,
             watcher: None,
             suggestion_index: 0,
+            active_sessions: Vec::new(),
+            session_poll_counter: 0,
         };
         app.filtered_aliases = app.sorted_aliases();
         Ok(app)
@@ -219,6 +224,19 @@ impl App {
                         self.needs_redraw = true;
                     }
                 }
+
+                // Poll for Claude sessions every 20 ticks (~5s at 250ms interval)
+                self.session_poll_counter += 1;
+                if self.session_poll_counter >= 20 {
+                    self.session_poll_counter = 0;
+                    if let Some(ref tx) = self.event_tx {
+                        let tx = tx.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let sessions = crate::session_detector::detect_sessions();
+                            let _ = tx.send(Action::SessionsDetected { sessions });
+                        });
+                    }
+                }
             }
             Action::RawKey(key_event) => {
                 self.handle_key(key_event.code, key_event.modifiers);
@@ -273,6 +291,10 @@ impl App {
                         }
                     }
                 }
+            }
+            Action::SessionsDetected { sessions } => {
+                self.active_sessions = sessions;
+                self.needs_redraw = true;
             }
             Action::CreateProjectResult {
                 alias,

@@ -7,6 +7,7 @@ mod error;
 mod event;
 mod project_creator;
 mod registry;
+mod session_detector;
 mod state_reader;
 mod tui;
 mod ui;

@@ -14,5 +14,8 @@ pub enum Action {
         success: bool,
         error: Option<String>,
     },
+    SessionsDetected {
+        sessions: Vec<crate::session_detector::ClaudeSession>,
+    },
     Noop,
 }

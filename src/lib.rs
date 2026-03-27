@@ -5,5 +5,6 @@ pub mod config;
 pub mod error;
 pub mod project_creator;
 pub mod registry;
+pub mod session_detector;
 pub mod state_reader;
 pub mod watcher;
