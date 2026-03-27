@@ -13,7 +13,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Tabs};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs};
 use ratatui::Frame;
 
 const TAB_TITLES: [&str; 4] = ["1:Phases", "2:Roadmap", "3:Backlog", "4:Git"];
@@ -174,14 +174,52 @@ impl Screen for DetailScreen {
                 ScreenAction::Pop
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                self.scroll_offset = self.scroll_offset.saturating_add(1);
-                ctx.needs_redraw = true;
-                ScreenAction::None
+                match current_view {
+                    DetailSubView::Backlog => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        if !cache.backlog_items.is_empty() {
+                            cache.backlog_selected = (cache.backlog_selected + 1)
+                                .min(cache.backlog_items.len().saturating_sub(1));
+                        }
+                        ctx.needs_redraw = true;
+                        ScreenAction::None
+                    }
+                    DetailSubView::GitHistory => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        if !cache.git_entries.is_empty() {
+                            cache.git_selected = (cache.git_selected + 1)
+                                .min(cache.git_entries.len().saturating_sub(1));
+                        }
+                        ctx.needs_redraw = true;
+                        ScreenAction::None
+                    }
+                    _ => {
+                        self.scroll_offset = self.scroll_offset.saturating_add(1);
+                        ctx.needs_redraw = true;
+                        ScreenAction::None
+                    }
+                }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                ctx.needs_redraw = true;
-                ScreenAction::None
+                match current_view {
+                    DetailSubView::Backlog => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        cache.backlog_selected = cache.backlog_selected.saturating_sub(1);
+                        ctx.needs_redraw = true;
+                        ScreenAction::None
+                    }
+                    DetailSubView::GitHistory => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        cache.git_selected = cache.git_selected.saturating_sub(1);
+                        ctx.needs_redraw = true;
+                        ScreenAction::None
+                    }
+                    _ => {
+                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                        ctx.needs_redraw = true;
+                        ScreenAction::None
+                    }
+                }
             }
             // Tab switching via number keys
             KeyCode::Char('1') => switch_to_tab(&self.alias, 0, &mut self.scroll_offset, ctx),
@@ -313,16 +351,26 @@ impl Screen for DetailScreen {
                         "Run GSD in this project first to enable queue".to_string(),
                     )
                 } else {
-                    // Pre-populate with first suggestion if available
-                    if let Some(state) = ctx.project_states.get(&alias) {
-                        let suggestions = queue_md::suggest_next_commands(state);
-                        if !suggestions.is_empty() {
-                            ctx.input_buffer = suggestions[0].clone();
+                    // On Backlog tab, pre-fill with /gsd:review-backlog for selected item
+                    if current_view == DetailSubView::Backlog {
+                        let cache = ctx.view_cache.entry(alias.clone()).or_default();
+                        if let Some(item) = cache.backlog_items.get(cache.backlog_selected) {
+                            ctx.input_buffer = format!("/gsd:review-backlog {}", item.dir_name);
                         } else {
                             ctx.input_buffer.clear();
                         }
                     } else {
-                        ctx.input_buffer.clear();
+                        // Pre-populate with first suggestion if available
+                        if let Some(state) = ctx.project_states.get(&alias) {
+                            let suggestions = queue_md::suggest_next_commands(state);
+                            if !suggestions.is_empty() {
+                                ctx.input_buffer = suggestions[0].clone();
+                            } else {
+                                ctx.input_buffer.clear();
+                            }
+                        } else {
+                            ctx.input_buffer.clear();
+                        }
                     }
                     ctx.suggestion_index = 0;
                     ctx.needs_redraw = true;
@@ -377,7 +425,7 @@ impl Screen for DetailScreen {
         match sub_view {
             DetailSubView::PhaseList => self.render_phase_list(frame, content_area, ctx),
             DetailSubView::RoadmapViz => self.render_roadmap(frame, content_area, ctx),
-            DetailSubView::Backlog => self.render_backlog_placeholder(frame, content_area, ctx),
+            DetailSubView::Backlog => self.render_backlog_tab(frame, content_area, ctx),
             DetailSubView::GitHistory => self.render_git_placeholder(frame, content_area, ctx),
         }
 
@@ -604,51 +652,107 @@ impl DetailScreen {
         }
     }
 
-    /// Render the backlog tab placeholder content.
-    fn render_backlog_placeholder(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+    /// Render the backlog tab with scrollable list and optional split-pane content preview.
+    fn render_backlog_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         let cache = ctx.view_cache.get(&self.alias);
 
-        let mut lines: Vec<Line> = Vec::new();
-
-        if let Some(cache) = cache {
-            if cache.loading_backlog {
-                lines.push(Line::from(Span::styled(
-                    "  Loading...",
+        // Handle no-cache and loading states
+        let cache = match cache {
+            Some(c) => c,
+            None => {
+                let block = Block::default().borders(Borders::ALL);
+                let paragraph = Paragraph::new(Span::styled(
+                    "  Press 3 to load backlog",
                     Style::default().fg(Color::DarkGray),
-                )));
-            } else if cache.backlog_items.is_empty() {
-                lines.push(Line::from("  No backlog items found."));
-            } else {
-                lines.push(Line::from(format!(
-                    "  Backlog items: {}",
-                    cache.backlog_items.len()
-                )));
-                lines.push(Line::from(""));
-                for (i, item) in cache.backlog_items.iter().enumerate() {
-                    let prefix = if i == cache.backlog_selected { "> " } else { "  " };
-                    let style = if i == cache.backlog_selected {
-                        Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan)
-                    } else {
-                        Style::default()
-                    };
-                    lines.push(Line::from(Span::styled(
-                        format!("{}  {} - {}", prefix, item.number, item.description),
-                        style,
-                    )));
-                }
+                ))
+                .block(block);
+                frame.render_widget(paragraph, area);
+                return;
             }
-        } else {
-            lines.push(Line::from(Span::styled(
-                "  Loading...",
+        };
+
+        if cache.loading_backlog {
+            let block = Block::default().borders(Borders::ALL);
+            let paragraph = Paragraph::new(Span::styled(
+                "  Loading backlog items...",
                 Style::default().fg(Color::DarkGray),
-            )));
+            ))
+            .block(block);
+            frame.render_widget(paragraph, area);
+            return;
         }
 
-        let block = Block::default().borders(Borders::ALL);
-        let paragraph = Paragraph::new(lines)
-            .block(block)
-            .scroll((self.scroll_offset, 0));
-        frame.render_widget(paragraph, area);
+        if cache.backlog_items.is_empty() {
+            let block = Block::default().borders(Borders::ALL);
+            let paragraph = Paragraph::new("  No backlog items found.").block(block);
+            frame.render_widget(paragraph, area);
+            return;
+        }
+
+        // Build list items
+        let list_items: Vec<ListItem> = cache
+            .backlog_items
+            .iter()
+            .map(|item| {
+                ListItem::new(Line::from(format!("  {}  {}", item.number, item.description)))
+            })
+            .collect();
+
+        let highlight_style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+
+        if cache.backlog_expanded {
+            // Split pane: top 50% list, bottom 50% content
+            let panes = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(area);
+
+            // Top: list
+            let list_block = Block::default()
+                .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
+                .title(format!(" Backlog ({} items) ", cache.backlog_items.len()));
+            let list_widget = List::new(list_items)
+                .block(list_block)
+                .highlight_style(highlight_style);
+            let mut list_state = ListState::default();
+            list_state.select(Some(cache.backlog_selected));
+            frame.render_stateful_widget(list_widget, panes[0], &mut list_state);
+
+            // Bottom: content preview
+            let selected_item = cache.backlog_items.get(cache.backlog_selected);
+            let content_title = selected_item
+                .map(|item| format!(" Content: {} ", item.dir_name))
+                .unwrap_or_else(|| " Content ".to_string());
+            let content_block = Block::default()
+                .borders(Borders::ALL)
+                .title(content_title);
+
+            let content_text = match selected_item.and_then(|item| item.content.as_deref()) {
+                Some(text) => text.to_string(),
+                None => "No content available".to_string(),
+            };
+            let content_style = if selected_item.and_then(|i| i.content.as_ref()).is_none() {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default()
+            };
+            let content_paragraph = Paragraph::new(content_text)
+                .style(content_style)
+                .block(content_block)
+                .scroll((self.scroll_offset, 0));
+            frame.render_widget(content_paragraph, panes[1]);
+        } else {
+            // Full list view
+            let list_block = Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Backlog ({} items) ", cache.backlog_items.len()));
+            let list_widget = List::new(list_items)
+                .block(list_block)
+                .highlight_style(highlight_style);
+            let mut list_state = ListState::default();
+            list_state.select(Some(cache.backlog_selected));
+            frame.render_stateful_widget(list_widget, area, &mut list_state);
+        }
     }
 
     /// Render the git history tab placeholder content.
@@ -750,7 +854,7 @@ impl DetailScreen {
         match sub_view {
             DetailSubView::PhaseList => self.render_phase_list(frame, content_area, ctx),
             DetailSubView::RoadmapViz => self.render_roadmap(frame, content_area, ctx),
-            DetailSubView::Backlog => self.render_backlog_placeholder(frame, content_area, ctx),
+            DetailSubView::Backlog => self.render_backlog_tab(frame, content_area, ctx),
             DetailSubView::GitHistory => self.render_git_placeholder(frame, content_area, ctx),
         }
     }
