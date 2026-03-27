@@ -4,6 +4,8 @@ pub mod roadmap_md;
 pub mod config_json;
 pub mod queue_md;
 pub mod disk_status;
+pub mod backlog;
+pub mod git_ops;
 
 use std::collections::HashMap;
 use std::path::Path;

@@ -101,6 +101,8 @@ impl Screen for DetailScreen {
                 let next = match current {
                     DetailSubView::PhaseList => DetailSubView::RoadmapViz,
                     DetailSubView::RoadmapViz => DetailSubView::PhaseList,
+                    DetailSubView::Backlog => DetailSubView::PhaseList,
+                    DetailSubView::GitHistory => DetailSubView::PhaseList,
                 };
                 ctx.detail_sub_view_per_project
                     .insert(self.alias.clone(), next);

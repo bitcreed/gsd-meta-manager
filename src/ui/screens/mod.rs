@@ -10,6 +10,8 @@ use crate::action::Action;
 use crate::change_tracker::ChangeTracker;
 use crate::config::Config;
 use crate::state_reader::ProjectState;
+use crate::state_reader::backlog::BacklogItem;
+use crate::state_reader::git_ops::{GitLogEntry, GitDiffStat};
 use crate::watcher::FileWatcher;
 use crate::app::DetailSubView;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -36,6 +38,36 @@ pub enum ScreenAction {
     DispatchAction(Action),
 }
 
+pub struct ProjectViewCache {
+    pub backlog_items: Vec<BacklogItem>,
+    pub backlog_selected: usize,
+    pub backlog_expanded: bool,
+    pub git_entries: Vec<GitLogEntry>,
+    pub git_selected: usize,
+    pub git_planning_only: bool,
+    pub git_diff_stat: Option<GitDiffStat>,
+    pub loading_backlog: bool,
+    pub loading_git: bool,
+    pub loading_diff: bool,
+}
+
+impl Default for ProjectViewCache {
+    fn default() -> Self {
+        Self {
+            backlog_items: Vec::new(),
+            backlog_selected: 0,
+            backlog_expanded: false,
+            git_entries: Vec::new(),
+            git_selected: 0,
+            git_planning_only: false,
+            git_diff_stat: None,
+            loading_backlog: false,
+            loading_git: false,
+            loading_diff: false,
+        }
+    }
+}
+
 pub struct AppContext {
     pub config: Config,
     pub config_path: PathBuf,
@@ -45,6 +77,7 @@ pub struct AppContext {
     pub filter_text: String,
     pub change_tracker: ChangeTracker,
     pub detail_sub_view_per_project: HashMap<String, DetailSubView>,
+    pub view_cache: HashMap<String, ProjectViewCache>,
     pub status_message: Option<(String, std::time::Instant)>,
     pub error_message: Option<String>,
     pub event_tx: Option<UnboundedSender<Action>>,

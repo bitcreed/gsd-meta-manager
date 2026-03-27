@@ -17,6 +17,8 @@ pub enum DetailSubView {
     #[default]
     PhaseList,
     RoadmapViz,
+    Backlog,
+    GitHistory,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,6 +106,7 @@ impl App {
             filter_text: String::new(),
             change_tracker: ChangeTracker::new(),
             detail_sub_view_per_project: HashMap::new(),
+            view_cache: HashMap::new(),
             status_message: None,
             error_message: None,
             event_tx: None,
@@ -214,6 +217,33 @@ impl App {
                     format!("Updated: {}", alias),
                     std::time::Instant::now(),
                 ));
+                self.needs_redraw = true;
+            }
+            Action::BacklogLoaded { alias, items } => {
+                let cache = self.ctx.view_cache.entry(alias).or_default();
+                cache.backlog_items = items;
+                cache.loading_backlog = false;
+                self.needs_redraw = true;
+            }
+            Action::BacklogContentLoaded { alias, item_number, content } => {
+                if let Some(cache) = self.ctx.view_cache.get_mut(&alias) {
+                    if let Some(item) = cache.backlog_items.iter_mut().find(|i| i.number == item_number) {
+                        item.content = Some(content);
+                    }
+                }
+                self.needs_redraw = true;
+            }
+            Action::GitLogLoaded { alias, entries, planning_only } => {
+                let cache = self.ctx.view_cache.entry(alias).or_default();
+                cache.git_entries = entries;
+                cache.git_planning_only = planning_only;
+                cache.loading_git = false;
+                self.needs_redraw = true;
+            }
+            Action::GitDiffStatLoaded { alias, hash: _, stat } => {
+                let cache = self.ctx.view_cache.entry(alias).or_default();
+                cache.git_diff_stat = Some(stat);
+                cache.loading_diff = false;
                 self.needs_redraw = true;
             }
             Action::CreateProjectResult {
