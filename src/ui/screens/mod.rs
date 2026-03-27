@@ -5,6 +5,7 @@ pub mod detail;
 pub mod enqueue;
 pub mod help;
 pub mod normal;
+pub mod queue_delete_confirm;
 
 use crate::action::Action;
 use crate::change_tracker::ChangeTracker;
