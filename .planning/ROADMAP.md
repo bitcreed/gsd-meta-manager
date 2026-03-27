@@ -111,8 +111,11 @@ Plans:
   1. User sees an active-session indicator on the dashboard for projects with running Claude sessions
   2. User can browse a session list showing last activity and status in the detail view
   3. User can resume an existing or launch a new Claude session from the TUI
-**Plans**: TBD
-**UI hint**: yes
+**Plans**: 2 plans
+
+Plans:
+- [ ] 09-01-PLAN.md — Session detection module, tick-based polling, and dashboard indicator
+- [ ] 09-02-PLAN.md — Sessions tab with list view, launch and resume actions
 
 ## Progress
 
@@ -125,4 +128,4 @@ Phases execute in numeric order: 05 -> 06 -> 07 -> 08 -> 09
 | 6. Read-Only Views | v1.1 | 0/4 | Not started | - |
 | 7. Execution Flow & GSD Integration | v1.1 | 0/3 | Not started | - |
 | 8. Queue Execution | v1.1 | 1/2 | In progress | - |
-| 9. Claude Session Management | v1.1 | 0/0 | Not started | - |
+| 9. Claude Session Management | v1.1 | 0/2 | Not started | - |
