@@ -16,7 +16,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs};
 use ratatui::Frame;
 
-const TAB_TITLES: [&str; 5] = ["1:Phases", "2:Roadmap", "3:Backlog", "4:Git", "5:Pipeline"];
+const TAB_TITLES: [&str; 6] = ["1:Phases", "2:Roadmap", "3:Backlog", "4:Git", "5:Pipeline", "6:Queue"];
 
 pub struct DetailScreen {
     pub alias: String,
@@ -39,6 +39,7 @@ fn tab_index(sub_view: &DetailSubView) -> usize {
         DetailSubView::Backlog => 2,
         DetailSubView::GitHistory => 3,
         DetailSubView::Pipeline => 4,
+        DetailSubView::Queue => 5,
     }
 }
 
@@ -49,6 +50,7 @@ fn sub_view_from_index(index: usize) -> DetailSubView {
         2 => DetailSubView::Backlog,
         3 => DetailSubView::GitHistory,
         4 => DetailSubView::Pipeline,
+        5 => DetailSubView::Queue,
         _ => DetailSubView::PhaseList,
     }
 }
@@ -241,6 +243,16 @@ impl Screen for DetailScreen {
                         }
                         ctx.needs_redraw = true;
                     }
+                    DetailSubView::Queue => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        if let Some(state) = ctx.project_states.get(&self.alias) {
+                            if !state.queued_actions.is_empty() {
+                                let max = state.queued_actions.len().saturating_sub(1);
+                                cache.queue_selected = (cache.queue_selected + 1).min(max);
+                            }
+                        }
+                        ctx.needs_redraw = true;
+                    }
                     _ => {
                         self.scroll_offset = self.scroll_offset.saturating_add(1);
                         ctx.needs_redraw = true;
@@ -269,6 +281,11 @@ impl Screen for DetailScreen {
                         cache.pipeline_selected = cache.pipeline_selected.saturating_sub(1);
                         ctx.needs_redraw = true;
                     }
+                    DetailSubView::Queue => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        cache.queue_selected = cache.queue_selected.saturating_sub(1);
+                        ctx.needs_redraw = true;
+                    }
                     _ => {
                         self.scroll_offset = self.scroll_offset.saturating_sub(1);
                         ctx.needs_redraw = true;
@@ -282,6 +299,7 @@ impl Screen for DetailScreen {
             KeyCode::Char('3') => switch_to_tab(&self.alias, 2, &mut self.scroll_offset, ctx),
             KeyCode::Char('4') => switch_to_tab(&self.alias, 3, &mut self.scroll_offset, ctx),
             KeyCode::Char('5') => switch_to_tab(&self.alias, 4, &mut self.scroll_offset, ctx),
+            KeyCode::Char('6') => switch_to_tab(&self.alias, 5, &mut self.scroll_offset, ctx),
             // Tab switching via arrow keys
             KeyCode::Left => {
                 if current_idx > 0 {
@@ -484,6 +502,7 @@ impl Screen for DetailScreen {
             DetailSubView::Backlog => self.render_backlog_tab(frame, content_area, ctx),
             DetailSubView::GitHistory => self.render_git_tab(frame, content_area, ctx),
             DetailSubView::Pipeline => self.render_pipeline_tab(frame, content_area, ctx),
+            DetailSubView::Queue => self.render_queue_tab(frame, content_area, ctx),
         }
 
         // Render footer with tab-appropriate hints
@@ -1048,6 +1067,59 @@ impl DetailScreen {
         }
     }
 
+    /// Render the queue tab with selectable list of queued actions.
+    fn render_queue_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        let alias = &self.alias;
+        let state = ctx.project_states.get(alias);
+        let cache = ctx.view_cache.get(alias);
+
+        let block = Block::default().borders(Borders::ALL);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        if inner.height < 3 || inner.width < 10 {
+            return;
+        }
+
+        let queued_actions = state
+            .map(|s| &s.queued_actions)
+            .filter(|q| !q.is_empty());
+
+        match queued_actions {
+            None => {
+                let msg = Paragraph::new("  Queue empty -- press 'e' to add")
+                    .style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM));
+                frame.render_widget(msg, inner);
+            }
+            Some(actions) => {
+                let selected = cache.map(|c| c.queue_selected).unwrap_or(0);
+
+                let items: Vec<ListItem> = actions
+                    .iter()
+                    .map(|action| {
+                        ListItem::new(Line::from(format!("  > {}", action.command)))
+                    })
+                    .collect();
+
+                let title = format!(" Queue ({} items) ", actions.len());
+                let list_block = Block::default().borders(Borders::ALL).title(title);
+                let list = List::new(items)
+                    .block(list_block)
+                    .highlight_style(
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
+                            .add_modifier(Modifier::UNDERLINED),
+                    )
+                    .highlight_symbol("> ");
+
+                let mut list_state = ListState::default();
+                list_state.select(Some(selected));
+                frame.render_stateful_widget(list, inner, &mut list_state);
+            }
+        }
+    }
+
     /// Render just the main content area (without footer), used by EnqueueScreen overlay.
     pub fn render_main_only(&self, frame: &mut Frame, main_area: Rect, ctx: &AppContext) {
         let alias = &self.alias;
@@ -1090,6 +1162,7 @@ impl DetailScreen {
             DetailSubView::Backlog => self.render_backlog_tab(frame, content_area, ctx),
             DetailSubView::GitHistory => self.render_git_tab(frame, content_area, ctx),
             DetailSubView::Pipeline => self.render_pipeline_tab(frame, content_area, ctx),
+            DetailSubView::Queue => self.render_queue_tab(frame, content_area, ctx),
         }
     }
 }
@@ -1231,7 +1304,7 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
         Span::raw("  "),
         Span::styled("[Esc]", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("back  "),
-        Span::styled("[1-5]", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled("[1-6]", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("tabs  "),
         Span::styled("[j/k]", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("scroll  "),
@@ -1249,6 +1322,12 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
             spans.push(Span::raw("planning-only  "));
             spans.push(Span::styled("[Enter]", Style::default().add_modifier(Modifier::BOLD)));
             spans.push(Span::raw("diff  "));
+        }
+        DetailSubView::Queue => {
+            spans.push(Span::styled("[j/k]", Style::default().add_modifier(Modifier::BOLD)));
+            spans.push(Span::raw("navigate  "));
+            spans.push(Span::styled("[e]", Style::default().add_modifier(Modifier::BOLD)));
+            spans.push(Span::raw("add  "));
         }
         _ => {
             spans.push(Span::styled("[e]", Style::default().add_modifier(Modifier::BOLD)));
