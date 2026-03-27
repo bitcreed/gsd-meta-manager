@@ -117,6 +117,17 @@ Plans:
 - [x] 09-01-PLAN.md — Session detection module, tick-based polling, and dashboard indicator
 - [x] 09-02-PLAN.md — Sessions tab with list view, launch and resume actions
 
+## Backlog
+
+### Phase 999.1: Milestone Archive Browser Tab (BACKLOG)
+
+**Goal:** Add an "Archive" tab to the detail view that lists completed milestones and lets users drill into past phase directories to view .md files (SUMMARYs, VERIFICATIONs, PLANs). Browse what was done in previous milestones without leaving the TUI.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
+
 ## Progress
 
 **Execution Order:**
