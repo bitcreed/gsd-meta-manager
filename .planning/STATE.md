@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Polish & Power Features
-status: Executing Phase 09
-stopped_at: Completed 09-01-PLAN.md
-last_updated: "2026-03-27T19:24:53Z"
+status: Phase complete — ready for verification
+stopped_at: Completed 09-02-PLAN.md
+last_updated: "2026-03-27T19:41:27.963Z"
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 16
-  completed_plans: 15
+  completed_plans: 16
 ---
 
 # Project State
@@ -57,6 +57,7 @@ Plan: 2 of 2
 | Phase 04 P02 | 4min | 2 tasks | 9 files |
 | Phase 04 P03 | 4min | 2 tasks | 6 files |
 | Phase 09 P01 | 4min | 2 tasks | 6 files |
+| Phase 09 P02 | 3min | 1 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -92,6 +93,8 @@ Recent decisions affecting current work:
 - [Phase 04]: Suggestion index on App struct, reset on manual typing
 - [Phase 09]: Used std::process::Command for pgrep inside spawn_blocking (not tokio::process)
 - [Phase 09]: Tick-counter polling pattern: increment in Tick handler, spawn_blocking at threshold, reset
+- [Phase 09]: Used sh -c wrapper for terminal launch to handle cd + claude in one command
+- [Phase 09]: Terminal fallback order: $TERMINAL, kitty, alacritty, gnome-terminal, xterm
 
 ### Pending Todos
 
@@ -109,6 +112,6 @@ None — v1.0 milestone complete.
 
 ## Session Continuity
 
-Last session: 2026-03-27T19:24:53Z
-Stopped at: Completed 09-01-PLAN.md
+Last session: 2026-03-27T19:41:27.960Z
+Stopped at: Completed 09-02-PLAN.md
 Resume file: None

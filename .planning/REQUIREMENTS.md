@@ -49,8 +49,8 @@ Requirements for the v1.1 milestone. Each maps to roadmap phases.
 ### Claude Sessions
 
 - [ ] **SESS-01**: User sees which projects have active Claude sessions on the dashboard
-- [ ] **SESS-02**: User can browse session list with last activity and status in detail view
-- [ ] **SESS-03**: User can resume or launch a Claude session from the TUI
+- [x] **SESS-02**: User can browse session list with last activity and status in detail view
+- [x] **SESS-03**: User can resume or launch a Claude session from the TUI
 
 ## Future Requirements
 
@@ -107,9 +107,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | QUEUE-02 | Phase 08 | Complete |
 | QUEUE-03 | Phase 08 | Complete |
 | SESS-01 | Phase 09 | Pending |
-| SESS-02 | Phase 09 | Pending |
+| SESS-02 | Phase 09 | Complete |
 | CLI-01 | Phase 05 | Complete |
-| SESS-03 | Phase 09 | Pending |
+| SESS-03 | Phase 09 | Complete |
 
 **Coverage:**
 - v1.1 requirements: 21 total
