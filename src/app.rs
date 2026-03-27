@@ -20,6 +20,7 @@ pub enum DetailSubView {
     Backlog,
     GitHistory,
     Pipeline,
+    Queue,
 }
 
 #[derive(Debug, Clone, PartialEq)]
