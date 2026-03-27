@@ -82,8 +82,12 @@ Plans:
   2. User sees color-coded status per pipeline stage (not started, current, complete, skipped)
   3. User sees plan execution progress as a fraction in the execute stage
   4. User sees [verified] vs [inferred] badges on status fields when GSD integration is enabled
-**Plans**: TBD
-**UI hint**: yes
+**Plans**: 3 plans
+
+Plans:
+- [ ] 07-01-PLAN.md — Extend data model (DiskInference fields, config toggle, Pipeline variant)
+- [ ] 07-02-PLAN.md — Pipeline tab with phase selection and stage visualization
+- [ ] 07-03-PLAN.md — Verified/inferred badges on phase status lines
 
 ### Phase 08: Queue Execution
 **Goal**: Users can execute queued items from the TUI with process lifecycle management
@@ -116,6 +120,6 @@ Phases execute in numeric order: 05 -> 06 -> 07 -> 08 -> 09
 |-------|-----------|----------------|--------|-----------|
 | 5. State Reader Accuracy | v1.1 | 5/5 | Complete | 2026-03-26 |
 | 6. Read-Only Views | v1.1 | 0/4 | Not started | - |
-| 7. Execution Flow & GSD Integration | v1.1 | 0/0 | Not started | - |
+| 7. Execution Flow & GSD Integration | v1.1 | 0/3 | Not started | - |
 | 8. Queue Execution | v1.1 | 0/0 | Not started | - |
 | 9. Claude Session Management | v1.1 | 0/0 | Not started | - |
