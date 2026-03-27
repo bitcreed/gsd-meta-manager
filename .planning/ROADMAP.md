@@ -65,12 +65,13 @@ Plans:
   3. User can queue a promotion command for a backlog item via the existing queue system
   4. User can view a scrollable git log for any registered project
   5. User can toggle between full-repo and .planning/-scoped git history
-**Plans**: 3 plans
+**Plans**: 4 plans
 
 Plans:
 - [x] 06-01-PLAN.md — Tab system foundation, data models, Action variants, and tab bar navigation
 - [ ] 06-02-PLAN.md — Backlog browser: scrollable list, content preview, queue promotion
 - [x] 06-03-PLAN.md — Git history viewer: scrollable log, planning-only toggle, diff stats
+- [ ] 06-04-PLAN.md — Gap closure: backlog split-pane content preview and queue promotion wiring
 
 ### Phase 07: Execution Flow & GSD Integration
 **Goal**: Users see per-phase workflow pipeline status and can distinguish verified facts from disk-inferred state
@@ -114,7 +115,7 @@ Phases execute in numeric order: 05 -> 06 -> 07 -> 08 -> 09
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 5. State Reader Accuracy | v1.1 | 5/5 | Complete | 2026-03-26 |
-| 6. Read-Only Views | v1.1 | 0/3 | Not started | - |
+| 6. Read-Only Views | v1.1 | 0/4 | Not started | - |
 | 7. Execution Flow & GSD Integration | v1.1 | 0/0 | Not started | - |
 | 8. Queue Execution | v1.1 | 0/0 | Not started | - |
 | 9. Claude Session Management | v1.1 | 0/0 | Not started | - |
