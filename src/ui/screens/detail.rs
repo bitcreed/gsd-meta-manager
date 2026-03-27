@@ -63,8 +63,14 @@ fn status_color(category: &StatusCategory) -> Color {
     }
 }
 
-/// Compute a disk-inferred status suffix for a phase line, e.g. " [Executing 2/3]".
-fn disk_suffix(phase_number: &str, phase_disk_statuses: &std::collections::HashMap<String, crate::state_reader::disk_status::DiskInference>) -> String {
+/// Compute disk-inferred status suffix spans for a phase line, e.g. " [Executing 2/3]".
+/// When `show_badges` is true, appends a [verified] or [inferred] badge based on artifact presence.
+fn disk_suffix_spans(
+    phase_number: &str,
+    phase_disk_statuses: &std::collections::HashMap<String, crate::state_reader::disk_status::DiskInference>,
+    show_badges: bool,
+) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
     let disk_inf = phase_disk_statuses.get(phase_number);
     let disk_label = match disk_inf {
         Some(inf) => match inf.status {
@@ -79,25 +85,45 @@ fn disk_suffix(phase_number: &str, phase_disk_statuses: &std::collections::HashM
         None => "",
     };
 
-    if disk_label.is_empty() {
-        String::new()
-    } else if disk_label == "Executing" {
-        match disk_inf {
-            Some(inf) if inf.plan_count > 0 => {
-                format!(" [Executing {}/{}]", inf.summary_count, inf.plan_count)
+    if !disk_label.is_empty() {
+        let label = if disk_label == "Executing" {
+            match disk_inf {
+                Some(inf) if inf.plan_count > 0 => {
+                    format!(" [Executing {}/{}]", inf.summary_count, inf.plan_count)
+                }
+                _ => format!(" [{}]", disk_label),
             }
-            _ => format!(" [{}]", disk_label),
-        }
-    } else if disk_label == "Planned" {
-        match disk_inf {
-            Some(inf) if inf.plan_count > 0 => {
-                format!(" [Planned ({} plans)]", inf.plan_count)
+        } else if disk_label == "Planned" {
+            match disk_inf {
+                Some(inf) if inf.plan_count > 0 => {
+                    format!(" [Planned ({} plans)]", inf.plan_count)
+                }
+                _ => format!(" [{}]", disk_label),
             }
-            _ => format!(" [{}]", disk_label),
-        }
-    } else {
-        format!(" [{}]", disk_label)
+        } else {
+            format!(" [{}]", disk_label)
+        };
+        spans.push(Span::raw(label));
     }
+
+    // Append verified/inferred badge when gsd_integration is enabled
+    if show_badges {
+        if let Some(inf) = phase_disk_statuses.get(phase_number) {
+            if inf.has_summaries || inf.has_verification {
+                spans.push(Span::styled(
+                    " [verified]",
+                    Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
+                ));
+            } else {
+                spans.push(Span::styled(
+                    " [inferred]",
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                ));
+            }
+        }
+    }
+
+    spans
 }
 
 /// Switch to a new tab, handling scroll reset and data loading for backlog/git tabs.
@@ -543,29 +569,36 @@ impl DetailScreen {
                         format!("{}/{} plans", phase.completed_plans, phase.total_plans)
                     };
 
-                    let ds = disk_suffix(&phase.number, &state.phase_disk_statuses);
+                    let show_badges = ctx.config.preferences.gsd_integration;
+                    let badge_spans = disk_suffix_spans(&phase.number, &state.phase_disk_statuses, show_badges);
 
                     let line_text = format!(
-                        "  {} P{}: {}  {}{}",
-                        icon, phase.number, phase.name, plan_display, ds
+                        "  {} P{}: {}  {}",
+                        icon, phase.number, phase.name, plan_display
                     );
 
                     if is_current {
                         let cat = classify_status(&state.status);
                         let color = status_color(&cat);
-                        lines.push(Line::from(Span::styled(
+                        let mut spans = vec![Span::styled(
                             line_text,
                             Style::default()
                                 .fg(color)
                                 .add_modifier(Modifier::BOLD),
-                        )));
+                        )];
+                        spans.extend(badge_spans);
+                        lines.push(Line::from(spans));
                     } else if phase.completed {
-                        lines.push(Line::from(Span::styled(
+                        let mut spans = vec![Span::styled(
                             line_text,
                             Style::default().fg(Color::DarkGray),
-                        )));
+                        )];
+                        spans.extend(badge_spans);
+                        lines.push(Line::from(spans));
                     } else {
-                        lines.push(Line::from(Span::raw(line_text)));
+                        let mut spans = vec![Span::raw(line_text)];
+                        spans.extend(badge_spans);
+                        lines.push(Line::from(spans));
                     }
                 }
             }
