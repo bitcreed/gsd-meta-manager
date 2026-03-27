@@ -47,6 +47,11 @@ pub fn parse_backlog_items(planning_dir: &Path) -> Vec<BacklogItem> {
             let dir_name = e.file_name().to_string_lossy().to_string();
             let (number, slug) = parse_backlog_dir_name(&dir_name)?;
 
+            // Skip directories with no .md files (empty backlog placeholders)
+            if find_first_md_file(&e.path()).is_none() {
+                return None;
+            }
+
             // Try to find description from first .md file's first heading
             let description = find_first_heading(&e.path()).unwrap_or_else(|| humanize_slug(&slug));
 
