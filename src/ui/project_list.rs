@@ -146,21 +146,52 @@ fn render_main(frame: &mut Frame, app: &mut App, area: Rect) {
 
                 let row_color = status_color(&status_str);
 
-                let cells: Vec<String> = if terminal_width >= 80 {
-                    vec![
-                        alias.clone(),
-                        phase_cell,
-                        status_str,
-                        progress_cell,
-                        backlog_cell,
-                    ]
-                } else if terminal_width >= 60 {
-                    vec![alias.clone(), phase_cell, status_str, progress_cell]
+                // Check if project has an active Claude session
+                let has_session = app
+                    .config
+                    .projects
+                    .get(alias)
+                    .map(|proj| {
+                        app.active_sessions
+                            .iter()
+                            .any(|s| s.working_dir == proj.path)
+                    })
+                    .unwrap_or(false);
+
+                let alias_line = if has_session {
+                    Line::from(vec![
+                        Span::styled("\u{25b6} ", Style::default().fg(Color::Green)),
+                        Span::raw(alias.clone()),
+                    ])
                 } else {
-                    vec![alias.clone(), phase_cell, status_str]
+                    Line::from(alias.clone())
                 };
 
-                Row::new(cells).style(Style::default().fg(row_color))
+                if terminal_width >= 80 {
+                    Row::new(vec![
+                        alias_line,
+                        Line::from(phase_cell),
+                        Line::from(status_str),
+                        Line::from(progress_cell),
+                        Line::from(backlog_cell),
+                    ])
+                    .style(Style::default().fg(row_color))
+                } else if terminal_width >= 60 {
+                    Row::new(vec![
+                        alias_line,
+                        Line::from(phase_cell),
+                        Line::from(status_str),
+                        Line::from(progress_cell),
+                    ])
+                    .style(Style::default().fg(row_color))
+                } else {
+                    Row::new(vec![
+                        alias_line,
+                        Line::from(phase_cell),
+                        Line::from(status_str),
+                    ])
+                    .style(Style::default().fg(row_color))
+                }
             })
             .collect();
 
