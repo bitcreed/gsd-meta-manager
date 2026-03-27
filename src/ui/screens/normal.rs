@@ -441,10 +441,21 @@ fn render_normal_footer(frame: &mut Frame, area: Rect, ctx: &AppContext) {
         }
     }
 
-    let left_text = format!(
-        "{} projects: {} > {} ! {} * {} +",
-        all_count, active, blocked, idle, complete
-    );
+    let mut left_spans: Vec<Span> = vec![
+        Span::raw(format!("{} projects ", all_count)),
+    ];
+    if active > 0 {
+        left_spans.push(Span::styled(format!("{} active ", active), Style::default().fg(Color::Green)));
+    }
+    if blocked > 0 {
+        left_spans.push(Span::styled(format!("{} blocked ", blocked), Style::default().fg(Color::Red)));
+    }
+    if idle > 0 {
+        left_spans.push(Span::styled(format!("{} idle ", idle), Style::default().fg(Color::DarkGray)));
+    }
+    if complete > 0 {
+        left_spans.push(Span::styled(format!("{} done ", complete), Style::default().fg(Color::Cyan)));
+    }
 
     let right_text = "[/]search [?]help [a]dd [c]reate [d]el [q]uit";
 
@@ -454,7 +465,7 @@ fn render_normal_footer(frame: &mut Frame, area: Rect, ctx: &AppContext) {
     ])
     .split(area);
 
-    let left = Paragraph::new(Line::from(Span::raw(left_text)));
+    let left = Paragraph::new(Line::from(left_spans));
     let right =
         Paragraph::new(Line::from(Span::raw(right_text))).alignment(Alignment::Right);
 
