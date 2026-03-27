@@ -363,16 +363,26 @@ impl Screen for DetailScreen {
                         "Run GSD in this project first to enable queue".to_string(),
                     )
                 } else {
-                    // Pre-populate with first suggestion if available
-                    if let Some(state) = ctx.project_states.get(&alias) {
-                        let suggestions = queue_md::suggest_next_commands(state);
-                        if !suggestions.is_empty() {
-                            ctx.input_buffer = suggestions[0].clone();
+                    // Backlog tab: pre-fill with /gsd:review-backlog {dir_name}
+                    if current_view == DetailSubView::Backlog {
+                        let cache = ctx.view_cache.entry(alias.clone()).or_default();
+                        if let Some(item) = cache.backlog_items.get(cache.backlog_selected) {
+                            ctx.input_buffer = format!("/gsd:review-backlog {}", item.dir_name);
                         } else {
                             ctx.input_buffer.clear();
                         }
                     } else {
-                        ctx.input_buffer.clear();
+                        // Generic: use suggest_next_commands
+                        if let Some(state) = ctx.project_states.get(&alias) {
+                            let suggestions = queue_md::suggest_next_commands(state);
+                            if !suggestions.is_empty() {
+                                ctx.input_buffer = suggestions[0].clone();
+                            } else {
+                                ctx.input_buffer.clear();
+                            }
+                        } else {
+                            ctx.input_buffer.clear();
+                        }
                     }
                     ctx.suggestion_index = 0;
                     ctx.needs_redraw = true;
