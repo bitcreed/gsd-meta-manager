@@ -43,7 +43,7 @@ Requirements for the v1.1 milestone. Each maps to roadmap phases.
 ### Queue Management
 
 - [ ] **QUEUE-01**: User can manage queue items (delete with confirmation, mark done) from the Queue tab
-- [ ] **QUEUE-02**: User sees queue items listed with selection and navigation in the detail view
+- [x] **QUEUE-02**: User sees queue items listed with selection and navigation in the detail view
 - [ ] **QUEUE-03**: User can add, remove, reorder, and edit queue items from the queue view
 
 ### Claude Sessions
@@ -104,7 +104,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FLOW-02 | Phase 07 | Complete |
 | FLOW-03 | Phase 07 | Complete |
 | QUEUE-01 | Phase 08 | Pending |
-| QUEUE-02 | Phase 08 | Pending |
+| QUEUE-02 | Phase 08 | Complete |
 | QUEUE-03 | Phase 08 | Pending |
 | SESS-01 | Phase 09 | Pending |
 | SESS-02 | Phase 09 | Pending |

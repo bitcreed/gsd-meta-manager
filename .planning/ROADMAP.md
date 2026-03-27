@@ -86,7 +86,7 @@ Plans:
 
 Plans:
 - [x] 07-01-PLAN.md — Extend data model (DiskInference fields, config toggle, Pipeline variant)
-- [ ] 07-02-PLAN.md — Pipeline tab with phase selection and stage visualization
+- [x] 07-02-PLAN.md — Pipeline tab with phase selection and stage visualization
 - [x] 07-03-PLAN.md — Verified/inferred badges on phase status lines
 
 ### Phase 08: Queue Execution
@@ -100,7 +100,7 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 08-01-PLAN.md — Queue tab view with selectable list, empty state, and navigation
+- [x] 08-01-PLAN.md — Queue tab view with selectable list, empty state, and navigation
 - [ ] 08-02-PLAN.md — Queue mutation operations (add, delete, reorder, edit, mark done)
 
 ### Phase 09: Claude Session Management
@@ -124,5 +124,5 @@ Phases execute in numeric order: 05 -> 06 -> 07 -> 08 -> 09
 | 5. State Reader Accuracy | v1.1 | 5/5 | Complete | 2026-03-26 |
 | 6. Read-Only Views | v1.1 | 0/4 | Not started | - |
 | 7. Execution Flow & GSD Integration | v1.1 | 0/3 | Not started | - |
-| 8. Queue Execution | v1.1 | 0/2 | Not started | - |
+| 8. Queue Execution | v1.1 | 1/2 | In progress | - |
 | 9. Claude Session Management | v1.1 | 0/0 | Not started | - |
