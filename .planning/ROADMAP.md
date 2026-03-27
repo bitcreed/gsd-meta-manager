@@ -68,7 +68,7 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 06-01-PLAN.md — Tab system foundation, data models, Action variants, and tab bar navigation
+- [x] 06-01-PLAN.md — Tab system foundation, data models, Action variants, and tab bar navigation
 - [ ] 06-02-PLAN.md — Backlog browser: scrollable list, content preview, queue promotion
 - [ ] 06-03-PLAN.md — Git history viewer: scrollable log, planning-only toggle, diff stats
 
