@@ -17,7 +17,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs};
 use ratatui::Frame;
 
-const TAB_TITLES: [&str; 6] = ["1:Phases", "2:Roadmap", "3:Backlog", "4:Git", "5:Pipeline", "6:Queue"];
+const TAB_TITLES: [&str; 7] = ["1:Phases", "2:Roadmap", "3:Backlog", "4:Git", "5:Pipeline", "6:Queue", "7:Sessions"];
 
 pub struct DetailScreen {
     pub alias: String,
@@ -41,6 +41,7 @@ fn tab_index(sub_view: &DetailSubView) -> usize {
         DetailSubView::GitHistory => 3,
         DetailSubView::Pipeline => 4,
         DetailSubView::Queue => 5,
+        DetailSubView::Sessions => 6,
     }
 }
 
@@ -52,8 +53,30 @@ fn sub_view_from_index(index: usize) -> DetailSubView {
         3 => DetailSubView::GitHistory,
         4 => DetailSubView::Pipeline,
         5 => DetailSubView::Queue,
+        6 => DetailSubView::Sessions,
         _ => DetailSubView::PhaseList,
     }
+}
+
+/// Find a terminal emulator to use for launching Claude sessions.
+/// Tries $TERMINAL env var first, then common terminal emulators.
+fn find_terminal() -> Option<String> {
+    if let Ok(term) = std::env::var("TERMINAL") {
+        if !term.is_empty() {
+            return Some(term);
+        }
+    }
+    for candidate in &["kitty", "alacritty", "gnome-terminal", "xterm"] {
+        if std::process::Command::new("which")
+            .arg(candidate)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            return Some(candidate.to_string());
+        }
+    }
+    None
 }
 
 fn status_color(category: &StatusCategory) -> Color {
@@ -275,6 +298,17 @@ impl Screen for DetailScreen {
                         }
                         ctx.needs_redraw = true;
                     }
+                    DetailSubView::Sessions => {
+                        let session_count = ctx.config.projects.get(&self.alias)
+                            .map(|proj| ctx.active_sessions.iter().filter(|s| s.working_dir == proj.path).count())
+                            .unwrap_or(0);
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        if session_count > 0 {
+                            let max = session_count.saturating_sub(1);
+                            cache.sessions_selected = (cache.sessions_selected + 1).min(max);
+                        }
+                        ctx.needs_redraw = true;
+                    }
                     _ => {
                         self.scroll_offset = self.scroll_offset.saturating_add(1);
                         ctx.needs_redraw = true;
@@ -308,6 +342,11 @@ impl Screen for DetailScreen {
                         cache.queue_selected = cache.queue_selected.saturating_sub(1);
                         ctx.needs_redraw = true;
                     }
+                    DetailSubView::Sessions => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        cache.sessions_selected = cache.sessions_selected.saturating_sub(1);
+                        ctx.needs_redraw = true;
+                    }
                     _ => {
                         self.scroll_offset = self.scroll_offset.saturating_sub(1);
                         ctx.needs_redraw = true;
@@ -322,6 +361,7 @@ impl Screen for DetailScreen {
             KeyCode::Char('4') => switch_to_tab(&self.alias, 3, &mut self.scroll_offset, ctx),
             KeyCode::Char('5') => switch_to_tab(&self.alias, 4, &mut self.scroll_offset, ctx),
             KeyCode::Char('6') => switch_to_tab(&self.alias, 5, &mut self.scroll_offset, ctx),
+            KeyCode::Char('7') => switch_to_tab(&self.alias, 6, &mut self.scroll_offset, ctx),
             // Tab switching via arrow keys
             KeyCode::Left => {
                 if current_idx > 0 {
@@ -443,7 +483,53 @@ impl Screen for DetailScreen {
                         }
                         ScreenAction::None
                     }
+                    DetailSubView::Sessions => {
+                        // Resume selected session in a new terminal
+                        let filtered_sessions: Vec<_> = ctx.config.projects.get(&self.alias)
+                            .map(|proj| ctx.active_sessions.iter().filter(|s| s.working_dir == proj.path).cloned().collect())
+                            .unwrap_or_default();
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        if let Some(session) = filtered_sessions.get(cache.sessions_selected) {
+                            if let Some(ref sid) = session.session_id {
+                                match find_terminal() {
+                                    Some(term) => {
+                                        let short_id = if sid.len() > 8 { &sid[..8] } else { sid };
+                                        match std::process::Command::new(&term)
+                                            .args(["-e", "sh", "-c", &format!("cd '{}' && claude --resume '{}'", session.working_dir.display(), sid)])
+                                            .spawn()
+                                        {
+                                            Ok(_) => return ScreenAction::SetStatusMessage(format!("Resumed session {}", short_id)),
+                                            Err(e) => return ScreenAction::SetStatusMessage(format!("Failed to launch: {}", e)),
+                                        }
+                                    }
+                                    None => return ScreenAction::SetStatusMessage("No terminal emulator found (set $TERMINAL)".to_string()),
+                                }
+                            } else {
+                                return ScreenAction::SetStatusMessage("No session ID to resume".to_string());
+                            }
+                        }
+                        ScreenAction::None
+                    }
                     _ => ScreenAction::None,
+                }
+            }
+            // 'n' key: launch new Claude session (Sessions tab only)
+            KeyCode::Char('n') if current_view == DetailSubView::Sessions => {
+                if let Some(project) = ctx.config.projects.get(&self.alias) {
+                    match find_terminal() {
+                        Some(term) => {
+                            match std::process::Command::new(&term)
+                                .args(["-e", "sh", "-c", &format!("cd '{}' && claude", project.path.display())])
+                                .spawn()
+                            {
+                                Ok(_) => ScreenAction::SetStatusMessage("Launched new Claude session".to_string()),
+                                Err(e) => ScreenAction::SetStatusMessage(format!("Failed to launch: {}", e)),
+                            }
+                        }
+                        None => ScreenAction::SetStatusMessage("No terminal emulator found (set $TERMINAL)".to_string()),
+                    }
+                } else {
+                    ScreenAction::None
                 }
             }
             // Toggle planning-only filter for git tab
@@ -708,6 +794,7 @@ impl Screen for DetailScreen {
             DetailSubView::GitHistory => self.render_git_tab(frame, content_area, ctx),
             DetailSubView::Pipeline => self.render_pipeline_tab(frame, content_area, ctx),
             DetailSubView::Queue => self.render_queue_tab(frame, content_area, ctx),
+            DetailSubView::Sessions => self.render_sessions_tab(frame, content_area, ctx),
         }
 
         // Render footer with tab-appropriate hints
@@ -1325,6 +1412,74 @@ impl DetailScreen {
         }
     }
 
+    /// Render the sessions tab listing active Claude sessions for this project.
+    fn render_sessions_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        let alias = &self.alias;
+
+        let block = Block::default().borders(Borders::ALL);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        if inner.height < 3 || inner.width < 10 {
+            return;
+        }
+
+        // Filter sessions by project path
+        let filtered_sessions: Vec<_> = ctx.config.projects.get(alias)
+            .map(|proj| ctx.active_sessions.iter().filter(|s| s.working_dir == proj.path).collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        if filtered_sessions.is_empty() {
+            let lines = vec![
+                Line::from(""),
+                Line::from("  No active Claude sessions"),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  [n] Launch new session",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ];
+            let msg = Paragraph::new(lines);
+            frame.render_widget(msg, inner);
+            return;
+        }
+
+        let selected = ctx.view_cache.get(alias)
+            .map(|c| c.sessions_selected.min(filtered_sessions.len().saturating_sub(1)))
+            .unwrap_or(0);
+
+        let items: Vec<ListItem> = filtered_sessions
+            .iter()
+            .map(|session| {
+                let sid_display = session.session_id.as_ref()
+                    .map(|sid| if sid.len() > 8 { sid[..8].to_string() } else { sid.clone() })
+                    .unwrap_or_else(|| "new session".to_string());
+                let time_display = session.start_time
+                    .map(|_| "active".to_string())
+                    .unwrap_or_else(|| "active".to_string());
+                ListItem::new(Line::from(format!(
+                    "  PID {} | Session: {} | {}",
+                    session.pid, sid_display, time_display
+                )))
+            })
+            .collect();
+
+        let title = format!(" Sessions ({}) ", filtered_sessions.len());
+        let list_block = Block::default().borders(Borders::ALL).title(title);
+        let list = List::new(items)
+            .block(list_block)
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("> ");
+
+        let mut list_state = ListState::default();
+        list_state.select(Some(selected));
+        frame.render_stateful_widget(list, inner, &mut list_state);
+    }
+
     /// Render just the main content area (without footer), used by EnqueueScreen overlay.
     pub fn render_main_only(&self, frame: &mut Frame, main_area: Rect, ctx: &AppContext) {
         let alias = &self.alias;
@@ -1368,6 +1523,7 @@ impl DetailScreen {
             DetailSubView::GitHistory => self.render_git_tab(frame, content_area, ctx),
             DetailSubView::Pipeline => self.render_pipeline_tab(frame, content_area, ctx),
             DetailSubView::Queue => self.render_queue_tab(frame, content_area, ctx),
+            DetailSubView::Sessions => self.render_sessions_tab(frame, content_area, ctx),
         }
     }
 }
@@ -1509,7 +1665,7 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
         Span::raw("  "),
         Span::styled("[Esc]", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("back  "),
-        Span::styled("[1-6]", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled("[1-7]", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("tabs  "),
         Span::styled("[j/k]", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("scroll  "),
@@ -1539,6 +1695,12 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
             spans.push(Span::raw("done  "));
             spans.push(Span::styled("[J/K]", Style::default().add_modifier(Modifier::BOLD)));
             spans.push(Span::raw("reorder  "));
+        }
+        DetailSubView::Sessions => {
+            spans.push(Span::styled("[Enter]", Style::default().add_modifier(Modifier::BOLD)));
+            spans.push(Span::raw("resume  "));
+            spans.push(Span::styled("[n]", Style::default().add_modifier(Modifier::BOLD)));
+            spans.push(Span::raw("new session  "));
         }
         _ => {
             spans.push(Span::styled("[e]", Style::default().add_modifier(Modifier::BOLD)));

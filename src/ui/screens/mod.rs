@@ -52,6 +52,7 @@ pub struct ProjectViewCache {
     pub loading_diff: bool,
     pub pipeline_selected: usize,
     pub queue_selected: usize,
+    pub sessions_selected: usize,
 }
 
 impl Default for ProjectViewCache {
@@ -69,6 +70,7 @@ impl Default for ProjectViewCache {
             loading_diff: false,
             pipeline_selected: 0,
             queue_selected: 0,
+            sessions_selected: 0,
         }
     }
 }
