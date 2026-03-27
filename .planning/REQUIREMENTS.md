@@ -38,7 +38,7 @@ Requirements for the v1.1 milestone. Each maps to roadmap phases.
 
 - [x] **FLOW-01**: User sees per-phase pipeline visualization (discuss/research/plan/execute/verify)
 - [x] **FLOW-02**: User sees color-coded status per stage (not started, current, complete, skipped)
-- [ ] **FLOW-03**: User sees plan execution progress as fraction in the execute stage
+- [x] **FLOW-03**: User sees plan execution progress as fraction in the execute stage
 
 ### Queue Execution
 
@@ -102,7 +102,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | GIT-03 | Phase 06 | Complete |
 | FLOW-01 | Phase 07 | Complete |
 | FLOW-02 | Phase 07 | Complete |
-| FLOW-03 | Phase 07 | Pending |
+| FLOW-03 | Phase 07 | Complete |
 | QUEUE-01 | Phase 08 | Pending |
 | QUEUE-02 | Phase 08 | Pending |
 | QUEUE-03 | Phase 08 | Pending |
