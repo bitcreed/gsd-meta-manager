@@ -4,6 +4,7 @@ use std::path::Path;
 pub struct BacklogItem {
     pub dir_name: String,
     pub number: String,
+    #[allow(dead_code)]
     pub slug: String,
     pub description: String,
     pub content: Option<String>,

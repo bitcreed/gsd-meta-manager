@@ -465,14 +465,12 @@ impl Screen for DetailScreen {
                                         Ok(stat) => {
                                             let _ = tx.send(Action::GitDiffStatLoaded {
                                                 alias,
-                                                hash,
                                                 stat,
                                             });
                                         }
                                         Err(_) => {
                                             let _ = tx.send(Action::GitDiffStatLoaded {
                                                 alias,
-                                                hash,
                                                 stat: Default::default(),
                                             });
                                         }

@@ -1,12 +1,11 @@
 use crate::action::Action;
 use crate::change_tracker::ChangeTracker;
-use crate::config::{load_config, save_config, Config};
+use crate::config::{load_config, save_config};
 use crate::registry;
 use crate::session_detector::ClaudeSession;
-use crate::state_reader::{self, queue_md, ProjectState};
+use crate::state_reader::{self, ProjectState};
 use crate::ui::screens::{AppContext, Screen, ScreenAction};
 use crate::ui::screens::normal::NormalScreen;
-use crate::watcher::FileWatcher;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::widgets::TableState;
 use std::collections::HashMap;
@@ -171,7 +170,7 @@ impl App {
                 if self.session_poll_counter >= 20 {
                     self.session_poll_counter = 0;
                     if let Some(ref tx) = self.ctx.event_tx {
-                        let tx: tokio::sync::mpsc::UnboundedSender<Action> = tx.clone();
+                        let tx: UnboundedSender<Action> = tx.clone();
                         tokio::task::spawn_blocking(move || {
                             let sessions = crate::session_detector::detect_sessions();
                             let _ = tx.send(Action::SessionsDetected { sessions });
@@ -185,7 +184,6 @@ impl App {
             Action::Resize => {
                 self.needs_redraw = true;
             }
-            Action::Noop => {}
             Action::FileChanged { project_path } => {
                 // Find the alias matching this project path
                 let alias = self
@@ -241,20 +239,6 @@ impl App {
                 ));
                 self.needs_redraw = true;
             }
-            Action::BacklogLoaded { alias, items } => {
-                let cache = self.ctx.view_cache.entry(alias).or_default();
-                cache.backlog_items = items;
-                cache.loading_backlog = false;
-                self.needs_redraw = true;
-            }
-            Action::BacklogContentLoaded { alias, item_number, content } => {
-                if let Some(cache) = self.ctx.view_cache.get_mut(&alias) {
-                    if let Some(item) = cache.backlog_items.iter_mut().find(|i| i.number == item_number) {
-                        item.content = Some(content);
-                    }
-                }
-                self.needs_redraw = true;
-            }
             Action::GitLogLoaded { alias, entries, planning_only } => {
                 let cache = self.ctx.view_cache.entry(alias).or_default();
                 cache.git_entries = entries;
@@ -262,7 +246,7 @@ impl App {
                 cache.loading_git = false;
                 self.needs_redraw = true;
             }
-            Action::GitDiffStatLoaded { alias, hash: _, stat } => {
+            Action::GitDiffStatLoaded { alias, stat } => {
                 let cache = self.ctx.view_cache.entry(alias).or_default();
                 cache.git_diff_stat = Some(stat);
                 cache.loading_diff = false;

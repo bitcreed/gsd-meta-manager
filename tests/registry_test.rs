@@ -182,8 +182,8 @@ fn end_to_end_add_then_list_via_cli() {
             "--config",
             config_path.to_str().unwrap(),
             "add",
-            "testalias",
             project_temp.path().to_str().unwrap(),
+            "testalias",
         ])
         .output()
         .expect("Failed to run cargo");

@@ -1,6 +1,7 @@
 use regex::Regex;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct RoadmapPhase {
     pub number: String,
     pub name: String,

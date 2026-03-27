@@ -1,5 +1,5 @@
 use crate::action::Action;
-use crossterm::event::{Event, EventStream, KeyEvent, KeyEventKind};
+use crossterm::event::{Event, EventStream, KeyEventKind};
 use futures::StreamExt;
 use std::time::Duration;
 use tokio::sync::mpsc;

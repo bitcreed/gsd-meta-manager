@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::mpsc::UnboundedSender;
 
+#[allow(unused)]
 pub trait Screen {
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers, ctx: &mut AppContext) -> ScreenAction;
     fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext);

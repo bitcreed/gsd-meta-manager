@@ -11,6 +11,7 @@ pub struct ChangeEvent {
 
 /// Snapshot of project state for change comparison.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct ProjectSnapshot {
     status: String,
     completed_phases: u32,

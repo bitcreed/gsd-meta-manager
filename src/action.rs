@@ -1,5 +1,4 @@
 use crate::state_reader::ProjectState;
-use crate::state_reader::backlog::BacklogItem;
 use crate::state_reader::git_ops::{GitLogEntry, GitDiffStat};
 use crossterm::event::KeyEvent;
 
@@ -21,15 +20,6 @@ pub enum Action {
         alias: String,
         state: ProjectState,
     },
-    BacklogLoaded {
-        alias: String,
-        items: Vec<BacklogItem>,
-    },
-    BacklogContentLoaded {
-        alias: String,
-        item_number: String,
-        content: String,
-    },
     GitLogLoaded {
         alias: String,
         entries: Vec<GitLogEntry>,
@@ -37,11 +27,9 @@ pub enum Action {
     },
     GitDiffStatLoaded {
         alias: String,
-        hash: String,
         stat: GitDiffStat,
     },
     SessionsDetected {
         sessions: Vec<crate::session_detector::ClaudeSession>,
     },
-    Noop,
 }
