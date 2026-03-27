@@ -40,11 +40,11 @@ Requirements for the v1.1 milestone. Each maps to roadmap phases.
 - [x] **FLOW-02**: User sees color-coded status per stage (not started, current, complete, skipped)
 - [x] **FLOW-03**: User sees plan execution progress as fraction in the execute stage
 
-### Queue Execution
+### Queue Management
 
-- [ ] **QUEUE-01**: User can execute a queued item with confirmation dialog
-- [ ] **QUEUE-02**: User sees queue item status (pending/in-progress/done/failed)
-- [ ] **QUEUE-03**: User can manage queue items (add/remove/reorder)
+- [ ] **QUEUE-01**: User can manage queue items (delete with confirmation, mark done) from the Queue tab
+- [ ] **QUEUE-02**: User sees queue items listed with selection and navigation in the detail view
+- [ ] **QUEUE-03**: User can add, remove, reorder, and edit queue items from the queue view
 
 ### Claude Sessions
 
