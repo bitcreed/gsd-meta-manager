@@ -45,9 +45,14 @@ pub fn save_queue(planning_dir: &Path, actions: &[QueuedAction]) -> anyhow::Resu
     if !planning_dir.is_dir() {
         anyhow::bail!("Run GSD in this project first to enable queue");
     }
+    let final_path = planning_dir.join("QUEUE.md");
+    if actions.is_empty() {
+        // Remove QUEUE.md when queue is empty
+        let _ = std::fs::remove_file(&final_path);
+        return Ok(());
+    }
     let content = write_queue_md(actions);
     let tmp_path = planning_dir.join("QUEUE.md.tmp");
-    let final_path = planning_dir.join("QUEUE.md");
     std::fs::write(&tmp_path, &content)?;
     std::fs::rename(&tmp_path, &final_path)?;
     Ok(())

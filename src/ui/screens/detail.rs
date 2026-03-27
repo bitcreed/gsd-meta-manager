@@ -943,10 +943,15 @@ impl DetailScreen {
         }
 
         let block = Block::default().borders(Borders::ALL);
+        // Clamp scroll so content can't scroll past the end
+        let content_height = lines.len() as u16;
+        let viewport_height = area.height.saturating_sub(2); // borders
+        let max_scroll = content_height.saturating_sub(viewport_height);
+        let clamped_offset = self.scroll_offset.min(max_scroll);
 
         let paragraph = Paragraph::new(lines)
             .block(block)
-            .scroll((self.scroll_offset, 0));
+            .scroll((clamped_offset, 0));
 
         frame.render_widget(paragraph, area);
     }
@@ -1011,10 +1016,19 @@ impl DetailScreen {
             frame.render_widget(header_paragraph, header_area);
 
             let current_phase_num = state.completed_phases + 1;
+            // Clamp roadmap scroll — estimate content height from phase count
+            let phase_block_h: u16 = 5; // BOX_HEIGHT(3) + connector(1) + spacing(1)
+            let total_content = if state.phases.is_empty() { 0 } else {
+                3 + (state.phases.len() as u16 - 1) * phase_block_h
+            };
+            let viewport_h = roadmap_area.height;
+            let max_scroll = total_content.saturating_sub(viewport_h);
+            let clamped_offset = self.scroll_offset.min(max_scroll);
+
             let roadmap_widget = RoadmapWidget {
                 phases: &state.phases,
                 current_phase_num,
-                scroll_offset: self.scroll_offset,
+                scroll_offset: clamped_offset,
             };
             frame.render_widget(roadmap_widget, roadmap_area);
         } else {
@@ -1099,7 +1113,7 @@ impl DetailScreen {
 
             let content_text = selected_item
                 .and_then(|item| item.content.as_deref())
-                .unwrap_or("  No content available");
+                .unwrap_or("  Empty — no .md files in this backlog directory");
 
             let style = if selected_item.and_then(|item| item.content.as_ref()).is_none() {
                 Style::default().fg(Color::DarkGray)
@@ -1659,55 +1673,40 @@ fn build_stage_detail_lines(inf: &DiskInference, statuses: &[StageStatus; 5]) ->
 
 /// Build the footer line with tab-appropriate key hints.
 fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
+    let b = Style::default().add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::raw("  "),
-        Span::styled("[Esc]", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("back  "),
-        Span::styled("[1-7]", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("tabs  "),
-        Span::styled("[j/k]", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("scroll  "),
+        Span::styled("[Esc]", b), Span::raw("back  "),
+        Span::styled("[1-7]", b), Span::raw("tabs  "),
+        Span::styled("[j/k]", b), Span::raw("scroll  "),
     ];
 
     match sub_view {
         DetailSubView::Backlog => {
-            spans.push(Span::styled("[Enter]", Style::default().add_modifier(Modifier::BOLD)));
-            spans.push(Span::raw("expand  "));
-            spans.push(Span::styled("[e]", Style::default().add_modifier(Modifier::BOLD)));
-            spans.push(Span::raw("enqueue  "));
+            spans.push(Span::styled("[Enter]", b)); spans.push(Span::raw("xpand  "));
+            spans.push(Span::styled("[e]", b)); spans.push(Span::raw("nqueue  "));
         }
         DetailSubView::GitHistory => {
-            spans.push(Span::styled("[p]", Style::default().add_modifier(Modifier::BOLD)));
-            spans.push(Span::raw("planning-only  "));
-            spans.push(Span::styled("[Enter]", Style::default().add_modifier(Modifier::BOLD)));
-            spans.push(Span::raw("diff  "));
+            spans.push(Span::styled("[p]", b)); spans.push(Span::raw("lanning-only  "));
+            spans.push(Span::styled("[Enter]", b)); spans.push(Span::raw("diff  "));
         }
         DetailSubView::Queue => {
-            spans.push(Span::styled("[a]", Style::default().add_modifier(Modifier::BOLD)));
-            spans.push(Span::raw("add  "));
-            spans.push(Span::styled("[e]", Style::default().add_modifier(Modifier::BOLD)));
-            spans.push(Span::raw("edit  "));
-            spans.push(Span::styled("[d]", Style::default().add_modifier(Modifier::BOLD)));
-            spans.push(Span::raw("delete  "));
-            spans.push(Span::styled("[Enter]", Style::default().add_modifier(Modifier::BOLD)));
-            spans.push(Span::raw("done  "));
-            spans.push(Span::styled("[J/K]", Style::default().add_modifier(Modifier::BOLD)));
-            spans.push(Span::raw("reorder  "));
+            spans.push(Span::styled("[a]", b)); spans.push(Span::raw("dd  "));
+            spans.push(Span::styled("[e]", b)); spans.push(Span::raw("dit  "));
+            spans.push(Span::styled("[d]", b)); spans.push(Span::raw("el  "));
+            spans.push(Span::styled("[Enter]", b)); spans.push(Span::raw("done  "));
+            spans.push(Span::styled("[J/K]", b)); spans.push(Span::raw("reorder  "));
         }
         DetailSubView::Sessions => {
-            spans.push(Span::styled("[Enter]", Style::default().add_modifier(Modifier::BOLD)));
-            spans.push(Span::raw("resume  "));
-            spans.push(Span::styled("[n]", Style::default().add_modifier(Modifier::BOLD)));
-            spans.push(Span::raw("new session  "));
+            spans.push(Span::styled("[Enter]", b)); spans.push(Span::raw("resume  "));
+            spans.push(Span::styled("[n]", b)); spans.push(Span::raw("ew session  "));
         }
         _ => {
-            spans.push(Span::styled("[e]", Style::default().add_modifier(Modifier::BOLD)));
-            spans.push(Span::raw("enqueue  "));
+            spans.push(Span::styled("[e]", b)); spans.push(Span::raw("nqueue  "));
         }
     }
 
-    spans.push(Span::styled("[?]", Style::default().add_modifier(Modifier::BOLD)));
-    spans.push(Span::raw("help"));
+    spans.push(Span::styled("[?]", b)); spans.push(Span::raw("help"));
 
     Paragraph::new(Line::from(spans))
 }

@@ -457,17 +457,26 @@ fn render_normal_footer(frame: &mut Frame, area: Rect, ctx: &AppContext) {
         left_spans.push(Span::styled(format!("{} done ", complete), Style::default().fg(Color::Cyan)));
     }
 
-    let right_text = "[/]search [?]help [a]dd [c]reate [d]el [q]uit";
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let right_spans = vec![
+        Span::styled("[/]", bold), Span::raw("search  "),
+        Span::styled("[?]", bold), Span::raw("help  "),
+        Span::styled("[a]", bold), Span::raw("dd  "),
+        Span::styled("[c]", bold), Span::raw("reate  "),
+        Span::styled("[d]", bold), Span::raw("el  "),
+        Span::styled("[q]", bold), Span::raw("uit"),
+    ];
+    let right_len: u16 = right_spans.iter().map(|s| s.width() as u16).sum();
 
     let footer_chunks = Layout::horizontal([
         Constraint::Min(0),
-        Constraint::Length(right_text.len() as u16 + 1),
+        Constraint::Length(right_len + 1),
     ])
     .split(area);
 
     let left = Paragraph::new(Line::from(left_spans));
     let right =
-        Paragraph::new(Line::from(Span::raw(right_text))).alignment(Alignment::Right);
+        Paragraph::new(Line::from(right_spans)).alignment(Alignment::Right);
 
     frame.render_widget(left, footer_chunks[0]);
     frame.render_widget(right, footer_chunks[1]);
