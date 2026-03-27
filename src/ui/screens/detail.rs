@@ -13,7 +13,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Tabs};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs};
 use ratatui::Frame;
 
 const TAB_TITLES: [&str; 4] = ["1:Phases", "2:Roadmap", "3:Backlog", "4:Git"];
@@ -169,18 +169,68 @@ impl Screen for DetailScreen {
 
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {
+                // If diff stat pane is showing on Git tab, dismiss it first
+                if current_view == DetailSubView::GitHistory {
+                    let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                    if cache.git_diff_stat.is_some() {
+                        cache.git_diff_stat = None;
+                        cache.loading_diff = false;
+                        ctx.needs_redraw = true;
+                        return ScreenAction::None;
+                    }
+                }
                 self.scroll_offset = 0;
                 ctx.needs_redraw = true;
                 ScreenAction::Pop
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                self.scroll_offset = self.scroll_offset.saturating_add(1);
-                ctx.needs_redraw = true;
+                match current_view {
+                    DetailSubView::GitHistory => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        if !cache.git_entries.is_empty() {
+                            let max = cache.git_entries.len().saturating_sub(1);
+                            cache.git_selected = (cache.git_selected + 1).min(max);
+                            cache.git_diff_stat = None;
+                        }
+                        ctx.needs_redraw = true;
+                    }
+                    DetailSubView::Backlog => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        if !cache.backlog_items.is_empty() {
+                            let max = cache.backlog_items.len().saturating_sub(1);
+                            cache.backlog_selected = (cache.backlog_selected + 1).min(max);
+                            cache.backlog_expanded = false;
+                        }
+                        ctx.needs_redraw = true;
+                    }
+                    _ => {
+                        self.scroll_offset = self.scroll_offset.saturating_add(1);
+                        ctx.needs_redraw = true;
+                    }
+                }
                 ScreenAction::None
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                ctx.needs_redraw = true;
+                match current_view {
+                    DetailSubView::GitHistory => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        if !cache.git_entries.is_empty() {
+                            cache.git_selected = cache.git_selected.saturating_sub(1);
+                            cache.git_diff_stat = None;
+                        }
+                        ctx.needs_redraw = true;
+                    }
+                    DetailSubView::Backlog => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        cache.backlog_selected = cache.backlog_selected.saturating_sub(1);
+                        cache.backlog_expanded = false;
+                        ctx.needs_redraw = true;
+                    }
+                    _ => {
+                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                        ctx.needs_redraw = true;
+                    }
+                }
                 ScreenAction::None
             }
             // Tab switching via number keys
@@ -378,7 +428,7 @@ impl Screen for DetailScreen {
             DetailSubView::PhaseList => self.render_phase_list(frame, content_area, ctx),
             DetailSubView::RoadmapViz => self.render_roadmap(frame, content_area, ctx),
             DetailSubView::Backlog => self.render_backlog_placeholder(frame, content_area, ctx),
-            DetailSubView::GitHistory => self.render_git_placeholder(frame, content_area, ctx),
+            DetailSubView::GitHistory => self.render_git_tab(frame, content_area, ctx),
         }
 
         // Render footer with tab-appropriate hints
@@ -651,64 +701,150 @@ impl DetailScreen {
         frame.render_widget(paragraph, area);
     }
 
-    /// Render the git history tab placeholder content.
-    fn render_git_placeholder(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+    /// Render the git history tab with scrollable log, mode indicator, and diff stat pane.
+    fn render_git_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         let cache = ctx.view_cache.get(&self.alias);
 
-        let mut lines: Vec<Line> = Vec::new();
+        let block = Block::default().borders(Borders::ALL);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
 
-        if let Some(cache) = cache {
-            if cache.git_planning_only {
-                lines.push(Line::from(Span::styled(
-                    "  [.planning/ only]",
-                    Style::default().fg(Color::Yellow),
-                )));
-                lines.push(Line::from(""));
-            }
-
-            if cache.loading_git {
-                lines.push(Line::from(Span::styled(
-                    "  Loading...",
-                    Style::default().fg(Color::DarkGray),
-                )));
-            } else if cache.git_entries.is_empty() {
-                lines.push(Line::from("  No git log entries found."));
-            } else {
-                lines.push(Line::from(format!(
-                    "  Git log: {} entries",
-                    cache.git_entries.len()
-                )));
-                lines.push(Line::from(""));
-                for (i, entry) in cache.git_entries.iter().enumerate() {
-                    let prefix = if i == cache.git_selected { "> " } else { "  " };
-                    let style = if i == cache.git_selected {
-                        Style::default().add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default()
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("{}  ", prefix), style),
-                        Span::styled(&entry.hash, Style::default().fg(Color::Yellow)),
-                        Span::styled(
-                            format!(" {} ", entry.date),
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                        Span::styled(&entry.message, style),
-                    ]));
-                }
-            }
-        } else {
-            lines.push(Line::from(Span::styled(
-                "  Loading...",
-                Style::default().fg(Color::DarkGray),
-            )));
+        if inner.height < 3 || inner.width < 10 {
+            return;
         }
 
-        let block = Block::default().borders(Borders::ALL);
-        let paragraph = Paragraph::new(lines)
-            .block(block)
-            .scroll((self.scroll_offset, 0));
-        frame.render_widget(paragraph, area);
+        let cache = match cache {
+            Some(c) => c,
+            None => {
+                let msg = Paragraph::new("  Press 4 to load git history")
+                    .style(Style::default().fg(Color::DarkGray));
+                frame.render_widget(msg, inner);
+                return;
+            }
+        };
+
+        if cache.loading_git {
+            let msg = Paragraph::new("  Loading git history...")
+                .style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(msg, inner);
+            return;
+        }
+
+        if cache.git_entries.is_empty() {
+            let msg = Paragraph::new("  No commits found (or not a git repository)");
+            frame.render_widget(msg, inner);
+            return;
+        }
+
+        // Mode indicator line
+        let mode_line = if cache.git_planning_only {
+            Line::from(Span::styled(
+                "  [.planning/ only]  Press 'p' to show full repo",
+                Style::default().fg(Color::Yellow),
+            ))
+        } else {
+            Line::from(Span::styled(
+                "  [Full repo]  Press 'p' to show .planning/ only",
+                Style::default().fg(Color::DarkGray),
+            ))
+        };
+
+        // Layout: mode indicator (1 line), then log (and optionally diff stat)
+        let has_diff = cache.git_diff_stat.is_some() || cache.loading_diff;
+        let content_chunks = if has_diff {
+            Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Percentage(60),
+                Constraint::Percentage(40),
+            ])
+            .split(inner)
+        } else {
+            Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
+            .split(inner)
+        };
+
+        let mode_area = content_chunks[0];
+        let log_area = content_chunks[1];
+
+        frame.render_widget(Paragraph::new(mode_line), mode_area);
+
+        // Build log list items
+        let items: Vec<ListItem> = cache
+            .git_entries
+            .iter()
+            .map(|entry| {
+                ListItem::new(Line::from(vec![
+                    Span::styled(&entry.hash, Style::default().fg(Color::Yellow)),
+                    Span::raw(" -- "),
+                    Span::raw(&entry.date),
+                    Span::raw(" -- "),
+                    Span::raw(&entry.message),
+                    Span::raw("  "),
+                    Span::styled(&entry.author, Style::default().fg(Color::DarkGray)),
+                ]))
+            })
+            .collect();
+
+        let list = List::new(items)
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("> ");
+
+        let mut list_state = ListState::default();
+        list_state.select(Some(cache.git_selected));
+        frame.render_stateful_widget(list, log_area, &mut list_state);
+
+        // Render diff stat pane if present
+        if has_diff {
+            let diff_area = content_chunks[2];
+            if cache.loading_diff {
+                let diff_block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Diff: loading... ");
+                let loading = Paragraph::new("  Loading diff...")
+                    .style(Style::default().fg(Color::DarkGray))
+                    .block(diff_block);
+                frame.render_widget(loading, diff_area);
+            } else if let Some(stat) = &cache.git_diff_stat {
+                let selected_hash = cache
+                    .git_entries
+                    .get(cache.git_selected)
+                    .map(|e| e.hash.as_str())
+                    .unwrap_or("???");
+                let diff_block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" Diff: {} ", selected_hash));
+
+                let mut diff_lines: Vec<Line> = stat
+                    .file_stats
+                    .iter()
+                    .map(|s| Line::from(format!("  {}", s)))
+                    .collect();
+
+                // Summary line with colored insertions/deletions
+                diff_lines.push(Line::from(vec![
+                    Span::raw(format!("  {} files changed, ", stat.files_changed)),
+                    Span::styled(
+                        format!("+{}", stat.insertions),
+                        Style::default().fg(Color::Green),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("-{}", stat.deletions),
+                        Style::default().fg(Color::Red),
+                    ),
+                ]));
+
+                let diff_paragraph = Paragraph::new(diff_lines).block(diff_block);
+                frame.render_widget(diff_paragraph, diff_area);
+            }
+        }
     }
 
     /// Render just the main content area (without footer), used by EnqueueScreen overlay.
@@ -751,7 +887,7 @@ impl DetailScreen {
             DetailSubView::PhaseList => self.render_phase_list(frame, content_area, ctx),
             DetailSubView::RoadmapViz => self.render_roadmap(frame, content_area, ctx),
             DetailSubView::Backlog => self.render_backlog_placeholder(frame, content_area, ctx),
-            DetailSubView::GitHistory => self.render_git_placeholder(frame, content_area, ctx),
+            DetailSubView::GitHistory => self.render_git_tab(frame, content_area, ctx),
         }
     }
 }
