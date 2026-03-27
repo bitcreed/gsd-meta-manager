@@ -2,7 +2,8 @@ use crate::action::Action;
 use crate::change_tracker::ChangeTracker;
 use crate::config::{load_config, save_config, Config};
 use crate::registry;
-use crate::state_reader::{self, ProjectState};
+use crate::session_detector::ClaudeSession;
+use crate::state_reader::{self, queue_md, ProjectState};
 use crate::ui::screens::{AppContext, Screen, ScreenAction};
 use crate::ui::screens::normal::NormalScreen;
 use crate::watcher::FileWatcher;
@@ -89,6 +90,8 @@ pub struct App {
     pub needs_redraw: bool,
     pub ctx: AppContext,
     pub screen_stack: Vec<Box<dyn Screen>>,
+    pub active_sessions: Vec<ClaudeSession>,
+    pub session_poll_counter: u32,
 }
 
 impl App {
@@ -118,6 +121,7 @@ impl App {
             suggestion_index: 0,
             input_buffer: String::new(),
             needs_redraw: true,
+            active_sessions: Vec::new(),
         };
         ctx.filtered_aliases = ctx.sorted_aliases();
 
@@ -126,6 +130,8 @@ impl App {
             needs_redraw: true,
             ctx,
             screen_stack: vec![Box::new(NormalScreen::new())],
+            active_sessions: Vec::new(),
+            session_poll_counter: 0,
         })
     }
 
@@ -156,6 +162,19 @@ impl App {
                     if instant.elapsed() > std::time::Duration::from_secs(3) {
                         self.ctx.status_message = None;
                         self.needs_redraw = true;
+                    }
+                }
+
+                // Poll for Claude sessions every 20 ticks (~5s at 250ms interval)
+                self.session_poll_counter += 1;
+                if self.session_poll_counter >= 20 {
+                    self.session_poll_counter = 0;
+                    if let Some(ref tx) = self.ctx.event_tx {
+                        let tx: tokio::sync::mpsc::UnboundedSender<Action> = tx.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let sessions = crate::session_detector::detect_sessions();
+                            let _ = tx.send(Action::SessionsDetected { sessions });
+                        });
                     }
                 }
             }
@@ -246,6 +265,11 @@ impl App {
                 let cache = self.ctx.view_cache.entry(alias).or_default();
                 cache.git_diff_stat = Some(stat);
                 cache.loading_diff = false;
+                self.needs_redraw = true;
+            }
+            Action::SessionsDetected { sessions } => {
+                self.active_sessions = sessions.clone();
+                self.ctx.active_sessions = sessions;
                 self.needs_redraw = true;
             }
             Action::CreateProjectResult {

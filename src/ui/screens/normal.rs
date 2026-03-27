@@ -341,9 +341,30 @@ impl NormalScreen {
                         }
                     };
 
+                    // Check if project has an active Claude session
+                    let has_session = ctx
+                        .config
+                        .projects
+                        .get(alias)
+                        .map(|proj| {
+                            ctx.active_sessions
+                                .iter()
+                                .any(|s| s.working_dir == proj.path)
+                        })
+                        .unwrap_or(false);
+
+                    let alias_cell: Line = if has_session {
+                        Line::from(vec![
+                            Span::styled("\u{25b6} ", Style::default().fg(Color::Green)),
+                            Span::raw(alias.clone()),
+                        ])
+                    } else {
+                        Line::from(alias.clone())
+                    };
+
                     let cells: Vec<Line> = if terminal_width >= 80 {
                         vec![
-                            Line::from(alias.clone()),
+                            alias_cell,
                             Line::from(phase_cell),
                             status_cell,
                             Line::from(progress_cell),
@@ -351,14 +372,14 @@ impl NormalScreen {
                         ]
                     } else if terminal_width >= 60 {
                         vec![
-                            Line::from(alias.clone()),
+                            alias_cell,
                             Line::from(phase_cell),
                             status_cell,
                             Line::from(progress_cell),
                         ]
                     } else {
                         vec![
-                            Line::from(alias.clone()),
+                            alias_cell,
                             Line::from(phase_cell),
                             status_cell,
                         ]

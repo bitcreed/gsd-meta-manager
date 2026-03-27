@@ -92,6 +92,7 @@ pub struct AppContext {
     pub suggestion_index: usize,
     pub input_buffer: String,
     pub needs_redraw: bool,
+    pub active_sessions: Vec<crate::session_detector::ClaudeSession>,
 }
 
 impl AppContext {

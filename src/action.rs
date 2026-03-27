@@ -40,5 +40,8 @@ pub enum Action {
         hash: String,
         stat: GitDiffStat,
     },
+    SessionsDetected {
+        sessions: Vec<crate::session_detector::ClaudeSession>,
+    },
     Noop,
 }

@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Polish & Power Features
-status: Ready to plan
-stopped_at: Completed 08-02-PLAN.md
-last_updated: "2026-03-27T19:02:15.503Z"
+status: Executing Phase 09
+stopped_at: Completed 09-01-PLAN.md
+last_updated: "2026-03-27T19:24:53Z"
 progress:
   total_phases: 5
   completed_phases: 4
-  total_plans: 14
-  completed_plans: 14
+  total_plans: 16
+  completed_plans: 15
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-26)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Planning next milestone (v1.1)
+**Current focus:** Phase 09 -- claude-session-management
 
 ## Current Position
 
-Phase: 09
-Plan: Not started
+Phase: 09 (claude-session-management) -- EXECUTING
+Plan: 2 of 2
 
 ## Performance Metrics
 
@@ -56,16 +56,7 @@ Plan: Not started
 | Phase 04 P01 | 4min | 2 tasks | 5 files |
 | Phase 04 P02 | 4min | 2 tasks | 9 files |
 | Phase 04 P03 | 4min | 2 tasks | 6 files |
-| Phase 05 P03 | 7min | 2 tasks | 4 files |
-| Phase 05 P04 | 3min | 2 tasks | 4 files |
-| Phase 05 P05 | 3min | 2 tasks | 2 files |
-| Phase 06 P01 | 5min | 2 tasks | 7 files |
-| Phase 06 P03 | 2min | 1 tasks | 1 files |
-| Phase 06 P04 | 3min | 2 tasks | 1 files |
-| Phase 07 P01 | 4min | 2 tasks | 5 files |
-| Phase 07 P03 | 2min | 1 tasks | 1 files |
-| Phase 08 P01 | 5min | 2 tasks | 3 files |
-| Phase 08 P02 | 3min | 2 tasks | 3 files |
+| Phase 09 P01 | 4min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -99,18 +90,8 @@ Recent decisions affecting current work:
 - [Phase 04]: Atomic QUEUE.md writes via tmp+rename for concurrent safety
 - [Phase 04]: Context-aware GSD command suggestions based on project status string matching
 - [Phase 04]: Suggestion index on App struct, reset on manual typing
-- [Phase 05]: Used PartialOrd/Ord derive on DiskStatus for pipeline comparison; stored disk statuses in HashMap on ProjectState
-- [Phase 05]: Ported rendering logic from orphaned files into active Screen trait screens rather than re-declaring modules
-- [Phase 05]: Removed expanded_status entirely per UAT feedback (labels one step ahead)
-- [Phase 06]: Backlog items loaded synchronously, git log loaded async via tokio::spawn
-- [Phase 06]: Replaced 'r' key toggle with 4-tab system using ratatui Tabs widget
-- [Phase 06]: Used ratatui List+ListState for git log scrollable selection; 60/40 split-pane for inline diff stats; per-tab j/k dispatch
-- [Phase 06]: Followed git tab pattern for backlog split-pane: outer Block, inner area, Layout::vertical split
-- [Phase 07]: Pipeline tab is 5th tab (index 4), accessible via '5' key
-- [Phase 07]: Converted disk_suffix to disk_suffix_spans returning Vec<Span> for mixed-style badge rendering
-- [Phase 08]: Queue tab is 6th tab (index 5), accessible via '6' key; uses existing queued_actions from ProjectState
-- [Phase 08]: Edit removes item before opening EnqueueScreen; cancel loses item (documented in status)
-- [Phase 08]: queue_mutate_and_save helper centralizes load-mutate-save-reload for all queue mutations
+- [Phase 09]: Used std::process::Command for pgrep inside spawn_blocking (not tokio::process)
+- [Phase 09]: Tick-counter polling pattern: increment in Tick handler, spawn_blocking at threshold, reset
 
 ### Pending Todos
 
@@ -128,6 +109,6 @@ None — v1.0 milestone complete.
 
 ## Session Continuity
 
-Last session: 2026-03-27T18:57:33.049Z
-Stopped at: Completed 08-02-PLAN.md
+Last session: 2026-03-27T19:24:53Z
+Stopped at: Completed 09-01-PLAN.md
 Resume file: None

@@ -1,0 +1,117 @@
+use std::path::PathBuf;
+use std::process::Command;
+
+#[derive(Debug, Clone)]
+pub struct ClaudeSession {
+    pub pid: u32,
+    pub session_id: Option<String>,
+    pub working_dir: PathBuf,
+    pub start_time: Option<u64>,
+}
+
+/// Detect active Claude Code sessions by inspecting the Linux /proc filesystem.
+///
+/// Uses `pgrep -x claude` to find PIDs, then reads /proc entries for each.
+/// Silently skips any PID where reads fail (stale/exited processes).
+/// Uses std::process::Command (not tokio) — called from spawn_blocking.
+pub fn detect_sessions() -> Vec<ClaudeSession> {
+    let pids = match get_claude_pids() {
+        Some(pids) => pids,
+        None => return Vec::new(),
+    };
+
+    pids.into_iter()
+        .filter_map(|pid| build_session(pid))
+        .collect()
+}
+
+fn get_claude_pids() -> Option<Vec<u32>> {
+    let output = Command::new("pgrep")
+        .args(["-x", "claude"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return Some(Vec::new());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let pids: Vec<u32> = stdout
+        .lines()
+        .filter_map(|line| line.trim().parse::<u32>().ok())
+        .collect();
+
+    Some(pids)
+}
+
+fn build_session(pid: u32) -> Option<ClaudeSession> {
+    let proc_path = PathBuf::from(format!("/proc/{}", pid));
+
+    // Read working directory from /proc/PID/cwd symlink
+    let working_dir = std::fs::read_link(proc_path.join("cwd")).ok()?;
+
+    // Read session_id from /proc/PID/cmdline (null-byte separated)
+    let session_id = read_session_id(pid);
+
+    // Read start_time from /proc/PID/stat field 22
+    let start_time = read_start_time(pid);
+
+    Some(ClaudeSession {
+        pid,
+        session_id,
+        working_dir,
+        start_time,
+    })
+}
+
+fn read_session_id(pid: u32) -> Option<String> {
+    let cmdline = std::fs::read(format!("/proc/{}/cmdline", pid)).ok()?;
+    let args: Vec<&[u8]> = cmdline.split(|&b| b == 0).collect();
+
+    for window in args.windows(2) {
+        if window[0] == b"--resume" {
+            let val = String::from_utf8_lossy(window[1]);
+            let val = val.trim();
+            if !val.is_empty() {
+                return Some(val.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+fn read_start_time(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    // /proc/PID/stat fields are space-separated, but field 2 (comm) can contain spaces
+    // and is enclosed in parentheses. Find the closing paren, then count from there.
+    let after_comm = stat.find(')')?.checked_add(2)?;
+    let rest = stat.get(after_comm..)?;
+    // Field 22 (starttime) is at index 19 after the comm field (0-indexed from field 3)
+    let field = rest.split_whitespace().nth(19)?;
+    field.parse::<u64>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_sessions_returns_vec() {
+        // Should not panic, returns empty vec if no claude processes
+        let sessions = detect_sessions();
+        // We can't assert specific content in CI, but it should not panic
+        let _ = sessions;
+    }
+
+    #[test]
+    fn test_read_session_id_nonexistent_pid() {
+        // Should return None for non-existent PID
+        assert!(read_session_id(999_999_999).is_none());
+    }
+
+    #[test]
+    fn test_read_start_time_nonexistent_pid() {
+        assert!(read_start_time(999_999_999).is_none());
+    }
+}
