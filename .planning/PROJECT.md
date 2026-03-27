@@ -20,15 +20,17 @@ See the state of every GSD project at a glance and act on any of them without le
 - ✓ Enqueue work — free-form command queue with suggestions, stored in .planning/QUEUE.md — v1.0
 - ✓ Create new project — TUI modal for name/path, git init, hook support, auto-register — v1.0
 
+- ✓ State reader accuracy — disk-based phase inference, plan counting fixes — v1.1
+- ✓ GSD integration — verified/inferred badges, gsd_integration config toggle — v1.1
+- ✓ Claude session management — detect active sessions, dashboard indicator, launch/resume — v1.1
+- ✓ Queue management — full CRUD (add, edit, delete, reorder, mark done) in Queue tab — v1.1
+- ✓ Git history viewer — scrollable log, planning-only toggle, diff stats — v1.1
+- ✓ Backlog browser — list with content preview, queue promotion — v1.1
+- ✓ Execution flow pipeline — per-phase D-R-P-E-V visualization with color-coded stages — v1.1
+
 ### Active
 
-- [ ] Fix state reader accuracy — plan counting, phase completion inference from disk
-- [ ] GSD integration — hooks, cached status, fact vs assumption distinction
-- [ ] Claude session management — detect, attach, launch sessions from TUI
-- [ ] Queue execution — make QUEUE.md actionable, not just a reminder list
-- [ ] Git history viewer — scrollable git log with repo and .planning/ scopes
-- [ ] Backlog browser — view/edit/promote backlog items from TUI
-- [ ] Execution flow graph — per-phase discuss/plan/execute/verify pipeline view
+(Requirements for next milestone — define with `/gsd:new-milestone`)
 
 ### Out of Scope
 
@@ -36,27 +38,19 @@ See the state of every GSD project at a glance and act on any of them without le
 - Telegram bridge or external integrations — v2+
 - Remote project management (projects on different machines) — local first, SSH research in backlog
 
-## Current Milestone: v1.1 Polish & Power Features
+## Current State
 
-**Goal:** Fix state reader accuracy, add GSD integration hooks, Claude session management, queue execution, git history, backlog browser, and execution flow graph.
-
-**Target features:**
-- Fix state reader accuracy — plan counting, phase completion inference from disk
-- GSD integration — hooks, cached status, fact vs assumption distinction
-- Claude session management — detect, attach, launch sessions from TUI
-- Queue execution — make QUEUE.md actionable, not just a reminder list
-- Git history viewer — scrollable git log with repo and .planning/ scopes
-- Backlog browser — view/edit/promote backlog items from TUI
-- Execution flow graph — per-phase discuss/plan/execute/verify pipeline view
+Shipped v1.1. All v1.0 and v1.1 features complete. Next milestone not yet defined.
 
 ## Context
 
-- Shipped v1.0 with 3,887 LOC Rust, 83 commits over 2 days
-- Tech stack: Rust, ratatui 0.30, crossterm, tokio, notify-debouncer-full
-- State reading works by parsing `.planning/` files directly (STATE.md, ROADMAP.md, config.json)
-- Known issue: ROADMAP.md parser has plan-counting bugs; disk-based inference planned for v1.1
-- Known issue: dashboard shows "P5: Unknown" when milestone is fully complete
-- Queue is append-only and passive (GSD doesn't consume QUEUE.md) — execution research planned
+- Shipped v1.1 with 6,319 LOC Rust, 79 commits in v1.1 cycle
+- Tech stack: Rust, ratatui 0.30, crossterm 0.29, tokio, notify-debouncer-full
+- Screen trait architecture with 8 screen modules and 7-tab detail view
+- Disk-based phase inference via /proc-like directory scanning
+- Queue is now fully managed (CRUD) but not executable (execution research deferred)
+- Claude session detection via pgrep + /proc (Linux-only)
+- Tech debt: 1 stale integration test, 11 compiler warnings, some deferred visual UAT
 
 ## Constraints
 
@@ -70,8 +64,9 @@ See the state of every GSD project at a glance and act on any of them without le
 |----------|-----------|---------|
 | V1 scope: dashboard + visualization + enqueue + create | Focus on the core management loop before advanced features | ✓ Good — shipped all 22 requirements |
 | Rust + ratatui over Python + Textual | Single binary, zero-cost abstractions, no runtime dependency | ✓ Good — 3.8K LOC, fast, portable |
-| Claude session hooking deferred to v1.1 | Needs research, high complexity, not needed for core value | — Pending, researching in v1.1 |
-| QUEUE.md as passive reminder (not GSD-consumed) | Simplest viable enqueue; execution research needed | ⚠️ Revisit — users expect it to be actionable |
+| Claude session detection via pgrep + /proc | Reliable on Linux, no Claude API dependency | ✓ Good — works for local sessions, Linux-only |
+| Queue as managed CRUD, not executable | Execution needs GSD hooks research, CRUD sufficient for v1.1 | ✓ Good — users can manage queue, execution deferred |
+| Screen trait refactor in Phase 05 | 11 InputMode variants would explode with new views | ✓ Good — enabled 7-tab detail view cleanly |
 | File-watching over polling for live updates | notify-debouncer-full with 200ms debounce | ✓ Good — responsive without CPU overhead |
 
 ## Evolution
@@ -92,4 +87,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-26 after v1.1 milestone start*
+*Last updated: 2026-03-27 after v1.1 milestone completion*
