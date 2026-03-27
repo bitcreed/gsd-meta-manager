@@ -266,6 +266,10 @@ impl Screen for DetailScreen {
                     "  Phases:",
                     Style::default().add_modifier(Modifier::BOLD),
                 )));
+                lines.push(Line::from(Span::styled(
+                    "  Legend: + done  * current  o future  [stage] = disk-inferred  (N plans) = plan count",
+                    Style::default().fg(Color::DarkGray),
+                )));
 
                 if state.phases.is_empty() {
                     lines.push(Line::from("  No roadmap data available"));
@@ -493,6 +497,10 @@ impl DetailScreen {
                 lines.push(Line::from(Span::styled(
                     "  Phases:",
                     Style::default().add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "  Legend: + done  * current  o future  [stage] = disk-inferred  (N plans) = plan count",
+                    Style::default().fg(Color::DarkGray),
                 )));
 
                 if state.phases.is_empty() {
