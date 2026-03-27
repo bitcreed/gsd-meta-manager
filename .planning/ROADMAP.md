@@ -53,7 +53,7 @@ Plans:
 - [x] 05-02-PLAN.md — Screen architecture refactor (InputMode to Screen trait) and async I/O migration
 - [x] 05-03-PLAN.md — Disk inference module and compact pipeline display on dashboard
 - [x] 05-04-PLAN.md — Gap closure: wire pipeline display and disk status brackets into active screen files
-- [ ] 05-05-PLAN.md — Gap closure: drop expanded status text, add detail view legend
+- [x] 05-05-PLAN.md — Gap closure: drop expanded status text, add detail view legend
 
 ### Phase 06: Read-Only Views
 **Goal**: Users can browse backlog items and git history without leaving the TUI

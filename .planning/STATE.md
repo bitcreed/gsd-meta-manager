@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Polish & Power Features
-status: v1.0 milestone complete
-stopped_at: Completed 05-04-PLAN.md
-last_updated: "2026-03-26T22:43:02.539Z"
+status: Phase complete — ready for verification
+stopped_at: Completed 05-05-PLAN.md
+last_updated: "2026-03-27T00:39:43.670Z"
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 4
-  completed_plans: 4
+  total_plans: 5
+  completed_plans: 5
 ---
 
 # Project State
@@ -58,6 +58,7 @@ Plan: 4 of 4
 | Phase 04 P03 | 4min | 2 tasks | 6 files |
 | Phase 05 P03 | 7min | 2 tasks | 4 files |
 | Phase 05 P04 | 3min | 2 tasks | 4 files |
+| Phase 05 P05 | 3min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -93,6 +94,7 @@ Recent decisions affecting current work:
 - [Phase 04]: Suggestion index on App struct, reset on manual typing
 - [Phase 05]: Used PartialOrd/Ord derive on DiskStatus for pipeline comparison; stored disk statuses in HashMap on ProjectState
 - [Phase 05]: Ported rendering logic from orphaned files into active Screen trait screens rather than re-declaring modules
+- [Phase 05]: Removed expanded_status entirely per UAT feedback (labels one step ahead)
 
 ### Pending Todos
 
@@ -110,6 +112,6 @@ None — v1.0 milestone complete.
 
 ## Session Continuity
 
-Last session: 2026-03-26T22:43:02.536Z
-Stopped at: Completed 05-04-PLAN.md
+Last session: 2026-03-27T00:39:43.667Z
+Stopped at: Completed 05-05-PLAN.md
 Resume file: None
