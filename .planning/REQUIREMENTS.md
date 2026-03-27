@@ -25,8 +25,8 @@ Requirements for the v1.1 milestone. Each maps to roadmap phases.
 ### Backlog
 
 - [x] **BLOG-01**: User can browse backlog items (999.*) in a scrollable list within detail view
-- [ ] **BLOG-02**: User can view backlog item details (markdown content)
-- [ ] **BLOG-03**: User can queue a promotion command for a backlog item
+- [x] **BLOG-02**: User can view backlog item details (markdown content)
+- [x] **BLOG-03**: User can queue a promotion command for a backlog item
 
 ### Git History
 
@@ -95,8 +95,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | GSD-01 | Phase 07 | Pending |
 | GSD-02 | Phase 07 | Pending |
 | BLOG-01 | Phase 06 | Complete |
-| BLOG-02 | Phase 06 | Pending |
-| BLOG-03 | Phase 06 | Pending |
+| BLOG-02 | Phase 06 | Complete |
+| BLOG-03 | Phase 06 | Complete |
 | GIT-01 | Phase 06 | Complete |
 | GIT-02 | Phase 06 | Pending |
 | GIT-03 | Phase 06 | Pending |
