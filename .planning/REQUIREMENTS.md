@@ -19,8 +19,8 @@ Requirements for the v1.1 milestone. Each maps to roadmap phases.
 
 ### GSD Integration
 
-- [ ] **GSD-01**: User can opt into enriching state with cached gsd-tools.cjs JSON output
-- [ ] **GSD-02**: User sees [verified] vs [inferred] badges on status fields
+- [x] **GSD-01**: User can opt into enriching state with cached gsd-tools.cjs JSON output
+- [x] **GSD-02**: User sees [verified] vs [inferred] badges on status fields
 
 ### Backlog
 
@@ -36,8 +36,8 @@ Requirements for the v1.1 milestone. Each maps to roadmap phases.
 
 ### Execution Flow Graph
 
-- [ ] **FLOW-01**: User sees per-phase pipeline visualization (discuss/research/plan/execute/verify)
-- [ ] **FLOW-02**: User sees color-coded status per stage (not started, current, complete, skipped)
+- [x] **FLOW-01**: User sees per-phase pipeline visualization (discuss/research/plan/execute/verify)
+- [x] **FLOW-02**: User sees color-coded status per stage (not started, current, complete, skipped)
 - [ ] **FLOW-03**: User sees plan execution progress as fraction in the execute stage
 
 ### Queue Execution
@@ -92,16 +92,16 @@ Which phases cover which requirements. Updated during roadmap creation.
 | STATE-01 | Phase 05 | Complete |
 | STATE-02 | Phase 05 | Complete |
 | STATE-03 | Phase 05 | Complete |
-| GSD-01 | Phase 07 | Pending |
-| GSD-02 | Phase 07 | Pending |
+| GSD-01 | Phase 07 | Complete |
+| GSD-02 | Phase 07 | Complete |
 | BLOG-01 | Phase 06 | Complete |
 | BLOG-02 | Phase 06 | Complete |
 | BLOG-03 | Phase 06 | Complete |
 | GIT-01 | Phase 06 | Complete |
 | GIT-02 | Phase 06 | Complete |
 | GIT-03 | Phase 06 | Complete |
-| FLOW-01 | Phase 07 | Pending |
-| FLOW-02 | Phase 07 | Pending |
+| FLOW-01 | Phase 07 | Complete |
+| FLOW-02 | Phase 07 | Complete |
 | FLOW-03 | Phase 07 | Pending |
 | QUEUE-01 | Phase 08 | Pending |
 | QUEUE-02 | Phase 08 | Pending |

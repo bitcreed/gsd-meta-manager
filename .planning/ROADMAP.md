@@ -85,7 +85,7 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 07-01-PLAN.md — Extend data model (DiskInference fields, config toggle, Pipeline variant)
+- [x] 07-01-PLAN.md — Extend data model (DiskInference fields, config toggle, Pipeline variant)
 - [ ] 07-02-PLAN.md — Pipeline tab with phase selection and stage visualization
 - [ ] 07-03-PLAN.md — Verified/inferred badges on phase status lines
 
