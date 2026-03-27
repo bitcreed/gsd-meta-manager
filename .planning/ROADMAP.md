@@ -31,7 +31,7 @@ Phase 04: Project Creation & Queue (2 plans, complete)
 
 - [x] **Phase 05: State Reader Accuracy** - Fix plan counting, completed-milestone display, and disk-based phase inference (completed 2026-03-26)
 - [x] **Phase 06: Read-Only Views** - Backlog browser and git history viewer as new detail-view screens (completed 2026-03-27)
-- [ ] **Phase 07: Execution Flow & GSD Integration** - Per-phase pipeline visualization and verified-vs-inferred status badges
+- [x] **Phase 07: Execution Flow & GSD Integration** - Per-phase pipeline visualization and verified-vs-inferred status badges (completed 2026-03-27)
 - [ ] **Phase 08: Queue Execution** - Make queued items executable with confirmation, status tracking, and terminal handoff
 - [ ] **Phase 09: Claude Session Management** - Detect, browse, and launch Claude sessions from the TUI
 
