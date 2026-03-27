@@ -70,7 +70,7 @@ Plans:
 Plans:
 - [x] 06-01-PLAN.md — Tab system foundation, data models, Action variants, and tab bar navigation
 - [ ] 06-02-PLAN.md — Backlog browser: scrollable list, content preview, queue promotion
-- [ ] 06-03-PLAN.md — Git history viewer: scrollable log, planning-only toggle, diff stats
+- [x] 06-03-PLAN.md — Git history viewer: scrollable log, planning-only toggle, diff stats
 
 ### Phase 07: Execution Flow & GSD Integration
 **Goal**: Users see per-phase workflow pipeline status and can distinguish verified facts from disk-inferred state

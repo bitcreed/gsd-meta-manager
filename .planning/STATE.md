@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Polish & Power Features
 status: Phase complete — ready for verification
-stopped_at: Completed 06-01-PLAN.md
-last_updated: "2026-03-27T03:14:25.831Z"
+stopped_at: Completed 06-03-PLAN.md
+last_updated: "2026-03-27T03:20:30.705Z"
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 8
-  completed_plans: 6
+  completed_plans: 7
 ---
 
 # Project State
@@ -60,6 +60,7 @@ Plan: 4 of 4
 | Phase 05 P04 | 3min | 2 tasks | 4 files |
 | Phase 05 P05 | 3min | 2 tasks | 2 files |
 | Phase 06 P01 | 5min | 2 tasks | 7 files |
+| Phase 06 P03 | 2min | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -98,6 +99,7 @@ Recent decisions affecting current work:
 - [Phase 05]: Removed expanded_status entirely per UAT feedback (labels one step ahead)
 - [Phase 06]: Backlog items loaded synchronously, git log loaded async via tokio::spawn
 - [Phase 06]: Replaced 'r' key toggle with 4-tab system using ratatui Tabs widget
+- [Phase 06]: Used ratatui List+ListState for git log scrollable selection; 60/40 split-pane for inline diff stats; per-tab j/k dispatch
 
 ### Pending Todos
 
@@ -115,6 +117,6 @@ None — v1.0 milestone complete.
 
 ## Session Continuity
 
-Last session: 2026-03-27T03:14:25.828Z
-Stopped at: Completed 06-01-PLAN.md
+Last session: 2026-03-27T03:20:30.702Z
+Stopped at: Completed 06-03-PLAN.md
 Resume file: None

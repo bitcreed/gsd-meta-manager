@@ -31,8 +31,8 @@ Requirements for the v1.1 milestone. Each maps to roadmap phases.
 ### Git History
 
 - [x] **GIT-01**: User can view scrollable git log for a project
-- [ ] **GIT-02**: User can toggle between full repo and .planning/-scoped history
-- [ ] **GIT-03**: User can view commit diff stats by selecting a commit
+- [x] **GIT-02**: User can toggle between full repo and .planning/-scoped history
+- [x] **GIT-03**: User can view commit diff stats by selecting a commit
 
 ### Execution Flow Graph
 
@@ -98,8 +98,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | BLOG-02 | Phase 06 | Pending |
 | BLOG-03 | Phase 06 | Pending |
 | GIT-01 | Phase 06 | Complete |
-| GIT-02 | Phase 06 | Pending |
-| GIT-03 | Phase 06 | Pending |
+| GIT-02 | Phase 06 | Complete |
+| GIT-03 | Phase 06 | Complete |
 | FLOW-01 | Phase 07 | Pending |
 | FLOW-02 | Phase 07 | Pending |
 | FLOW-03 | Phase 07 | Pending |
