@@ -1,9 +1,10 @@
 use super::{AppContext, Screen, ScreenAction};
 use super::enqueue::EnqueueScreen;
 use super::help::HelpScreen;
+use super::queue_delete_confirm::QueueDeleteConfirmScreen;
 use crate::action::Action;
 use crate::app::{classify_status, DetailSubView, StatusCategory};
-use crate::state_reader::backlog;
+use crate::state_reader::{self, backlog};
 use crate::state_reader::disk_status::{DiskInference, DiskStatus};
 use crate::state_reader::git_ops;
 use crate::change_tracker::ChangeTracker;
@@ -188,6 +189,27 @@ fn switch_to_tab(
     ScreenAction::None
 }
 
+/// Load queue, apply a mutation, save back to disk, and reload project state.
+/// Returns Ok(()) on success or an error message string.
+fn queue_mutate_and_save(
+    alias: &str,
+    ctx: &mut AppContext,
+    mutate: impl FnOnce(&mut Vec<queue_md::QueuedAction>),
+) -> Result<(), String> {
+    let project = ctx
+        .config
+        .projects
+        .get(alias)
+        .ok_or_else(|| "Project not found".to_string())?;
+    let planning_dir = project.path.join(".planning");
+    let mut actions = queue_md::load_queue(&planning_dir);
+    mutate(&mut actions);
+    queue_md::save_queue(&planning_dir, &actions).map_err(|e| format!("Queue error: {}", e))?;
+    let new_state = state_reader::parse_project_state(&planning_dir);
+    ctx.project_states.insert(alias.to_string(), new_state);
+    Ok(())
+}
+
 impl Screen for DetailScreen {
     fn handle_key(&mut self, code: KeyCode, _modifiers: KeyModifiers, ctx: &mut AppContext) -> ScreenAction {
         let current_view = ctx
@@ -315,10 +337,55 @@ impl Screen for DetailScreen {
                     ScreenAction::None
                 }
             }
-            // Enter: expand backlog item or load diff stat
-            KeyCode::Enter => {
+            // Enter/Space: expand backlog item, load diff stat, or mark queue item done
+            KeyCode::Enter | KeyCode::Char(' ') => {
                 match current_view {
+                    DetailSubView::Queue => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        let selected = cache.queue_selected;
+                        // Get the command text before mutation
+                        let command_text = ctx
+                            .project_states
+                            .get(&self.alias)
+                            .and_then(|s| s.queued_actions.get(selected))
+                            .map(|a| a.command.clone());
+                        if let Some(cmd) = command_text {
+                            match queue_mutate_and_save(&self.alias, ctx, |actions| {
+                                if selected < actions.len() {
+                                    actions.remove(selected);
+                                }
+                            }) {
+                                Ok(()) => {
+                                    // Clamp selection
+                                    let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                                    let new_len = ctx
+                                        .project_states
+                                        .get(&self.alias)
+                                        .map(|s| s.queued_actions.len())
+                                        .unwrap_or(0);
+                                    if new_len == 0 {
+                                        cache.queue_selected = 0;
+                                    } else if cache.queue_selected >= new_len {
+                                        cache.queue_selected = new_len - 1;
+                                    }
+                                    ctx.status_message = Some((
+                                        format!("Done: {}", cmd),
+                                        std::time::Instant::now(),
+                                    ));
+                                }
+                                Err(e) => {
+                                    ctx.status_message = Some((e, std::time::Instant::now()));
+                                }
+                            }
+                            ctx.needs_redraw = true;
+                        }
+                        ScreenAction::None
+                    }
                     DetailSubView::Backlog => {
+                        // Space does nothing on backlog; Enter toggles expand
+                        if code == KeyCode::Char(' ') {
+                            return ScreenAction::None;
+                        }
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         if !cache.backlog_items.is_empty() {
                             cache.backlog_expanded = !cache.backlog_expanded;
@@ -342,6 +409,9 @@ impl Screen for DetailScreen {
                         ScreenAction::None
                     }
                     DetailSubView::GitHistory => {
+                        if code == KeyCode::Char(' ') {
+                            return ScreenAction::None;
+                        }
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         if let Some(entry) = cache.git_entries.get(cache.git_selected) {
                             let hash = entry.hash.clone();
@@ -411,6 +481,96 @@ impl Screen for DetailScreen {
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
+            // 'a' key: add new queue item (Queue tab only)
+            KeyCode::Char('a') if current_view == DetailSubView::Queue => {
+                let alias = self.alias.clone();
+                let has_planning = ctx
+                    .config
+                    .projects
+                    .get(&alias)
+                    .map(|p| p.path.join(".planning").is_dir())
+                    .unwrap_or(false);
+                if !has_planning {
+                    ctx.needs_redraw = true;
+                    ScreenAction::SetStatusMessage(
+                        "Run GSD in this project first to enable queue".to_string(),
+                    )
+                } else {
+                    ctx.input_buffer.clear();
+                    ctx.suggestion_index = 0;
+                    ctx.needs_redraw = true;
+                    ScreenAction::Push(Box::new(EnqueueScreen::new(alias)))
+                }
+            }
+            // 'd' or 'x' key: delete queue item with confirmation (Queue tab only)
+            KeyCode::Char('d') | KeyCode::Char('x') if current_view == DetailSubView::Queue => {
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                let selected = cache.queue_selected;
+                let command_text = ctx
+                    .project_states
+                    .get(&self.alias)
+                    .and_then(|s| s.queued_actions.get(selected))
+                    .map(|a| a.command.clone());
+                if let Some(cmd) = command_text {
+                    ctx.needs_redraw = true;
+                    ScreenAction::Push(Box::new(QueueDeleteConfirmScreen::new(
+                        self.alias.clone(),
+                        selected,
+                        cmd,
+                    )))
+                } else {
+                    ScreenAction::None
+                }
+            }
+            // Shift+J: move queue item down
+            KeyCode::Char('J') if current_view == DetailSubView::Queue => {
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                let selected = cache.queue_selected;
+                let len = ctx
+                    .project_states
+                    .get(&self.alias)
+                    .map(|s| s.queued_actions.len())
+                    .unwrap_or(0);
+                if len > 1 && selected < len - 1 {
+                    match queue_mutate_and_save(&self.alias, ctx, |actions| {
+                        if selected < actions.len() - 1 {
+                            actions.swap(selected, selected + 1);
+                        }
+                    }) {
+                        Ok(()) => {
+                            let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                            cache.queue_selected = selected + 1;
+                        }
+                        Err(e) => {
+                            ctx.status_message = Some((e, std::time::Instant::now()));
+                        }
+                    }
+                    ctx.needs_redraw = true;
+                }
+                ScreenAction::None
+            }
+            // Shift+K: move queue item up
+            KeyCode::Char('K') if current_view == DetailSubView::Queue => {
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                let selected = cache.queue_selected;
+                if selected > 0 {
+                    match queue_mutate_and_save(&self.alias, ctx, |actions| {
+                        if selected > 0 && selected < actions.len() {
+                            actions.swap(selected, selected - 1);
+                        }
+                    }) {
+                        Ok(()) => {
+                            let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                            cache.queue_selected = selected - 1;
+                        }
+                        Err(e) => {
+                            ctx.status_message = Some((e, std::time::Instant::now()));
+                        }
+                    }
+                    ctx.needs_redraw = true;
+                }
+                ScreenAction::None
+            }
             KeyCode::Char('e') => {
                 let alias = self.alias.clone();
                 let has_planning = ctx
@@ -424,6 +584,51 @@ impl Screen for DetailScreen {
                     ScreenAction::SetStatusMessage(
                         "Run GSD in this project first to enable queue".to_string(),
                     )
+                } else if current_view == DetailSubView::Queue {
+                    // Queue tab: edit selected item (pre-fill + remove old)
+                    let cache = ctx.view_cache.entry(alias.clone()).or_default();
+                    let selected = cache.queue_selected;
+                    let command_text = ctx
+                        .project_states
+                        .get(&alias)
+                        .and_then(|s| s.queued_actions.get(selected))
+                        .map(|a| a.command.clone());
+                    if let Some(cmd) = command_text {
+                        ctx.input_buffer = cmd.clone();
+                        ctx.suggestion_index = 0;
+                        // Remove the item first; EnqueueScreen will re-add on Enter
+                        match queue_mutate_and_save(&alias, ctx, |actions| {
+                            if selected < actions.len() {
+                                actions.remove(selected);
+                            }
+                        }) {
+                            Ok(()) => {
+                                // Clamp selection after removal
+                                let cache = ctx.view_cache.entry(alias.clone()).or_default();
+                                let new_len = ctx
+                                    .project_states
+                                    .get(&alias)
+                                    .map(|s| s.queued_actions.len())
+                                    .unwrap_or(0);
+                                if new_len == 0 {
+                                    cache.queue_selected = 0;
+                                } else if cache.queue_selected >= new_len {
+                                    cache.queue_selected = new_len - 1;
+                                }
+                                ctx.status_message = Some((
+                                    format!("Editing: {} (Esc cancels and removes)", cmd),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                            Err(e) => {
+                                ctx.status_message = Some((e, std::time::Instant::now()));
+                            }
+                        }
+                        ctx.needs_redraw = true;
+                        ScreenAction::Push(Box::new(EnqueueScreen::new(alias)))
+                    } else {
+                        ScreenAction::None
+                    }
                 } else {
                     // Backlog tab: pre-fill with /gsd:review-backlog {dir_name}
                     if current_view == DetailSubView::Backlog {
@@ -1087,7 +1292,7 @@ impl DetailScreen {
 
         match queued_actions {
             None => {
-                let msg = Paragraph::new("  Queue empty -- press 'e' to add")
+                let msg = Paragraph::new("  Queue empty -- press 'a' to add")
                     .style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM));
                 frame.render_widget(msg, inner);
             }
@@ -1324,10 +1529,16 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
             spans.push(Span::raw("diff  "));
         }
         DetailSubView::Queue => {
-            spans.push(Span::styled("[j/k]", Style::default().add_modifier(Modifier::BOLD)));
-            spans.push(Span::raw("navigate  "));
-            spans.push(Span::styled("[e]", Style::default().add_modifier(Modifier::BOLD)));
+            spans.push(Span::styled("[a]", Style::default().add_modifier(Modifier::BOLD)));
             spans.push(Span::raw("add  "));
+            spans.push(Span::styled("[e]", Style::default().add_modifier(Modifier::BOLD)));
+            spans.push(Span::raw("edit  "));
+            spans.push(Span::styled("[d]", Style::default().add_modifier(Modifier::BOLD)));
+            spans.push(Span::raw("delete  "));
+            spans.push(Span::styled("[Enter]", Style::default().add_modifier(Modifier::BOLD)));
+            spans.push(Span::raw("done  "));
+            spans.push(Span::styled("[J/K]", Style::default().add_modifier(Modifier::BOLD)));
+            spans.push(Span::raw("reorder  "));
         }
         _ => {
             spans.push(Span::styled("[e]", Style::default().add_modifier(Modifier::BOLD)));
