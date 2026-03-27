@@ -17,6 +17,8 @@ pub struct DiskInference {
     pub status: DiskStatus,
     pub plan_count: u32,
     pub summary_count: u32,
+    pub has_plans: bool,
+    pub has_summaries: bool,
     pub has_context: bool,
     pub has_research: bool,
     pub has_verification: bool,
@@ -112,6 +114,8 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         status,
         plan_count,
         summary_count,
+        has_plans: plan_count > 0,
+        has_summaries: summary_count > 0,
         has_context,
         has_research,
         has_verification,
@@ -273,6 +277,8 @@ mod tests {
         assert_eq!(result.status, DiskStatus::Planned);
         assert_eq!(result.plan_count, 2);
         assert_eq!(result.summary_count, 0);
+        assert!(result.has_plans);
+        assert!(!result.has_summaries);
     }
 
     #[test]
@@ -298,6 +304,8 @@ mod tests {
         assert_eq!(result.status, DiskStatus::Complete);
         assert_eq!(result.plan_count, 2);
         assert_eq!(result.summary_count, 2);
+        assert!(result.has_plans);
+        assert!(result.has_summaries);
     }
 
     #[test]
@@ -313,6 +321,27 @@ mod tests {
     fn test_nonexistent_directory_returns_no_directory() {
         let result = infer_disk_status(Path::new("/nonexistent/path/does/not/exist"));
         assert_eq!(result.status, DiskStatus::NoDirectory);
+    }
+
+    #[test]
+    fn test_has_plans_and_has_summaries_booleans() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-PLAN.md"), "plan1").unwrap();
+        fs::write(dir.path().join("05-02-PLAN.md"), "plan2").unwrap();
+        fs::write(dir.path().join("05-01-SUMMARY.md"), "summary1").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(result.has_plans, "has_plans should be true when plans exist");
+        assert!(result.has_summaries, "has_summaries should be true when summaries exist");
+        assert_eq!(result.plan_count, 2);
+        assert_eq!(result.summary_count, 1);
+    }
+
+    #[test]
+    fn test_empty_dir_has_no_plans_or_summaries() {
+        let dir = tempdir().unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(!result.has_plans);
+        assert!(!result.has_summaries);
     }
 
     #[test]
