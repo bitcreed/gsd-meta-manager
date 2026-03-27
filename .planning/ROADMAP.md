@@ -90,15 +90,18 @@ Plans:
 - [x] 07-03-PLAN.md — Verified/inferred badges on phase status lines
 
 ### Phase 08: Queue Execution
-**Goal**: Users can execute queued items from the TUI with process lifecycle management
+**Goal**: Users can manage queued items from the TUI with full CRUD operations (add, view, edit, delete, reorder, mark done)
 **Depends on**: Phase 07
 **Requirements**: QUEUE-01, QUEUE-02, QUEUE-03
 **Success Criteria** (what must be TRUE):
-  1. User can execute a queued item and sees a confirmation dialog before it runs
-  2. User sees queue item status (pending/in-progress/done/failed) update in real time
-  3. User can add, remove, and reorder queue items from the queue view
-**Plans**: TBD
-**UI hint**: yes
+  1. User can view queue items in a dedicated Queue tab and manage them with confirmation dialogs
+  2. User sees queue items as a selectable list with empty state hint
+  3. User can add, remove, reorder, and mark done queue items from the queue view
+**Plans**: 2 plans
+
+Plans:
+- [ ] 08-01-PLAN.md — Queue tab view with selectable list, empty state, and navigation
+- [ ] 08-02-PLAN.md — Queue mutation operations (add, delete, reorder, edit, mark done)
 
 ### Phase 09: Claude Session Management
 **Goal**: Users can see which projects have active Claude sessions and launch or resume sessions from the TUI
@@ -121,5 +124,5 @@ Phases execute in numeric order: 05 -> 06 -> 07 -> 08 -> 09
 | 5. State Reader Accuracy | v1.1 | 5/5 | Complete | 2026-03-26 |
 | 6. Read-Only Views | v1.1 | 0/4 | Not started | - |
 | 7. Execution Flow & GSD Integration | v1.1 | 0/3 | Not started | - |
-| 8. Queue Execution | v1.1 | 0/0 | Not started | - |
+| 8. Queue Execution | v1.1 | 0/2 | Not started | - |
 | 9. Claude Session Management | v1.1 | 0/0 | Not started | - |
