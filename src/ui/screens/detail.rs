@@ -4,7 +4,7 @@ use super::help::HelpScreen;
 use crate::action::Action;
 use crate::app::{classify_status, DetailSubView, StatusCategory};
 use crate::state_reader::backlog;
-use crate::state_reader::disk_status::DiskStatus;
+use crate::state_reader::disk_status::{DiskInference, DiskStatus};
 use crate::state_reader::git_ops;
 use crate::change_tracker::ChangeTracker;
 use crate::state_reader::queue_md;
@@ -205,6 +205,16 @@ impl Screen for DetailScreen {
                         }
                         ctx.needs_redraw = true;
                     }
+                    DetailSubView::Pipeline => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        if let Some(state) = ctx.project_states.get(&self.alias) {
+                            if !state.phases.is_empty() {
+                                let max = state.phases.len().saturating_sub(1);
+                                cache.pipeline_selected = (cache.pipeline_selected + 1).min(max);
+                            }
+                        }
+                        ctx.needs_redraw = true;
+                    }
                     _ => {
                         self.scroll_offset = self.scroll_offset.saturating_add(1);
                         ctx.needs_redraw = true;
@@ -226,6 +236,11 @@ impl Screen for DetailScreen {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         cache.backlog_selected = cache.backlog_selected.saturating_sub(1);
                         cache.backlog_expanded = false;
+                        ctx.needs_redraw = true;
+                    }
+                    DetailSubView::Pipeline => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        cache.pipeline_selected = cache.pipeline_selected.saturating_sub(1);
                         ctx.needs_redraw = true;
                     }
                     _ => {
@@ -906,13 +921,98 @@ impl DetailScreen {
         }
     }
 
-    fn render_pipeline_tab(&self, frame: &mut Frame, area: Rect, _ctx: &AppContext) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Pipeline (coming in 07-02) ");
-        let placeholder = Paragraph::new("Execution flow pipeline view will be rendered here.")
-            .block(block);
-        frame.render_widget(placeholder, area);
+    fn render_pipeline_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        let alias = &self.alias;
+        let state = ctx.project_states.get(alias);
+        let cache = ctx.view_cache.get(alias);
+
+        let state = match state {
+            Some(s) => s,
+            None => {
+                let block = Block::default().borders(Borders::ALL).title(" Pipeline ");
+                let msg = Paragraph::new("  No state data available.").block(block);
+                frame.render_widget(msg, area);
+                return;
+            }
+        };
+
+        if state.phases.is_empty() {
+            let block = Block::default().borders(Borders::ALL).title(" Pipeline ");
+            let msg = Paragraph::new("  No phases found").block(block);
+            frame.render_widget(msg, area);
+            return;
+        }
+
+        // Split into left (phase list) and right (pipeline detail)
+        let panes = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(area);
+        let left_area = panes[0];
+        let right_area = panes[1];
+
+        let selected = cache
+            .map(|c| c.pipeline_selected.min(state.phases.len().saturating_sub(1)))
+            .unwrap_or(0);
+
+        // Left pane: phase list
+        let items: Vec<ListItem> = state
+            .phases
+            .iter()
+            .map(|phase| ListItem::new(format!("P{}: {}", phase.number, phase.name)))
+            .collect();
+
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::RIGHT)
+                    .title(" Phases "),
+            )
+            .highlight_style(
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .fg(Color::Cyan),
+            )
+            .highlight_symbol("> ");
+
+        let mut list_state = ListState::default();
+        list_state.select(Some(selected));
+        frame.render_stateful_widget(list, left_area, &mut list_state);
+
+        // Right pane: pipeline detail for selected phase
+        let phase = &state.phases[selected];
+        let inference = state.phase_disk_statuses.get(&phase.number);
+
+        let right_block = Block::default()
+            .borders(Borders::NONE)
+            .title(" Pipeline ");
+        let inner = right_block.inner(right_area);
+        frame.render_widget(right_block, right_area);
+
+        match inference {
+            None => {
+                let msg = Paragraph::new("  No disk data");
+                frame.render_widget(msg, inner);
+            }
+            Some(inf) => {
+                let stage_statuses = derive_all_stage_statuses(inf);
+                let pipeline_line = build_pipeline_line(inf, &stage_statuses);
+                let detail_lines = build_stage_detail_lines(inf, &stage_statuses);
+
+                let mut lines: Vec<Line> = Vec::new();
+                lines.push(Line::from(format!(
+                    "  Phase {}: {}",
+                    phase.number, phase.name
+                )));
+                lines.push(Line::from(""));
+                lines.push(pipeline_line);
+                lines.push(Line::from(""));
+                for dl in detail_lines {
+                    lines.push(dl);
+                }
+
+                let paragraph = Paragraph::new(lines);
+                frame.render_widget(paragraph, inner);
+            }
+        }
     }
 
     /// Render just the main content area (without footer), used by EnqueueScreen overlay.
@@ -959,6 +1059,137 @@ impl DetailScreen {
             DetailSubView::Pipeline => self.render_pipeline_tab(frame, content_area, ctx),
         }
     }
+}
+
+// --- Pipeline stage status logic ---
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum StageStatus {
+    Complete,
+    Current,
+    Skipped,
+    NotStarted,
+}
+
+/// Stage names for the 5 GSD pipeline stages.
+const STAGE_LABELS: [&str; 5] = ["D", "R", "P", "E", "V"];
+const STAGE_NAMES: [&str; 5] = ["Discuss", "Research", "Plan", "Execute", "Verify"];
+
+/// Determine the status of each of the 5 pipeline stages from DiskInference.
+fn derive_all_stage_statuses(inf: &DiskInference) -> [StageStatus; 5] {
+    // Whether each stage's artifact is present
+    let present = [
+        inf.has_context,                                          // D: Discuss
+        inf.has_research,                                         // R: Research
+        inf.has_plans,                                            // P: Plan
+        inf.summary_count > 0,                                    // E: Execute (at least one)
+        inf.has_verification,                                     // V: Verify
+    ];
+
+    // Execute is "complete" only if summary_count >= plan_count and plan_count > 0
+    let execute_complete = inf.plan_count > 0 && inf.summary_count >= inf.plan_count;
+
+    let mut statuses = [StageStatus::NotStarted; 5];
+
+    for i in 0..5 {
+        if present[i] {
+            if i == 3 && !execute_complete {
+                // Execute stage: present but not fully complete
+                statuses[i] = StageStatus::Current;
+            } else {
+                statuses[i] = StageStatus::Complete;
+            }
+        } else {
+            // Check if any later stage is present (skip detection per D-10)
+            let any_later = present[i + 1..].iter().any(|&p| p);
+            if any_later {
+                statuses[i] = StageStatus::Skipped;
+            } else {
+                // Check if this is the next expected stage after the last complete one
+                let last_complete = (0..i).rev().find(|&j| present[j]);
+                if let Some(lc) = last_complete {
+                    if lc == i - 1 {
+                        // Immediately after a complete stage
+                        statuses[i] = StageStatus::Current;
+                    }
+                } else if i == 0 {
+                    // First stage, nothing complete yet -- it's the current one
+                    // only if the overall status isn't NoDirectory/Empty
+                    if inf.status != DiskStatus::NoDirectory && inf.status != DiskStatus::Empty {
+                        statuses[i] = StageStatus::Current;
+                    }
+                }
+            }
+        }
+    }
+
+    statuses
+}
+
+fn stage_color(status: StageStatus) -> Color {
+    match status {
+        StageStatus::Complete => Color::Green,
+        StageStatus::Current => Color::Yellow,
+        StageStatus::Skipped => Color::Magenta,
+        StageStatus::NotStarted => Color::DarkGray,
+    }
+}
+
+/// Build the horizontal pipeline line: [D]---[R]---[P]---[E 2/3]---[V]
+fn build_pipeline_line(inf: &DiskInference, statuses: &[StageStatus; 5]) -> Line<'static> {
+    let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::raw("  "));
+
+    for (i, &status) in statuses.iter().enumerate() {
+        let color = stage_color(status);
+        let label = if status == StageStatus::Skipped {
+            "[--]".to_string()
+        } else if i == 3 && inf.plan_count > 0 {
+            // Execute stage with plan fraction
+            format!("[E {}/{}]", inf.summary_count, inf.plan_count)
+        } else {
+            format!("[{}]", STAGE_LABELS[i])
+        };
+
+        let style = if status == StageStatus::Skipped {
+            Style::default().fg(color).add_modifier(Modifier::DIM)
+        } else {
+            Style::default().fg(color)
+        };
+
+        spans.push(Span::styled(label, style));
+
+        if i < 4 {
+            spans.push(Span::styled("---", Style::default().fg(Color::DarkGray)));
+        }
+    }
+
+    Line::from(spans)
+}
+
+/// Build detail lines showing each stage's status text.
+fn build_stage_detail_lines(inf: &DiskInference, statuses: &[StageStatus; 5]) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+
+    for (i, &status) in statuses.iter().enumerate() {
+        let color = stage_color(status);
+        let detail = match (i, status) {
+            (3, StageStatus::Complete) => format!("{}/{} complete", inf.summary_count, inf.plan_count),
+            (3, StageStatus::Current) => format!("{}/{} complete", inf.summary_count, inf.plan_count),
+            (2, StageStatus::Complete) if inf.plan_count > 0 => format!("{} plans", inf.plan_count),
+            (_, StageStatus::Complete) => "Complete".to_string(),
+            (_, StageStatus::Current) => "Current".to_string(),
+            (_, StageStatus::Skipped) => "Skipped".to_string(),
+            (_, StageStatus::NotStarted) => "Not started".to_string(),
+        };
+
+        lines.push(Line::from(vec![
+            Span::raw(format!("  {:<12}", format!("{}:", STAGE_NAMES[i]))),
+            Span::styled(detail, Style::default().fg(color)),
+        ]));
+    }
+
+    lines
 }
 
 /// Build the footer line with tab-appropriate key hints.
