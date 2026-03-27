@@ -427,7 +427,7 @@ impl Screen for DetailScreen {
         match sub_view {
             DetailSubView::PhaseList => self.render_phase_list(frame, content_area, ctx),
             DetailSubView::RoadmapViz => self.render_roadmap(frame, content_area, ctx),
-            DetailSubView::Backlog => self.render_backlog_placeholder(frame, content_area, ctx),
+            DetailSubView::Backlog => self.render_backlog_tab(frame, content_area, ctx),
             DetailSubView::GitHistory => self.render_git_tab(frame, content_area, ctx),
         }
 
@@ -654,51 +654,96 @@ impl DetailScreen {
         }
     }
 
-    /// Render the backlog tab placeholder content.
-    fn render_backlog_placeholder(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+    /// Render the backlog tab with list selection and optional split-pane content preview.
+    fn render_backlog_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         let cache = ctx.view_cache.get(&self.alias);
 
-        let mut lines: Vec<Line> = Vec::new();
+        let block = Block::default().borders(Borders::ALL);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
 
-        if let Some(cache) = cache {
-            if cache.loading_backlog {
-                lines.push(Line::from(Span::styled(
-                    "  Loading...",
-                    Style::default().fg(Color::DarkGray),
-                )));
-            } else if cache.backlog_items.is_empty() {
-                lines.push(Line::from("  No backlog items found."));
-            } else {
-                lines.push(Line::from(format!(
-                    "  Backlog items: {}",
-                    cache.backlog_items.len()
-                )));
-                lines.push(Line::from(""));
-                for (i, item) in cache.backlog_items.iter().enumerate() {
-                    let prefix = if i == cache.backlog_selected { "> " } else { "  " };
-                    let style = if i == cache.backlog_selected {
-                        Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan)
-                    } else {
-                        Style::default()
-                    };
-                    lines.push(Line::from(Span::styled(
-                        format!("{}  {} - {}", prefix, item.number, item.description),
-                        style,
-                    )));
-                }
-            }
-        } else {
-            lines.push(Line::from(Span::styled(
-                "  Loading...",
-                Style::default().fg(Color::DarkGray),
-            )));
+        if inner.height < 3 || inner.width < 10 {
+            return;
         }
 
-        let block = Block::default().borders(Borders::ALL);
-        let paragraph = Paragraph::new(lines)
-            .block(block)
-            .scroll((self.scroll_offset, 0));
-        frame.render_widget(paragraph, area);
+        let cache = match cache {
+            Some(c) => c,
+            None => {
+                let msg = Paragraph::new("  Loading...")
+                    .style(Style::default().fg(Color::DarkGray));
+                frame.render_widget(msg, inner);
+                return;
+            }
+        };
+
+        if cache.loading_backlog {
+            let msg = Paragraph::new("  Loading...")
+                .style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(msg, inner);
+            return;
+        }
+
+        if cache.backlog_items.is_empty() {
+            let msg = Paragraph::new("  No backlog items found.");
+            frame.render_widget(msg, inner);
+            return;
+        }
+
+        // Build list items
+        let items: Vec<ListItem> = cache
+            .backlog_items
+            .iter()
+            .map(|item| {
+                ListItem::new(Line::from(format!("{} - {}", item.number, item.description)))
+            })
+            .collect();
+
+        let list = List::new(items)
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("> ");
+
+        let mut list_state = ListState::default();
+        list_state.select(Some(cache.backlog_selected));
+
+        if cache.backlog_expanded {
+            // Split-pane: 50/50 list on top, content on bottom
+            let chunks = Layout::vertical([
+                Constraint::Percentage(50),
+                Constraint::Percentage(50),
+            ])
+            .split(inner);
+
+            frame.render_stateful_widget(list, chunks[0], &mut list_state);
+
+            // Content pane for selected item
+            let selected_item = cache.backlog_items.get(cache.backlog_selected);
+            let title = selected_item
+                .map(|item| format!(" Content: {} ", item.dir_name))
+                .unwrap_or_else(|| " Content ".to_string());
+            let content_block = Block::default().borders(Borders::ALL).title(title);
+
+            let content_text = selected_item
+                .and_then(|item| item.content.as_deref())
+                .unwrap_or("  No content available");
+
+            let style = if selected_item.and_then(|item| item.content.as_ref()).is_none() {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default()
+            };
+
+            let content_paragraph = Paragraph::new(content_text)
+                .style(style)
+                .block(content_block);
+            frame.render_widget(content_paragraph, chunks[1]);
+        } else {
+            // Full-height list, no content pane
+            frame.render_stateful_widget(list, inner, &mut list_state);
+        }
     }
 
     /// Render the git history tab with scrollable log, mode indicator, and diff stat pane.
@@ -886,7 +931,7 @@ impl DetailScreen {
         match sub_view {
             DetailSubView::PhaseList => self.render_phase_list(frame, content_area, ctx),
             DetailSubView::RoadmapViz => self.render_roadmap(frame, content_area, ctx),
-            DetailSubView::Backlog => self.render_backlog_placeholder(frame, content_area, ctx),
+            DetailSubView::Backlog => self.render_backlog_tab(frame, content_area, ctx),
             DetailSubView::GitHistory => self.render_git_tab(frame, content_area, ctx),
         }
     }
