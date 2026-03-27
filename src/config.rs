@@ -29,6 +29,8 @@ pub struct HooksConfig {
 pub struct Preferences {
     #[serde(default)]
     pub hooks: HooksConfig,
+    #[serde(default)]
+    pub gsd_integration: bool,
 }
 
 impl Config {

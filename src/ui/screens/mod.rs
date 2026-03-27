@@ -49,6 +49,7 @@ pub struct ProjectViewCache {
     pub loading_backlog: bool,
     pub loading_git: bool,
     pub loading_diff: bool,
+    pub pipeline_selected: usize,
 }
 
 impl Default for ProjectViewCache {
@@ -64,6 +65,7 @@ impl Default for ProjectViewCache {
             loading_backlog: false,
             loading_git: false,
             loading_diff: false,
+            pipeline_selected: 0,
         }
     }
 }

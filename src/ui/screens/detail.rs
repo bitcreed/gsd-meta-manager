@@ -16,7 +16,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs};
 use ratatui::Frame;
 
-const TAB_TITLES: [&str; 4] = ["1:Phases", "2:Roadmap", "3:Backlog", "4:Git"];
+const TAB_TITLES: [&str; 5] = ["1:Phases", "2:Roadmap", "3:Backlog", "4:Git", "5:Pipeline"];
 
 pub struct DetailScreen {
     pub alias: String,
@@ -38,6 +38,7 @@ fn tab_index(sub_view: &DetailSubView) -> usize {
         DetailSubView::RoadmapViz => 1,
         DetailSubView::Backlog => 2,
         DetailSubView::GitHistory => 3,
+        DetailSubView::Pipeline => 4,
     }
 }
 
@@ -47,6 +48,7 @@ fn sub_view_from_index(index: usize) -> DetailSubView {
         1 => DetailSubView::RoadmapViz,
         2 => DetailSubView::Backlog,
         3 => DetailSubView::GitHistory,
+        4 => DetailSubView::Pipeline,
         _ => DetailSubView::PhaseList,
     }
 }
@@ -238,6 +240,7 @@ impl Screen for DetailScreen {
             KeyCode::Char('2') => switch_to_tab(&self.alias, 1, &mut self.scroll_offset, ctx),
             KeyCode::Char('3') => switch_to_tab(&self.alias, 2, &mut self.scroll_offset, ctx),
             KeyCode::Char('4') => switch_to_tab(&self.alias, 3, &mut self.scroll_offset, ctx),
+            KeyCode::Char('5') => switch_to_tab(&self.alias, 4, &mut self.scroll_offset, ctx),
             // Tab switching via arrow keys
             KeyCode::Left => {
                 if current_idx > 0 {
@@ -247,7 +250,7 @@ impl Screen for DetailScreen {
                 }
             }
             KeyCode::Right => {
-                if current_idx < 3 {
+                if current_idx < TAB_TITLES.len() - 1 {
                     switch_to_tab(&self.alias, current_idx + 1, &mut self.scroll_offset, ctx)
                 } else {
                     ScreenAction::None
@@ -439,6 +442,7 @@ impl Screen for DetailScreen {
             DetailSubView::RoadmapViz => self.render_roadmap(frame, content_area, ctx),
             DetailSubView::Backlog => self.render_backlog_tab(frame, content_area, ctx),
             DetailSubView::GitHistory => self.render_git_tab(frame, content_area, ctx),
+            DetailSubView::Pipeline => self.render_pipeline_tab(frame, content_area, ctx),
         }
 
         // Render footer with tab-appropriate hints
@@ -902,6 +906,15 @@ impl DetailScreen {
         }
     }
 
+    fn render_pipeline_tab(&self, frame: &mut Frame, area: Rect, _ctx: &AppContext) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Pipeline (coming in 07-02) ");
+        let placeholder = Paragraph::new("Execution flow pipeline view will be rendered here.")
+            .block(block);
+        frame.render_widget(placeholder, area);
+    }
+
     /// Render just the main content area (without footer), used by EnqueueScreen overlay.
     pub fn render_main_only(&self, frame: &mut Frame, main_area: Rect, ctx: &AppContext) {
         let alias = &self.alias;
@@ -943,6 +956,7 @@ impl DetailScreen {
             DetailSubView::RoadmapViz => self.render_roadmap(frame, content_area, ctx),
             DetailSubView::Backlog => self.render_backlog_tab(frame, content_area, ctx),
             DetailSubView::GitHistory => self.render_git_tab(frame, content_area, ctx),
+            DetailSubView::Pipeline => self.render_pipeline_tab(frame, content_area, ctx),
         }
     }
 }
@@ -953,7 +967,7 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
         Span::raw("  "),
         Span::styled("[Esc]", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("back  "),
-        Span::styled("[1-4]", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled("[1-5]", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("tabs  "),
         Span::styled("[j/k]", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("scroll  "),
