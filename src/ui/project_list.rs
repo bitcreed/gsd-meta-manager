@@ -39,7 +39,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 fn render_main(frame: &mut Frame, app: &mut App, area: Rect) {
     let outer_block = Block::default()
         .borders(Borders::ALL)
-        .title(" GSD Manager ");
+        .title(" GSD Meta Manager ");
 
     if app.config.projects.is_empty() && app.input_mode == InputMode::Normal {
         // Empty state
