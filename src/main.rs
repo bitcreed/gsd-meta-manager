@@ -25,9 +25,9 @@ use registry::{add_project, list_projects, remove_project};
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing subscriber with file appender before anything else
     let log_dir = dirs::data_local_dir()
-        .map(|d| d.join("gsd-manager"))
+        .map(|d| d.join("gsd-meta-manager"))
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    let file_appender = tracing_appender::rolling::daily(&log_dir, "gsd-manager.log");
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "gsd-meta-manager.log");
     tracing_subscriber::fmt()
         .with_writer(file_appender)
         .with_ansi(false)

@@ -1,4 +1,4 @@
-# GSD Manager
+# GSD Meta Manager
 
 ## What This Is
 

@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "gsd-manager", about = "TUI command center for GSD projects")]
+#[command(name = "gsd-meta-manager", about = "TUI command center for GSD projects")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
