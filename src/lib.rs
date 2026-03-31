@@ -1,4 +1,5 @@
 pub mod action;
+pub mod archive;
 pub mod app;
 pub mod change_tracker;
 pub mod cli;

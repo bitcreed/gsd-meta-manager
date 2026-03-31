@@ -32,4 +32,13 @@ pub enum Action {
     SessionsDetected {
         sessions: Vec<crate::session_detector::ClaudeSession>,
     },
+    ArchiveMilestonesDiscovered {
+        alias: String,
+        milestones: Vec<String>,
+    },
+    ArchiveLoaded {
+        alias: String,
+        milestone: String,
+        data: crate::archive::MilestoneArchive,
+    },
 }

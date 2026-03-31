@@ -334,6 +334,12 @@ impl App {
                     self.needs_redraw = true;
                 }
             }
+            Action::ArchiveMilestonesDiscovered { .. } => {
+                // Handled in Plan 02 when archive tab UI is wired
+            }
+            Action::ArchiveLoaded { .. } => {
+                // Handled in Plan 02 when archive tab UI is wired
+            }
         }
     }
 
