@@ -1,4 +1,4 @@
-use crate::action::Action;
+use gsd_meta_manager::action::Action;
 use crossterm::event::{Event, EventStream, KeyEventKind};
 use futures::StreamExt;
 use std::time::Duration;

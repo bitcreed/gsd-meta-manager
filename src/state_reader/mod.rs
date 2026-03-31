@@ -1,6 +1,5 @@
 pub mod state_md;
 pub mod roadmap_md;
-#[allow(dead_code)]
 pub mod config_json;
 pub mod queue_md;
 pub mod disk_status;

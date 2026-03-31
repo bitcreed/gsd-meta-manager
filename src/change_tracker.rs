@@ -9,51 +9,26 @@ pub struct ChangeEvent {
     pub timestamp: Instant,
 }
 
-/// Snapshot of project state for change comparison.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct ProjectSnapshot {
-    status: String,
-    completed_phases: u32,
-    completed_plans: u32,
-    phase_names: Vec<(String, bool)>, // (name, completed)
-}
-
-impl ProjectSnapshot {
-    fn from_state(state: &ProjectState) -> Self {
-        Self {
-            status: state.status.clone(),
-            completed_phases: state.completed_phases,
-            completed_plans: state.completed_plans,
-            phase_names: state
-                .phases
-                .iter()
-                .map(|p| (p.name.clone(), p.completed))
-                .collect(),
-        }
-    }
-}
-
 /// In-memory change tracker that detects status transitions and phase completions
 /// since app launch. Per D-07: in-memory only, no persistence. Per D-08: only tracks
 /// phase completions and status transitions.
 pub struct ChangeTracker {
-    initial_snapshots: HashMap<String, ProjectSnapshot>,
     changes: HashMap<String, Vec<ChangeEvent>>,
 }
 
 impl ChangeTracker {
     pub fn new() -> Self {
         Self {
-            initial_snapshots: HashMap::new(),
             changes: HashMap::new(),
         }
     }
 
     /// Record the initial state of a project at app startup.
-    pub fn record_initial(&mut self, alias: &str, state: &ProjectState) {
-        self.initial_snapshots
-            .insert(alias.to_string(), ProjectSnapshot::from_state(state));
+    /// Currently a no-op; retained for API compatibility (change detection
+    /// uses old/new comparison in `detect_changes` instead).
+    pub fn record_initial(&mut self, _alias: &str, _state: &ProjectState) {
+        // Intentionally empty -- initial snapshots were removed as dead code.
+        // Change detection compares old vs new state directly.
     }
 
     /// Compare old and new states, generating change events for status transitions

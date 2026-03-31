@@ -23,20 +23,20 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::mpsc::UnboundedSender;
 
-#[allow(unused)]
 pub trait Screen {
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers, ctx: &mut AppContext) -> ScreenAction;
     fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext);
     fn name(&self) -> &str;
 }
 
-#[allow(dead_code)]
 pub enum ScreenAction {
     None,
     Push(Box<dyn Screen>),
     Pop,
     Quit,
     SetStatusMessage(String),
+    /// Used by archive browser (Phase 12) to dispatch async load actions.
+    #[allow(dead_code)]
     DispatchAction(Action),
 }
 

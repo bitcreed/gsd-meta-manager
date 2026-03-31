@@ -1,25 +1,16 @@
-mod action;
-mod app;
-mod change_tracker;
-mod cli;
-mod config;
-mod error;
 mod event;
-mod project_creator;
-mod registry;
-mod session_detector;
-mod state_reader;
 mod tui;
-mod ui;
-mod watcher;
 
-use app::App;
-use watcher::FileWatcher;
+use gsd_meta_manager::action;
+use gsd_meta_manager::app::App;
+use gsd_meta_manager::cli::{Cli, Commands};
+use gsd_meta_manager::config::{load_config, save_config, Config};
+use gsd_meta_manager::registry::{add_project, list_projects, remove_project};
+use gsd_meta_manager::watcher::FileWatcher;
+use gsd_meta_manager::ui;
+
 use clap::Parser;
-use cli::{Cli, Commands};
-use config::{load_config, save_config, Config};
 use event::EventBus;
-use registry::{add_project, list_projects, remove_project};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

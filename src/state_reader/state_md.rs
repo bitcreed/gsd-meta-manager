@@ -1,7 +1,6 @@
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Default, Clone)]
-#[allow(dead_code)]
 pub struct StateFrontmatter {
     #[serde(default)]
     pub gsd_state_version: f64,
@@ -22,7 +21,6 @@ pub struct StateFrontmatter {
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
-#[allow(dead_code)]
 pub struct ProgressInfo {
     #[serde(default)]
     pub total_phases: u32,

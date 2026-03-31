@@ -4,8 +4,6 @@ use std::path::Path;
 pub struct BacklogItem {
     pub dir_name: String,
     pub number: String,
-    #[allow(dead_code)]
-    pub slug: String,
     pub description: String,
     pub content: Option<String>,
 }
@@ -58,7 +56,6 @@ pub fn parse_backlog_items(planning_dir: &Path) -> Vec<BacklogItem> {
             Some(BacklogItem {
                 dir_name,
                 number,
-                slug,
                 description,
                 content: None,
             })
