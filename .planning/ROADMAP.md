@@ -44,7 +44,7 @@ Phase 09: Claude Session Management (2 plans, complete)
 **Milestone Goal:** Clean up tech debt, add paused-project detection, build milestone archive browsing in the detail view, and research queue execution integration with GSD.
 
 - [x] **Phase 10: Tech Debt Cleanup** - Resolve compiler warnings, fix stale integration test, establish clean baseline (completed 2026-03-31)
-- [ ] **Phase 11: Paused Project Detection** - Show pause badge on dashboard for projects with HANDOFF.md/HANDOFF.json
+- [x] **Phase 11: Paused Project Detection** - Show pause badge on dashboard for projects with HANDOFF.md/HANDOFF.json (completed 2026-03-31)
 - [ ] **Phase 12: Milestone Archive Browser** - Browse completed milestones and drill into past phase artifacts from the detail view
 - [ ] **Phase 13: Queue Execution Research** - Document GSD autonomous mode, hook points, and design for auto-continue from QUEUE.md
 
@@ -70,7 +70,7 @@ Plans:
   1. User sees a pause badge (distinct icon/color) on dashboard rows for any project with a HANDOFF.md or HANDOFF.json file in `.planning/`
   2. Pause badge takes priority over session-active indicator when both conditions are true
   3. Pause detection updates automatically when HANDOFF files appear or are removed (via existing file watcher)
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 
 Plans:
 - [ ] 11-01-PLAN.md -- HANDOFF detection, dashboard badge, and detail view pause context
@@ -84,11 +84,12 @@ Plans:
   2. User can select a milestone and see its phases, then select a phase to see its artifact files
   3. User can view a selected artifact file with styled rendering (headers, bold, lists, code blocks distinguishable from plain text)
   4. Archive data loads asynchronously without blocking the TUI render loop, and completed milestone data is cached across tab switches
-**Plans**: TBD
-**UI hint**: yes
+**Plans:** 3 plans
 
 Plans:
-- [ ] TBD
+- [ ] 12-01-PLAN.md -- Archive data layer: types, discovery, loading, markdown renderer
+- [ ] 12-02-PLAN.md -- UI integration: Archive tab, state fields, key handling, rendering
+- [ ] 12-03-PLAN.md -- Build verification and visual UAT checkpoint
 
 ### Phase 13: Queue Execution Research
 **Goal**: A design document exists that enables v1.3 implementation of queue execution without further research
@@ -124,6 +125,6 @@ Phases execute in numeric order: 10 -> 11 -> 12 -> 13
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 10. Tech Debt Cleanup | v1.2 | 1/1 | Complete    | 2026-03-31 |
-| 11. Paused Project Detection | v1.2 | 0/1 | Not started | - |
-| 12. Milestone Archive Browser | v1.2 | 0/0 | Not started | - |
+| 11. Paused Project Detection | v1.2 | 0/1 | Complete    | 2026-03-31 |
+| 12. Milestone Archive Browser | v1.2 | 0/3 | Not started | - |
 | 13. Queue Execution Research | v1.2 | 0/0 | Not started | - |
