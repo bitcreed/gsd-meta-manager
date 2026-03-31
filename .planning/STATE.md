@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Housekeeping & Archive Browser
-status: planning
-stopped_at: Completed 11-01-PLAN.md
-last_updated: "2026-03-31T21:42:11.062Z"
-last_activity: 2026-03-31 -- Roadmap created for v1.2
+status: executing
+stopped_at: Completed 12-01-PLAN.md
+last_updated: "2026-03-31T22:37:34.516Z"
+last_activity: 2026-03-31
 progress:
   total_phases: 5
-  completed_phases: 0
-  total_plans: 1
-  completed_plans: 1
+  completed_phases: 2
+  total_plans: 5
+  completed_plans: 3
   percent: 0
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 10 - Tech Debt Cleanup
+**Current focus:** Phase 12 — Milestone Archive Browser
 
 ## Current Position
 
-Phase: 10 of 13 (Tech Debt Cleanup)
-Plan: 0 of TBD in current phase
-Status: Ready to plan
-Last activity: 2026-03-31 -- Roadmap created for v1.2
+Phase: 12 (Milestone Archive Browser) — EXECUTING
+Plan: 2 of 3
+Status: Ready to execute
+Last activity: 2026-03-31
 
 Progress: [..........] 0%
 
@@ -53,6 +53,7 @@ Progress: [..........] 0%
 
 *Updated after each plan completion*
 | Phase 11 P01 | 3min | 2 tasks | 4 files |
+| Phase 12 P01 | 2min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -66,6 +67,7 @@ Recent decisions affecting current work:
 - [v1.2]: Archive browser uses existing ListState pattern (not tui-tree-widget)
 - [v1.2]: HANDOFF.json requires content check (not existence-only) to avoid stale badges
 - [Phase 11]: HANDOFF file detection with non-empty content validation for pause badges
+- [Phase 12]: Archive module in separate src/archive.rs file (not in detail.rs) for testability
 
 ### Pending Todos
 
@@ -84,6 +86,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-31T21:42:11.059Z
-Stopped at: Completed 11-01-PLAN.md
+Last session: 2026-03-31T22:37:34.512Z
+Stopped at: Completed 12-01-PLAN.md
 Resume file: None

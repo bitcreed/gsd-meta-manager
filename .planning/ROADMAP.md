@@ -84,10 +84,10 @@ Plans:
   2. User can select a milestone and see its phases, then select a phase to see its artifact files
   3. User can view a selected artifact file with styled rendering (headers, bold, lists, code blocks distinguishable from plain text)
   4. Archive data loads asynchronously without blocking the TUI render loop, and completed milestone data is cached across tab switches
-**Plans:** 3 plans
+**Plans:** 1/3 plans executed
 
 Plans:
-- [ ] 12-01-PLAN.md -- Archive data layer: types, discovery, loading, markdown renderer
+- [x] 12-01-PLAN.md -- Archive data layer: types, discovery, loading, markdown renderer
 - [ ] 12-02-PLAN.md -- UI integration: Archive tab, state fields, key handling, rendering
 - [ ] 12-03-PLAN.md -- Build verification and visual UAT checkpoint
 
@@ -126,5 +126,5 @@ Phases execute in numeric order: 10 -> 11 -> 12 -> 13
 |-------|-----------|----------------|--------|-----------|
 | 10. Tech Debt Cleanup | v1.2 | 1/1 | Complete    | 2026-03-31 |
 | 11. Paused Project Detection | v1.2 | 0/1 | Complete    | 2026-03-31 |
-| 12. Milestone Archive Browser | v1.2 | 0/3 | Not started | - |
+| 12. Milestone Archive Browser | v1.2 | 1/3 | In Progress|  |
 | 13. Queue Execution Research | v1.2 | 0/0 | Not started | - |
