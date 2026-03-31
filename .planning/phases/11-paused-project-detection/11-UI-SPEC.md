@@ -36,7 +36,7 @@ Terminal cell units (1 cell = 1 character width or height). All spacing in whole
 | md | 3 cells | Section padding within detail view |
 | lg | 4 cells | Layout margins (detail view sides) |
 
-Exceptions: none -- all values follow existing ratatui layout patterns in the codebase.
+Exception: Terminal cell units use a base-1 character grid. Standard base-4 pixel constraints do not apply. Values xs=1, sm=2, md=3, lg=4 represent the minimum practical increments for a monospace cell layout. These match existing ratatui layout patterns in the codebase.
 
 ---
 
