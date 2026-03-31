@@ -70,10 +70,10 @@ Plans:
   1. User sees a pause badge (distinct icon/color) on dashboard rows for any project with a HANDOFF.md or HANDOFF.json file in `.planning/`
   2. Pause badge takes priority over session-active indicator when both conditions are true
   3. Pause detection updates automatically when HANDOFF files appear or are removed (via existing file watcher)
-**Plans**: TBD
+**Plans:** 1 plan
 
 Plans:
-- [ ] TBD
+- [ ] 11-01-PLAN.md -- HANDOFF detection, dashboard badge, and detail view pause context
 
 ### Phase 12: Milestone Archive Browser
 **Goal**: Users can browse completed milestones and drill into past phase artifacts without leaving the TUI
@@ -123,7 +123,7 @@ Phases execute in numeric order: 10 -> 11 -> 12 -> 13
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 10. Tech Debt Cleanup | v1.2 | 1/1 | Complete   | 2026-03-31 |
-| 11. Paused Project Detection | v1.2 | 0/0 | Not started | - |
+| 10. Tech Debt Cleanup | v1.2 | 1/1 | Complete    | 2026-03-31 |
+| 11. Paused Project Detection | v1.2 | 0/1 | Not started | - |
 | 12. Milestone Archive Browser | v1.2 | 0/0 | Not started | - |
 | 13. Queue Execution Research | v1.2 | 0/0 | Not started | - |
