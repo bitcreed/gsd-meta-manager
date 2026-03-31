@@ -161,11 +161,7 @@ pub fn find_phase_dir(planning_dir: &Path, phase_number: &str) -> Option<PathBuf
             {
                 if let Ok(phase_entries) = std::fs::read_dir(milestone_entry.path()) {
                     for phase_entry in phase_entries.flatten() {
-                        if phase_entry
-                            .file_type()
-                            .map(|t| t.is_dir())
-                            .unwrap_or(false)
-                        {
+                        if phase_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                             if let Some(name) = phase_entry.file_name().to_str() {
                                 if name.starts_with(&prefix) {
                                     return Some(phase_entry.path());
@@ -202,11 +198,7 @@ pub fn infer_phase_status(planning_dir: &Path, phase_number: &str) -> DiskInfere
             {
                 if let Ok(phase_entries) = std::fs::read_dir(milestone_entry.path()) {
                     for phase_entry in phase_entries.flatten() {
-                        if phase_entry
-                            .file_type()
-                            .map(|t| t.is_dir())
-                            .unwrap_or(false)
-                        {
+                        if phase_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                             if let Some(name) = phase_entry.file_name().to_str() {
                                 if name.starts_with(&prefix) {
                                     // Archived phase -- always Complete
@@ -330,8 +322,14 @@ mod tests {
         fs::write(dir.path().join("05-02-PLAN.md"), "plan2").unwrap();
         fs::write(dir.path().join("05-01-SUMMARY.md"), "summary1").unwrap();
         let result = infer_disk_status(dir.path());
-        assert!(result.has_plans, "has_plans should be true when plans exist");
-        assert!(result.has_summaries, "has_summaries should be true when summaries exist");
+        assert!(
+            result.has_plans,
+            "has_plans should be true when plans exist"
+        );
+        assert!(
+            result.has_summaries,
+            "has_summaries should be true when summaries exist"
+        );
         assert_eq!(result.plan_count, 2);
         assert_eq!(result.summary_count, 1);
     }
@@ -358,7 +356,11 @@ mod tests {
     fn test_archived_phase_returns_complete() {
         let dir = tempdir().unwrap();
         // Create milestone archive structure: milestones/v1.0/05-something/
-        let milestone_dir = dir.path().join("milestones").join("v1.0").join("05-state-reader");
+        let milestone_dir = dir
+            .path()
+            .join("milestones")
+            .join("v1.0")
+            .join("05-state-reader");
         fs::create_dir_all(&milestone_dir).unwrap();
         // Put some content in the archived phase
         fs::write(milestone_dir.join("05-01-PLAN.md"), "plan").unwrap();
@@ -384,7 +386,11 @@ mod tests {
     #[test]
     fn test_find_phase_dir_in_milestones() {
         let dir = tempdir().unwrap();
-        let milestone_phase = dir.path().join("milestones").join("v1.0").join("03-something");
+        let milestone_phase = dir
+            .path()
+            .join("milestones")
+            .join("v1.0")
+            .join("03-something");
         fs::create_dir_all(&milestone_phase).unwrap();
         fs::create_dir_all(dir.path().join("phases")).unwrap();
 

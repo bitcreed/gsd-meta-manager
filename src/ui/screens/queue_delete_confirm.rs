@@ -24,7 +24,12 @@ impl QueueDeleteConfirmScreen {
 }
 
 impl Screen for QueueDeleteConfirmScreen {
-    fn handle_key(&mut self, code: KeyCode, _modifiers: KeyModifiers, ctx: &mut AppContext) -> ScreenAction {
+    fn handle_key(
+        &mut self,
+        code: KeyCode,
+        _modifiers: KeyModifiers,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
         match code {
             KeyCode::Char('y') => {
                 if let Some(project) = ctx.config.projects.get(&self.alias) {
@@ -33,10 +38,8 @@ impl Screen for QueueDeleteConfirmScreen {
                     if self.index < actions.len() {
                         actions.remove(self.index);
                         if let Err(e) = queue_md::save_queue(&planning_dir, &actions) {
-                            ctx.status_message = Some((
-                                format!("Queue error: {}", e),
-                                std::time::Instant::now(),
-                            ));
+                            ctx.status_message =
+                                Some((format!("Queue error: {}", e), std::time::Instant::now()));
                         } else {
                             ctx.status_message = Some((
                                 format!("Removed: {}", self.command_text),
@@ -81,10 +84,7 @@ impl Screen for QueueDeleteConfirmScreen {
         } else {
             self.command_text.clone()
         };
-        let prompt = format!(
-            "  Remove \"{}\" from queue? [y/n]",
-            display_text,
-        );
+        let prompt = format!("  Remove \"{}\" from queue? [y/n]", display_text,);
         let line = Line::from(Span::styled(
             prompt,
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),

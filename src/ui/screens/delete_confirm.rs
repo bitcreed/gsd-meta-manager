@@ -19,7 +19,12 @@ impl DeleteConfirmScreen {
 }
 
 impl Screen for DeleteConfirmScreen {
-    fn handle_key(&mut self, code: KeyCode, _modifiers: KeyModifiers, ctx: &mut AppContext) -> ScreenAction {
+    fn handle_key(
+        &mut self,
+        code: KeyCode,
+        _modifiers: KeyModifiers,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
         match code {
             KeyCode::Char('y') => {
                 do_remove_project(ctx, &self.alias);
@@ -84,10 +89,8 @@ fn do_remove_project(ctx: &mut AppContext, alias: &str) {
             ctx.detail_sub_view_per_project.remove(alias);
             ctx.last_refresh.remove(alias);
 
-            ctx.status_message = Some((
-                format!("Removed \"{}\"", alias),
-                std::time::Instant::now(),
-            ));
+            ctx.status_message =
+                Some((format!("Removed \"{}\"", alias), std::time::Instant::now()));
 
             ctx.recompute_filtered_aliases();
             if ctx.filtered_aliases.is_empty() {

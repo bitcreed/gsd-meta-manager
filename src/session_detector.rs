@@ -20,16 +20,11 @@ pub fn detect_sessions() -> Vec<ClaudeSession> {
         None => return Vec::new(),
     };
 
-    pids.into_iter()
-        .filter_map(|pid| build_session(pid))
-        .collect()
+    pids.into_iter().filter_map(build_session).collect()
 }
 
 fn get_claude_pids() -> Option<Vec<u32>> {
-    let output = Command::new("pgrep")
-        .args(["-x", "claude"])
-        .output()
-        .ok()?;
+    let output = Command::new("pgrep").args(["-x", "claude"]).output().ok()?;
 
     if !output.status.success() {
         return Some(Vec::new());

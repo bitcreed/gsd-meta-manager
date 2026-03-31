@@ -36,8 +36,7 @@ pub fn create_project(name: &str, path: &Path, hooks: &HooksConfig) -> anyhow::R
 
     // Run pre_create hook if configured
     if let Some(ref hook_cmd) = hooks.pre_create {
-        execute_hook(hook_cmd, name, path, &alias)
-            .context("Pre-create hook failed")?;
+        execute_hook(hook_cmd, name, path, &alias).context("Pre-create hook failed")?;
     }
 
     // Create the project directory
@@ -59,8 +58,7 @@ pub fn create_project(name: &str, path: &Path, hooks: &HooksConfig) -> anyhow::R
 
     // Run post_create hook if configured
     if let Some(ref hook_cmd) = hooks.post_create {
-        execute_hook(hook_cmd, name, path, &alias)
-            .context("Post-create hook failed")?;
+        execute_hook(hook_cmd, name, path, &alias).context("Post-create hook failed")?;
     }
 
     Ok(())
@@ -120,10 +118,7 @@ pub fn tab_complete_path(partial: &str) -> Vec<String> {
             if prefix.is_empty() {
                 true
             } else {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(&prefix)
+                entry.file_name().to_string_lossy().starts_with(&prefix)
             }
         })
         .map(|entry| {

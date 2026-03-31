@@ -8,6 +8,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+use std::path::Path;
 use std::path::PathBuf;
 
 enum AddPhase {
@@ -28,7 +29,12 @@ impl AddProjectScreen {
 }
 
 impl Screen for AddProjectScreen {
-    fn handle_key(&mut self, code: KeyCode, _modifiers: KeyModifiers, ctx: &mut AppContext) -> ScreenAction {
+    fn handle_key(
+        &mut self,
+        code: KeyCode,
+        _modifiers: KeyModifiers,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
         match &self.phase {
             AddPhase::Alias => self.handle_alias_key(code, ctx),
             AddPhase::Path { alias } => {
@@ -94,8 +100,7 @@ impl AddProjectScreen {
                     return ScreenAction::None;
                 }
                 if alias.contains(char::is_whitespace) {
-                    ctx.error_message =
-                        Some("Alias cannot contain whitespace.".to_string());
+                    ctx.error_message = Some("Alias cannot contain whitespace.".to_string());
                     ctx.needs_redraw = true;
                     return ScreenAction::None;
                 }
@@ -123,7 +128,12 @@ impl AddProjectScreen {
         }
     }
 
-    fn handle_path_key(&mut self, code: KeyCode, ctx: &mut AppContext, alias: &str) -> ScreenAction {
+    fn handle_path_key(
+        &mut self,
+        code: KeyCode,
+        ctx: &mut AppContext,
+        alias: &str,
+    ) -> ScreenAction {
         match code {
             KeyCode::Char(c) => {
                 ctx.input_buffer.push(c);
@@ -152,8 +162,8 @@ impl AddProjectScreen {
     }
 }
 
-fn do_add_project(ctx: &mut AppContext, alias: &str, path: &PathBuf) {
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+fn do_add_project(ctx: &mut AppContext, alias: &str, path: &Path) {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
     match registry::add_project(&mut ctx.config, alias, &canonical) {
         Ok(()) => {
@@ -166,10 +176,7 @@ fn do_add_project(ctx: &mut AppContext, alias: &str, path: &PathBuf) {
             let state = state_reader::parse_project_state(&planning_dir);
             ctx.project_states.insert(alias.to_string(), state);
 
-            ctx.status_message = Some((
-                format!("Added \"{}\"", alias),
-                std::time::Instant::now(),
-            ));
+            ctx.status_message = Some((format!("Added \"{}\"", alias), std::time::Instant::now()));
             ctx.input_buffer.clear();
             ctx.error_message = None;
 
@@ -207,10 +214,7 @@ fn render_input_footer(frame: &mut Frame, area: Rect, ctx: &AppContext, label: &
 
     if let Some(err) = &ctx.error_message {
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            err.clone(),
-            Style::default().fg(Color::Red),
-        ));
+        spans.push(Span::styled(err.clone(), Style::default().fg(Color::Red)));
     }
 
     let line = Line::from(spans);

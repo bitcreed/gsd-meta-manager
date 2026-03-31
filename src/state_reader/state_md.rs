@@ -43,7 +43,7 @@ pub fn extract_frontmatter(content: &str) -> Option<&str> {
     }
     // Skip the opening ---
     let after_open = &content[3..];
-    let after_open = after_open.trim_start_matches(|c: char| c == '\r' || c == '\n');
+    let after_open = after_open.trim_start_matches(['\r', '\n']);
 
     // Find closing --- (must be on its own line)
     if let Some(end) = after_open.find("\n---") {

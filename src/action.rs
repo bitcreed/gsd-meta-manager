@@ -1,5 +1,5 @@
+use crate::state_reader::git_ops::{GitDiffStat, GitLogEntry};
 use crate::state_reader::ProjectState;
-use crate::state_reader::git_ops::{GitLogEntry, GitDiffStat};
 use crossterm::event::KeyEvent;
 
 #[derive(Debug, Clone)]

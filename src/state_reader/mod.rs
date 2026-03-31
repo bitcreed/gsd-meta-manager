@@ -1,10 +1,10 @@
-pub mod state_md;
-pub mod roadmap_md;
-pub mod config_json;
-pub mod queue_md;
-pub mod disk_status;
 pub mod backlog;
+pub mod config_json;
+pub mod disk_status;
 pub mod git_ops;
+pub mod queue_md;
+pub mod roadmap_md;
+pub mod state_md;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -52,7 +52,9 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
             // Derive current_phase from stopped_at, completion status, or phase number
             if !fm.stopped_at.is_empty() {
                 state.current_phase = fm.stopped_at.clone();
-            } else if fm.progress.completed_phases >= fm.progress.total_phases && fm.progress.total_phases > 0 {
+            } else if fm.progress.completed_phases >= fm.progress.total_phases
+                && fm.progress.total_phases > 0
+            {
                 state.current_phase = if !fm.milestone.is_empty() {
                     format!("{} Complete", fm.milestone)
                 } else {

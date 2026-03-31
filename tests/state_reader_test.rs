@@ -140,7 +140,8 @@ fn test_parse_gsd_config_missing_fields() {
 
 #[test]
 fn test_parse_gsd_config_extra_fields_ignored() {
-    let content = r#"{"mode": "yolo", "granularity": "coarse", "extra_field": true, "workflow": {}}"#;
+    let content =
+        r#"{"mode": "yolo", "granularity": "coarse", "extra_field": true, "workflow": {}}"#;
     let config = parse_gsd_config(content).unwrap();
     assert_eq!(config.mode, "yolo");
 }

@@ -8,23 +8,28 @@ pub mod normal;
 pub mod queue_delete_confirm;
 
 use crate::action::Action;
+use crate::app::DetailSubView;
 use crate::change_tracker::ChangeTracker;
 use crate::config::Config;
-use crate::state_reader::ProjectState;
 use crate::state_reader::backlog::BacklogItem;
-use crate::state_reader::git_ops::{GitLogEntry, GitDiffStat};
+use crate::state_reader::git_ops::{GitDiffStat, GitLogEntry};
+use crate::state_reader::ProjectState;
 use crate::watcher::FileWatcher;
-use crate::app::DetailSubView;
 use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::layout::Rect;
 use ratatui::widgets::TableState;
 use ratatui::Frame;
-use ratatui::layout::Rect;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub trait Screen {
-    fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers, ctx: &mut AppContext) -> ScreenAction;
+    fn handle_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        ctx: &mut AppContext,
+    ) -> ScreenAction;
     fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext);
     fn name(&self) -> &str;
 }
@@ -37,9 +42,10 @@ pub enum ScreenAction {
     SetStatusMessage(String),
     /// Used by archive browser (Phase 12) to dispatch async load actions.
     #[allow(dead_code)]
-    DispatchAction(Action),
+    DispatchAction(Box<Action>),
 }
 
+#[derive(Default)]
 pub struct ProjectViewCache {
     pub backlog_items: Vec<BacklogItem>,
     pub backlog_selected: usize,
@@ -54,26 +60,6 @@ pub struct ProjectViewCache {
     pub pipeline_selected: usize,
     pub queue_selected: usize,
     pub sessions_selected: usize,
-}
-
-impl Default for ProjectViewCache {
-    fn default() -> Self {
-        Self {
-            backlog_items: Vec::new(),
-            backlog_selected: 0,
-            backlog_expanded: false,
-            git_entries: Vec::new(),
-            git_selected: 0,
-            git_planning_only: false,
-            git_diff_stat: None,
-            loading_backlog: false,
-            loading_git: false,
-            loading_diff: false,
-            pipeline_selected: 0,
-            queue_selected: 0,
-            sessions_selected: 0,
-        }
-    }
 }
 
 pub struct AppContext {
@@ -102,7 +88,7 @@ impl AppContext {
     /// Get sorted project aliases for consistent ordering in the table.
     pub fn sorted_aliases(&self) -> Vec<String> {
         let mut aliases: Vec<String> = self.config.projects.keys().cloned().collect();
-        aliases.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        aliases.sort_by_key(|a| a.to_lowercase());
         aliases
     }
 
@@ -114,7 +100,7 @@ impl AppContext {
     }
 
     pub fn recompute_filtered_aliases(&mut self) {
-        use crate::app::{parse_filter, format_phase_display, FilterColumn};
+        use crate::app::{format_phase_display, parse_filter, FilterColumn};
 
         let all = self.sorted_aliases();
         if self.filter_text.is_empty() {
@@ -129,19 +115,17 @@ impl AppContext {
                 let state = self.project_states.get(alias);
                 match column {
                     FilterColumn::Name => alias.to_lowercase().contains(&term_lower),
-                    FilterColumn::Phase => state.map_or(false, |s| {
+                    FilterColumn::Phase => state.is_some_and(|s| {
                         format_phase_display(s).to_lowercase().contains(&term_lower)
                     }),
                     FilterColumn::Status => {
-                        state.map_or(false, |s| s.status.to_lowercase().contains(&term_lower))
+                        state.is_some_and(|s| s.status.to_lowercase().contains(&term_lower))
                     }
                     FilterColumn::All => {
                         alias.to_lowercase().contains(&term_lower)
-                            || state.map_or(false, |s| {
+                            || state.is_some_and(|s| {
                                 s.status.to_lowercase().contains(&term_lower)
-                                    || format_phase_display(s)
-                                        .to_lowercase()
-                                        .contains(&term_lower)
+                                    || format_phase_display(s).to_lowercase().contains(&term_lower)
                             })
                     }
                 }

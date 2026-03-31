@@ -12,12 +12,9 @@ pub struct RoadmapPhase {
 
 /// Parse ROADMAP.md content and extract phase checklist items with per-phase plan counts.
 pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
-    let phase_re = Regex::new(
-        r"- \[([ xX])\] \*\*Phase ([0-9.]+): (.+?)\*\*\s*[-\x{2014}]\s*(.*)"
-    ).unwrap();
-    let plan_re = Regex::new(
-        r"^\s*- \[([ xX])\] (?:\d+-\d+-)?PLAN\.md"
-    ).unwrap();
+    let phase_re =
+        Regex::new(r"- \[([ xX])\] \*\*Phase ([0-9.]+): (.+?)\*\*\s*[-\x{2014}]\s*(.*)").unwrap();
+    let plan_re = Regex::new(r"^\s*- \[([ xX])\] (?:\d+-\d+-)?PLAN\.md").unwrap();
 
     let lines: Vec<&str> = content.lines().collect();
     let mut phases: Vec<RoadmapPhase> = Vec::new();

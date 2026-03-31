@@ -6,8 +6,8 @@ use gsd_meta_manager::app::App;
 use gsd_meta_manager::cli::{Cli, Commands};
 use gsd_meta_manager::config::{load_config, save_config, Config};
 use gsd_meta_manager::registry::{add_project, list_projects, remove_project};
-use gsd_meta_manager::watcher::FileWatcher;
 use gsd_meta_manager::ui;
+use gsd_meta_manager::watcher::FileWatcher;
 
 use clap::Parser;
 use event::EventBus;
@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
             if projects.is_empty() {
                 println!("No projects registered.");
             } else {
-                println!("{:<20} {:<50} {}", "ALIAS", "PATH", "ADDED");
+                println!("{:<20} {:<50} ADDED", "ALIAS", "PATH");
                 println!("{}", "-".repeat(90));
                 for (alias, project) in projects {
                     println!(
@@ -96,11 +96,7 @@ async fn main() -> anyhow::Result<()> {
                 let planning_dir = project.path.join(".planning");
                 if planning_dir.is_dir() {
                     if let Err(e) = watcher.watch(&planning_dir) {
-                        tracing::warn!(
-                            "Could not watch {}: {}",
-                            planning_dir.display(),
-                            e
-                        );
+                        tracing::warn!("Could not watch {}: {}", planning_dir.display(), e);
                     }
                 }
             }

@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 enum CreatePhase {
     Name,
@@ -28,7 +28,12 @@ impl CreateProjectScreen {
 }
 
 impl Screen for CreateProjectScreen {
-    fn handle_key(&mut self, code: KeyCode, _modifiers: KeyModifiers, ctx: &mut AppContext) -> ScreenAction {
+    fn handle_key(
+        &mut self,
+        code: KeyCode,
+        _modifiers: KeyModifiers,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
         match &self.phase {
             CreatePhase::Name => self.handle_name_key(code, ctx),
             CreatePhase::Path { name } => {
@@ -66,11 +71,7 @@ impl Screen for CreateProjectScreen {
                 render_input_footer(frame, chunks[1], ctx, "Path (Tab to complete)");
             }
             CreatePhase::Confirm { name, path } => {
-                let prompt = format!(
-                    "Create \"{}\" at {}? [y/n]",
-                    name,
-                    path.display()
-                );
+                let prompt = format!("Create \"{}\" at {}? [y/n]", name, path.display());
                 let line = Line::from(Span::styled(prompt, Style::default().fg(Color::Yellow)));
                 frame.render_widget(Paragraph::new(line), chunks[1]);
             }
@@ -187,23 +188,20 @@ impl CreateProjectScreen {
         code: KeyCode,
         ctx: &mut AppContext,
         name: &str,
-        path: &PathBuf,
+        path: &Path,
     ) -> ScreenAction {
         match code {
             KeyCode::Enter | KeyCode::Char('y') => {
                 let alias = name.to_lowercase().replace(' ', "-");
                 let hooks = ctx.config.preferences.hooks.clone();
-                let path_clone = path.clone();
+                let path_clone = path.to_path_buf();
                 let name_clone = name.to_string();
                 let alias_clone = alias.clone();
 
                 if let Some(tx) = ctx.event_tx.clone() {
                     tokio::task::spawn_blocking(move || {
-                        let result = project_creator::create_project(
-                            &name_clone,
-                            &path_clone,
-                            &hooks,
-                        );
+                        let result =
+                            project_creator::create_project(&name_clone, &path_clone, &hooks);
                         let (success, error): (bool, Option<String>) = match result {
                             Ok(()) => (true, None),
                             Err(e) => (false, Some(format!("{}", e))),
@@ -223,8 +221,7 @@ impl CreateProjectScreen {
                     ctx.needs_redraw = true;
                     ScreenAction::Pop
                 } else {
-                    ctx.error_message =
-                        Some("Event channel not available.".to_string());
+                    ctx.error_message = Some("Event channel not available.".to_string());
                     ctx.needs_redraw = true;
                     ScreenAction::None
                 }
@@ -252,10 +249,7 @@ fn render_input_footer(frame: &mut Frame, area: Rect, ctx: &AppContext, label: &
 
     if let Some(err) = &ctx.error_message {
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            err.clone(),
-            Style::default().fg(Color::Red),
-        ));
+        spans.push(Span::styled(err.clone(), Style::default().fg(Color::Red)));
     }
 
     let line = Line::from(spans);

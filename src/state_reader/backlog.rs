@@ -46,9 +46,7 @@ pub fn parse_backlog_items(planning_dir: &Path) -> Vec<BacklogItem> {
             let (number, slug) = parse_backlog_dir_name(&dir_name)?;
 
             // Skip directories with no .md files (empty backlog placeholders)
-            if find_first_md_file(&e.path()).is_none() {
-                return None;
-            }
+            find_first_md_file(&e.path())?;
 
             // Try to find description from first .md file's first heading
             let description = find_first_heading(&e.path()).unwrap_or_else(|| humanize_slug(&slug));
@@ -64,9 +62,19 @@ pub fn parse_backlog_items(planning_dir: &Path) -> Vec<BacklogItem> {
 
     // Sort by number ascending (999.1, 999.2, etc.)
     items.sort_by(|a, b| {
-        let a_num: f64 = a.number.strip_prefix("999.").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-        let b_num: f64 = b.number.strip_prefix("999.").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-        a_num.partial_cmp(&b_num).unwrap_or(std::cmp::Ordering::Equal)
+        let a_num: f64 = a
+            .number
+            .strip_prefix("999.")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+        let b_num: f64 = b
+            .number
+            .strip_prefix("999.")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+        a_num
+            .partial_cmp(&b_num)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     items
@@ -97,12 +105,7 @@ fn find_first_md_file(dir: &Path) -> Option<std::path::PathBuf> {
     let mut entries: Vec<_> = std::fs::read_dir(dir)
         .ok()?
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|ext| ext == "md")
-                .unwrap_or(false)
-        })
+        .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
         .collect();
     entries.sort_by_key(|e| e.file_name());
     entries.first().map(|e| e.path())
@@ -124,12 +127,18 @@ mod tests {
     #[test]
     fn test_parse_backlog_dir_name_valid() {
         let result = parse_backlog_dir_name("999.3-queue-editor-and-reorder");
-        assert_eq!(result, Some(("999.3".to_string(), "queue-editor-and-reorder".to_string())));
+        assert_eq!(
+            result,
+            Some(("999.3".to_string(), "queue-editor-and-reorder".to_string()))
+        );
     }
 
     #[test]
     fn test_parse_backlog_dir_name_with_brace() {
-        assert_eq!(parse_backlog_dir_name("999.1-{\n  \"slug\": \"test\"\n}"), None);
+        assert_eq!(
+            parse_backlog_dir_name("999.1-{\n  \"slug\": \"test\"\n}"),
+            None
+        );
     }
 
     #[test]
@@ -139,6 +148,9 @@ mod tests {
 
     #[test]
     fn test_humanize_slug() {
-        assert_eq!(humanize_slug("queue-editor-and-reorder"), "Queue editor and reorder");
+        assert_eq!(
+            humanize_slug("queue-editor-and-reorder"),
+            "Queue editor and reorder"
+        );
     }
 }

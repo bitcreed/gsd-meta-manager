@@ -1,9 +1,9 @@
-use super::{AppContext, Screen, ScreenAction};
-use super::detail::DetailScreen;
 use super::add_project::AddProjectScreen;
 use super::create_project::CreateProjectScreen;
 use super::delete_confirm::DeleteConfirmScreen;
+use super::detail::DetailScreen;
 use super::help::HelpScreen;
+use super::{AppContext, Screen, ScreenAction};
 use crate::app::{classify_status, format_phase_display, StatusCategory};
 use crate::state_reader::disk_status::DiskStatus;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -15,6 +15,12 @@ use ratatui::Frame;
 
 pub struct NormalScreen {
     pub searching: bool,
+}
+
+impl Default for NormalScreen {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl NormalScreen {
@@ -72,9 +78,13 @@ fn compact_pipeline(status: &DiskStatus) -> Line<'static> {
     Line::from(spans)
 }
 
-
 impl Screen for NormalScreen {
-    fn handle_key(&mut self, code: KeyCode, _modifiers: KeyModifiers, ctx: &mut AppContext) -> ScreenAction {
+    fn handle_key(
+        &mut self,
+        code: KeyCode,
+        _modifiers: KeyModifiers,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
         if self.searching {
             return self.handle_search_key(code, ctx);
         }
@@ -286,8 +296,7 @@ impl NormalScreen {
             let rows: Vec<Row> = ctx
                 .filtered_aliases
                 .iter()
-                .enumerate()
-                .map(|(_idx, alias)| {
+                .map(|alias| {
                     let state = ctx.project_states.get(alias);
 
                     let status_str = match state {
@@ -378,11 +387,7 @@ impl NormalScreen {
                             Line::from(progress_cell),
                         ]
                     } else {
-                        vec![
-                            alias_cell,
-                            Line::from(phase_cell),
-                            status_cell,
-                        ]
+                        vec![alias_cell, Line::from(phase_cell), status_cell]
                     };
 
                     Row::new(cells).style(Style::default().fg(row_color))
@@ -397,7 +402,7 @@ impl NormalScreen {
                 .highlight_symbol("> ");
 
             // We need a mutable table_state for rendering
-            let mut table_state = ctx.table_state.clone();
+            let mut table_state = ctx.table_state;
             frame.render_stateful_widget(table, inner, &mut table_state);
             // Note: table_state selection is managed by ctx directly through handle_key
         }
@@ -441,42 +446,54 @@ fn render_normal_footer(frame: &mut Frame, area: Rect, ctx: &AppContext) {
         }
     }
 
-    let mut left_spans: Vec<Span> = vec![
-        Span::raw(format!("{} projects ", all_count)),
-    ];
+    let mut left_spans: Vec<Span> = vec![Span::raw(format!("{} projects ", all_count))];
     if active > 0 {
-        left_spans.push(Span::styled(format!("{} active ", active), Style::default().fg(Color::Green)));
+        left_spans.push(Span::styled(
+            format!("{} active ", active),
+            Style::default().fg(Color::Green),
+        ));
     }
     if blocked > 0 {
-        left_spans.push(Span::styled(format!("{} blocked ", blocked), Style::default().fg(Color::Red)));
+        left_spans.push(Span::styled(
+            format!("{} blocked ", blocked),
+            Style::default().fg(Color::Red),
+        ));
     }
     if idle > 0 {
-        left_spans.push(Span::styled(format!("{} idle ", idle), Style::default().fg(Color::DarkGray)));
+        left_spans.push(Span::styled(
+            format!("{} idle ", idle),
+            Style::default().fg(Color::DarkGray),
+        ));
     }
     if complete > 0 {
-        left_spans.push(Span::styled(format!("{} done ", complete), Style::default().fg(Color::Cyan)));
+        left_spans.push(Span::styled(
+            format!("{} done ", complete),
+            Style::default().fg(Color::Cyan),
+        ));
     }
 
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let right_spans = vec![
-        Span::styled("[/]", bold), Span::raw("search  "),
-        Span::styled("[?]", bold), Span::raw("help  "),
-        Span::styled("[a]", bold), Span::raw("dd  "),
-        Span::styled("[c]", bold), Span::raw("reate  "),
-        Span::styled("[d]", bold), Span::raw("el  "),
-        Span::styled("[q]", bold), Span::raw("uit"),
+        Span::styled("[/]", bold),
+        Span::raw("search  "),
+        Span::styled("[?]", bold),
+        Span::raw("help  "),
+        Span::styled("[a]", bold),
+        Span::raw("dd  "),
+        Span::styled("[c]", bold),
+        Span::raw("reate  "),
+        Span::styled("[d]", bold),
+        Span::raw("el  "),
+        Span::styled("[q]", bold),
+        Span::raw("uit"),
     ];
     let right_len: u16 = right_spans.iter().map(|s| s.width() as u16).sum();
 
-    let footer_chunks = Layout::horizontal([
-        Constraint::Min(0),
-        Constraint::Length(right_len + 1),
-    ])
-    .split(area);
+    let footer_chunks =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(right_len + 1)]).split(area);
 
     let left = Paragraph::new(Line::from(left_spans));
-    let right =
-        Paragraph::new(Line::from(right_spans)).alignment(Alignment::Right);
+    let right = Paragraph::new(Line::from(right_spans)).alignment(Alignment::Right);
 
     frame.render_widget(left, footer_chunks[0]);
     frame.render_widget(right, footer_chunks[1]);
@@ -501,8 +518,7 @@ fn render_search_footer(frame: &mut Frame, area: Rect, ctx: &AppContext) {
     .split(area);
 
     let left = Paragraph::new(Line::from(left_spans));
-    let right =
-        Paragraph::new(Line::from(Span::raw(right_text))).alignment(Alignment::Right);
+    let right = Paragraph::new(Line::from(Span::raw(right_text))).alignment(Alignment::Right);
 
     frame.render_widget(left, footer_chunks[0]);
     frame.render_widget(right, footer_chunks[1]);

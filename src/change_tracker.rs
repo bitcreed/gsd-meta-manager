@@ -16,6 +16,12 @@ pub struct ChangeTracker {
     changes: HashMap<String, Vec<ChangeEvent>>,
 }
 
+impl Default for ChangeTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChangeTracker {
     pub fn new() -> Self {
         Self {
@@ -68,7 +74,11 @@ impl ChangeTracker {
         if new.completed_plans > old.completed_plans {
             let diff = new.completed_plans - old.completed_plans;
             events.push(ChangeEvent {
-                description: format!("{} more plan{} completed", diff, if diff == 1 { "" } else { "s" }),
+                description: format!(
+                    "{} more plan{} completed",
+                    diff,
+                    if diff == 1 { "" } else { "s" }
+                ),
                 timestamp: now,
             });
         }
@@ -99,7 +109,11 @@ mod tests {
     use super::*;
     use crate::state_reader::roadmap_md::RoadmapPhase;
 
-    fn make_state(status: &str, completed_plans: u32, phases: Vec<(&str, &str, bool)>) -> ProjectState {
+    fn make_state(
+        status: &str,
+        completed_plans: u32,
+        phases: Vec<(&str, &str, bool)>,
+    ) -> ProjectState {
         ProjectState {
             status: status.to_string(),
             completed_plans,
@@ -126,7 +140,9 @@ mod tests {
         tracker.detect_changes("proj", &old, &new);
 
         let latest = tracker.latest_change("proj").unwrap();
-        assert!(latest.description.contains("Status: Ready to plan -> Executing"));
+        assert!(latest
+            .description
+            .contains("Status: Ready to plan -> Executing"));
     }
 
     #[test]

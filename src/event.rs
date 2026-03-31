@@ -1,6 +1,6 @@
-use gsd_meta_manager::action::Action;
 use crossterm::event::{Event, EventStream, KeyEventKind};
 use futures::StreamExt;
+use gsd_meta_manager::action::Action;
 use std::time::Duration;
 use tokio::sync::mpsc;
 

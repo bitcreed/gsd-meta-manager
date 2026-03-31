@@ -33,6 +33,12 @@ pub struct Preferences {
     pub gsd_integration: bool,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Config {
     pub fn default_path() -> PathBuf {
         dirs::config_dir()
@@ -55,8 +61,8 @@ pub fn load_config(path: &Path) -> anyhow::Result<Config> {
     if !path.exists() {
         return Ok(Config::new());
     }
-    let content =
-        std::fs::read_to_string(path).with_context(|| format!("Failed to read config: {}", path.display()))?;
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read config: {}", path.display()))?;
     let config: Config = serde_json::from_str(&content)
         .with_context(|| format!("Failed to parse config JSON: {}", path.display()))?;
     Ok(config)

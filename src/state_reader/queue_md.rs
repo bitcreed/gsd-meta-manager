@@ -124,8 +124,12 @@ mod tests {
     #[test]
     fn test_write_queue_md_roundtrip() {
         let actions = vec![
-            QueuedAction { command: "/gsd:plan-phase 4".to_string() },
-            QueuedAction { command: "/gsd:execute-phase 4".to_string() },
+            QueuedAction {
+                command: "/gsd:plan-phase 4".to_string(),
+            },
+            QueuedAction {
+                command: "/gsd:execute-phase 4".to_string(),
+            },
         ];
         let content = write_queue_md(&actions);
         let parsed = parse_queue_md(&content);

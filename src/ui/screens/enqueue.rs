@@ -18,7 +18,12 @@ impl EnqueueScreen {
 }
 
 impl Screen for EnqueueScreen {
-    fn handle_key(&mut self, code: KeyCode, _modifiers: KeyModifiers, ctx: &mut AppContext) -> ScreenAction {
+    fn handle_key(
+        &mut self,
+        code: KeyCode,
+        _modifiers: KeyModifiers,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
         match code {
             KeyCode::Enter => {
                 if !ctx.input_buffer.is_empty() {
@@ -29,10 +34,8 @@ impl Screen for EnqueueScreen {
                             command: ctx.input_buffer.clone(),
                         });
                         if let Err(e) = queue_md::save_queue(&planning_dir, &actions) {
-                            ctx.status_message = Some((
-                                format!("Queue error: {}", e),
-                                std::time::Instant::now(),
-                            ));
+                            ctx.status_message =
+                                Some((format!("Queue error: {}", e), std::time::Instant::now()));
                         } else {
                             ctx.status_message = Some((
                                 format!("Queued: {}", ctx.input_buffer),
@@ -55,10 +58,8 @@ impl Screen for EnqueueScreen {
                     if let Some(state) = ctx.project_states.get(&self.alias) {
                         let suggestions = queue_md::suggest_next_commands(state);
                         if !suggestions.is_empty() {
-                            ctx.suggestion_index =
-                                (ctx.suggestion_index + 1) % suggestions.len();
-                            ctx.input_buffer =
-                                suggestions[ctx.suggestion_index].clone();
+                            ctx.suggestion_index = (ctx.suggestion_index + 1) % suggestions.len();
+                            ctx.input_buffer = suggestions[ctx.suggestion_index].clone();
                             ctx.needs_redraw = true;
                         }
                     }

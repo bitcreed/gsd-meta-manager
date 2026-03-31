@@ -79,9 +79,13 @@ impl<'a> Widget for RoadmapWidget<'a> {
 
             // Top border chars
             let (tl, horiz, tr, bl, br, vert) = if is_current {
-                ('\u{250F}', '\u{2501}', '\u{2513}', '\u{2517}', '\u{251B}', '\u{2503}') // bold: heavy box
+                (
+                    '\u{250F}', '\u{2501}', '\u{2513}', '\u{2517}', '\u{251B}', '\u{2503}',
+                ) // bold: heavy box
             } else {
-                ('\u{250C}', '\u{2500}', '\u{2510}', '\u{2514}', '\u{2518}', '\u{2502}') // light box
+                (
+                    '\u{250C}', '\u{2500}', '\u{2510}', '\u{2514}', '\u{2518}', '\u{2502}',
+                ) // light box
             };
 
             // --- Top border ---
@@ -90,8 +94,7 @@ impl<'a> Widget for RoadmapWidget<'a> {
                 let border_str = format!(
                     "{}{}{}",
                     tl,
-                    std::iter::repeat_n(horiz, box_width.saturating_sub(2))
-                        .collect::<String>(),
+                    std::iter::repeat_n(horiz, box_width.saturating_sub(2)).collect::<String>(),
                     tr
                 );
                 buf.set_string(box_x, screen_y, &border_str, style);
@@ -150,8 +153,7 @@ impl<'a> Widget for RoadmapWidget<'a> {
                 let border_str = format!(
                     "{}{}{}",
                     bl,
-                    std::iter::repeat_n(horiz, box_width.saturating_sub(2))
-                        .collect::<String>(),
+                    std::iter::repeat_n(horiz, box_width.saturating_sub(2)).collect::<String>(),
                     br
                 );
                 buf.set_string(box_x, screen_y, &border_str, style);

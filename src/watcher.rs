@@ -82,12 +82,10 @@ impl FileWatcher {
 
     /// Stop watching a `.planning/` directory.
     pub fn unwatch(&mut self, planning_dir: &Path) -> anyhow::Result<()> {
-        self.debouncer
-            .unwatch(planning_dir)
-            .map_err(|e| {
-                tracing::warn!("Failed to unwatch {}: {}", planning_dir.display(), e);
-                anyhow::anyhow!("Failed to unwatch {}: {}", planning_dir.display(), e)
-            })
+        self.debouncer.unwatch(planning_dir).map_err(|e| {
+            tracing::warn!("Failed to unwatch {}: {}", planning_dir.display(), e);
+            anyhow::anyhow!("Failed to unwatch {}: {}", planning_dir.display(), e)
+        })
     }
 }
 

@@ -17,7 +17,12 @@ fn centered_rect(area: Rect, pct_width: u16, pct_height: u16) -> Rect {
 }
 
 impl Screen for HelpScreen {
-    fn handle_key(&mut self, code: KeyCode, _modifiers: KeyModifiers, ctx: &mut AppContext) -> ScreenAction {
+    fn handle_key(
+        &mut self,
+        code: KeyCode,
+        _modifiers: KeyModifiers,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
         match code {
             KeyCode::Char('?') | KeyCode::Esc => {
                 ctx.needs_redraw = true;
@@ -67,9 +72,7 @@ impl Screen for HelpScreen {
             )),
         ];
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Help ");
+        let block = Block::default().borders(Borders::ALL).title(" Help ");
         let paragraph = Paragraph::new(help_text).block(block);
         frame.render_widget(paragraph, popup_area);
     }

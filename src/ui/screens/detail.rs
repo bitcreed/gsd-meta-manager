@@ -1,14 +1,14 @@
-use super::{AppContext, Screen, ScreenAction};
 use super::enqueue::EnqueueScreen;
 use super::help::HelpScreen;
 use super::queue_delete_confirm::QueueDeleteConfirmScreen;
+use super::{AppContext, Screen, ScreenAction};
 use crate::action::Action;
 use crate::app::{classify_status, DetailSubView, StatusCategory};
-use crate::state_reader::{self, backlog};
+use crate::change_tracker::ChangeTracker;
 use crate::state_reader::disk_status::{DiskInference, DiskStatus};
 use crate::state_reader::git_ops;
-use crate::change_tracker::ChangeTracker;
 use crate::state_reader::queue_md;
+use crate::state_reader::{self, backlog};
 use crate::ui::roadmap_widget::RoadmapWidget;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -17,7 +17,15 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs};
 use ratatui::Frame;
 
-const TAB_TITLES: [&str; 7] = ["1:Phases", "2:Roadmap", "3:Backlog", "4:Git", "5:Pipeline", "6:Queue", "7:Sessions"];
+const TAB_TITLES: [&str; 7] = [
+    "1:Phases",
+    "2:Roadmap",
+    "3:Backlog",
+    "4:Git",
+    "5:Pipeline",
+    "6:Queue",
+    "7:Sessions",
+];
 
 pub struct DetailScreen {
     pub alias: String,
@@ -93,7 +101,10 @@ fn status_color(category: &StatusCategory) -> Color {
 /// When `show_badges` is true, appends a [verified] or [inferred] badge based on artifact presence.
 fn disk_suffix_spans(
     phase_number: &str,
-    phase_disk_statuses: &std::collections::HashMap<String, crate::state_reader::disk_status::DiskInference>,
+    phase_disk_statuses: &std::collections::HashMap<
+        String,
+        crate::state_reader::disk_status::DiskInference,
+    >,
     show_badges: bool,
 ) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
@@ -138,12 +149,16 @@ fn disk_suffix_spans(
             if inf.has_summaries || inf.has_verification {
                 spans.push(Span::styled(
                     " [verified]",
-                    Style::default().fg(Color::Green).add_modifier(Modifier::DIM),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::DIM),
                 ));
             } else {
                 spans.push(Span::styled(
                     " [inferred]",
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
                 ));
             }
         }
@@ -234,7 +249,12 @@ fn queue_mutate_and_save(
 }
 
 impl Screen for DetailScreen {
-    fn handle_key(&mut self, code: KeyCode, _modifiers: KeyModifiers, ctx: &mut AppContext) -> ScreenAction {
+    fn handle_key(
+        &mut self,
+        code: KeyCode,
+        _modifiers: KeyModifiers,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
         let current_view = ctx
             .detail_sub_view_per_project
             .get(&self.alias)
@@ -299,8 +319,16 @@ impl Screen for DetailScreen {
                         ctx.needs_redraw = true;
                     }
                     DetailSubView::Sessions => {
-                        let session_count = ctx.config.projects.get(&self.alias)
-                            .map(|proj| ctx.active_sessions.iter().filter(|s| s.working_dir == proj.path).count())
+                        let session_count = ctx
+                            .config
+                            .projects
+                            .get(&self.alias)
+                            .map(|proj| {
+                                ctx.active_sessions
+                                    .iter()
+                                    .filter(|s| s.working_dir == proj.path)
+                                    .count()
+                            })
                             .unwrap_or(0);
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         if session_count > 0 {
@@ -397,7 +425,8 @@ impl Screen for DetailScreen {
                             }) {
                                 Ok(()) => {
                                     // Clamp selection
-                                    let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                                    let cache =
+                                        ctx.view_cache.entry(self.alias.clone()).or_default();
                                     let new_len = ctx
                                         .project_states
                                         .get(&self.alias)
@@ -408,10 +437,8 @@ impl Screen for DetailScreen {
                                     } else if cache.queue_selected >= new_len {
                                         cache.queue_selected = new_len - 1;
                                     }
-                                    ctx.status_message = Some((
-                                        format!("Done: {}", cmd),
-                                        std::time::Instant::now(),
-                                    ));
+                                    ctx.status_message =
+                                        Some((format!("Done: {}", cmd), std::time::Instant::now()));
                                 }
                                 Err(e) => {
                                     ctx.status_message = Some((e, std::time::Instant::now()));
@@ -434,11 +461,16 @@ impl Screen for DetailScreen {
                                 let selected = cache.backlog_selected;
                                 if let Some(item) = cache.backlog_items.get(selected) {
                                     if item.content.is_none() {
-                                        if let Some(project) = ctx.config.projects.get(&self.alias) {
+                                        if let Some(project) = ctx.config.projects.get(&self.alias)
+                                        {
                                             let planning_dir = project.path.join(".planning");
-                                            let content = backlog::load_backlog_content(&planning_dir, &item.dir_name);
+                                            let content = backlog::load_backlog_content(
+                                                &planning_dir,
+                                                &item.dir_name,
+                                            );
                                             if let Some(content) = content {
-                                                cache.backlog_items[selected].content = Some(content);
+                                                cache.backlog_items[selected].content =
+                                                    Some(content);
                                             }
                                         }
                                     }
@@ -456,17 +488,17 @@ impl Screen for DetailScreen {
                         if let Some(entry) = cache.git_entries.get(cache.git_selected) {
                             let hash = entry.hash.clone();
                             cache.loading_diff = true;
-                            if let (Some(project), Some(tx)) = (ctx.config.projects.get(&self.alias), &ctx.event_tx) {
+                            if let (Some(project), Some(tx)) =
+                                (ctx.config.projects.get(&self.alias), &ctx.event_tx)
+                            {
                                 let tx = tx.clone();
                                 let project_path = project.path.clone();
                                 let alias = self.alias.clone();
                                 tokio::spawn(async move {
                                     match git_ops::load_diff_stat(&project_path, &hash).await {
                                         Ok(stat) => {
-                                            let _ = tx.send(Action::GitDiffStatLoaded {
-                                                alias,
-                                                stat,
-                                            });
+                                            let _ =
+                                                tx.send(Action::GitDiffStatLoaded { alias, stat });
                                         }
                                         Err(_) => {
                                             let _ = tx.send(Action::GitDiffStatLoaded {
@@ -483,8 +515,17 @@ impl Screen for DetailScreen {
                     }
                     DetailSubView::Sessions => {
                         // Resume selected session in a new terminal
-                        let filtered_sessions: Vec<_> = ctx.config.projects.get(&self.alias)
-                            .map(|proj| ctx.active_sessions.iter().filter(|s| s.working_dir == proj.path).cloned().collect())
+                        let filtered_sessions: Vec<_> = ctx
+                            .config
+                            .projects
+                            .get(&self.alias)
+                            .map(|proj| {
+                                ctx.active_sessions
+                                    .iter()
+                                    .filter(|s| s.working_dir == proj.path)
+                                    .cloned()
+                                    .collect()
+                            })
                             .unwrap_or_default();
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         if let Some(session) = filtered_sessions.get(cache.sessions_selected) {
@@ -493,17 +534,43 @@ impl Screen for DetailScreen {
                                     Some(term) => {
                                         let short_id = if sid.len() > 8 { &sid[..8] } else { sid };
                                         match std::process::Command::new(&term)
-                                            .args(["-e", "sh", "-c", &format!("cd '{}' && claude --resume '{}'", session.working_dir.display(), sid)])
+                                            .args([
+                                                "-e",
+                                                "sh",
+                                                "-c",
+                                                &format!(
+                                                    "cd '{}' && claude --resume '{}'",
+                                                    session.working_dir.display(),
+                                                    sid
+                                                ),
+                                            ])
                                             .spawn()
                                         {
-                                            Ok(_) => return ScreenAction::SetStatusMessage(format!("Resumed session {}", short_id)),
-                                            Err(e) => return ScreenAction::SetStatusMessage(format!("Failed to launch: {}", e)),
+                                            Ok(_) => {
+                                                return ScreenAction::SetStatusMessage(format!(
+                                                    "Resumed session {}",
+                                                    short_id
+                                                ))
+                                            }
+                                            Err(e) => {
+                                                return ScreenAction::SetStatusMessage(format!(
+                                                    "Failed to launch: {}",
+                                                    e
+                                                ))
+                                            }
                                         }
                                     }
-                                    None => return ScreenAction::SetStatusMessage("No terminal emulator found (set $TERMINAL)".to_string()),
+                                    None => {
+                                        return ScreenAction::SetStatusMessage(
+                                            "No terminal emulator found (set $TERMINAL)"
+                                                .to_string(),
+                                        )
+                                    }
                                 }
                             } else {
-                                return ScreenAction::SetStatusMessage("No session ID to resume".to_string());
+                                return ScreenAction::SetStatusMessage(
+                                    "No session ID to resume".to_string(),
+                                );
                             }
                         }
                         ScreenAction::None
@@ -517,14 +584,26 @@ impl Screen for DetailScreen {
                     match find_terminal() {
                         Some(term) => {
                             match std::process::Command::new(&term)
-                                .args(["-e", "sh", "-c", &format!("cd '{}' && claude", project.path.display())])
+                                .args([
+                                    "-e",
+                                    "sh",
+                                    "-c",
+                                    &format!("cd '{}' && claude", project.path.display()),
+                                ])
                                 .spawn()
                             {
-                                Ok(_) => ScreenAction::SetStatusMessage("Launched new Claude session".to_string()),
-                                Err(e) => ScreenAction::SetStatusMessage(format!("Failed to launch: {}", e)),
+                                Ok(_) => ScreenAction::SetStatusMessage(
+                                    "Launched new Claude session".to_string(),
+                                ),
+                                Err(e) => ScreenAction::SetStatusMessage(format!(
+                                    "Failed to launch: {}",
+                                    e
+                                )),
                             }
                         }
-                        None => ScreenAction::SetStatusMessage("No terminal emulator found (set $TERMINAL)".to_string()),
+                        None => ScreenAction::SetStatusMessage(
+                            "No terminal emulator found (set $TERMINAL)".to_string(),
+                        ),
                     }
                 } else {
                     ScreenAction::None
@@ -538,7 +617,9 @@ impl Screen for DetailScreen {
                 cache.git_diff_stat = None;
                 cache.git_selected = 0;
                 cache.loading_git = true;
-                if let (Some(project), Some(tx)) = (ctx.config.projects.get(&self.alias), &ctx.event_tx) {
+                if let (Some(project), Some(tx)) =
+                    (ctx.config.projects.get(&self.alias), &ctx.event_tx)
+                {
                     let tx = tx.clone();
                     let project_path = project.path.clone();
                     let alias = self.alias.clone();
@@ -879,7 +960,8 @@ impl DetailScreen {
                     };
 
                     let show_badges = ctx.config.preferences.gsd_integration;
-                    let badge_spans = disk_suffix_spans(&phase.number, &state.phase_disk_statuses, show_badges);
+                    let badge_spans =
+                        disk_suffix_spans(&phase.number, &state.phase_disk_statuses, show_badges);
 
                     let line_text = format!(
                         "  {} P{}: {}  {}",
@@ -891,9 +973,7 @@ impl DetailScreen {
                         let color = status_color(&cat);
                         let mut spans = vec![Span::styled(
                             line_text,
-                            Style::default()
-                                .fg(color)
-                                .add_modifier(Modifier::BOLD),
+                            Style::default().fg(color).add_modifier(Modifier::BOLD),
                         )];
                         spans.extend(badge_spans);
                         lines.push(Line::from(spans));
@@ -930,10 +1010,7 @@ impl DetailScreen {
                 for (i, action) in state.queued_actions.iter().enumerate() {
                     lines.push(Line::from(vec![
                         Span::raw(format!("    {}. ", i + 1)),
-                        Span::styled(
-                            &action.command,
-                            Style::default().fg(Color::Cyan),
-                        ),
+                        Span::styled(&action.command, Style::default().fg(Color::Cyan)),
                     ]));
                 }
             }
@@ -1000,17 +1077,15 @@ impl DetailScreen {
 
             let header_height = header_lines.len() as u16 + 2;
 
-            let content_chunks = Layout::vertical([
-                Constraint::Length(header_height),
-                Constraint::Min(0),
-            ])
-            .split(area);
+            let content_chunks =
+                Layout::vertical([Constraint::Length(header_height), Constraint::Min(0)])
+                    .split(area);
 
             let header_area = content_chunks[0];
             let roadmap_area = content_chunks[1];
 
-            let header_block = Block::default()
-                .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT);
+            let header_block =
+                Block::default().borders(Borders::TOP | Borders::LEFT | Borders::RIGHT);
 
             let header_paragraph = Paragraph::new(header_lines).block(header_block);
             frame.render_widget(header_paragraph, header_area);
@@ -1018,7 +1093,9 @@ impl DetailScreen {
             let current_phase_num = state.completed_phases + 1;
             // Clamp roadmap scroll — estimate content height from phase count
             let phase_block_h: u16 = 5; // BOX_HEIGHT(3) + connector(1) + spacing(1)
-            let total_content = if state.phases.is_empty() { 0 } else {
+            let total_content = if state.phases.is_empty() {
+                0
+            } else {
                 3 + (state.phases.len() as u16 - 1) * phase_block_h
             };
             let viewport_h = roadmap_area.height;
@@ -1033,8 +1110,7 @@ impl DetailScreen {
             frame.render_widget(roadmap_widget, roadmap_area);
         } else {
             let block = Block::default().borders(Borders::ALL);
-            let paragraph = Paragraph::new("  No state data available for roadmap.")
-                .block(block);
+            let paragraph = Paragraph::new("  No state data available for roadmap.").block(block);
             frame.render_widget(paragraph, area);
         }
     }
@@ -1054,16 +1130,15 @@ impl DetailScreen {
         let cache = match cache {
             Some(c) => c,
             None => {
-                let msg = Paragraph::new("  Loading...")
-                    .style(Style::default().fg(Color::DarkGray));
+                let msg =
+                    Paragraph::new("  Loading...").style(Style::default().fg(Color::DarkGray));
                 frame.render_widget(msg, inner);
                 return;
             }
         };
 
         if cache.loading_backlog {
-            let msg = Paragraph::new("  Loading...")
-                .style(Style::default().fg(Color::DarkGray));
+            let msg = Paragraph::new("  Loading...").style(Style::default().fg(Color::DarkGray));
             frame.render_widget(msg, inner);
             return;
         }
@@ -1079,7 +1154,10 @@ impl DetailScreen {
             .backlog_items
             .iter()
             .map(|item| {
-                ListItem::new(Line::from(format!("{} - {}", item.number, item.description)))
+                ListItem::new(Line::from(format!(
+                    "{} - {}",
+                    item.number, item.description
+                )))
             })
             .collect();
 
@@ -1096,11 +1174,8 @@ impl DetailScreen {
 
         if cache.backlog_expanded {
             // Split-pane: 50/50 list on top, content on bottom
-            let chunks = Layout::vertical([
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
-            ])
-            .split(inner);
+            let chunks = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(inner);
 
             frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
@@ -1115,7 +1190,10 @@ impl DetailScreen {
                 .and_then(|item| item.content.as_deref())
                 .unwrap_or("  Empty — no .md files in this backlog directory");
 
-            let style = if selected_item.and_then(|item| item.content.as_ref()).is_none() {
+            let style = if selected_item
+                .and_then(|item| item.content.as_ref())
+                .is_none()
+            {
                 Style::default().fg(Color::DarkGray)
             } else {
                 Style::default()
@@ -1189,11 +1267,7 @@ impl DetailScreen {
             ])
             .split(inner)
         } else {
-            Layout::vertical([
-                Constraint::Length(1),
-                Constraint::Min(0),
-            ])
-            .split(inner)
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner)
         };
 
         let mode_area = content_chunks[0];
@@ -1306,7 +1380,10 @@ impl DetailScreen {
         let right_area = panes[1];
 
         let selected = cache
-            .map(|c| c.pipeline_selected.min(state.phases.len().saturating_sub(1)))
+            .map(|c| {
+                c.pipeline_selected
+                    .min(state.phases.len().saturating_sub(1))
+            })
             .unwrap_or(0);
 
         // Left pane: phase list
@@ -1317,11 +1394,7 @@ impl DetailScreen {
             .collect();
 
         let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::RIGHT)
-                    .title(" Phases "),
-            )
+            .block(Block::default().borders(Borders::RIGHT).title(" Phases "))
             .highlight_style(
                 Style::default()
                     .add_modifier(Modifier::BOLD)
@@ -1337,9 +1410,7 @@ impl DetailScreen {
         let phase = &state.phases[selected];
         let inference = state.phase_disk_statuses.get(&phase.number);
 
-        let right_block = Block::default()
-            .borders(Borders::NONE)
-            .title(" Pipeline ");
+        let right_block = Block::default().borders(Borders::NONE).title(" Pipeline ");
         let inner = right_block.inner(right_area);
         frame.render_widget(right_block, right_area);
 
@@ -1385,14 +1456,15 @@ impl DetailScreen {
             return;
         }
 
-        let queued_actions = state
-            .map(|s| &s.queued_actions)
-            .filter(|q| !q.is_empty());
+        let queued_actions = state.map(|s| &s.queued_actions).filter(|q| !q.is_empty());
 
         match queued_actions {
             None => {
-                let msg = Paragraph::new("  Queue empty -- press 'a' to add")
-                    .style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM));
+                let msg = Paragraph::new("  Queue empty -- press 'a' to add").style(
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
+                );
                 frame.render_widget(msg, inner);
             }
             Some(actions) => {
@@ -1400,9 +1472,7 @@ impl DetailScreen {
 
                 let items: Vec<ListItem> = actions
                     .iter()
-                    .map(|action| {
-                        ListItem::new(Line::from(format!("  > {}", action.command)))
-                    })
+                    .map(|action| ListItem::new(Line::from(format!("  > {}", action.command))))
                     .collect();
 
                 let title = format!(" Queue ({} items) ", actions.len());
@@ -1437,8 +1507,16 @@ impl DetailScreen {
         }
 
         // Filter sessions by project path
-        let filtered_sessions: Vec<_> = ctx.config.projects.get(alias)
-            .map(|proj| ctx.active_sessions.iter().filter(|s| s.working_dir == proj.path).collect::<Vec<_>>())
+        let filtered_sessions: Vec<_> = ctx
+            .config
+            .projects
+            .get(alias)
+            .map(|proj| {
+                ctx.active_sessions
+                    .iter()
+                    .filter(|s| s.working_dir == proj.path)
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
 
         if filtered_sessions.is_empty() {
@@ -1456,17 +1534,31 @@ impl DetailScreen {
             return;
         }
 
-        let selected = ctx.view_cache.get(alias)
-            .map(|c| c.sessions_selected.min(filtered_sessions.len().saturating_sub(1)))
+        let selected = ctx
+            .view_cache
+            .get(alias)
+            .map(|c| {
+                c.sessions_selected
+                    .min(filtered_sessions.len().saturating_sub(1))
+            })
             .unwrap_or(0);
 
         let items: Vec<ListItem> = filtered_sessions
             .iter()
             .map(|session| {
-                let sid_display = session.session_id.as_ref()
-                    .map(|sid| if sid.len() > 8 { sid[..8].to_string() } else { sid.clone() })
+                let sid_display = session
+                    .session_id
+                    .as_ref()
+                    .map(|sid| {
+                        if sid.len() > 8 {
+                            sid[..8].to_string()
+                        } else {
+                            sid.clone()
+                        }
+                    })
                     .unwrap_or_else(|| "new session".to_string());
-                let time_display = session.start_time
+                let time_display = session
+                    .start_time
                     .map(|_| "active".to_string())
                     .unwrap_or_else(|| "active".to_string());
                 ListItem::new(Line::from(format!(
@@ -1504,11 +1596,7 @@ impl DetailScreen {
         let tab_idx = tab_index(&sub_view);
 
         // Split into tab bar and content
-        let chunks = Layout::vertical([
-            Constraint::Length(3),
-            Constraint::Min(0),
-        ])
-        .split(main_area);
+        let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(main_area);
         let tab_area = chunks[0];
         let content_area = chunks[1];
 
@@ -1558,11 +1646,11 @@ const STAGE_NAMES: [&str; 5] = ["Discuss", "Research", "Plan", "Execute", "Verif
 fn derive_all_stage_statuses(inf: &DiskInference) -> [StageStatus; 5] {
     // Whether each stage's artifact is present
     let present = [
-        inf.has_context,                                          // D: Discuss
-        inf.has_research,                                         // R: Research
-        inf.has_plans,                                            // P: Plan
-        inf.summary_count > 0,                                    // E: Execute (at least one)
-        inf.has_verification,                                     // V: Verify
+        inf.has_context,       // D: Discuss
+        inf.has_research,      // R: Research
+        inf.has_plans,         // P: Plan
+        inf.summary_count > 0, // E: Execute (at least one)
+        inf.has_verification,  // V: Verify
     ];
 
     // Execute is "complete" only if summary_count >= plan_count and plan_count > 0
@@ -1647,14 +1735,21 @@ fn build_pipeline_line(inf: &DiskInference, statuses: &[StageStatus; 5]) -> Line
 }
 
 /// Build detail lines showing each stage's status text.
-fn build_stage_detail_lines(inf: &DiskInference, statuses: &[StageStatus; 5]) -> Vec<Line<'static>> {
+fn build_stage_detail_lines(
+    inf: &DiskInference,
+    statuses: &[StageStatus; 5],
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     for (i, &status) in statuses.iter().enumerate() {
         let color = stage_color(status);
         let detail = match (i, status) {
-            (3, StageStatus::Complete) => format!("{}/{} complete", inf.summary_count, inf.plan_count),
-            (3, StageStatus::Current) => format!("{}/{} complete", inf.summary_count, inf.plan_count),
+            (3, StageStatus::Complete) => {
+                format!("{}/{} complete", inf.summary_count, inf.plan_count)
+            }
+            (3, StageStatus::Current) => {
+                format!("{}/{} complete", inf.summary_count, inf.plan_count)
+            }
             (2, StageStatus::Complete) if inf.plan_count > 0 => format!("{} plans", inf.plan_count),
             (_, StageStatus::Complete) => "Complete".to_string(),
             (_, StageStatus::Current) => "Current".to_string(),
@@ -1676,37 +1771,53 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
     let b = Style::default().add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::raw("  "),
-        Span::styled("[Esc]", b), Span::raw("back  "),
-        Span::styled("[1-7]", b), Span::raw("tabs  "),
-        Span::styled("[j/k]", b), Span::raw("scroll  "),
+        Span::styled("[Esc]", b),
+        Span::raw("back  "),
+        Span::styled("[1-7]", b),
+        Span::raw("tabs  "),
+        Span::styled("[j/k]", b),
+        Span::raw("scroll  "),
     ];
 
     match sub_view {
         DetailSubView::Backlog => {
-            spans.push(Span::styled("[Enter]", b)); spans.push(Span::raw("xpand  "));
-            spans.push(Span::styled("[e]", b)); spans.push(Span::raw("nqueue  "));
+            spans.push(Span::styled("[Enter]", b));
+            spans.push(Span::raw("xpand  "));
+            spans.push(Span::styled("[e]", b));
+            spans.push(Span::raw("nqueue  "));
         }
         DetailSubView::GitHistory => {
-            spans.push(Span::styled("[p]", b)); spans.push(Span::raw("lanning-only  "));
-            spans.push(Span::styled("[Enter]", b)); spans.push(Span::raw("diff  "));
+            spans.push(Span::styled("[p]", b));
+            spans.push(Span::raw("lanning-only  "));
+            spans.push(Span::styled("[Enter]", b));
+            spans.push(Span::raw("diff  "));
         }
         DetailSubView::Queue => {
-            spans.push(Span::styled("[a]", b)); spans.push(Span::raw("dd  "));
-            spans.push(Span::styled("[e]", b)); spans.push(Span::raw("dit  "));
-            spans.push(Span::styled("[d]", b)); spans.push(Span::raw("el  "));
-            spans.push(Span::styled("[Enter]", b)); spans.push(Span::raw("done  "));
-            spans.push(Span::styled("[J/K]", b)); spans.push(Span::raw("reorder  "));
+            spans.push(Span::styled("[a]", b));
+            spans.push(Span::raw("dd  "));
+            spans.push(Span::styled("[e]", b));
+            spans.push(Span::raw("dit  "));
+            spans.push(Span::styled("[d]", b));
+            spans.push(Span::raw("el  "));
+            spans.push(Span::styled("[Enter]", b));
+            spans.push(Span::raw("done  "));
+            spans.push(Span::styled("[J/K]", b));
+            spans.push(Span::raw("reorder  "));
         }
         DetailSubView::Sessions => {
-            spans.push(Span::styled("[Enter]", b)); spans.push(Span::raw("resume  "));
-            spans.push(Span::styled("[n]", b)); spans.push(Span::raw("ew session  "));
+            spans.push(Span::styled("[Enter]", b));
+            spans.push(Span::raw("resume  "));
+            spans.push(Span::styled("[n]", b));
+            spans.push(Span::raw("ew session  "));
         }
         _ => {
-            spans.push(Span::styled("[e]", b)); spans.push(Span::raw("nqueue  "));
+            spans.push(Span::styled("[e]", b));
+            spans.push(Span::raw("nqueue  "));
         }
     }
 
-    spans.push(Span::styled("[?]", b)); spans.push(Span::raw("help"));
+    spans.push(Span::styled("[?]", b));
+    spans.push(Span::raw("help"));
 
     Paragraph::new(Line::from(spans))
 }

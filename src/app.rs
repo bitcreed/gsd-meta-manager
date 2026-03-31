@@ -4,8 +4,8 @@ use crate::config::{load_config, save_config};
 use crate::registry;
 use crate::session_detector::ClaudeSession;
 use crate::state_reader::{self, ProjectState};
-use crate::ui::screens::{AppContext, Screen, ScreenAction};
 use crate::ui::screens::normal::NormalScreen;
+use crate::ui::screens::{AppContext, Screen, ScreenAction};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::widgets::TableState;
 use std::collections::HashMap;
@@ -210,7 +210,10 @@ impl App {
                         let planning_dir = project_path.join(".planning");
                         tokio::task::spawn_blocking(move || {
                             let state = state_reader::parse_project_state(&planning_dir);
-                            let _ = tx.send(Action::ProjectStateLoaded { alias: alias_for_task, state });
+                            let _ = tx.send(Action::ProjectStateLoaded {
+                                alias: alias_for_task,
+                                state,
+                            });
                         });
                         self.ctx.last_refresh.insert(alias, now);
                     }
@@ -233,13 +236,15 @@ impl App {
                 }
                 self.ctx.project_states.insert(alias.clone(), state);
                 self.ctx.recompute_filtered_aliases();
-                self.ctx.status_message = Some((
-                    format!("Updated: {}", alias),
-                    std::time::Instant::now(),
-                ));
+                self.ctx.status_message =
+                    Some((format!("Updated: {}", alias), std::time::Instant::now()));
                 self.needs_redraw = true;
             }
-            Action::GitLogLoaded { alias, entries, planning_only } => {
+            Action::GitLogLoaded {
+                alias,
+                entries,
+                planning_only,
+            } => {
                 let cache = self.ctx.view_cache.entry(alias).or_default();
                 cache.git_entries = entries;
                 cache.git_planning_only = planning_only;
@@ -323,9 +328,8 @@ impl App {
                     }
                     self.needs_redraw = true;
                 } else {
-                    self.ctx.error_message = Some(
-                        error.unwrap_or_else(|| "Unknown error creating project".to_string()),
-                    );
+                    self.ctx.error_message =
+                        Some(error.unwrap_or_else(|| "Unknown error creating project".to_string()));
                     self.ctx.input_buffer.clear();
                     self.needs_redraw = true;
                 }
@@ -368,7 +372,7 @@ impl App {
             }
             ScreenAction::DispatchAction(action) => {
                 if let Some(tx) = &self.ctx.event_tx {
-                    let _ = tx.send(action);
+                    let _ = tx.send(*action);
                 }
             }
         }

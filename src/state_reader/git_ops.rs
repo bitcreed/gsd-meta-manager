@@ -65,10 +65,7 @@ pub async fn load_git_log(
 }
 
 /// Load diff stat for a specific commit hash.
-pub async fn load_diff_stat(
-    project_path: &Path,
-    hash: &str,
-) -> anyhow::Result<GitDiffStat> {
+pub async fn load_diff_stat(project_path: &Path, hash: &str) -> anyhow::Result<GitDiffStat> {
     let output = tokio::process::Command::new("git")
         .current_dir(project_path)
         .args(["diff-tree", "--stat", "--no-commit-id", "-r", hash])
