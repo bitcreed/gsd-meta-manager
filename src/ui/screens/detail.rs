@@ -50,6 +50,7 @@ fn tab_index(sub_view: &DetailSubView) -> usize {
         DetailSubView::Pipeline => 4,
         DetailSubView::Queue => 5,
         DetailSubView::Sessions => 6,
+        DetailSubView::Archive => 7,
     }
 }
 
@@ -62,6 +63,7 @@ fn sub_view_from_index(index: usize) -> DetailSubView {
         4 => DetailSubView::Pipeline,
         5 => DetailSubView::Queue,
         6 => DetailSubView::Sessions,
+        7 => DetailSubView::Archive,
         _ => DetailSubView::PhaseList,
     }
 }
@@ -874,6 +876,7 @@ impl Screen for DetailScreen {
             DetailSubView::Pipeline => self.render_pipeline_tab(frame, content_area, ctx),
             DetailSubView::Queue => self.render_queue_tab(frame, content_area, ctx),
             DetailSubView::Sessions => self.render_sessions_tab(frame, content_area, ctx),
+            DetailSubView::Archive => self.render_archive_tab(frame, content_area, ctx),
         }
 
         // Render footer with tab-appropriate hints
@@ -1624,6 +1627,13 @@ impl DetailScreen {
         frame.render_stateful_widget(list, inner, &mut list_state);
     }
 
+    /// Render the archive tab with 4-level drill-down navigation.
+    fn render_archive_tab(&self, frame: &mut Frame, area: Rect, _ctx: &AppContext) {
+        let loading = Paragraph::new("Archive tab loading...")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(loading, area);
+    }
+
     /// Render just the main content area (without footer), used by EnqueueScreen overlay.
     pub fn render_main_only(&self, frame: &mut Frame, main_area: Rect, ctx: &AppContext) {
         let alias = &self.alias;
@@ -1664,6 +1674,7 @@ impl DetailScreen {
             DetailSubView::Pipeline => self.render_pipeline_tab(frame, content_area, ctx),
             DetailSubView::Queue => self.render_queue_tab(frame, content_area, ctx),
             DetailSubView::Sessions => self.render_sessions_tab(frame, content_area, ctx),
+            DetailSubView::Archive => self.render_archive_tab(frame, content_area, ctx),
         }
     }
 }

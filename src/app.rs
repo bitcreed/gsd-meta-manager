@@ -22,6 +22,7 @@ pub enum DetailSubView {
     Pipeline,
     Queue,
     Sessions,
+    Archive,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -122,6 +123,7 @@ impl App {
             input_buffer: String::new(),
             needs_redraw: true,
             active_sessions: Vec::new(),
+            archive_cache: HashMap::new(),
         };
         ctx.filtered_aliases = ctx.sorted_aliases();
 
@@ -334,11 +336,21 @@ impl App {
                     self.needs_redraw = true;
                 }
             }
-            Action::ArchiveMilestonesDiscovered { .. } => {
-                // Handled in Plan 02 when archive tab UI is wired
+            Action::ArchiveMilestonesDiscovered { alias, milestones } => {
+                let cache = self.ctx.view_cache.entry(alias).or_default();
+                cache.archive_milestones = milestones;
+                cache.archive_loading = false;
+                self.needs_redraw = true;
             }
-            Action::ArchiveLoaded { .. } => {
-                // Handled in Plan 02 when archive tab UI is wired
+            Action::ArchiveLoaded {
+                alias,
+                milestone,
+                data,
+            } => {
+                self.ctx.archive_cache.insert(milestone, data);
+                let cache = self.ctx.view_cache.entry(alias).or_default();
+                cache.archive_loading = false;
+                self.needs_redraw = true;
             }
         }
     }

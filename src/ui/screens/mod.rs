@@ -60,6 +60,12 @@ pub struct ProjectViewCache {
     pub pipeline_selected: usize,
     pub queue_selected: usize,
     pub sessions_selected: usize,
+    pub archive_depth: crate::archive::ArchiveDepth,
+    pub archive_milestones: Vec<String>,
+    pub archive_selected: [usize; 4],
+    pub archive_scroll_offset: u16,
+    pub archive_loading: bool,
+    pub archive_file_content: Option<String>,
 }
 
 pub struct AppContext {
@@ -82,6 +88,7 @@ pub struct AppContext {
     pub input_buffer: String,
     pub needs_redraw: bool,
     pub active_sessions: Vec<crate::session_detector::ClaudeSession>,
+    pub archive_cache: HashMap<String, crate::archive::MilestoneArchive>,
 }
 
 impl AppContext {
