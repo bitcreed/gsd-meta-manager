@@ -17,14 +17,15 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs};
 use ratatui::Frame;
 
-const TAB_TITLES: [&str; 7] = [
+const TAB_TITLES: [&str; 8] = [
     "1:Phases",
     "2:Roadmap",
     "3:Backlog",
     "4:Git",
-    "5:Pipeline",
+    "5:Pipe",
     "6:Queue",
-    "7:Sessions",
+    "7:Sess",
+    "8:Archive",
 ];
 
 pub struct DetailScreen {
@@ -226,6 +227,26 @@ fn switch_to_tab(
         }
     }
 
+    // Load milestone list for archive tab on first visit
+    if new_view == DetailSubView::Archive {
+        let cache = ctx.view_cache.entry(alias.to_string()).or_default();
+        if cache.archive_milestones.is_empty() && !cache.archive_loading {
+            cache.archive_loading = true;
+            if let (Some(project), Some(tx)) = (ctx.config.projects.get(alias), &ctx.event_tx) {
+                let tx = tx.clone();
+                let milestones_dir = project.path.join(".planning/milestones");
+                let alias_owned = alias.to_string();
+                tokio::task::spawn_blocking(move || {
+                    let milestones = crate::archive::discover_milestones(&milestones_dir);
+                    let _ = tx.send(Action::ArchiveMilestonesDiscovered {
+                        alias: alias_owned,
+                        milestones,
+                    });
+                });
+            }
+        }
+    }
+
     ScreenAction::None
 }
 
@@ -266,6 +287,41 @@ impl Screen for DetailScreen {
 
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {
+                // Archive: pop depth level before popping screen
+                if current_view == DetailSubView::Archive {
+                    let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                    use crate::archive::ArchiveDepth;
+                    match &cache.archive_depth {
+                        ArchiveDepth::MilestoneList => {
+                            // At root level -- fall through to pop screen
+                        }
+                        ArchiveDepth::PhaseList { .. } => {
+                            cache.archive_depth = ArchiveDepth::MilestoneList;
+                            ctx.needs_redraw = true;
+                            return ScreenAction::None;
+                        }
+                        ArchiveDepth::FileList { milestone, .. } => {
+                            cache.archive_depth =
+                                ArchiveDepth::PhaseList { milestone: milestone.clone() };
+                            ctx.needs_redraw = true;
+                            return ScreenAction::None;
+                        }
+                        ArchiveDepth::FileView {
+                            milestone,
+                            phase_idx,
+                            ..
+                        } => {
+                            cache.archive_depth = ArchiveDepth::FileList {
+                                milestone: milestone.clone(),
+                                phase_idx: *phase_idx,
+                            };
+                            cache.archive_file_content = None;
+                            cache.archive_scroll_offset = 0;
+                            ctx.needs_redraw = true;
+                            return ScreenAction::None;
+                        }
+                    }
+                }
                 // If diff stat pane is showing on Git tab, dismiss it first
                 if current_view == DetailSubView::GitHistory {
                     let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
@@ -339,6 +395,39 @@ impl Screen for DetailScreen {
                         }
                         ctx.needs_redraw = true;
                     }
+                    DetailSubView::Archive => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        use crate::archive::ArchiveDepth;
+                        match &cache.archive_depth {
+                            ArchiveDepth::MilestoneList => {
+                                let max = cache.archive_milestones.len().saturating_sub(1);
+                                cache.archive_selected[0] =
+                                    (cache.archive_selected[0] + 1).min(max);
+                            }
+                            ArchiveDepth::PhaseList { milestone } => {
+                                if let Some(data) = ctx.archive_cache.get(milestone) {
+                                    let total = data.top_level_files.len() + data.phases.len();
+                                    let max = total.saturating_sub(1);
+                                    cache.archive_selected[1] =
+                                        (cache.archive_selected[1] + 1).min(max);
+                                }
+                            }
+                            ArchiveDepth::FileList { milestone, phase_idx } => {
+                                if let Some(data) = ctx.archive_cache.get(milestone) {
+                                    if let Some(phase) = data.phases.get(*phase_idx) {
+                                        let max = phase.files.len().saturating_sub(1);
+                                        cache.archive_selected[2] =
+                                            (cache.archive_selected[2] + 1).min(max);
+                                    }
+                                }
+                            }
+                            ArchiveDepth::FileView { .. } => {
+                                cache.archive_scroll_offset =
+                                    cache.archive_scroll_offset.saturating_add(1);
+                            }
+                        }
+                        ctx.needs_redraw = true;
+                    }
                     _ => {
                         self.scroll_offset = self.scroll_offset.saturating_add(1);
                         ctx.needs_redraw = true;
@@ -377,6 +466,29 @@ impl Screen for DetailScreen {
                         cache.sessions_selected = cache.sessions_selected.saturating_sub(1);
                         ctx.needs_redraw = true;
                     }
+                    DetailSubView::Archive => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        use crate::archive::ArchiveDepth;
+                        match &cache.archive_depth {
+                            ArchiveDepth::MilestoneList => {
+                                cache.archive_selected[0] =
+                                    cache.archive_selected[0].saturating_sub(1);
+                            }
+                            ArchiveDepth::PhaseList { .. } => {
+                                cache.archive_selected[1] =
+                                    cache.archive_selected[1].saturating_sub(1);
+                            }
+                            ArchiveDepth::FileList { .. } => {
+                                cache.archive_selected[2] =
+                                    cache.archive_selected[2].saturating_sub(1);
+                            }
+                            ArchiveDepth::FileView { .. } => {
+                                cache.archive_scroll_offset =
+                                    cache.archive_scroll_offset.saturating_sub(1);
+                            }
+                        }
+                        ctx.needs_redraw = true;
+                    }
                     _ => {
                         self.scroll_offset = self.scroll_offset.saturating_sub(1);
                         ctx.needs_redraw = true;
@@ -392,6 +504,7 @@ impl Screen for DetailScreen {
             KeyCode::Char('5') => switch_to_tab(&self.alias, 4, &mut self.scroll_offset, ctx),
             KeyCode::Char('6') => switch_to_tab(&self.alias, 5, &mut self.scroll_offset, ctx),
             KeyCode::Char('7') => switch_to_tab(&self.alias, 6, &mut self.scroll_offset, ctx),
+            KeyCode::Char('8') => switch_to_tab(&self.alias, 7, &mut self.scroll_offset, ctx),
             // Tab switching via arrow keys
             KeyCode::Left => {
                 if current_idx > 0 {
@@ -573,6 +686,104 @@ impl Screen for DetailScreen {
                                 return ScreenAction::SetStatusMessage(
                                     "No session ID to resume".to_string(),
                                 );
+                            }
+                        }
+                        ScreenAction::None
+                    }
+                    DetailSubView::Archive => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        use crate::archive::ArchiveDepth;
+                        match cache.archive_depth.clone() {
+                            ArchiveDepth::MilestoneList => {
+                                let selected = cache.archive_selected[0];
+                                if let Some(milestone) =
+                                    cache.archive_milestones.get(selected).cloned()
+                                {
+                                    cache.archive_depth = ArchiveDepth::PhaseList {
+                                        milestone: milestone.clone(),
+                                    };
+                                    cache.archive_selected[1] = 0;
+                                    // Trigger async load if not cached
+                                    if !ctx.archive_cache.contains_key(&milestone) {
+                                        cache.archive_loading = true;
+                                        if let Some(project) = ctx.config.projects.get(&self.alias)
+                                        {
+                                            let milestones_dir =
+                                                project.path.join(".planning/milestones");
+                                            if let Some(tx) = &ctx.event_tx {
+                                                let tx = tx.clone();
+                                                let alias = self.alias.clone();
+                                                let ms = milestone.clone();
+                                                tokio::task::spawn_blocking(move || {
+                                                    let data =
+                                                        crate::archive::load_milestone_archive(
+                                                            &milestones_dir,
+                                                            &ms,
+                                                        );
+                                                    let _ = tx.send(Action::ArchiveLoaded {
+                                                        alias,
+                                                        milestone: ms,
+                                                        data,
+                                                    });
+                                                });
+                                            }
+                                        }
+                                    }
+                                    ctx.needs_redraw = true;
+                                }
+                            }
+                            ArchiveDepth::PhaseList { milestone } => {
+                                let selected = cache.archive_selected[1];
+                                if let Some(data) = ctx.archive_cache.get(&milestone) {
+                                    let top_count = data.top_level_files.len();
+                                    if selected < top_count {
+                                        // Selected a top-level file
+                                        let file = &data.top_level_files[selected];
+                                        let path = file.path.clone();
+                                        cache.archive_depth = ArchiveDepth::FileView {
+                                            milestone: milestone.clone(),
+                                            phase_idx: 0,
+                                            file_idx: selected,
+                                        };
+                                        cache.archive_scroll_offset = 0;
+                                        cache.archive_file_content =
+                                            Some(crate::archive::read_archive_file(&path));
+                                    } else {
+                                        // Selected a phase
+                                        let phase_idx = selected - top_count;
+                                        cache.archive_depth = ArchiveDepth::FileList {
+                                            milestone: milestone.clone(),
+                                            phase_idx,
+                                        };
+                                        cache.archive_selected[2] = 0;
+                                    }
+                                    ctx.needs_redraw = true;
+                                }
+                            }
+                            ArchiveDepth::FileList {
+                                milestone,
+                                phase_idx,
+                            } => {
+                                let selected = cache.archive_selected[2];
+                                if let Some(data) = ctx.archive_cache.get(&milestone) {
+                                    if let Some(phase) = data.phases.get(phase_idx) {
+                                        if let Some(file) = phase.files.get(selected) {
+                                            let path = file.path.clone();
+                                            cache.archive_depth = ArchiveDepth::FileView {
+                                                milestone: milestone.clone(),
+                                                phase_idx,
+                                                file_idx: selected,
+                                            };
+                                            cache.archive_scroll_offset = 0;
+                                            cache.archive_file_content =
+                                                Some(crate::archive::read_archive_file(&path));
+                                            ctx.needs_redraw = true;
+                                        }
+                                    }
+                                }
+                            }
+                            ArchiveDepth::FileView { .. } => {
+                                // No action on Enter in file view
                             }
                         }
                         ScreenAction::None
@@ -1628,10 +1839,216 @@ impl DetailScreen {
     }
 
     /// Render the archive tab with 4-level drill-down navigation.
-    fn render_archive_tab(&self, frame: &mut Frame, area: Rect, _ctx: &AppContext) {
-        let loading = Paragraph::new("Archive tab loading...")
-            .style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(loading, area);
+    fn render_archive_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        use crate::archive::ArchiveDepth;
+
+        let cache = if let Some(c) = ctx.view_cache.get(&self.alias) {
+            c
+        } else {
+            let loading = Paragraph::new("Loading...")
+                .style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(loading, area);
+            return;
+        };
+
+        // Split: breadcrumb (1 row) + content (remaining)
+        let chunks =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+        let breadcrumb_area = chunks[0];
+        let content_area = chunks[1];
+
+        // Render breadcrumb
+        let breadcrumb = Self::archive_breadcrumb(&cache.archive_depth, cache, ctx);
+        frame.render_widget(Paragraph::new(breadcrumb), breadcrumb_area);
+
+        if cache.archive_loading {
+            let loading = Paragraph::new("Loading...")
+                .style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(loading, content_area);
+            return;
+        }
+
+        match &cache.archive_depth {
+            ArchiveDepth::MilestoneList => {
+                if cache.archive_milestones.is_empty() {
+                    let empty = Paragraph::new(
+                        "No archived milestones found. Complete a milestone to see it here.",
+                    )
+                    .style(Style::default().fg(Color::DarkGray));
+                    frame.render_widget(empty, content_area);
+                    return;
+                }
+                let items: Vec<ListItem> = cache
+                    .archive_milestones
+                    .iter()
+                    .map(|v| {
+                        ListItem::new(Line::from(Span::styled(
+                            v.clone(),
+                            Style::default().fg(Color::Yellow),
+                        )))
+                    })
+                    .collect();
+                let list = List::new(items)
+                    .highlight_style(
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .highlight_symbol("> ");
+                let mut list_state = ListState::default();
+                list_state.select(Some(cache.archive_selected[0]));
+                frame.render_stateful_widget(list, content_area, &mut list_state);
+            }
+            ArchiveDepth::PhaseList { milestone } => {
+                if let Some(data) = ctx.archive_cache.get(milestone) {
+                    let mut items: Vec<ListItem> = Vec::new();
+                    // Top-level milestone files first
+                    for f in &data.top_level_files {
+                        items.push(ListItem::new(Line::from(Span::styled(
+                            format!("  {}", f.name),
+                            Style::default().fg(Color::DarkGray),
+                        ))));
+                    }
+                    // Then phases
+                    for phase in &data.phases {
+                        items.push(ListItem::new(Line::from(Span::raw(
+                            phase.display_name.clone(),
+                        ))));
+                    }
+                    if items.is_empty() {
+                        let empty =
+                            Paragraph::new("No phase artifacts found for this milestone.")
+                                .style(Style::default().fg(Color::DarkGray));
+                        frame.render_widget(empty, content_area);
+                        return;
+                    }
+                    let list = List::new(items)
+                        .highlight_style(
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        )
+                        .highlight_symbol("> ");
+                    let mut list_state = ListState::default();
+                    list_state.select(Some(cache.archive_selected[1]));
+                    frame.render_stateful_widget(list, content_area, &mut list_state);
+                } else {
+                    let loading = Paragraph::new("Loading...")
+                        .style(Style::default().fg(Color::DarkGray));
+                    frame.render_widget(loading, content_area);
+                }
+            }
+            ArchiveDepth::FileList {
+                milestone,
+                phase_idx,
+            } => {
+                if let Some(data) = ctx.archive_cache.get(milestone) {
+                    if let Some(phase) = data.phases.get(*phase_idx) {
+                        if phase.files.is_empty() {
+                            let empty = Paragraph::new("No files found for this phase.")
+                                .style(Style::default().fg(Color::DarkGray));
+                            frame.render_widget(empty, content_area);
+                            return;
+                        }
+                        let items: Vec<ListItem> = phase
+                            .files
+                            .iter()
+                            .map(|f| ListItem::new(Line::from(Span::raw(f.name.clone()))))
+                            .collect();
+                        let list = List::new(items)
+                            .highlight_style(
+                                Style::default()
+                                    .fg(Color::Cyan)
+                                    .add_modifier(Modifier::BOLD),
+                            )
+                            .highlight_symbol("> ");
+                        let mut list_state = ListState::default();
+                        list_state.select(Some(cache.archive_selected[2]));
+                        frame.render_stateful_widget(list, content_area, &mut list_state);
+                    }
+                }
+            }
+            ArchiveDepth::FileView { .. } => {
+                if let Some(content) = &cache.archive_file_content {
+                    let styled_lines = crate::archive::render_markdown_lines(content);
+                    let total_lines = styled_lines.len() as u16;
+                    let visible_height = content_area.height;
+                    let max_scroll = total_lines.saturating_sub(visible_height);
+                    let scroll = cache.archive_scroll_offset.min(max_scroll);
+                    let paragraph = Paragraph::new(styled_lines).scroll((scroll, 0));
+                    frame.render_widget(paragraph, content_area);
+                } else {
+                    let loading = Paragraph::new("Loading...")
+                        .style(Style::default().fg(Color::DarkGray));
+                    frame.render_widget(loading, content_area);
+                }
+            }
+        }
+    }
+
+    /// Build breadcrumb line for the archive tab showing navigation path.
+    fn archive_breadcrumb(
+        depth: &crate::archive::ArchiveDepth,
+        _cache: &super::ProjectViewCache,
+        ctx: &AppContext,
+    ) -> Line<'static> {
+        use crate::archive::ArchiveDepth;
+        let mut spans = vec![Span::styled(
+            "Archive".to_string(),
+            Style::default().fg(Color::Cyan),
+        )];
+
+        match depth {
+            ArchiveDepth::MilestoneList => {}
+            ArchiveDepth::PhaseList { milestone } => {
+                spans.push(Span::raw(" > "));
+                spans.push(Span::styled(
+                    milestone.clone(),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+            ArchiveDepth::FileList {
+                milestone,
+                phase_idx,
+            } => {
+                spans.push(Span::raw(" > "));
+                spans.push(Span::styled(
+                    milestone.clone(),
+                    Style::default().fg(Color::Yellow),
+                ));
+                if let Some(data) = ctx.archive_cache.get(milestone) {
+                    if let Some(phase) = data.phases.get(*phase_idx) {
+                        spans.push(Span::raw(" > "));
+                        spans.push(Span::raw(phase.display_name.clone()));
+                    }
+                }
+            }
+            ArchiveDepth::FileView {
+                milestone,
+                phase_idx,
+                file_idx,
+            } => {
+                spans.push(Span::raw(" > "));
+                spans.push(Span::styled(
+                    milestone.clone(),
+                    Style::default().fg(Color::Yellow),
+                ));
+                if let Some(data) = ctx.archive_cache.get(milestone) {
+                    if let Some(phase) = data.phases.get(*phase_idx) {
+                        spans.push(Span::raw(" > "));
+                        spans.push(Span::raw(phase.display_name.clone()));
+                        if let Some(file) = phase.files.get(*file_idx) {
+                            spans.push(Span::raw(" > "));
+                            spans.push(Span::styled(
+                                file.name.clone(),
+                                Style::default().add_modifier(Modifier::BOLD),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        Line::from(spans)
     }
 
     /// Render just the main content area (without footer), used by EnqueueScreen overlay.
@@ -1824,7 +2241,7 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
         Span::raw("  "),
         Span::styled("[Esc]", b),
         Span::raw("back  "),
-        Span::styled("[1-7]", b),
+        Span::styled("[1-8]", b),
         Span::raw("tabs  "),
         Span::styled("[j/k]", b),
         Span::raw("scroll  "),
@@ -1860,6 +2277,10 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
             spans.push(Span::raw("resume  "));
             spans.push(Span::styled("[n]", b));
             spans.push(Span::raw("ew session  "));
+        }
+        DetailSubView::Archive => {
+            spans.push(Span::styled("[Enter]", b));
+            spans.push(Span::raw("open  "));
         }
         _ => {
             spans.push(Span::styled("[e]", b));
