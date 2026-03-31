@@ -1,523 +1,521 @@
-# Architecture: v1.1 Feature Integration
+# Architecture Patterns
 
-**Domain:** TUI multi-project management dashboard — v1.1 power features
-**Researched:** 2026-03-26
-**Confidence:** HIGH (based on actual codebase analysis, verified Claude CLI structure, and real session file inspection)
+**Domain:** v1.2 Feature Integration (Archive Browser, Paused Detection, Queue Execution Research)
+**Researched:** 2026-03-31
+**Confidence:** HIGH (based on direct codebase analysis of v1.1 shipped code and GSD workflow file inspection)
 
-## Existing Architecture Summary
+## Existing Architecture Summary (Post-v1.1)
 
-The v1.0 codebase follows TEA (The Elm Architecture):
+The app follows TEA (The Elm Architecture) with a screen stack:
 
-- **App struct** (app.rs): Monolithic root state — config, project_states HashMap, input_mode, UI state
-- **Action enum** (action.rs): 5 variants — Tick, RawKey, Resize, FileChanged, CreateProjectResult
-- **EventBus** (event.rs): tokio mpsc unbounded channel, crossterm reader + tick timer as producers
-- **InputMode enum**: 11 variants controlling modal navigation (Normal, DetailView, EnqueueInput, etc.)
-- **StateReader** (state_reader/): Parses STATE.md (YAML frontmatter), ROADMAP.md (regex), QUEUE.md (line-based)
-- **FileWatcher** (watcher.rs): notify-debouncer-full, sends Action::FileChanged with project_path
-- **UI modules** (ui/): Stateless render functions dispatched by InputMode — project_list, detail_view, roadmap_widget, help_overlay
+- **App** struct holds `AppContext` and `screen_stack: Vec<Box<dyn Screen>>`
+- **Action** enum (7 variants): Tick, RawKey, Resize, FileChanged, ProjectStateLoaded, GitLogLoaded, GitDiffStatLoaded, SessionsDetected, CreateProjectResult
+- **Screen** trait: `handle_key()` returns `ScreenAction` (None/Push/Pop/Quit/SetStatusMessage/DispatchAction)
+- **DetailScreen** has 7 tabs via `DetailSubView` enum: PhaseList, RoadmapViz, Backlog, GitHistory, Pipeline, Queue, Sessions
+- **TAB_TITLES** constant: `["1:Phases", "2:Roadmap", "3:Backlog", "4:Git", "5:Pipeline", "6:Queue", "7:Sessions"]`
+- **ProjectViewCache** holds async-loaded per-project tab data (backlog items, git entries, diff stats, selection indices)
+- **StateReader** (`parse_project_state()`) reads `.planning/` into `ProjectState` struct -- called on startup and on every `FileChanged`
+- **FileWatcher** via notify-debouncer-full triggers `Action::FileChanged` on `.planning/` directory changes
+- **Session detection** via `pgrep`/`/proc` polls every 20 ticks (~5s), stores in `App.active_sessions`
+- All state mutation flows through `App::update()`; rendering is pure
 
-**Key characteristics:**
-- App.update() is ~140 lines, handles all actions in a single match
-- InputMode variants carry data (e.g., DetailView { alias }, EnqueueInput { alias })
-- Per-project sub-view state lives in `HashMap<String, DetailSubView>` on App
-- All state mutation flows through App::update(); UI is pure render
+**Key data flow:**
+```
+FileWatcher -> Action::FileChanged -> spawn_blocking(parse_project_state)
+  -> Action::ProjectStateLoaded -> App.ctx.project_states.insert() -> redraw
+```
 
-## New Features — Integration Analysis
+## New Features and Integration Points
 
-### Feature 1: Claude Session Management
+### 1. Paused-Project Detection (HANDOFF.json)
 
-**What it does:** Detect active Claude Code sessions per project, show session status in dashboard and detail view, allow launching/resuming sessions from TUI.
+**What it is:** GSD's `/gsd:pause-work` writes `.planning/HANDOFF.json` with structured pause state. Projects with this file are paused and should show a badge on the dashboard.
 
-**Data source (verified on disk):**
-- `~/.claude/projects/<url-encoded-path>/` contains `<uuid>.jsonl` session files
-- Path encoding: `/home/blk/projects/rust/gsd-manager` becomes `-home-blk-projects-rust-gsd-manager`
-- Each JSONL entry has: `type` (user/assistant/progress/file-history-snapshot), `sessionId`, `timestamp`, `cwd`, `gitBranch`
-- No `sessions-index.json` exists on this system — must parse JSONL directly or scan directory
-- Running processes detectable via `ps` — process name is `claude` with args like `--resume <session-id>`
+**Data source:** `.planning/HANDOFF.json` -- JSON file with fields:
+- `status`: always `"paused"`
+- `timestamp`: ISO 8601 when paused
+- `phase`: current phase number or `"milestone-complete"`
+- `phase_name`: human-readable phase name
+- `next_action`: what to do when resuming
+- `blockers`: array of `{description, type, workaround}` objects
+- `human_actions_pending`: array of `{action, context, blocking}` objects
+- `context_notes`: mental state summary
 
-**New components:**
+Note: HANDOFF.json is deleted on resume (`/gsd:resume-work`). Its presence means the project is paused.
 
-| Component | Type | Location | Purpose |
-|-----------|------|----------|---------|
-| `ClaudeSessionReader` | Data reader | `src/state_reader/claude_sessions.rs` | Scan `~/.claude/projects/` for session files matching a project path |
-| `ClaudeProcessDetector` | Infrastructure | `src/claude_detector.rs` | Check running `claude` processes via `/proc` or `ps` output |
-| `SessionListView` | UI component | `src/ui/session_list.rs` | Render session list with status indicators |
+**Integration approach -- extend existing StateReader:**
 
-**New data structures:**
+#### New: `state_reader/handoff.rs` (~50 lines)
 
 ```rust
-// In state_reader/claude_sessions.rs
-pub struct ClaudeSession {
-    pub session_id: String,
-    pub last_activity: chrono::DateTime<chrono::Utc>,
-    pub first_prompt: Option<String>,  // extracted from first "user" type entry
-    pub message_count: u32,
-    pub git_branch: Option<String>,
-    pub is_active: bool,  // true if matching process found
+use std::path::Path;
+
+#[derive(Debug, Clone, Default)]
+pub struct PauseInfo {
+    pub timestamp: String,
+    pub phase: String,
+    pub phase_name: String,
+    pub next_action: String,
+    pub blocker_count: usize,
+    pub human_actions_count: usize,
+    pub context_notes: String,
 }
 
-// Added to ProjectState
+pub fn parse_handoff(planning_dir: &Path) -> Option<PauseInfo> {
+    let path = planning_dir.join("HANDOFF.json");
+    let content = std::fs::read_to_string(&path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    // Extract fields from JSON, return PauseInfo
+    Some(PauseInfo {
+        timestamp: json["timestamp"].as_str()?.to_string(),
+        phase: json["phase"].as_str().unwrap_or("").to_string(),
+        phase_name: json["phase_name"].as_str().unwrap_or("").to_string(),
+        next_action: json["next_action"].as_str().unwrap_or("").to_string(),
+        blocker_count: json["blockers"].as_array().map(|a| a.len()).unwrap_or(0),
+        human_actions_count: json["human_actions_pending"].as_array().map(|a| a.len()).unwrap_or(0),
+        context_notes: json["context_notes"].as_str().unwrap_or("").to_string(),
+    })
+}
+```
+
+#### Modified: `ProjectState` (state_reader/mod.rs)
+
+Add two fields:
+
+```rust
 pub struct ProjectState {
     // ... existing fields ...
-    pub claude_sessions: Vec<ClaudeSession>,
-    pub active_session_count: u32,
+    pub is_paused: bool,
+    pub pause_info: Option<PauseInfo>,
 }
 ```
 
-**New Action variants:**
+#### Modified: `parse_project_state()` (state_reader/mod.rs)
+
+Add after queue loading (line ~102):
 
 ```rust
-Action::RefreshClaudeSessions { project_path: PathBuf },
-Action::LaunchClaudeSession { alias: String, command: String },
-Action::ResumeClaudeSession { alias: String, session_id: String },
-Action::ClaudeSessionResult { alias: String, success: bool, error: Option<String> },
-```
-
-**New InputMode variants:**
-
-```rust
-InputMode::SessionList { alias: String },
-InputMode::LaunchSession { alias: String },
-```
-
-**Integration points:**
-- `parse_project_state()` gains optional claude session scanning (guarded by feature flag or lazy-loaded on detail view entry)
-- Detail view gets new sub-view tab: PhaseList / RoadmapViz / **Sessions**
-- Dashboard can show a session indicator column (active session count)
-- Session launch uses `tokio::process::Command` to spawn `claude` in a new terminal (detached)
-
-**Critical constraint:** Session scanning reads potentially large JSONL files. Must NOT scan on every file-watcher tick. Scan only on explicit navigation to session view, or on a slower timer (every 30s).
-
-### Feature 2: Queue Execution
-
-**What it does:** Make QUEUE.md items actionable — execute queued GSD commands by launching Claude sessions with the command as the initial prompt.
-
-**Integration with existing code:**
-- QUEUE.md parsing already exists in `state_reader/queue_md.rs`
-- EnqueueInput mode already works for adding items
-- Execution means: `claude -p "<command>"` or `claude "<command>"` in the project directory
-
-**New components:**
-
-| Component | Type | Location | Purpose |
-|-----------|------|----------|---------|
-| `QueueExecutor` | Infrastructure | `src/queue_executor.rs` | Spawn Claude process with queue item as prompt |
-| Queue editor enhancements | UI modification | `src/ui/detail_view.rs` | Add reorder, delete, execute actions to queue display |
-
-**New Action variants:**
-
-```rust
-Action::ExecuteQueueItem { alias: String, index: usize },
-Action::QueueExecutionResult { alias: String, index: usize, success: bool, error: Option<String> },
-Action::RemoveQueueItem { alias: String, index: usize },
-Action::ReorderQueueItem { alias: String, from: usize, to: usize },
-```
-
-**New InputMode variant:**
-
-```rust
-InputMode::QueueView { alias: String, selected: usize },
-```
-
-**Integration points:**
-- `QueuedAction` struct gains `status: QueueItemStatus` (Pending/Running/Done/Failed)
-- Detail view queue section becomes interactive (not just display)
-- Execution spawns detached `claude` process — TUI does not wait for completion
-- Queue item removal modifies QUEUE.md via existing `save_queue()` function
-
-### Feature 3: Git History Viewer
-
-**What it does:** Scrollable git log for a project, with ability to scope to `.planning/` changes only.
-
-**Implementation approach:** Use `std::process::Command` to call `git log` rather than linking `libgit2`. Rationale:
-- git2 crate adds ~3MB to binary and requires libgit2 C library build
-- `git log --oneline --format=...` gives structured output trivially
-- The viewer is read-only; no git write operations needed
-- Every GSD project is a git repo by definition
-
-**New components:**
-
-| Component | Type | Location | Purpose |
-|-----------|------|----------|---------|
-| `GitLogReader` | Data reader | `src/state_reader/git_log.rs` | Run `git log` and parse structured output |
-| `GitHistoryView` | UI component | `src/ui/git_history.rs` | Scrollable commit list with filtering |
-
-**New data structures:**
-
-```rust
-pub struct GitCommit {
-    pub hash: String,       // short hash
-    pub message: String,    // first line
-    pub author: String,
-    pub date: String,       // relative date
-    pub files_changed: u32, // from --stat
-}
-
-pub struct GitHistoryState {
-    pub commits: Vec<GitCommit>,
-    pub scroll_offset: usize,
-    pub scope: GitScope,       // All or PlanningOnly
-    pub loading: bool,
-}
-
-pub enum GitScope {
-    All,
-    PlanningOnly,  // git log -- .planning/
+// Check for HANDOFF.json (paused project)
+if let Some(info) = handoff::parse_handoff(planning_dir) {
+    state.is_paused = true;
+    state.pause_info = Some(info);
 }
 ```
 
-**New Action variants:**
+#### Modified: Dashboard alias cell rendering (ui/screens/normal.rs, ~line 344)
+
+The existing session badge pattern is the template. Insert paused check with higher priority:
 
 ```rust
-Action::LoadGitHistory { alias: String, scope: GitScope },
-Action::GitHistoryLoaded { alias: String, commits: Vec<GitCommit> },
+let is_paused = ctx.project_states.get(alias)
+    .map(|s| s.is_paused)
+    .unwrap_or(false);
+
+let alias_cell: Line = if is_paused {
+    Line::from(vec![
+        Span::styled("\u{23f8} ", Style::default().fg(Color::Cyan)),
+        Span::raw(alias.clone()),
+    ])
+} else if has_session {
+    // existing session badge (green triangle)
+    Line::from(vec![
+        Span::styled("\u{25b6} ", Style::default().fg(Color::Green)),
+        Span::raw(alias.clone()),
+    ])
+} else {
+    Line::from(alias.clone())
+};
 ```
 
-**New InputMode variant:**
+**Decision: Do NOT add a new `StatusCategory::Paused` variant.** Paused maps to Idle (yellow). The visual distinction comes from the badge icon. Adding a variant forces changes to every `match` on StatusCategory.
 
-```rust
-InputMode::GitHistory { alias: String },
-```
+#### Modified: Detail view PhaseList tab
 
-**Integration points:**
-- Detail view gets new sub-view or keybinding (`g` for git history)
-- Git log is loaded async via `tokio::task::spawn_blocking` (runs in thread pool)
-- Per-project git history state stored in `HashMap<String, GitHistoryState>` on App
-- Scope toggle (`Tab` key) switches between all commits and .planning/-only
-
-### Feature 4: Backlog Browser
-
-**What it does:** View, edit, and promote backlog items (999.x directories) from the TUI.
-
-**Data source (verified on disk):**
-- Backlog items are directories in `.planning/phases/` matching `999.*` pattern
-- Directory names follow pattern: `999.N-slug-name`
-- May contain `CONCEPT.md` or be empty
-- Promotion means: renaming from `999.N-slug` to a real phase number directory
-
-**New components:**
-
-| Component | Type | Location | Purpose |
-|-----------|------|----------|---------|
-| `BacklogReader` | Data reader | `src/state_reader/backlog.rs` | Scan 999.x directories, parse names and contents |
-| `BacklogView` | UI component | `src/ui/backlog_view.rs` | Scrollable list with preview panel |
-
-**New data structures:**
-
-```rust
-pub struct BacklogItem {
-    pub number: String,     // "999.3"
-    pub slug: String,       // "queue-editor-and-reorder"
-    pub display_name: String, // derived from slug: "Queue Editor and Reorder"
-    pub has_concept: bool,
-    pub concept_preview: Option<String>,  // first ~200 chars of CONCEPT.md
-    pub dir_path: PathBuf,
-}
-
-pub struct BacklogViewState {
-    pub items: Vec<BacklogItem>,
-    pub selected: usize,
-    pub show_preview: bool,
-}
-```
-
-**New Action variants:**
-
-```rust
-Action::LoadBacklog { alias: String },
-Action::BacklogLoaded { alias: String, items: Vec<BacklogItem> },
-Action::PromoteBacklogItem { alias: String, item_number: String, target_phase: u32 },
-```
-
-**New InputMode variant:**
-
-```rust
-InputMode::BacklogBrowser { alias: String },
-```
-
-**Integration points:**
-- `count_backlog_items()` already exists in state_reader; enhance to return full BacklogItem structs
-- Detail view gains `b` keybinding for backlog browser
-- Promotion writes to filesystem (rename directory) — must be careful about active GSD instances
-- Backlog count already shown in detail view; make it clickable/navigable
-
-### Feature 5: Execution Flow Graph
-
-**What it does:** Per-phase visualization of the GSD workflow pipeline: discuss -> plan -> execute -> verify, showing which steps are complete based on file presence.
-
-**Data source (verified on disk):**
-Phase directories contain specific files indicating completion of each workflow step:
-- `NN-DISCUSSION-LOG.md` -> discuss step done
-- `NN-CONTEXT.md` -> context gathered
-- `NN-RESEARCH.md` -> research done (optional)
-- `NN-MM-PLAN.md` files -> plan step done (per plan)
-- `NN-MM-SUMMARY.md` files -> execute step done (per plan)
-- `NN-VERIFICATION.md` -> verify step done
-
-**New components:**
-
-| Component | Type | Location | Purpose |
-|-----------|------|----------|---------|
-| `PhaseFlowReader` | Data reader | `src/state_reader/phase_flow.rs` | Scan phase directory for workflow artifacts |
-| `FlowGraphWidget` | Custom widget | `src/ui/flow_graph.rs` | Render pipeline visualization |
-
-**New data structures:**
-
-```rust
-pub struct PhaseFlowState {
-    pub phase_number: String,
-    pub phase_name: String,
-    pub steps: Vec<FlowStep>,
-}
-
-pub struct FlowStep {
-    pub name: String,           // "Discuss", "Plan", "Execute", "Verify"
-    pub status: FlowStepStatus,
-    pub artifacts: Vec<String>, // file names that prove completion
-}
-
-pub enum FlowStepStatus {
-    NotStarted,
-    InProgress,  // some artifacts present but not all expected
-    Complete,
-    Skipped,     // optional step that was bypassed
-}
-```
-
-**New InputMode variant:**
-
-```rust
-InputMode::FlowGraph { alias: String, phase: String },
-```
-
-**Integration points:**
-- Accessible from detail view's phase list — select a phase, press `Enter` or `f` to see flow
-- Requires reading the actual phase directory, not just ROADMAP.md
-- Phase directory paths: `.planning/phases/NN-slug/` (active) or `.planning/milestones/vX.X-phases/NN-slug/` (archived)
-- Widget renders a horizontal pipeline with box-drawing characters:
+When `is_paused` is true, render a pause info panel above the phase list:
 
 ```
-  ┌─────────┐    ┌──────┐    ┌─────────┐    ┌────────┐
-  │ Discuss  │───>│ Plan │───>│ Execute │───>│ Verify │
-  │    [+]   │    │ [3/3]│    │  [2/3]  │    │  [ ]   │
-  └─────────┘    └──────┘    └─────────┘    └────────┘
+ PAUSED  since 2026-03-27
+ Phase: v1.0 archived
+ Next: Set up Railway credentials
+ Blockers: 2 | Human actions: 4
 ```
 
-## State Changes to App Struct
+This is a conditional `Paragraph` widget rendered in the existing PhaseList layout -- no new screen or tab needed.
 
-```rust
-pub struct App {
-    // ... existing fields unchanged ...
+#### File watcher integration
 
-    // NEW: Per-project extended state
-    pub session_states: HashMap<String, Vec<ClaudeSession>>,
-    pub git_history_states: HashMap<String, GitHistoryState>,
-    pub backlog_states: HashMap<String, BacklogViewState>,
-    pub phase_flow_states: HashMap<String, PhaseFlowState>,
+Already handled automatically. HANDOFF.json lives in `.planning/`, which the watcher monitors. When it appears/disappears, `Action::FileChanged` fires, `parse_project_state` re-runs, and `is_paused` updates.
 
-    // NEW: Detail view sub-views expanded
-    // (detail_sub_view_per_project HashMap values change type)
-}
+---
+
+### 2. Milestone Archive Browser Tab
+
+**What it is:** A new 8th tab in DetailScreen for browsing completed milestones and drilling into archived phase artifacts.
+
+**Data source:** `.planning/milestones/` directory structure (verified on disk):
+```
+milestones/
+  v1.0-ROADMAP.md          # Full phase details, milestone summary
+  v1.0-REQUIREMENTS.md     # Archived requirements with final status
+  v1.0-MILESTONE-AUDIT.md  # YAML frontmatter with scores + gaps
+  v1.0-phases/             # Phase directories with all artifacts
+    01-core-infrastructure/
+      01-CONTEXT.md, 01-01-PLAN.md, 01-01-SUMMARY.md,
+      01-VERIFICATION.md, 01-UI-SPEC.md, etc.
+    02-dashboard-and-navigation/
+      ...
+  v1.1-ROADMAP.md
+  v1.1-MILESTONE-AUDIT.md
+  v1.1-REQUIREMENTS.md
+  v1.1-phases/
+    05-state-reader-accuracy/
+      ...
 ```
 
-**DetailSubView expansion:**
+#### Modified: `DetailSubView` enum (app.rs)
 
 ```rust
 pub enum DetailSubView {
-    PhaseList,      // existing
-    RoadmapViz,     // existing
-    Sessions,       // NEW
-    GitHistory,     // NEW
-    BacklogBrowser, // NEW
-    FlowGraph { phase: String }, // NEW
+    PhaseList,
+    RoadmapViz,
+    Backlog,
+    GitHistory,
+    Pipeline,
+    Queue,
+    Sessions,
+    Archives,    // NEW -- 8th tab
 }
 ```
 
-Alternatively, keep the existing DetailSubView for the main toggle and use InputMode variants for the new full-screen views. This keeps the existing `r` key toggle intact and adds new keybindings. **Recommended approach:** Use InputMode variants for new views because they are full-screen navigations, not sub-tabs of the detail view.
+Update TAB_TITLES to 8 elements:
+```rust
+const TAB_TITLES: [&str; 8] = [
+    "1:Phases", "2:Roadmap", "3:Backlog", "4:Git",
+    "5:Pipeline", "6:Queue", "7:Sessions", "8:Archives"
+];
+```
 
-## Action Enum Growth Plan
+Update `tab_index()` and `sub_view_from_index()` with the new variant.
 
-Current: 5 variants. After v1.1: ~18 variants. This is within the "comfortable" range for a single match in update(). However, the update() method should be refactored into delegated handlers:
+#### New: `state_reader/milestones.rs` (~120 lines)
+
+Data structures and scanning logic:
 
 ```rust
-impl App {
-    pub fn update(&mut self, action: Action) {
-        match &action {
-            Action::Tick | Action::Resize | Action::Noop => self.handle_lifecycle(action),
-            Action::RawKey(_) => self.handle_key_action(action),
-            Action::FileChanged { .. } => self.handle_file_change(action),
-            Action::CreateProjectResult { .. } => self.handle_create_result(action),
-            // v1.1 additions
-            Action::LoadGitHistory { .. } | Action::GitHistoryLoaded { .. } => self.handle_git(action),
-            Action::LoadBacklog { .. } | Action::BacklogLoaded { .. } | Action::PromoteBacklogItem { .. } => self.handle_backlog(action),
-            Action::ExecuteQueueItem { .. } | Action::QueueExecutionResult { .. } | Action::RemoveQueueItem { .. } | Action::ReorderQueueItem { .. } => self.handle_queue(action),
-            Action::RefreshClaudeSessions { .. } | Action::LaunchClaudeSession { .. } | Action::ResumeClaudeSession { .. } | Action::ClaudeSessionResult { .. } => self.handle_claude(action),
-        }
-    }
+#[derive(Debug, Clone)]
+pub struct ArchivedMilestone {
+    pub version: String,           // "v1.0"
+    pub name: String,              // extracted from ROADMAP.md header
+    pub audit_status: String,      // from AUDIT.md YAML: "passed", "tech_debt", "gaps_found"
+    pub shipped_date: String,      // from ROADMAP.md
+    pub phase_count: usize,
+    pub phases: Vec<ArchivedPhase>,
+    pub has_audit: bool,
+    pub has_requirements: bool,
+    pub top_level_files: Vec<String>, // ["v1.0-ROADMAP.md", "v1.0-MILESTONE-AUDIT.md", ...]
+}
+
+#[derive(Debug, Clone)]
+pub struct ArchivedPhase {
+    pub dir_name: String,          // "01-core-infrastructure"
+    pub number: String,            // "01"
+    pub name: String,              // "core-infrastructure" -> "Core Infrastructure"
+    pub artifact_count: usize,
+    pub artifacts: Vec<String>,    // file names in the phase dir
+}
+
+/// Scan .planning/milestones/ for archived milestones.
+/// Lightweight: reads directory listings and a few header lines, not full file contents.
+pub fn scan_milestones(planning_dir: &Path) -> Vec<ArchivedMilestone> {
+    // 1. List milestones/ dir entries
+    // 2. Group by version prefix (v1.0-*, v1.1-*, etc.)
+    // 3. For each version:
+    //    a. Check for -ROADMAP.md, -REQUIREMENTS.md, -MILESTONE-AUDIT.md
+    //    b. Parse milestone name from ROADMAP.md first heading
+    //    c. Parse audit status from AUDIT.md YAML frontmatter
+    //    d. List -phases/ subdirectories, for each list artifact files
+    // 4. Sort by version descending (newest first)
 }
 ```
 
-## Data Flow: New Patterns
+#### Modified: `ProjectViewCache` (ui/screens/mod.rs)
 
-### Claude Session Detection Flow
+Add archive cache fields:
 
-```
-Navigation to Sessions view
-    |
-    v
-App dispatches Action::RefreshClaudeSessions { project_path }
-    |
-    v
-spawn_blocking: ClaudeSessionReader::scan(~/.claude/projects/<encoded-path>/)
-    |  reads directory listing + first/last lines of each .jsonl
-    |  checks /proc or `ps` for matching claude process
-    v
-Action::ClaudeSessionsLoaded sent via event_tx
-    |
-    v
-App::update() stores sessions in session_states HashMap
-    |
-    v
-Next render picks up session data
-```
+```rust
+pub struct ProjectViewCache {
+    // ... existing fields ...
+    pub archived_milestones: Vec<ArchivedMilestone>,
+    pub archive_milestone_selected: usize,
+    pub archive_phase_selected: usize,
+    pub archive_artifact_selected: usize,
+    pub archive_depth: ArchiveBrowseDepth,
+    pub archive_content: Option<String>,  // loaded artifact text
+    pub loading_archives: bool,
+}
 
-### Async Command Execution Flow (Queue + Session Launch)
-
-```
-User triggers execute (queue item or session launch)
-    |
-    v
-App::update() spawns detached process:
-    tokio::process::Command::new("claude")
-        .args(&["-r", session_id])  // or queue command
-        .current_dir(project_path)
-        .spawn()  // detached, TUI does NOT wait
-    |
-    v
-Status message: "Launched Claude session in terminal"
-    |
-    v
-User switches to that terminal manually
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum ArchiveBrowseDepth {
+    #[default]
+    MilestoneList,      // List of milestones (v1.0, v1.1, ...)
+    PhaseList,          // Phases within selected milestone
+    ArtifactList,       // Files within selected phase
+    ArtifactContent,    // Viewing file content (scrollable)
+}
 ```
 
-**Important:** The TUI cannot embed a Claude session within itself. Claude Code is a full TUI application that takes over the terminal. Launch must either:
-1. Open a new terminal window/tab (platform-dependent)
-2. Print instructions to switch to the spawned terminal
-3. Use tmux/screen split if available
+#### Navigation pattern
 
-**Recommended:** Spawn `claude` in a new tmux pane if tmux is detected, otherwise spawn in background and show the session ID for manual resume.
-
-### Git History Loading Flow
+Drill-down with Enter/Escape, matching existing Backlog expand/collapse UX:
 
 ```
-Navigation to GitHistory view
-    |
-    v
-App dispatches Action::LoadGitHistory { alias, scope }
-    |
-    v
-spawn_blocking: git log --format="<structured>" --max-count=100 -- [.planning/]
-    |
-    v
-Action::GitHistoryLoaded { alias, commits } sent via event_tx
-    |
-    v
-App::update() stores in git_history_states
-    |
-    v
-Render shows scrollable commit list
+Milestones              Phases                  Artifacts               Content
+v1.0 MVP (4 phases)  > 01: Core Infra        > 01-CONTEXT.md        > (scrollable text)
+v1.1 Polish (5 ph)     02: Dashboard           01-01-PLAN.md
+                        03: Live State          01-01-SUMMARY.md
+                        04: Viz & Create        01-VERIFICATION.md
 ```
 
-## Build Order (Dependency-Based)
+- **Enter**: drill deeper
+- **Escape**: back one level (at MilestoneList level, Escape exits to previous screen like other tabs)
+- **j/k or Up/Down**: navigate within current level
+- **Scrolling in ArtifactContent**: same mechanism as existing backlog content preview
 
-| Order | Feature | Depends On | Rationale |
-|-------|---------|------------|-----------|
-| 1 | **State reader fixes** (999.4, 999.5, 999.6) | Nothing | Foundation — all other features read from corrected state |
-| 2 | **Backlog browser** (999.11) | State reader fixes (uses phase directory scanning) | Low complexity, extends existing `count_backlog_items()`, validates phase directory reading pattern used by flow graph |
-| 3 | **Git history viewer** (999.8) | Nothing (standalone) | Self-contained, no writes, introduces async command pattern reused by queue execution and session launch |
-| 4 | **Queue editor/reorder** (999.3) | Nothing (extends existing queue_md) | Builds on existing EnqueueInput; adds interactive list pattern reused by backlog and session views |
-| 5 | **Execution flow graph** (999.1) | Backlog browser (shares phase directory reading) | Needs phase directory scanning; more complex widget but isolated rendering |
-| 6 | **GSD integration hooks** (999.7) | State reader fixes | Enhances state reader with cached status and fact/assumption tracking |
-| 7 | **Queue execution** (999.9) | Queue editor, git history (reuses async spawn pattern) | Needs both queue management and process spawning |
-| 8 | **Claude session management** (999.10) | Queue execution (reuses spawn pattern), GSD integration | Most complex; needs process detection, JSONL parsing, terminal management |
+At MilestoneList level, also show top-level files (ROADMAP.md, AUDIT.md, REQUIREMENTS.md) as browsable items alongside the phases directory.
 
-**Critical path:** State reader fixes -> Backlog browser -> Flow graph (these share phase directory reading code). Git history and queue editor can be built in parallel since they are independent.
+#### New Action variants
 
-## New Module Map
-
-```
-src/
-├── main.rs
-├── tui.rs
-├── app.rs                       # MODIFY: add new state HashMaps, refactor update()
-├── action.rs                    # MODIFY: add ~13 new Action variants
-├── event.rs                     # UNCHANGED
-├── config.rs                    # UNCHANGED
-├── error.rs                     # UNCHANGED
-├── cli.rs                       # UNCHANGED
-├── registry.rs                  # UNCHANGED
-├── change_tracker.rs            # UNCHANGED
-├── project_creator.rs           # UNCHANGED
-├── watcher.rs                   # UNCHANGED
-├── state_reader/
-│   ├── mod.rs                   # MODIFY: add claude_sessions, backlog, phase_flow, git_log
-│   ├── state_md.rs              # MODIFY: fix plan counting, completion inference
-│   ├── roadmap_md.rs            # MODIFY: fix parser bugs
-│   ├── config_json.rs           # UNCHANGED
-│   ├── queue_md.rs              # MODIFY: add QueueItemStatus, reorder/remove helpers
-│   ├── claude_sessions.rs       # NEW: scan ~/.claude/projects/ for session JSONL
-│   ├── backlog.rs               # NEW: parse 999.x directories into BacklogItem structs
-│   ├── phase_flow.rs            # NEW: scan phase dirs for workflow artifacts
-│   └── git_log.rs               # NEW: run git log, parse structured output
-├── claude_detector.rs           # NEW: check running claude processes
-├── queue_executor.rs            # NEW: spawn claude with queue command
-├── ui/
-│   ├── mod.rs                   # MODIFY: dispatch to new views
-│   ├── project_list.rs          # MODIFY: add session indicator column
-│   ├── detail_view.rs           # MODIFY: add keybindings for new sub-views
-│   ├── roadmap_widget.rs        # UNCHANGED
-│   ├── help_overlay.rs          # MODIFY: add new keybindings to help
-│   ├── session_list.rs          # NEW: Claude session list with status
-│   ├── git_history.rs           # NEW: scrollable git log
-│   ├── backlog_view.rs          # NEW: backlog item list with preview
-│   └── flow_graph.rs            # NEW: per-phase pipeline visualization widget
-└── (tests remain in-module)
+```rust
+pub enum Action {
+    // ... existing ...
+    ArchivesLoaded {
+        alias: String,
+        milestones: Vec<ArchivedMilestone>,
+    },
+    ArchiveContentLoaded {
+        alias: String,
+        content: String,
+    },
+}
 ```
 
-**Files changed:** 10 modified, 8 new
-**Files unchanged:** 7
+Loading follows the established async pattern:
+1. Tab activation checks `ProjectViewCache.archived_milestones`
+2. If empty, sets `loading_archives = true`, spawns `tokio::task::spawn_blocking`
+3. Blocking task sends `Action::ArchivesLoaded` through event bus
+4. `App::update()` stores in cache and triggers redraw
+5. Artifact content similarly loaded via `ArchiveContentLoaded`
 
-## Anti-Patterns to Avoid in v1.1
+#### Cache invalidation
 
-### Anti-Pattern: Scanning Claude Sessions on Every Tick
+`Action::FileChanged` for a project clears `archived_milestones` from its cache. Since milestone archives change only at milestone boundaries (rare), this is fine as a simple clear-on-any-change strategy. The next tab visit triggers a re-scan.
 
-Session JSONL files can be megabytes. Scanning on every 250ms tick or file-watcher event would cause visible lag. Scan only on explicit user navigation to session view, with a 30-second cache TTL.
+---
 
-### Anti-Pattern: Blocking on Process Spawn
+### 3. Queue Execution Research (Data Model Implications)
 
-When launching `claude` for queue execution or session resume, never `wait()` on the child process. The TUI must remain responsive. Spawn and forget; show status via process detection on next session scan.
+**What it is:** Research-only phase. Documents how GSD could auto-execute queue items. No code changes -- informs future data model design.
 
-### Anti-Pattern: Direct Filesystem Mutation in update()
+#### GSD Autonomous Workflow Analysis
 
-Queue reorder, backlog promotion, and QUEUE.md saves should use `spawn_blocking` with a result action, not synchronous fs writes in `update()`. The existing `save_queue()` is synchronous — acceptable for small files, but promotion (directory rename) can be slow on network filesystems.
+From reading `autonomous.md`, the key lifecycle:
 
-### Anti-Pattern: Putting All New State in App
+1. **Initialize**: `init milestone-op` bootstraps context, reads STATE.md/ROADMAP.md
+2. **Discover phases**: `roadmap analyze` finds incomplete phases, sorts by number
+3. **Per-phase execution loop**:
+   - Smart discuss (or skip if infrastructure) -> writes CONTEXT.md
+   - Plan (`gsd:plan-phase N`) -> writes PLAN.md files
+   - Execute (`gsd:execute-phase N --no-transition`) -> writes SUMMARY.md files
+   - Post-execution routing on VERIFICATION.md status (passed/human_needed/gaps_found)
+   - Gap closure limited to 1 retry
+4. **Iterate**: Re-reads ROADMAP.md (catches decimal phase insertions), checks STATE.md for blockers
+5. **Lifecycle**: audit -> complete-milestone -> cleanup
 
-With 5 new features, App is at risk of becoming a god struct. Keep feature-specific state in dedicated state structs stored in HashMaps. App orchestrates; feature modules own their state shape.
+**Key insight: Autonomous mode has NO awareness of QUEUE.md.** There is no hook point where queue items are consumed. Queue items are free-form text strings (GSD commands, notes, reminders) -- not structured phase definitions.
+
+#### Hook points for future queue execution
+
+Three possible integration strategies:
+
+**(a) Launch-time injection (recommended for v1.3+):**
+The TUI launches a Claude session with queue items as the initial prompt. Example: `claude -p "/gsd:quick Fix the login button"` in the project directory. This is the simplest approach and already possible with v1.1's session launch feature. The missing piece is a "run next queue item" action that:
+1. Takes the first pending queue item
+2. Launches `claude -p "<item>"` in a new terminal
+3. Marks the item as "running" in the UI (not persisted -- session state only)
+
+**(b) Autonomous pre-phase hook (requires GSD changes):**
+Add a `--queue` flag to `/gsd:autonomous` that reads QUEUE.md before each phase and offers to execute pending items. This requires changes to the GSD workflow file, not the TUI.
+
+**(c) Phase insertion (requires GSD changes):**
+Convert queue items to decimal phases in ROADMAP.md. Example: queue item "Fix login button" becomes "Phase 5.1: Quick fix -- login button". Autonomous mode would then pick it up in the iterate step. Complex and fragile.
+
+#### Data model recommendation
+
+The current `QueuedAction { command: String }` is sufficient for v1.2. Do NOT add status/timestamp fields yet because:
+- QUEUE.md is plain markdown (`- command text`) that GSD reads directly
+- Adding structured fields requires a format change (YAML frontmatter, JSON, or custom markers)
+- Status tracking is session-ephemeral (a running item in one TUI session is stale the next)
+
+**Future-proofing note:** When queue execution is implemented (v1.3+), the model should expand to:
+
+```rust
+pub struct QueuedAction {
+    pub command: String,
+    pub status: QueueStatus,        // Pending | Running | Done | Failed
+    pub created_at: Option<String>,
+    pub executed_at: Option<String>,
+}
+```
+
+But this requires a QUEUE.md format migration (from plain list to structured format). That decision should be made when execution is actually built.
+
+---
+
+## Component Boundaries
+
+| Component | Status | Location | Responsibility |
+|-----------|--------|----------|----------------|
+| `state_reader/handoff.rs` | **NEW** | src/state_reader/ | Parse HANDOFF.json into PauseInfo |
+| `state_reader/milestones.rs` | **NEW** | src/state_reader/ | Scan milestones/ directory for ArchivedMilestone structs |
+| `ProjectState` | **MODIFIED** | src/state_reader/mod.rs | Add `is_paused: bool`, `pause_info: Option<PauseInfo>` |
+| `parse_project_state()` | **MODIFIED** | src/state_reader/mod.rs | Call `handoff::parse_handoff()` after queue loading |
+| `DetailSubView` | **MODIFIED** | src/app.rs | Add `Archives` variant (8th tab) |
+| `ProjectViewCache` | **MODIFIED** | src/ui/screens/mod.rs | Add archive browse state fields |
+| `Action` enum | **MODIFIED** | src/action.rs | Add `ArchivesLoaded`, `ArchiveContentLoaded` |
+| `NormalScreen::render` | **MODIFIED** | src/ui/screens/normal.rs | Add pause badge to alias cell |
+| `DetailScreen` | **MODIFIED** | src/ui/screens/detail.rs | Archives tab rendering, pause info panel |
+| `App::update()` | **MODIFIED** | src/app.rs | Handle new Action variants |
+
+**Files unchanged:** cli.rs, config.rs, error.rs, event.rs, lib.rs, main.rs, tui.rs, registry.rs, change_tracker.rs, project_creator.rs, session_detector.rs, watcher.rs, all existing state_reader submodules, ui/project_list.rs, ui/roadmap_widget.rs, all existing screen modules except normal.rs and detail.rs
+
+## Data Flow
+
+### Paused Detection Flow
+
+```
+FileWatcher detects HANDOFF.json appear/disappear in .planning/
+  -> Action::FileChanged { project_path }
+  -> spawn_blocking(parse_project_state)
+    -> handoff::parse_handoff() reads HANDOFF.json
+    -> ProjectState { is_paused: true, pause_info: Some(...) }
+  -> Action::ProjectStateLoaded { alias, state }
+  -> App::update() stores in project_states HashMap
+  -> NormalScreen renders pause badge on alias cell
+  -> DetailScreen PhaseList shows pause info panel
+```
+
+### Archive Browser Flow
+
+```
+User presses '8' or Tab-navigates to Archives tab
+  -> DetailScreen sets sub_view to Archives
+  -> If cache.archived_milestones empty:
+       spawn_blocking(milestones::scan_milestones(planning_dir))
+       -> Action::ArchivesLoaded { alias, milestones }
+       -> App::update() stores in ProjectViewCache
+  -> Render milestone list (from cache)
+
+User presses Enter on milestone
+  -> archive_depth = PhaseList
+  -> Show phases from cached ArchivedMilestone.phases (no I/O)
+
+User presses Enter on phase
+  -> archive_depth = ArtifactList
+  -> Show artifact file names from cached ArchivedPhase.artifacts (no I/O)
+
+User presses Enter on artifact
+  -> spawn_blocking(fs::read_to_string(artifact_path))
+  -> Action::ArchiveContentLoaded { alias, content }
+  -> archive_depth = ArtifactContent
+  -> Render scrollable Paragraph with raw markdown content
+
+User presses Escape
+  -> Go back one depth level (Content -> Artifacts -> Phases -> Milestones -> exit tab)
+```
+
+## Patterns to Follow
+
+### Pattern 1: Badge Priority on Dashboard Alias Cell
+
+At most one badge icon per project. Priority order:
+
+1. **Paused** (`\u{23f8}` cyan) -- highest priority, project is inactive
+2. **Active session** (`\u{25b6}` green) -- project has running Claude
+
+A paused project with an active session is contradictory (session would consume HANDOFF.json). If both somehow true, pause wins.
+
+### Pattern 2: Async Tab Data Loading (Established)
+
+All tab content follows this pattern (already used by Git, Backlog):
+
+1. Tab activation checks `ProjectViewCache` for existing data
+2. If empty: set `loading_X = true`, `spawn_blocking` with I/O work
+3. Blocking task sends Action variant through event bus
+4. `App::update()` stores in cache, sets `loading_X = false`, triggers redraw
+5. Subsequent visits use cached data (invalidated on FileChanged)
+
+Archives follow this identically.
+
+### Pattern 3: Drill-Down Navigation State
+
+`ArchiveBrowseDepth` enum is per-project state in `ProjectViewCache`. Switching between projects preserves each project's browse position (same as how `detail_sub_view_per_project` preserves tab selection).
+
+Key bindings within Archives tab:
+- **Enter**: drill deeper
+- **Escape**: back one level (at MilestoneList, Escape pops DetailScreen)
+- **j/k or Up/Down**: navigate within current level
+
+## Anti-Patterns to Avoid
+
+### Anti-Pattern 1: Loading Full Archive Content Eagerly
+
+Do NOT parse all archived markdown files during `scan_milestones()`. Scan collects directory structure and metadata only (file names, counts, first-line headers). Content is loaded on-demand when user drills into a specific artifact.
+
+**Why:** A project with 5 milestones and 40 archived phases could have 200+ files. Reading them all blocks the render loop and wastes memory.
+
+### Anti-Pattern 2: Putting Archive Data in ProjectState
+
+Do NOT add archived milestone data to `ProjectState`. Archives are view-level data belonging in `ProjectViewCache` (lazily loaded when user opens detail view).
+
+**Why:** `ProjectState` is parsed on every `FileChanged` event for every project. Loading archive data there makes file-change handling slow for all projects, even when the user is not viewing archives.
+
+### Anti-Pattern 3: Creating a New Screen for Archive Browser
+
+Do NOT create a new `Screen` impl for the archive browser. It is a tab within DetailScreen, following the established 7-tab pattern (now 8).
+
+**Why:** The screen stack is for distinct navigation contexts (dashboard -> detail -> confirm dialog). Tabs within DetailScreen are for different data views of the same project.
+
+### Anti-Pattern 4: Adding StatusCategory::Paused
+
+Do NOT add a new variant to the `StatusCategory` enum for paused projects. Paused maps to `Idle` (yellow). The distinction is communicated via the badge icon, not the status color.
+
+**Why:** Every `match` on StatusCategory across the codebase would need updating. The badge provides a clearer visual signal than a color change anyway.
+
+## Build Order (Dependency-Aware)
+
+| Order | Feature | Depends On | New Files | Modified Files |
+|-------|---------|------------|-----------|----------------|
+| 1 | **Tech debt cleanup** | Nothing | 0 | Multiple (warnings, stale test) |
+| 2 | **Paused detection** | Nothing | 1 (handoff.rs) | 3 (mod.rs, normal.rs, detail.rs) |
+| 3 | **Archive browser tab** | Nothing | 1 (milestones.rs) | 4 (app.rs, action.rs, mod.rs, detail.rs) |
+| 4 | **Queue execution research** | Nothing | 0 | 0 (documentation only) |
+
+**Parallelism:** All four are independent. Paused detection and archive browser touch different code areas:
+- Paused: state_reader/mod.rs + dashboard rendering (normal.rs) + detail PhaseList
+- Archive: app.rs (enum) + action.rs (enum) + screens/mod.rs (cache) + detail.rs (new tab)
+
+The only shared file is `detail.rs`, but they modify different sections (PhaseList rendering vs new Archives tab case).
+
+**Recommended phase ordering for roadmap:**
+1. Tech debt first -- clean foundation
+2. Paused detection second -- smallest scope, immediate user value
+3. Archive browser third -- largest scope, most new code
+4. Queue execution research last or parallel -- no code changes, can run any time
 
 ## Sources
 
-- Codebase analysis: `/home/blk/projects/rust/gsd-manager/src/` (all source files read directly)
-- Claude Code session format: inspected `~/.claude/projects/-home-blk-projects-rust-gsd-manager/*.jsonl` (verified JSONL structure with sessionId, type, timestamp, cwd, gitBranch fields)
-- Running process detection: verified via `ps aux | grep claude` showing process name and args including `--resume <session-id>`
-- [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference) — `--resume`, `--session-id`, `-c`, `-p` flags (HIGH confidence, official docs)
-- [claude-sessions-monitor](https://github.com/yepzdk/claude-sessions-monitor) — approach of scanning `~/.claude/projects/` JSONL files (MEDIUM confidence, third-party)
-- [Session Files & Format - DeepWiki](https://deepwiki.com/affaan-m/everything-claude-code/7.1-session-files-and-format) — sessions-index.json schema reference (MEDIUM confidence)
-- [Claude Code session management article](https://kentgigger.com/posts/claude-code-conversation-history) — directory structure and history.jsonl (MEDIUM confidence)
-- GSD phase directory structure: verified via `ls .planning/milestones/v1.0-phases/01-core-infrastructure/` showing DISCUSSION-LOG, CONTEXT, PLAN, SUMMARY, VERIFICATION files
-- [ratatui custom widget docs](https://ratatui.rs/recipes/widgets/custom/) — Widget trait implementation (HIGH confidence, official docs)
-- [git2-rs](https://crates.io/crates/git2) — considered and rejected in favor of git CLI for read-only log viewing (HIGH confidence assessment)
-
----
-*Architecture research for: v1.1 feature integration into existing TEA architecture*
-*Researched: 2026-03-26*
+- **Codebase analysis:** Direct reading of all 32 source files in `src/` (HIGH confidence)
+- **GSD workflow files:** `autonomous.md`, `pause-work.md`, `resume-project.md`, `complete-milestone.md` in `~/.claude/get-shit-done/workflows/` (HIGH confidence)
+- **Milestone archive structure:** Direct inspection of `.planning/milestones/` showing v1.0 and v1.1 archives with -ROADMAP.md, -REQUIREMENTS.md, -MILESTONE-AUDIT.md, and -phases/ directories (HIGH confidence)
+- **HANDOFF.json format:** Live example from `/home/blk/projects/web/shopify-error-tracker/.planning/HANDOFF.json` showing all fields (HIGH confidence)
+- **HANDOFF.json lifecycle:** From `pause-work.md` (writes it) and `resume-project.md` (reads and deletes it) (HIGH confidence)

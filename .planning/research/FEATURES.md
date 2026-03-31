@@ -1,328 +1,337 @@
-# Feature Landscape
+# Feature Research
 
-**Domain:** GSD TUI meta-manager v1.1 power features
-**Researched:** 2026-03-26
-**Scope:** Claude session management, queue execution, git history viewer, backlog browser, execution flow graph, state reader fixes, GSD integration hooks
-**Overall confidence:** MEDIUM-HIGH (verified against actual Claude CLI, GSD source code, and local filesystem; Claude session JSONL format is undocumented)
+**Domain:** GSD TUI meta-manager v1.2 — housekeeping, archive browser, queue execution research
+**Researched:** 2026-03-31
+**Confidence:** MEDIUM-HIGH
 
----
+## Feature Landscape
 
-## Table Stakes
+### Table Stakes (Users Expect These)
 
-Features v1.1 must deliver. Missing any = release feels half-baked.
+Features that complete the v1.2 milestone promise. Missing these = milestone feels unfinished.
 
 | Feature | Why Expected | Complexity | Depends On | Notes |
 |---------|--------------|------------|------------|-------|
-| Fix state reader plan counting (999.4) | Dashboard shows wrong progress — users notice immediately and lose trust | Low | Existing `roadmap_md.rs` | Regex misses standalone `PLAN.md` and indented plan lists |
-| Fix P5:Unknown on completed milestones (999.5) | Visible bug for any finished milestone | Low | Existing `state_reader/mod.rs` | When `completed_phases == total_phases`, code computes phase N+1 which doesn't exist |
-| Disk-based phase completion inference (999.6) | ROADMAP.md checkboxes are often stale; disk files are ground truth | Med | state_reader refactor | Replicate GSD's own disk_status algorithm from `roadmap.cjs` |
-| GSD integration hooks (999.7) | Users need "fact vs assumption" distinction — is status verified or just inferred from files? | Med | state_reader, async subprocess | Optional enrichment via `gsd-tools.cjs` JSON output |
-| Backlog browser (999.11) | Dashboard already shows backlog count; users expect to drill in and see items | Med | Existing detail_view | Parse `999.*` directories, display in scrollable list |
+| Paused project detection (HANDOFF.md badge) | Users pause work with `/gsd:pause-work`; dashboard should reflect paused state with a `\|\|` badge | LOW | `state_reader/mod.rs`, `ProjectState` struct | Check for `.planning/HANDOFF.md` or `.planning/HANDOFF.json` existence; add `has_handoff: bool` to `ProjectState`; todo already documented |
+| Fix stale integration test | `end_to_end_add_then_list_via_cli` uses old CLI arg order (`add <alias> <path>` vs `add <path> [alias]`); broken test = CI rot | LOW | `tests/` directory | Identified in v1.1 milestone audit; mechanical fix |
+| Resolve compiler warnings | 11 warnings (unused fields, dead code from future-facing APIs) accumulated over v1.1 | LOW | Various source files | Prefix unused fields with `_` or add `#[allow(dead_code)]` where intentional |
+| Deferred visual UAT | 4 visual checks from Phase 06 never run by human (tab nav, backlog split-pane, git scrolling, diff stats) | LOW | Running binary, human tester | Not code work — verification work; document results |
 
-## Differentiators
+### Differentiators (Competitive Advantage)
 
-Features that make v1.1 a meaningful upgrade. High value, not universally expected.
+Features that make v1.2 a meaningful upgrade. Not universally expected, but high value.
 
 | Feature | Value Proposition | Complexity | Depends On | Notes |
 |---------|-------------------|------------|------------|-------|
-| Claude session management (999.10) | See which projects have active Claude sessions, resume/launch from TUI — the killer feature that justifies the meta-manager over terminal tabs | High | Claude CLI, process detection, terminal spawning | Highest value, highest risk |
-| Queue execution (999.9) | Turn QUEUE.md from passive reminder into actionable launcher — execute GSD commands from the TUI | High | Queue parser (exists), terminal spawning | Shares terminal-spawning infra with session management |
-| Execution flow graph (999.1) | Per-phase pipeline visualization (discuss/research/plan/execute/verify) — makes GSD workflow visible and navigable | High | disk_status inference (999.6) | Custom ratatui Widget, maps files to pipeline stages |
-| Git history viewer (999.8) | Scrollable git log scoped to repo or `.planning/` — see what changed without leaving TUI | Med | git CLI subprocess | Modeled after gitui/lazygit commit list UX |
+| Milestone Archive Browser tab | Browse completed milestones and drill into past phase artifacts (SUMMARYs, VERIFICATIONs, PLANs, CONTEXTs) from TUI — turns the app into a project archaeology tool, not just a status viewer | MEDIUM | Existing detail view tab system, filesystem reading | Uses the 8th tab slot (currently empty); milestone data already on disk in `.planning/milestones/` |
+| Queue execution research document | Design document for how queue items become executable Claude sessions — covers headless mode, auto-approve, session chaining, and completion detection | LOW | Understanding of Claude Code CLI, GSD workflows | Research-only deliverable; no code changes; informs v1.3+ implementation |
 
-## Anti-Features
+### Anti-Features (Commonly Requested, Often Problematic)
 
-Features to explicitly NOT build in v1.1.
-
-| Anti-Feature | Why Avoid | What to Do Instead |
-|--------------|-----------|-------------------|
-| Embedded Claude terminal inside TUI | Terminal-in-terminal is a UX disaster: keypress conflicts, rendering glitches, impossible scrollback. Every TUI that tries this regrets it. | Launch Claude in a separate tmux pane or terminal tab; show session status in the TUI |
-| Real-time streaming of Claude output | Requires parsing Claude's ANSI output stream, rate-limiting renders — massive complexity for marginal value | Show session metadata (active/idle/completed, last activity timestamp, duration) instead |
-| Full text editor for QUEUE.md | Text editing in TUI is a solved-but-painful problem; users already have preferred editors | Support add/remove/reorder operations on queue items; `$EDITOR` for complex edits |
-| Auto-executing queued commands without confirmation | Dangerous: queued items may be stale, context-dependent, or destructive | Always show confirmation dialog before execution |
-| Git commit/push/branch from TUI | Scope creep into gitui/lazygit territory; those tools exist and excel | Read-only git history; launch gitui/lazygit for mutations |
-| Plugin system / extensibility | Architecture still stabilizing; premature abstraction creates maintenance burden | Defer to v2+ per PROJECT.md |
-| Backlog promotion (creating phases) | Needs deeper GSD integration research; phase numbering and roadmap editing is complex | Read-only in v1.1; promote by enqueueing `/gsd:add-phase` command |
+| Feature | Why Requested | Why Problematic | Alternative |
+|---------|---------------|-----------------|-------------|
+| Auto-execute queue items on project open | "If I queued it, I want it done" | Stale items, destructive commands, missing context; auto-execution without confirmation violates project constraint of non-intrusiveness | Manual trigger with confirmation dialog; research document covers safe patterns |
+| Full milestone diff viewer | "Show me everything that changed in v1.0" | Combines potentially thousands of git commits; rendering time and memory explosion; scope creep into gitui territory | Show milestone-level summary (phase count, date range, requirement coverage) and link to existing Git tab for commit details |
+| Editable archive files | "Let me fix that old SUMMARY" | Archive files are historical record; editing breaks audit trail and may conflict with git history | Read-only view; direct user to editor for intentional modifications |
+| Tree view with full expand/collapse for archive | "I want a filesystem explorer" | Over-engineered for the actual data shape; milestones have only 2-3 nesting levels; tree widget adds a dependency for marginal benefit | Flat list of milestones, then flat list of phases within milestone, then flat list of files within phase — three levels of drill-down using existing List widget |
+| Real-time queue execution status in dashboard | "Show me running/completed/failed badges live" | Requires process monitoring, exit code capture, and session lifecycle tracking — this is the full queue execution feature, not a v1.2 scope item | Research document captures the design; implement in v1.3+ |
 
 ---
 
 ## Feature Details
 
-### 1. Fix State Reader Accuracy (Table Stakes, Low-Med)
+### 1. Paused Project Detection (Table Stakes, LOW)
 
-Three parser bugs that undermine dashboard reliability.
-
-**999.4 — Plan counting:** The `roadmap_md.rs` regex `^\s*- \[([ xX])\] \d+-\d+-PLAN\.md` requires format `NN-NN-PLAN.md`. GSD also uses standalone `PLAN.md` files and the plan regex doesn't account for all indentation patterns. Fix: broaden regex, add `PLAN.md` standalone match.
-
-**999.5 — P5:Unknown:** In `state_reader/mod.rs`, when `completed_phases == total_phases`, the code computes `current_phase = format!("Phase {}", completed_phases + 1)`. That phase doesn't exist. Fix: when all phases complete, set `current_phase` to "Complete" or the milestone name.
-
-**999.6 — Disk-based inference:** Replicate GSD's disk_status algorithm (verified from `roadmap.cjs` lines 127-153):
-
-| disk_status | Detection |
-|-------------|-----------|
-| `no_directory` | Phase directory doesn't exist in `.planning/phases/` |
-| `empty` | Directory exists but no CONTEXT/RESEARCH/PLAN/SUMMARY files |
-| `discussed` | `CONTEXT.md` or `*-CONTEXT.md` present |
-| `researched` | `RESEARCH.md` or `*-RESEARCH.md` present |
-| `planned` | `PLAN.md` or `*-PLAN.md` present, no SUMMARY files |
-| `partial` | Some SUMMARY files but count < PLAN count |
-| `complete` | SUMMARY count >= PLAN count (all plans executed) |
-
-This is the foundation the execution flow graph depends on.
-
-### 2. GSD Integration Hooks (Table Stakes, Med)
-
-Optional enrichment of file-based state with authoritative GSD tool JSON output.
-
-**Integration points (verified from `gsd-tools.cjs` source):**
-- `gsd-tools.cjs state json` — STATE.md frontmatter as structured JSON
-- `gsd-tools.cjs roadmap analyze` — full roadmap with disk_status per phase, plan/summary counts, dependency resolution
-- `gsd-tools.cjs progress json` — formatted progress data
-
-**Design constraint:** Must be opt-in and async. The TUI must work perfectly with file-only reading (project constraint: "must not require running Claude/GSD to check status"). GSD enrichment is a "trust boost" overlay.
+Detect `.planning/HANDOFF.md` (or `.planning/HANDOFF.json`) and show a pause indicator on the dashboard.
 
 **Implementation:**
-- `tokio::process::Command` to spawn gsd-tools, capture stdout JSON
-- Deserialize into enriched state struct
-- Cache per-project with TTL, invalidate when file watcher fires
-- Show `[verified]` vs `[inferred]` badges on status fields
-- Graceful degradation: if gsd-tools.cjs not found or errors, silently fall back to file-only
+1. Add `has_handoff: bool` to `ProjectState` struct
+2. In `parse_project_state()`, check `planning_dir.join("HANDOFF.md").exists() || planning_dir.join("HANDOFF.json").exists()`
+3. In `NormalScreen` dashboard row, prepend `||` badge (dim yellow) to alias when `state.has_handoff` is true
+4. Badge coexists with session indicator (`>`) — show both if applicable
 
-### 3. Claude Session Management (Differentiator, High)
+**Why HANDOFF.md and not just HANDOFF.json:** GSD's `/gsd:pause-work` creates both `HANDOFF.json` (machine-readable) and `.continue-here.md` (human-readable). The JSON file is the reliable indicator. However, some older GSD versions may only produce `HANDOFF.md`. Check for both.
 
-Detect, display, resume, and launch Claude Code sessions for registered projects.
+**Confidence:** HIGH — todo already documented in `.planning/todos/pending/`, implementation path is clear, minimal risk.
 
-**Detection approach (verified against Claude CLI v2.1.84 and local filesystem):**
+### 2. Tech Debt Cleanup (Table Stakes, LOW)
 
-**Session file discovery:**
-- Path: `~/.claude/projects/{encoded-cwd}/{uuid}.jsonl`
-- Encoded CWD format: absolute path with non-alphanumeric chars replaced by `-` (e.g., `/home/blk/projects/rust/gsd-manager` becomes `-home-blk-projects-rust-gsd-manager`)
-- Each `.jsonl` file is one session
+Three items from v1.1 milestone audit, all mechanical:
 
-**Session metadata extraction (from JSONL tail):**
-- `type` field: `user`, `assistant`, `progress`, `file-history-snapshot`
-- `sessionId` field: UUID of the session
-- `timestamp` field: when the message was recorded
-- `message.content` for user messages: check for `/gsd:` prefix to identify GSD workflow sessions
-- Session name/slug: stored in records, used by `claude --resume`
+**Stale integration test:** Update `end_to_end_add_then_list_via_cli` to use current CLI arg order (`add <path> [alias]`). Verify with `cargo nextest run`.
 
-**Active session detection:**
-- Process check: scan `/proc/*/cmdline` for `claude` processes whose CWD matches project path
-- IDE lock files: `~/.claude/ide/*.lock` — JSON with `{pid, workspaceFolders, ideName}` — check if PID is alive via `kill -0`
-- Heuristic: if most recent JSONL was modified within the last 60 seconds, session is likely active
+**Compiler warnings:** Address 11 warnings. Strategy:
+- Unused fields that are future-facing: add `#[allow(dead_code)]` with a comment explaining the intent
+- Truly dead code: remove it
+- Unused imports: remove them
 
-**Launch capabilities:**
-- `claude --resume {session-id}` — resume specific session in new terminal
-- `claude --continue` — continue most recent session for project dir
-- `claude -p "/gsd:resume-work"` — headless: new GSD session that auto-resumes
-- Terminal spawning: `tmux new-window -c {project_path} "claude --resume {id}"` or `$TERMINAL -e "cd {path} && claude --continue"`
+**Visual UAT:** Run the binary and manually verify 4 deferred checks from Phase 06. Document results in a UAT file.
 
-**UX design (following lazygit's always-visible-panes pattern):**
-- New sub-view tab in detail view: `PhaseList | RoadmapViz | Sessions | FlowGraph | GitLog`
-- Session list showing: name/slug, last activity (relative time), status icon (active/recent/stale), GSD workflow type
-- Active session indicator on dashboard project row (a small dot or icon in status column)
-- Keybindings: `Enter` to resume in new terminal, `n` to start new session, `c` to continue latest
+**Confidence:** HIGH — all items already identified and scoped in the audit.
 
-**Confidence:** MEDIUM — Session JSONL structure verified from actual files, but it's undocumented and could change between Claude Code versions. Build defensively with graceful fallback. Process detection is platform-specific (Linux `/proc` vs macOS `ps`).
+### 3. Milestone Archive Browser Tab (Differentiator, MEDIUM)
 
-### 4. Queue Execution (Differentiator, High)
+A new tab in the detail view for browsing completed milestone artifacts.
 
-Make QUEUE.md items actionable by executing them in Claude sessions.
-
-**Current state:** Queue is append-only list of strings like `/gsd:plan-phase 4`. The `QueuedAction` struct only has a `command` field. No execution.
-
-**Enhanced QueuedAction struct:**
-```rust
-pub struct QueuedAction {
-    pub command: String,
-    pub status: QueueStatus,       // Pending | InProgress | Done | Failed
-    pub enqueued_at: Option<String>, // ISO timestamp
-    pub started_at: Option<String>,
-    pub session_id: Option<String>,  // Claude session UUID when executed
-}
+**Data source:** `.planning/milestones/` directory, structured as:
+```
+.planning/milestones/
+  v1.0-MILESTONE-AUDIT.md
+  v1.0-REQUIREMENTS.md
+  v1.0-ROADMAP.md
+  v1.0-phases/
+    01-core-infrastructure/
+      01-CONTEXT.md
+      01-RESEARCH.md
+      01-01-PLAN.md
+      01-01-SUMMARY.md
+      01-VERIFICATION.md
+      ...
+    02-dashboard-and-navigation/
+      ...
+  v1.1-MILESTONE-AUDIT.md
+  v1.1-REQUIREMENTS.md
+  v1.1-ROADMAP.md
+  v1.1-phases/
+    05-state-reader-accuracy/
+      ...
 ```
 
-**Execution flow:**
-1. User selects queued item, presses `x` (execute)
-2. TUI shows confirmation dialog: "Execute `/gsd:plan-phase 4` in project X? [y/n]"
-3. On confirm, determine execution mode:
-   - **Interactive:** `tmux new-window -c {path} "claude"` then the user types the command (safest)
-   - **Headless:** `claude -p "{command}" --output-format json` in project dir (for commands that don't need interaction)
-   - **Session-attached:** If an active session exists, show option to queue it for that session
-4. Update queue item status to `in-progress`
-5. File watcher detects `.planning/` changes when GSD completes -> dashboard updates
-6. Mark item `done` or `failed` based on outcome (or manual user action)
+**UX pattern: Three-level drill-down (no tree widget needed)**
 
-**Queue view UX:**
-- Sub-view in detail view alongside phases, sessions, etc.
-- Vim navigation: `j`/`k` to move, `x` to execute, `d` to delete, `e` to edit, `J`/`K` to reorder
-- Color coding: pending (white), in-progress (yellow), done (green), failed (red)
-- Bottom bar shows suggested next commands from `suggest_next_commands()` (already implemented)
-- `a` to add new item (opens inline input, same as current enqueue modal)
-
-**Shared infrastructure with session management:** Both features need terminal spawning. Build a `terminal_launcher` module that handles tmux detection, fallback to `$TERMINAL`, and process lifecycle tracking. Implement this once, use it for both queue execution and session launching.
-
-### 5. Execution Flow Graph (Differentiator, High)
-
-Per-phase pipeline visualization of the GSD workflow stages.
-
-**Pipeline stages (verified from GSD source code `init.cjs` lines 956-985):**
+Level 1 — Milestone list:
 ```
-[Discuss] -> [Research] -> [Plan] -> [Execute] -> [Verify]
+  Archive
+  -------
+  > v1.1 — Polish & Power Features  (5 phases, 21 reqs)
+    v1.0 — MVP                       (4 phases, 22 reqs)
 ```
+- Scrollable list of milestone versions
+- Show phase count, requirement count, completion date from MILESTONE-AUDIT.md
+- `Enter` to drill into selected milestone
 
-**Stage-to-file mapping (from `roadmap.cjs` disk_status algorithm):**
-
-| Stage | Detected By | Notes |
-|-------|-------------|-------|
-| Not started | No directory or empty directory | Gray box |
-| Discuss | CONTEXT.md exists | discuss-phase creates this |
-| Research | RESEARCH.md exists | Optional; some phases skip |
-| Plan | PLAN.md files exist | plan-phase creates these |
-| Execute | SUMMARY.md files exist (partial or complete) | execute-phase creates these |
-| Verify | VERIFICATION.md or UAT.md exists | verify-work creates these |
-
-**Visualization (ASCII in terminal):**
+Level 2 — Phase list within milestone:
 ```
-Phase 3: Live State
-  [DISC] --> [RSCH] --> [PLAN] --> [EXEC] --> [VRFY]
-    ok        ok        ok       2/3 done      --
+  v1.1 > Phases
+  -------------
+  > 05 State Reader Accuracy    (5 plans)
+    06 Read-Only Views           (4 plans)
+    07 Execution Flow & GSD      (3 plans)
+    08 Queue Execution           (2 plans)
+    09 Claude Session Mgmt       (2 plans)
 
-Phase 4: Visualization
-  [DISC] --> [RSCH] --> [PLAN] --> [EXEC] --> [VRFY]
-    ok       skip      >>> NOW       --         --
+  [AUDIT] [REQUIREMENTS] [ROADMAP]
 ```
+- List phases from `vX.Y-phases/` subdirectories
+- Parse phase directory names for number and slug (same pattern as existing phase parsing)
+- Bottom section: milestone-level documents (audit, requirements, roadmap)
+- `Enter` to drill into phase files; `Esc`/`Backspace` to go back to milestone list
+
+Level 3 — File list within phase:
+```
+  v1.1 > 05 State Reader > Files
+  --------------------------------
+  > 05-CONTEXT.md
+    05-DISCUSSION-LOG.md
+    05-RESEARCH.md
+    05-01-PLAN.md
+    05-01-SUMMARY.md
+    ...
+    05-VERIFICATION.md
+    05-HUMAN-UAT.md
+```
+- List `.md` files in the phase directory
+- `Enter` to view file content in a scrollable markdown viewer (reuse existing backlog content preview pattern)
+- `Esc`/`Backspace` to go back to phase list
+
+**Why not use `tui-tree-widget`:** The milestone hierarchy has exactly 3 fixed levels (milestone > phase > file). A tree widget adds a dependency and visual complexity (expand/collapse icons, indentation management) for a structure that is better served by sequential drill-down. The existing `List` + `ListState` pattern used by Backlog and Git tabs is proven and consistent. Users navigate with `Enter` to go deeper and `Esc` to go back — the same pattern already used in the backlog browser.
 
 **Implementation approach:**
-- Custom `Widget` implementation (per CLAUDE.md: "implement custom ratatui Widget trait" for graph rendering)
-- Each stage is a small bordered cell with status text/color
-- Connecting arrows `-->` between stages
-- Color scheme: dim gray (not started), yellow/bold (current), green (complete), dark gray (skipped)
-- Show plan progress as fraction (e.g., "2/3") in the Execute stage
+1. Add `DetailSubView::Archive` variant and extend `TAB_TITLES` to 8 tabs
+2. Create `archive` module in `src/state_reader/` to scan `.planning/milestones/` directory
+3. Data model:
+   ```rust
+   pub struct MilestoneArchive {
+       pub version: String,        // "v1.0", "v1.1"
+       pub name: String,           // from ROADMAP.md or directory name
+       pub phase_count: u32,
+       pub requirement_count: u32,
+       pub completed_date: Option<String>,
+       pub phases: Vec<ArchivedPhase>,
+       pub docs: Vec<PathBuf>,     // milestone-level .md files
+   }
 
-**View modes:**
-- **Stacked view:** All phases shown vertically, scrollable (using ratatui's built-in List or tui-widget-list)
-- **Single-phase view:** One phase at a time, up/down to switch between phases
-- **Dashboard compact:** Single-line pipeline indicator per project on the main list (e.g., `D-R-P-E-V` with colors)
+   pub struct ArchivedPhase {
+       pub number: String,         // "01", "05"
+       pub name: String,           // "core-infrastructure"
+       pub plan_count: u32,
+       pub files: Vec<PathBuf>,
+   }
+   ```
+4. Archive data is static (completed milestones don't change) — parse once, cache forever, no file watching needed
+5. Render using existing `List` widget pattern with breadcrumb navigation in the block title
 
-**Complexity notes:** The widget rendering is the hard part. Each phase row needs 5 boxes + 4 arrows, with dynamic widths based on terminal size. Use `Constraint::Ratio` or `Constraint::Min` for responsive layout. The data model is straightforward once disk_status inference works.
+**Complexity assessment:** MEDIUM because:
+- Directory parsing is straightforward (glob + sort)
+- The three-level navigation requires state management for "which level am I on" and "what's selected at each level"
+- Markdown content viewing reuses existing backlog preview code
+- No new dependencies needed
 
-### 6. Git History Viewer (Differentiator, Med)
+**Confidence:** HIGH — directory structure is stable and well-understood; UI pattern matches existing tabs.
 
-Scrollable git log scoped to the whole repo or `.planning/` directory.
+### 4. Queue Execution Research (Differentiator, LOW complexity — research only)
 
-**Approach:** Shell out to `git log` via `tokio::process::Command`:
-```bash
-# Full repo history
-git -C {project_path} log --oneline --format="%h|%ad|%an|%s" --date=short -n 100
+Design document covering how queue items can become executable Claude sessions in a future milestone. No code changes in v1.2.
 
-# .planning/ scoped
-git -C {project_path} log --oneline --format="%h|%ad|%an|%s" --date=short -n 100 -- .planning/
-```
+**Key findings from research:**
 
-**Why `git` CLI over `git2` crate:** The git2 crate links libgit2 (C library), adds significant compile time, and introduces a native dependency. The `git` CLI is guaranteed available for any GSD user (GSD requires git). Cost/benefit strongly favors `Command::new("git")`.
+**Claude Code CLI capabilities (verified from official docs):**
+- `claude -p "{command}"` — headless execution, prints result, exits
+- `claude -p "{command}" --output-format json` — structured output with `result`, `session_id`, `usage`
+- `claude -p "{command}" --allowedTools "Bash,Read,Edit"` — auto-approve specific tools
+- `claude --continue` — continue most recent session in the project directory
+- `claude --resume {session-id}` — resume a specific session
+- `--bare` mode — skip auto-discovery of hooks/MCP/CLAUDE.md; deterministic execution
+- `--output-format stream-json` — real-time token streaming for progress monitoring
 
-**UX design (modeled after gitui/lazygit):**
-- New sub-view tab in detail view
-- Two scopes toggled by keybinding: `a` for all commits, `p` for `.planning/` only
-- Columnar display: hash (dim cyan), date (dim), author (dim), message (default)
-- Vim navigation: `j`/`k` to scroll, `G`/`gg` for top/bottom
-- `Enter` on a commit shows diff stat: `git show --stat {hash}` in a popup or split pane
-- Lazy loading: fetch first 50 commits, load more on scroll (avoids blocking on large repos)
+**Auto-continue pattern (inspired by Ralph TUI):**
+The Ralph TUI project demonstrates the canonical "auto-continue" queue pattern for AI agent orchestration:
+1. Task queue holds structured work items
+2. Orchestrator selects next task, constructs prompt with context
+3. Agent executes autonomously
+4. Completion detection triggers (exit code, output parsing, file change)
+5. Orchestrator marks done, selects next task
+6. Space to start, `p` to pause — user retains control
 
-**Parse format:** Use `|` delimiter in `--format` string, split in Rust. Handle edge cases: commit messages containing `|` (use last-occurrence split for the message field).
+**Proposed execution modes for gsd-meta-manager:**
 
-### 7. Backlog Browser (Table Stakes, Med)
+| Mode | Command | When to Use | Safety |
+|------|---------|-------------|--------|
+| Interactive | Open terminal, user types command | Complex/ambiguous tasks | Safest — user in the loop |
+| Headless single | `claude -p "{cmd}" --output-format json` | Simple, well-defined commands | Medium — auto-approve needed |
+| Headless chain | Sequential `claude -p` with `--continue` | Multiple related queue items | Medium — session context preserved |
+| Auto-continue | Loop: execute item, detect completion, next item | Batch processing | Risky — needs safeguards |
 
-View and browse backlog items from within the TUI.
+**GSD-specific integration points:**
+- `/gsd:quick "{task}"` — self-contained tasks; ideal for headless execution
+- `/gsd:execute-phase` — structured phase execution; needs full GSD context
+- `/gsd:autonomous` — drives all remaining phases; long-running, needs monitoring
+- `/gsd:do "{task}"` — routes to appropriate GSD command; good for arbitrary queue items
 
-**Data source:** Parse `999.*` directories in `.planning/phases/`:
-- Directory pattern: `999.N-slug-name` (e.g., `999.8-git-history-viewer`)
-- Parse: split on first `-` after `999.N` to get number and slug
-- Content: check for any `.md` files inside the directory for description text
-- Humanize slug: replace `-` with spaces, title case
+**Safety requirements for auto-continue:**
+1. Confirmation before starting batch execution
+2. Pause capability (user presses `p` to stop after current item)
+3. Failure stops the chain (don't execute item N+1 if item N failed)
+4. Session isolation — each queue item gets its own session or explicitly chains
+5. Timeout per item (configurable, default 10 minutes)
+6. Exit code / output validation to determine success/failure
+7. Queue items marked with execution timestamp and result
 
-**UX design:**
-- Sub-view in detail view, or section at the bottom of PhaseList
-- Scrollable list: item number, humanized name, file count
-- `Enter` to view item details (show any .md file contents in a read-only panel)
-- `q` to queue promotion: adds `/gsd:add-phase {description}` to QUEUE.md
-- Sort by item number (999.1, 999.2, etc.)
+**Completion detection strategies:**
+- Process exit code (0 = success, non-zero = failure)
+- JSON output parsing (`--output-format json` includes `result` field)
+- File change detection via existing `notify` watcher (`.planning/` changes after execution)
+- Session JSONL tail check (last message indicates completion)
 
-**Edge cases:**
-- Empty directories (as in this project currently) — show name only, no description
-- Malformed directory names (e.g., `999.1-{\n "slug": ...}` — yes, this exists in the current project) — handle gracefully, extract what we can
-- No `.planning/phases/` directory — show "No backlog items" message
+**What to defer past v1.3:**
+- Streaming output display in TUI (complex, marginal value for status monitoring)
+- Parallel queue execution (multiple items simultaneously)
+- Queue item dependencies (execute B only after A succeeds)
+- Remote execution (SSH to other machines)
+
+**Confidence:** HIGH for CLI capabilities (verified from official docs). MEDIUM for auto-continue pattern (based on Ralph TUI architecture, not yet implemented in this codebase). LOW for completion detection reliability (untested with real GSD workflows).
 
 ---
 
 ## Feature Dependencies
 
 ```
-Fix plan counting (999.4) --------+
-Fix P5:Unknown (999.5) ----------+---> Accurate state reader (foundation)
-Disk-based inference (999.6) ----+
-                                  |
-                                  v
-                         GSD integration hooks (999.7)
-                                  |
-                                  v
-                         Execution flow graph (999.1)
-                         (needs disk_status per phase for pipeline stages)
+Paused project detection
+    (independent, no blockers)
 
-Terminal spawning module --------+---> Queue execution (999.9)
-(shared infrastructure)          |
-                                 +---> Claude session management (999.10)
-                                       (resume/launch needs terminal spawning)
+Tech debt cleanup
+    (independent, no blockers)
 
-Backlog browser (999.11) ------------ independent, no blockers
-Git history viewer (999.8) ---------- independent, no blockers
+Deferred visual UAT
+    (independent, no blockers)
+
+Milestone Archive Browser
+    └──requires──> Existing detail view tab system (built in v1.1)
+    └──requires──> Existing List/ListState pattern (built in v1.1)
+    └──reuses───> Backlog content preview renderer (built in Phase 06)
+
+Queue Execution Research
+    (independent — research document only, no code dependencies)
 ```
 
-## MVP Recommendation
+### Dependency Notes
 
-### Phase 1 — Fix the foundation (bugs + state accuracy)
-Prioritize because everything else depends on accurate state reading.
+- **Archive Browser requires tab system:** The 7-tab detail view was built in Phase 06. Adding an 8th tab is mechanical (extend `TAB_TITLES`, add `DetailSubView::Archive`, add match arm). The pattern is well-established.
+- **Archive Browser reuses backlog preview:** The backlog browser already renders markdown content in a scrollable pane. The archive file viewer can reuse the same rendering logic.
+- **No cross-dependencies between v1.2 features:** All four feature areas (pause detection, tech debt, archive browser, queue research) can be worked on in any order or in parallel.
 
-1. **Fix plan counting regex** (999.4) — Low effort, high trust impact
-2. **Fix P5:Unknown bug** (999.5) — Low effort, visible improvement
-3. **Disk-based phase completion inference** (999.6) — Medium effort, foundation for flow graph
+## MVP Definition
 
-### Phase 2 — New read-only views (low risk, high utility)
-Independent features that add value without complex infrastructure.
+### v1.2 Scope (This Milestone)
 
-4. **Backlog browser** (999.11) — Simplest new feature, data already partially parsed
-5. **Git history viewer** (999.8) — Medium complexity, high utility, git CLI is simple
-6. **Execution flow graph** (999.1) — Depends on disk inference from phase 1; custom widget work
+- [x] Paused project detection via HANDOFF.md badge -- completes dashboard status picture
+- [x] Fix stale integration test -- CI hygiene
+- [x] Resolve 11 compiler warnings -- code quality
+- [x] Complete deferred visual UAT from v1.1 -- verification debt
+- [x] Milestone Archive Browser tab -- the headline feature; browse past work
+- [x] Queue execution research document -- design for v1.3 implementation
 
-### Phase 3 — GSD integration + execution (high complexity, high value)
-Requires terminal spawning infrastructure and careful error handling.
+### Defer to v1.3 (Queue Execution Implementation)
 
-7. **GSD integration hooks** (999.7) — Enriches all views with verified data
-8. **Queue execution** (999.9) — Needs terminal spawning module
-9. **Claude session management** (999.10) — Highest complexity + highest value; reuses terminal spawning from 999.9
+- [ ] Headless queue execution (`claude -p`) -- implement the researched design
+- [ ] Auto-continue mode -- batch queue processing with safety controls
+- [ ] Execution status tracking in queue view -- pending/running/done/failed badges
 
-### Defer to v1.2
-- Queue editor and reorder (999.3) — nice-to-have, not blocking v1.1
-- Backlog promotion (phase creation from backlog) — needs deeper GSD integration
-- Milestone plan editor with Claude launch (999.2) — blocked on session management maturity
+### Future Consideration (v2+)
 
----
+- [ ] Container support with Claude command injection (backlog 999.2) -- major feature, needs architecture
+- [ ] Plugin system / extensibility -- per PROJECT.md, deferred until core stabilizes
+- [ ] Remote project management (SSH) -- local-first per constraints
+
+## Feature Prioritization Matrix
+
+| Feature | User Value | Implementation Cost | Priority |
+|---------|------------|---------------------|----------|
+| Paused project detection | MEDIUM | LOW | P1 |
+| Fix stale integration test | LOW | LOW | P1 |
+| Resolve compiler warnings | LOW | LOW | P1 |
+| Visual UAT completion | MEDIUM | LOW | P1 |
+| Milestone Archive Browser | HIGH | MEDIUM | P1 |
+| Queue execution research | MEDIUM | LOW | P1 |
+| Headless queue execution | HIGH | HIGH | P2 (v1.3) |
+| Auto-continue mode | MEDIUM | HIGH | P3 (v1.3+) |
+
+**Priority key:**
+- P1: v1.2 scope, ship this milestone
+- P2: v1.3 scope, designed in v1.2 research
+- P3: Future scope, informed by research
+
+## Analogous TUI Archive/History Browsers
+
+| Pattern | Example App | How They Do It | Our Approach |
+|---------|-------------|----------------|--------------|
+| Git log browsing | gitui, lazygit | Scrollable list with detail pane on Enter | Already built in Git tab; archive browser follows same pattern |
+| File tree navigation | ranger, lf, yazi | Three-column: parent/current/preview | Too complex for 3-level hierarchy; drill-down with breadcrumbs is simpler and matches existing UX |
+| Nested list drill-down | k9s (Kubernetes TUI) | Select namespace > pods > containers; Esc to go back | Exactly our pattern: milestone > phase > file with Esc to go back |
+| Read-only document viewer | glow (markdown TUI) | Scrollable rendered markdown | We render raw markdown lines (no formatting); sufficient for viewing PLANs/SUMMARYs |
 
 ## Sources
 
-- Claude CLI v2.1.84 `--help` output — session flags: `--resume`, `--continue`, `--name`, `--session-id`, `--worktree`, `--tmux` (HIGH confidence, verified locally)
-- `~/.claude/projects/-home-blk-projects-rust-gsd-manager/` — session JSONL files with `type`, `sessionId`, `timestamp`, `message.content` fields (HIGH confidence, verified locally)
-- `~/.claude/ide/36473.lock` — lock file structure: `{pid, workspaceFolders, ideName, transport, authToken}` (HIGH confidence, verified locally)
-- GSD `roadmap.cjs` lines 127-177 — disk_status algorithm: no_directory/empty/discussed/researched/planned/partial/complete (HIGH confidence, read from source)
-- GSD `init.cjs` lines 956-985 — phase lifecycle: discuss/research/plan/execute/verify with dependency-aware recommendations (HIGH confidence, read from source)
-- GSD `gsd-tools.cjs` lines 1-80 — available CLI commands for integration (HIGH confidence, read from source)
-- Existing `queue_md.rs` — current queue parser with `QueuedAction`, `suggest_next_commands` (HIGH confidence, read from source)
-- Existing `roadmap_md.rs` — current roadmap parser with plan counting regex (HIGH confidence, read from source)
-- Existing `state_reader/mod.rs` — current state parsing with ProjectState struct (HIGH confidence, read from source)
-- [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference) — session management documentation (MEDIUM confidence, WebSearch)
-- [Claude Code session file format](https://databunny.medium.com/inside-claude-code-the-session-file-format-and-how-to-inspect-it-b9998e66d56b) — JSONL structure: parentUuid, sessionId, slug for session chaining (MEDIUM confidence, single source blog post)
-- [gitui](https://github.com/gitui-org/gitui) — Rust TUI git client; UX patterns for commit list, keybindings (HIGH confidence, well-known project)
-- [lazygit](https://github.com/jesseduffield/lazygit) — TUI UX patterns: always-visible panes, consistent keybinding model, scope toggling (HIGH confidence, well-known project)
-- [tui-widget-list](https://github.com/preiter93/tui-widget-list) — scrollable list widget for ratatui with padding and infinite scrolling (HIGH confidence, crates.io)
-- [tui-scrollview](https://github.com/joshka/tui-scrollview) — generic scrollable view widget for ratatui (HIGH confidence, crates.io)
+- [Claude Code headless/programmatic docs](https://code.claude.com/docs/en/headless) -- `-p` flag, `--output-format json`, `--allowedTools`, `--continue`, `--resume`, `--bare` mode (HIGH confidence, official docs)
+- [Ralph TUI](https://peerlist.io/leonardo_zanobi/articles/ralph-tui-ai-agent-orchestration-that-actually-works) -- auto-continue queue execution pattern for AI agent orchestration (MEDIUM confidence, single project)
+- [tui-tree-widget](https://crates.io/crates/tui-tree-widget) v0.24.0 -- tree widget for ratatui; evaluated and rejected for archive browser (HIGH confidence, crates.io)
+- [ratatui-explorer](https://github.com/tatounee/ratatui-explorer) -- file explorer widget for ratatui; evaluated, too heavy for our use case (MEDIUM confidence)
+- `.planning/milestones/` directory structure -- verified locally; 2 milestones (v1.0, v1.1), 9 phases total, consistent naming conventions (HIGH confidence)
+- `.planning/todos/pending/2026-03-27-detect-paused-projects-via-handoff-md-badge.md` -- existing todo for pause detection (HIGH confidence)
+- v1.1 milestone audit -- tech debt items enumerated with phase attribution (HIGH confidence)
+- GSD `/gsd:pause-work` workflow source -- creates HANDOFF.json and .continue-here.md (HIGH confidence, read from source)
+- [k9s](https://github.com/derailed/k9s) -- Kubernetes TUI drill-down pattern reference (HIGH confidence, well-known project)
+
+---
+*Feature research for: GSD Meta Manager v1.2 — Housekeeping & Archive Browser*
+*Researched: 2026-03-31*
