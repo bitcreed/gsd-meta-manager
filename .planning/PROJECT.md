@@ -50,7 +50,7 @@ See the state of every GSD project at a glance and act on any of them without le
 
 ## Current State
 
-Shipped v1.1. Starting v1.2 focused on housekeeping and archive browsing.
+Phase 10 (Tech Debt Cleanup) complete — zero warnings, zero clippy lints, clean formatting, all 96 tests pass. Continuing v1.2.
 
 ## Context
 
@@ -60,7 +60,7 @@ Shipped v1.1. Starting v1.2 focused on housekeeping and archive browsing.
 - Disk-based phase inference via /proc-like directory scanning
 - Queue is now fully managed (CRUD) but not executable (execution research deferred)
 - Claude session detection via pgrep + /proc (Linux-only)
-- Tech debt: 1 stale integration test, 11 compiler warnings, some deferred visual UAT
+- Tech debt resolved: zero warnings, all tests pass (Phase 10 complete)
 
 ## Constraints
 
@@ -97,4 +97,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-31 — v1.2 milestone started*
+*Last updated: 2026-03-31 — Phase 10 complete*
