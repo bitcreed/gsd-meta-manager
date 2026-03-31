@@ -30,7 +30,7 @@ See the state of every GSD project at a glance and act on any of them without le
 
 ### Active
 
-(Requirements for next milestone — define with `/gsd:new-milestone`)
+(Requirements defined below — see REQUIREMENTS.md)
 
 ### Out of Scope
 
@@ -38,9 +38,19 @@ See the state of every GSD project at a glance and act on any of them without le
 - Telegram bridge or external integrations — v2+
 - Remote project management (projects on different machines) — local first, SSH research in backlog
 
+## Current Milestone: v1.2 Housekeeping & Archive Browser
+
+**Goal:** Clean up tech debt, add paused-project detection, research queue execution integration with GSD, and add milestone archive browsing to the detail view.
+
+**Target features:**
+- Detect paused projects (HANDOFF.md) and show pause badge on dashboard
+- Tech debt cleanup: fix stale integration test, resolve compiler warnings, address deferred visual UAT
+- Queue execution research: document GSD hooks, autonomous mode, session lifecycle, and design for auto-continue from QUEUE.md (research only)
+- Milestone Archive Browser tab (from backlog 999.1): browse completed milestones and drill into past phase artifacts from the TUI
+
 ## Current State
 
-Shipped v1.1. All v1.0 and v1.1 features complete. Next milestone not yet defined.
+Shipped v1.1. Starting v1.2 focused on housekeeping and archive browsing.
 
 ## Context
 
@@ -87,4 +97,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-27 after v1.1 milestone completion*
+*Last updated: 2026-03-31 — v1.2 milestone started*

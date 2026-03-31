@@ -1,30 +1,32 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.1
-milestone_name: Polish & Power Features
-status: v1.1 milestone complete
-stopped_at: Completed 09-02-PLAN.md
-last_updated: "2026-03-27T20:25:13.176Z"
+milestone: v1.2
+milestone_name: Housekeeping & Archive Browser
+status: Defining requirements
+stopped_at: null
+last_updated: "2026-03-31T08:00:00.000Z"
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 16
-  completed_plans: 16
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-26)
+See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 09 -- claude-session-management
+**Current focus:** Defining v1.2 requirements
 
 ## Current Position
 
-Phase: 09
-Plan: Not started
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-03-31 — Milestone v1.2 started
 
 ## Performance Metrics
 
