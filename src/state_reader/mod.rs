@@ -25,6 +25,59 @@ pub struct ProjectState {
     pub phase_disk_statuses: HashMap<String, disk_status::DiskInference>,
     /// Disk inference for the current/active phase (first non-complete, or last if all complete)
     pub current_phase_status: Option<disk_status::DiskInference>,
+    /// Whether the project has a non-empty HANDOFF.md or HANDOFF.json in .planning/
+    pub paused: bool,
+    /// Extracted context from HANDOFF file (next_action from JSON, or first content line from MD)
+    pub pause_context: Option<String>,
+}
+
+/// Detect HANDOFF.md or HANDOFF.json in a planning directory.
+/// Returns (is_paused, optional_context_string).
+/// HANDOFF.json: extracts `next_action` field.
+/// HANDOFF.md: extracts first non-empty line after any `#` heading, or first non-empty line.
+/// Empty files (after trim) are ignored -- not considered paused.
+fn detect_handoff(planning_dir: &Path) -> (bool, Option<String>) {
+    // Try HANDOFF.json first
+    let json_path = planning_dir.join("HANDOFF.json");
+    if let Ok(content) = std::fs::read_to_string(&json_path) {
+        if !content.trim().is_empty() {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                let ctx = val
+                    .get("next_action")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                return (true, ctx);
+            }
+            // Non-empty but invalid JSON -- still paused, no context
+            return (true, None);
+        }
+    }
+
+    // Try HANDOFF.md
+    let md_path = planning_dir.join("HANDOFF.md");
+    if let Ok(content) = std::fs::read_to_string(&md_path) {
+        if !content.trim().is_empty() {
+            // Extract first non-empty line after any # heading line, or first non-empty line
+            let mut found_heading = false;
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with('#') {
+                    found_heading = true;
+                    continue;
+                }
+                if !trimmed.is_empty() {
+                    return (true, Some(trimmed.to_string()));
+                }
+            }
+            // File has content but only headings or whitespace
+            if found_heading {
+                return (true, None);
+            }
+            return (true, None);
+        }
+    }
+
+    (false, None)
 }
 
 /// Parse a GSD project's .planning/ directory into a ProjectState.
@@ -101,6 +154,11 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
 
     // Load queued actions from QUEUE.md
     state.queued_actions = queue_md::load_queue(planning_dir);
+
+    // Detect HANDOFF files for pause state
+    let (paused, pause_context) = detect_handoff(planning_dir);
+    state.paused = paused;
+    state.pause_context = pause_context;
 
     state
 }
