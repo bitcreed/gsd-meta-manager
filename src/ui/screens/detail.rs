@@ -835,6 +835,26 @@ impl DetailScreen {
                 Span::raw(&state.milestone),
             ]));
 
+            if state.paused {
+                let pause_line = if let Some(ref ctx_text) = state.pause_context {
+                    Line::from(vec![
+                        Span::styled(
+                            "  Paused: ",
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(ctx_text.as_str(), Style::default().fg(Color::Cyan)),
+                    ])
+                } else {
+                    Line::from(Span::styled(
+                        "  Paused (HANDOFF file present)",
+                        Style::default().fg(Color::Cyan),
+                    ))
+                };
+                lines.push(pause_line);
+            }
+
             lines.push(Line::from(""));
 
             if let Some(event) = ctx.change_tracker.latest_change(alias) {
@@ -983,6 +1003,26 @@ impl DetailScreen {
                 Span::styled("Milestone: ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(&state.milestone),
             ]));
+
+            if state.paused {
+                let pause_line = if let Some(ref ctx_text) = state.pause_context {
+                    Line::from(vec![
+                        Span::styled(
+                            "  Paused: ",
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(ctx_text.as_str(), Style::default().fg(Color::Cyan)),
+                    ])
+                } else {
+                    Line::from(Span::styled(
+                        "  Paused (HANDOFF file present)",
+                        Style::default().fg(Color::Cyan),
+                    ))
+                };
+                header_lines.push(pause_line);
+            }
 
             header_lines.push(Line::from(""));
 

@@ -353,7 +353,20 @@ impl NormalScreen {
                         })
                         .unwrap_or(false);
 
-                    let alias_cell: Line = if has_session {
+                    // Check if project is paused (from HANDOFF file detection)
+                    let is_paused = ctx
+                        .project_states
+                        .get(alias)
+                        .map(|s| s.paused)
+                        .unwrap_or(false);
+
+                    let alias_cell: Line = if is_paused {
+                        // Pause badge takes priority over session indicator
+                        Line::from(vec![
+                            Span::styled("\u{23F8} ", Style::default().fg(Color::Cyan)),
+                            Span::raw(alias.clone()),
+                        ])
+                    } else if has_session {
                         Line::from(vec![
                             Span::styled("\u{25b6} ", Style::default().fg(Color::Green)),
                             Span::raw(alias.clone()),
