@@ -57,10 +57,10 @@ Phase 09: Claude Session Management (2 plans, complete)
 **Success Criteria** (what must be TRUE):
   1. `cargo build` completes with zero warnings (no `#[allow(dead_code)]` suppressions except those needed by upcoming archive browser code)
   2. `cargo nextest run` passes all integration tests including `end_to_end_add_then_list_via_cli` with correct CLI argument order
-**Plans**: TBD
+**Plans:** 1 plan
 
 Plans:
-- [ ] TBD
+- [ ] 10-01-PLAN.md -- Resolve dead code annotations, clippy warnings, and formatting
 
 ### Phase 11: Paused Project Detection
 **Goal**: Users can tell at a glance which projects are paused and see pause context without opening files
@@ -123,7 +123,7 @@ Phases execute in numeric order: 10 -> 11 -> 12 -> 13
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 10. Tech Debt Cleanup | v1.2 | 0/0 | Not started | - |
+| 10. Tech Debt Cleanup | v1.2 | 0/1 | Not started | - |
 | 11. Paused Project Detection | v1.2 | 0/0 | Not started | - |
 | 12. Milestone Archive Browser | v1.2 | 0/0 | Not started | - |
 | 13. Queue Execution Research | v1.2 | 0/0 | Not started | - |
