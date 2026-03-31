@@ -1,4 +1,5 @@
 mod action;
+mod archive;
 mod app;
 mod change_tracker;
 mod cli;
