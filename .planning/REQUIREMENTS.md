@@ -18,7 +18,7 @@ Requirements for v1.2 Housekeeping & Archive Browser. Each maps to roadmap phase
 
 ### Milestone Archive Browser
 
-- [ ] **ARCH-01**: User can see a list of completed milestones in an Archive tab within the detail view
+- [x] **ARCH-01**: User can see a list of completed milestones in an Archive tab within the detail view
 - [x] **ARCH-02**: User can drill into a milestone to see its phases, then into a phase to see its artifact files
 - [x] **ARCH-03**: User can view a selected artifact file with styled markdown rendering (headers, bold, lists, code blocks)
 - [x] **ARCH-04**: Archive data is loaded asynchronously and cached (completed milestones are immutable)
@@ -62,7 +62,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DEBT-01 | Phase 10 | Pending |
 | DEBT-02 | Phase 10 | Pending |
 | PAUSE-01 | Phase 11 | Complete |
-| ARCH-01 | Phase 12 | Pending |
+| ARCH-01 | Phase 12 | Complete |
 | ARCH-02 | Phase 12 | Complete |
 | ARCH-03 | Phase 12 | Complete |
 | ARCH-04 | Phase 12 | Complete |
