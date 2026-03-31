@@ -1,0 +1,27 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-03-31T08:37:21.940Z",
+  "phase": "10",
+  "phase_name": "Tech Debt Cleanup",
+  "phase_dir": ".planning/phases/10-tech-debt-cleanup",
+  "plan": 1,
+  "task": 0,
+  "total_tasks": 2,
+  "status": "paused",
+  "completed_tasks": [],
+  "remaining_tasks": [
+    {"id": 1, "name": "Audit and resolve dead code annotations", "status": "not_started"},
+    {"id": 2, "name": "Fix clippy warnings and formatting", "status": "not_started"}
+  ],
+  "blockers": [],
+  "human_actions_pending": [],
+  "decisions": [
+    {"decision": "v1.2 milestone: Housekeeping & Archive Browser (4 phases, 9 requirements)", "rationale": "Tech debt cleanup, paused detection, archive browser, queue execution research", "phase": "milestone"},
+    {"decision": "Thorough cleanup with Claude's discretion on all dead_code items", "rationale": "User wants comprehensive cleanup, not minimal", "phase": "10"},
+    {"decision": "No new Cargo dependencies for v1.2 (except potentially pulldown-cmark)", "rationale": "Existing stack sufficient for all features", "phase": "10"},
+    {"decision": "Skip research for Phase 10", "rationale": "Well-known code locations, cleanup phase, no new patterns", "phase": "10"}
+  ],
+  "uncommitted_files": [],
+  "next_action": "Execute Phase 10: /gsd:execute-phase 10 — runs 1 plan (2 tasks) to resolve all #[allow(dead_code)] annotations, clippy warnings, and formatting",
+  "context_notes": "Milestone v1.2 just initialized. Research complete (4 parallel researchers + synthesizer). Requirements defined (9 total). Roadmap created (phases 10-13). Phase 10 context gathered and plan created + verified. Ready to execute."
+}
