@@ -279,6 +279,73 @@ fn test_parse_project_state_malformed_state_md() {
 }
 
 #[test]
+fn test_parse_project_state_not_paused() {
+    let tmp = TempDir::new().unwrap();
+    // No HANDOFF files at all
+    fs::write(tmp.path().join("STATE.md"), "---\nstatus: active\n---\n").unwrap();
+    let state = parse_project_state(tmp.path());
+    assert!(!state.paused);
+    assert!(state.pause_context.is_none());
+}
+
+#[test]
+fn test_parse_project_state_paused_with_handoff_json() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("STATE.md"), "---\nstatus: active\n---\n").unwrap();
+    fs::write(
+        tmp.path().join("HANDOFF.json"),
+        r#"{"next_action": "Fix timeout"}"#,
+    )
+    .unwrap();
+    let state = parse_project_state(tmp.path());
+    assert!(state.paused);
+    assert_eq!(state.pause_context, Some("Fix timeout".to_string()));
+}
+
+#[test]
+fn test_parse_project_state_paused_with_handoff_md() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("STATE.md"), "---\nstatus: active\n---\n").unwrap();
+    fs::write(
+        tmp.path().join("HANDOFF.md"),
+        "# Handoff\nReview the API design\n",
+    )
+    .unwrap();
+    let state = parse_project_state(tmp.path());
+    assert!(state.paused);
+    assert_eq!(
+        state.pause_context,
+        Some("Review the API design".to_string())
+    );
+}
+
+#[test]
+fn test_parse_project_state_empty_handoff_ignored() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("STATE.md"), "---\nstatus: active\n---\n").unwrap();
+    // Empty HANDOFF.json should NOT trigger paused state
+    fs::write(tmp.path().join("HANDOFF.json"), "").unwrap();
+    let state = parse_project_state(tmp.path());
+    assert!(!state.paused);
+    assert!(state.pause_context.is_none());
+}
+
+#[test]
+fn test_parse_project_state_handoff_md_no_heading() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("STATE.md"), "---\nstatus: active\n---\n").unwrap();
+    fs::write(tmp.path().join("HANDOFF.md"), "Do the thing\n").unwrap();
+    let state = parse_project_state(tmp.path());
+    assert!(state.paused);
+    assert_eq!(state.pause_context, Some("Do the thing".to_string()));
+}
+
+// ============================================================================
+// HANDOFF / pause detection tests
+// ============================================================================
+// (Tests above cover pause detection via parse_project_state integration)
+
+#[test]
 fn test_parse_project_state_derives_current_phase_from_completed() {
     let tmp = TempDir::new().unwrap();
     // STATE.md with no stopped_at
