@@ -9,8 +9,8 @@ Requirements for v1.2 Housekeeping & Archive Browser. Each maps to roadmap phase
 
 ### Tech Debt
 
-- [ ] **DEBT-01**: Build compiles with zero warnings (resolve all compiler warnings and `#[allow(dead_code)]` annotations)
-- [ ] **DEBT-02**: All integration tests pass with correct CLI argument order and current API assumptions
+- [x] **DEBT-01**: Build compiles with zero warnings (resolve all compiler warnings and `#[allow(dead_code)]` annotations)
+- [x] **DEBT-02**: All integration tests pass with correct CLI argument order and current API assumptions
 
 ### Paused Project Detection
 
@@ -59,8 +59,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DEBT-01 | Phase 10 | Pending |
-| DEBT-02 | Phase 10 | Pending |
+| DEBT-01 | Phase 10 | Complete |
+| DEBT-02 | Phase 10 | Complete |
 | PAUSE-01 | Phase 11 | Pending |
 | ARCH-01 | Phase 12 | Pending |
 | ARCH-02 | Phase 12 | Pending |
