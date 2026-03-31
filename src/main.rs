@@ -1,26 +1,13 @@
-mod action;
-mod archive;
-mod app;
-mod change_tracker;
-mod cli;
-mod config;
-mod error;
 mod event;
-mod project_creator;
-mod registry;
-mod session_detector;
-mod state_reader;
 mod tui;
-mod ui;
-mod watcher;
 
-use app::App;
-use watcher::FileWatcher;
+use gsd_meta_manager::app::App;
+use gsd_meta_manager::watcher::FileWatcher;
 use clap::Parser;
-use cli::{Cli, Commands};
-use config::{load_config, save_config, Config};
+use gsd_meta_manager::cli::{Cli, Commands};
+use gsd_meta_manager::config::{load_config, save_config, Config};
 use event::EventBus;
-use registry::{add_project, list_projects, remove_project};
+use gsd_meta_manager::registry::{add_project, list_projects, remove_project};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -137,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
 async fn run_tui_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<action::Action>,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<gsd_meta_manager::action::Action>,
 ) -> anyhow::Result<()> {
     loop {
         // Sync needs_redraw from ctx (screens set ctx.needs_redraw)
@@ -147,7 +134,7 @@ async fn run_tui_loop(
         }
 
         if app.needs_redraw {
-            terminal.draw(|frame| ui::render(frame, app))?;
+            terminal.draw(|frame| gsd_meta_manager::ui::render(frame, app))?;
             app.needs_redraw = false;
         }
 
