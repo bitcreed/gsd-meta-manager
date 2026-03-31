@@ -3,7 +3,8 @@
 ## Milestones
 
 - **v1.0 MVP** - Phases 01-04 (shipped 2026-03-26)
-- **v1.1 Polish & Power Features** - Phases 05-09 (in progress)
+- **v1.1 Polish & Power Features** - Phases 05-09 (shipped 2026-03-27)
+- **v1.2 Housekeeping & Archive Browser** - Phases 10-13 (in progress)
 
 ## Phases
 
@@ -25,127 +26,104 @@ Phase 04: Project Creation & Queue (2 plans, complete)
 
 </details>
 
-### v1.1 Polish & Power Features
+<details>
+<summary>v1.1 Polish & Power Features (Phases 05-09) - SHIPPED 2026-03-27</summary>
 
-**Milestone Goal:** Fix state reader accuracy, add read-only project views (backlog, git, flow graph), GSD integration, and make the queue actionable with Claude session management.
+See `.planning/milestones/v1.1-phases/` for archived phase artifacts.
 
-- [x] **Phase 05: State Reader Accuracy** - Fix plan counting, completed-milestone display, and disk-based phase inference (completed 2026-03-26)
-- [x] **Phase 06: Read-Only Views** - Backlog browser and git history viewer as new detail-view screens (completed 2026-03-27)
-- [x] **Phase 07: Execution Flow & GSD Integration** - Per-phase pipeline visualization and verified-vs-inferred status badges (completed 2026-03-27)
-- [x] **Phase 08: Queue Execution** - Make queued items executable with confirmation, status tracking, and terminal handoff (completed 2026-03-27)
-- [x] **Phase 09: Claude Session Management** - Detect, browse, and launch Claude sessions from the TUI (completed 2026-03-27)
+Phase 05: State Reader Accuracy (5 plans, complete)
+Phase 06: Read-Only Views (4 plans, complete)
+Phase 07: Execution Flow & GSD Integration (3 plans, complete)
+Phase 08: Queue Execution (2 plans, complete)
+Phase 09: Claude Session Management (2 plans, complete)
+
+</details>
+
+### v1.2 Housekeeping & Archive Browser
+
+**Milestone Goal:** Clean up tech debt, add paused-project detection, build milestone archive browsing in the detail view, and research queue execution integration with GSD.
+
+- [ ] **Phase 10: Tech Debt Cleanup** - Resolve compiler warnings, fix stale integration test, establish clean baseline
+- [ ] **Phase 11: Paused Project Detection** - Show pause badge on dashboard for projects with HANDOFF.md/HANDOFF.json
+- [ ] **Phase 12: Milestone Archive Browser** - Browse completed milestones and drill into past phase artifacts from the detail view
+- [ ] **Phase 13: Queue Execution Research** - Document GSD autonomous mode, hook points, and design for auto-continue from QUEUE.md
 
 ## Phase Details
 
-### Phase 05: State Reader Accuracy
-**Goal**: Users see correct, trustworthy project state on the dashboard without manual verification
-**Depends on**: Phase 04 (v1.0 foundation)
-**Requirements**: STATE-01, STATE-02, STATE-03, CLI-01
+### Phase 10: Tech Debt Cleanup
+**Goal**: Users see a clean, warning-free build and all tests pass as a reliable baseline for new feature work
+**Depends on**: Phase 09 (v1.1 complete)
+**Requirements**: DEBT-01, DEBT-02
 **Success Criteria** (what must be TRUE):
-  1. User sees correct plan counts per phase (standalone PLAN.md files counted accurately)
-  2. User sees "Complete" status when all phases in a milestone are done (not "P5: Unknown")
-  3. User sees phase status derived from disk artifacts (discuss/research/plan/execute/verify stages) with confidence indicators
-  4. User can register a project by path only — name auto-derived from last folder component
-**Plans**: 5 plans
+  1. `cargo build` completes with zero warnings (no `#[allow(dead_code)]` suppressions except those needed by upcoming archive browser code)
+  2. `cargo nextest run` passes all integration tests including `end_to_end_add_then_list_via_cli` with correct CLI argument order
+**Plans**: TBD
 
 Plans:
-- [x] 05-01-PLAN.md — Fix plan counting regex, milestone completion bug, and CLI alias auto-derive
-- [x] 05-02-PLAN.md — Screen architecture refactor (InputMode to Screen trait) and async I/O migration
-- [x] 05-03-PLAN.md — Disk inference module and compact pipeline display on dashboard
-- [x] 05-04-PLAN.md — Gap closure: wire pipeline display and disk status brackets into active screen files
-- [x] 05-05-PLAN.md — Gap closure: drop expanded status text, add detail view legend
+- [ ] TBD
 
-### Phase 06: Read-Only Views
-**Goal**: Users can browse backlog items and git history without leaving the TUI
-**Depends on**: Phase 05
-**Requirements**: BLOG-01, BLOG-02, BLOG-03, GIT-01, GIT-02, GIT-03
+### Phase 11: Paused Project Detection
+**Goal**: Users can tell at a glance which projects are paused and see pause context without opening files
+**Depends on**: Phase 10
+**Requirements**: PAUSE-01
 **Success Criteria** (what must be TRUE):
-  1. User can scroll through backlog items (999.*) in a list within the detail view
-  2. User can view markdown content of a selected backlog item
-  3. User can queue a promotion command for a backlog item via the existing queue system
-  4. User can view a scrollable git log for any registered project
-  5. User can toggle between full-repo and .planning/-scoped git history
-**Plans**: 4 plans
+  1. User sees a pause badge (distinct icon/color) on dashboard rows for any project with a HANDOFF.md or HANDOFF.json file in `.planning/`
+  2. Pause badge takes priority over session-active indicator when both conditions are true
+  3. Pause detection updates automatically when HANDOFF files appear or are removed (via existing file watcher)
+**Plans**: TBD
 
 Plans:
-- [x] 06-01-PLAN.md — Tab system foundation, data models, Action variants, and tab bar navigation
-- [x] 06-02-PLAN.md — Backlog browser: scrollable list, content preview, queue promotion
-- [x] 06-03-PLAN.md — Git history viewer: scrollable log, planning-only toggle, diff stats
-- [x] 06-04-PLAN.md — Gap closure: backlog split-pane content preview and queue promotion wiring
+- [ ] TBD
 
-### Phase 07: Execution Flow & GSD Integration
-**Goal**: Users see per-phase workflow pipeline status and can distinguish verified facts from disk-inferred state
-**Depends on**: Phase 06
-**Requirements**: FLOW-01, FLOW-02, FLOW-03, GSD-01, GSD-02
+### Phase 12: Milestone Archive Browser
+**Goal**: Users can browse completed milestones and drill into past phase artifacts without leaving the TUI
+**Depends on**: Phase 11
+**Requirements**: ARCH-01, ARCH-02, ARCH-03, ARCH-04
 **Success Criteria** (what must be TRUE):
-  1. User sees a per-phase pipeline visualization showing discuss/research/plan/execute/verify stages
-  2. User sees color-coded status per pipeline stage (not started, current, complete, skipped)
-  3. User sees plan execution progress as a fraction in the execute stage
-  4. User sees [verified] vs [inferred] badges on status fields when GSD integration is enabled
-**Plans**: 3 plans
+  1. User sees a list of completed milestones in an Archive tab within the detail view
+  2. User can select a milestone and see its phases, then select a phase to see its artifact files
+  3. User can view a selected artifact file with styled rendering (headers, bold, lists, code blocks distinguishable from plain text)
+  4. Archive data loads asynchronously without blocking the TUI render loop, and completed milestone data is cached across tab switches
+**Plans**: TBD
+**UI hint**: yes
 
 Plans:
-- [x] 07-01-PLAN.md — Extend data model (DiskInference fields, config toggle, Pipeline variant)
-- [x] 07-02-PLAN.md — Pipeline tab with phase selection and stage visualization
-- [x] 07-03-PLAN.md — Verified/inferred badges on phase status lines
+- [ ] TBD
 
-### Phase 08: Queue Execution
-**Goal**: Users can manage queued items from the TUI with full CRUD operations (add, view, edit, delete, reorder, mark done)
-**Depends on**: Phase 07
-**Requirements**: QUEUE-01, QUEUE-02, QUEUE-03
+### Phase 13: Queue Execution Research
+**Goal**: A design document exists that enables v1.3 implementation of queue execution without further research
+**Depends on**: Phase 10 (independent of Phases 11-12; ordered last because it is documentation-only)
+**Requirements**: QRES-01, QRES-02
 **Success Criteria** (what must be TRUE):
-  1. User can view queue items in a dedicated Queue tab and manage them with confirmation dialogs
-  2. User sees queue items as a selectable list with empty state hint
-  3. User can add, remove, reorder, and mark done queue items from the queue view
-**Plans**: 2 plans
+  1. Research document covers GSD autonomous mode lifecycle, `claude -p` / `--continue` / `--resume` CLI capabilities, and hook points for automation
+  2. Research document includes a concrete design for auto-continue from QUEUE.md with at least two integration strategies, identified trade-offs, and safety requirements
+  3. Confidence levels are explicitly stated for each design element (HIGH/MEDIUM/LOW) to guide v1.3 planning
+**Plans**: TBD
 
 Plans:
-- [x] 08-01-PLAN.md — Queue tab view with selectable list, empty state, and navigation
-- [x] 08-02-PLAN.md — Queue mutation operations (add, delete, reorder, edit, mark done)
-
-### Phase 09: Claude Session Management
-**Goal**: Users can see which projects have active Claude sessions and launch or resume sessions from the TUI
-**Depends on**: Phase 08
-**Requirements**: SESS-01, SESS-02, SESS-03
-**Success Criteria** (what must be TRUE):
-  1. User sees an active-session indicator on the dashboard for projects with running Claude sessions
-  2. User can browse a session list showing last activity and status in the detail view
-  3. User can resume an existing or launch a new Claude session from the TUI
-**Plans**: 2 plans
-
-Plans:
-- [x] 09-01-PLAN.md — Session detection module, tick-based polling, and dashboard indicator
-- [x] 09-02-PLAN.md — Sessions tab with list view, launch and resume actions
+- [ ] TBD
 
 ## Backlog
 
-### Phase 999.1: Milestone Archive Browser Tab (BACKLOG)
-
-**Goal:** Add an "Archive" tab to the detail view that lists completed milestones and lets users drill into past phase directories to view .md files (SUMMARYs, VERIFICATIONs, PLANs). Browse what was done in previous milestones without leaving the TUI.
-**Requirements:** TBD
-**Plans:** 0 plans
-
-Plans:
-- [ ] TBD (promote with /gsd:review-backlog when ready)
-
 ### Phase 999.2: Container Support with Claude Command Injection (BACKLOG)
 
-**Goal:** Start, stop, and resume Claude sessions inside containers mapped to project directories. Monitor container output and inject commands directly into running Claude instances from the TUI — enabling remote/isolated execution without terminal switching.
+**Goal:** Start, stop, and resume Claude sessions inside containers mapped to project directories. Monitor container output and inject commands directly into running Claude instances from the TUI -- enabling remote/isolated execution without terminal switching.
 **Requirements:** TBD
 **Plans:** 0 plans
 
 Plans:
 - [ ] TBD (promote with /gsd:review-backlog when ready)
+
+Note: Backlog 999.1 (Milestone Archive Browser) promoted to Phase 12 in v1.2.
 
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 05 -> 06 -> 07 -> 08 -> 09
+Phases execute in numeric order: 10 -> 11 -> 12 -> 13
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 5. State Reader Accuracy | v1.1 | 5/5 | Complete | 2026-03-26 |
-| 6. Read-Only Views | v1.1 | 0/4 | Not started | - |
-| 7. Execution Flow & GSD Integration | v1.1 | 0/3 | Not started | - |
-| 8. Queue Execution | v1.1 | 1/2 | In progress | - |
-| 9. Claude Session Management | v1.1 | 0/2 | Not started | - |
+| 10. Tech Debt Cleanup | v1.2 | 0/0 | Not started | - |
+| 11. Paused Project Detection | v1.2 | 0/0 | Not started | - |
+| 12. Milestone Archive Browser | v1.2 | 0/0 | Not started | - |
+| 13. Queue Execution Research | v1.2 | 0/0 | Not started | - |

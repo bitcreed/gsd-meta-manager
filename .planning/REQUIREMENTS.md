@@ -59,21 +59,21 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DEBT-01 | TBD | Pending |
-| DEBT-02 | TBD | Pending |
-| PAUSE-01 | TBD | Pending |
-| ARCH-01 | TBD | Pending |
-| ARCH-02 | TBD | Pending |
-| ARCH-03 | TBD | Pending |
-| ARCH-04 | TBD | Pending |
-| QRES-01 | TBD | Pending |
-| QRES-02 | TBD | Pending |
+| DEBT-01 | Phase 10 | Pending |
+| DEBT-02 | Phase 10 | Pending |
+| PAUSE-01 | Phase 11 | Pending |
+| ARCH-01 | Phase 12 | Pending |
+| ARCH-02 | Phase 12 | Pending |
+| ARCH-03 | Phase 12 | Pending |
+| ARCH-04 | Phase 12 | Pending |
+| QRES-01 | Phase 13 | Pending |
+| QRES-02 | Phase 13 | Pending |
 
 **Coverage:**
 - v1.2 requirements: 9 total
-- Mapped to phases: 0
-- Unmapped: 9 ⚠️
+- Mapped to phases: 9
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-31*
-*Last updated: 2026-03-31 after initial definition*
+*Last updated: 2026-03-31 after roadmap creation*
