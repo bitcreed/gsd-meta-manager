@@ -14,7 +14,7 @@ Requirements for v1.2 Housekeeping & Archive Browser. Each maps to roadmap phase
 
 ### Paused Project Detection
 
-- [ ] **PAUSE-01**: User sees a pause badge on dashboard rows for projects with a `.planning/HANDOFF.md` or `HANDOFF.json` file
+- [x] **PAUSE-01**: User sees a pause badge on dashboard rows for projects with a `.planning/HANDOFF.md` or `HANDOFF.json` file
 
 ### Milestone Archive Browser
 
@@ -61,7 +61,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 |-------------|-------|--------|
 | DEBT-01 | Phase 10 | Pending |
 | DEBT-02 | Phase 10 | Pending |
-| PAUSE-01 | Phase 11 | Pending |
+| PAUSE-01 | Phase 11 | Complete |
 | ARCH-01 | Phase 12 | Pending |
 | ARCH-02 | Phase 12 | Pending |
 | ARCH-03 | Phase 12 | Pending |
