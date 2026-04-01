@@ -25,8 +25,8 @@ Requirements for v1.2 Housekeeping & Archive Browser. Each maps to roadmap phase
 
 ### Queue Execution Research
 
-- [ ] **QRES-01**: Research document covers GSD autonomous mode lifecycle, hook points, and CLI capabilities (`claude -p`, `--continue`, `--resume`)
-- [ ] **QRES-02**: Research document includes a design for auto-continue from QUEUE.md with identified integration points and trade-offs
+- [x] **QRES-01**: Research document covers GSD autonomous mode lifecycle, hook points, and CLI capabilities (`claude -p`, `--continue`, `--resume`)
+- [x] **QRES-02**: Research document includes a design for auto-continue from QUEUE.md with identified integration points and trade-offs
 
 ## Future Requirements
 
@@ -66,8 +66,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ARCH-02 | Phase 12 | Complete |
 | ARCH-03 | Phase 12 | Complete |
 | ARCH-04 | Phase 12 | Complete |
-| QRES-01 | Phase 13 | Pending |
-| QRES-02 | Phase 13 | Pending |
+| QRES-01 | Phase 13 | Complete |
+| QRES-02 | Phase 13 | Complete |
 
 **Coverage:**
 - v1.2 requirements: 9 total
