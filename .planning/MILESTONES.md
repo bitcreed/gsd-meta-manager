@@ -1,5 +1,19 @@
 # Milestones
 
+## v1.2 Housekeeping & Archive Browser (Shipped: 2026-04-01)
+
+**Phases completed:** 5 phases, 6 plans, 10 tasks
+
+**Key accomplishments:**
+
+- Zero-warning build with all dead_code suppressions resolved, clippy clean, and main.rs refactored to use lib crate
+- HANDOFF file detection with cyan pause badge on dashboard and context display in detail view
+- Archive data types, filesystem discovery, milestone loading, and markdown renderer in src/archive.rs with action variants for async delivery
+- 8-tab detail view with Archive drill-down browser: milestone list, phase list, file list, and styled markdown viewer with breadcrumb navigation
+- Queue execution design document covering GSD autonomous lifecycle, two integration strategies (per-item isolation recommended for v1.3), LLM-agnostic Executor interface, and safety requirements with timeouts/retries/escalation
+
+---
+
 ## v1.1 Polish & Power Features (Shipped: 2026-03-27)
 
 **Phases completed:** 5 phases, 16 plans, 25 tasks
