@@ -66,6 +66,7 @@ pub struct ProjectViewCache {
     pub archive_scroll_offset: u16,
     pub archive_loading: bool,
     pub archive_file_content: Option<String>,
+    pub archive_file_name: Option<String>,
 }
 
 pub struct AppContext {

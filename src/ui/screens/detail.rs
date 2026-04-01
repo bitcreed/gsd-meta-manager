@@ -740,6 +740,7 @@ impl Screen for DetailScreen {
                                         // Selected a top-level file
                                         let file = &data.top_level_files[selected];
                                         let path = file.path.clone();
+                                        cache.archive_file_name = Some(file.name.clone());
                                         cache.archive_depth = ArchiveDepth::FileView {
                                             milestone: milestone.clone(),
                                             phase_idx: 0,
@@ -769,6 +770,7 @@ impl Screen for DetailScreen {
                                     if let Some(phase) = data.phases.get(phase_idx) {
                                         if let Some(file) = phase.files.get(selected) {
                                             let path = file.path.clone();
+                                            cache.archive_file_name = Some(file.name.clone());
                                             cache.archive_depth = ArchiveDepth::FileView {
                                                 milestone: milestone.clone(),
                                                 phase_idx,
@@ -1989,7 +1991,7 @@ impl DetailScreen {
     /// Build breadcrumb line for the archive tab showing navigation path.
     fn archive_breadcrumb(
         depth: &crate::archive::ArchiveDepth,
-        _cache: &super::ProjectViewCache,
+        cache: &super::ProjectViewCache,
         ctx: &AppContext,
     ) -> Line<'static> {
         use crate::archive::ArchiveDepth;
@@ -2026,7 +2028,7 @@ impl DetailScreen {
             ArchiveDepth::FileView {
                 milestone,
                 phase_idx,
-                file_idx,
+                ..
             } => {
                 spans.push(Span::raw(" > "));
                 spans.push(Span::styled(
@@ -2037,14 +2039,14 @@ impl DetailScreen {
                     if let Some(phase) = data.phases.get(*phase_idx) {
                         spans.push(Span::raw(" > "));
                         spans.push(Span::raw(phase.display_name.clone()));
-                        if let Some(file) = phase.files.get(*file_idx) {
-                            spans.push(Span::raw(" > "));
-                            spans.push(Span::styled(
-                                file.name.clone(),
-                                Style::default().add_modifier(Modifier::BOLD),
-                            ));
-                        }
                     }
+                }
+                if let Some(ref name) = cache.archive_file_name {
+                    spans.push(Span::raw(" > "));
+                    spans.push(Span::styled(
+                        name.clone(),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ));
                 }
             }
         }

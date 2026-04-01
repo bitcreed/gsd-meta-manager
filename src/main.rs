@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
             if projects.is_empty() {
                 println!("No projects registered.");
             } else {
-                println!("{:<20} {:<50} {}", "ALIAS", "PATH", "ADDED");
+                println!("{:<20} {:<50} ADDED", "ALIAS", "PATH");
                 println!("{}", "-".repeat(90));
                 for (alias, project) in projects {
                     println!(

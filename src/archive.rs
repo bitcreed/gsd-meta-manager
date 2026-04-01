@@ -4,9 +4,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 /// Depth levels for archive drill-down navigation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum ArchiveDepth {
     /// Level 0: List of milestones (v1.0, v1.1, ...)
+    #[default]
     MilestoneList,
     /// Level 1: Phases within a selected milestone
     PhaseList { milestone: String },
@@ -14,12 +15,6 @@ pub enum ArchiveDepth {
     FileList { milestone: String, phase_idx: usize },
     /// Level 3: Viewing file content with markdown styling
     FileView { milestone: String, phase_idx: usize, file_idx: usize },
-}
-
-impl Default for ArchiveDepth {
-    fn default() -> Self {
-        Self::MilestoneList
-    }
 }
 
 /// Parsed milestone archive with top-level files and phase subdirectories.
