@@ -50,7 +50,7 @@ See the state of every GSD project at a glance and act on any of them without le
 
 ## Current State
 
-Phase 11 (Paused Project Detection) complete — HANDOFF detection with badge display on dashboard and detail view. 25 tests pass. Continuing v1.2.
+All v1.2 phases complete (10-13). Tech debt cleaned, paused detection added, archive browser built, queue execution researched. Ready for milestone lifecycle.
 
 ## Context
 
@@ -97,4 +97,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-31 — Phase 11 complete*
+*Last updated: 2026-04-01 — v1.2 all phases complete*
