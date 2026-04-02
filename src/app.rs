@@ -93,6 +93,8 @@ pub struct App {
     pub screen_stack: Vec<Box<dyn Screen>>,
     pub active_sessions: Vec<ClaudeSession>,
     pub session_poll_counter: u32,
+    /// When set, the main loop should suspend the TUI and open this file in $EDITOR.
+    pub pending_editor: Option<PathBuf>,
 }
 
 impl App {
@@ -134,6 +136,7 @@ impl App {
             screen_stack: vec![Box::new(NormalScreen::new())],
             active_sessions: Vec::new(),
             session_poll_counter: 0,
+            pending_editor: None,
         })
     }
 
@@ -387,6 +390,9 @@ impl App {
             ScreenAction::SetStatusMessage(msg) => {
                 self.ctx.status_message = Some((msg, std::time::Instant::now()));
                 self.needs_redraw = true;
+            }
+            ScreenAction::SuspendAndEdit(path) => {
+                self.pending_editor = Some(path);
             }
             ScreenAction::DispatchAction(action) => {
                 if let Some(tx) = &self.ctx.event_tx {

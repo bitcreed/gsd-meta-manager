@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct BacklogItem {
@@ -6,6 +6,8 @@ pub struct BacklogItem {
     pub number: String,
     pub description: String,
     pub content: Option<String>,
+    /// Path to the first .md file in the backlog item directory.
+    pub path: Option<PathBuf>,
 }
 
 /// Parse a backlog directory name like "999.3-queue-editor-and-reorder" into (number, slug).
@@ -46,7 +48,7 @@ pub fn parse_backlog_items(planning_dir: &Path) -> Vec<BacklogItem> {
             let (number, slug) = parse_backlog_dir_name(&dir_name)?;
 
             // Skip directories with no .md files (empty backlog placeholders)
-            find_first_md_file(&e.path())?;
+            let md_path = find_first_md_file(&e.path())?;
 
             // Try to find description from first .md file's first heading
             let description = find_first_heading(&e.path()).unwrap_or_else(|| humanize_slug(&slug));
@@ -56,6 +58,7 @@ pub fn parse_backlog_items(planning_dir: &Path) -> Vec<BacklogItem> {
                 number,
                 description,
                 content: None,
+                path: Some(md_path),
             })
         })
         .collect();

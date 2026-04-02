@@ -261,6 +261,25 @@ pub fn render_markdown_lines(content: &str) -> Vec<Line<'static>> {
     lines
 }
 
+/// Generate right-aligned line number Lines for a visible window of content.
+///
+/// `total` is the total number of lines in the content.
+/// `scroll` is the current scroll offset (0-based).
+/// `visible` is the number of visible rows in the viewport.
+pub fn line_number_lines(total: usize, scroll: u16, visible: u16) -> Vec<Line<'static>> {
+    let start = scroll as usize;
+    let end = (start + visible as usize).min(total);
+    let width = total.max(1).to_string().len();
+    (start..end)
+        .map(|i| {
+            Line::from(Span::styled(
+                format!("{:>width$} ", i + 1, width = width),
+                Style::default().fg(Color::DarkGray),
+            ))
+        })
+        .collect()
+}
+
 /// Parse inline `**bold**` markers into mixed Span sequences.
 fn parse_inline_styles(line: &str) -> Line<'static> {
     let mut spans = Vec::new();

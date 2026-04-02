@@ -88,6 +88,7 @@ None yet.
 |---|-------------|------|--------|-----------|
 | 260325-reh | Fix 6 tech debt items from v1.0 audit | 2026-03-26 | 53b1ce5 | [260325-reh](./quick/260325-reh-fix-6-tech-debt-items-from-v1-0-audit-in/) |
 | 260327-rhx | Rename project to gsd-meta-manager | 2026-03-28 | e018917 | [260327-rhx](./quick/260327-rhx-rename-the-project-to-gsd-meta-manager/) |
+| 260401-t7y | Add tui-textarea + $EDITOR shell-out for archive/backlog | 2026-04-02 | 248a800 | [260401-t7y](./quick/260401-t7y-add-tui-textarea-for-markdown-viewing-an/) |
 
 ## Session Continuity
 
