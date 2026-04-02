@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 Phase: 999.2
 Plan: Not started
 Status: Phase complete — ready for verification
-Last activity: 2026-04-01
+Last activity: 2026-04-02 - Completed quick task 260401-t7y: Add tui-textarea for markdown viewing and $EDITOR shell-out
 
 Progress: [..........] 0%
 
