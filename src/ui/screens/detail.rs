@@ -952,6 +952,48 @@ impl Screen for DetailScreen {
                 ScreenAction::None
             }
             KeyCode::Char('e') => {
+                // Archive FileView: open file in $EDITOR (read-only for milestones)
+                if current_view == DetailSubView::Archive {
+                    let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                    use crate::archive::ArchiveDepth;
+                    if let ArchiveDepth::FileView {
+                        milestone,
+                        phase_idx,
+                        file_idx,
+                    } = &cache.archive_depth
+                    {
+                        // Resolve the file path from archive cache
+                        let file_path = ctx.archive_cache.get(milestone).and_then(|data| {
+                            let top_count = data.top_level_files.len();
+                            if *phase_idx == 0 && *file_idx < top_count {
+                                // Could be a top-level file (entered from PhaseList)
+                                // Check if we have a matching top-level file
+                                data.top_level_files.get(*file_idx).map(|f| f.path.clone())
+                            } else {
+                                data.phases
+                                    .get(*phase_idx)
+                                    .and_then(|p| p.files.get(*file_idx))
+                                    .map(|f| f.path.clone())
+                            }
+                        });
+
+                        if let Some(path) = file_path {
+                            // Check if file is under milestones/ (archived = read-only)
+                            let path_str = path.to_string_lossy();
+                            if path_str.contains("/milestones/") {
+                                ctx.needs_redraw = true;
+                                return ScreenAction::SetStatusMessage(
+                                    "Archived files are read-only".to_string(),
+                                );
+                            }
+                            ctx.needs_redraw = true;
+                            return ScreenAction::SuspendAndEdit(path);
+                        }
+                    }
+                    // Not in FileView depth -- no-op for 'e'
+                    return ScreenAction::None;
+                }
+
                 let alias = self.alias.clone();
                 let has_planning = ctx
                     .config
@@ -1009,27 +1051,40 @@ impl Screen for DetailScreen {
                     } else {
                         ScreenAction::None
                     }
-                } else {
-                    // Backlog tab: pre-fill with /gsd:review-backlog {dir_name}
-                    if current_view == DetailSubView::Backlog {
-                        let cache = ctx.view_cache.entry(alias.clone()).or_default();
+                } else if current_view == DetailSubView::Backlog {
+                    // Backlog tab: if expanded, open file in $EDITOR; otherwise enqueue
+                    let cache = ctx.view_cache.entry(alias.clone()).or_default();
+                    if cache.backlog_expanded {
                         if let Some(item) = cache.backlog_items.get(cache.backlog_selected) {
-                            ctx.input_buffer = format!("/gsd:review-backlog {}", item.dir_name);
+                            if let Some(ref path) = item.path {
+                                ctx.needs_redraw = true;
+                                return ScreenAction::SuspendAndEdit(path.clone());
+                            }
+                        }
+                        return ScreenAction::SetStatusMessage(
+                            "No file found for this backlog item".to_string(),
+                        );
+                    }
+                    // Not expanded: enqueue as before
+                    if let Some(item) = cache.backlog_items.get(cache.backlog_selected) {
+                        ctx.input_buffer = format!("/gsd:review-backlog {}", item.dir_name);
+                    } else {
+                        ctx.input_buffer.clear();
+                    }
+                    ctx.suggestion_index = 0;
+                    ctx.needs_redraw = true;
+                    ScreenAction::Push(Box::new(EnqueueScreen::new(alias)))
+                } else {
+                    // Generic: use suggest_next_commands
+                    if let Some(state) = ctx.project_states.get(&alias) {
+                        let suggestions = queue_md::suggest_next_commands(state);
+                        if !suggestions.is_empty() {
+                            ctx.input_buffer = suggestions[0].clone();
                         } else {
                             ctx.input_buffer.clear();
                         }
                     } else {
-                        // Generic: use suggest_next_commands
-                        if let Some(state) = ctx.project_states.get(&alias) {
-                            let suggestions = queue_md::suggest_next_commands(state);
-                            if !suggestions.is_empty() {
-                                ctx.input_buffer = suggestions[0].clone();
-                            } else {
-                                ctx.input_buffer.clear();
-                            }
-                        } else {
-                            ctx.input_buffer.clear();
-                        }
+                        ctx.input_buffer.clear();
                     }
                     ctx.suggestion_index = 0;
                     ctx.needs_redraw = true;

@@ -142,6 +142,50 @@ async fn run_tui_loop(
             app.update(action);
         }
 
+        // Check if a screen action requested an editor launch
+        if let Some(path) = app.pending_editor.take() {
+            // Suspend the TUI
+            ratatui::restore();
+
+            // Determine editor: $VISUAL > $EDITOR > vi
+            let editor = std::env::var("VISUAL")
+                .or_else(|_| std::env::var("EDITOR"))
+                .unwrap_or_else(|_| "vi".to_string());
+
+            // Spawn editor and wait for it to exit
+            let status = std::process::Command::new(&editor).arg(&path).status();
+
+            match status {
+                Ok(s) if s.success() => {
+                    app.ctx.status_message = Some((
+                        format!(
+                            "Editor closed: {}",
+                            path.file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                        ),
+                        std::time::Instant::now(),
+                    ));
+                }
+                Ok(s) => {
+                    app.ctx.status_message = Some((
+                        format!("Editor exited with: {}", s),
+                        std::time::Instant::now(),
+                    ));
+                }
+                Err(e) => {
+                    app.ctx.status_message = Some((
+                        format!("Failed to launch {}: {}", editor, e),
+                        std::time::Instant::now(),
+                    ));
+                }
+            }
+
+            // Re-initialize TUI
+            *terminal = ratatui::init();
+            app.needs_redraw = true;
+        }
+
         if app.should_quit {
             break;
         }
