@@ -1974,11 +1974,32 @@ impl DetailScreen {
                 if let Some(content) = &cache.archive_file_content {
                     let styled_lines = crate::archive::render_markdown_lines(content);
                     let total_lines = styled_lines.len() as u16;
-                    let visible_height = content_area.height;
+                    // Split content area into gutter + main content
+                    let gutter_width = (total_lines as usize).max(1).to_string().len() as u16 + 1;
+                    let file_chunks = Layout::horizontal([
+                        Constraint::Length(gutter_width),
+                        Constraint::Min(0),
+                    ])
+                    .split(content_area);
+                    let gutter_area = file_chunks[0];
+                    let text_area = file_chunks[1];
+
+                    let visible_height = text_area.height;
                     let max_scroll = total_lines.saturating_sub(visible_height);
                     let scroll = cache.archive_scroll_offset.min(max_scroll);
+
+                    // Render line number gutter
+                    let gutter_lines = crate::archive::line_number_lines(
+                        total_lines as usize,
+                        scroll,
+                        visible_height,
+                    );
+                    let gutter = Paragraph::new(gutter_lines);
+                    frame.render_widget(gutter, gutter_area);
+
+                    // Render styled markdown content
                     let paragraph = Paragraph::new(styled_lines).scroll((scroll, 0));
-                    frame.render_widget(paragraph, content_area);
+                    frame.render_widget(paragraph, text_area);
                 } else {
                     let loading = Paragraph::new("Loading...")
                         .style(Style::default().fg(Color::DarkGray));
@@ -2283,6 +2304,8 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
         DetailSubView::Archive => {
             spans.push(Span::styled("[Enter]", b));
             spans.push(Span::raw("open  "));
+            spans.push(Span::styled("[e]", b));
+            spans.push(Span::raw("dit  "));
         }
         _ => {
             spans.push(Span::styled("[e]", b));
