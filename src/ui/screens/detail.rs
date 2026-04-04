@@ -17,6 +17,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs};
 use ratatui::Frame;
 
+const PAGE_SCROLL_LINES: u16 = 20;
+
 const TAB_TITLES: [&str; 8] = [
     "1:Phases",
     "2:Roadmap",
@@ -491,6 +493,166 @@ impl Screen for DetailScreen {
                     }
                     _ => {
                         self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                        ctx.needs_redraw = true;
+                    }
+                }
+                ScreenAction::None
+            }
+            KeyCode::PageDown => {
+                match current_view {
+                    DetailSubView::GitHistory => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        if !cache.git_entries.is_empty() {
+                            let max = cache.git_entries.len().saturating_sub(1);
+                            cache.git_selected = (cache.git_selected + PAGE_SCROLL_LINES as usize).min(max);
+                            cache.git_diff_stat = None;
+                        }
+                        ctx.needs_redraw = true;
+                    }
+                    DetailSubView::Backlog => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        if !cache.backlog_items.is_empty() {
+                            let max = cache.backlog_items.len().saturating_sub(1);
+                            cache.backlog_selected = (cache.backlog_selected + PAGE_SCROLL_LINES as usize).min(max);
+                            cache.backlog_expanded = false;
+                        }
+                        ctx.needs_redraw = true;
+                    }
+                    DetailSubView::Pipeline => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        if let Some(state) = ctx.project_states.get(&self.alias) {
+                            if !state.phases.is_empty() {
+                                let max = state.phases.len().saturating_sub(1);
+                                cache.pipeline_selected = (cache.pipeline_selected + PAGE_SCROLL_LINES as usize).min(max);
+                            }
+                        }
+                        ctx.needs_redraw = true;
+                    }
+                    DetailSubView::Queue => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        if let Some(state) = ctx.project_states.get(&self.alias) {
+                            if !state.queued_actions.is_empty() {
+                                let max = state.queued_actions.len().saturating_sub(1);
+                                cache.queue_selected = (cache.queue_selected + PAGE_SCROLL_LINES as usize).min(max);
+                            }
+                        }
+                        ctx.needs_redraw = true;
+                    }
+                    DetailSubView::Sessions => {
+                        let session_count = ctx
+                            .config
+                            .projects
+                            .get(&self.alias)
+                            .map(|proj| {
+                                ctx.active_sessions
+                                    .iter()
+                                    .filter(|s| s.working_dir == proj.path)
+                                    .count()
+                            })
+                            .unwrap_or(0);
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        if session_count > 0 {
+                            let max = session_count.saturating_sub(1);
+                            cache.sessions_selected = (cache.sessions_selected + PAGE_SCROLL_LINES as usize).min(max);
+                        }
+                        ctx.needs_redraw = true;
+                    }
+                    DetailSubView::Archive => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        use crate::archive::ArchiveDepth;
+                        match &cache.archive_depth {
+                            ArchiveDepth::MilestoneList => {
+                                let max = cache.archive_milestones.len().saturating_sub(1);
+                                cache.archive_selected[0] =
+                                    (cache.archive_selected[0] + PAGE_SCROLL_LINES as usize).min(max);
+                            }
+                            ArchiveDepth::PhaseList { milestone } => {
+                                if let Some(data) = ctx.archive_cache.get(milestone) {
+                                    let total = data.top_level_files.len() + data.phases.len();
+                                    let max = total.saturating_sub(1);
+                                    cache.archive_selected[1] =
+                                        (cache.archive_selected[1] + PAGE_SCROLL_LINES as usize).min(max);
+                                }
+                            }
+                            ArchiveDepth::FileList { milestone, phase_idx } => {
+                                if let Some(data) = ctx.archive_cache.get(milestone) {
+                                    if let Some(phase) = data.phases.get(*phase_idx) {
+                                        let max = phase.files.len().saturating_sub(1);
+                                        cache.archive_selected[2] =
+                                            (cache.archive_selected[2] + PAGE_SCROLL_LINES as usize).min(max);
+                                    }
+                                }
+                            }
+                            ArchiveDepth::FileView { .. } => {
+                                cache.archive_scroll_offset =
+                                    cache.archive_scroll_offset.saturating_add(PAGE_SCROLL_LINES);
+                            }
+                        }
+                        ctx.needs_redraw = true;
+                    }
+                    _ => {
+                        self.scroll_offset = self.scroll_offset.saturating_add(PAGE_SCROLL_LINES);
+                        ctx.needs_redraw = true;
+                    }
+                }
+                ScreenAction::None
+            }
+            KeyCode::PageUp => {
+                match current_view {
+                    DetailSubView::GitHistory => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        if !cache.git_entries.is_empty() {
+                            cache.git_selected = cache.git_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
+                            cache.git_diff_stat = None;
+                        }
+                        ctx.needs_redraw = true;
+                    }
+                    DetailSubView::Backlog => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        cache.backlog_selected = cache.backlog_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
+                        cache.backlog_expanded = false;
+                        ctx.needs_redraw = true;
+                    }
+                    DetailSubView::Pipeline => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        cache.pipeline_selected = cache.pipeline_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
+                        ctx.needs_redraw = true;
+                    }
+                    DetailSubView::Queue => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        cache.queue_selected = cache.queue_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
+                        ctx.needs_redraw = true;
+                    }
+                    DetailSubView::Sessions => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        cache.sessions_selected = cache.sessions_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
+                        ctx.needs_redraw = true;
+                    }
+                    DetailSubView::Archive => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        use crate::archive::ArchiveDepth;
+                        match &cache.archive_depth {
+                            ArchiveDepth::MilestoneList => {
+                                cache.archive_selected[0] =
+                                    cache.archive_selected[0].saturating_sub(PAGE_SCROLL_LINES as usize);
+                            }
+                            ArchiveDepth::PhaseList { .. } => {
+                                cache.archive_selected[1] =
+                                    cache.archive_selected[1].saturating_sub(PAGE_SCROLL_LINES as usize);
+                            }
+                            ArchiveDepth::FileList { .. } => {
+                                cache.archive_selected[2] =
+                                    cache.archive_selected[2].saturating_sub(PAGE_SCROLL_LINES as usize);
+                            }
+                            ArchiveDepth::FileView { .. } => {
+                                cache.archive_scroll_offset =
+                                    cache.archive_scroll_offset.saturating_sub(PAGE_SCROLL_LINES);
+                            }
+                        }
+                        ctx.needs_redraw = true;
+                    }
+                    _ => {
+                        self.scroll_offset = self.scroll_offset.saturating_sub(PAGE_SCROLL_LINES);
                         ctx.needs_redraw = true;
                     }
                 }
