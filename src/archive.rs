@@ -14,7 +14,9 @@ pub enum ArchiveDepth {
     /// Level 2: Artifact files within a selected phase
     FileList { milestone: String, phase_idx: usize },
     /// Level 3: Viewing file content with markdown styling
-    FileView { milestone: String, phase_idx: usize, file_idx: usize },
+    /// `phase_idx`: `None` = top-level file (entered from PhaseList),
+    /// `Some(idx)` = phase file (entered from FileList)
+    FileView { milestone: String, phase_idx: Option<usize>, file_idx: usize },
 }
 
 /// Parsed milestone archive with top-level files and phase subdirectories.

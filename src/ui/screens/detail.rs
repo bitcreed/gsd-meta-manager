@@ -313,10 +313,21 @@ impl Screen for DetailScreen {
                             phase_idx,
                             ..
                         } => {
-                            cache.archive_depth = ArchiveDepth::FileList {
-                                milestone: milestone.clone(),
-                                phase_idx: *phase_idx,
-                            };
+                            match phase_idx {
+                                Some(idx) => {
+                                    // Came from FileList -- return to FileList
+                                    cache.archive_depth = ArchiveDepth::FileList {
+                                        milestone: milestone.clone(),
+                                        phase_idx: *idx,
+                                    };
+                                }
+                                None => {
+                                    // Came from PhaseList (top-level file) -- return to PhaseList
+                                    cache.archive_depth = ArchiveDepth::PhaseList {
+                                        milestone: milestone.clone(),
+                                    };
+                                }
+                            }
                             cache.archive_file_content = None;
                             cache.archive_scroll_offset = 0;
                             ctx.needs_redraw = true;
@@ -905,7 +916,7 @@ impl Screen for DetailScreen {
                                         cache.archive_file_name = Some(file.name.clone());
                                         cache.archive_depth = ArchiveDepth::FileView {
                                             milestone: milestone.clone(),
-                                            phase_idx: 0,
+                                            phase_idx: None,
                                             file_idx: selected,
                                         };
                                         cache.archive_scroll_offset = 0;
@@ -935,7 +946,7 @@ impl Screen for DetailScreen {
                                             cache.archive_file_name = Some(file.name.clone());
                                             cache.archive_depth = ArchiveDepth::FileView {
                                                 milestone: milestone.clone(),
-                                                phase_idx,
+                                                phase_idx: Some(phase_idx),
                                                 file_idx: selected,
                                             };
                                             cache.archive_scroll_offset = 0;
@@ -1126,16 +1137,17 @@ impl Screen for DetailScreen {
                     {
                         // Resolve the file path from archive cache
                         let file_path = ctx.archive_cache.get(milestone).and_then(|data| {
-                            let top_count = data.top_level_files.len();
-                            if *phase_idx == 0 && *file_idx < top_count {
-                                // Could be a top-level file (entered from PhaseList)
-                                // Check if we have a matching top-level file
-                                data.top_level_files.get(*file_idx).map(|f| f.path.clone())
-                            } else {
-                                data.phases
-                                    .get(*phase_idx)
-                                    .and_then(|p| p.files.get(*file_idx))
-                                    .map(|f| f.path.clone())
+                            match phase_idx {
+                                None => {
+                                    // Top-level file (entered from PhaseList)
+                                    data.top_level_files.get(*file_idx).map(|f| f.path.clone())
+                                }
+                                Some(idx) => {
+                                    data.phases
+                                        .get(*idx)
+                                        .and_then(|p| p.files.get(*file_idx))
+                                        .map(|f| f.path.clone())
+                                }
                             }
                         });
 
@@ -2273,10 +2285,12 @@ impl DetailScreen {
                     milestone.clone(),
                     Style::default().fg(Color::Yellow),
                 ));
-                if let Some(data) = ctx.archive_cache.get(milestone) {
-                    if let Some(phase) = data.phases.get(*phase_idx) {
-                        spans.push(Span::raw(" > "));
-                        spans.push(Span::raw(phase.display_name.clone()));
+                if let Some(idx) = phase_idx {
+                    if let Some(data) = ctx.archive_cache.get(milestone) {
+                        if let Some(phase) = data.phases.get(*idx) {
+                            spans.push(Span::raw(" > "));
+                            spans.push(Span::raw(phase.display_name.clone()));
+                        }
                     }
                 }
                 if let Some(ref name) = cache.archive_file_name {
