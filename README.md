@@ -1,14 +1,12 @@
 # GSD Meta Manager
 
-<!-- TODO: Add CI/CD badges here when configured -->
-
 A TUI command center for managing multiple GSD-run projects from a single interface.
 
 <!-- TODO: Add screenshot or terminal recording here -->
 
 ## What is it?
 
-GSD Meta Manager gives you a unified dashboard across all your
+GSD (Get S\[oftware\] Done) Meta Manager gives you a unified dashboard across all your
 [GSD workflow](https://github.com/anthropics/claude-code/tree/main/.claude/get-shit-done)
 projects. It reads `.planning/` state directly from disk -- no need to launch
 Claude or run `/gsd:progress` in each project directory. Register your projects
