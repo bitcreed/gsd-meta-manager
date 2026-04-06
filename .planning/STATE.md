@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 Phase: 999.2
 Plan: Not started
 Status: Phase complete — ready for verification
-Last activity: 2026-04-06 - Completed quick task 260405-oum: Add Defaults tab to display and edit .planning/config.json settings
+Last activity: 2026-04-06 - Completed quick task 260405-urb: Write a README.md for GitHub
 
 Progress: [..........] 0%
 
@@ -92,6 +92,7 @@ None yet.
 | 260403-p84 | Add PageUp/PageDown scrolling to detail screen | 2026-04-04 | 3d8d720 | [260403-p84](./quick/260403-p84-add-pageup-pagedown-scrolling-to-markdow/) |
 | 260405-27p | Fix folder appears empty after returning from markdown view | 2026-04-05 | d8a578e | [260405-27p](./quick/260405-27p-fix-folder-appears-empty-after-returning/) |
 | 260405-oum | Add Defaults tab to display and edit .planning/config.json settings | 2026-04-06 | 963c8a4 | [260405-oum](./quick/260405-oum-add-defaults-tab-to-display-and-edit-pla/) |
+| 260405-urb | Write a README.md for GitHub | 2026-04-06 | d0130d8 | [260405-urb](./quick/260405-urb-write-a-readme-md-for-github/) |
 
 ## Session Continuity
 
