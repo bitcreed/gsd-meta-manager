@@ -23,6 +23,7 @@ pub enum DetailSubView {
     Queue,
     Sessions,
     Archive,
+    Defaults,
 }
 
 #[derive(Debug, Clone, PartialEq)]

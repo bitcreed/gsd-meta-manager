@@ -69,6 +69,9 @@ pub struct ProjectViewCache {
     pub archive_loading: bool,
     pub archive_file_content: Option<String>,
     pub archive_file_name: Option<String>,
+    pub defaults_config: Option<crate::state_reader::config_json::GsdConfig>,
+    pub defaults_selected: usize,
+    pub defaults_editing: Option<usize>,
 }
 
 pub struct AppContext {
