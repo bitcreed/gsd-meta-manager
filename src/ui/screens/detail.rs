@@ -19,7 +19,7 @@ use ratatui::Frame;
 
 const PAGE_SCROLL_LINES: u16 = 20;
 
-const TAB_TITLES: [&str; 8] = [
+const TAB_TITLES: [&str; 9] = [
     "1:Phases",
     "2:Roadmap",
     "3:Backlog",
@@ -27,7 +27,8 @@ const TAB_TITLES: [&str; 8] = [
     "5:Pipe",
     "6:Queue",
     "7:Sess",
-    "8:Archive",
+    "8:Arch",
+    "9:Cfg",
 ];
 
 pub struct DetailScreen {
@@ -54,6 +55,7 @@ fn tab_index(sub_view: &DetailSubView) -> usize {
         DetailSubView::Queue => 5,
         DetailSubView::Sessions => 6,
         DetailSubView::Archive => 7,
+        DetailSubView::Defaults => 8,
     }
 }
 
@@ -67,6 +69,7 @@ fn sub_view_from_index(index: usize) -> DetailSubView {
         5 => DetailSubView::Queue,
         6 => DetailSubView::Sessions,
         7 => DetailSubView::Archive,
+        8 => DetailSubView::Defaults,
         _ => DetailSubView::PhaseList,
     }
 }
@@ -227,6 +230,22 @@ fn switch_to_tab(
                 });
             }
         }
+    }
+
+    // Load config.json for defaults tab
+    if new_view == DetailSubView::Defaults {
+        let cache = ctx.view_cache.entry(alias.to_string()).or_default();
+        if let Some(project) = ctx.config.projects.get(alias) {
+            let config_path = project.path.join(".planning/config.json");
+            if let Ok(content) = std::fs::read_to_string(&config_path) {
+                cache.defaults_config =
+                    crate::state_reader::config_json::parse_gsd_config(&content);
+            } else {
+                cache.defaults_config = None;
+            }
+        }
+        cache.defaults_selected = 0;
+        cache.defaults_editing = None;
     }
 
     // Load milestone list for archive tab on first visit
@@ -441,6 +460,15 @@ impl Screen for DetailScreen {
                         }
                         ctx.needs_redraw = true;
                     }
+                    DetailSubView::Defaults => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        let entry_count = defaults_entry_count(&cache.defaults_config);
+                        if entry_count > 0 {
+                            let max = entry_count.saturating_sub(1);
+                            cache.defaults_selected = (cache.defaults_selected + 1).min(max);
+                        }
+                        ctx.needs_redraw = true;
+                    }
                     _ => {
                         self.scroll_offset = self.scroll_offset.saturating_add(1);
                         ctx.needs_redraw = true;
@@ -500,6 +528,11 @@ impl Screen for DetailScreen {
                                     cache.archive_scroll_offset.saturating_sub(1);
                             }
                         }
+                        ctx.needs_redraw = true;
+                    }
+                    DetailSubView::Defaults => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        cache.defaults_selected = cache.defaults_selected.saturating_sub(1);
                         ctx.needs_redraw = true;
                     }
                     _ => {
@@ -601,6 +634,15 @@ impl Screen for DetailScreen {
                         }
                         ctx.needs_redraw = true;
                     }
+                    DetailSubView::Defaults => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        let entry_count = defaults_entry_count(&cache.defaults_config);
+                        if entry_count > 0 {
+                            let max = entry_count.saturating_sub(1);
+                            cache.defaults_selected = (cache.defaults_selected + PAGE_SCROLL_LINES as usize).min(max);
+                        }
+                        ctx.needs_redraw = true;
+                    }
                     _ => {
                         self.scroll_offset = self.scroll_offset.saturating_add(PAGE_SCROLL_LINES);
                         ctx.needs_redraw = true;
@@ -662,6 +704,11 @@ impl Screen for DetailScreen {
                         }
                         ctx.needs_redraw = true;
                     }
+                    DetailSubView::Defaults => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        cache.defaults_selected = cache.defaults_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
+                        ctx.needs_redraw = true;
+                    }
                     _ => {
                         self.scroll_offset = self.scroll_offset.saturating_sub(PAGE_SCROLL_LINES);
                         ctx.needs_redraw = true;
@@ -678,6 +725,7 @@ impl Screen for DetailScreen {
             KeyCode::Char('6') => switch_to_tab(&self.alias, 5, &mut self.scroll_offset, ctx),
             KeyCode::Char('7') => switch_to_tab(&self.alias, 6, &mut self.scroll_offset, ctx),
             KeyCode::Char('8') => switch_to_tab(&self.alias, 7, &mut self.scroll_offset, ctx),
+            KeyCode::Char('9') => switch_to_tab(&self.alias, 8, &mut self.scroll_offset, ctx),
             // Tab switching via arrow keys
             KeyCode::Left => {
                 if current_idx > 0 {
@@ -963,8 +1011,47 @@ impl Screen for DetailScreen {
                         }
                         ScreenAction::None
                     }
+                    DetailSubView::Defaults => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        if let Some(ref mut config) = cache.defaults_config {
+                            let entries = build_defaults_entries(config);
+                            let selected = cache.defaults_selected;
+                            if selected < entries.len() {
+                                let entry = &entries[selected];
+                                let mutated = mutate_config_entry(config, entry.key, &entry.kind);
+                                if mutated {
+                                    // Write back to disk
+                                    if let Some(project) = ctx.config.projects.get(&self.alias) {
+                                        let config_path = project.path.join(".planning/config.json");
+                                        if let Ok(json) = crate::state_reader::config_json::serialize_gsd_config(config) {
+                                            let _ = std::fs::write(&config_path, &json);
+                                            ctx.status_message = Some(("Config saved".to_string(), std::time::Instant::now()));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        ctx.needs_redraw = true;
+                        ScreenAction::None
+                    }
                     _ => ScreenAction::None,
                 }
+            }
+            // 'r' key: reload config (Defaults tab only)
+            KeyCode::Char('r') if current_view == DetailSubView::Defaults => {
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                if let Some(project) = ctx.config.projects.get(&self.alias) {
+                    let config_path = project.path.join(".planning/config.json");
+                    if let Ok(content) = std::fs::read_to_string(&config_path) {
+                        cache.defaults_config =
+                            crate::state_reader::config_json::parse_gsd_config(&content);
+                    } else {
+                        cache.defaults_config = None;
+                    }
+                }
+                ctx.status_message = Some(("Config reloaded".to_string(), std::time::Instant::now()));
+                ctx.needs_redraw = true;
+                ScreenAction::None
             }
             // 'n' key: launch new Claude session (Sessions tab only)
             KeyCode::Char('n') if current_view == DetailSubView::Sessions => {
@@ -1319,6 +1406,7 @@ impl Screen for DetailScreen {
             DetailSubView::Queue => self.render_queue_tab(frame, content_area, ctx),
             DetailSubView::Sessions => self.render_sessions_tab(frame, content_area, ctx),
             DetailSubView::Archive => self.render_archive_tab(frame, content_area, ctx),
+            DetailSubView::Defaults => self.render_defaults_tab(frame, content_area, ctx),
         }
 
         // Render footer with tab-appropriate hints
@@ -2346,7 +2434,81 @@ impl DetailScreen {
             DetailSubView::Queue => self.render_queue_tab(frame, content_area, ctx),
             DetailSubView::Sessions => self.render_sessions_tab(frame, content_area, ctx),
             DetailSubView::Archive => self.render_archive_tab(frame, content_area, ctx),
+            DetailSubView::Defaults => self.render_defaults_tab(frame, content_area, ctx),
         }
+    }
+
+    fn render_defaults_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        let cache = ctx.view_cache.get(&self.alias);
+        let config = cache.and_then(|c| c.defaults_config.as_ref());
+        let selected = cache.map(|c| c.defaults_selected).unwrap_or(0);
+
+        let config = match config {
+            Some(c) => c,
+            None => {
+                let msg = Paragraph::new("  No config loaded (project may not have .planning/config.json)")
+                    .style(Style::default().fg(Color::DarkGray));
+                frame.render_widget(msg, area);
+                return;
+            }
+        };
+
+        let entries = build_defaults_entries(config);
+        let items: Vec<ListItem> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                let cat_span = if entry.show_category {
+                    Span::styled(
+                        format!("{:<10}", entry.category),
+                        Style::default().fg(Color::DarkGray),
+                    )
+                } else {
+                    Span::raw("          ")
+                };
+                let key_span = Span::styled(
+                    format!("{:<30}", entry.key),
+                    Style::default().fg(Color::White),
+                );
+                let val_style = match entry.kind {
+                    ConfigValueKind::Bool => {
+                        if entry.value == "true" {
+                            Style::default().fg(Color::Green)
+                        } else if entry.value == "false" {
+                            Style::default().fg(Color::Red)
+                        } else {
+                            Style::default().fg(Color::DarkGray)
+                        }
+                    }
+                    ConfigValueKind::Null => Style::default().fg(Color::DarkGray),
+                    _ => Style::default().fg(Color::Yellow),
+                };
+                let val_span = Span::styled(&entry.value, val_style);
+                let line = Line::from(vec![
+                    Span::raw("  "),
+                    cat_span,
+                    Span::raw(" "),
+                    key_span,
+                    val_span,
+                ]);
+                let item = ListItem::new(line);
+                if i == selected {
+                    item.style(Style::default().bg(Color::DarkGray).fg(Color::Cyan))
+                } else {
+                    item
+                }
+            })
+            .collect();
+
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::TOP)
+                .title(" Config Settings "),
+        );
+
+        let mut list_state = ListState::default();
+        list_state.select(Some(selected));
+        frame.render_stateful_widget(list, area, &mut list_state);
     }
 }
 
@@ -2495,7 +2657,7 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
         Span::raw("  "),
         Span::styled("[Esc]", b),
         Span::raw("back  "),
-        Span::styled("[1-8]", b),
+        Span::styled("[1-9]", b),
         Span::raw("tabs  "),
         Span::styled("[j/k]", b),
         Span::raw("scroll  "),
@@ -2538,6 +2700,12 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
             spans.push(Span::styled("[e]", b));
             spans.push(Span::raw("dit  "));
         }
+        DetailSubView::Defaults => {
+            spans.push(Span::styled("[Enter]", b));
+            spans.push(Span::raw("toggle/cycle  "));
+            spans.push(Span::styled("[r]", b));
+            spans.push(Span::raw("eload  "));
+        }
         _ => {
             spans.push(Span::styled("[e]", b));
             spans.push(Span::raw("nqueue  "));
@@ -2548,4 +2716,237 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
     spans.push(Span::raw("help"));
 
     Paragraph::new(Line::from(spans))
+}
+
+// --- Defaults tab helpers ---
+
+#[derive(Debug, Clone)]
+enum ConfigValueKind {
+    Bool,
+    Enum(&'static [&'static str]),
+    String,
+    Integer,
+    Null,
+}
+
+struct ConfigEntry {
+    category: &'static str,
+    key: &'static str,
+    value: String,
+    kind: ConfigValueKind,
+    show_category: bool,
+}
+
+fn opt_bool_display(v: &Option<bool>) -> (String, ConfigValueKind) {
+    match v {
+        Some(b) => (b.to_string(), ConfigValueKind::Bool),
+        None => ("(unset)".to_string(), ConfigValueKind::Null),
+    }
+}
+
+fn opt_str_display(v: &Option<String>) -> (String, ConfigValueKind) {
+    match v {
+        Some(s) => (s.clone(), ConfigValueKind::String),
+        None => ("(unset)".to_string(), ConfigValueKind::Null),
+    }
+}
+
+fn opt_u32_display(v: &Option<u32>) -> (String, ConfigValueKind) {
+    match v {
+        Some(n) => (n.to_string(), ConfigValueKind::Integer),
+        None => ("(unset)".to_string(), ConfigValueKind::Null),
+    }
+}
+
+fn build_defaults_entries(config: &crate::state_reader::config_json::GsdConfig) -> Vec<ConfigEntry> {
+    let mut entries = Vec::new();
+    let mut push = |cat: &'static str, key: &'static str, value: String, kind: ConfigValueKind, first: bool| {
+        entries.push(ConfigEntry {
+            category: cat,
+            key,
+            value,
+            kind,
+            show_category: first,
+        });
+    };
+
+    // General
+    let cat = "General";
+    push(cat, "mode", config.mode.clone(), ConfigValueKind::Enum(&["yolo", "normal"]), true);
+    push(cat, "granularity", config.granularity.clone(), ConfigValueKind::Enum(&["coarse", "standard", "fine"]), false);
+    push(cat, "model_profile", config.model_profile.clone(), ConfigValueKind::Enum(&["quality", "balanced", "budget"]), false);
+    let (v, k) = opt_bool_display(&config.commit_docs);
+    push(cat, "commit_docs", v, k, false);
+    let (v, k) = opt_bool_display(&config.parallelization);
+    push(cat, "parallelization", v, k, false);
+    let (v, k) = opt_str_display(&config.project_code);
+    push(cat, "project_code", v, k, false);
+    let (v, k) = opt_str_display(&config.phase_naming);
+    push(cat, "phase_naming", v, k, false);
+    let (v, k) = opt_str_display(&config.response_language);
+    push(cat, "response_language", v, k, false);
+
+    // Search
+    let cat = "Search";
+    let (v, k) = opt_bool_display(&config.search_gitignored);
+    push(cat, "search_gitignored", v, k, true);
+    let (v, k) = opt_bool_display(&config.brave_search);
+    push(cat, "brave_search", v, k, false);
+    let (v, k) = opt_bool_display(&config.firecrawl);
+    push(cat, "firecrawl", v, k, false);
+    let (v, k) = opt_bool_display(&config.exa_search);
+    push(cat, "exa_search", v, k, false);
+
+    // Git
+    let cat = "Git";
+    let git = config.git.as_ref();
+    let (v, k) = match git.and_then(|g| g.branching_strategy.as_ref()) {
+        Some(s) => (s.clone(), ConfigValueKind::Enum(&["none", "phase", "milestone"])),
+        None => ("(unset)".to_string(), ConfigValueKind::Null),
+    };
+    push(cat, "branching_strategy", v, k, true);
+    let (v, k) = opt_str_display(&git.and_then(|g| g.base_branch.clone()));
+    push(cat, "base_branch", v, k, false);
+    let (v, k) = opt_str_display(&git.and_then(|g| g.phase_branch_template.clone()));
+    push(cat, "phase_branch_template", v, k, false);
+    let (v, k) = opt_str_display(&git.and_then(|g| g.milestone_branch_template.clone()));
+    push(cat, "milestone_branch_template", v, k, false);
+    let qbt_val = git.and_then(|g| g.quick_branch_template.as_ref()).map(|v| v.to_string()).unwrap_or("(unset)".to_string());
+    let qbt_kind = if qbt_val == "(unset)" { ConfigValueKind::Null } else { ConfigValueKind::String };
+    push(cat, "quick_branch_template", qbt_val, qbt_kind, false);
+
+    // Workflow
+    let cat = "Workflow";
+    let wf = config.workflow.as_ref();
+    let (v, k) = opt_bool_display(&wf.and_then(|w| w.research));
+    push(cat, "research", v, k, true);
+    let (v, k) = opt_bool_display(&wf.and_then(|w| w.plan_check));
+    push(cat, "plan_check", v, k, false);
+    let (v, k) = opt_bool_display(&wf.and_then(|w| w.verifier));
+    push(cat, "verifier", v, k, false);
+    let (v, k) = opt_bool_display(&wf.and_then(|w| w.nyquist_validation));
+    push(cat, "nyquist_validation", v, k, false);
+    let (v, k) = opt_bool_display(&wf.and_then(|w| w.auto_advance));
+    push(cat, "auto_advance", v, k, false);
+    let (v, k) = opt_bool_display(&wf.and_then(|w| w.node_repair));
+    push(cat, "node_repair", v, k, false);
+    let (v, k) = opt_u32_display(&wf.and_then(|w| w.node_repair_budget));
+    push(cat, "node_repair_budget", v, k, false);
+    let (v, k) = opt_bool_display(&wf.and_then(|w| w.ui_phase));
+    push(cat, "ui_phase", v, k, false);
+    let (v, k) = opt_bool_display(&wf.and_then(|w| w.ui_safety_gate));
+    push(cat, "ui_safety_gate", v, k, false);
+    let (v, k) = opt_bool_display(&wf.and_then(|w| w.text_mode));
+    push(cat, "text_mode", v, k, false);
+    let (v, k) = opt_bool_display(&wf.and_then(|w| w.research_before_questions));
+    push(cat, "research_before_questions", v, k, false);
+    let (v, k) = match wf.and_then(|w| w.discuss_mode.as_ref()) {
+        Some(s) => (s.clone(), ConfigValueKind::Enum(&["discuss", "skip", "auto"])),
+        None => ("(unset)".to_string(), ConfigValueKind::Null),
+    };
+    push(cat, "discuss_mode", v, k, false);
+    let (v, k) = opt_bool_display(&wf.and_then(|w| w.skip_discuss));
+    push(cat, "skip_discuss", v, k, false);
+    let (v, k) = opt_bool_display(&wf.and_then(|w| w.auto_chain_active));
+    push(cat, "auto_chain_active", v, k, false);
+    let (v, k) = opt_bool_display(&wf.and_then(|w| w.use_worktrees));
+    push(cat, "use_worktrees", v, k, false);
+    let (v, k) = opt_u32_display(&wf.and_then(|w| w.subagent_timeout));
+    push(cat, "subagent_timeout", v, k, false);
+
+    // Hooks
+    let cat = "Hooks";
+    let (v, k) = opt_bool_display(&config.hooks.as_ref().and_then(|h| h.context_warnings));
+    push(cat, "context_warnings", v, k, true);
+
+    entries
+}
+
+fn defaults_entry_count(config: &Option<crate::state_reader::config_json::GsdConfig>) -> usize {
+    match config {
+        Some(c) => build_defaults_entries(c).len(),
+        None => 0,
+    }
+}
+
+/// Mutate the config field identified by `key`. Returns true if a mutation was made.
+fn mutate_config_entry(
+    config: &mut crate::state_reader::config_json::GsdConfig,
+    key: &str,
+    kind: &ConfigValueKind,
+) -> bool {
+    use crate::state_reader::config_json::*;
+
+    match kind {
+        ConfigValueKind::Null => false, // Cannot toggle unset values without initializing parent
+        ConfigValueKind::String => false, // String editing not supported via Enter
+        ConfigValueKind::Bool => {
+            // Toggle the boolean field
+            match key {
+                "commit_docs" => { config.commit_docs = Some(!config.commit_docs.unwrap_or(false)); true }
+                "parallelization" => { config.parallelization = Some(!config.parallelization.unwrap_or(false)); true }
+                "search_gitignored" => { config.search_gitignored = Some(!config.search_gitignored.unwrap_or(false)); true }
+                "brave_search" => { config.brave_search = Some(!config.brave_search.unwrap_or(false)); true }
+                "firecrawl" => { config.firecrawl = Some(!config.firecrawl.unwrap_or(false)); true }
+                "exa_search" => { config.exa_search = Some(!config.exa_search.unwrap_or(false)); true }
+                "research" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.research = Some(!wf.research.unwrap_or(false)); true }
+                "plan_check" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.plan_check = Some(!wf.plan_check.unwrap_or(false)); true }
+                "verifier" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.verifier = Some(!wf.verifier.unwrap_or(false)); true }
+                "nyquist_validation" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.nyquist_validation = Some(!wf.nyquist_validation.unwrap_or(false)); true }
+                "auto_advance" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.auto_advance = Some(!wf.auto_advance.unwrap_or(false)); true }
+                "node_repair" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.node_repair = Some(!wf.node_repair.unwrap_or(false)); true }
+                "ui_phase" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.ui_phase = Some(!wf.ui_phase.unwrap_or(false)); true }
+                "ui_safety_gate" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.ui_safety_gate = Some(!wf.ui_safety_gate.unwrap_or(false)); true }
+                "text_mode" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.text_mode = Some(!wf.text_mode.unwrap_or(false)); true }
+                "research_before_questions" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.research_before_questions = Some(!wf.research_before_questions.unwrap_or(false)); true }
+                "skip_discuss" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.skip_discuss = Some(!wf.skip_discuss.unwrap_or(false)); true }
+                "auto_chain_active" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.auto_chain_active = Some(!wf.auto_chain_active.unwrap_or(false)); true }
+                "use_worktrees" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.use_worktrees = Some(!wf.use_worktrees.unwrap_or(false)); true }
+                "context_warnings" => { let hooks = config.hooks.get_or_insert_with(HooksConfig::default); hooks.context_warnings = Some(!hooks.context_warnings.unwrap_or(false)); true }
+                _ => false,
+            }
+        }
+        ConfigValueKind::Enum(options) => {
+            let cycle = |current: &str| -> String {
+                let idx = options.iter().position(|&o| o == current).unwrap_or(0);
+                let next = (idx + 1) % options.len();
+                options[next].to_string()
+            };
+            match key {
+                "mode" => { config.mode = cycle(&config.mode); true }
+                "granularity" => { config.granularity = cycle(&config.granularity); true }
+                "model_profile" => { config.model_profile = cycle(&config.model_profile); true }
+                "branching_strategy" => {
+                    let git = config.git.get_or_insert_with(GitConfig::default);
+                    let current = git.branching_strategy.as_deref().unwrap_or("none");
+                    git.branching_strategy = Some(cycle(current));
+                    true
+                }
+                "discuss_mode" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    let current = wf.discuss_mode.as_deref().unwrap_or("discuss");
+                    wf.discuss_mode = Some(cycle(current));
+                    true
+                }
+                _ => false,
+            }
+        }
+        ConfigValueKind::Integer => {
+            match key {
+                "node_repair_budget" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    let current = wf.node_repair_budget.unwrap_or(0);
+                    wf.node_repair_budget = Some(if current >= 10 { 0 } else { current + 1 });
+                    true
+                }
+                "subagent_timeout" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    let current = wf.subagent_timeout.unwrap_or(0);
+                    wf.subagent_timeout = Some(if current >= 600 { 60 } else { current + 30 });
+                    true
+                }
+                _ => false,
+            }
+        }
+    }
 }
