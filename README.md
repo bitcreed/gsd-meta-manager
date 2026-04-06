@@ -48,14 +48,28 @@ The binary is at `target/release/gsd-meta-manager`.
 
 ## Usage
 
-Launch the manager:
+Launch the manager with `gsd-meta-manager`
 
 ```sh
-gsd-meta-manager
+gsd-meta-manager --help
+TUI command center for GSD projects
+
+Usage: gsd-meta-manager [OPTIONS] [COMMAND]
+
+Commands:
+  add     Add a GSD project to the registry
+  remove  Remove a project from the registry
+  list    List all registered projects
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --config <CONFIG>  Path to config file (overrides default location)
+  -h, --help             Print help
 ```
 
 Register a project by pressing `a` and entering the path to a GSD project
-directory (any directory containing a `.planning/` folder).
+directory (any directory containing a `.planning/` folder) or by using the
+command line option `gsd-meta-manager add <path> [alias]`
 
 ### Key Bindings
 
