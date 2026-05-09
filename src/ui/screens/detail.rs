@@ -2210,6 +2210,7 @@ impl DetailScreen {
                 let stage_statuses = derive_all_stage_statuses(inf);
                 let pipeline_line = build_pipeline_line(inf, &stage_statuses);
                 let detail_lines = build_stage_detail_lines(inf, &stage_statuses);
+                let substage_lines = build_substage_lines(inf);
 
                 let mut lines: Vec<Line> = Vec::new();
                 lines.push(Line::from(format!(
@@ -2221,6 +2222,12 @@ impl DetailScreen {
                 lines.push(Line::from(""));
                 for dl in detail_lines {
                     lines.push(dl);
+                }
+                if !substage_lines.is_empty() {
+                    lines.push(Line::from(""));
+                    for sl in substage_lines {
+                        lines.push(sl);
+                    }
                 }
 
                 let paragraph = Paragraph::new(lines);
@@ -2974,6 +2981,68 @@ fn build_stage_detail_lines(
     lines
 }
 
+/// Build sub-stage status lines for the Plan and Execute parent stages.
+/// Each sub-stage is detected by the presence of a specific artifact.
+/// We only render a parent group's lines once that parent has any artifact
+/// on disk — otherwise the section stays collapsed to avoid noise on
+/// not-yet-touched phases.
+fn build_substage_lines(inf: &DiskInference) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = Vec::new();
+
+    let plan_touched = inf.has_plans
+        || inf.has_patterns
+        || inf.has_plan_check
+        || inf.has_validation
+        || inf.has_ui_spec
+        || inf.has_ui_check
+        || inf.has_ai_spec;
+    if plan_touched {
+        lines.push(Line::from(Span::styled(
+            "  Plan sub-stages:",
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+        )));
+        push_substage(&mut lines, "Patterns", inf.has_patterns);
+        push_substage(&mut lines, "UI-Spec", inf.has_ui_spec);
+        push_substage(&mut lines, "AI-Spec", inf.has_ai_spec);
+        push_substage(&mut lines, "Plan-Check", inf.has_plan_check);
+        push_substage(&mut lines, "UI-Check", inf.has_ui_check);
+        push_substage(&mut lines, "Nyquist", inf.has_validation);
+    }
+
+    let exec_touched = inf.summary_count > 0 || inf.has_review || inf.has_ui_review;
+    if exec_touched {
+        if plan_touched {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(Span::styled(
+            "  Execute sub-stages:",
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+        )));
+        push_substage(&mut lines, "Code Review", inf.has_review);
+        push_substage(&mut lines, "UI Review", inf.has_ui_review);
+    }
+
+    lines
+}
+
+fn push_substage(lines: &mut Vec<Line<'static>>, label: &'static str, present: bool) {
+    let (marker, color) = if present {
+        ("✓", Color::Green)
+    } else {
+        ("○", Color::DarkGray)
+    };
+    lines.push(Line::from(vec![
+        Span::raw("    "),
+        Span::styled(marker.to_string(), Style::default().fg(color)),
+        Span::raw(" "),
+        Span::styled(format!("{:<14}", label), Style::default().fg(Color::White)),
+        Span::styled(
+            if present { "done" } else { "not run" },
+            Style::default().fg(color),
+        ),
+    ]));
+}
+
 /// Build the footer line with tab-appropriate key hints.
 fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
     let b = Style::default().add_modifier(Modifier::BOLD);
@@ -3026,7 +3095,11 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
         }
         DetailSubView::Defaults => {
             spans.push(Span::styled("[Enter]", b));
-            spans.push(Span::raw("toggle/cycle  "));
+            spans.push(Span::raw("edit  "));
+            spans.push(Span::styled("[x]", b));
+            spans.push(Span::raw(" clear  "));
+            spans.push(Span::styled("[d]", b));
+            spans.push(Span::raw(" defaults  "));
             spans.push(Span::styled("[r]", b));
             spans.push(Span::raw("eload  "));
         }

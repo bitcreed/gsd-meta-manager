@@ -22,6 +22,15 @@ pub struct DiskInference {
     pub has_context: bool,
     pub has_research: bool,
     pub has_verification: bool,
+    /// Sub-stage artifacts (per /gsd-settings Planning + Execution toggles).
+    pub has_patterns: bool,
+    pub has_plan_check: bool,
+    pub has_validation: bool,
+    pub has_ui_spec: bool,
+    pub has_ui_check: bool,
+    pub has_ai_spec: bool,
+    pub has_review: bool,
+    pub has_ui_review: bool,
 }
 
 /// Infer the GSD status of a phase directory by scanning its file artifacts.
@@ -57,6 +66,14 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     let mut has_context = false;
     let mut has_research = false;
     let mut has_verification = false;
+    let mut has_patterns = false;
+    let mut has_plan_check = false;
+    let mut has_validation = false;
+    let mut has_ui_spec = false;
+    let mut has_ui_check = false;
+    let mut has_ai_spec = false;
+    let mut has_review = false;
+    let mut has_ui_review = false;
 
     for entry in entries.flatten() {
         let name = match entry.file_name().into_string() {
@@ -69,7 +86,42 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
             continue;
         }
 
-        // Match PLAN.md or *-PLAN.md
+        // Skip review (UI-REVIEW vs REVIEW) and validate before generic SUMMARY/PLAN
+        // matches so we don't double-count.
+        if name == "UI-REVIEW.md" || name.ends_with("-UI-REVIEW.md") {
+            has_ui_review = true;
+            continue;
+        }
+        if name == "REVIEW.md" || name.ends_with("-REVIEW.md") {
+            has_review = true;
+            continue;
+        }
+        if name == "UI-SPEC.md" || name.ends_with("-UI-SPEC.md") {
+            has_ui_spec = true;
+            continue;
+        }
+        if name == "UI-CHECK.md" || name.ends_with("-UI-CHECK.md") {
+            has_ui_check = true;
+            continue;
+        }
+        if name == "AI-SPEC.md" || name.ends_with("-AI-SPEC.md") {
+            has_ai_spec = true;
+            continue;
+        }
+        if name == "PATTERNS.md" || name.ends_with("-PATTERNS.md") {
+            has_patterns = true;
+            continue;
+        }
+        if name == "PLAN-CHECK.md" || name.ends_with("-PLAN-CHECK.md") {
+            has_plan_check = true;
+            continue;
+        }
+        if name == "VALIDATION.md" || name.ends_with("-VALIDATION.md") {
+            has_validation = true;
+            continue;
+        }
+
+        // Match PLAN.md or *-PLAN.md (after PLAN-CHECK is filtered above)
         if name == "PLAN.md" || name.ends_with("-PLAN.md") {
             plan_count += 1;
         }
@@ -119,6 +171,14 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         has_context,
         has_research,
         has_verification,
+        has_patterns,
+        has_plan_check,
+        has_validation,
+        has_ui_spec,
+        has_ui_check,
+        has_ai_spec,
+        has_review,
+        has_ui_review,
     }
 }
 
