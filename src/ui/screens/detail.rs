@@ -246,6 +246,7 @@ fn switch_to_tab(
         }
         cache.defaults_selected = 0;
         cache.defaults_editing = None;
+        cache.defaults_dropdown_selected = 0;
     }
 
     // Load milestone list for archive tab on first visit
@@ -364,6 +365,16 @@ impl Screen for DetailScreen {
                         return ScreenAction::None;
                     }
                 }
+                // If a config dropdown is open on the Defaults tab, close it first
+                if current_view == DetailSubView::Defaults {
+                    let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                    if cache.defaults_editing.is_some() {
+                        cache.defaults_editing = None;
+                        cache.defaults_dropdown_selected = 0;
+                        ctx.needs_redraw = true;
+                        return ScreenAction::None;
+                    }
+                }
                 self.scroll_offset = 0;
                 ctx.needs_redraw = true;
                 ScreenAction::Pop
@@ -462,10 +473,25 @@ impl Screen for DetailScreen {
                     }
                     DetailSubView::Defaults => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        let entry_count = defaults_entry_count(&cache.defaults_config);
-                        if entry_count > 0 {
-                            let max = entry_count.saturating_sub(1);
-                            cache.defaults_selected = (cache.defaults_selected + 1).min(max);
+                        if let Some(editing_idx) = cache.defaults_editing {
+                            // Move dropdown cursor down
+                            if let Some(ref config) = cache.defaults_config {
+                                let entries = build_defaults_entries(config);
+                                if let Some(entry) = entries.get(editing_idx) {
+                                    let options = dropdown_options(&entry.kind);
+                                    if !options.is_empty() {
+                                        let max = options.len() - 1;
+                                        cache.defaults_dropdown_selected =
+                                            (cache.defaults_dropdown_selected + 1).min(max);
+                                    }
+                                }
+                            }
+                        } else {
+                            let entry_count = defaults_entry_count(&cache.defaults_config);
+                            if entry_count > 0 {
+                                let max = entry_count.saturating_sub(1);
+                                cache.defaults_selected = (cache.defaults_selected + 1).min(max);
+                            }
                         }
                         ctx.needs_redraw = true;
                     }
@@ -532,7 +558,12 @@ impl Screen for DetailScreen {
                     }
                     DetailSubView::Defaults => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        cache.defaults_selected = cache.defaults_selected.saturating_sub(1);
+                        if cache.defaults_editing.is_some() {
+                            cache.defaults_dropdown_selected =
+                                cache.defaults_dropdown_selected.saturating_sub(1);
+                        } else {
+                            cache.defaults_selected = cache.defaults_selected.saturating_sub(1);
+                        }
                         ctx.needs_redraw = true;
                     }
                     _ => {
@@ -1013,19 +1044,51 @@ impl Screen for DetailScreen {
                     }
                     DetailSubView::Defaults => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        if let Some(ref mut config) = cache.defaults_config {
+                        if let Some(editing_idx) = cache.defaults_editing {
+                            // Dropdown is open — Enter applies the selected option.
+                            if let Some(ref mut config) = cache.defaults_config {
+                                let entries = build_defaults_entries(config);
+                                if let Some(entry) = entries.get(editing_idx) {
+                                    let options = dropdown_options(&entry.kind);
+                                    let dropdown_idx = cache.defaults_dropdown_selected.min(options.len().saturating_sub(1));
+                                    if let Some(value) = options.get(dropdown_idx) {
+                                        let applied = set_config_value(config, entry.key, value);
+                                        if applied {
+                                            if let Some(project) = ctx.config.projects.get(&self.alias) {
+                                                let config_path = project.path.join(".planning/config.json");
+                                                if let Ok(json) = crate::state_reader::config_json::serialize_gsd_config(config) {
+                                                    let _ = std::fs::write(&config_path, &json);
+                                                    ctx.status_message = Some(("Config saved".to_string(), std::time::Instant::now()));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            cache.defaults_editing = None;
+                            cache.defaults_dropdown_selected = 0;
+                        } else if let Some(ref config) = cache.defaults_config {
                             let entries = build_defaults_entries(config);
                             let selected = cache.defaults_selected;
-                            if selected < entries.len() {
-                                let entry = &entries[selected];
-                                let mutated = mutate_config_entry(config, entry.key, &entry.kind);
-                                if mutated {
-                                    // Write back to disk
-                                    if let Some(project) = ctx.config.projects.get(&self.alias) {
-                                        let config_path = project.path.join(".planning/config.json");
-                                        if let Ok(json) = crate::state_reader::config_json::serialize_gsd_config(config) {
-                                            let _ = std::fs::write(&config_path, &json);
-                                            ctx.status_message = Some(("Config saved".to_string(), std::time::Instant::now()));
+                            if let Some(entry) = entries.get(selected) {
+                                let options = dropdown_options(&entry.kind);
+                                if !options.is_empty() {
+                                    // Open dropdown, position cursor on current value
+                                    let current_idx = options.iter().position(|o| o == &entry.value).unwrap_or(0);
+                                    cache.defaults_editing = Some(selected);
+                                    cache.defaults_dropdown_selected = current_idx;
+                                } else if matches!(entry.kind, ConfigValueKind::Integer) {
+                                    // Integers have no fixed list — keep cycling behavior.
+                                    if let Some(ref mut config) = cache.defaults_config {
+                                        let mutated = mutate_config_entry(config, entry.key, &entry.kind);
+                                        if mutated {
+                                            if let Some(project) = ctx.config.projects.get(&self.alias) {
+                                                let config_path = project.path.join(".planning/config.json");
+                                                if let Ok(json) = crate::state_reader::config_json::serialize_gsd_config(config) {
+                                                    let _ = std::fs::write(&config_path, &json);
+                                                    ctx.status_message = Some(("Config saved".to_string(), std::time::Instant::now()));
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -2509,6 +2572,65 @@ impl DetailScreen {
         let mut list_state = ListState::default();
         list_state.select(Some(selected));
         frame.render_stateful_widget(list, area, &mut list_state);
+
+        // Render dropdown overlay if editing
+        if let Some(cache) = cache {
+            if let Some(editing_idx) = cache.defaults_editing {
+                if let Some(entry) = entries.get(editing_idx) {
+                    let options = dropdown_options(&entry.kind);
+                    if !options.is_empty() {
+                        let dropdown_idx =
+                            cache.defaults_dropdown_selected.min(options.len() - 1);
+                        let title = format!(" {} ", entry.key);
+                        let max_opt_width = options.iter().map(|s| s.len()).max().unwrap_or(0);
+                        let inner_w = max_opt_width.max(title.len() + 2).max(20) as u16;
+                        let popup_w = (inner_w + 4).min(area.width.saturating_sub(2));
+                        let popup_h = (options.len() as u16 + 2).min(area.height.saturating_sub(2));
+                        let popup_x =
+                            area.x + (area.width.saturating_sub(popup_w)) / 2;
+                        let popup_y =
+                            area.y + (area.height.saturating_sub(popup_h)) / 2;
+                        let popup_area = Rect {
+                            x: popup_x,
+                            y: popup_y,
+                            width: popup_w,
+                            height: popup_h,
+                        };
+
+                        // Clear underneath the popup so the list doesn't bleed through
+                        frame.render_widget(ratatui::widgets::Clear, popup_area);
+
+                        let opt_items: Vec<ListItem> = options
+                            .iter()
+                            .enumerate()
+                            .map(|(i, opt)| {
+                                let style = if i == dropdown_idx {
+                                    Style::default()
+                                        .bg(Color::Cyan)
+                                        .fg(Color::Black)
+                                        .add_modifier(Modifier::BOLD)
+                                } else {
+                                    Style::default().fg(Color::White)
+                                };
+                                let marker = if opt == &entry.value { "● " } else { "  " };
+                                ListItem::new(Line::from(vec![
+                                    Span::raw(marker),
+                                    Span::raw(opt.clone()),
+                                ]))
+                                .style(style)
+                            })
+                            .collect();
+                        let popup = List::new(opt_items).block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .border_style(Style::default().fg(Color::Cyan))
+                                .title(title),
+                        );
+                        frame.render_widget(popup, popup_area);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2772,9 +2894,9 @@ fn build_defaults_entries(config: &crate::state_reader::config_json::GsdConfig) 
 
     // General
     let cat = "General";
-    push(cat, "mode", config.mode.clone(), ConfigValueKind::Enum(&["yolo", "normal"]), true);
+    push(cat, "mode", config.mode.clone(), ConfigValueKind::Enum(&["interactive", "yolo"]), true);
     push(cat, "granularity", config.granularity.clone(), ConfigValueKind::Enum(&["coarse", "standard", "fine"]), false);
-    push(cat, "model_profile", config.model_profile.clone(), ConfigValueKind::Enum(&["quality", "balanced", "budget"]), false);
+    push(cat, "model_profile", config.model_profile.clone(), ConfigValueKind::Enum(&["quality", "balanced", "budget", "inherit"]), false);
     let (v, k) = opt_bool_display(&config.commit_docs);
     push(cat, "commit_docs", v, k, false);
     let (v, k) = opt_bool_display(&config.parallelization);
@@ -2841,7 +2963,7 @@ fn build_defaults_entries(config: &crate::state_reader::config_json::GsdConfig) 
     let (v, k) = opt_bool_display(&wf.and_then(|w| w.research_before_questions));
     push(cat, "research_before_questions", v, k, false);
     let (v, k) = match wf.and_then(|w| w.discuss_mode.as_ref()) {
-        Some(s) => (s.clone(), ConfigValueKind::Enum(&["discuss", "skip", "auto"])),
+        Some(s) => (s.clone(), ConfigValueKind::Enum(&["discuss", "assumptions"])),
         None => ("(unset)".to_string(), ConfigValueKind::Null),
     };
     push(cat, "discuss_mode", v, k, false);
@@ -2866,6 +2988,74 @@ fn defaults_entry_count(config: &Option<crate::state_reader::config_json::GsdCon
     match config {
         Some(c) => build_defaults_entries(c).len(),
         None => 0,
+    }
+}
+
+/// Returns the list of selectable values for an entry's kind, or empty if the
+/// list is not statically known (e.g. free-form strings, integers).
+fn dropdown_options(kind: &ConfigValueKind) -> Vec<String> {
+    match kind {
+        ConfigValueKind::Bool => vec!["true".to_string(), "false".to_string()],
+        ConfigValueKind::Enum(opts) => opts.iter().map(|s| s.to_string()).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Set a bool/enum config field to a specific value (selected from a dropdown).
+/// Returns true if the field was recognized and updated.
+fn set_config_value(
+    config: &mut crate::state_reader::config_json::GsdConfig,
+    key: &str,
+    value: &str,
+) -> bool {
+    use crate::state_reader::config_json::*;
+
+    let parse_bool = |v: &str| match v {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    };
+
+    if let Some(b) = parse_bool(value) {
+        match key {
+            "commit_docs" => { config.commit_docs = Some(b); return true; }
+            "parallelization" => { config.parallelization = Some(b); return true; }
+            "search_gitignored" => { config.search_gitignored = Some(b); return true; }
+            "brave_search" => { config.brave_search = Some(b); return true; }
+            "firecrawl" => { config.firecrawl = Some(b); return true; }
+            "exa_search" => { config.exa_search = Some(b); return true; }
+            "research" => { config.workflow.get_or_insert_with(WorkflowConfig::default).research = Some(b); return true; }
+            "plan_check" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_check = Some(b); return true; }
+            "verifier" => { config.workflow.get_or_insert_with(WorkflowConfig::default).verifier = Some(b); return true; }
+            "nyquist_validation" => { config.workflow.get_or_insert_with(WorkflowConfig::default).nyquist_validation = Some(b); return true; }
+            "auto_advance" => { config.workflow.get_or_insert_with(WorkflowConfig::default).auto_advance = Some(b); return true; }
+            "node_repair" => { config.workflow.get_or_insert_with(WorkflowConfig::default).node_repair = Some(b); return true; }
+            "ui_phase" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_phase = Some(b); return true; }
+            "ui_safety_gate" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_safety_gate = Some(b); return true; }
+            "text_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).text_mode = Some(b); return true; }
+            "research_before_questions" => { config.workflow.get_or_insert_with(WorkflowConfig::default).research_before_questions = Some(b); return true; }
+            "skip_discuss" => { config.workflow.get_or_insert_with(WorkflowConfig::default).skip_discuss = Some(b); return true; }
+            "auto_chain_active" => { config.workflow.get_or_insert_with(WorkflowConfig::default).auto_chain_active = Some(b); return true; }
+            "use_worktrees" => { config.workflow.get_or_insert_with(WorkflowConfig::default).use_worktrees = Some(b); return true; }
+            "context_warnings" => { config.hooks.get_or_insert_with(HooksConfig::default).context_warnings = Some(b); return true; }
+            _ => {}
+        }
+    }
+
+    // Enum string values
+    match key {
+        "mode" => { config.mode = value.to_string(); true }
+        "granularity" => { config.granularity = value.to_string(); true }
+        "model_profile" => { config.model_profile = value.to_string(); true }
+        "branching_strategy" => {
+            config.git.get_or_insert_with(GitConfig::default).branching_strategy = Some(value.to_string());
+            true
+        }
+        "discuss_mode" => {
+            config.workflow.get_or_insert_with(WorkflowConfig::default).discuss_mode = Some(value.to_string());
+            true
+        }
+        _ => false,
     }
 }
 

@@ -71,7 +71,10 @@ pub struct ProjectViewCache {
     pub archive_file_name: Option<String>,
     pub defaults_config: Option<crate::state_reader::config_json::GsdConfig>,
     pub defaults_selected: usize,
+    /// When `Some(entry_idx)`, a dropdown is open for that entry.
     pub defaults_editing: Option<usize>,
+    /// Cursor position inside the open dropdown.
+    pub defaults_dropdown_selected: usize,
 }
 
 pub struct AppContext {
