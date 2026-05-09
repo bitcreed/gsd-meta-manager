@@ -95,6 +95,7 @@ None yet.
 | 260405-urb | Write a README.md for GitHub | 2026-04-06 | d0130d8 | [260405-urb](./quick/260405-urb-write-a-readme-md-for-github/) |
 | 260509-k9m | Extend Defaults tab: intel/graphify keys, text input, x-to-clear | 2026-05-09 | 3d77fa5 | [260509-k9m](./quick/260509-k9m-extend-defaults-tab-text-input-and-clear/) |
 | 260509-zh2 | Defaults layering (~/.gsd/defaults.json), six-section layout, [d] toggle, pipeline sub-stage drill-down | 2026-05-09 | 75e80c2 | [260509-zh2](./quick/260509-zh2-defaults-layering-six-sections-pipeline/) |
+| 260509-t8m | Tab-to-switch into a Claude session via tmux (overview + Sessions tab) | 2026-05-09 | ed1f3b2 | [260509-t8m](./quick/260509-t8m-tab-to-switch-to-tmux-session/) |
 
 ## Session Continuity
 
