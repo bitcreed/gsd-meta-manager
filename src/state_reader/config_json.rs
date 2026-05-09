@@ -32,6 +32,10 @@ pub struct GsdConfig {
     pub workflow: Option<WorkflowConfig>,
     #[serde(default)]
     pub hooks: Option<HooksConfig>,
+    #[serde(default)]
+    pub intel: Option<IntelConfig>,
+    #[serde(default)]
+    pub graphify: Option<GraphifyConfig>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
@@ -88,6 +92,20 @@ pub struct WorkflowConfig {
 pub struct HooksConfig {
     #[serde(default)]
     pub context_warnings: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct IntelConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct GraphifyConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub build_timeout: Option<u32>,
 }
 
 /// Parse GSD's .planning/config.json content.

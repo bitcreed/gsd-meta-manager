@@ -2981,6 +2981,18 @@ fn build_defaults_entries(config: &crate::state_reader::config_json::GsdConfig) 
     let (v, k) = opt_bool_display(&config.hooks.as_ref().and_then(|h| h.context_warnings));
     push(cat, "context_warnings", v, k, true);
 
+    // Intel
+    let cat = "Intel";
+    let (v, k) = opt_bool_display(&config.intel.as_ref().and_then(|i| i.enabled));
+    push(cat, "intel_enabled", v, k, true);
+
+    // Graphify
+    let cat = "Graphify";
+    let (v, k) = opt_bool_display(&config.graphify.as_ref().and_then(|g| g.enabled));
+    push(cat, "graphify_enabled", v, k, true);
+    let (v, k) = opt_u32_display(&config.graphify.as_ref().and_then(|g| g.build_timeout));
+    push(cat, "graphify_build_timeout", v, k, false);
+
     entries
 }
 
@@ -3038,6 +3050,8 @@ fn set_config_value(
             "auto_chain_active" => { config.workflow.get_or_insert_with(WorkflowConfig::default).auto_chain_active = Some(b); return true; }
             "use_worktrees" => { config.workflow.get_or_insert_with(WorkflowConfig::default).use_worktrees = Some(b); return true; }
             "context_warnings" => { config.hooks.get_or_insert_with(HooksConfig::default).context_warnings = Some(b); return true; }
+            "intel_enabled" => { config.intel.get_or_insert_with(IntelConfig::default).enabled = Some(b); return true; }
+            "graphify_enabled" => { config.graphify.get_or_insert_with(GraphifyConfig::default).enabled = Some(b); return true; }
             _ => {}
         }
     }
@@ -3093,6 +3107,8 @@ fn mutate_config_entry(
                 "auto_chain_active" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.auto_chain_active = Some(!wf.auto_chain_active.unwrap_or(false)); true }
                 "use_worktrees" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.use_worktrees = Some(!wf.use_worktrees.unwrap_or(false)); true }
                 "context_warnings" => { let hooks = config.hooks.get_or_insert_with(HooksConfig::default); hooks.context_warnings = Some(!hooks.context_warnings.unwrap_or(false)); true }
+                "intel_enabled" => { let i = config.intel.get_or_insert_with(IntelConfig::default); i.enabled = Some(!i.enabled.unwrap_or(false)); true }
+                "graphify_enabled" => { let g = config.graphify.get_or_insert_with(GraphifyConfig::default); g.enabled = Some(!g.enabled.unwrap_or(false)); true }
                 _ => false,
             }
         }
@@ -3133,6 +3149,12 @@ fn mutate_config_entry(
                     let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
                     let current = wf.subagent_timeout.unwrap_or(0);
                     wf.subagent_timeout = Some(if current >= 600 { 60 } else { current + 30 });
+                    true
+                }
+                "graphify_build_timeout" => {
+                    let g = config.graphify.get_or_insert_with(GraphifyConfig::default);
+                    let current = g.build_timeout.unwrap_or(0);
+                    g.build_timeout = Some(if current >= 600 { 60 } else { current + 30 });
                     true
                 }
                 _ => false,
