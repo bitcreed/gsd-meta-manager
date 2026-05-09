@@ -1,17 +1,17 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-status: verifying
-stopped_at: "Completed quick task 260403-p84: Add PageUp/PageDown scrolling to detail screen"
-last_updated: "2026-04-04T01:14:06.991Z"
-last_activity: 2026-04-01
+milestone: v1.3
+milestone_name: Configuration & Pipeline Visibility
+status: shipped
+stopped_at: "Tagged v1.3 — Configuration & Pipeline Visibility"
+last_updated: "2026-05-09T00:00:00.000Z"
+last_activity: 2026-05-09
 progress:
-  total_phases: 1
+  total_phases: 0
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  total_plans: 10
+  completed_plans: 10
+  percent: 100
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 13 — Queue Execution Research
+**Current focus:** v1.3 shipped — ready for the next milestone (`/gsd:new-milestone`)
 
 ## Current Position
 
-Phase: 999.2
-Plan: Not started
-Status: Phase complete — ready for verification
-Last activity: 2026-04-06 - Completed quick task 260405-urb: Write a README.md for GitHub
+Phase: —
+Plan: —
+Status: v1.3 shipped (Configuration & Pipeline Visibility) — no active milestone
+Last activity: 2026-05-09 - Tagged v1.3
 
-Progress: [..........] 0%
+Progress: [##########] 100%
 
 ## Performance Metrics
 

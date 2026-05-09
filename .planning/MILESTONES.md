@@ -1,5 +1,20 @@
 # Milestones
 
+## v1.3 Configuration & Pipeline Visibility (Shipped: 2026-05-09)
+
+**Phases completed:** 0 phases, 10 quick tasks
+
+**Key accomplishments:**
+
+- Defaults tab — 9th detail-view tab that reads, displays, and edits `.planning/config.json` with categorized rendering, dropdown picker for booleans and enums, inline text-input for string fields (e.g. `base_branch`), `x`-to-clear shortcut for unsetting Optional fields, and `r`-to-reload
+- Defaults layering — `~/.gsd/defaults.json` is parsed and surfaced as a fallback for any project row that's unset; inherited values render with a magenta `*` marker. `d` toggles the tab between editing the project config and the global defaults file (auto-creates `~/.gsd/` on first save)
+- Six-section Defaults layout matching GSD's `/gsd-settings` (Planning / Execution / Docs & Output / Features / Model & Pipeline / Misc); `GsdConfig` extended with `pattern_mapper`, `ai_integration_phase`, `tdd_mode`, `code_review`, `code_review_depth`, `ui_review`, `intel.enabled`, `graphify.enabled`, `graphify.build_timeout`
+- Pipeline sub-stage drill-down — `DiskInference` learned eight new artifact flags (`PATTERNS.md`, `PLAN-CHECK.md`, `VALIDATION.md`, `UI-SPEC.md`, `UI-CHECK.md`, `AI-SPEC.md`, `REVIEW.md`, `UI-REVIEW.md`); the Pipeline tab renders indented "Plan sub-stages" / "Execute sub-stages" blocks with ✓/○ markers
+- Tmux Tab-to-switch — `ClaudeSession` gained a `tty` field; new `terminal_switch` module mirrors claudectl's tmux flow; Tab on the project list (overview) and on the Sessions tab jumps focus to the matching tmux pane
+- Polish — `tui-textarea` + `$EDITOR` shell-out for archive/backlog markdown editing, PageUp/PageDown scrolling on the detail screen, fixed folder-empty regression after returning from markdown view, GitHub-ready README
+
+---
+
 ## v1.2 Housekeeping & Archive Browser (Shipped: 2026-04-01)
 
 **Phases completed:** 5 phases, 6 plans, 10 tasks

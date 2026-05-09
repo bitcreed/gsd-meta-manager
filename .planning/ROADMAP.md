@@ -5,6 +5,7 @@
 - ✅ **v1.0 MVP** - Phases 01-04 (shipped 2026-03-26)
 - ✅ **v1.1 Polish & Power Features** - Phases 05-09 (shipped 2026-03-27)
 - ✅ **v1.2 Housekeeping & Archive Browser** - Phases 10-13 (shipped 2026-04-01)
+- ✅ **v1.3 Configuration & Pipeline Visibility** - 10 quick tasks (shipped 2026-05-09)
 
 ## Phases
 
@@ -48,6 +49,24 @@ Phase 10: Tech Debt Cleanup (1 plan, complete)
 Phase 11: Paused Project Detection (1 plan, complete)
 Phase 12: Milestone Archive Browser (3 plans, complete)
 Phase 13: Queue Execution Research (1 plan, complete)
+
+</details>
+
+<details>
+<summary>v1.3 Configuration & Pipeline Visibility (10 quick tasks) - SHIPPED 2026-05-09</summary>
+
+No formal phases — the milestone shipped entirely via `/gsd-quick` tasks
+listed in `STATE.md` "Quick Tasks Completed":
+
+- 260401-t7y: tui-textarea + $EDITOR shell-out for archive/backlog markdown
+- 260403-p84: PageUp/PageDown scrolling on the detail screen
+- 260405-27p: fix folder appears empty after returning from markdown view
+- 260405-oum: initial Defaults tab — display + edit .planning/config.json
+- 260405-urb: GitHub-ready README.md
+- 260509 (defaults dropdown): replace toggle-on-Enter with dropdown picker; include `adaptive` profile
+- 260509-k9m: surface intel/graphify keys; text-input for String rows; `x`-to-clear shortcut
+- 260509-zh2: layer ~/.gsd/defaults.json under project config; six-section layout matching `/gsd-settings`; `[d]` toggle to edit defaults; pipeline sub-stage drill-down
+- 260509-t8m: Tab-to-switch into a tmux Claude session
 
 </details>
 

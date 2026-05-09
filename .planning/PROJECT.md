@@ -31,6 +31,13 @@ See the state of every GSD project at a glance and act on any of them without le
 - ✓ Tech debt cleanup — zero warnings, zero clippy lints, clean formatting — v1.2
 - ✓ Paused project detection — HANDOFF file detection with cyan pause badge on dashboard — v1.2
 - ✓ Milestone archive browser — 8-tab detail view with drill-down, styled markdown, async loading — v1.2
+
+- ✓ Defaults tab — 9-tab detail view exposing `.planning/config.json` with categorized rendering, dropdown picker for booleans/enums, inline text-input for string rows (`base_branch`, etc.), `x`-to-clear shortcut, `r`-to-reload, six sections mirroring `/gsd-settings` — v1.3
+- ✓ Defaults layering — `~/.gsd/defaults.json` parsed and surfaced as fallback for unset rows with `*` marker; `[d]` toggle to edit the global defaults file directly — v1.3
+- ✓ Pipeline sub-stage drill-down — Plan and Execute parents expand into per-toggle artifact rows (PATTERNS, PLAN-CHECK, VALIDATION, UI-SPEC, UI-CHECK, AI-SPEC, REVIEW, UI-REVIEW) with ✓/○ markers — v1.3
+- ✓ Tmux session switching — Tab on the project list or Sessions tab jumps focus to the matching tmux pane (mirrors claudectl) — v1.3
+- ✓ Markdown editing polish — `tui-textarea` + `$EDITOR` shell-out for archive/backlog markdown, PageUp/PageDown scrolling on detail screen — v1.3
+- ✓ GitHub-ready README — landing-page README with quickstart, screenshots, and kid-friendly GSD explainer — v1.3
 - ✓ Queue execution research — design document with 2 strategies, safety requirements, LLM-agnostic — v1.2
 
 ### Active
@@ -46,7 +53,7 @@ See the state of every GSD project at a glance and act on any of them without le
 
 ## Current State
 
-Shipped v1.2. 7,630 LOC Rust across 3 milestones. 13 phases, 30+ plans shipped. All 9 v1.2 requirements satisfied.
+Shipped v1.3. 13 phases + 10 quick tasks across 4 milestones. v1.3 (Configuration & Pipeline Visibility) shipped entirely via `/gsd-quick` — no formal phases — and centred on the Defaults tab (six-section layout mirroring `/gsd-settings`, `~/.gsd/defaults.json` layering with `*` marker for inherited values, `[d]` toggle, dropdown/text-input editors, `x`-to-clear), pipeline sub-stage drill-down, and tmux Tab-to-switch.
 
 ## Context
 
