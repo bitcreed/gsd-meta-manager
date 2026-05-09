@@ -86,6 +86,18 @@ pub struct WorkflowConfig {
     pub use_worktrees: Option<bool>,
     #[serde(default)]
     pub subagent_timeout: Option<u32>,
+    #[serde(default)]
+    pub pattern_mapper: Option<bool>,
+    #[serde(default)]
+    pub ai_integration_phase: Option<bool>,
+    #[serde(default)]
+    pub tdd_mode: Option<bool>,
+    #[serde(default)]
+    pub code_review: Option<bool>,
+    #[serde(default)]
+    pub code_review_depth: Option<String>,
+    #[serde(default)]
+    pub ui_review: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
@@ -123,6 +135,27 @@ pub fn parse_gsd_config(content: &str) -> Option<GsdConfig> {
 /// Serialize a GsdConfig back to pretty-printed JSON.
 pub fn serialize_gsd_config(config: &GsdConfig) -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(config)
+}
+
+/// Resolve the absolute path to the user-level GSD defaults file
+/// (`~/.gsd/defaults.json`). Returns None when $HOME is unset.
+pub fn user_defaults_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(|home| {
+        let mut p = std::path::PathBuf::from(home);
+        p.push(".gsd");
+        p.push("defaults.json");
+        p
+    })
+}
+
+/// Load `~/.gsd/defaults.json` if present and parsable.
+/// GSD layers this under project config at `/gsd-new-project` time;
+/// we surface it in the TUI so users can see which fields fall back
+/// to global defaults.
+pub fn load_user_defaults() -> Option<GsdConfig> {
+    let path = user_defaults_path()?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    parse_gsd_config(&content)
 }
 
 #[cfg(test)]

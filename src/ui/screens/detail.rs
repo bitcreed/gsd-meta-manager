@@ -232,7 +232,7 @@ fn switch_to_tab(
         }
     }
 
-    // Load config.json for defaults tab
+    // Load config.json + ~/.gsd/defaults.json for defaults tab
     if new_view == DetailSubView::Defaults {
         let cache = ctx.view_cache.entry(alias.to_string()).or_default();
         if let Some(project) = ctx.config.projects.get(alias) {
@@ -244,6 +244,8 @@ fn switch_to_tab(
                 cache.defaults_config = None;
             }
         }
+        cache.defaults_user_config =
+            crate::state_reader::config_json::load_user_defaults();
         cache.defaults_selected = 0;
         cache.defaults_editing = None;
         cache.defaults_dropdown_selected = 0;
@@ -317,8 +319,7 @@ impl Screen for DetailScreen {
                 let editing = cache.and_then(|c| c.defaults_editing);
                 editing.and_then(|idx| {
                     cache
-                        .and_then(|c| c.defaults_config.as_ref())
-                        .map(build_defaults_entries)
+                        .map(entries_for_cache)
                         .and_then(|entries| entries.into_iter().nth(idx))
                         .filter(|e| matches!(e.kind, ConfigValueKind::String))
                         .map(|_| idx)
@@ -498,19 +499,17 @@ impl Screen for DetailScreen {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         if let Some(editing_idx) = cache.defaults_editing {
                             // Move dropdown cursor down
-                            if let Some(ref config) = cache.defaults_config {
-                                let entries = build_defaults_entries(config);
-                                if let Some(entry) = entries.get(editing_idx) {
-                                    let options = dropdown_options(&entry.kind);
-                                    if !options.is_empty() {
-                                        let max = options.len() - 1;
-                                        cache.defaults_dropdown_selected =
-                                            (cache.defaults_dropdown_selected + 1).min(max);
-                                    }
+                            let entries = entries_for_cache(cache);
+                            if let Some(entry) = entries.get(editing_idx) {
+                                let options = dropdown_options(&entry.kind);
+                                if !options.is_empty() {
+                                    let max = options.len() - 1;
+                                    cache.defaults_dropdown_selected =
+                                        (cache.defaults_dropdown_selected + 1).min(max);
                                 }
                             }
                         } else {
-                            let entry_count = defaults_entry_count(&cache.defaults_config);
+                            let entry_count = entries_count_for_cache(cache);
                             if entry_count > 0 {
                                 let max = entry_count.saturating_sub(1);
                                 cache.defaults_selected = (cache.defaults_selected + 1).min(max);
@@ -690,7 +689,7 @@ impl Screen for DetailScreen {
                     }
                     DetailSubView::Defaults => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        let entry_count = defaults_entry_count(&cache.defaults_config);
+                        let entry_count = entries_count_for_cache(cache);
                         if entry_count > 0 {
                             let max = entry_count.saturating_sub(1);
                             cache.defaults_selected = (cache.defaults_selected + PAGE_SCROLL_LINES as usize).min(max);
@@ -1066,43 +1065,39 @@ impl Screen for DetailScreen {
                         ScreenAction::None
                     }
                     DetailSubView::Defaults => {
+                        let project_path = ctx
+                            .config
+                            .projects
+                            .get(&self.alias)
+                            .map(|p| p.path.clone());
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        let target = cache.defaults_edit_target;
                         if let Some(editing_idx) = cache.defaults_editing {
                             // Dropdown is open — Enter applies the selected option.
-                            if let Some(ref mut config) = cache.defaults_config {
-                                let entries = build_defaults_entries(config);
-                                if let Some(entry) = entries.get(editing_idx) {
-                                    let options = dropdown_options(&entry.kind);
-                                    let dropdown_idx = cache.defaults_dropdown_selected.min(options.len().saturating_sub(1));
-                                    if let Some(value) = options.get(dropdown_idx) {
-                                        let applied = set_config_value(config, entry.key, value);
-                                        if applied {
-                                            if let Some(project) = ctx.config.projects.get(&self.alias) {
-                                                let config_path = project.path.join(".planning/config.json");
-                                                if let Ok(json) = crate::state_reader::config_json::serialize_gsd_config(config) {
-                                                    let _ = std::fs::write(&config_path, &json);
-                                                    ctx.status_message = Some(("Config saved".to_string(), std::time::Instant::now()));
-                                                }
-                                            }
+                            let entries = entries_for_cache(cache);
+                            if let Some(entry) = entries.get(editing_idx).cloned() {
+                                let options = dropdown_options(&entry.kind);
+                                let dropdown_idx = cache.defaults_dropdown_selected.min(options.len().saturating_sub(1));
+                                if let Some(value) = options.get(dropdown_idx).cloned() {
+                                    if let Some(active) = active_config_mut(cache) {
+                                        if set_config_value(active, entry.key, &value) {
+                                            persist_active_config(target, project_path.as_deref(), active, &mut ctx.status_message);
                                         }
                                     }
                                 }
                             }
                             cache.defaults_editing = None;
                             cache.defaults_dropdown_selected = 0;
-                        } else if let Some(ref config) = cache.defaults_config {
-                            let entries = build_defaults_entries(config);
+                        } else {
+                            let entries = entries_for_cache(cache);
                             let selected = cache.defaults_selected;
-                            if let Some(entry) = entries.get(selected) {
+                            if let Some(entry) = entries.get(selected).cloned() {
                                 let options = dropdown_options(&entry.kind);
                                 if !options.is_empty() {
-                                    // Open dropdown, position cursor on current value
                                     let current_idx = options.iter().position(|o| o == &entry.value).unwrap_or(0);
                                     cache.defaults_editing = Some(selected);
                                     cache.defaults_dropdown_selected = current_idx;
                                 } else if matches!(entry.kind, ConfigValueKind::String) {
-                                    // Open text input pre-filled with current value
-                                    // ("(unset)" is treated as empty so the user can type fresh).
                                     cache.defaults_editing = Some(selected);
                                     cache.defaults_text_buffer =
                                         if entry.value == "(unset)" {
@@ -1111,17 +1106,9 @@ impl Screen for DetailScreen {
                                             entry.value.clone()
                                         };
                                 } else if matches!(entry.kind, ConfigValueKind::Integer) {
-                                    // Integers have no fixed list — keep cycling behavior.
-                                    if let Some(ref mut config) = cache.defaults_config {
-                                        let mutated = mutate_config_entry(config, entry.key, &entry.kind);
-                                        if mutated {
-                                            if let Some(project) = ctx.config.projects.get(&self.alias) {
-                                                let config_path = project.path.join(".planning/config.json");
-                                                if let Ok(json) = crate::state_reader::config_json::serialize_gsd_config(config) {
-                                                    let _ = std::fs::write(&config_path, &json);
-                                                    ctx.status_message = Some(("Config saved".to_string(), std::time::Instant::now()));
-                                                }
-                                            }
+                                    if let Some(active) = active_config_mut(cache) {
+                                        if mutate_config_entry(active, entry.key, &entry.kind) {
+                                            persist_active_config(target, project_path.as_deref(), active, &mut ctx.status_message);
                                         }
                                     }
                                 }
@@ -1135,25 +1122,31 @@ impl Screen for DetailScreen {
             }
             // 'x' key: clear (unset) the value of the selected config row
             KeyCode::Char('x') if current_view == DetailSubView::Defaults => {
+                let project_path = ctx
+                    .config
+                    .projects
+                    .get(&self.alias)
+                    .map(|p| p.path.clone());
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                let target = cache.defaults_edit_target;
                 if cache.defaults_editing.is_none() {
-                    if let Some(ref mut config) = cache.defaults_config {
-                        let entries = build_defaults_entries(config);
-                        let selected = cache.defaults_selected;
-                        if let Some(entry) = entries.get(selected) {
-                            let key = entry.key;
-                            let cleared = clear_config_value(config, key);
+                    let entries = entries_for_cache(cache);
+                    let selected = cache.defaults_selected;
+                    if let Some(entry) = entries.get(selected).cloned() {
+                        let key = entry.key;
+                        if let Some(active) = active_config_mut(cache) {
+                            let cleared = clear_config_value(active, key);
                             if cleared {
-                                if let Some(project) = ctx.config.projects.get(&self.alias) {
-                                    let config_path = project.path.join(".planning/config.json");
-                                    if let Ok(json) = crate::state_reader::config_json::serialize_gsd_config(config) {
-                                        let _ = std::fs::write(&config_path, &json);
-                                        ctx.status_message = Some((
-                                            format!("Cleared {}", key),
-                                            std::time::Instant::now(),
-                                        ));
-                                    }
-                                }
+                                persist_active_config(
+                                    target,
+                                    project_path.as_deref(),
+                                    active,
+                                    &mut ctx.status_message,
+                                );
+                                ctx.status_message = Some((
+                                    format!("Cleared {}", key),
+                                    std::time::Instant::now(),
+                                ));
                             } else {
                                 ctx.status_message = Some((
                                     format!("{} cannot be cleared", key),
@@ -1178,7 +1171,38 @@ impl Screen for DetailScreen {
                         cache.defaults_config = None;
                     }
                 }
+                cache.defaults_user_config =
+                    crate::state_reader::config_json::load_user_defaults();
                 ctx.status_message = Some(("Config reloaded".to_string(), std::time::Instant::now()));
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+            // 'd' key: toggle between editing project config and ~/.gsd/defaults.json
+            KeyCode::Char('d') if current_view == DetailSubView::Defaults => {
+                use super::DefaultsEditTarget;
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                if cache.defaults_editing.is_some() {
+                    return ScreenAction::None;
+                }
+                cache.defaults_edit_target = match cache.defaults_edit_target {
+                    DefaultsEditTarget::Project => DefaultsEditTarget::Global,
+                    DefaultsEditTarget::Global => DefaultsEditTarget::Project,
+                };
+                // Bootstrap an empty global defaults so toggling into the
+                // Global view always has something editable, even before
+                // ~/.gsd/defaults.json exists on disk.
+                if cache.defaults_edit_target == DefaultsEditTarget::Global
+                    && cache.defaults_user_config.is_none()
+                {
+                    cache.defaults_user_config =
+                        Some(crate::state_reader::config_json::GsdConfig::default());
+                }
+                cache.defaults_selected = 0;
+                let label = match cache.defaults_edit_target {
+                    DefaultsEditTarget::Project => "Editing project config",
+                    DefaultsEditTarget::Global => "Editing ~/.gsd/defaults.json",
+                };
+                ctx.status_message = Some((label.to_string(), std::time::Instant::now()));
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
@@ -1575,32 +1599,31 @@ impl DetailScreen {
                 ctx.needs_redraw = true;
             }
             KeyCode::Enter => {
+                let project_path = ctx
+                    .config
+                    .projects
+                    .get(&self.alias)
+                    .map(|p| p.path.clone());
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                let target = cache.defaults_edit_target;
                 let buffer = std::mem::take(&mut cache.defaults_text_buffer);
                 cache.defaults_editing = None;
-                if let Some(ref mut config) = cache.defaults_config {
-                    let entries = build_defaults_entries(config);
-                    if let Some(entry) = entries.get(editing_idx) {
-                        let key = entry.key;
+                let entries = entries_for_cache(cache);
+                if let Some(entry) = entries.get(editing_idx).cloned() {
+                    let key = entry.key;
+                    if let Some(active) = active_config_mut(cache) {
                         let applied = if buffer.is_empty() {
-                            clear_config_value(config, key)
+                            clear_config_value(active, key)
                         } else {
-                            set_string_value(config, key, &buffer)
+                            set_string_value(active, key, &buffer)
                         };
                         if applied {
-                            if let Some(project) = ctx.config.projects.get(&self.alias) {
-                                let config_path =
-                                    project.path.join(".planning/config.json");
-                                if let Ok(json) =
-                                    crate::state_reader::config_json::serialize_gsd_config(config)
-                                {
-                                    let _ = std::fs::write(&config_path, &json);
-                                    ctx.status_message = Some((
-                                        "Config saved".to_string(),
-                                        std::time::Instant::now(),
-                                    ));
-                                }
-                            }
+                            persist_active_config(
+                                target,
+                                project_path.as_deref(),
+                                active,
+                                &mut ctx.status_message,
+                            );
                         }
                     }
                 }
@@ -2630,32 +2653,44 @@ impl DetailScreen {
     }
 
     fn render_defaults_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        use super::DefaultsEditTarget;
         let cache = ctx.view_cache.get(&self.alias);
-        let config = cache.and_then(|c| c.defaults_config.as_ref());
         let selected = cache.map(|c| c.defaults_selected).unwrap_or(0);
+        let edit_target = cache
+            .map(|c| c.defaults_edit_target)
+            .unwrap_or_default();
 
-        let config = match config {
-            Some(c) => c,
-            None => {
-                let msg = Paragraph::new("  No config loaded (project may not have .planning/config.json)")
-                    .style(Style::default().fg(Color::DarkGray));
-                frame.render_widget(msg, area);
-                return;
-            }
+        let entries = match cache {
+            Some(c) => entries_for_cache(c),
+            None => Vec::new(),
         };
 
-        let entries = build_defaults_entries(config);
+        if entries.is_empty() {
+            let msg_text = match edit_target {
+                DefaultsEditTarget::Project => {
+                    "  No config loaded (project may not have .planning/config.json)"
+                }
+                DefaultsEditTarget::Global => {
+                    "  No global defaults loaded (~/.gsd/defaults.json missing — saving will create it)"
+                }
+            };
+            let msg =
+                Paragraph::new(msg_text).style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(msg, area);
+            return;
+        }
+
         let items: Vec<ListItem> = entries
             .iter()
             .enumerate()
             .map(|(i, entry)| {
                 let cat_span = if entry.show_category {
                     Span::styled(
-                        format!("{:<10}", entry.category),
+                        format!("{:<18}", entry.category),
                         Style::default().fg(Color::DarkGray),
                     )
                 } else {
-                    Span::raw("          ")
+                    Span::raw("                  ")
                 };
                 let key_span = Span::styled(
                     format!("{:<30}", entry.key),
@@ -2674,14 +2709,21 @@ impl DetailScreen {
                     ConfigValueKind::Null => Style::default().fg(Color::DarkGray),
                     _ => Style::default().fg(Color::Yellow),
                 };
-                let val_span = Span::styled(&entry.value, val_style);
-                let line = Line::from(vec![
+                let val_span = Span::styled(entry.value.clone(), val_style);
+                let mut spans = vec![
                     Span::raw("  "),
                     cat_span,
                     Span::raw(" "),
                     key_span,
                     val_span,
-                ]);
+                ];
+                if entry.from_defaults {
+                    spans.push(Span::styled(
+                        " *",
+                        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                    ));
+                }
+                let line = Line::from(spans);
                 let item = ListItem::new(line);
                 if i == selected {
                     item.style(Style::default().bg(Color::DarkGray).fg(Color::Cyan))
@@ -2691,10 +2733,14 @@ impl DetailScreen {
             })
             .collect();
 
+        let title = match edit_target {
+            DefaultsEditTarget::Project => " Config Settings ".to_string(),
+            DefaultsEditTarget::Global => " Global Defaults (~/.gsd/defaults.json) ".to_string(),
+        };
         let list = List::new(items).block(
             Block::default()
                 .borders(Borders::TOP)
-                .title(" Config Settings "),
+                .title(title),
         );
 
         let mut list_state = ListState::default();
@@ -3007,155 +3053,301 @@ enum ConfigValueKind {
     Null,
 }
 
+#[derive(Clone)]
 struct ConfigEntry {
     category: &'static str,
     key: &'static str,
     value: String,
     kind: ConfigValueKind,
     show_category: bool,
+    /// True when the value was inherited from ~/.gsd/defaults.json
+    /// because the project config had it unset.
+    from_defaults: bool,
 }
 
-fn opt_bool_display(v: &Option<bool>) -> (String, ConfigValueKind) {
-    match v {
-        Some(b) => (b.to_string(), ConfigValueKind::Bool),
-        None => ("(unset)".to_string(), ConfigValueKind::Null),
+fn opt_bool_layered(project: Option<bool>, defaults: Option<bool>) -> (String, ConfigValueKind, bool) {
+    if let Some(v) = project {
+        (v.to_string(), ConfigValueKind::Bool, false)
+    } else if let Some(v) = defaults {
+        (v.to_string(), ConfigValueKind::Bool, true)
+    } else {
+        ("(unset)".to_string(), ConfigValueKind::Null, false)
     }
 }
 
-fn opt_str_display(v: &Option<String>) -> (String, ConfigValueKind) {
-    match v {
-        Some(s) => (s.clone(), ConfigValueKind::String),
-        None => ("(unset)".to_string(), ConfigValueKind::Null),
+fn opt_str_layered(project: Option<&str>, defaults: Option<&str>) -> (String, ConfigValueKind, bool) {
+    if let Some(s) = project {
+        (s.to_string(), ConfigValueKind::String, false)
+    } else if let Some(s) = defaults {
+        (s.to_string(), ConfigValueKind::String, true)
+    } else {
+        ("(unset)".to_string(), ConfigValueKind::Null, false)
     }
 }
 
-fn opt_u32_display(v: &Option<u32>) -> (String, ConfigValueKind) {
-    match v {
-        Some(n) => (n.to_string(), ConfigValueKind::Integer),
-        None => ("(unset)".to_string(), ConfigValueKind::Null),
+fn opt_u32_layered(project: Option<u32>, defaults: Option<u32>) -> (String, ConfigValueKind, bool) {
+    if let Some(n) = project {
+        (n.to_string(), ConfigValueKind::Integer, false)
+    } else if let Some(n) = defaults {
+        (n.to_string(), ConfigValueKind::Integer, true)
+    } else {
+        ("(unset)".to_string(), ConfigValueKind::Null, false)
     }
 }
 
-fn build_defaults_entries(config: &crate::state_reader::config_json::GsdConfig) -> Vec<ConfigEntry> {
+fn opt_enum_layered(
+    project: Option<&str>,
+    defaults: Option<&str>,
+    options: &'static [&'static str],
+) -> (String, ConfigValueKind, bool) {
+    if let Some(s) = project {
+        (s.to_string(), ConfigValueKind::Enum(options), false)
+    } else if let Some(s) = defaults {
+        (s.to_string(), ConfigValueKind::Enum(options), true)
+    } else {
+        ("(unset)".to_string(), ConfigValueKind::Null, false)
+    }
+}
+
+fn build_defaults_entries(
+    config: &crate::state_reader::config_json::GsdConfig,
+    defaults: Option<&crate::state_reader::config_json::GsdConfig>,
+) -> Vec<ConfigEntry> {
+    use crate::state_reader::config_json::GsdConfig;
+
     let mut entries = Vec::new();
-    let mut push = |cat: &'static str, key: &'static str, value: String, kind: ConfigValueKind, first: bool| {
+    let mut push = |cat: &'static str,
+                    key: &'static str,
+                    value: String,
+                    kind: ConfigValueKind,
+                    first: bool,
+                    from_defaults: bool| {
         entries.push(ConfigEntry {
             category: cat,
             key,
             value,
             kind,
             show_category: first,
+            from_defaults,
         });
     };
 
-    // General
-    let cat = "General";
-    push(cat, "mode", config.mode.clone(), ConfigValueKind::Enum(&["interactive", "yolo"]), true);
-    push(cat, "granularity", config.granularity.clone(), ConfigValueKind::Enum(&["coarse", "standard", "fine"]), false);
-    push(cat, "model_profile", config.model_profile.clone(), ConfigValueKind::Enum(&["quality", "balanced", "budget", "adaptive", "inherit"]), false);
-    let (v, k) = opt_bool_display(&config.commit_docs);
-    push(cat, "commit_docs", v, k, false);
-    let (v, k) = opt_bool_display(&config.parallelization);
-    push(cat, "parallelization", v, k, false);
-    let (v, k) = opt_str_display(&config.project_code);
-    push(cat, "project_code", v, k, false);
-    let (v, k) = opt_str_display(&config.phase_naming);
-    push(cat, "phase_naming", v, k, false);
-    let (v, k) = opt_str_display(&config.response_language);
-    push(cat, "response_language", v, k, false);
+    // Layered accessors — fall back to ~/.gsd/defaults.json when the
+    // project's Option is None.
+    let bool_l = |proj: Option<bool>, def: Option<bool>| opt_bool_layered(proj, def);
+    let u32_l = |proj: Option<u32>, def: Option<u32>| opt_u32_layered(proj, def);
+    let str_l = |proj: Option<&str>, def: Option<&str>| opt_str_layered(proj, def);
+    let enum_l = |proj: Option<&str>,
+                  def: Option<&str>,
+                  options: &'static [&'static str]| { opt_enum_layered(proj, def, options) };
 
-    // Search
-    let cat = "Search";
-    let (v, k) = opt_bool_display(&config.search_gitignored);
-    push(cat, "search_gitignored", v, k, true);
-    let (v, k) = opt_bool_display(&config.brave_search);
-    push(cat, "brave_search", v, k, false);
-    let (v, k) = opt_bool_display(&config.firecrawl);
-    push(cat, "firecrawl", v, k, false);
-    let (v, k) = opt_bool_display(&config.exa_search);
-    push(cat, "exa_search", v, k, false);
+    // ── Planning ───────────────────────────────────────────────
+    let cat = "Planning";
+    let pwf = config.workflow.as_ref();
+    let dwf = defaults.and_then(|d: &GsdConfig| d.workflow.as_ref());
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.research), dwf.and_then(|w| w.research));
+    push(cat, "research", v, k, true, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.plan_check), dwf.and_then(|w| w.plan_check));
+    push(cat, "plan_check", v, k, false, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.pattern_mapper), dwf.and_then(|w| w.pattern_mapper));
+    push(cat, "pattern_mapper", v, k, false, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.nyquist_validation), dwf.and_then(|w| w.nyquist_validation));
+    push(cat, "nyquist_validation", v, k, false, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.ui_phase), dwf.and_then(|w| w.ui_phase));
+    push(cat, "ui_phase", v, k, false, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.ui_safety_gate), dwf.and_then(|w| w.ui_safety_gate));
+    push(cat, "ui_safety_gate", v, k, false, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.ai_integration_phase), dwf.and_then(|w| w.ai_integration_phase));
+    push(cat, "ai_integration_phase", v, k, false, fd);
+    let (v, k, fd) = u32_l(pwf.and_then(|w| w.subagent_timeout), dwf.and_then(|w| w.subagent_timeout));
+    push(cat, "subagent_timeout", v, k, false, fd);
 
-    // Git
-    let cat = "Git";
-    let git = config.git.as_ref();
-    let (v, k) = match git.and_then(|g| g.branching_strategy.as_ref()) {
-        Some(s) => (s.clone(), ConfigValueKind::Enum(&["none", "phase", "milestone"])),
-        None => ("(unset)".to_string(), ConfigValueKind::Null),
+    // ── Execution ──────────────────────────────────────────────
+    let cat = "Execution";
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.verifier), dwf.and_then(|w| w.verifier));
+    push(cat, "verifier", v, k, true, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.tdd_mode), dwf.and_then(|w| w.tdd_mode));
+    push(cat, "tdd_mode", v, k, false, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.code_review), dwf.and_then(|w| w.code_review));
+    push(cat, "code_review", v, k, false, fd);
+    let (v, k, fd) = enum_l(
+        pwf.and_then(|w| w.code_review_depth.as_deref()),
+        dwf.and_then(|w| w.code_review_depth.as_deref()),
+        &["quick", "standard", "deep"],
+    );
+    push(cat, "code_review_depth", v, k, false, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.ui_review), dwf.and_then(|w| w.ui_review));
+    push(cat, "ui_review", v, k, false, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.node_repair), dwf.and_then(|w| w.node_repair));
+    push(cat, "node_repair", v, k, false, fd);
+    let (v, k, fd) = u32_l(pwf.and_then(|w| w.node_repair_budget), dwf.and_then(|w| w.node_repair_budget));
+    push(cat, "node_repair_budget", v, k, false, fd);
+
+    // ── Docs & Output ─────────────────────────────────────────
+    let cat = "Docs & Output";
+    let (v, k, fd) = bool_l(config.commit_docs, defaults.and_then(|d| d.commit_docs));
+    push(cat, "commit_docs", v, k, true, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.skip_discuss), dwf.and_then(|w| w.skip_discuss));
+    push(cat, "skip_discuss", v, k, false, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.use_worktrees), dwf.and_then(|w| w.use_worktrees));
+    push(cat, "use_worktrees", v, k, false, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.text_mode), dwf.and_then(|w| w.text_mode));
+    push(cat, "text_mode", v, k, false, fd);
+    let (v, k, fd) = str_l(
+        config.response_language.as_deref(),
+        defaults.and_then(|d| d.response_language.as_deref()),
+    );
+    push(cat, "response_language", v, k, false, fd);
+
+    // ── Features ──────────────────────────────────────────────
+    let cat = "Features";
+    let (v, k, fd) = bool_l(
+        config.intel.as_ref().and_then(|i| i.enabled),
+        defaults.and_then(|d| d.intel.as_ref().and_then(|i| i.enabled)),
+    );
+    push(cat, "intel_enabled", v, k, true, fd);
+    let (v, k, fd) = bool_l(
+        config.graphify.as_ref().and_then(|g| g.enabled),
+        defaults.and_then(|d| d.graphify.as_ref().and_then(|g| g.enabled)),
+    );
+    push(cat, "graphify_enabled", v, k, false, fd);
+    let (v, k, fd) = u32_l(
+        config.graphify.as_ref().and_then(|g| g.build_timeout),
+        defaults.and_then(|d| d.graphify.as_ref().and_then(|g| g.build_timeout)),
+    );
+    push(cat, "graphify_build_timeout", v, k, false, fd);
+    let (v, k, fd) = bool_l(config.brave_search, defaults.and_then(|d| d.brave_search));
+    push(cat, "brave_search", v, k, false, fd);
+    let (v, k, fd) = bool_l(config.firecrawl, defaults.and_then(|d| d.firecrawl));
+    push(cat, "firecrawl", v, k, false, fd);
+    let (v, k, fd) = bool_l(config.exa_search, defaults.and_then(|d| d.exa_search));
+    push(cat, "exa_search", v, k, false, fd);
+
+    // ── Model & Pipeline ──────────────────────────────────────
+    let cat = "Model & Pipeline";
+    push(cat, "mode", config.mode.clone(), ConfigValueKind::Enum(&["interactive", "yolo"]), true, false);
+    push(cat, "granularity", config.granularity.clone(), ConfigValueKind::Enum(&["coarse", "standard", "fine"]), false, false);
+    push(cat, "model_profile", config.model_profile.clone(), ConfigValueKind::Enum(&["quality", "balanced", "budget", "adaptive", "inherit"]), false, false);
+    let (v, k, fd) = bool_l(config.parallelization, defaults.and_then(|d| d.parallelization));
+    push(cat, "parallelization", v, k, false, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.auto_advance), dwf.and_then(|w| w.auto_advance));
+    push(cat, "auto_advance", v, k, false, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.auto_chain_active), dwf.and_then(|w| w.auto_chain_active));
+    push(cat, "auto_chain_active", v, k, false, fd);
+    let pgit = config.git.as_ref();
+    let dgit = defaults.and_then(|d| d.git.as_ref());
+    let (v, k, fd) = enum_l(
+        pgit.and_then(|g| g.branching_strategy.as_deref()),
+        dgit.and_then(|g| g.branching_strategy.as_deref()),
+        &["none", "phase", "milestone"],
+    );
+    push(cat, "branching_strategy", v, k, false, fd);
+    let (v, k, fd) = str_l(
+        pgit.and_then(|g| g.base_branch.as_deref()),
+        dgit.and_then(|g| g.base_branch.as_deref()),
+    );
+    push(cat, "base_branch", v, k, false, fd);
+    let (v, k, fd) = str_l(
+        pgit.and_then(|g| g.phase_branch_template.as_deref()),
+        dgit.and_then(|g| g.phase_branch_template.as_deref()),
+    );
+    push(cat, "phase_branch_template", v, k, false, fd);
+    let (v, k, fd) = str_l(
+        pgit.and_then(|g| g.milestone_branch_template.as_deref()),
+        dgit.and_then(|g| g.milestone_branch_template.as_deref()),
+    );
+    push(cat, "milestone_branch_template", v, k, false, fd);
+    let qbt_proj = pgit.and_then(|g| g.quick_branch_template.as_ref()).map(|v| v.to_string());
+    let qbt_def = dgit.and_then(|g| g.quick_branch_template.as_ref()).map(|v| v.to_string());
+    let (qbt_val, qbt_kind, qbt_fd) = match (qbt_proj, qbt_def) {
+        (Some(s), _) => (s, ConfigValueKind::String, false),
+        (None, Some(s)) => (s, ConfigValueKind::String, true),
+        (None, None) => ("(unset)".to_string(), ConfigValueKind::Null, false),
     };
-    push(cat, "branching_strategy", v, k, true);
-    let (v, k) = opt_str_display(&git.and_then(|g| g.base_branch.clone()));
-    push(cat, "base_branch", v, k, false);
-    let (v, k) = opt_str_display(&git.and_then(|g| g.phase_branch_template.clone()));
-    push(cat, "phase_branch_template", v, k, false);
-    let (v, k) = opt_str_display(&git.and_then(|g| g.milestone_branch_template.clone()));
-    push(cat, "milestone_branch_template", v, k, false);
-    let qbt_val = git.and_then(|g| g.quick_branch_template.as_ref()).map(|v| v.to_string()).unwrap_or("(unset)".to_string());
-    let qbt_kind = if qbt_val == "(unset)" { ConfigValueKind::Null } else { ConfigValueKind::String };
-    push(cat, "quick_branch_template", qbt_val, qbt_kind, false);
+    push(cat, "quick_branch_template", qbt_val, qbt_kind, false, qbt_fd);
 
-    // Workflow
-    let cat = "Workflow";
-    let wf = config.workflow.as_ref();
-    let (v, k) = opt_bool_display(&wf.and_then(|w| w.research));
-    push(cat, "research", v, k, true);
-    let (v, k) = opt_bool_display(&wf.and_then(|w| w.plan_check));
-    push(cat, "plan_check", v, k, false);
-    let (v, k) = opt_bool_display(&wf.and_then(|w| w.verifier));
-    push(cat, "verifier", v, k, false);
-    let (v, k) = opt_bool_display(&wf.and_then(|w| w.nyquist_validation));
-    push(cat, "nyquist_validation", v, k, false);
-    let (v, k) = opt_bool_display(&wf.and_then(|w| w.auto_advance));
-    push(cat, "auto_advance", v, k, false);
-    let (v, k) = opt_bool_display(&wf.and_then(|w| w.node_repair));
-    push(cat, "node_repair", v, k, false);
-    let (v, k) = opt_u32_display(&wf.and_then(|w| w.node_repair_budget));
-    push(cat, "node_repair_budget", v, k, false);
-    let (v, k) = opt_bool_display(&wf.and_then(|w| w.ui_phase));
-    push(cat, "ui_phase", v, k, false);
-    let (v, k) = opt_bool_display(&wf.and_then(|w| w.ui_safety_gate));
-    push(cat, "ui_safety_gate", v, k, false);
-    let (v, k) = opt_bool_display(&wf.and_then(|w| w.text_mode));
-    push(cat, "text_mode", v, k, false);
-    let (v, k) = opt_bool_display(&wf.and_then(|w| w.research_before_questions));
-    push(cat, "research_before_questions", v, k, false);
-    let (v, k) = match wf.and_then(|w| w.discuss_mode.as_ref()) {
-        Some(s) => (s.clone(), ConfigValueKind::Enum(&["discuss", "assumptions"])),
-        None => ("(unset)".to_string(), ConfigValueKind::Null),
-    };
-    push(cat, "discuss_mode", v, k, false);
-    let (v, k) = opt_bool_display(&wf.and_then(|w| w.skip_discuss));
-    push(cat, "skip_discuss", v, k, false);
-    let (v, k) = opt_bool_display(&wf.and_then(|w| w.auto_chain_active));
-    push(cat, "auto_chain_active", v, k, false);
-    let (v, k) = opt_bool_display(&wf.and_then(|w| w.use_worktrees));
-    push(cat, "use_worktrees", v, k, false);
-    let (v, k) = opt_u32_display(&wf.and_then(|w| w.subagent_timeout));
-    push(cat, "subagent_timeout", v, k, false);
-
-    // Hooks
-    let cat = "Hooks";
-    let (v, k) = opt_bool_display(&config.hooks.as_ref().and_then(|h| h.context_warnings));
-    push(cat, "context_warnings", v, k, true);
-
-    // Intel
-    let cat = "Intel";
-    let (v, k) = opt_bool_display(&config.intel.as_ref().and_then(|i| i.enabled));
-    push(cat, "intel_enabled", v, k, true);
-
-    // Graphify
-    let cat = "Graphify";
-    let (v, k) = opt_bool_display(&config.graphify.as_ref().and_then(|g| g.enabled));
-    push(cat, "graphify_enabled", v, k, true);
-    let (v, k) = opt_u32_display(&config.graphify.as_ref().and_then(|g| g.build_timeout));
-    push(cat, "graphify_build_timeout", v, k, false);
+    // ── Misc ──────────────────────────────────────────────────
+    let cat = "Misc";
+    let (v, k, fd) = bool_l(
+        config.hooks.as_ref().and_then(|h| h.context_warnings),
+        defaults.and_then(|d| d.hooks.as_ref().and_then(|h| h.context_warnings)),
+    );
+    push(cat, "context_warnings", v, k, true, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.research_before_questions), dwf.and_then(|w| w.research_before_questions));
+    push(cat, "research_before_questions", v, k, false, fd);
+    let (v, k, fd) = enum_l(
+        pwf.and_then(|w| w.discuss_mode.as_deref()),
+        dwf.and_then(|w| w.discuss_mode.as_deref()),
+        &["discuss", "assumptions"],
+    );
+    push(cat, "discuss_mode", v, k, false, fd);
+    let (v, k, fd) = bool_l(config.search_gitignored, defaults.and_then(|d| d.search_gitignored));
+    push(cat, "search_gitignored", v, k, false, fd);
+    let (v, k, fd) = str_l(config.project_code.as_deref(), defaults.and_then(|d| d.project_code.as_deref()));
+    push(cat, "project_code", v, k, false, fd);
+    let (v, k, fd) = str_l(config.phase_naming.as_deref(), defaults.and_then(|d| d.phase_naming.as_deref()));
+    push(cat, "phase_naming", v, k, false, fd);
 
     entries
 }
 
-fn defaults_entry_count(config: &Option<crate::state_reader::config_json::GsdConfig>) -> usize {
-    match config {
-        Some(c) => build_defaults_entries(c).len(),
-        None => 0,
+/// Build defaults entries respecting the cache's edit target.
+/// When target=Project: project config is primary, defaults_user_config
+/// fills in unset Optional fields. When target=Global: defaults_user_config
+/// is primary with no fallback.
+fn entries_for_cache(cache: &super::ProjectViewCache) -> Vec<ConfigEntry> {
+    use super::DefaultsEditTarget;
+    let (primary, fallback) = match cache.defaults_edit_target {
+        DefaultsEditTarget::Project => {
+            (cache.defaults_config.as_ref(), cache.defaults_user_config.as_ref())
+        }
+        DefaultsEditTarget::Global => (cache.defaults_user_config.as_ref(), None),
+    };
+    primary
+        .map(|p| build_defaults_entries(p, fallback))
+        .unwrap_or_default()
+}
+
+fn entries_count_for_cache(cache: &super::ProjectViewCache) -> usize {
+    entries_for_cache(cache).len()
+}
+
+/// Get a mutable reference to whichever config the user is currently
+/// editing (project or ~/.gsd/defaults.json).
+fn active_config_mut(
+    cache: &mut super::ProjectViewCache,
+) -> Option<&mut crate::state_reader::config_json::GsdConfig> {
+    use super::DefaultsEditTarget;
+    match cache.defaults_edit_target {
+        DefaultsEditTarget::Project => cache.defaults_config.as_mut(),
+        DefaultsEditTarget::Global => cache.defaults_user_config.as_mut(),
+    }
+}
+
+/// Persist the active config to disk and surface a status message.
+fn persist_active_config(
+    target: super::DefaultsEditTarget,
+    project_path: Option<&std::path::Path>,
+    config: &crate::state_reader::config_json::GsdConfig,
+    status_message: &mut Option<(String, std::time::Instant)>,
+) {
+    use super::DefaultsEditTarget;
+    let path = match target {
+        DefaultsEditTarget::Project => project_path.map(|p| p.join(".planning/config.json")),
+        DefaultsEditTarget::Global => crate::state_reader::config_json::user_defaults_path(),
+    };
+    let Some(path) = path else { return };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = crate::state_reader::config_json::serialize_gsd_config(config) {
+        if std::fs::write(&path, &json).is_ok() {
+            let label = match target {
+                DefaultsEditTarget::Project => "Config saved",
+                DefaultsEditTarget::Global => "Defaults saved",
+            };
+            *status_message = Some((label.to_string(), std::time::Instant::now()));
+        }
     }
 }
 
@@ -3208,6 +3400,11 @@ fn set_config_value(
             "context_warnings" => { config.hooks.get_or_insert_with(HooksConfig::default).context_warnings = Some(b); return true; }
             "intel_enabled" => { config.intel.get_or_insert_with(IntelConfig::default).enabled = Some(b); return true; }
             "graphify_enabled" => { config.graphify.get_or_insert_with(GraphifyConfig::default).enabled = Some(b); return true; }
+            "pattern_mapper" => { config.workflow.get_or_insert_with(WorkflowConfig::default).pattern_mapper = Some(b); return true; }
+            "ai_integration_phase" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ai_integration_phase = Some(b); return true; }
+            "tdd_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).tdd_mode = Some(b); return true; }
+            "code_review" => { config.workflow.get_or_insert_with(WorkflowConfig::default).code_review = Some(b); return true; }
+            "ui_review" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_review = Some(b); return true; }
             _ => {}
         }
     }
@@ -3223,6 +3420,10 @@ fn set_config_value(
         }
         "discuss_mode" => {
             config.workflow.get_or_insert_with(WorkflowConfig::default).discuss_mode = Some(value.to_string());
+            true
+        }
+        "code_review_depth" => {
+            config.workflow.get_or_insert_with(WorkflowConfig::default).code_review_depth = Some(value.to_string());
             true
         }
         _ => false,
@@ -3321,6 +3522,14 @@ fn clear_config_value(
         "graphify_enabled" => { config.graphify.get_or_insert_with(GraphifyConfig::default).enabled = None; true }
         "graphify_build_timeout" => { config.graphify.get_or_insert_with(GraphifyConfig::default).build_timeout = None; true }
 
+        // Workflow toggles added with the /gsd-settings six-section layout
+        "pattern_mapper" => { config.workflow.get_or_insert_with(WorkflowConfig::default).pattern_mapper = None; true }
+        "ai_integration_phase" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ai_integration_phase = None; true }
+        "tdd_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).tdd_mode = None; true }
+        "code_review" => { config.workflow.get_or_insert_with(WorkflowConfig::default).code_review = None; true }
+        "code_review_depth" => { config.workflow.get_or_insert_with(WorkflowConfig::default).code_review_depth = None; true }
+        "ui_review" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_review = None; true }
+
         _ => false,
     }
 }
@@ -3361,6 +3570,11 @@ fn mutate_config_entry(
                 "context_warnings" => { let hooks = config.hooks.get_or_insert_with(HooksConfig::default); hooks.context_warnings = Some(!hooks.context_warnings.unwrap_or(false)); true }
                 "intel_enabled" => { let i = config.intel.get_or_insert_with(IntelConfig::default); i.enabled = Some(!i.enabled.unwrap_or(false)); true }
                 "graphify_enabled" => { let g = config.graphify.get_or_insert_with(GraphifyConfig::default); g.enabled = Some(!g.enabled.unwrap_or(false)); true }
+                "pattern_mapper" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.pattern_mapper = Some(!wf.pattern_mapper.unwrap_or(false)); true }
+                "ai_integration_phase" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.ai_integration_phase = Some(!wf.ai_integration_phase.unwrap_or(false)); true }
+                "tdd_mode" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.tdd_mode = Some(!wf.tdd_mode.unwrap_or(false)); true }
+                "code_review" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.code_review = Some(!wf.code_review.unwrap_or(false)); true }
+                "ui_review" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.ui_review = Some(!wf.ui_review.unwrap_or(false)); true }
                 _ => false,
             }
         }

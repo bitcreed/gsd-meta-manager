@@ -47,6 +47,13 @@ pub enum ScreenAction {
     DispatchAction(Box<Action>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DefaultsEditTarget {
+    #[default]
+    Project,
+    Global,
+}
+
 #[derive(Default)]
 pub struct ProjectViewCache {
     pub backlog_items: Vec<BacklogItem>,
@@ -70,6 +77,11 @@ pub struct ProjectViewCache {
     pub archive_file_content: Option<String>,
     pub archive_file_name: Option<String>,
     pub defaults_config: Option<crate::state_reader::config_json::GsdConfig>,
+    /// Parsed contents of ~/.gsd/defaults.json — layered under
+    /// `defaults_config` for display and editable via the [d] toggle.
+    pub defaults_user_config: Option<crate::state_reader::config_json::GsdConfig>,
+    /// Which file the Defaults tab is currently editing.
+    pub defaults_edit_target: DefaultsEditTarget,
     pub defaults_selected: usize,
     /// When `Some(entry_idx)`, a dropdown OR text input is open for that entry.
     /// The render code decides which UI to show based on the entry's kind.
