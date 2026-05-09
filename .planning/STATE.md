@@ -93,6 +93,7 @@ None yet.
 | 260405-27p | Fix folder appears empty after returning from markdown view | 2026-04-05 | d8a578e | [260405-27p](./quick/260405-27p-fix-folder-appears-empty-after-returning/) |
 | 260405-oum | Add Defaults tab to display and edit .planning/config.json settings | 2026-04-06 | 963c8a4 | [260405-oum](./quick/260405-oum-add-defaults-tab-to-display-and-edit-pla/) |
 | 260405-urb | Write a README.md for GitHub | 2026-04-06 | d0130d8 | [260405-urb](./quick/260405-urb-write-a-readme-md-for-github/) |
+| 260509-k9m | Extend Defaults tab: intel/graphify keys, text input, x-to-clear | 2026-05-09 | 3d77fa5 | [260509-k9m](./quick/260509-k9m-extend-defaults-tab-text-input-and-clear/) |
 
 ## Session Continuity
 
