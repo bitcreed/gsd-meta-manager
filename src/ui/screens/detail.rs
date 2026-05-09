@@ -247,6 +247,7 @@ fn switch_to_tab(
         cache.defaults_selected = 0;
         cache.defaults_editing = None;
         cache.defaults_dropdown_selected = 0;
+        cache.defaults_text_buffer.clear();
     }
 
     // Load milestone list for archive tab on first visit
@@ -306,6 +307,27 @@ impl Screen for DetailScreen {
             .cloned()
             .unwrap_or_default();
         let current_idx = tab_index(&current_view);
+
+        // Text-input intercept: when the Defaults tab has a String entry being
+        // edited, route all keystrokes to the input buffer so character keys
+        // ('q', 'x', 'r', etc.) don't trigger their global shortcuts.
+        if current_view == DetailSubView::Defaults {
+            let editing_text_idx = {
+                let cache = ctx.view_cache.get(&self.alias);
+                let editing = cache.and_then(|c| c.defaults_editing);
+                editing.and_then(|idx| {
+                    cache
+                        .and_then(|c| c.defaults_config.as_ref())
+                        .map(build_defaults_entries)
+                        .and_then(|entries| entries.into_iter().nth(idx))
+                        .filter(|e| matches!(e.kind, ConfigValueKind::String))
+                        .map(|_| idx)
+                })
+            };
+            if let Some(editing_idx) = editing_text_idx {
+                return self.handle_text_input_key(code, ctx, editing_idx);
+            }
+        }
 
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {
@@ -371,6 +393,7 @@ impl Screen for DetailScreen {
                     if cache.defaults_editing.is_some() {
                         cache.defaults_editing = None;
                         cache.defaults_dropdown_selected = 0;
+                        cache.defaults_text_buffer.clear();
                         ctx.needs_redraw = true;
                         return ScreenAction::None;
                     }
@@ -1077,6 +1100,16 @@ impl Screen for DetailScreen {
                                     let current_idx = options.iter().position(|o| o == &entry.value).unwrap_or(0);
                                     cache.defaults_editing = Some(selected);
                                     cache.defaults_dropdown_selected = current_idx;
+                                } else if matches!(entry.kind, ConfigValueKind::String) {
+                                    // Open text input pre-filled with current value
+                                    // ("(unset)" is treated as empty so the user can type fresh).
+                                    cache.defaults_editing = Some(selected);
+                                    cache.defaults_text_buffer =
+                                        if entry.value == "(unset)" {
+                                            String::new()
+                                        } else {
+                                            entry.value.clone()
+                                        };
                                 } else if matches!(entry.kind, ConfigValueKind::Integer) {
                                     // Integers have no fixed list — keep cycling behavior.
                                     if let Some(ref mut config) = cache.defaults_config {
@@ -1099,6 +1132,39 @@ impl Screen for DetailScreen {
                     }
                     _ => ScreenAction::None,
                 }
+            }
+            // 'x' key: clear (unset) the value of the selected config row
+            KeyCode::Char('x') if current_view == DetailSubView::Defaults => {
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                if cache.defaults_editing.is_none() {
+                    if let Some(ref mut config) = cache.defaults_config {
+                        let entries = build_defaults_entries(config);
+                        let selected = cache.defaults_selected;
+                        if let Some(entry) = entries.get(selected) {
+                            let key = entry.key;
+                            let cleared = clear_config_value(config, key);
+                            if cleared {
+                                if let Some(project) = ctx.config.projects.get(&self.alias) {
+                                    let config_path = project.path.join(".planning/config.json");
+                                    if let Ok(json) = crate::state_reader::config_json::serialize_gsd_config(config) {
+                                        let _ = std::fs::write(&config_path, &json);
+                                        ctx.status_message = Some((
+                                            format!("Cleared {}", key),
+                                            std::time::Instant::now(),
+                                        ));
+                                    }
+                                }
+                            } else {
+                                ctx.status_message = Some((
+                                    format!("{} cannot be cleared", key),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                ctx.needs_redraw = true;
+                ScreenAction::None
             }
             // 'r' key: reload config (Defaults tab only)
             KeyCode::Char('r') if current_view == DetailSubView::Defaults => {
@@ -1483,6 +1549,68 @@ impl Screen for DetailScreen {
 }
 
 impl DetailScreen {
+    /// Handle a keystroke while a text-input editor is open on the Defaults
+    /// tab. Char/Backspace edit the buffer, Enter persists, Esc cancels.
+    fn handle_text_input_key(
+        &self,
+        code: KeyCode,
+        ctx: &mut AppContext,
+        editing_idx: usize,
+    ) -> ScreenAction {
+        match code {
+            KeyCode::Char(c) => {
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                cache.defaults_text_buffer.push(c);
+                ctx.needs_redraw = true;
+            }
+            KeyCode::Backspace => {
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                cache.defaults_text_buffer.pop();
+                ctx.needs_redraw = true;
+            }
+            KeyCode::Esc => {
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                cache.defaults_editing = None;
+                cache.defaults_text_buffer.clear();
+                ctx.needs_redraw = true;
+            }
+            KeyCode::Enter => {
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                let buffer = std::mem::take(&mut cache.defaults_text_buffer);
+                cache.defaults_editing = None;
+                if let Some(ref mut config) = cache.defaults_config {
+                    let entries = build_defaults_entries(config);
+                    if let Some(entry) = entries.get(editing_idx) {
+                        let key = entry.key;
+                        let applied = if buffer.is_empty() {
+                            clear_config_value(config, key)
+                        } else {
+                            set_string_value(config, key, &buffer)
+                        };
+                        if applied {
+                            if let Some(project) = ctx.config.projects.get(&self.alias) {
+                                let config_path =
+                                    project.path.join(".planning/config.json");
+                                if let Ok(json) =
+                                    crate::state_reader::config_json::serialize_gsd_config(config)
+                                {
+                                    let _ = std::fs::write(&config_path, &json);
+                                    ctx.status_message = Some((
+                                        "Config saved".to_string(),
+                                        std::time::Instant::now(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                ctx.needs_redraw = true;
+            }
+            _ => {}
+        }
+        ScreenAction::None
+    }
+
     /// Render the phase list tab content.
     fn render_phase_list(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         let alias = &self.alias;
@@ -2573,10 +2701,38 @@ impl DetailScreen {
         list_state.select(Some(selected));
         frame.render_stateful_widget(list, area, &mut list_state);
 
-        // Render dropdown overlay if editing
+        // Render dropdown OR text-input overlay if editing
         if let Some(cache) = cache {
             if let Some(editing_idx) = cache.defaults_editing {
                 if let Some(entry) = entries.get(editing_idx) {
+                    if matches!(entry.kind, ConfigValueKind::String) {
+                        let title = format!(" {} (Enter to save, Esc to cancel) ", entry.key);
+                        let buffer = &cache.defaults_text_buffer;
+                        let inner_w = buffer.len().max(title.len()).max(30) as u16;
+                        let popup_w = (inner_w + 4).min(area.width.saturating_sub(2));
+                        let popup_h = 3u16;
+                        let popup_x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+                        let popup_y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+                        let popup_area = Rect {
+                            x: popup_x,
+                            y: popup_y,
+                            width: popup_w,
+                            height: popup_h,
+                        };
+                        frame.render_widget(ratatui::widgets::Clear, popup_area);
+                        let text = Paragraph::new(Line::from(vec![
+                            Span::styled(buffer.clone(), Style::default().fg(Color::White)),
+                            Span::styled("█", Style::default().fg(Color::Cyan)),
+                        ]))
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .border_style(Style::default().fg(Color::Cyan))
+                                .title(title),
+                        );
+                        frame.render_widget(text, popup_area);
+                        return;
+                    }
                     let options = dropdown_options(&entry.kind);
                     if !options.is_empty() {
                         let dropdown_idx =
@@ -3069,6 +3225,102 @@ fn set_config_value(
             config.workflow.get_or_insert_with(WorkflowConfig::default).discuss_mode = Some(value.to_string());
             true
         }
+        _ => false,
+    }
+}
+
+/// Set a String-kind config field by key. Returns true if recognized.
+/// `value` is assumed to be non-empty (callers route empty input through
+/// `clear_config_value` instead).
+fn set_string_value(
+    config: &mut crate::state_reader::config_json::GsdConfig,
+    key: &str,
+    value: &str,
+) -> bool {
+    use crate::state_reader::config_json::*;
+
+    match key {
+        "project_code" => { config.project_code = Some(value.to_string()); true }
+        "phase_naming" => { config.phase_naming = Some(value.to_string()); true }
+        "response_language" => { config.response_language = Some(value.to_string()); true }
+        "base_branch" => {
+            config.git.get_or_insert_with(GitConfig::default).base_branch = Some(value.to_string());
+            true
+        }
+        "phase_branch_template" => {
+            config.git.get_or_insert_with(GitConfig::default).phase_branch_template = Some(value.to_string());
+            true
+        }
+        "milestone_branch_template" => {
+            config.git.get_or_insert_with(GitConfig::default).milestone_branch_template = Some(value.to_string());
+            true
+        }
+        "quick_branch_template" => {
+            config.git.get_or_insert_with(GitConfig::default).quick_branch_template =
+                Some(serde_json::Value::String(value.to_string()));
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Clear (set to None / unset) the config field identified by `key`.
+/// Required scalar fields (`mode`, `granularity`, `model_profile`) are NOT
+/// clearable — those rows ignore the clear shortcut.
+fn clear_config_value(
+    config: &mut crate::state_reader::config_json::GsdConfig,
+    key: &str,
+) -> bool {
+    use crate::state_reader::config_json::*;
+
+    match key {
+        // Required (non-Option) fields — refuse to clear.
+        "mode" | "granularity" | "model_profile" => false,
+
+        // Top-level Options
+        "commit_docs" => { config.commit_docs = None; true }
+        "parallelization" => { config.parallelization = None; true }
+        "search_gitignored" => { config.search_gitignored = None; true }
+        "brave_search" => { config.brave_search = None; true }
+        "firecrawl" => { config.firecrawl = None; true }
+        "exa_search" => { config.exa_search = None; true }
+        "project_code" => { config.project_code = None; true }
+        "phase_naming" => { config.phase_naming = None; true }
+        "response_language" => { config.response_language = None; true }
+
+        // Git
+        "branching_strategy" => { config.git.get_or_insert_with(GitConfig::default).branching_strategy = None; true }
+        "base_branch" => { config.git.get_or_insert_with(GitConfig::default).base_branch = None; true }
+        "phase_branch_template" => { config.git.get_or_insert_with(GitConfig::default).phase_branch_template = None; true }
+        "milestone_branch_template" => { config.git.get_or_insert_with(GitConfig::default).milestone_branch_template = None; true }
+        "quick_branch_template" => { config.git.get_or_insert_with(GitConfig::default).quick_branch_template = None; true }
+
+        // Workflow
+        "research" => { config.workflow.get_or_insert_with(WorkflowConfig::default).research = None; true }
+        "plan_check" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_check = None; true }
+        "verifier" => { config.workflow.get_or_insert_with(WorkflowConfig::default).verifier = None; true }
+        "nyquist_validation" => { config.workflow.get_or_insert_with(WorkflowConfig::default).nyquist_validation = None; true }
+        "auto_advance" => { config.workflow.get_or_insert_with(WorkflowConfig::default).auto_advance = None; true }
+        "node_repair" => { config.workflow.get_or_insert_with(WorkflowConfig::default).node_repair = None; true }
+        "node_repair_budget" => { config.workflow.get_or_insert_with(WorkflowConfig::default).node_repair_budget = None; true }
+        "ui_phase" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_phase = None; true }
+        "ui_safety_gate" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_safety_gate = None; true }
+        "text_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).text_mode = None; true }
+        "research_before_questions" => { config.workflow.get_or_insert_with(WorkflowConfig::default).research_before_questions = None; true }
+        "discuss_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).discuss_mode = None; true }
+        "skip_discuss" => { config.workflow.get_or_insert_with(WorkflowConfig::default).skip_discuss = None; true }
+        "auto_chain_active" => { config.workflow.get_or_insert_with(WorkflowConfig::default).auto_chain_active = None; true }
+        "use_worktrees" => { config.workflow.get_or_insert_with(WorkflowConfig::default).use_worktrees = None; true }
+        "subagent_timeout" => { config.workflow.get_or_insert_with(WorkflowConfig::default).subagent_timeout = None; true }
+
+        // Hooks
+        "context_warnings" => { config.hooks.get_or_insert_with(HooksConfig::default).context_warnings = None; true }
+
+        // Intel / Graphify
+        "intel_enabled" => { config.intel.get_or_insert_with(IntelConfig::default).enabled = None; true }
+        "graphify_enabled" => { config.graphify.get_or_insert_with(GraphifyConfig::default).enabled = None; true }
+        "graphify_build_timeout" => { config.graphify.get_or_insert_with(GraphifyConfig::default).build_timeout = None; true }
+
         _ => false,
     }
 }

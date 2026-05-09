@@ -71,10 +71,13 @@ pub struct ProjectViewCache {
     pub archive_file_name: Option<String>,
     pub defaults_config: Option<crate::state_reader::config_json::GsdConfig>,
     pub defaults_selected: usize,
-    /// When `Some(entry_idx)`, a dropdown is open for that entry.
+    /// When `Some(entry_idx)`, a dropdown OR text input is open for that entry.
+    /// The render code decides which UI to show based on the entry's kind.
     pub defaults_editing: Option<usize>,
-    /// Cursor position inside the open dropdown.
+    /// Cursor position inside the open dropdown (only used for Bool/Enum).
     pub defaults_dropdown_selected: usize,
+    /// In-progress text the user is typing for a String-kind entry.
+    pub defaults_text_buffer: String,
 }
 
 pub struct AppContext {
