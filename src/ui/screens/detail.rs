@@ -2896,7 +2896,7 @@ fn build_defaults_entries(config: &crate::state_reader::config_json::GsdConfig) 
     let cat = "General";
     push(cat, "mode", config.mode.clone(), ConfigValueKind::Enum(&["interactive", "yolo"]), true);
     push(cat, "granularity", config.granularity.clone(), ConfigValueKind::Enum(&["coarse", "standard", "fine"]), false);
-    push(cat, "model_profile", config.model_profile.clone(), ConfigValueKind::Enum(&["quality", "balanced", "budget", "inherit"]), false);
+    push(cat, "model_profile", config.model_profile.clone(), ConfigValueKind::Enum(&["quality", "balanced", "budget", "adaptive", "inherit"]), false);
     let (v, k) = opt_bool_display(&config.commit_docs);
     push(cat, "commit_docs", v, k, false);
     let (v, k) = opt_bool_display(&config.parallelization);
