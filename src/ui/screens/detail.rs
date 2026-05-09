@@ -1177,6 +1177,47 @@ impl Screen for DetailScreen {
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
+            // Tab: switch the host terminal to a Claude session for this project.
+            // From the Sessions tab, jump to the highlighted session.
+            // From any other tab, jump to the first session matching the project's path.
+            KeyCode::Tab => {
+                let project_path = ctx
+                    .config
+                    .projects
+                    .get(&self.alias)
+                    .map(|p| p.path.clone());
+                let session = if current_view == DetailSubView::Sessions {
+                    let filtered: Vec<_> = project_path
+                        .as_ref()
+                        .map(|path| {
+                            ctx.active_sessions
+                                .iter()
+                                .filter(|s| s.working_dir == *path)
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                    filtered.get(cache.sessions_selected).cloned()
+                } else {
+                    project_path.and_then(|path| {
+                        ctx.active_sessions
+                            .iter()
+                            .find(|s| s.working_dir == path)
+                            .cloned()
+                    })
+                };
+                let msg = match session {
+                    Some(s) => match crate::terminal_switch::switch_to_session(&s) {
+                        Ok(()) => format!("Switched to {}", self.alias),
+                        Err(e) => e,
+                    },
+                    None => format!("No active Claude session for {}", self.alias),
+                };
+                ctx.status_message = Some((msg, std::time::Instant::now()));
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
             // 'd' key: toggle between editing project config and ~/.gsd/defaults.json
             KeyCode::Char('d') if current_view == DetailSubView::Defaults => {
                 use super::DefaultsEditTarget;
@@ -3084,6 +3125,8 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
         DetailSubView::Sessions => {
             spans.push(Span::styled("[Enter]", b));
             spans.push(Span::raw("resume  "));
+            spans.push(Span::styled("[Tab]", b));
+            spans.push(Span::raw("switch  "));
             spans.push(Span::styled("[n]", b));
             spans.push(Span::raw("ew session  "));
         }

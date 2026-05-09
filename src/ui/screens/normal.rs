@@ -142,6 +142,29 @@ impl Screen for NormalScreen {
                 ctx.needs_redraw = true;
                 ScreenAction::Push(Box::new(HelpScreen))
             }
+            KeyCode::Tab => {
+                let alias = match ctx.selected_alias() {
+                    Some(a) => a,
+                    None => return ScreenAction::None,
+                };
+                let project_path = ctx.config.projects.get(&alias).map(|p| p.path.clone());
+                let session = project_path.and_then(|path| {
+                    ctx.active_sessions
+                        .iter()
+                        .find(|s| s.working_dir == path)
+                        .cloned()
+                });
+                let msg = match session {
+                    Some(s) => match crate::terminal_switch::switch_to_session(&s) {
+                        Ok(()) => format!("Switched to {}", alias),
+                        Err(e) => e,
+                    },
+                    None => format!("No active Claude session for {}", alias),
+                };
+                ctx.status_message = Some((msg, std::time::Instant::now()));
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
             _ => ScreenAction::None,
         }
     }
@@ -489,6 +512,8 @@ fn render_normal_footer(frame: &mut Frame, area: Rect, ctx: &AppContext) {
     let right_spans = vec![
         Span::styled("[/]", bold),
         Span::raw("search  "),
+        Span::styled("[Tab]", bold),
+        Span::raw("session  "),
         Span::styled("[?]", bold),
         Span::raw("help  "),
         Span::styled("[a]", bold),

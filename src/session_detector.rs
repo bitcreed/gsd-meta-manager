@@ -7,6 +7,10 @@ pub struct ClaudeSession {
     pub session_id: Option<String>,
     pub working_dir: PathBuf,
     pub start_time: Option<u64>,
+    /// Controlling TTY in tmux-friendly form (e.g. "pts/3"). The leading
+    /// "/dev/" is stripped so a `contains()` match against tmux's
+    /// `#{pane_tty}` (which prints "/dev/pts/3") still hits.
+    pub tty: Option<String>,
 }
 
 /// Detect active Claude Code sessions by inspecting the Linux /proc filesystem.
@@ -51,12 +55,29 @@ fn build_session(pid: u32) -> Option<ClaudeSession> {
     // Read start_time from /proc/PID/stat field 22
     let start_time = read_start_time(pid);
 
+    // Read TTY from /proc/PID/fd/0 — the controlling terminal symlinks
+    // here for any interactive Claude session.
+    let tty = read_tty(pid);
+
     Some(ClaudeSession {
         pid,
         session_id,
         working_dir,
         start_time,
+        tty,
     })
+}
+
+fn read_tty(pid: u32) -> Option<String> {
+    let link = std::fs::read_link(format!("/proc/{}/fd/0", pid)).ok()?;
+    let s = link.to_string_lossy();
+    // /dev/pts/3 → pts/3 ; /dev/tty1 → tty1 ; anything else passes through.
+    let stripped = s.strip_prefix("/dev/").unwrap_or(&s);
+    if stripped.is_empty() {
+        None
+    } else {
+        Some(stripped.to_string())
+    }
 }
 
 fn read_session_id(pid: u32) -> Option<String> {

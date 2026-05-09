@@ -9,5 +9,6 @@ pub mod project_creator;
 pub mod registry;
 pub mod session_detector;
 pub mod state_reader;
+pub mod terminal_switch;
 pub mod ui;
 pub mod watcher;
