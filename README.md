@@ -1,28 +1,30 @@
+<!-- generated-by: gsd-doc-writer -->
 # GSD Meta Manager
 
 A TUI command center for managing multiple GSD-run projects from a single interface.
 
-<!-- TODO: Add screenshot or terminal recording here -->
-
 ## What is it?
 
-GSD (Get S\[oftware\] Done) Meta Manager gives you a unified dashboard across all your
-[GSD workflow](https://github.com/anthropics/claude-code/tree/main/.claude/get-shit-done)
-projects. It reads `.planning/` state directly from disk -- no need to launch
-Claude or run `/gsd:progress` in each project directory. Register your projects
-once and see phase status, roadmap progress, queued work, and pending actions at
-a glance.
+GSD (Get S\[oftware\] Done) Meta Manager gives you a unified dashboard across all
+your GSD workflow projects. It reads `.planning/` state directly from disk -- no
+need to launch Claude or run `/gsd:progress` in each project directory. Register
+your projects once and see phase status, roadmap progress, queued work, and
+pending actions at a glance.
 
 ## Features
 
 - Unified dashboard with color-coded project status (active, paused, idle)
 - Live filesystem watching -- auto-refreshes when `.planning/` files change
 - Vim-style navigation (`j`/`k`, `/` search, `Enter` to drill in)
-- 10-tab detail view: Phases, Roadmap (ASCII DAG), Backlog, Git History, Pipeline, Queue, Sessions, Archive, Config, Docs (rendered `.planning/` browser rooted at the active phase, with quick jumps to `.planning/` and back)
+- 10-tab detail view: Phases, Roadmap (ASCII DAG), Backlog, Git History,
+  Pipeline, Queue, Sessions, Archive, Config, Docs (rendered `.planning/`
+  browser rooted at the active phase, with quick jumps to `.planning/` and back)
 - Queue management: create, edit, delete, and reorder items
 - New project creation from within the TUI
 - Claude session detection (shows which projects have active Claude instances)
-- Auto-registration of GSD projects from active Claude sessions -- any running `claude` whose working directory contains `.planning/` is added to the registry automatically
+- Auto-registration of GSD projects from active Claude sessions -- any running
+  `claude` whose working directory contains `.planning/` is added to the
+  registry automatically
 - Paused project detection (parses HANDOFF files)
 - Milestone archive browser with inline markdown rendering
 - Search and filter across projects
@@ -33,23 +35,45 @@ Requires **Rust 1.85+**.
 
 ### From source
 
-```sh
+```bash
 cargo install --path .
 ```
 
 ### Build manually
 
-```sh
+```bash
 cargo build --release
 ```
 
 The binary is at `target/release/gsd-meta-manager`.
 
+## Quick start
+
+1. Build and install the binary:
+
+   ```bash
+   cargo install --path .
+   ```
+
+2. Launch the TUI:
+
+   ```bash
+   gsd-meta-manager
+   ```
+
+3. Register a project by pressing `a` and entering the path to any directory
+   that contains a `.planning/` folder, or via the CLI:
+
+   ```bash
+   gsd-meta-manager add /path/to/your/gsd-project
+   ```
+
+4. Active `claude` sessions whose working directory contains `.planning/` are
+   auto-registered on launch and during the ~5s session poll.
+
 ## Usage
 
-Launch the manager with `gsd-meta-manager`
-
-```sh
+```text
 gsd-meta-manager --help
 TUI command center for GSD projects
 
@@ -64,20 +88,10 @@ Commands:
 Options:
       --config <CONFIG>  Path to config file (overrides default location)
   -h, --help             Print help
+  -V, --version          Print version
 ```
 
-Register a project by pressing `a` and entering the path to a GSD project
-directory (any directory containing a `.planning/` folder) or by using the
-command line option `gsd-meta-manager add <path> [alias]`.
-
-Projects are also discovered automatically: at launch and on each session
-poll (~5s), any active `claude` process whose working directory is a GSD
-project (contains `.planning/`) is registered without prompting. The alias
-is derived from the directory's basename (with a `-2`, `-3`, ... suffix on
-collision), and an `Auto-registered: <alias>` status message confirms each
-addition.
-
-### Key Bindings
+### Key bindings
 
 | Key              | Action                  |
 |------------------|-------------------------|
@@ -91,20 +105,42 @@ addition.
 | `?`              | Show help               |
 | `q`              | Quit                    |
 
+### Examples
+
+Register a project with a custom alias:
+
+```bash
+gsd-meta-manager add /home/me/projects/my-app my-app
+```
+
+List all registered projects:
+
+```bash
+gsd-meta-manager list
+```
+
+Remove a project from the registry:
+
+```bash
+gsd-meta-manager remove my-app
+```
+
 ### Configuration
 
 User configuration is stored at:
 
-```
-~/.config/gsd-meta-manager/config.toml
+```text
+~/.config/gsd-meta-manager/config.json
 ```
 
-## How it Works
+Override the config location with `--config <PATH>`.
 
-GSD Meta Manager reads each registered project's `.planning/` directory to
-infer phase status, roadmap progress, queue state, and workflow position. A
-filesystem watcher ([notify](https://crates.io/crates/notify)) triggers live
-updates whenever planning files change on disk. A single async event loop
+## How it works
+
+GSD Meta Manager reads each registered project's `.planning/` directory to infer
+phase status, roadmap progress, queue state, and workflow position. A filesystem
+watcher ([notify](https://crates.io/crates/notify)) triggers live updates
+whenever planning files change on disk. A single async event loop
 ([tokio](https://crates.io/crates/tokio)) races terminal input, filesystem
 events, and a render tick interval -- the UI never blocks on I/O.
 
@@ -119,8 +155,8 @@ terminal support.
 
 ## Contributing
 
-Contributions welcome. Please open an issue to discuss changes before
-submitting a PR.
+Contributions welcome. Please open an issue to discuss changes before submitting
+a PR.
 
 ## License
 
