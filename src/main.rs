@@ -105,6 +105,15 @@ async fn main() -> anyhow::Result<()> {
             // Store watcher on App context so new projects can be watched dynamically
             app.ctx.watcher = Some(watcher);
 
+            // Startup scan: auto-register any active Claude sessions whose
+            // working_dir is an unregistered GSD project. The session poll
+            // tick handles the same logic ongoing (every ~5s), but this
+            // closes the gap between launch and the first poll.
+            let initial_sessions = gsd_meta_manager::session_detector::detect_sessions();
+            app.active_sessions = initial_sessions.clone();
+            app.ctx.active_sessions = initial_sessions;
+            app.auto_register_new_sessions();
+
             event_bus.spawn_crossterm_reader();
             event_bus.spawn_tick(250);
 

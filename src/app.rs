@@ -160,6 +160,61 @@ impl App {
         }
     }
 
+    /// Auto-register any active Claude sessions whose working_dir is an
+    /// unregistered GSD project. Persists config, starts the file watcher,
+    /// loads initial project state, and surfaces a status message per
+    /// newly-added project.
+    pub fn auto_register_new_sessions(&mut self) {
+        let added =
+            registry::auto_register_from_sessions(&mut self.ctx.config, &self.active_sessions);
+
+        if added.is_empty() {
+            return;
+        }
+
+        for (alias, path) in &added {
+            if let Err(e) = save_config(&self.ctx.config, &self.ctx.config_path) {
+                tracing::warn!(
+                    alias = %alias,
+                    error = %e,
+                    "auto-register: save_config failed",
+                );
+                // Continue; the in-memory registration still helps this session.
+            }
+
+            let planning_dir = path.join(".planning");
+            if let Some(ref mut watcher) = self.ctx.watcher {
+                if let Err(e) = watcher.watch(&planning_dir) {
+                    tracing::warn!(
+                        alias = %alias,
+                        path = %planning_dir.display(),
+                        error = %e,
+                        "auto-register: watcher.watch failed",
+                    );
+                }
+            }
+
+            let state = state_reader::parse_project_state(&planning_dir);
+            self.ctx
+                .change_tracker
+                .record_initial(alias, &state);
+            self.ctx.project_states.insert(alias.clone(), state);
+
+            tracing::info!(
+                alias = %alias,
+                path = %path.display(),
+                "Auto-registered GSD project from active Claude session",
+            );
+            self.ctx.status_message = Some((
+                format!("Auto-registered: {}", alias),
+                std::time::Instant::now(),
+            ));
+        }
+
+        self.ctx.recompute_filtered_aliases();
+        self.needs_redraw = true;
+    }
+
     pub fn update(&mut self, action: Action) {
         match action {
             Action::Tick => {
@@ -266,6 +321,7 @@ impl App {
             Action::SessionsDetected { sessions } => {
                 self.active_sessions = sessions.clone();
                 self.ctx.active_sessions = sessions;
+                self.auto_register_new_sessions();
                 self.needs_redraw = true;
             }
             Action::CreateProjectResult {
