@@ -1,9 +1,9 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.3
-milestone_name: Configuration & Pipeline Visibility
+milestone: v1.4
+milestone_name: Live Sessions & Document Browsing
 status: shipped
-stopped_at: "Tagged v1.3 — Configuration & Pipeline Visibility"
+stopped_at: "Tagged v1.4 — Live Sessions & Document Browsing"
 last_updated: "2026-05-12T00:00:00.000Z"
 last_activity: 2026-05-12
 progress:
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** v1.3 shipped — ready for the next milestone (`/gsd:new-milestone`)
+**Current focus:** v1.4 shipped — ready for the next milestone (`/gsd:new-milestone`)
 
 ## Current Position
 
 Phase: —
 Plan: —
-Status: v1.3 shipped (Configuration & Pipeline Visibility) — no active milestone
-Last activity: 2026-05-12 - Completed quick task 260512-fe6: Docs browser tab for .planning/
+Status: v1.4 shipped (Live Sessions & Document Browsing) — no active milestone
+Last activity: 2026-05-12 - Tagged v1.4
 
 Progress: [##########] 100%
 
@@ -104,5 +104,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-05-12T18:05:00.273Z
-Stopped at: Completed quick task 260512-fe6: Docs browser tab for .planning/
+Stopped at: Tagged v1.4 — Live Sessions & Document Browsing
 Resume file: None

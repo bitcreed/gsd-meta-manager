@@ -4,6 +4,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "gsd-meta-manager",
+    version,
     about = "TUI command center for GSD projects"
 )]
 pub struct Cli {
