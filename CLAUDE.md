@@ -124,6 +124,33 @@ Use these entry points:
 Do not make direct repo edits outside a GSD workflow unless the user explicitly asks to bypass it.
 <!-- GSD:workflow-end -->
 
+## Release Process
+
+When tagging a milestone (`vX.Y`), do all of the following before creating the tag:
+
+1. **Bump `Cargo.toml` `version`** to match the milestone — `v1.4` → `version = "1.4.0"`. The crate version and the milestone tag must stay in sync; `gsd-meta-manager --version` reads from `Cargo.toml`. Historically the version drifted (stuck at `0.1.0` through v1.0–v1.3); don't re-introduce that drift.
+2. **Run `cargo update`** to refresh `Cargo.lock` to the latest within current semver constraints. List any deps still behind latest (typically semver-breaking direct deps or upstream-pinned transitives) in the release commit body so the gap is visible; defer the actual major bump as a separate change.
+3. **Verify clean** after the bumps: `cargo build && cargo test && cargo clippy -- -D warnings`.
+4. **Update `.planning/STATE.md`**: `milestone`, `milestone_name`, `status: shipped`, `stopped_at`, the "Current Position" block, and "Session Continuity".
+5. **Release commit**: `chore(release): vX.Y — <milestone name>`. The body itemizes every quick task and phase shipped in this milestone plus any deferred dep bumps.
+6. **Annotated tag with the full changelog in the annotation body** — not just a one-line title. Example:
+   ```
+   git tag -a vX.Y -F - <<'EOF'
+   vX.Y <milestone name>
+
+   <one-line summary>
+
+   Changes:
+   - <quick-task id>  <short title>
+   - <phase number>   <short title>
+
+   Dependencies:
+   - cargo update: <highlights>
+   - deferred:     <semver-breaking deps not bumped>
+   EOF
+   ```
+   The tag annotation is the canonical changelog — `git tag -l --format='%(contents)' vX.Y` must show what shipped without consulting the commit log. The release commit body and the tag annotation should agree.
+
 
 
 <!-- GSD:profile-start -->
