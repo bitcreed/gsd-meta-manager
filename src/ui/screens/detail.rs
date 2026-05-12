@@ -3036,12 +3036,14 @@ fn build_substage_lines(inf: &DiskInference) -> Vec<Line<'static>> {
         || inf.has_validation
         || inf.has_ui_spec
         || inf.has_ui_check
-        || inf.has_ai_spec;
+        || inf.has_ai_spec
+        || inf.has_security;
     if plan_touched {
         lines.push(Line::from(Span::styled(
             "  Plan sub-stages:",
             Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
         )));
+        push_substage(&mut lines, "Security", inf.has_security);
         push_substage(&mut lines, "Patterns", inf.has_patterns);
         push_substage(&mut lines, "UI-Spec", inf.has_ui_spec);
         push_substage(&mut lines, "AI-Spec", inf.has_ai_spec);
