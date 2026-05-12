@@ -75,6 +75,7 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     let mut has_ai_spec = false;
     let mut has_review = false;
     let mut has_ui_review = false;
+    let mut has_security = false;
 
     for entry in entries.flatten() {
         let name = match entry.file_name().into_string() {
@@ -119,6 +120,10 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         }
         if name == "VALIDATION.md" || name.ends_with("-VALIDATION.md") {
             has_validation = true;
+            continue;
+        }
+        if name == "SECURITY.md" || name.ends_with("-SECURITY.md") {
+            has_security = true;
             continue;
         }
 
@@ -172,7 +177,7 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         has_context,
         has_research,
         has_verification,
-        has_security: false,
+        has_security,
         has_patterns,
         has_plan_check,
         has_validation,
