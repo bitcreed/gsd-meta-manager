@@ -90,6 +90,22 @@ pub struct ProjectViewCache {
     pub defaults_dropdown_selected: usize,
     /// In-progress text the user is typing for a String-kind entry.
     pub defaults_text_buffer: String,
+    // ── Docs browser tab state ────────────────────────────────────────
+    pub browser_depth: crate::browser::BrowserDepth,
+    /// `None` until the user first activates the Docs tab; then set to the
+    /// initial active-phase dir (or `.planning/` root if milestone complete).
+    pub browser_current_dir: Option<PathBuf>,
+    /// Root directory of the browse session (the project's `.planning/`).
+    /// Used as the boundary for "navigate up" — Backspace at this dir is a no-op.
+    pub browser_root: Option<PathBuf>,
+    /// Entry directory the browser opened on (active phase or root). `g` jumps
+    /// to `browser_root`; `p` jumps back here.
+    pub browser_entry_dir: Option<PathBuf>,
+    pub browser_entries: Vec<crate::browser::BrowserEntry>,
+    pub browser_selected: usize,
+    pub browser_scroll_offset: u16,
+    pub browser_file_content: Option<String>,
+    pub browser_file_name: Option<String>,
 }
 
 pub struct AppContext {

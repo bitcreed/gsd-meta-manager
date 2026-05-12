@@ -19,7 +19,7 @@ use ratatui::Frame;
 
 const PAGE_SCROLL_LINES: u16 = 20;
 
-const TAB_TITLES: [&str; 9] = [
+const TAB_TITLES: [&str; 10] = [
     "1:Phases",
     "2:Roadmap",
     "3:Backlog",
@@ -29,6 +29,7 @@ const TAB_TITLES: [&str; 9] = [
     "7:Sess",
     "8:Arch",
     "9:Cfg",
+    "0:Docs",
 ];
 
 pub struct DetailScreen {
@@ -56,6 +57,7 @@ fn tab_index(sub_view: &DetailSubView) -> usize {
         DetailSubView::Sessions => 6,
         DetailSubView::Archive => 7,
         DetailSubView::Defaults => 8,
+        DetailSubView::Browse => 9,
     }
 }
 
@@ -70,6 +72,7 @@ fn sub_view_from_index(index: usize) -> DetailSubView {
         6 => DetailSubView::Sessions,
         7 => DetailSubView::Archive,
         8 => DetailSubView::Defaults,
+        9 => DetailSubView::Browse,
         _ => DetailSubView::PhaseList,
     }
 }
@@ -252,6 +255,33 @@ fn switch_to_tab(
         cache.defaults_text_buffer.clear();
     }
 
+    // Lazy-init the docs browser on first visit: resolve the active phase
+    // directory (or `.planning/` root if milestone complete) and populate
+    // the entry list. Re-running this on subsequent visits would wipe any
+    // navigation state, so we only run it when `browser_current_dir` is None.
+    if new_view == DetailSubView::Browse {
+        let project_path = ctx
+            .config
+            .projects
+            .get(alias)
+            .map(|p| p.path.clone());
+        let project_state = ctx.project_states.get(alias).cloned();
+        let cache = ctx.view_cache.entry(alias.to_string()).or_default();
+        if cache.browser_current_dir.is_none() {
+            if let (Some(path), Some(state)) = (project_path, project_state) {
+                let planning_dir = path.join(".planning");
+                let entry_dir = crate::browser::resolve_active_phase_dir(&planning_dir, &state);
+                cache.browser_entries = crate::browser::list_dir(&entry_dir);
+                cache.browser_root = Some(planning_dir);
+                cache.browser_entry_dir = Some(entry_dir.clone());
+                cache.browser_current_dir = Some(entry_dir);
+                cache.browser_selected = 0;
+                cache.browser_scroll_offset = 0;
+                cache.browser_depth = crate::browser::BrowserDepth::List;
+            }
+        }
+    }
+
     // Load milestone list for archive tab on first visit
     if new_view == DetailSubView::Archive {
         let cache = ctx.view_cache.entry(alias.to_string()).or_default();
@@ -388,6 +418,39 @@ impl Screen for DetailScreen {
                         return ScreenAction::None;
                     }
                 }
+                // Browse: drop View→List, walk up one dir, or fall through to pop
+                if current_view == DetailSubView::Browse {
+                    let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                    use crate::browser::BrowserDepth;
+                    match cache.browser_depth {
+                        BrowserDepth::View => {
+                            cache.browser_depth = BrowserDepth::List;
+                            cache.browser_file_content = None;
+                            cache.browser_file_name = None;
+                            cache.browser_scroll_offset = 0;
+                            ctx.needs_redraw = true;
+                            return ScreenAction::None;
+                        }
+                        BrowserDepth::List => {
+                            let current = cache.browser_current_dir.clone();
+                            let root = cache.browser_root.clone();
+                            if let (Some(current), Some(root)) = (current, root) {
+                                if current != root {
+                                    if let Some(parent) = current.parent() {
+                                        let parent = parent.to_path_buf();
+                                        cache.browser_entries = crate::browser::list_dir(&parent);
+                                        cache.browser_current_dir = Some(parent);
+                                        cache.browser_selected = 0;
+                                        cache.browser_scroll_offset = 0;
+                                        ctx.needs_redraw = true;
+                                        return ScreenAction::None;
+                                    }
+                                }
+                            }
+                            // At the .planning/ root: fall through to pop screen
+                        }
+                    }
+                }
                 // If a config dropdown is open on the Defaults tab, close it first
                 if current_view == DetailSubView::Defaults {
                     let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
@@ -517,6 +580,24 @@ impl Screen for DetailScreen {
                         }
                         ctx.needs_redraw = true;
                     }
+                    DetailSubView::Browse => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        use crate::browser::BrowserDepth;
+                        match cache.browser_depth {
+                            BrowserDepth::List => {
+                                if !cache.browser_entries.is_empty() {
+                                    let max = cache.browser_entries.len().saturating_sub(1);
+                                    cache.browser_selected =
+                                        (cache.browser_selected + 1).min(max);
+                                }
+                            }
+                            BrowserDepth::View => {
+                                cache.browser_scroll_offset =
+                                    cache.browser_scroll_offset.saturating_add(1);
+                            }
+                        }
+                        ctx.needs_redraw = true;
+                    }
                     _ => {
                         self.scroll_offset = self.scroll_offset.saturating_add(1);
                         ctx.needs_redraw = true;
@@ -585,6 +666,21 @@ impl Screen for DetailScreen {
                                 cache.defaults_dropdown_selected.saturating_sub(1);
                         } else {
                             cache.defaults_selected = cache.defaults_selected.saturating_sub(1);
+                        }
+                        ctx.needs_redraw = true;
+                    }
+                    DetailSubView::Browse => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        use crate::browser::BrowserDepth;
+                        match cache.browser_depth {
+                            BrowserDepth::List => {
+                                cache.browser_selected =
+                                    cache.browser_selected.saturating_sub(1);
+                            }
+                            BrowserDepth::View => {
+                                cache.browser_scroll_offset =
+                                    cache.browser_scroll_offset.saturating_sub(1);
+                            }
                         }
                         ctx.needs_redraw = true;
                     }
@@ -696,6 +792,26 @@ impl Screen for DetailScreen {
                         }
                         ctx.needs_redraw = true;
                     }
+                    DetailSubView::Browse => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        use crate::browser::BrowserDepth;
+                        match cache.browser_depth {
+                            BrowserDepth::List => {
+                                if !cache.browser_entries.is_empty() {
+                                    let max = cache.browser_entries.len().saturating_sub(1);
+                                    cache.browser_selected = (cache.browser_selected
+                                        + PAGE_SCROLL_LINES as usize)
+                                        .min(max);
+                                }
+                            }
+                            BrowserDepth::View => {
+                                cache.browser_scroll_offset = cache
+                                    .browser_scroll_offset
+                                    .saturating_add(PAGE_SCROLL_LINES);
+                            }
+                        }
+                        ctx.needs_redraw = true;
+                    }
                     _ => {
                         self.scroll_offset = self.scroll_offset.saturating_add(PAGE_SCROLL_LINES);
                         ctx.needs_redraw = true;
@@ -762,6 +878,23 @@ impl Screen for DetailScreen {
                         cache.defaults_selected = cache.defaults_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
                         ctx.needs_redraw = true;
                     }
+                    DetailSubView::Browse => {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        use crate::browser::BrowserDepth;
+                        match cache.browser_depth {
+                            BrowserDepth::List => {
+                                cache.browser_selected = cache
+                                    .browser_selected
+                                    .saturating_sub(PAGE_SCROLL_LINES as usize);
+                            }
+                            BrowserDepth::View => {
+                                cache.browser_scroll_offset = cache
+                                    .browser_scroll_offset
+                                    .saturating_sub(PAGE_SCROLL_LINES);
+                            }
+                        }
+                        ctx.needs_redraw = true;
+                    }
                     _ => {
                         self.scroll_offset = self.scroll_offset.saturating_sub(PAGE_SCROLL_LINES);
                         ctx.needs_redraw = true;
@@ -779,6 +912,7 @@ impl Screen for DetailScreen {
             KeyCode::Char('7') => switch_to_tab(&self.alias, 6, &mut self.scroll_offset, ctx),
             KeyCode::Char('8') => switch_to_tab(&self.alias, 7, &mut self.scroll_offset, ctx),
             KeyCode::Char('9') => switch_to_tab(&self.alias, 8, &mut self.scroll_offset, ctx),
+            KeyCode::Char('0') => switch_to_tab(&self.alias, 9, &mut self.scroll_offset, ctx),
             // Tab switching via arrow keys
             KeyCode::Left => {
                 if current_idx > 0 {
@@ -1117,8 +1251,68 @@ impl Screen for DetailScreen {
                         ctx.needs_redraw = true;
                         ScreenAction::None
                     }
+                    DetailSubView::Browse => {
+                        // Space does nothing; only Enter descends/opens
+                        if code == KeyCode::Char(' ') {
+                            return ScreenAction::None;
+                        }
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        if cache.browser_depth != crate::browser::BrowserDepth::List {
+                            return ScreenAction::None;
+                        }
+                        let entry = cache
+                            .browser_entries
+                            .get(cache.browser_selected)
+                            .cloned();
+                        if let Some(entry) = entry {
+                            if entry.is_dir {
+                                cache.browser_entries = crate::browser::list_dir(&entry.path);
+                                cache.browser_current_dir = Some(entry.path);
+                                cache.browser_selected = 0;
+                                cache.browser_scroll_offset = 0;
+                            } else {
+                                cache.browser_file_content =
+                                    Some(crate::browser::read_md_file(&entry.path));
+                                cache.browser_file_name = Some(entry.name.clone());
+                                cache.browser_depth = crate::browser::BrowserDepth::View;
+                                cache.browser_scroll_offset = 0;
+                            }
+                            ctx.needs_redraw = true;
+                        }
+                        ScreenAction::None
+                    }
                     _ => ScreenAction::None,
                 }
+            }
+            // Docs browser: 'g' jumps to .planning/ root
+            KeyCode::Char('g') if current_view == DetailSubView::Browse => {
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                if let Some(root) = cache.browser_root.clone() {
+                    cache.browser_entries = crate::browser::list_dir(&root);
+                    cache.browser_current_dir = Some(root);
+                    cache.browser_selected = 0;
+                    cache.browser_scroll_offset = 0;
+                    cache.browser_depth = crate::browser::BrowserDepth::List;
+                    cache.browser_file_content = None;
+                    cache.browser_file_name = None;
+                    ctx.needs_redraw = true;
+                }
+                ScreenAction::None
+            }
+            // Docs browser: 'p' jumps back to the entry phase directory
+            KeyCode::Char('p') if current_view == DetailSubView::Browse => {
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                if let Some(entry_dir) = cache.browser_entry_dir.clone() {
+                    cache.browser_entries = crate::browser::list_dir(&entry_dir);
+                    cache.browser_current_dir = Some(entry_dir);
+                    cache.browser_selected = 0;
+                    cache.browser_scroll_offset = 0;
+                    cache.browser_depth = crate::browser::BrowserDepth::List;
+                    cache.browser_file_content = None;
+                    cache.browser_file_name = None;
+                    ctx.needs_redraw = true;
+                }
+                ScreenAction::None
             }
             // 'x' key: clear (unset) the value of the selected config row
             KeyCode::Char('x') if current_view == DetailSubView::Defaults => {
@@ -1601,6 +1795,7 @@ impl Screen for DetailScreen {
             DetailSubView::Sessions => self.render_sessions_tab(frame, content_area, ctx),
             DetailSubView::Archive => self.render_archive_tab(frame, content_area, ctx),
             DetailSubView::Defaults => self.render_defaults_tab(frame, content_area, ctx),
+            DetailSubView::Browse => self.render_browser_tab(frame, content_area, ctx),
         }
 
         // Render footer with tab-appropriate hints
@@ -2588,6 +2783,144 @@ impl DetailScreen {
         }
     }
 
+    /// Render the docs browser tab: a drill-down list of `.planning/` entries
+    /// (dirs first, then `.md` files) with a rendered markdown preview when a
+    /// file is open.
+    fn render_browser_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        use crate::browser::BrowserDepth;
+
+        let cache = match ctx.view_cache.get(&self.alias) {
+            Some(c) => c,
+            None => {
+                let p = Paragraph::new("Loading...")
+                    .style(Style::default().fg(Color::DarkGray));
+                frame.render_widget(p, area);
+                return;
+            }
+        };
+
+        // Header: Docs > <relative path from .planning/ root>
+        let root = cache.browser_root.as_deref();
+        let current = cache.browser_current_dir.as_deref();
+        let rel_path = match (root, current) {
+            (Some(r), Some(c)) => c
+                .strip_prefix(r)
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| c.to_string_lossy().to_string()),
+            _ => String::new(),
+        };
+        let mut header_spans = vec![
+            Span::styled("Docs", Style::default().fg(Color::Cyan)),
+            Span::raw(" > "),
+            Span::styled(".planning", Style::default().fg(Color::Yellow)),
+        ];
+        if !rel_path.is_empty() {
+            header_spans.push(Span::raw("/"));
+            header_spans.push(Span::styled(
+                rel_path,
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        if cache.browser_depth == BrowserDepth::View {
+            if let Some(name) = &cache.browser_file_name {
+                header_spans.push(Span::raw(" / "));
+                header_spans.push(Span::styled(
+                    name.clone(),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+        }
+
+        let chunks = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(area);
+        let header_area = chunks[0];
+        let content_area = chunks[1];
+
+        let header = Paragraph::new(Line::from(header_spans));
+        frame.render_widget(header, header_area);
+
+        match cache.browser_depth {
+            BrowserDepth::List => {
+                if cache.browser_entries.is_empty() {
+                    let msg = Paragraph::new("(empty directory)")
+                        .style(Style::default().fg(Color::DarkGray));
+                    frame.render_widget(msg, content_area);
+                    return;
+                }
+                let items: Vec<ListItem> = cache
+                    .browser_entries
+                    .iter()
+                    .map(|e| {
+                        if e.is_dir {
+                            ListItem::new(Line::from(vec![
+                                Span::styled(
+                                    "[DIR] ",
+                                    Style::default()
+                                        .fg(Color::Blue)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                Span::raw(e.name.clone()),
+                            ]))
+                        } else {
+                            ListItem::new(Line::from(Span::raw(e.name.clone())))
+                        }
+                    })
+                    .collect();
+                let list = List::new(items)
+                    .block(Block::default().borders(Borders::NONE))
+                    .highlight_style(
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .highlight_symbol("> ");
+                let mut list_state = ListState::default();
+                list_state.select(Some(cache.browser_selected));
+                frame.render_stateful_widget(list, content_area, &mut list_state);
+            }
+            BrowserDepth::View => {
+                if let Some(content) = &cache.browser_file_content {
+                    let styled_lines = crate::archive::render_markdown_lines(content);
+                    let total_lines = styled_lines.len() as u16;
+                    let gutter_width =
+                        (total_lines as usize).max(1).to_string().len() as u16 + 1;
+                    let file_chunks = Layout::horizontal([
+                        Constraint::Length(gutter_width),
+                        Constraint::Min(0),
+                    ])
+                    .split(content_area);
+                    let gutter_area = file_chunks[0];
+                    let text_area = file_chunks[1];
+
+                    let visible_height = text_area.height;
+                    let max_scroll = total_lines.saturating_sub(visible_height);
+                    let scroll = cache.browser_scroll_offset.min(max_scroll);
+
+                    let gutter_lines = crate::archive::line_number_lines(
+                        total_lines as usize,
+                        scroll,
+                        visible_height,
+                    );
+                    let gutter = Paragraph::new(gutter_lines);
+                    frame.render_widget(gutter, gutter_area);
+
+                    let paragraph = Paragraph::new(styled_lines).scroll((scroll, 0));
+                    frame.render_widget(paragraph, text_area);
+                } else {
+                    let loading = Paragraph::new("Loading...")
+                        .style(Style::default().fg(Color::DarkGray));
+                    frame.render_widget(loading, content_area);
+                }
+            }
+        }
+    }
+
     /// Build breadcrumb line for the archive tab showing navigation path.
     fn archive_breadcrumb(
         depth: &crate::archive::ArchiveDepth,
@@ -2697,6 +3030,7 @@ impl DetailScreen {
             DetailSubView::Sessions => self.render_sessions_tab(frame, content_area, ctx),
             DetailSubView::Archive => self.render_archive_tab(frame, content_area, ctx),
             DetailSubView::Defaults => self.render_defaults_tab(frame, content_area, ctx),
+            DetailSubView::Browse => self.render_browser_tab(frame, content_area, ctx),
         }
     }
 
@@ -3137,6 +3471,16 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
             spans.push(Span::raw("open  "));
             spans.push(Span::styled("[e]", b));
             spans.push(Span::raw("dit  "));
+        }
+        DetailSubView::Browse => {
+            spans.push(Span::styled("[Enter]", b));
+            spans.push(Span::raw("open  "));
+            spans.push(Span::styled("[Esc]", b));
+            spans.push(Span::raw("up  "));
+            spans.push(Span::styled("[g]", b));
+            spans.push(Span::raw("root  "));
+            spans.push(Span::styled("[p]", b));
+            spans.push(Span::raw("hase  "));
         }
         DetailSubView::Defaults => {
             spans.push(Span::styled("[Enter]", b));

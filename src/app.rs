@@ -24,6 +24,7 @@ pub enum DetailSubView {
     Sessions,
     Archive,
     Defaults,
+    Browse,
 }
 
 #[derive(Debug, Clone, PartialEq)]
