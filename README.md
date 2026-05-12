@@ -22,6 +22,7 @@ a glance.
 - Queue management: create, edit, delete, and reorder items
 - New project creation from within the TUI
 - Claude session detection (shows which projects have active Claude instances)
+- Auto-registration of GSD projects from active Claude sessions -- any running `claude` whose working directory contains `.planning/` is added to the registry automatically
 - Paused project detection (parses HANDOFF files)
 - Milestone archive browser with inline markdown rendering
 - Search and filter across projects
@@ -67,7 +68,14 @@ Options:
 
 Register a project by pressing `a` and entering the path to a GSD project
 directory (any directory containing a `.planning/` folder) or by using the
-command line option `gsd-meta-manager add <path> [alias]`
+command line option `gsd-meta-manager add <path> [alias]`.
+
+Projects are also discovered automatically: at launch and on each session
+poll (~5s), any active `claude` process whose working directory is a GSD
+project (contains `.planning/`) is registered without prompting. The alias
+is derived from the directory's basename (with a `-2`, `-3`, ... suffix on
+collision), and an `Auto-registered: <alias>` status message confirms each
+addition.
 
 ### Key Bindings
 
