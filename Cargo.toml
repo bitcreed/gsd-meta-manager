@@ -2,6 +2,14 @@
 name = "gsd-meta-manager"
 version = "1.4.0"
 edition = "2021"
+authors = ["Andreas Brauchli <andy@bitcreed.us>"]
+description = "TUI command center for managing multiple GSD-run projects from a single interface."
+license = "MIT"
+repository = "https://github.com/bitcreed/gsd-meta-manager"
+readme = "README.md"
+keywords = ["tui", "gsd", "dashboard", "ratatui", "cli"]
+categories = ["command-line-utilities"]
+exclude = [".planning/", "CLAUDE.md"]
 
 [dependencies]
 ratatui = { version = "0.30", features = ["crossterm"] }
