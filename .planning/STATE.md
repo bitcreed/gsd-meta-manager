@@ -4,8 +4,8 @@ milestone: v1.3
 milestone_name: Configuration & Pipeline Visibility
 status: shipped
 stopped_at: "Tagged v1.3 — Configuration & Pipeline Visibility"
-last_updated: "2026-05-09T00:00:00.000Z"
-last_activity: 2026-05-09
+last_updated: "2026-05-12T00:00:00.000Z"
+last_activity: 2026-05-12
 progress:
   total_phases: 0
   completed_phases: 0
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 Phase: —
 Plan: —
 Status: v1.3 shipped (Configuration & Pipeline Visibility) — no active milestone
-Last activity: 2026-05-09 - Tagged v1.3
+Last activity: 2026-05-12 - Completed quick task 260512-epe: Auto-register GSD projects from active claude sessions
 
 Progress: [##########] 100%
 
@@ -97,9 +97,10 @@ None yet.
 | 260509-zh2 | Defaults layering (~/.gsd/defaults.json), six-section layout, [d] toggle, pipeline sub-stage drill-down | 2026-05-09 | 75e80c2 | [260509-zh2](./quick/260509-zh2-defaults-layering-six-sections-pipeline/) |
 | 260509-t8m | Tab-to-switch into a Claude session via tmux (overview + Sessions tab) | 2026-05-09 | ed1f3b2 | [260509-t8m](./quick/260509-t8m-tab-to-switch-to-tmux-session/) |
 | 260512-ecm | Detect SECURITY.md sub-phase artifact and render Security row in Plan sub-stages | 2026-05-12 | e17afe7 | [260512-ecm](./quick/260512-ecm-add-support-for-gsd-s-optional-secure-su/) |
+| 260512-epe | Auto-detect and register GSD projects from active claude sessions | 2026-05-12 | b350b46 | [260512-epe](./quick/260512-epe-auto-detect-and-register-gsd-projects-fr/) |
 
 ## Session Continuity
 
-Last session: 2026-05-12T17:19:57.403Z
-Stopped at: Completed quick task 260512-ecm: SECURITY.md sub-phase detection
+Last session: 2026-05-12T17:35:16.574Z
+Stopped at: Completed quick task 260512-epe: Auto-register GSD projects from active claude sessions
 Resume file: None
