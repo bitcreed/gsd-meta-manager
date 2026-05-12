@@ -289,17 +289,27 @@ impl App {
                 }
             }
             Action::ProjectStateLoaded { alias, state } => {
-                // Detect changes before replacing the old state
-                if let Some(old_state) = self.ctx.project_states.get(&alias) {
-                    self.ctx
-                        .change_tracker
-                        .detect_changes(&alias, old_state, &state);
-                }
+                // Detect changes before replacing the old state.
+                // `changed` is true if there was no prior state (first load) or
+                // the freshly-parsed snapshot differs from the cached one.
+                // Watcher events that don't actually move state (e.g. unrelated
+                // .planning/ writes) skip the user-facing notification.
+                let changed = match self.ctx.project_states.get(&alias) {
+                    Some(old_state) => {
+                        self.ctx
+                            .change_tracker
+                            .detect_changes(&alias, old_state, &state);
+                        *old_state != state
+                    }
+                    None => true,
+                };
                 self.ctx.project_states.insert(alias.clone(), state);
-                self.ctx.recompute_filtered_aliases();
-                self.ctx.status_message =
-                    Some((format!("Updated: {}", alias), std::time::Instant::now()));
-                self.needs_redraw = true;
+                if changed {
+                    self.ctx.recompute_filtered_aliases();
+                    self.ctx.status_message =
+                        Some((format!("Updated: {}", alias), std::time::Instant::now()));
+                    self.needs_redraw = true;
+                }
             }
             Action::GitLogLoaded {
                 alias,
