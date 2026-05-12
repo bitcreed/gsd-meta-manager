@@ -19,6 +19,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_writer(file_appender)
         .with_ansi(false)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
     color_eyre::install().map_err(|e| anyhow::anyhow!("{}", e))?;

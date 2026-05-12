@@ -109,19 +109,17 @@ colors are disabled in the file output (`with_ansi(false)`).
 
 ### Filtering log output
 
-The `tracing-subscriber` crate is built with the `env-filter` feature, but as of
-the current `src/main.rs` no `EnvFilter` layer is installed on the subscriber —
-`tracing_subscriber::fmt().with_writer(...).with_ansi(false).init()` is called
-without `.with_env_filter(...)`. `RUST_LOG` is therefore **not** honored by the
-file appender today. Wiring it in is a one-line change but has not landed yet:
+`main.rs` installs `EnvFilter::from_default_env()` on the subscriber, so the
+file appender honors `RUST_LOG`. With no `RUST_LOG` set, the default filter is
+empty and only `ERROR`-level events are recorded. Examples:
 
-```rust
-// proposed addition in main.rs
-.with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+```bash
+RUST_LOG=debug cargo run                       # everything at debug+
+RUST_LOG=gsd_meta_manager=debug cargo run      # this crate only
+RUST_LOG=gsd_meta_manager=trace,notify=warn cargo run
 ```
 
-Until that lands, adjust verbosity by editing the `tracing::*!` call sites
-directly or by adding the `EnvFilter` line locally.
+Any filter directive accepted by `tracing_subscriber::EnvFilter` works.
 
 Tail the log in a separate terminal while the TUI runs:
 
