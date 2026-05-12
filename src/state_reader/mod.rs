@@ -9,7 +9,7 @@ pub mod state_md;
 use std::collections::HashMap;
 use std::path::Path;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProjectState {
     pub status: String,
     pub current_phase: String,

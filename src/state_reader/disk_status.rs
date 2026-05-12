@@ -12,7 +12,7 @@ pub enum DiskStatus {
     Complete,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct DiskInference {
     pub status: DiskStatus,
     pub plan_count: u32,

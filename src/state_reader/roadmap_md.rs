@@ -1,6 +1,6 @@
 use regex::Regex;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RoadmapPhase {
     pub number: String,
     pub name: String,
