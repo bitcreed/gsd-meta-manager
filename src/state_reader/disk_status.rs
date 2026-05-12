@@ -22,6 +22,7 @@ pub struct DiskInference {
     pub has_context: bool,
     pub has_research: bool,
     pub has_verification: bool,
+    pub has_security: bool,
     /// Sub-stage artifacts (per /gsd-settings Planning + Execution toggles).
     pub has_patterns: bool,
     pub has_plan_check: bool,
@@ -171,6 +172,7 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         has_context,
         has_research,
         has_verification,
+        has_security: false,
         has_patterns,
         has_plan_check,
         has_validation,
@@ -441,6 +443,33 @@ mod tests {
         let found = find_phase_dir(dir.path(), "05");
         assert!(found.is_some());
         assert_eq!(found.unwrap(), phase_dir);
+    }
+
+    #[test]
+    fn test_security_md_detected() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-SECURITY.md"), "security").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(result.has_security, "has_security should be true for *-SECURITY.md");
+        // SECURITY.md is informational — must not affect plan/summary/status counts.
+        assert_eq!(result.plan_count, 0);
+        assert_eq!(result.summary_count, 0);
+        assert_eq!(result.status, DiskStatus::Empty);
+    }
+
+    #[test]
+    fn test_standalone_security_md_detected() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("SECURITY.md"), "security").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(result.has_security, "has_security should be true for bare SECURITY.md");
+    }
+
+    #[test]
+    fn test_empty_dir_has_no_security() {
+        let dir = tempdir().unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(!result.has_security);
     }
 
     #[test]
