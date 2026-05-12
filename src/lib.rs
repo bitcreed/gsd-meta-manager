@@ -1,6 +1,7 @@
 pub mod action;
 pub mod archive;
 pub mod app;
+pub mod browser;
 pub mod change_tracker;
 pub mod cli;
 pub mod config;
