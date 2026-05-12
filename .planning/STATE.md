@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 Phase: —
 Plan: —
 Status: v1.3 shipped (Configuration & Pipeline Visibility) — no active milestone
-Last activity: 2026-05-12 - Completed quick task 260512-eyv: Suppress no-op "Updated" status notifications
+Last activity: 2026-05-12 - Completed quick task 260512-fe6: Docs browser tab for .planning/
 
 Progress: [##########] 100%
 
@@ -99,9 +99,10 @@ None yet.
 | 260512-ecm | Detect SECURITY.md sub-phase artifact and render Security row in Plan sub-stages | 2026-05-12 | e17afe7 | [260512-ecm](./quick/260512-ecm-add-support-for-gsd-s-optional-secure-su/) |
 | 260512-epe | Auto-detect and register GSD projects from active claude sessions | 2026-05-12 | b350b46 | [260512-epe](./quick/260512-epe-auto-detect-and-register-gsd-projects-fr/) |
 | 260512-eyv | Suppress "Updated" status when project state is unchanged | 2026-05-12 | 4dcd271 | [260512-eyv](./quick/260512-eyv-suppress-updated-status-when-project-sta/) |
+| 260512-fe6 | Add markdown document browser tab for .planning/ rooted at active phase | 2026-05-12 | 106cbcc | [260512-fe6](./quick/260512-fe6-add-markdown-document-browser-tab-for-pl/) |
 
 ## Session Continuity
 
-Last session: 2026-05-12T17:46:38.314Z
-Stopped at: Completed quick task 260512-eyv: Suppress no-op "Updated" status notifications
+Last session: 2026-05-12T18:05:00.273Z
+Stopped at: Completed quick task 260512-fe6: Docs browser tab for .planning/
 Resume file: None

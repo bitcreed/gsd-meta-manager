@@ -18,7 +18,7 @@ a glance.
 - Unified dashboard with color-coded project status (active, paused, idle)
 - Live filesystem watching -- auto-refreshes when `.planning/` files change
 - Vim-style navigation (`j`/`k`, `/` search, `Enter` to drill in)
-- 9-tab detail view: Phases, Roadmap (ASCII DAG), Backlog, Git History, Pipeline, Queue, Sessions, Archive, Config
+- 10-tab detail view: Phases, Roadmap (ASCII DAG), Backlog, Git History, Pipeline, Queue, Sessions, Archive, Config, Docs (rendered `.planning/` browser rooted at the active phase, with quick jumps to `.planning/` and back)
 - Queue management: create, edit, delete, and reorder items
 - New project creation from within the TUI
 - Claude session detection (shows which projects have active Claude instances)
