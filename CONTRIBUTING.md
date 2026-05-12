@@ -68,12 +68,6 @@ You don't need to use any particular planning workflow to contribute — the
 a requirement for external contributors. Just open a PR with a clear
 description and tests where applicable.
 
-## Code of Conduct
-
-Be kind and constructive. Assume good intent, give thoughtful feedback, and
-keep discussion focused on the code and the problem. Harassment of any kind
-is not welcome.
-
 ## License
 
 By contributing, you agree that your contributions will be licensed under the
