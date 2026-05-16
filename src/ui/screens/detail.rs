@@ -3386,7 +3386,8 @@ fn build_substage_lines(inf: &DiskInference) -> Vec<Line<'static>> {
         push_substage(&mut lines, "Nyquist", inf.has_validation);
     }
 
-    let exec_touched = inf.summary_count > 0 || inf.has_review || inf.has_ui_review;
+    let exec_touched =
+        inf.summary_count > 0 || inf.has_review || inf.has_ui_review || inf.has_uat;
     if exec_touched {
         if plan_touched {
             lines.push(Line::from(""));
@@ -3397,6 +3398,7 @@ fn build_substage_lines(inf: &DiskInference) -> Vec<Line<'static>> {
         )));
         push_substage(&mut lines, "Code Review", inf.has_review);
         push_substage(&mut lines, "UI Review", inf.has_ui_review);
+        push_substage(&mut lines, "UAT", inf.has_uat);
     }
 
     lines

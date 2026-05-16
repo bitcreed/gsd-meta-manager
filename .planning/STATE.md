@@ -100,6 +100,7 @@ None yet.
 | 260512-epe | Auto-detect and register GSD projects from active claude sessions | 2026-05-12 | b350b46 | [260512-epe](./quick/260512-epe-auto-detect-and-register-gsd-projects-fr/) |
 | 260512-eyv | Suppress "Updated" status when project state is unchanged | 2026-05-12 | 4dcd271 | [260512-eyv](./quick/260512-eyv-suppress-updated-status-when-project-sta/) |
 | 260512-fe6 | Add markdown document browser tab for .planning/ rooted at active phase | 2026-05-12 | 106cbcc | [260512-fe6](./quick/260512-fe6-add-markdown-document-browser-tab-for-pl/) |
+| 260515-vyt | Detect UAT.md sub-phase artifact and surface in pipeline drill-down | 2026-05-15 | a921cfc | [260515-vyt](./quick/260515-vyt-add-uat-md-sub-phase-detection-to-meta-ma/) |
 
 ## Session Continuity
 

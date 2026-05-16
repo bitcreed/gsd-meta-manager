@@ -23,6 +23,7 @@ pub struct DiskInference {
     pub has_research: bool,
     pub has_verification: bool,
     pub has_security: bool,
+    pub has_uat: bool,
     /// Sub-stage artifacts (per /gsd-settings Planning + Execution toggles).
     pub has_patterns: bool,
     pub has_plan_check: bool,
@@ -76,6 +77,7 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     let mut has_review = false;
     let mut has_ui_review = false;
     let mut has_security = false;
+    let mut has_uat = false;
 
     for entry in entries.flatten() {
         let name = match entry.file_name().into_string() {
@@ -124,6 +126,10 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         }
         if name == "SECURITY.md" || name.ends_with("-SECURITY.md") {
             has_security = true;
+            continue;
+        }
+        if name == "UAT.md" || name.ends_with("-UAT.md") {
+            has_uat = true;
             continue;
         }
 
@@ -178,6 +184,7 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         has_research,
         has_verification,
         has_security,
+        has_uat,
         has_patterns,
         has_plan_check,
         has_validation,
@@ -475,6 +482,32 @@ mod tests {
         let dir = tempdir().unwrap();
         let result = infer_disk_status(dir.path());
         assert!(!result.has_security);
+    }
+
+    #[test]
+    fn test_uat_md_detected() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-UAT.md"), "uat").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(result.has_uat, "has_uat should be true for *-UAT.md");
+        assert_eq!(result.plan_count, 0);
+        assert_eq!(result.summary_count, 0);
+        assert_eq!(result.status, DiskStatus::Empty);
+    }
+
+    #[test]
+    fn test_standalone_uat_md_detected() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("UAT.md"), "uat").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(result.has_uat, "has_uat should be true for bare UAT.md");
+    }
+
+    #[test]
+    fn test_empty_dir_has_no_uat() {
+        let dir = tempdir().unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(!result.has_uat);
     }
 
     #[test]
