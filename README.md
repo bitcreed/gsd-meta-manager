@@ -33,6 +33,12 @@ pending actions at a glance.
 
 Requires **Rust 1.85+**.
 
+### From crates.io
+
+```bash
+cargo install gsd-meta-manager
+```
+
 ### From source
 
 ```bash
@@ -49,10 +55,10 @@ The binary is at `target/release/gsd-meta-manager`.
 
 ## Quick start
 
-1. Build and install the binary:
+1. Install the binary:
 
    ```bash
-   cargo install --path .
+   cargo install gsd-meta-manager
    ```
 
 2. Launch the TUI:
