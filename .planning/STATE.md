@@ -1,9 +1,9 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.5
+milestone: v1.5.0
 milestone_name: Sub-phase Artifact Detection
 status: shipped
-stopped_at: "Tagged v1.5 — Sub-phase Artifact Detection"
+stopped_at: "Tagged v1.5.0 — Sub-phase Artifact Detection"
 last_updated: "2026-05-15T00:00:00.000Z"
 last_activity: 2026-05-15
 progress:
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** v1.5 shipped — ready for the next milestone (`/gsd:new-milestone`)
+**Current focus:** v1.5.0 shipped — ready for the next milestone (`/gsd:new-milestone`)
 
 ## Current Position
 
 Phase: —
 Plan: —
-Status: v1.5 shipped (Sub-phase Artifact Detection) — no active milestone
-Last activity: 2026-05-15 - Tagged v1.5
+Status: v1.5.0 shipped (Sub-phase Artifact Detection) — no active milestone
+Last activity: 2026-05-15 - Tagged v1.5.0
 
 Progress: [##########] 100%
 
@@ -106,5 +106,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-05-15T00:00:00.000Z
-Stopped at: Tagged v1.5 — Sub-phase Artifact Detection
+Stopped at: Tagged v1.5.0 — Sub-phase Artifact Detection
 Resume file: None
