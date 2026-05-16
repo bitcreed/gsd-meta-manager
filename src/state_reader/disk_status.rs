@@ -24,6 +24,8 @@ pub struct DiskInference {
     pub has_verification: bool,
     pub has_security: bool,
     pub has_uat: bool,
+    pub has_spec: bool,
+    pub has_eval_review: bool,
     /// Sub-stage artifacts (per /gsd-settings Planning + Execution toggles).
     pub has_patterns: bool,
     pub has_plan_check: bool,
@@ -78,6 +80,8 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     let mut has_ui_review = false;
     let mut has_security = false;
     let mut has_uat = false;
+    let mut has_spec = false;
+    let mut has_eval_review = false;
 
     for entry in entries.flatten() {
         let name = match entry.file_name().into_string() {
@@ -96,6 +100,10 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
             has_ui_review = true;
             continue;
         }
+        if name == "EVAL-REVIEW.md" || name.ends_with("-EVAL-REVIEW.md") {
+            has_eval_review = true;
+            continue;
+        }
         if name == "REVIEW.md" || name.ends_with("-REVIEW.md") {
             has_review = true;
             continue;
@@ -110,6 +118,10 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         }
         if name == "AI-SPEC.md" || name.ends_with("-AI-SPEC.md") {
             has_ai_spec = true;
+            continue;
+        }
+        if name == "SPEC.md" || name.ends_with("-SPEC.md") {
+            has_spec = true;
             continue;
         }
         if name == "PATTERNS.md" || name.ends_with("-PATTERNS.md") {
@@ -185,6 +197,8 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         has_verification,
         has_security,
         has_uat,
+        has_spec,
+        has_eval_review,
         has_patterns,
         has_plan_check,
         has_validation,
@@ -508,6 +522,43 @@ mod tests {
         let dir = tempdir().unwrap();
         let result = infer_disk_status(dir.path());
         assert!(!result.has_uat);
+    }
+
+    #[test]
+    fn test_spec_md_detected() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-SPEC.md"), "spec").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(result.has_spec);
+        assert!(!result.has_ui_spec);
+        assert!(!result.has_ai_spec);
+        assert_eq!(result.status, DiskStatus::Empty);
+    }
+
+    #[test]
+    fn test_ai_spec_does_not_trigger_spec() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-AI-SPEC.md"), "ai-spec").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(result.has_ai_spec);
+        assert!(!result.has_spec, "AI-SPEC.md must not be misclassified as SPEC.md");
+    }
+
+    #[test]
+    fn test_eval_review_detected() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-EVAL-REVIEW.md"), "eval").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(result.has_eval_review);
+        assert!(!result.has_review, "EVAL-REVIEW.md must not be misclassified as REVIEW.md");
+    }
+
+    #[test]
+    fn test_empty_dir_has_no_spec_or_eval_review() {
+        let dir = tempdir().unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(!result.has_spec);
+        assert!(!result.has_eval_review);
     }
 
     #[test]

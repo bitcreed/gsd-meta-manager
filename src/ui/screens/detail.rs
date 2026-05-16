@@ -3365,6 +3365,7 @@ fn build_substage_lines(inf: &DiskInference) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
 
     let plan_touched = inf.has_plans
+        || inf.has_spec
         || inf.has_patterns
         || inf.has_plan_check
         || inf.has_validation
@@ -3377,6 +3378,7 @@ fn build_substage_lines(inf: &DiskInference) -> Vec<Line<'static>> {
             "  Plan sub-stages:",
             Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
         )));
+        push_substage(&mut lines, "Spec", inf.has_spec);
         push_substage(&mut lines, "Security", inf.has_security);
         push_substage(&mut lines, "Patterns", inf.has_patterns);
         push_substage(&mut lines, "UI-Spec", inf.has_ui_spec);
@@ -3386,8 +3388,11 @@ fn build_substage_lines(inf: &DiskInference) -> Vec<Line<'static>> {
         push_substage(&mut lines, "Nyquist", inf.has_validation);
     }
 
-    let exec_touched =
-        inf.summary_count > 0 || inf.has_review || inf.has_ui_review || inf.has_uat;
+    let exec_touched = inf.summary_count > 0
+        || inf.has_review
+        || inf.has_ui_review
+        || inf.has_eval_review
+        || inf.has_uat;
     if exec_touched {
         if plan_touched {
             lines.push(Line::from(""));
@@ -3398,6 +3403,7 @@ fn build_substage_lines(inf: &DiskInference) -> Vec<Line<'static>> {
         )));
         push_substage(&mut lines, "Code Review", inf.has_review);
         push_substage(&mut lines, "UI Review", inf.has_ui_review);
+        push_substage(&mut lines, "Eval Review", inf.has_eval_review);
         push_substage(&mut lines, "UAT", inf.has_uat);
     }
 
