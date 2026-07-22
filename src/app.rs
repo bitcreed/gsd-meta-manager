@@ -57,6 +57,17 @@ pub fn parse_filter(input: &str) -> (String, FilterColumn) {
 }
 
 pub fn classify_status(status: &str) -> StatusCategory {
+    // ADR-2207 status vocabulary takes precedence over the generic keyword
+    // matching below. Milestone-terminal statuses are truly Complete; the
+    // intermediate `All phases complete` is NOT (the milestone awaits
+    // `/gsd:complete-milestone`) — classify it as Idle so it doesn't fall
+    // through to the `contains("complete")` branch.
+    if state_reader::state_md::is_milestone_terminal(status) {
+        return StatusCategory::Complete;
+    }
+    if state_reader::state_md::is_all_phases_complete(status) {
+        return StatusCategory::Idle;
+    }
     let s = status.to_lowercase();
     if s.contains("executing") || s.contains("active") || s.contains("in progress") {
         StatusCategory::Active
@@ -72,6 +83,11 @@ pub fn classify_status(status: &str) -> StatusCategory {
 }
 
 pub fn format_phase_display(state: &ProjectState) -> String {
+    // ADR-2207: an explicit `current_phase_name` from STATE.md frontmatter is
+    // the most accurate label; prefer it over the count-derived fallback.
+    if !state.current_phase_name.is_empty() {
+        return state.current_phase_name.clone();
+    }
     if state.completed_phases >= state.total_phases && state.total_phases > 0 {
         if !state.milestone.is_empty() {
             return format!("{} Complete", state.milestone);
@@ -527,5 +543,48 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(format_phase_display(&state), "P2: Dashboard");
+    }
+
+    #[test]
+    fn test_classify_status_milestone_terminal_is_complete() {
+        assert_eq!(
+            classify_status("v1.5.0 milestone complete"),
+            StatusCategory::Complete
+        );
+        assert_eq!(
+            classify_status("Awaiting next milestone"),
+            StatusCategory::Complete
+        );
+    }
+
+    #[test]
+    fn test_classify_status_all_phases_complete_is_idle() {
+        // Intermediate ADR-2207 state — NOT Complete.
+        assert_eq!(
+            classify_status("All phases complete"),
+            StatusCategory::Idle
+        );
+    }
+
+    #[test]
+    fn test_classify_status_ordinary_unchanged() {
+        assert_eq!(classify_status("executing"), StatusCategory::Active);
+        assert_eq!(classify_status("blocked"), StatusCategory::Blocked);
+        assert_eq!(classify_status("ready to plan"), StatusCategory::Idle);
+        assert_eq!(classify_status("shipped"), StatusCategory::Unknown);
+        // A plain phase-completion status still classifies as Complete.
+        assert_eq!(classify_status("phase complete"), StatusCategory::Complete);
+    }
+
+    #[test]
+    fn test_format_phase_display_prefers_current_phase_name() {
+        let state = ProjectState {
+            current_phase_name: "Live State".to_string(),
+            completed_phases: 2,
+            total_phases: 4,
+            phases: vec![],
+            ..Default::default()
+        };
+        assert_eq!(format_phase_display(&state), "Live State");
     }
 }
