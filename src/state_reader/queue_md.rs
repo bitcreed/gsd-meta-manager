@@ -161,32 +161,71 @@ pub fn write_queue_md(actions: &[QueuedAction]) -> String {
     output
 }
 
-/// Load queued actions from a project's .planning/QUEUE.md file.
-/// Returns an empty vec if the file doesn't exist or can't be read.
+/// Return the canonical and legacy queue file paths for a `.planning/` dir.
+///
+/// Returns `(canonical, legacy)` where:
+///   - canonical = `.planning/meta-manager/QUEUE.md`
+///   - legacy    = `.planning/QUEUE.md`
+///
+/// The queue lives in an app-namespaced subdirectory (`meta-manager/`) rather
+/// than at the `.planning/` root to satisfy GSD 1.8.0's `/gsd-health` W019
+/// check. That check flags any non-canonical `*.md` FILE at the `.planning/`
+/// root (hardcoded allowlist in gsd-core `src/artifacts.cts`, with no user
+/// allowlist) but skips subdirectories entirely (`if (!entry.isFile())
+/// continue` in gsd-core `src/verify.cts`). Placing the queue under a subdir
+/// therefore produces zero health findings.
+fn queue_paths(planning_dir: &Path) -> (PathBuf, PathBuf) {
+    let canonical = planning_dir.join("meta-manager").join("QUEUE.md");
+    let legacy = planning_dir.join("QUEUE.md");
+    (canonical, legacy)
+}
+
+/// Load queued actions from a project's queue file.
+///
+/// Reads the canonical `.planning/meta-manager/QUEUE.md` first; if it is
+/// absent, falls back to the legacy `.planning/QUEUE.md` so existing installs
+/// keep working with no user action. Returns an empty vec if neither exists or
+/// can't be read.
 pub fn load_queue(planning_dir: &Path) -> Vec<QueuedAction> {
-    let queue_path = planning_dir.join("QUEUE.md");
-    match std::fs::read_to_string(&queue_path) {
+    let (canonical, legacy) = queue_paths(planning_dir);
+    if let Ok(content) = std::fs::read_to_string(&canonical) {
+        return parse_queue_md(&content);
+    }
+    match std::fs::read_to_string(&legacy) {
         Ok(content) => parse_queue_md(&content),
         Err(_) => Vec::new(),
     }
 }
 
-/// Save queued actions atomically to .planning/QUEUE.md.
-/// Writes to a temporary file first, then renames to avoid partial writes.
+/// Save queued actions atomically to `.planning/meta-manager/QUEUE.md`.
+///
+/// Writes to a temporary file first, then renames to avoid partial writes,
+/// creating the `meta-manager/` subdir if needed. After a successful write,
+/// a lingering legacy root `.planning/QUEUE.md` is removed (one-shot migration
+/// on first write). When the queue is empty, both the canonical file and any
+/// legacy root file are removed.
 pub fn save_queue(planning_dir: &Path, actions: &[QueuedAction]) -> anyhow::Result<()> {
     if !planning_dir.is_dir() {
         anyhow::bail!("Run GSD in this project first to enable queue");
     }
-    let final_path = planning_dir.join("QUEUE.md");
+    let (canonical, legacy) = queue_paths(planning_dir);
     if actions.is_empty() {
-        // Remove QUEUE.md when queue is empty
-        let _ = std::fs::remove_file(&final_path);
+        // Remove the queue (both canonical and legacy) when empty.
+        let _ = std::fs::remove_file(&canonical);
+        let _ = std::fs::remove_file(&legacy);
         return Ok(());
     }
+    let meta_dir = canonical
+        .parent()
+        .expect("canonical queue path always has a parent");
+    std::fs::create_dir_all(meta_dir)?;
     let content = write_queue_md(actions);
-    let tmp_path = planning_dir.join("QUEUE.md.tmp");
+    let tmp_path = meta_dir.join("QUEUE.md.tmp");
     std::fs::write(&tmp_path, &content)?;
-    std::fs::rename(&tmp_path, &final_path)?;
+    std::fs::rename(&tmp_path, &canonical)?;
+    // One-shot migration: remove the legacy root queue now that the canonical
+    // location holds the current queue.
+    let _ = std::fs::remove_file(&legacy);
     Ok(())
 }
 
@@ -371,6 +410,75 @@ mod tests {
         };
         let suggestions = suggest_next_commands(&state);
         assert_eq!(suggestions[0], "/gsd:progress");
+    }
+
+    #[test]
+    fn test_load_queue_reads_legacy_only() {
+        let td = tempfile::tempdir().unwrap();
+        let planning = td.path();
+        std::fs::write(planning.join("QUEUE.md"), "# Queue\n\n- /gsd:quick\n").unwrap();
+        let actions = load_queue(planning);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].command, "/gsd:quick");
+    }
+
+    #[test]
+    fn test_load_queue_new_path_wins_over_legacy() {
+        let td = tempfile::tempdir().unwrap();
+        let planning = td.path();
+        std::fs::write(planning.join("QUEUE.md"), "# Queue\n\n- /gsd:legacy\n").unwrap();
+        std::fs::create_dir_all(planning.join("meta-manager")).unwrap();
+        std::fs::write(
+            planning.join("meta-manager").join("QUEUE.md"),
+            "# Queue\n\n- /gsd:canonical\n",
+        )
+        .unwrap();
+        let actions = load_queue(planning);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].command, "/gsd:canonical");
+    }
+
+    #[test]
+    fn test_save_queue_writes_new_path_and_removes_legacy() {
+        let td = tempfile::tempdir().unwrap();
+        let planning = td.path();
+        std::fs::write(planning.join("QUEUE.md"), "# Queue\n\n- /gsd:old\n").unwrap();
+        let actions = vec![QueuedAction {
+            command: "/gsd:plan-phase 4".to_string(),
+        }];
+        save_queue(planning, &actions).unwrap();
+        let canonical = planning.join("meta-manager").join("QUEUE.md");
+        assert!(canonical.is_file(), "canonical queue file should exist");
+        assert!(
+            !planning.join("QUEUE.md").exists(),
+            "legacy root queue should be migrated away"
+        );
+        let reloaded = load_queue(planning);
+        assert_eq!(reloaded.len(), 1);
+        assert_eq!(reloaded[0].command, "/gsd:plan-phase 4");
+    }
+
+    #[test]
+    fn test_save_queue_empty_removes_both_files() {
+        let td = tempfile::tempdir().unwrap();
+        let planning = td.path();
+        std::fs::write(planning.join("QUEUE.md"), "# Queue\n\n- /gsd:old\n").unwrap();
+        std::fs::create_dir_all(planning.join("meta-manager")).unwrap();
+        std::fs::write(
+            planning.join("meta-manager").join("QUEUE.md"),
+            "# Queue\n\n- /gsd:current\n",
+        )
+        .unwrap();
+        save_queue(planning, &[]).unwrap();
+        assert!(
+            !planning.join("QUEUE.md").exists(),
+            "legacy root queue should be removed on empty save"
+        );
+        assert!(
+            !planning.join("meta-manager").join("QUEUE.md").exists(),
+            "canonical queue should be removed on empty save"
+        );
+        assert!(load_queue(planning).is_empty());
     }
 
     #[test]
