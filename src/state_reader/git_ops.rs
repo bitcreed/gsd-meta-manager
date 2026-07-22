@@ -31,6 +31,68 @@ fn git_last_commit_time(project_root: &Path) -> Option<chrono::DateTime<chrono::
         .map(|dt| dt.with_timezone(&chrono::Utc))
 }
 
+/// Filesystem-mtime fallback for `project_last_activity`. Walks
+/// `<project_root>/.planning/` shallowly (top level plus one level of
+/// subdirectories — sufficient for staleness) collecting file `modified()`
+/// times and returns the newest as a UTC timestamp. If `.planning/` is absent,
+/// falls back to the `project_root` directory's own mtime. Returns `None` when
+/// nothing is readable. Never panics.
+fn mtime_last_activity(project_root: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
+    let planning = project_root.join(".planning");
+    if planning.is_dir() {
+        let mut newest: Option<std::time::SystemTime> = None;
+
+        // Shallow walk: top level plus one level of subdirectories.
+        if let Ok(entries) = std::fs::read_dir(&planning) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let file_type = match entry.file_type() {
+                    Ok(ft) => ft,
+                    Err(_) => continue,
+                };
+
+                if file_type.is_file() {
+                    if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+                        newest = Some(newest.map_or(modified, |cur| cur.max(modified)));
+                    }
+                } else if file_type.is_dir() {
+                    if let Ok(sub_entries) = std::fs::read_dir(&path) {
+                        for sub in sub_entries.flatten() {
+                            if sub.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                                if let Ok(modified) =
+                                    sub.metadata().and_then(|m| m.modified())
+                                {
+                                    newest =
+                                        Some(newest.map_or(modified, |cur| cur.max(modified)));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(t) = newest {
+            return Some(chrono::DateTime::<chrono::Utc>::from(t));
+        }
+    }
+
+    // Fall back to the project_root directory's own mtime.
+    std::fs::metadata(project_root)
+        .and_then(|m| m.modified())
+        .ok()
+        .map(chrono::DateTime::<chrono::Utc>::from)
+}
+
+/// A project's last-activity timestamp, preferring the most recent git commit
+/// time and falling back to the newest `.planning/` file mtime (or the project
+/// directory mtime) for non-git or empty repositories. Synchronous by design.
+/// Returns `None` only when neither git nor the filesystem yields a timestamp.
+/// Never panics.
+pub fn project_last_activity(project_root: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
+    git_last_commit_time(project_root).or_else(|| mtime_last_activity(project_root))
+}
+
 #[derive(Debug, Clone)]
 pub struct GitLogEntry {
     pub hash: String,
@@ -212,6 +274,60 @@ mod tests {
         assert!(
             git_last_commit_time(&tmp).is_none(),
             "expected None for a directory that is not a git repo"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn mtime_last_activity_returns_recent_time_for_planning_dir() {
+        let tmp =
+            std::env::temp_dir().join(format!("gsd_git_ops_test_mtime_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join(".planning")).unwrap();
+        std::fs::write(tmp.join(".planning").join("STATE.md"), "state").unwrap();
+
+        let result = mtime_last_activity(&tmp);
+        assert!(result.is_some(), "expected Some from freshly-written .planning file");
+
+        let now = chrono::Utc::now();
+        let dt = result.unwrap();
+        let diff = (now - dt).num_seconds().abs();
+        assert!(
+            diff < 60,
+            "expected mtime within a minute of now, got {}s difference",
+            diff
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn mtime_last_activity_returns_none_for_missing_path() {
+        let missing = std::env::temp_dir().join(format!(
+            "gsd_git_ops_test_missing_{}_does_not_exist",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&missing);
+
+        assert!(
+            mtime_last_activity(&missing).is_none(),
+            "expected None for a path that does not exist"
+        );
+    }
+
+    #[test]
+    fn project_last_activity_falls_back_to_mtime_for_non_git_dir() {
+        let tmp = std::env::temp_dir()
+            .join(format!("gsd_git_ops_test_activity_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join(".planning")).unwrap();
+        std::fs::write(tmp.join(".planning").join("STATE.md"), "state").unwrap();
+
+        // Non-git dir: git_last_commit_time is None, so the mtime fallback applies.
+        assert!(
+            project_last_activity(&tmp).is_some(),
+            "expected Some from mtime fallback on a non-git dir with .planning files"
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
