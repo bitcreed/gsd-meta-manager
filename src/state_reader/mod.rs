@@ -5,6 +5,7 @@ pub mod git_ops;
 pub mod queue_md;
 pub mod roadmap_md;
 pub mod state_md;
+pub mod workstreams;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
