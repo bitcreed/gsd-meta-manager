@@ -1,6 +1,6 @@
 [package]
 name = "gsd-meta-manager"
-version = "1.5.0"
+version = "1.6.0"
 edition = "2021"
 authors = ["Andreas Brauchli <andy@bitcreed.us>"]
 description = "TUI command center for managing multiple GSD-run projects from a single interface."
