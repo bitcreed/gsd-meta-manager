@@ -290,7 +290,7 @@ impl App {
                             let state = state_reader::parse_project_state(&planning_dir);
                             let _ = tx.send(Action::ProjectStateLoaded {
                                 alias: alias_for_task,
-                                state,
+                                state: Box::new(state),
                             });
                         });
                         self.ctx.last_refresh.insert(alias, now);
@@ -316,11 +316,11 @@ impl App {
                         self.ctx
                             .change_tracker
                             .detect_changes(&alias, old_state, &state);
-                        *old_state != state
+                        *old_state != *state
                     }
                     None => true,
                 };
-                self.ctx.project_states.insert(alias.clone(), state);
+                self.ctx.project_states.insert(alias.clone(), *state);
                 if changed {
                     self.ctx.recompute_filtered_aliases();
                     self.ctx.status_message =

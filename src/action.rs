@@ -18,7 +18,8 @@ pub enum Action {
     },
     ProjectStateLoaded {
         alias: String,
-        state: ProjectState,
+        // Boxed: ProjectState dwarfs every other variant (clippy::large_enum_variant)
+        state: Box<ProjectState>,
     },
     GitLogLoaded {
         alias: String,
