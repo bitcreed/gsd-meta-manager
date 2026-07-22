@@ -3,8 +3,8 @@ quick_id: 260722-emn
 plan: 10
 item: I
 wave: 5
-status: incomplete
-blocker: "clippy -D warnings fails on pre-existing out-of-scope lint (src/action.rs large_enum_variant); orchestrator decides whether it blocks the v1.6.0 release"
+status: complete
+resolution: "blocker cleared by orchestrator gap-closure commit ca0ad3b (box ProjectState in Action); full gate now green: build + 210 tests + clippy -D warnings clean"
 files_modified: [Cargo.toml, Cargo.lock]
 commit: af92a8d
 ---

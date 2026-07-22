@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 Phase: —
 Plan: —
 Status: v1.5.0 shipped (Sub-phase Artifact Detection) — no active milestone
-Last activity: 2026-05-15 - Tagged v1.5.0
+Last activity: 2026-07-22 - Completed quick task 260722-emn: GSD 1.8.0 catch-up; version bumped to 1.6.0 (release prep, untagged)
 
 Progress: [##########] 100%
 
@@ -102,6 +102,7 @@ None yet.
 | 260512-fe6 | Add markdown document browser tab for .planning/ rooted at active phase | 2026-05-12 | 106cbcc | [260512-fe6](./quick/260512-fe6-add-markdown-document-browser-tab-for-pl/) |
 | 260515-vyt | Detect UAT.md sub-phase artifact and surface in pipeline drill-down | 2026-05-15 | de91154 | [260515-vyt](./quick/260515-vyt-add-uat-md-sub-phase-detection-to-meta-ma/) |
 | 260515-w3a | Detect SPEC.md and EVAL-REVIEW.md sub-phase artifacts | 2026-05-15 | a88d82c | [260515-w3a](./quick/260515-w3a-add-spec-and-eval-review-sub-phase-detect/) |
+| 260722-emn | Catch up to GSD 1.8.0: README value prop + tier 1-3 state-reader/feature updates (10 plans, 5 waves) | 2026-07-22 | ca0ad3b | [260722-emn](./quick/260722-emn-catch-up-to-gsd-1-8-0-readme-value-propo/) |
 
 ## Session Continuity
 
