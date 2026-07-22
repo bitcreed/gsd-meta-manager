@@ -36,6 +36,78 @@ pub struct GsdConfig {
     pub intel: Option<IntelConfig>,
     #[serde(default)]
     pub graphify: Option<GraphifyConfig>,
+    // --- GSD 1.4–1.8 additions ---
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_orchestration: Option<ClaudeOrchestrationConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statusline: Option<StatuslineConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic_routing: Option<DynamicRoutingConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<ReviewConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_job: Option<ExternalJobConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<CapabilitiesConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_id_convention: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_md_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_repos: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct ClaudeOrchestrationConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub execution_backend: Option<String>,
+    #[serde(default)]
+    pub min_agent_sdk_version: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct StatuslineConfig {
+    #[serde(default)]
+    pub show_context_tokens: Option<bool>,
+    #[serde(default)]
+    pub state_format: Option<String>,
+    #[serde(default)]
+    pub show_git: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct DynamicRoutingConfig {
+    #[serde(default)]
+    pub provider_escalation: Option<bool>,
+    #[serde(default)]
+    pub max_escalations: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct ReviewConfig {
+    /// Shape varies (count or list) — mirror the `quick_branch_template` precedent.
+    #[serde(default)]
+    pub reviewer_instances: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct ExternalJobConfig {
+    #[serde(default)]
+    pub submit_timeout_ms: Option<u32>,
+    #[serde(default)]
+    pub poll_timeout_ms: Option<u32>,
+    #[serde(default)]
+    pub artifact_dir: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct CapabilitiesConfig {
+    #[serde(default)]
+    pub strict_known_registries: Option<bool>,
+    #[serde(default)]
+    pub auto_update: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
@@ -254,5 +326,102 @@ mod tests {
             reparsed.workflow.as_ref().unwrap().node_repair_budget,
             Some(3)
         );
+    }
+
+    #[test]
+    fn test_parse_new_toplevel_blocks() {
+        let content = r#"{
+            "claude_orchestration": {
+                "enabled": true,
+                "execution_backend": "claude-agent-sdk",
+                "min_agent_sdk_version": "0.1.0"
+            },
+            "statusline": {
+                "show_context_tokens": true,
+                "state_format": "compact",
+                "show_git": false
+            },
+            "dynamic_routing": {
+                "provider_escalation": true,
+                "max_escalations": 2
+            },
+            "review": {
+                "reviewer_instances": 3
+            },
+            "external_job": {
+                "submit_timeout_ms": 60000,
+                "poll_timeout_ms": 5000,
+                "artifact_dir": ".planning/jobs"
+            },
+            "capabilities": {
+                "strict_known_registries": true,
+                "auto_update": false
+            },
+            "phase_id_convention": "zero-padded",
+            "claude_md_path": "./CLAUDE.md",
+            "sub_repos": ["backend", "frontend"]
+        }"#;
+        let config = parse_gsd_config(content).unwrap();
+
+        let co = config.claude_orchestration.as_ref().unwrap();
+        assert_eq!(co.enabled, Some(true));
+        assert_eq!(co.execution_backend, Some("claude-agent-sdk".to_string()));
+        assert_eq!(co.min_agent_sdk_version, Some("0.1.0".to_string()));
+
+        let sl = config.statusline.as_ref().unwrap();
+        assert_eq!(sl.show_context_tokens, Some(true));
+        assert_eq!(sl.state_format, Some("compact".to_string()));
+        assert_eq!(sl.show_git, Some(false));
+
+        let dr = config.dynamic_routing.as_ref().unwrap();
+        assert_eq!(dr.provider_escalation, Some(true));
+        assert_eq!(dr.max_escalations, Some(2));
+
+        let rv = config.review.as_ref().unwrap();
+        assert_eq!(
+            rv.reviewer_instances,
+            Some(serde_json::Value::from(3))
+        );
+
+        let ej = config.external_job.as_ref().unwrap();
+        assert_eq!(ej.submit_timeout_ms, Some(60000));
+        assert_eq!(ej.poll_timeout_ms, Some(5000));
+        assert_eq!(ej.artifact_dir, Some(".planning/jobs".to_string()));
+
+        let cap = config.capabilities.as_ref().unwrap();
+        assert_eq!(cap.strict_known_registries, Some(true));
+        assert_eq!(cap.auto_update, Some(false));
+
+        assert_eq!(config.phase_id_convention, Some("zero-padded".to_string()));
+        assert_eq!(config.claude_md_path, Some("./CLAUDE.md".to_string()));
+        assert!(config.sub_repos.as_ref().unwrap().is_array());
+    }
+
+    #[test]
+    fn test_new_toplevel_blocks_default_none() {
+        let config = parse_gsd_config("{}").unwrap();
+        assert!(config.claude_orchestration.is_none());
+        assert!(config.statusline.is_none());
+        assert!(config.dynamic_routing.is_none());
+        assert!(config.review.is_none());
+        assert!(config.external_job.is_none());
+        assert!(config.capabilities.is_none());
+        assert!(config.phase_id_convention.is_none());
+        assert!(config.claude_md_path.is_none());
+        assert!(config.sub_repos.is_none());
+    }
+
+    #[test]
+    fn test_default_config_omits_new_toplevel_keys() {
+        let config = GsdConfig::default();
+        let serialized = serialize_gsd_config(&config).unwrap();
+        assert!(!serialized.contains("claude_orchestration"));
+        assert!(!serialized.contains("statusline"));
+        assert!(!serialized.contains("dynamic_routing"));
+        assert!(!serialized.contains("external_job"));
+        assert!(!serialized.contains("capabilities"));
+        assert!(!serialized.contains("phase_id_convention"));
+        assert!(!serialized.contains("claude_md_path"));
+        assert!(!serialized.contains("sub_repos"));
     }
 }
