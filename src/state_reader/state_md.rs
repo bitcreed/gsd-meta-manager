@@ -16,8 +16,89 @@ pub struct StateFrontmatter {
     pub last_updated: String,
     #[serde(default)]
     pub last_activity: Option<String>,
+    /// ADR-2207: current phase number (GSD 1.8.0 frontmatter). Stored as a
+    /// string but accepts a YAML string OR number so a numeric value never
+    /// aborts frontmatter parsing.
+    #[serde(default, deserialize_with = "de_opt_scalar_string")]
+    pub current_phase: Option<String>,
+    /// ADR-2207: human-readable current phase name (GSD 1.8.0 frontmatter).
+    #[serde(default)]
+    pub current_phase_name: Option<String>,
+    /// ADR-2207: current plan identifier (GSD 1.8.0 frontmatter). Accepts a
+    /// YAML string OR number (e.g. `"0.3"` or `14`).
+    #[serde(default, deserialize_with = "de_opt_scalar_string")]
+    pub current_plan: Option<String>,
     #[serde(default)]
     pub progress: ProgressInfo,
+}
+
+/// Deserialize a YAML scalar (string, integer, float, or null) into
+/// `Option<String>`.
+///
+/// GSD 1.8.0 may write `current_phase` / `current_plan` either quoted
+/// (`"14"`, `"0.3"`) or bare (`14`). serde_yml would otherwise reject a bare
+/// number for a `String`/`Option<String>` field and abort the *entire*
+/// frontmatter parse (`parse_state_md` returning `None` zeroes every field).
+/// This visitor normalizes any scalar shape to its string form; null/absent
+/// yields `None`.
+fn de_opt_scalar_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct ScalarStringVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for ScalarStringVisitor {
+        type Value = Option<String>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a string, integer, float, or null")
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(Some(v.to_string()))
+        }
+        fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(Some(v.to_string()))
+        }
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(Some(v.to_string()))
+        }
+        fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+            Ok(Some(v.to_string()))
+        }
+        fn visit_none<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            deserializer.deserialize_any(self)
+        }
+    }
+
+    deserializer.deserialize_option(ScalarStringVisitor)
+}
+
+/// ADR-2207: true when `status` denotes milestone termination — the milestone
+/// is fully done (`<version> milestone complete`) or the project is between
+/// milestones (`Awaiting next milestone`). Case-insensitive.
+pub fn is_milestone_terminal(status: &str) -> bool {
+    let s = status.to_lowercase();
+    s.contains("milestone complete") || s.contains("awaiting next milestone")
+}
+
+/// ADR-2207: true when `status` is the intermediate `All phases complete`
+/// state — every phase is done but the milestone has NOT been terminated
+/// (the project awaits `/gsd:complete-milestone`). Case-insensitive.
+pub fn is_all_phases_complete(status: &str) -> bool {
+    status.to_lowercase().contains("all phases complete")
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -122,5 +203,52 @@ mod tests {
         assert_eq!(fm.status, "active");
         assert_eq!(fm.progress.total_phases, 0); // default
         assert_eq!(fm.milestone, ""); // default
+    }
+
+    #[test]
+    fn test_frontmatter_current_phase_keys_string_form() {
+        let content = "---\nstatus: executing\ncurrent_phase: \"14\"\ncurrent_phase_name: Dashboard\ncurrent_plan: \"0.3\"\n---\n";
+        let fm = parse_state_md(content).unwrap();
+        assert_eq!(fm.current_phase.as_deref(), Some("14"));
+        assert_eq!(fm.current_phase_name.as_deref(), Some("Dashboard"));
+        assert_eq!(fm.current_plan.as_deref(), Some("0.3"));
+    }
+
+    #[test]
+    fn test_frontmatter_current_phase_numeric_form() {
+        // A bare (unquoted) numeric current_phase / current_plan must NOT abort
+        // frontmatter parsing — it is coerced to its string form.
+        let content = "---\nstatus: executing\ncurrent_phase: 14\ncurrent_plan: 2\n---\n";
+        let fm = parse_state_md(content).unwrap();
+        assert_eq!(fm.status, "executing");
+        assert_eq!(fm.current_phase.as_deref(), Some("14"));
+        assert_eq!(fm.current_plan.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn test_frontmatter_current_phase_absent_is_none() {
+        let content = "---\nstatus: active\n---\n";
+        let fm = parse_state_md(content).unwrap();
+        assert_eq!(fm.current_phase, None);
+        assert_eq!(fm.current_phase_name, None);
+        assert_eq!(fm.current_plan, None);
+    }
+
+    #[test]
+    fn test_is_milestone_terminal() {
+        assert!(is_milestone_terminal("v1.5.0 milestone complete"));
+        assert!(is_milestone_terminal("Awaiting next milestone"));
+        assert!(is_milestone_terminal("V1.5.0 MILESTONE COMPLETE")); // case-insensitive
+        assert!(!is_milestone_terminal("All phases complete"));
+        assert!(!is_milestone_terminal("executing"));
+    }
+
+    #[test]
+    fn test_is_all_phases_complete() {
+        assert!(is_all_phases_complete("All phases complete"));
+        assert!(is_all_phases_complete("all phases complete")); // case-insensitive
+        assert!(!is_all_phases_complete("v1.5.0 milestone complete"));
+        assert!(!is_all_phases_complete("Awaiting next milestone"));
+        assert!(!is_all_phases_complete("executing"));
     }
 }
