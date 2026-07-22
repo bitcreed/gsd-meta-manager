@@ -21,6 +21,22 @@ pub struct RoadmapPhase {
 /// the numeric body is `[0-9][0-9.]*` with an optional trailing `[A-Za-z]`.
 const PHASE_ID: &str = r"(?:[A-Za-z]{1,4}-)?[0-9][0-9.]*[A-Za-z]?";
 
+/// Returns true when a phase number is a backlog sentinel that must be excluded
+/// from the returned phase list (and every count).
+///
+/// Sentinels: `Phase 0` (pre-milestone) and `Phase 999` / `999.x` (backlog).
+/// A leading alphabetic project-code prefix (`M-`, `AB-`) is stripped first so
+/// only the numeric body is inspected. Ordinary decimals like `0.3` are kept.
+fn is_sentinel_phase(number: &str) -> bool {
+    let n = match number.split_once('-') {
+        Some((prefix, rest)) if !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_alphabetic()) => {
+            rest
+        }
+        _ => number,
+    };
+    n == "0" || n == "999" || n.starts_with("999.")
+}
+
 /// Parse ROADMAP.md content and extract phase checklist items with per-phase plan counts.
 ///
 /// Recognizes several heading shapes used by GSD 1.8.0 roadmaps:
@@ -56,24 +72,36 @@ pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
     while i < lines.len() {
         let line = lines[i];
         let parsed: Option<RoadmapPhase> = if let Some(caps) = checklist_re.captures(line) {
-            Some(RoadmapPhase {
-                completed: &caps[1] != " ",
-                number: caps[3].to_string(),
-                name: caps[4].trim().to_string(),
-                description: caps[6].trim().to_string(),
-                total_plans: 0,
-                completed_plans: 0,
-            })
+            let number = caps[3].to_string();
+            // Strikethrough (`~~...~~`) marks a retired phase → exclude entirely.
+            let retired = caps.get(2).is_some() || caps.get(5).is_some() || line.contains("~~");
+            if retired || is_sentinel_phase(&number) {
+                None
+            } else {
+                Some(RoadmapPhase {
+                    completed: &caps[1] != " ",
+                    number,
+                    name: caps[4].trim().to_string(),
+                    description: caps[6].trim().to_string(),
+                    total_plans: 0,
+                    completed_plans: 0,
+                })
+            }
         } else if let Some(caps) = heading_re.captures(line) {
             // `###`-style headings carry no checkbox and no inline description.
-            Some(RoadmapPhase {
-                completed: false,
-                number: caps[1].to_string(),
-                name: caps[2].trim().to_string(),
-                description: String::new(),
-                total_plans: 0,
-                completed_plans: 0,
-            })
+            let number = caps[1].to_string();
+            if line.contains("~~") || is_sentinel_phase(&number) {
+                None
+            } else {
+                Some(RoadmapPhase {
+                    completed: false,
+                    number,
+                    name: caps[2].trim().to_string(),
+                    description: String::new(),
+                    total_plans: 0,
+                    completed_plans: 0,
+                })
+            }
         } else {
             None
         };
@@ -297,6 +325,54 @@ Plans:
         assert_eq!(phases.len(), 1);
         assert_eq!(phases[0].number, "0.3");
         assert_eq!(phases[0].name, "Spike");
+    }
+
+    #[test]
+    fn test_parse_roadmap_excludes_strikethrough() {
+        // A strikethrough (retired) phase is absent from the returned Vec and
+        // does not contribute to any count; real phases are unaffected.
+        let content = r#"- [ ] **Phase 1: Real One** - live
+- [ ] ~~**Phase 7: Old idea**~~ - abandoned
+~~Phase 8: Bare strike~~
+- [ ] **Phase 2: Real Two** - live
+"#;
+        let phases = parse_roadmap_phases(content);
+        assert_eq!(phases.len(), 2);
+        assert_eq!(phases[0].number, "1");
+        assert_eq!(phases[1].number, "2");
+        assert!(phases.iter().all(|p| p.number != "7" && p.number != "8"));
+    }
+
+    #[test]
+    fn test_parse_roadmap_excludes_backlog_sentinels() {
+        // Phase 0 and Phase 999 / 999.x sentinels are excluded; real phases stay.
+        let content = r#"- [ ] **Phase 0: Backlog** - pre-milestone
+- [ ] **Phase 1: Alpha** - real
+- [ ] **Phase 999: Someday** - backlog
+- [ ] **Phase 999.2: Later** - backlog
+- [ ] **Phase 0.3: Spike** - real decimal
+- [ ] **Phase 2: Beta** - real
+"#;
+        let phases = parse_roadmap_phases(content);
+        let numbers: Vec<&str> = phases.iter().map(|p| p.number.as_str()).collect();
+        assert_eq!(numbers, vec!["1", "0.3", "2"]);
+        assert!(!numbers.contains(&"0"));
+        assert!(!numbers.contains(&"999"));
+        assert!(!numbers.contains(&"999.2"));
+    }
+
+    #[test]
+    fn test_parse_roadmap_three_real_phases_unaffected() {
+        // A normal roadmap of 3 real phases is unchanged by the new filters.
+        let content = r#"- [ ] **Phase 1: One** - a
+- [x] **Phase 2: Two** - b
+- [ ] **Phase M-2: Three** - c
+"#;
+        let phases = parse_roadmap_phases(content);
+        assert_eq!(phases.len(), 3);
+        assert_eq!(phases[0].number, "1");
+        assert_eq!(phases[1].number, "2");
+        assert_eq!(phases[2].number, "M-2");
     }
 
     #[test]
