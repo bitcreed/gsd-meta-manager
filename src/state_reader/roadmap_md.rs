@@ -10,6 +10,20 @@ pub struct RoadmapPhase {
     pub completed_plans: u32,
 }
 
+/// Aggregate phase/plan counts parsed from a ROADMAP.md `## Progress` table.
+///
+/// The `## Progress` table is the authoritative source of progress counts for a
+/// GSD 1.8.0 roadmap. plan 6 (mod.rs) prefers this over STATE.md frontmatter
+/// when present; when the section is absent `roadmap_progress` returns `None` and
+/// the caller falls back to STATE.md.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RoadmapProgress {
+    pub total_phases: u32,
+    pub completed_phases: u32,
+    pub total_plans: u32,
+    pub completed_plans: u32,
+}
+
 /// Phase-ID token used inside the phase recognizers.
 ///
 /// Accepts:
@@ -134,6 +148,123 @@ pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
     }
 
     phases
+}
+
+/// Returns true when a `## Progress` table Phase cell is a backlog sentinel
+/// (`Phase 0` / `Phase 999` / `999.x`) that must not be counted. The cell may
+/// carry a trailing label (e.g. `999. Backlog`), so only the leading token is
+/// inspected.
+fn is_progress_sentinel(phase_cell: &str) -> bool {
+    let token = phase_cell
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('.');
+    is_sentinel_phase(token)
+}
+
+/// Split a markdown table row into trimmed cells, dropping the outer pipes.
+fn split_table_row(line: &str) -> Vec<String> {
+    line.trim()
+        .trim_matches('|')
+        .split('|')
+        .map(|c| c.trim().to_string())
+        .collect()
+}
+
+/// Parse the authoritative `## Progress` table from ROADMAP.md content.
+///
+/// Columns are matched by NAME (case-insensitive), not position, so both the
+/// flat 4-column layout (`Phase | Plans Complete | Status | Completed`) and the
+/// milestone-grouped 5-column layout (with an extra `Milestone` column) — as
+/// well as any column reordering — are handled. Returns `None` when the
+/// `## Progress` section is absent or its table header cannot be interpreted
+/// (missing the required `Phase` / `Plans Complete` columns).
+///
+/// Pure: takes `&str`, returns `Option<RoadmapProgress>`, mutates nothing.
+///
+/// plan 6 (mod.rs) prefers this over STATE.md frontmatter when present.
+pub fn roadmap_progress(content: &str) -> Option<RoadmapProgress> {
+    let lines: Vec<&str> = content.lines().collect();
+
+    // Locate the `## Progress` section heading.
+    let progress_heading = Regex::new(r"(?i)^##[ \t]+Progress\b").unwrap();
+    // A following level-1 or level-2 heading closes the section scope.
+    let heading_boundary = Regex::new(r"^#{1,2}[ \t]").unwrap();
+
+    let start = lines.iter().position(|l| progress_heading.is_match(l))?;
+    let mut end = lines.len();
+    for (offset, l) in lines.iter().enumerate().skip(start + 1) {
+        if heading_boundary.is_match(l) {
+            end = offset;
+            break;
+        }
+    }
+    let scope = &lines[(start + 1)..end];
+
+    // A markdown table header row is a `|`-delimited line immediately followed
+    // by a delimiter row (`| --- | ... |`).
+    let is_row = |l: &str| l.trim().starts_with('|');
+    let is_delimiter = |l: &str| {
+        let t = l.trim();
+        t.starts_with('|')
+            && t.contains('-')
+            && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ' | '\t'))
+    };
+
+    let mut header_idx = None;
+    for k in 0..scope.len() {
+        if is_row(scope[k]) && k + 1 < scope.len() && is_delimiter(scope[k + 1]) {
+            header_idx = Some(k);
+            break;
+        }
+    }
+    let header_idx = header_idx?;
+
+    let headers = split_table_row(scope[header_idx]);
+    let col = |name: &str| headers.iter().position(|h| h.eq_ignore_ascii_case(name));
+
+    // Required columns; without these the header cannot be interpreted.
+    let phase_col = col("Phase")?;
+    let plans_col = col("Plans Complete")?;
+    let status_col = col("Status");
+
+    let plans_re = Regex::new(r"(\d+)\s*/\s*(\d+)").unwrap();
+
+    let mut progress = RoadmapProgress::default();
+
+    for l in scope.iter().skip(header_idx + 2) {
+        if !is_row(l) {
+            break; // table ended
+        }
+        let cells = split_table_row(l);
+        if cells.len() < headers.len() {
+            continue;
+        }
+        let phase_cell = cells.get(phase_col).map(String::as_str).unwrap_or("").trim();
+        if phase_cell.is_empty() || is_progress_sentinel(phase_cell) {
+            continue;
+        }
+        progress.total_phases += 1;
+
+        if let Some(sc) = status_col {
+            if let Some(status) = cells.get(sc) {
+                let status = status.trim();
+                if status.eq_ignore_ascii_case("complete") || status.eq_ignore_ascii_case("done") {
+                    progress.completed_phases += 1;
+                }
+            }
+        }
+
+        if let Some(cell) = cells.get(plans_col) {
+            if let Some(m) = plans_re.captures(cell.trim()) {
+                progress.completed_plans += m[1].parse::<u32>().unwrap_or(0);
+                progress.total_plans += m[2].parse::<u32>().unwrap_or(0);
+            }
+        }
+    }
+
+    Some(progress)
 }
 
 #[cfg(test)]
@@ -390,5 +521,94 @@ Plans:
         assert_eq!(phases.len(), 1);
         assert_eq!(phases[0].total_plans, 2);
         assert_eq!(phases[0].completed_plans, 0);
+    }
+
+    #[test]
+    fn test_roadmap_progress_flat_four_column() {
+        let content = r#"# Roadmap
+
+## Progress
+
+| Phase | Plans Complete | Status | Completed |
+| --- | --- | --- | --- |
+| 1. Alpha | 2/2 | Complete | ✅ |
+| 2. Beta | 1/2 | In Progress | |
+"#;
+        let p = roadmap_progress(content).expect("progress table parses");
+        assert_eq!(p.total_phases, 2);
+        assert_eq!(p.completed_phases, 1);
+        assert_eq!(p.total_plans, 4);
+        assert_eq!(p.completed_plans, 3);
+    }
+
+    #[test]
+    fn test_roadmap_progress_milestone_grouped_five_column() {
+        let content = r#"## Progress
+
+| Phase | Milestone | Plans Complete | Status | Completed |
+|---|---|---|---|---|
+| 1. Alpha | v1.0 | 2/2 | Complete | ✅ |
+| 2. Beta | v1.1 | 0/3 | Planned | |
+"#;
+        let p = roadmap_progress(content).expect("5-column table parses");
+        assert_eq!(p.total_phases, 2);
+        assert_eq!(p.completed_phases, 1);
+        assert_eq!(p.total_plans, 5);
+        assert_eq!(p.completed_plans, 2);
+    }
+
+    #[test]
+    fn test_roadmap_progress_column_reordered() {
+        // Columns matched by NAME, not position — a reordered header still parses.
+        let content = r#"## Progress
+
+| Status | Completed | Plans Complete | Phase |
+| --- | --- | --- | --- |
+| Complete | ✅ | 3/3 | 1. Alpha |
+| Planned | | 0/2 | 2. Beta |
+"#;
+        let p = roadmap_progress(content).expect("reordered table parses");
+        assert_eq!(p.total_phases, 2);
+        assert_eq!(p.completed_phases, 1);
+        assert_eq!(p.total_plans, 5);
+        assert_eq!(p.completed_plans, 3);
+    }
+
+    #[test]
+    fn test_roadmap_progress_excludes_backlog_row() {
+        // A 999.x backlog row is not counted as a phase or plans.
+        let content = r#"## Progress
+
+| Phase | Plans Complete | Status | Completed |
+| --- | --- | --- | --- |
+| 1. Alpha | 2/2 | Complete | ✅ |
+| 999. Backlog | 0/9 | Planned | |
+"#;
+        let p = roadmap_progress(content).expect("table parses");
+        assert_eq!(p.total_phases, 1);
+        assert_eq!(p.completed_phases, 1);
+        assert_eq!(p.total_plans, 2);
+        assert_eq!(p.completed_plans, 2);
+    }
+
+    #[test]
+    fn test_roadmap_progress_absent_section_is_none() {
+        let content = r#"# Roadmap
+
+- [ ] **Phase 1: Alpha** - no progress table here
+"#;
+        assert_eq!(roadmap_progress(content), None);
+    }
+
+    #[test]
+    fn test_roadmap_progress_uninterpretable_header_is_none() {
+        // A `## Progress` section whose table lacks the required columns → None.
+        let content = r#"## Progress
+
+| Foo | Bar |
+| --- | --- |
+| a | b |
+"#;
+        assert_eq!(roadmap_progress(content), None);
     }
 }
