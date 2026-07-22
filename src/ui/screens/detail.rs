@@ -3131,6 +3131,9 @@ impl DetailScreen {
                         }
                     }
                     ConfigValueKind::Null => Style::default().fg(Color::DarkGray),
+                    ConfigValueKind::ReadOnly => Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
                     _ => Style::default().fg(Color::Yellow),
                 };
                 let val_span = Span::styled(entry.value.clone(), val_style);
@@ -3668,6 +3671,9 @@ enum ConfigValueKind {
     String,
     Integer,
     Null,
+    /// Display-only: shape-varying keys (JSON value could be int/string/array)
+    /// that we surface as a formatted string but never make editable.
+    ReadOnly,
 }
 
 #[derive(Clone)]
@@ -3726,6 +3732,28 @@ fn opt_enum_layered(
     }
 }
 
+/// Format a shape-varying JSON value for read-only display.
+fn json_display(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Layered accessor for shape-varying keys rendered read-only.
+fn opt_json_readonly(
+    project: Option<&serde_json::Value>,
+    defaults: Option<&serde_json::Value>,
+) -> (String, ConfigValueKind, bool) {
+    if let Some(v) = project {
+        (json_display(v), ConfigValueKind::ReadOnly, false)
+    } else if let Some(v) = defaults {
+        (json_display(v), ConfigValueKind::ReadOnly, true)
+    } else {
+        ("(unset)".to_string(), ConfigValueKind::Null, false)
+    }
+}
+
 fn build_defaults_entries(
     config: &crate::state_reader::config_json::GsdConfig,
     defaults: Option<&crate::state_reader::config_json::GsdConfig>,
@@ -3778,6 +3806,17 @@ fn build_defaults_entries(
     push(cat, "ai_integration_phase", v, k, false, fd);
     let (v, k, fd) = u32_l(pwf.and_then(|w| w.subagent_timeout), dwf.and_then(|w| w.subagent_timeout));
     push(cat, "subagent_timeout", v, k, false, fd);
+    // GSD 1.4–1.8 planning gates
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.specless_probe_fallback), dwf.and_then(|w| w.specless_probe_fallback));
+    push(cat, "workflow.specless_probe_fallback", v, k, false, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.assumption_delta), dwf.and_then(|w| w.assumption_delta));
+    push(cat, "workflow.assumption_delta", v, k, false, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.plan_drift_precheck), dwf.and_then(|w| w.plan_drift_precheck));
+    push(cat, "workflow.plan_drift_precheck", v, k, false, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.plan_chunked), dwf.and_then(|w| w.plan_chunked));
+    push(cat, "workflow.plan_chunked", v, k, false, fd);
+    let (v, k, fd) = str_l(pwf.and_then(|w| w.context_guard_mode.as_deref()), dwf.and_then(|w| w.context_guard_mode.as_deref()));
+    push(cat, "workflow.context_guard_mode", v, k, false, fd);
 
     // ── Execution ──────────────────────────────────────────────
     let cat = "Execution";
@@ -3799,6 +3838,28 @@ fn build_defaults_entries(
     push(cat, "node_repair", v, k, false, fd);
     let (v, k, fd) = u32_l(pwf.and_then(|w| w.node_repair_budget), dwf.and_then(|w| w.node_repair_budget));
     push(cat, "node_repair_budget", v, k, false, fd);
+    // GSD 1.8 execution gates
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.api_coverage_gate), dwf.and_then(|w| w.api_coverage_gate));
+    push(cat, "workflow.api_coverage_gate", v, k, false, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.windows_enforce), dwf.and_then(|w| w.windows_enforce));
+    push(cat, "workflow.windows_enforce", v, k, false, fd);
+    let (v, k, fd) = bool_l(pwf.and_then(|w| w.mvp_mode), dwf.and_then(|w| w.mvp_mode));
+    push(cat, "workflow.mvp_mode", v, k, false, fd);
+    let (v, k, fd) = u32_l(pwf.and_then(|w| w.test_gate_timeout), dwf.and_then(|w| w.test_gate_timeout));
+    push(cat, "workflow.test_gate_timeout", v, k, false, fd);
+    let (v, k, fd) = str_l(pwf.and_then(|w| w.code_review_command.as_deref()), dwf.and_then(|w| w.code_review_command.as_deref()));
+    push(cat, "workflow.code_review_command", v, k, false, fd);
+    // Shape-varying security keys — read-only display.
+    let (v, k, fd) = opt_json_readonly(
+        pwf.and_then(|w| w.security_asvs_level.as_ref()),
+        dwf.and_then(|w| w.security_asvs_level.as_ref()),
+    );
+    push(cat, "workflow.security_asvs_level", v, k, false, fd);
+    let (v, k, fd) = opt_json_readonly(
+        pwf.and_then(|w| w.security_block_on.as_ref()),
+        dwf.and_then(|w| w.security_block_on.as_ref()),
+    );
+    push(cat, "workflow.security_block_on", v, k, false, fd);
 
     // ── Docs & Output ─────────────────────────────────────────
     let cat = "Docs & Output";
@@ -3833,6 +3894,11 @@ fn build_defaults_entries(
         defaults.and_then(|d| d.graphify.as_ref().and_then(|g| g.build_timeout)),
     );
     push(cat, "graphify_build_timeout", v, k, false, fd);
+    let (v, k, fd) = str_l(
+        config.graphify.as_ref().and_then(|g| g.graph_path.as_deref()),
+        defaults.and_then(|d| d.graphify.as_ref().and_then(|g| g.graph_path.as_deref())),
+    );
+    push(cat, "graphify.graph_path", v, k, false, fd);
     let (v, k, fd) = bool_l(config.brave_search, defaults.and_then(|d| d.brave_search));
     push(cat, "brave_search", v, k, false, fd);
     let (v, k, fd) = bool_l(config.firecrawl, defaults.and_then(|d| d.firecrawl));
@@ -3904,6 +3970,71 @@ fn build_defaults_entries(
     push(cat, "project_code", v, k, false, fd);
     let (v, k, fd) = str_l(config.phase_naming.as_deref(), defaults.and_then(|d| d.phase_naming.as_deref()));
     push(cat, "phase_naming", v, k, false, fd);
+    let (v, k, fd) = str_l(config.phase_id_convention.as_deref(), defaults.and_then(|d| d.phase_id_convention.as_deref()));
+    push(cat, "phase_id_convention", v, k, false, fd);
+    let (v, k, fd) = str_l(config.claude_md_path.as_deref(), defaults.and_then(|d| d.claude_md_path.as_deref()));
+    push(cat, "claude_md_path", v, k, false, fd);
+    let (v, k, fd) = opt_json_readonly(config.sub_repos.as_ref(), defaults.and_then(|d| d.sub_repos.as_ref()));
+    push(cat, "sub_repos", v, k, false, fd);
+
+    // ── Orchestration ─────────────────────────────────────────
+    let cat = "Orchestration";
+    let pco = config.claude_orchestration.as_ref();
+    let dco = defaults.and_then(|d: &GsdConfig| d.claude_orchestration.as_ref());
+    let (v, k, fd) = bool_l(pco.and_then(|c| c.enabled), dco.and_then(|c| c.enabled));
+    push(cat, "claude_orchestration.enabled", v, k, true, fd);
+    let (v, k, fd) = str_l(pco.and_then(|c| c.execution_backend.as_deref()), dco.and_then(|c| c.execution_backend.as_deref()));
+    push(cat, "claude_orchestration.execution_backend", v, k, false, fd);
+    let (v, k, fd) = str_l(pco.and_then(|c| c.min_agent_sdk_version.as_deref()), dco.and_then(|c| c.min_agent_sdk_version.as_deref()));
+    push(cat, "claude_orchestration.min_agent_sdk_version", v, k, false, fd);
+
+    // ── Statusline ────────────────────────────────────────────
+    let cat = "Statusline";
+    let psl = config.statusline.as_ref();
+    let dsl = defaults.and_then(|d: &GsdConfig| d.statusline.as_ref());
+    let (v, k, fd) = bool_l(psl.and_then(|s| s.show_context_tokens), dsl.and_then(|s| s.show_context_tokens));
+    push(cat, "statusline.show_context_tokens", v, k, true, fd);
+    let (v, k, fd) = str_l(psl.and_then(|s| s.state_format.as_deref()), dsl.and_then(|s| s.state_format.as_deref()));
+    push(cat, "statusline.state_format", v, k, false, fd);
+    let (v, k, fd) = bool_l(psl.and_then(|s| s.show_git), dsl.and_then(|s| s.show_git));
+    push(cat, "statusline.show_git", v, k, false, fd);
+
+    // ── Routing ───────────────────────────────────────────────
+    let cat = "Routing";
+    let pdr = config.dynamic_routing.as_ref();
+    let ddr = defaults.and_then(|d: &GsdConfig| d.dynamic_routing.as_ref());
+    let (v, k, fd) = bool_l(pdr.and_then(|r| r.provider_escalation), ddr.and_then(|r| r.provider_escalation));
+    push(cat, "dynamic_routing.provider_escalation", v, k, true, fd);
+    let (v, k, fd) = u32_l(pdr.and_then(|r| r.max_escalations), ddr.and_then(|r| r.max_escalations));
+    push(cat, "dynamic_routing.max_escalations", v, k, false, fd);
+
+    // ── External Job ──────────────────────────────────────────
+    let cat = "External Job";
+    let pej = config.external_job.as_ref();
+    let dej = defaults.and_then(|d: &GsdConfig| d.external_job.as_ref());
+    let (v, k, fd) = u32_l(pej.and_then(|e| e.submit_timeout_ms), dej.and_then(|e| e.submit_timeout_ms));
+    push(cat, "external_job.submit_timeout_ms", v, k, true, fd);
+    let (v, k, fd) = u32_l(pej.and_then(|e| e.poll_timeout_ms), dej.and_then(|e| e.poll_timeout_ms));
+    push(cat, "external_job.poll_timeout_ms", v, k, false, fd);
+    let (v, k, fd) = str_l(pej.and_then(|e| e.artifact_dir.as_deref()), dej.and_then(|e| e.artifact_dir.as_deref()));
+    push(cat, "external_job.artifact_dir", v, k, false, fd);
+
+    // ── Capabilities ──────────────────────────────────────────
+    let cat = "Capabilities";
+    let pcap = config.capabilities.as_ref();
+    let dcap = defaults.and_then(|d: &GsdConfig| d.capabilities.as_ref());
+    let (v, k, fd) = bool_l(pcap.and_then(|c| c.strict_known_registries), dcap.and_then(|c| c.strict_known_registries));
+    push(cat, "capabilities.strict_known_registries", v, k, true, fd);
+    let (v, k, fd) = bool_l(pcap.and_then(|c| c.auto_update), dcap.and_then(|c| c.auto_update));
+    push(cat, "capabilities.auto_update", v, k, false, fd);
+
+    // ── Review ────────────────────────────────────────────────
+    let cat = "Review";
+    let (v, k, fd) = opt_json_readonly(
+        config.review.as_ref().and_then(|r| r.reviewer_instances.as_ref()),
+        defaults.and_then(|d| d.review.as_ref().and_then(|r| r.reviewer_instances.as_ref())),
+    );
+    push(cat, "review.reviewer_instances", v, k, true, fd);
 
     entries
 }
@@ -4022,6 +4153,21 @@ fn set_config_value(
             "tdd_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).tdd_mode = Some(b); return true; }
             "code_review" => { config.workflow.get_or_insert_with(WorkflowConfig::default).code_review = Some(b); return true; }
             "ui_review" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_review = Some(b); return true; }
+            // GSD 1.4–1.8 workflow gates
+            "workflow.specless_probe_fallback" => { config.workflow.get_or_insert_with(WorkflowConfig::default).specless_probe_fallback = Some(b); return true; }
+            "workflow.assumption_delta" => { config.workflow.get_or_insert_with(WorkflowConfig::default).assumption_delta = Some(b); return true; }
+            "workflow.plan_drift_precheck" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_drift_precheck = Some(b); return true; }
+            "workflow.plan_chunked" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_chunked = Some(b); return true; }
+            "workflow.api_coverage_gate" => { config.workflow.get_or_insert_with(WorkflowConfig::default).api_coverage_gate = Some(b); return true; }
+            "workflow.windows_enforce" => { config.workflow.get_or_insert_with(WorkflowConfig::default).windows_enforce = Some(b); return true; }
+            "workflow.mvp_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).mvp_mode = Some(b); return true; }
+            // GSD 1.8 top-level blocks
+            "claude_orchestration.enabled" => { config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default).enabled = Some(b); return true; }
+            "statusline.show_context_tokens" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_context_tokens = Some(b); return true; }
+            "statusline.show_git" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_git = Some(b); return true; }
+            "dynamic_routing.provider_escalation" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).provider_escalation = Some(b); return true; }
+            "capabilities.strict_known_registries" => { config.capabilities.get_or_insert_with(CapabilitiesConfig::default).strict_known_registries = Some(b); return true; }
+            "capabilities.auto_update" => { config.capabilities.get_or_insert_with(CapabilitiesConfig::default).auto_update = Some(b); return true; }
             _ => {}
         }
     }
@@ -4078,6 +4224,16 @@ fn set_string_value(
                 Some(serde_json::Value::String(value.to_string()));
             true
         }
+        // GSD 1.4–1.8 string keys
+        "workflow.context_guard_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).context_guard_mode = Some(value.to_string()); true }
+        "workflow.code_review_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).code_review_command = Some(value.to_string()); true }
+        "graphify.graph_path" => { config.graphify.get_or_insert_with(GraphifyConfig::default).graph_path = Some(value.to_string()); true }
+        "phase_id_convention" => { config.phase_id_convention = Some(value.to_string()); true }
+        "claude_md_path" => { config.claude_md_path = Some(value.to_string()); true }
+        "claude_orchestration.execution_backend" => { config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default).execution_backend = Some(value.to_string()); true }
+        "claude_orchestration.min_agent_sdk_version" => { config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default).min_agent_sdk_version = Some(value.to_string()); true }
+        "statusline.state_format" => { config.statusline.get_or_insert_with(StatuslineConfig::default).state_format = Some(value.to_string()); true }
+        "external_job.artifact_dir" => { config.external_job.get_or_insert_with(ExternalJobConfig::default).artifact_dir = Some(value.to_string()); true }
         _ => false,
     }
 }
@@ -4147,6 +4303,36 @@ fn clear_config_value(
         "code_review_depth" => { config.workflow.get_or_insert_with(WorkflowConfig::default).code_review_depth = None; true }
         "ui_review" => { config.workflow.get_or_insert_with(WorkflowConfig::default).ui_review = None; true }
 
+        // GSD 1.4–1.8 workflow gates
+        "workflow.specless_probe_fallback" => { config.workflow.get_or_insert_with(WorkflowConfig::default).specless_probe_fallback = None; true }
+        "workflow.assumption_delta" => { config.workflow.get_or_insert_with(WorkflowConfig::default).assumption_delta = None; true }
+        "workflow.plan_drift_precheck" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_drift_precheck = None; true }
+        "workflow.plan_chunked" => { config.workflow.get_or_insert_with(WorkflowConfig::default).plan_chunked = None; true }
+        "workflow.context_guard_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).context_guard_mode = None; true }
+        "workflow.api_coverage_gate" => { config.workflow.get_or_insert_with(WorkflowConfig::default).api_coverage_gate = None; true }
+        "workflow.windows_enforce" => { config.workflow.get_or_insert_with(WorkflowConfig::default).windows_enforce = None; true }
+        "workflow.mvp_mode" => { config.workflow.get_or_insert_with(WorkflowConfig::default).mvp_mode = None; true }
+        "workflow.test_gate_timeout" => { config.workflow.get_or_insert_with(WorkflowConfig::default).test_gate_timeout = None; true }
+        "workflow.code_review_command" => { config.workflow.get_or_insert_with(WorkflowConfig::default).code_review_command = None; true }
+        "graphify.graph_path" => { config.graphify.get_or_insert_with(GraphifyConfig::default).graph_path = None; true }
+
+        // GSD 1.8 top-level blocks
+        "phase_id_convention" => { config.phase_id_convention = None; true }
+        "claude_md_path" => { config.claude_md_path = None; true }
+        "claude_orchestration.enabled" => { config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default).enabled = None; true }
+        "claude_orchestration.execution_backend" => { config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default).execution_backend = None; true }
+        "claude_orchestration.min_agent_sdk_version" => { config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default).min_agent_sdk_version = None; true }
+        "statusline.show_context_tokens" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_context_tokens = None; true }
+        "statusline.state_format" => { config.statusline.get_or_insert_with(StatuslineConfig::default).state_format = None; true }
+        "statusline.show_git" => { config.statusline.get_or_insert_with(StatuslineConfig::default).show_git = None; true }
+        "dynamic_routing.provider_escalation" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).provider_escalation = None; true }
+        "dynamic_routing.max_escalations" => { config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default).max_escalations = None; true }
+        "external_job.submit_timeout_ms" => { config.external_job.get_or_insert_with(ExternalJobConfig::default).submit_timeout_ms = None; true }
+        "external_job.poll_timeout_ms" => { config.external_job.get_or_insert_with(ExternalJobConfig::default).poll_timeout_ms = None; true }
+        "external_job.artifact_dir" => { config.external_job.get_or_insert_with(ExternalJobConfig::default).artifact_dir = None; true }
+        "capabilities.strict_known_registries" => { config.capabilities.get_or_insert_with(CapabilitiesConfig::default).strict_known_registries = None; true }
+        "capabilities.auto_update" => { config.capabilities.get_or_insert_with(CapabilitiesConfig::default).auto_update = None; true }
+
         _ => false,
     }
 }
@@ -4192,6 +4378,21 @@ fn mutate_config_entry(
                 "tdd_mode" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.tdd_mode = Some(!wf.tdd_mode.unwrap_or(false)); true }
                 "code_review" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.code_review = Some(!wf.code_review.unwrap_or(false)); true }
                 "ui_review" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.ui_review = Some(!wf.ui_review.unwrap_or(false)); true }
+                // GSD 1.4–1.8 workflow gates
+                "workflow.specless_probe_fallback" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.specless_probe_fallback = Some(!wf.specless_probe_fallback.unwrap_or(false)); true }
+                "workflow.assumption_delta" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.assumption_delta = Some(!wf.assumption_delta.unwrap_or(false)); true }
+                "workflow.plan_drift_precheck" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.plan_drift_precheck = Some(!wf.plan_drift_precheck.unwrap_or(false)); true }
+                "workflow.plan_chunked" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.plan_chunked = Some(!wf.plan_chunked.unwrap_or(false)); true }
+                "workflow.api_coverage_gate" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.api_coverage_gate = Some(!wf.api_coverage_gate.unwrap_or(false)); true }
+                "workflow.windows_enforce" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.windows_enforce = Some(!wf.windows_enforce.unwrap_or(false)); true }
+                "workflow.mvp_mode" => { let wf = config.workflow.get_or_insert_with(WorkflowConfig::default); wf.mvp_mode = Some(!wf.mvp_mode.unwrap_or(false)); true }
+                // GSD 1.8 top-level blocks
+                "claude_orchestration.enabled" => { let c = config.claude_orchestration.get_or_insert_with(ClaudeOrchestrationConfig::default); c.enabled = Some(!c.enabled.unwrap_or(false)); true }
+                "statusline.show_context_tokens" => { let s = config.statusline.get_or_insert_with(StatuslineConfig::default); s.show_context_tokens = Some(!s.show_context_tokens.unwrap_or(false)); true }
+                "statusline.show_git" => { let s = config.statusline.get_or_insert_with(StatuslineConfig::default); s.show_git = Some(!s.show_git.unwrap_or(false)); true }
+                "dynamic_routing.provider_escalation" => { let r = config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default); r.provider_escalation = Some(!r.provider_escalation.unwrap_or(false)); true }
+                "capabilities.strict_known_registries" => { let c = config.capabilities.get_or_insert_with(CapabilitiesConfig::default); c.strict_known_registries = Some(!c.strict_known_registries.unwrap_or(false)); true }
+                "capabilities.auto_update" => { let c = config.capabilities.get_or_insert_with(CapabilitiesConfig::default); c.auto_update = Some(!c.auto_update.unwrap_or(false)); true }
                 _ => false,
             }
         }
@@ -4240,9 +4441,35 @@ fn mutate_config_entry(
                     g.build_timeout = Some(if current >= 600 { 60 } else { current + 30 });
                     true
                 }
+                "dynamic_routing.max_escalations" => {
+                    let r = config.dynamic_routing.get_or_insert_with(DynamicRoutingConfig::default);
+                    let current = r.max_escalations.unwrap_or(0);
+                    r.max_escalations = Some(if current >= 10 { 0 } else { current + 1 });
+                    true
+                }
+                "workflow.test_gate_timeout" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    let current = wf.test_gate_timeout.unwrap_or(0);
+                    wf.test_gate_timeout = Some(if current >= 600 { 60 } else { current + 30 });
+                    true
+                }
+                "external_job.submit_timeout_ms" => {
+                    let e = config.external_job.get_or_insert_with(ExternalJobConfig::default);
+                    let current = e.submit_timeout_ms.unwrap_or(0);
+                    e.submit_timeout_ms = Some(if current >= 120000 { 5000 } else { current + 5000 });
+                    true
+                }
+                "external_job.poll_timeout_ms" => {
+                    let e = config.external_job.get_or_insert_with(ExternalJobConfig::default);
+                    let current = e.poll_timeout_ms.unwrap_or(0);
+                    e.poll_timeout_ms = Some(if current >= 60000 { 1000 } else { current + 1000 });
+                    true
+                }
                 _ => false,
             }
         }
+        // Shape-varying keys are surfaced read-only; never mutated in place.
+        ConfigValueKind::ReadOnly => false,
     }
 }
 
