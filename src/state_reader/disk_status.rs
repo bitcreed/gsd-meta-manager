@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -37,6 +38,35 @@ pub struct DiskInference {
     pub has_ui_review: bool,
 }
 
+/// Detect whether a plan file's YAML frontmatter declares `status: superseded`.
+///
+/// GSD 1.8.0 (#2349): a plan marked `status: superseded` was deliberately
+/// reassigned or never executed — its work moved to a later plan, so it can
+/// never gain a matching `*-SUMMARY.md`. Such a plan is excluded from BOTH the
+/// plan and summary counts. We parse only the leading `---`…`---` frontmatter
+/// block via a cheap line scan (no YAML dependency); a plan without the marker
+/// is counted exactly as before. Fail-safe: a file with no frontmatter, or a
+/// closed block with no `status: superseded`, is treated as a normal plan.
+fn plan_frontmatter_superseded(content: &str) -> bool {
+    let mut lines = content.lines();
+    // Frontmatter must open on the very first line with a bare `---`.
+    if lines.next().map(str::trim) != Some("---") {
+        return false;
+    }
+    for line in lines {
+        if line.trim() == "---" {
+            // End of frontmatter block without a superseded marker.
+            return false;
+        }
+        if let Some((key, value)) = line.split_once(':') {
+            if key.trim() == "status" && value.trim().eq_ignore_ascii_case("superseded") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Infer the GSD status of a phase directory by scanning its file artifacts.
 ///
 /// Follows GSD's algorithm (from roadmap.cjs:127-166):
@@ -65,8 +95,14 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         }
     };
 
-    let mut plan_count: u32 = 0;
-    let mut summary_count: u32 = 0;
+    // GSD 1.8.0 counting is a two-pass scan (#1988, #2349):
+    //   Pass 1 collects the IDs of surviving (non-superseded) plans.
+    //   Pass 2 counts only summaries whose ID matches a surviving plan.
+    // Both passes run inside the single directory iteration below: plan IDs are
+    // gathered into `plan_ids` and candidate summary names into `summary_names`,
+    // then paired after the loop.
+    let mut plan_ids: HashSet<String> = HashSet::new();
+    let mut summary_names: Vec<String> = Vec::new();
     let mut has_context = false;
     let mut has_research = false;
     let mut has_verification = false;
@@ -132,6 +168,11 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
             has_plan_check = true;
             continue;
         }
+        // PLAN-REVIEW artifacts are review notes, not plans (#2349): skip before
+        // the PLAN match so they never count toward plan_count or set has_plans.
+        if name == "PLAN-REVIEW.md" || name.ends_with("-PLAN-REVIEW.md") {
+            continue;
+        }
         if name == "VALIDATION.md" || name.ends_with("-VALIDATION.md") {
             has_validation = true;
             continue;
@@ -145,14 +186,33 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
             continue;
         }
 
-        // Match PLAN.md or *-PLAN.md (after PLAN-CHECK is filtered above)
+        // Pass 1 — Match PLAN.md or *-PLAN.md (after PLAN-CHECK/PLAN-REVIEW are
+        // filtered above). Derive the plan ID (filename minus the PLAN suffix;
+        // standalone PLAN.md → empty-string ID) and record it, unless the plan's
+        // frontmatter marks it `status: superseded`.
         if name == "PLAN.md" || name.ends_with("-PLAN.md") {
-            plan_count += 1;
+            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                if plan_frontmatter_superseded(&content) {
+                    continue;
+                }
+            }
+            let id = name
+                .strip_suffix("-PLAN.md")
+                .map(str::to_string)
+                .unwrap_or_default();
+            plan_ids.insert(id);
+            continue;
         }
 
-        // Match SUMMARY.md or *-SUMMARY.md
+        // Pass 2 (collection) — Match SUMMARY.md or *-SUMMARY.md, excluding FIX and
+        // GAPCLOSURE summaries which are never plan partners (#1988). The ID→plan
+        // pairing happens after the loop once all surviving plan IDs are known.
         if name == "SUMMARY.md" || name.ends_with("-SUMMARY.md") {
-            summary_count += 1;
+            if name.contains("-FIX-") || name.ends_with("-GAPCLOSURE-SUMMARY.md") {
+                continue;
+            }
+            summary_names.push(name);
+            continue;
         }
 
         // Match CONTEXT.md or *-CONTEXT.md
@@ -170,6 +230,21 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
             has_verification = true;
         }
     }
+
+    // Pass 2 (pairing) — a summary counts only if its ID matches a surviving
+    // (non-superseded) plan ID (matched-summary rule, #1988). Standalone
+    // SUMMARY.md derives the empty-string ID and pairs with standalone PLAN.md.
+    let plan_count: u32 = plan_ids.len() as u32;
+    let summary_count: u32 = summary_names
+        .iter()
+        .filter(|name| {
+            let id = name
+                .strip_suffix("-SUMMARY.md")
+                .map(str::to_string)
+                .unwrap_or_default();
+            plan_ids.contains(&id)
+        })
+        .count() as u32;
 
     // Determine status following GSD's priority order
     let status = if summary_count >= plan_count && plan_count > 0 {
@@ -559,6 +634,129 @@ mod tests {
         let result = infer_disk_status(dir.path());
         assert!(!result.has_spec);
         assert!(!result.has_eval_review);
+    }
+
+    // ── Task 1: GSD 1.8.0 counting — exclusions, superseded, matched-summary ──
+
+    #[test]
+    fn test_fix_summary_not_counted() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-PLAN.md"), "plan1").unwrap();
+        fs::write(dir.path().join("05-01-SUMMARY.md"), "summary1").unwrap();
+        // A FIX summary must not inflate the count or flip status.
+        fs::write(dir.path().join("05-01-FIX-01-SUMMARY.md"), "fix").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 1);
+        assert_eq!(
+            result.summary_count, 1,
+            "FIX summary must not be counted in summary_count"
+        );
+        assert_eq!(result.status, DiskStatus::Complete);
+    }
+
+    #[test]
+    fn test_gapclosure_summary_not_counted() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-PLAN.md"), "plan1").unwrap();
+        fs::write(dir.path().join("05-02-PLAN.md"), "plan2").unwrap();
+        fs::write(dir.path().join("05-01-SUMMARY.md"), "summary1").unwrap();
+        // GAPCLOSURE summary must not flip a still-incomplete phase to Complete.
+        fs::write(dir.path().join("05-GAPCLOSURE-SUMMARY.md"), "gap").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 2);
+        assert_eq!(
+            result.summary_count, 1,
+            "GAPCLOSURE summary must not be counted"
+        );
+        assert_eq!(result.status, DiskStatus::Partial);
+    }
+
+    #[test]
+    fn test_plan_review_not_counted_as_plan() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-PLAN.md"), "plan1").unwrap();
+        fs::write(dir.path().join("05-01-PLAN-REVIEW.md"), "review").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(
+            result.plan_count, 1,
+            "PLAN-REVIEW.md must not be counted as a plan"
+        );
+        assert_eq!(result.status, DiskStatus::Planned);
+    }
+
+    #[test]
+    fn test_superseded_plan_excluded_from_counts() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-PLAN.md"), "plan1").unwrap();
+        fs::write(dir.path().join("05-01-SUMMARY.md"), "summary1").unwrap();
+        // A superseded plan is dropped from the denominator, and its summary
+        // (if any) is not counted either.
+        fs::write(
+            dir.path().join("05-02-PLAN.md"),
+            "---\nstatus: superseded\n---\nbody",
+        )
+        .unwrap();
+        fs::write(dir.path().join("05-02-SUMMARY.md"), "summary2").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(
+            result.plan_count, 1,
+            "superseded plan must be excluded from plan_count"
+        );
+        assert_eq!(
+            result.summary_count, 1,
+            "summary of a superseded plan must not be counted"
+        );
+        assert_eq!(result.status, DiskStatus::Complete);
+    }
+
+    #[test]
+    fn test_unmatched_summary_not_counted() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-PLAN.md"), "plan1").unwrap();
+        // A summary with no matching plan ID must not be counted.
+        fs::write(dir.path().join("05-99-SUMMARY.md"), "orphan").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 1);
+        assert_eq!(
+            result.summary_count, 0,
+            "summary without a matching plan must not be counted"
+        );
+        assert_eq!(result.status, DiskStatus::Planned);
+    }
+
+    #[test]
+    fn test_normal_two_plan_two_summary_still_complete() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-PLAN.md"), "plan1").unwrap();
+        fs::write(dir.path().join("05-02-PLAN.md"), "plan2").unwrap();
+        fs::write(dir.path().join("05-01-SUMMARY.md"), "summary1").unwrap();
+        fs::write(dir.path().join("05-02-SUMMARY.md"), "summary2").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 2);
+        assert_eq!(result.summary_count, 2);
+        assert_eq!(result.status, DiskStatus::Complete);
+    }
+
+    #[test]
+    fn test_standalone_summary_requires_standalone_plan() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("PLAN.md"), "plan").unwrap();
+        fs::write(dir.path().join("SUMMARY.md"), "summary").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 1);
+        assert_eq!(result.summary_count, 1);
+        assert_eq!(result.status, DiskStatus::Complete);
+    }
+
+    #[test]
+    fn test_standalone_summary_without_plan_not_counted() {
+        let dir = tempdir().unwrap();
+        // Standalone SUMMARY.md with no PLAN.md must not be counted.
+        fs::write(dir.path().join("SUMMARY.md"), "summary").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 0);
+        assert_eq!(result.summary_count, 0);
+        assert_eq!(result.status, DiskStatus::Empty);
     }
 
     #[test]
