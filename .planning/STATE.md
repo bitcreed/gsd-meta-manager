@@ -4,7 +4,7 @@ milestone: v1.5.0
 milestone_name: Sub-phase Artifact Detection
 status: shipped
 stopped_at: Tagged v1.5.0 — Sub-phase Artifact Detection
-last_updated: "2026-07-22T19:47:41.731Z"
+last_updated: "2026-07-22T19:51:58.046Z"
 last_activity: 2026-07-22
 last_activity_desc: "Completed quick task 260722-emn: GSD 1.8.0 catch-up; version bumped to 1.6.0 (release prep, untagged)"
 progress:
@@ -104,6 +104,7 @@ None yet.
 | 260515-w3a | Detect SPEC.md and EVAL-REVIEW.md sub-phase artifacts | 2026-05-15 | a88d82c | [260515-w3a](./quick/260515-w3a-add-spec-and-eval-review-sub-phase-detect/) |
 | 260722-emn | Catch up to GSD 1.8.0: README value prop + tier 1-3 state-reader/feature updates (10 plans, 5 waves) | 2026-07-22 | ca0ad3b | [260722-emn](./quick/260722-emn-catch-up-to-gsd-1-8-0-readme-value-propo/) |
 | 18 | Bump direct deps: notify-debouncer-full 0.7, serde_yml 0.0.13 | 2026-07-22 | 60f028d | — |
+| 19 | Add GitHub Actions release workflow: crates.io publish on version tags | 2026-07-22 | b174ecb | — |
 
 ## Session Continuity
 
