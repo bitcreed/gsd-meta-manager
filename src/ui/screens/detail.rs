@@ -2466,6 +2466,48 @@ impl DetailScreen {
                     }
                 }
 
+                // External-job indicator: distinguish a legitimately blocked
+                // phase (waiting on an async job) from a stuck one.
+                if state.external_job_waiting {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            "  \u{23F3} external job waiting",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            "  (blocked on an async job, not stuck)",
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ]));
+                }
+
+                // Waves manifest (GSD 1.8.0 parallelism), when present on disk
+                // for the selected phase. Absent/unparsable → render nothing.
+                if let Some(proj) = ctx.config.projects.get(alias) {
+                    let planning_dir = proj.path.join(".planning");
+                    if let Some(phase_dir) =
+                        crate::state_reader::disk_status::find_phase_dir(
+                            &planning_dir,
+                            &phase.number,
+                        )
+                    {
+                        let waves_path = phase_dir.join("waves.json");
+                        if let Ok(raw) = std::fs::read_to_string(&waves_path) {
+                            if let Some(manifest) = parse_waves_manifest(&raw) {
+                                if !manifest.waves.is_empty() {
+                                    lines.push(Line::from(""));
+                                    for wl in build_waves_lines(&manifest) {
+                                        lines.push(wl);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let paragraph = Paragraph::new(lines);
                 frame.render_widget(paragraph, inner);
             }
@@ -3356,6 +3398,111 @@ fn build_stage_detail_lines(
     lines
 }
 
+/// A parsed `waves.json` parallelism manifest (GSD 1.8.0 claude-orchestration).
+///
+/// On-disk shape (see gsd-core `enable-claude-orchestration-workflow-backend`):
+/// `{ "waves": [ { "id": "w1", "plans": [ { "id": "p1", "files_modified": [..] } ] } ] }`.
+/// Deserialization is intentionally lenient: unknown fields are ignored and any
+/// missing field defaults, so a partial or evolving manifest still renders.
+#[derive(Debug, serde::Deserialize)]
+struct WavesManifest {
+    #[serde(default)]
+    waves: Vec<WaveEntry>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct WaveEntry {
+    /// Wave identifier — usually a string id (`"w1"`) but tolerated as a number too.
+    #[serde(default)]
+    id: Option<serde_json::Value>,
+    /// Alternate wave key some manifests use instead of `id`.
+    #[serde(default)]
+    wave: Option<serde_json::Value>,
+    #[serde(default)]
+    plans: Vec<WavePlan>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct WavePlan {
+    #[serde(default)]
+    id: Option<String>,
+    /// Alternate plan-identifier key.
+    #[serde(default)]
+    plan: Option<String>,
+    #[serde(default)]
+    files_modified: Vec<String>,
+}
+
+impl WaveEntry {
+    /// A short display label for the wave, falling back to a 1-based index.
+    fn label(&self, index: usize) -> String {
+        match self.id.as_ref().or(self.wave.as_ref()) {
+            Some(serde_json::Value::String(s)) if !s.is_empty() => s.clone(),
+            Some(serde_json::Value::Null) | None => format!("wave {}", index + 1),
+            Some(other) => other.to_string(),
+        }
+    }
+}
+
+impl WavePlan {
+    /// The plan's identifier, if the manifest carried one.
+    fn label(&self) -> Option<String> {
+        self.id
+            .clone()
+            .or_else(|| self.plan.clone())
+            .filter(|s| !s.is_empty())
+    }
+}
+
+/// Deserialize a `waves.json` manifest. Returns `None` on unparsable input so
+/// callers can silently omit the section rather than surface parse noise.
+fn parse_waves_manifest(raw: &str) -> Option<WavesManifest> {
+    serde_json::from_str::<WavesManifest>(raw).ok()
+}
+
+/// Render a compact "Waves" section: one line per wave listing its plans and a
+/// small parallelism hint (plan count). Assumes `manifest.waves` is non-empty.
+fn build_waves_lines(manifest: &WavesManifest) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        "  Waves (parallelism):",
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    )));
+    for (i, wave) in manifest.waves.iter().enumerate() {
+        let plan_count = wave.plans.len();
+        let files_touched: usize = wave.plans.iter().map(|p| p.files_modified.len()).sum();
+        let mut hint = if plan_count == 1 {
+            "1 plan".to_string()
+        } else {
+            format!("{} parallel", plan_count)
+        };
+        if files_touched > 0 {
+            hint.push_str(&format!(", {}f", files_touched));
+        }
+        let plans: Vec<String> = wave.plans.iter().filter_map(|p| p.label()).collect();
+        let plans_str = if plans.is_empty() {
+            "(no plans)".to_string()
+        } else {
+            plans.join(", ")
+        };
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                format!("{:<8}", wave.label(i)),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(
+                format!("{:<14}", hint),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(plans_str, Style::default().fg(Color::White)),
+        ]));
+    }
+    lines
+}
+
 /// Build sub-stage status lines for the Plan and Execute parent stages.
 /// Each sub-stage is detected by the presence of a specific artifact.
 /// We only render a parent group's lines once that parent has any artifact
@@ -4096,5 +4243,63 @@ fn mutate_config_entry(
                 _ => false,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_waves_manifest_two_waves() {
+        let raw = r#"{
+            "waves": [
+                {
+                    "id": "w1",
+                    "plans": [
+                        { "id": "p1", "files_modified": ["src/foo.rs"] },
+                        { "id": "p2", "files_modified": ["src/bar.rs"] }
+                    ]
+                },
+                {
+                    "id": "w2",
+                    "plans": [
+                        { "id": "p3", "files_modified": ["src/baz.rs"] }
+                    ]
+                }
+            ]
+        }"#;
+        let manifest = parse_waves_manifest(raw).expect("valid manifest parses");
+        assert_eq!(manifest.waves.len(), 2);
+        assert_eq!(manifest.waves[0].label(0), "w1");
+        assert_eq!(manifest.waves[0].plans.len(), 2);
+        assert_eq!(manifest.waves[0].plans[0].label(), Some("p1".to_string()));
+        assert_eq!(manifest.waves[1].label(1), "w2");
+        assert_eq!(manifest.waves[1].plans.len(), 1);
+
+        // Rendering produces a header + one line per wave.
+        let lines = build_waves_lines(&manifest);
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_waves_manifest_garbage_is_none() {
+        assert!(parse_waves_manifest("not json at all").is_none());
+        assert!(parse_waves_manifest("{ oops ]").is_none());
+    }
+
+    #[test]
+    fn test_parse_waves_manifest_lenient_defaults() {
+        // Numeric wave id and missing plan ids are tolerated.
+        let raw = r#"{ "waves": [ { "wave": 1, "plans": [ { "files_modified": [] } ] } ] }"#;
+        let manifest = parse_waves_manifest(raw).expect("lenient parse");
+        assert_eq!(manifest.waves.len(), 1);
+        assert_eq!(manifest.waves[0].label(0), "1");
+        // A plan with no id falls back to None (rendered as "(no plans)").
+        assert_eq!(manifest.waves[0].plans[0].label(), None);
+
+        // Empty object → empty waves, still Some (render layer skips it).
+        let empty = parse_waves_manifest("{}").expect("empty object parses");
+        assert!(empty.waves.is_empty());
     }
 }
