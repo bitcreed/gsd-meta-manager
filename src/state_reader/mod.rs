@@ -43,6 +43,10 @@ pub struct ProjectState {
     pub last_activity: Option<chrono::DateTime<chrono::Utc>>,
     /// Filesystem root of the project (the directory containing `.planning/`).
     pub project_root: PathBuf,
+    /// GSD 1.8.0 parallel workstreams under `.planning/workstreams/<ws>/`.
+    /// Empty for flat projects. Bounded to one level: a workstream's own
+    /// sub-state carries an empty `workstreams` vec (recursion guard below).
+    pub workstreams: Vec<workstreams::WorkstreamState>,
 }
 
 /// Detect HANDOFF.md or HANDOFF.json in a planning directory.
@@ -219,6 +223,19 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
     // legitimately blocked, not stuck).
     state.external_job_waiting = detect_async_jobs(planning_dir);
 
+    // Load parallel workstreams (GSD 1.8.0). Recursion guard: skip when this
+    // planning dir is itself a workstream (immediate parent named `workstreams`),
+    // so a workstream sub-parse never re-enters workstream loading. This bounds
+    // recursion depth to one level.
+    let inside_workstream = planning_dir
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        == Some("workstreams");
+    if !inside_workstream {
+        state.workstreams = workstreams::load_workstreams(planning_dir);
+    }
+
     state
 }
 
@@ -362,6 +379,29 @@ mod tests {
         // project_root and last_activity are populated for any project.
         assert_eq!(state.project_root, td.path());
         assert!(state.last_activity.is_some());
+    }
+
+    #[test]
+    fn test_workstreams_populated_on_project_state() {
+        let td = make_planning(&[
+            ("STATE.md", "---\nstatus: executing\n---\n"),
+            ("workstreams/alpha/STATE.md", "---\nstatus: executing\n---\n"),
+            ("workstreams/beta/STATE.md", "---\nstatus: planning\n---\n"),
+            ("active-workstream", "alpha\n"),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert_eq!(state.workstreams.len(), 2);
+        // Bounded recursion: each workstream sub-state has no nested workstreams.
+        assert!(state.workstreams.iter().all(|w| w.state.workstreams.is_empty()));
+        // Active flag flows through from the active-workstream pointer.
+        assert!(state.workstreams.iter().find(|w| w.name == "alpha").unwrap().active);
+    }
+
+    #[test]
+    fn test_flat_project_has_empty_workstreams() {
+        let td = make_planning(&[("STATE.md", "---\nstatus: executing\n---\n")]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert!(state.workstreams.is_empty());
     }
 }
 
