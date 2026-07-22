@@ -39,8 +39,9 @@ metrics:
   tasks: 3
   files: 2
 human_verification:
-  status: deferred
-  checkpoint: "Task 4 (checkpoint:human-verify, blocking) — visual verification pending"
+  status: passed
+  verified_on: 2026-07-22
+  checkpoint: "Task 4 (checkpoint:human-verify, blocking) — visually verified by user post-release"
   what: "Pipe tab waves.json rendering; Cfg tab new keys grouping + bool toggle/persist; dashboard workstream cue + external-job-waiting badge; layout intact at 80/60/40 columns."
   how: "cargo run against a registered project; open a phase with waves.json, open Cfg tab and toggle a new bool, confirm a project with .planning/workstreams/* and one with .planning/async-jobs/*.json render their cues."
 ---
@@ -83,7 +84,7 @@ Wired the wave-1–3 data-layer additions into the TUI so the reader work become
 None. All new UI surfaces are wired to real data-layer fields; no placeholder/mock data introduced.
 
 ## Human Verification (deferred)
-Task 4 is a blocking `checkpoint:human-verify` for visual/layout confirmation. Per execution constraints it was not blocked on; it is deferred to the user. See `human_verification:` frontmatter for the exact steps.
+Task 4 is a blocking `checkpoint:human-verify` for visual/layout confirmation. Per execution constraints it was not blocked on; it was deferred to the user and **verified by the user on 2026-07-22** (post-v1.6.0-release): Pipe waves rendering, Cfg new keys, workstream/external-job badges all confirmed good at the target widths.
 
 ## Self-Check: PASSED
 - Commits present: 23dd9ae (Task 1), 03a631b (Task 2), 1518a91 (Task 3) — verified in git log.
