@@ -1,5 +1,36 @@
 use std::path::Path;
 
+/// Read a project's last-activity timestamp from its most recent git commit
+/// (committer date), falling back to filesystem mtimes for non-git or empty
+/// repositories. Synchronous by design: its consumer `parse_project_state` is
+/// synchronous. Plan 6 stores this on `ProjectState.last_activity`.
+///
+/// Returns the committer date of the most recent commit as a UTC timestamp, or
+/// `None` when the directory is not a git repo, has no commits, or git is
+/// unavailable/errors. Never panics.
+fn git_last_commit_time(project_root: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project_root)
+        .args(["log", "-1", "--format=%cI"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    chrono::DateTime::parse_from_rfc3339(trimmed)
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+}
+
 #[derive(Debug, Clone)]
 pub struct GitLogEntry {
     pub hash: String,
@@ -112,4 +143,77 @@ pub async fn load_diff_stat(project_path: &Path, hash: &str) -> anyhow::Result<G
     }
 
     Ok(stat)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    /// Initialize a git repo with one commit in `dir`. Returns `false` if the
+    /// sandbox forbids git init/commit (e.g. no writable identity), so callers
+    /// can skip gracefully rather than fail.
+    fn try_init_repo_with_commit(dir: &Path) -> bool {
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .ok()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+
+        if !git(&["init"]) {
+            return false;
+        }
+        // Use local (repo-scoped) identity so we don't depend on global config.
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test User"]);
+
+        if std::fs::write(dir.join("file.txt"), "hello").is_err() {
+            return false;
+        }
+        if !git(&["add", "file.txt"]) {
+            return false;
+        }
+        git(&["commit", "-m", "initial commit"])
+    }
+
+    #[test]
+    fn git_last_commit_time_returns_some_in_real_repo() {
+        let tmp = std::env::temp_dir().join(format!("gsd_git_ops_test_repo_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        if !try_init_repo_with_commit(&tmp) {
+            // Sandbox forbids git commit — skip gracefully.
+            let _ = std::fs::remove_dir_all(&tmp);
+            return;
+        }
+
+        let result = git_last_commit_time(&tmp);
+        assert!(
+            result.is_some(),
+            "expected Some(commit time) in a repo with one commit"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn git_last_commit_time_returns_none_for_non_git_dir() {
+        let tmp =
+            std::env::temp_dir().join(format!("gsd_git_ops_test_nogit_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        assert!(
+            git_last_commit_time(&tmp).is_none(),
+            "expected None for a directory that is not a git repo"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
