@@ -36,6 +36,11 @@ pub struct DiskInference {
     pub has_ai_spec: bool,
     pub has_review: bool,
     pub has_ui_review: bool,
+    /// GSD 1.8.0 informational artifacts — never affect plan/summary counts.
+    pub has_coverage: bool,
+    pub has_windows: bool,
+    pub has_deferred_items: bool,
+    pub has_skeleton: bool,
 }
 
 /// Detect whether a plan file's YAML frontmatter declares `status: superseded`.
@@ -118,6 +123,10 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     let mut has_uat = false;
     let mut has_spec = false;
     let mut has_eval_review = false;
+    let mut has_coverage = false;
+    let mut has_windows = false;
+    let mut has_deferred_items = false;
+    let mut has_skeleton = false;
 
     for entry in entries.flatten() {
         let name = match entry.file_name().into_string() {
@@ -183,6 +192,23 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         }
         if name == "UAT.md" || name.ends_with("-UAT.md") {
             has_uat = true;
+            continue;
+        }
+        // GSD 1.8.0 informational artifacts — flagged only, never counted.
+        if name == "COVERAGE.md" || name.ends_with("-COVERAGE.md") {
+            has_coverage = true;
+            continue;
+        }
+        if name == "WINDOWS.md" || name.ends_with("-WINDOWS.md") {
+            has_windows = true;
+            continue;
+        }
+        if name == "deferred-items.md" || name.ends_with("-deferred-items.md") {
+            has_deferred_items = true;
+            continue;
+        }
+        if name == "SKELETON.md" || name.ends_with("-SKELETON.md") {
+            has_skeleton = true;
             continue;
         }
 
@@ -282,6 +308,10 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         has_ai_spec,
         has_review,
         has_ui_review,
+        has_coverage,
+        has_windows,
+        has_deferred_items,
+        has_skeleton,
     }
 }
 
@@ -849,5 +879,95 @@ mod tests {
         let found = find_phase_dir(dir.path(), "0.3");
         assert!(found.is_some());
         assert_eq!(found.unwrap(), phase_dir);
+    }
+
+    // ── Task 3: COVERAGE / WINDOWS / deferred-items / SKELETON artifacts ──
+
+    #[test]
+    fn test_coverage_md_detected() {
+        let bare = tempdir().unwrap();
+        fs::write(bare.path().join("COVERAGE.md"), "coverage").unwrap();
+        assert!(infer_disk_status(bare.path()).has_coverage);
+
+        let prefixed = tempdir().unwrap();
+        fs::write(prefixed.path().join("05-COVERAGE.md"), "coverage").unwrap();
+        assert!(infer_disk_status(prefixed.path()).has_coverage);
+    }
+
+    #[test]
+    fn test_windows_md_detected() {
+        let bare = tempdir().unwrap();
+        fs::write(bare.path().join("WINDOWS.md"), "windows").unwrap();
+        assert!(infer_disk_status(bare.path()).has_windows);
+
+        let prefixed = tempdir().unwrap();
+        fs::write(prefixed.path().join("05-WINDOWS.md"), "windows").unwrap();
+        assert!(infer_disk_status(prefixed.path()).has_windows);
+    }
+
+    #[test]
+    fn test_deferred_items_md_detected() {
+        let bare = tempdir().unwrap();
+        fs::write(bare.path().join("deferred-items.md"), "deferred").unwrap();
+        assert!(infer_disk_status(bare.path()).has_deferred_items);
+
+        let prefixed = tempdir().unwrap();
+        fs::write(prefixed.path().join("05-deferred-items.md"), "deferred").unwrap();
+        assert!(infer_disk_status(prefixed.path()).has_deferred_items);
+    }
+
+    #[test]
+    fn test_skeleton_md_detected() {
+        let bare = tempdir().unwrap();
+        fs::write(bare.path().join("SKELETON.md"), "skeleton").unwrap();
+        assert!(infer_disk_status(bare.path()).has_skeleton);
+
+        let prefixed = tempdir().unwrap();
+        fs::write(prefixed.path().join("05-01-SKELETON.md"), "skeleton").unwrap();
+        assert!(infer_disk_status(prefixed.path()).has_skeleton);
+    }
+
+    #[test]
+    fn test_new_artifacts_do_not_affect_counts_or_status() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("COVERAGE.md"), "coverage").unwrap();
+        fs::write(dir.path().join("WINDOWS.md"), "windows").unwrap();
+        fs::write(dir.path().join("deferred-items.md"), "deferred").unwrap();
+        fs::write(dir.path().join("SKELETON.md"), "skeleton").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(result.has_coverage);
+        assert!(result.has_windows);
+        assert!(result.has_deferred_items);
+        assert!(result.has_skeleton);
+        assert_eq!(result.plan_count, 0);
+        assert_eq!(result.summary_count, 0);
+        assert_eq!(
+            result.status,
+            DiskStatus::Empty,
+            "informational artifacts must not change status"
+        );
+    }
+
+    #[test]
+    fn test_per_plan_security_still_detected() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-SECURITY.md"), "security").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(
+            result.has_security,
+            "05-01-SECURITY.md must still set has_security"
+        );
+        assert_eq!(result.plan_count, 0);
+        assert_eq!(result.summary_count, 0);
+    }
+
+    #[test]
+    fn test_empty_dir_has_no_new_artifacts() {
+        let dir = tempdir().unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(!result.has_coverage);
+        assert!(!result.has_windows);
+        assert!(!result.has_deferred_items);
+        assert!(!result.has_skeleton);
     }
 }
