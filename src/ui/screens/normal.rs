@@ -332,6 +332,27 @@ impl NormalScreen {
                         None => "?".to_string(),
                     };
 
+                    // Workstream cue (GSD 1.8.0): show the active workstream name,
+                    // else an "N ws" count, appended to the Phase column so
+                    // multi-workstream projects are visible in every layout.
+                    let ws_suffix = match state {
+                        Some(s) if !s.workstreams.is_empty() => {
+                            match s.workstreams.iter().find(|w| w.active) {
+                                Some(active) => format!("  [ws:{}]", active.name),
+                                None => format!("  [{} ws]", s.workstreams.len()),
+                            }
+                        }
+                        _ => String::new(),
+                    };
+                    let phase_line: Line = if ws_suffix.is_empty() {
+                        Line::from(phase_cell)
+                    } else {
+                        Line::from(vec![
+                            Span::raw(phase_cell),
+                            Span::styled(ws_suffix, Style::default().fg(Color::Magenta)),
+                        ])
+                    };
+
                     let progress_cell = match state {
                         Some(s) => format!("{}/{} phases", s.completed_phases, s.total_phases),
                         None => "?".to_string(),
@@ -392,10 +413,22 @@ impl NormalScreen {
                         .map(|s| s.paused)
                         .unwrap_or(false);
 
+                    // Legitimately blocked on an external/async job (GSD 1.8.0).
+                    let external_job_waiting = state
+                        .map(|s| s.external_job_waiting)
+                        .unwrap_or(false);
+
+                    // Badge priority: pause > external-job-waiting > session.
                     let alias_cell: Line = if is_paused {
-                        // Pause badge takes priority over session indicator
+                        // Pause badge takes priority over all other indicators
                         Line::from(vec![
                             Span::styled("\u{23F8} ", Style::default().fg(Color::Cyan)),
+                            Span::raw(alias.clone()),
+                        ])
+                    } else if external_job_waiting {
+                        // Hourglass: waiting on an async job, not stuck
+                        Line::from(vec![
+                            Span::styled("\u{23F3} ", Style::default().fg(Color::Yellow)),
                             Span::raw(alias.clone()),
                         ])
                     } else if has_session {
@@ -410,7 +443,7 @@ impl NormalScreen {
                     let cells: Vec<Line> = if terminal_width >= 80 {
                         vec![
                             alias_cell,
-                            Line::from(phase_cell),
+                            phase_line,
                             status_cell,
                             Line::from(progress_cell),
                             Line::from(backlog_cell),
@@ -418,12 +451,12 @@ impl NormalScreen {
                     } else if terminal_width >= 60 {
                         vec![
                             alias_cell,
-                            Line::from(phase_cell),
+                            phase_line,
                             status_cell,
                             Line::from(progress_cell),
                         ]
                     } else {
-                        vec![alias_cell, Line::from(phase_cell), status_cell]
+                        vec![alias_cell, phase_line, status_cell]
                     };
 
                     Row::new(cells).style(Style::default().fg(row_color))

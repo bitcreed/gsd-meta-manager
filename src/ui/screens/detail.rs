@@ -3522,13 +3522,17 @@ fn build_substage_lines(inf: &DiskInference) -> Vec<Line<'static>> {
         || inf.has_ui_spec
         || inf.has_ui_check
         || inf.has_ai_spec
-        || inf.has_security;
+        || inf.has_security
+        || inf.has_skeleton
+        || inf.has_windows
+        || inf.has_deferred_items;
     if plan_touched {
         lines.push(Line::from(Span::styled(
             "  Plan sub-stages:",
             Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
         )));
         push_substage(&mut lines, "Spec", inf.has_spec);
+        push_substage(&mut lines, "Skeleton", inf.has_skeleton);
         push_substage(&mut lines, "Security", inf.has_security);
         push_substage(&mut lines, "Patterns", inf.has_patterns);
         push_substage(&mut lines, "UI-Spec", inf.has_ui_spec);
@@ -3536,13 +3540,16 @@ fn build_substage_lines(inf: &DiskInference) -> Vec<Line<'static>> {
         push_substage(&mut lines, "Plan-Check", inf.has_plan_check);
         push_substage(&mut lines, "UI-Check", inf.has_ui_check);
         push_substage(&mut lines, "Nyquist", inf.has_validation);
+        push_substage(&mut lines, "Windows", inf.has_windows);
+        push_substage(&mut lines, "Deferred", inf.has_deferred_items);
     }
 
     let exec_touched = inf.summary_count > 0
         || inf.has_review
         || inf.has_ui_review
         || inf.has_eval_review
-        || inf.has_uat;
+        || inf.has_uat
+        || inf.has_coverage;
     if exec_touched {
         if plan_touched {
             lines.push(Line::from(""));
@@ -3555,6 +3562,7 @@ fn build_substage_lines(inf: &DiskInference) -> Vec<Line<'static>> {
         push_substage(&mut lines, "UI Review", inf.has_ui_review);
         push_substage(&mut lines, "Eval Review", inf.has_eval_review);
         push_substage(&mut lines, "UAT", inf.has_uat);
+        push_substage(&mut lines, "Coverage", inf.has_coverage);
     }
 
     lines
