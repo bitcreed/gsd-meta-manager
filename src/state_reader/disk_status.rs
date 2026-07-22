@@ -285,27 +285,50 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     }
 }
 
+/// Test whether a phase directory name belongs to the given phase number.
+///
+/// GSD 1.8.0 phase directories are no longer always `NN-slug`: they may be
+/// decimal (`0.3-slug`), milestone-prefixed (`M1-2-slug`), project-code-prefixed
+/// (`AB-29-slug`), or year-prefixed multi-segment (`14-2026-foo`). Matching must
+/// also be pad-insensitive (`3-foo` and `03-foo` both match phase `3`) while
+/// still rejecting bare-number-vs-longer-number collisions (`1` must not match
+/// `14-foo` or `1.2-foo`).
+///
+/// A candidate list is built from `phase_number` — always the raw string, plus
+/// (for all-digit numbers) the zero-padded-to-2 and leading-zeros-stripped forms.
+/// A directory matches a candidate `C` when it equals `C` or starts with `C-`;
+/// the trailing `-` is the boundary guard against longer-number collisions.
+fn phase_dir_matches(dir_name: &str, phase_number: &str) -> bool {
+    let mut candidates: Vec<String> = vec![phase_number.to_string()];
+    if !phase_number.is_empty() && phase_number.chars().all(|c| c.is_ascii_digit()) {
+        if phase_number.len() < 2 {
+            candidates.push(format!("{:0>2}", phase_number));
+        }
+        let stripped = phase_number.trim_start_matches('0');
+        candidates.push(if stripped.is_empty() {
+            "0".to_string()
+        } else {
+            stripped.to_string()
+        });
+    }
+    candidates
+        .iter()
+        .any(|c| dir_name == c || dir_name.starts_with(&format!("{c}-")))
+}
+
 /// Find a phase directory by its number, checking both active phases/ and archived milestones/.
 ///
 /// Search order:
 /// 1. planning_dir/phases/ for directories starting with zero-padded phase number (e.g., "05-")
 /// 2. planning_dir/milestones/*/ for archived phases
 pub fn find_phase_dir(planning_dir: &Path, phase_number: &str) -> Option<PathBuf> {
-    // Zero-pad to 2 digits for prefix matching
-    let padded = if phase_number.len() == 1 {
-        format!("0{}", phase_number)
-    } else {
-        phase_number.to_string()
-    };
-    let prefix = format!("{}-", padded);
-
     // Check phases/ directory first
     let phases_dir = planning_dir.join("phases");
     if let Ok(entries) = std::fs::read_dir(&phases_dir) {
         for entry in entries.flatten() {
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 if let Some(name) = entry.file_name().to_str() {
-                    if name.starts_with(&prefix) {
+                    if phase_dir_matches(name, phase_number) {
                         return Some(entry.path());
                     }
                 }
@@ -326,7 +349,7 @@ pub fn find_phase_dir(planning_dir: &Path, phase_number: &str) -> Option<PathBuf
                     for phase_entry in phase_entries.flatten() {
                         if phase_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                             if let Some(name) = phase_entry.file_name().to_str() {
-                                if name.starts_with(&prefix) {
+                                if phase_dir_matches(name, phase_number) {
                                     return Some(phase_entry.path());
                                 }
                             }
@@ -343,13 +366,6 @@ pub fn find_phase_dir(planning_dir: &Path, phase_number: &str) -> Option<PathBuf
 /// Infer a phase's status by locating its directory and scanning artifacts.
 /// Archived phases (in milestones/) are always Complete per Pitfall 4.
 pub fn infer_phase_status(planning_dir: &Path, phase_number: &str) -> DiskInference {
-    let padded = if phase_number.len() == 1 {
-        format!("0{}", phase_number)
-    } else {
-        phase_number.to_string()
-    };
-    let prefix = format!("{}-", padded);
-
     // Check if phase is in milestones/ (archived = Complete)
     let milestones_dir = planning_dir.join("milestones");
     if let Ok(milestone_entries) = std::fs::read_dir(&milestones_dir) {
@@ -363,7 +379,7 @@ pub fn infer_phase_status(planning_dir: &Path, phase_number: &str) -> DiskInfere
                     for phase_entry in phase_entries.flatten() {
                         if phase_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                             if let Some(name) = phase_entry.file_name().to_str() {
-                                if name.starts_with(&prefix) {
+                                if phase_dir_matches(name, phase_number) {
                                     // Archived phase -- always Complete
                                     return DiskInference {
                                         status: DiskStatus::Complete,
@@ -773,5 +789,65 @@ mod tests {
         let found = find_phase_dir(dir.path(), "03");
         assert!(found.is_some());
         assert_eq!(found.unwrap(), milestone_phase);
+    }
+
+    // ── Task 2: robust phase-token / directory matching ──
+
+    #[test]
+    fn test_phase_dir_matches_year_prefixed() {
+        assert!(phase_dir_matches("14-2026-foo", "14"));
+    }
+
+    #[test]
+    fn test_phase_dir_matches_decimal() {
+        assert!(phase_dir_matches("0.3-slug", "0.3"));
+    }
+
+    #[test]
+    fn test_phase_dir_matches_milestone_prefixed() {
+        assert!(phase_dir_matches("M1-2-slug", "M1-2"));
+    }
+
+    #[test]
+    fn test_phase_dir_matches_project_code_prefixed() {
+        assert!(phase_dir_matches("AB-29-slug", "AB-29"));
+    }
+
+    #[test]
+    fn test_phase_dir_matches_pad_insensitive() {
+        assert!(phase_dir_matches("3-foo", "3"));
+        assert!(phase_dir_matches("03-foo", "3"));
+    }
+
+    #[test]
+    fn test_phase_dir_matches_rejects_longer_number() {
+        assert!(!phase_dir_matches("14-foo", "1"));
+    }
+
+    #[test]
+    fn test_phase_dir_matches_rejects_decimal_boundary() {
+        assert!(!phase_dir_matches("1.2-foo", "1"));
+    }
+
+    #[test]
+    fn test_find_phase_dir_year_prefixed() {
+        let dir = tempdir().unwrap();
+        let phase_dir = dir.path().join("phases").join("14-2026-foo");
+        fs::create_dir_all(&phase_dir).unwrap();
+
+        let found = find_phase_dir(dir.path(), "14");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), phase_dir);
+    }
+
+    #[test]
+    fn test_find_phase_dir_decimal() {
+        let dir = tempdir().unwrap();
+        let phase_dir = dir.path().join("phases").join("0.3-foo");
+        fs::create_dir_all(&phase_dir).unwrap();
+
+        let found = find_phase_dir(dir.path(), "0.3");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), phase_dir);
     }
 }
