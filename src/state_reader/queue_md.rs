@@ -191,8 +191,32 @@ pub fn save_queue(planning_dir: &Path, actions: &[QueuedAction]) -> anyhow::Resu
 }
 
 /// Suggest GSD commands based on current project state.
-/// Returns context-aware suggestions that the user can tab-cycle through.
+///
+/// Prefers GSD 1.8.0's `gsd-tools smart-entry`, which understands situations
+/// the keyword heuristic cannot (idle-stranded, external-job-waiting, milestone
+/// boundaries) and always returns exactly one recommended `/gsd:*` action. When
+/// the project has a resolvable launcher and smart-entry yields a non-empty
+/// list, that list is used; otherwise it falls back to the keyword heuristic.
+///
+/// This runs on-demand (when building the suggestion list in response to a user
+/// action, not per-frame), so a brief synchronous subprocess is acceptable; any
+/// failure falls back to the keyword heuristic instantly.
 pub fn suggest_next_commands(state: &super::ProjectState) -> Vec<String> {
+    if !state.project_root.as_os_str().is_empty() {
+        if let Some(commands) = smart_entry_commands(&state.project_root) {
+            if !commands.is_empty() {
+                return commands;
+            }
+        }
+    }
+    keyword_suggestions(state)
+}
+
+/// Keyword-heuristic suggestions derived from the project's status string.
+///
+/// The original `suggest_next_commands` body, preserved verbatim as the
+/// fallback path when smart-entry is unavailable.
+fn keyword_suggestions(state: &super::ProjectState) -> Vec<String> {
     let status_lower = state.status.to_lowercase();
     let next_phase = state.completed_phases + 1;
 
@@ -347,5 +371,20 @@ mod tests {
         };
         let suggestions = suggest_next_commands(&state);
         assert_eq!(suggestions[0], "/gsd:progress");
+    }
+
+    #[test]
+    fn test_suggest_empty_project_root_uses_keyword_path() {
+        // With an empty project_root (default/test states), smart-entry is
+        // never attempted and the keyword heuristic is used directly.
+        let state = super::super::ProjectState {
+            status: "idle".to_string(),
+            completed_phases: 1,
+            ..Default::default()
+        };
+        assert!(state.project_root.as_os_str().is_empty());
+        let suggestions = suggest_next_commands(&state);
+        assert_eq!(suggestions, keyword_suggestions(&state));
+        assert!(suggestions[0].contains("discuss-phase 2"));
     }
 }
