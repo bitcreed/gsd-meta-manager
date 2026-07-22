@@ -1,9 +1,9 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.5.0
-milestone_name: Sub-phase Artifact Detection
+milestone: v1.6.0
+milestone_name: GSD 1.8.0 Catch-up
 status: shipped
-stopped_at: Tagged v1.5.0 — Sub-phase Artifact Detection
+stopped_at: Tagged v1.6.0 — GSD 1.8.0 Catch-up
 last_updated: "2026-07-22T19:51:58.046Z"
 last_activity: 2026-07-22
 last_activity_desc: "Completed quick task 260722-emn: GSD 1.8.0 catch-up; version bumped to 1.6.0 (release prep, untagged)"
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** v1.5.0 shipped — ready for the next milestone (`/gsd:new-milestone`)
+**Current focus:** v1.6.0 shipped — ready for the next milestone (`/gsd:new-milestone`)
 
 ## Current Position
 
 Phase: —
 Plan: —
-Status: v1.5.0 shipped (Sub-phase Artifact Detection) — no active milestone
+Status: v1.6.0 shipped (GSD 1.8.0 Catch-up) — no active milestone
 Last activity: 2026-07-22 - Completed quick task 260722-emn: GSD 1.8.0 catch-up; version bumped to 1.6.0 (release prep, untagged)
 
 Progress: [##########] 100%
@@ -108,6 +108,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-05-15T00:00:00.000Z
-Stopped at: Tagged v1.5.0 — Sub-phase Artifact Detection
+Last session: 2026-07-22T00:00:00.000Z
+Stopped at: Tagged v1.6.0 — GSD 1.8.0 Catch-up
 Resume file: None
