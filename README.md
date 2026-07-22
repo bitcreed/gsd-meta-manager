@@ -11,6 +11,33 @@ need to launch Claude or run `/gsd:progress` in each project directory. Register
 your projects once and see phase status, roadmap progress, queued work, and
 pending actions at a glance.
 
+## Why GSD Meta Manager?
+
+GSD Meta Manager is the **cross-project** command center: it observes and acts on
+*every* registered project at once, from a single terminal. What you get spanning
+all of them:
+
+- **Zero-token state reading** -- parses each project's `.planning/` directory on
+  disk. No Claude run, no `/gsd:progress`, no API cost required to see status.
+- **Claude session awareness** -- detects which projects have a live `claude`
+  instance, launches or resumes a session on any of them, and auto-registers new
+  projects from active sessions.
+- **tmux focus** -- `Tab`-to-switch straight into a project's running Claude
+  session without hunting through terminal tabs.
+- **Milestone archive browsing** -- read shipped-milestone artifacts with inline
+  markdown rendering, without leaving the dashboard.
+
+### Not the same as GSD's claude-orchestration backend
+
+GSD 1.8.0 added an experimental, opt-in `claude-orchestration` execution backend.
+That backend parallelizes plan execution *inside a single Claude session on a
+single project* -- running a phase's waves concurrently via Claude Code's Workflow
+tool -- and produces the same commits and `SUMMARY.md` artifacts as normal
+execution, writing no new on-disk state format. GSD Meta Manager works at the
+opposite scope: it observes and acts *across many projects* from one terminal. The
+two are complementary -- orchestration speeds up work *within* one project's phase;
+the Meta Manager gives you the view and the controls *across* your whole portfolio.
+
 ## Features
 
 - Unified dashboard with color-coded project status (active, paused, idle)
@@ -158,6 +185,12 @@ terminal support.
 
 - **Rust 1.85+** (for building from source)
 - Produces a single static binary with no runtime dependencies
+
+### Compatibility
+
+Reads GSD 1.8.0 `.planning/` state formats. Because it observes on-disk state
+rather than driving GSD, it is non-intrusive and works alongside any GSD workflow
+backend, including the experimental `claude-orchestration` execution path.
 
 ## Contributing
 
