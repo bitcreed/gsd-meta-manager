@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -35,6 +36,40 @@ pub struct DiskInference {
     pub has_ai_spec: bool,
     pub has_review: bool,
     pub has_ui_review: bool,
+    /// GSD 1.8.0 informational artifacts — never affect plan/summary counts.
+    pub has_coverage: bool,
+    pub has_windows: bool,
+    pub has_deferred_items: bool,
+    pub has_skeleton: bool,
+}
+
+/// Detect whether a plan file's YAML frontmatter declares `status: superseded`.
+///
+/// GSD 1.8.0 (#2349): a plan marked `status: superseded` was deliberately
+/// reassigned or never executed — its work moved to a later plan, so it can
+/// never gain a matching `*-SUMMARY.md`. Such a plan is excluded from BOTH the
+/// plan and summary counts. We parse only the leading `---`…`---` frontmatter
+/// block via a cheap line scan (no YAML dependency); a plan without the marker
+/// is counted exactly as before. Fail-safe: a file with no frontmatter, or a
+/// closed block with no `status: superseded`, is treated as a normal plan.
+fn plan_frontmatter_superseded(content: &str) -> bool {
+    let mut lines = content.lines();
+    // Frontmatter must open on the very first line with a bare `---`.
+    if lines.next().map(str::trim) != Some("---") {
+        return false;
+    }
+    for line in lines {
+        if line.trim() == "---" {
+            // End of frontmatter block without a superseded marker.
+            return false;
+        }
+        if let Some((key, value)) = line.split_once(':') {
+            if key.trim() == "status" && value.trim().eq_ignore_ascii_case("superseded") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Infer the GSD status of a phase directory by scanning its file artifacts.
@@ -65,8 +100,14 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         }
     };
 
-    let mut plan_count: u32 = 0;
-    let mut summary_count: u32 = 0;
+    // GSD 1.8.0 counting is a two-pass scan (#1988, #2349):
+    //   Pass 1 collects the IDs of surviving (non-superseded) plans.
+    //   Pass 2 counts only summaries whose ID matches a surviving plan.
+    // Both passes run inside the single directory iteration below: plan IDs are
+    // gathered into `plan_ids` and candidate summary names into `summary_names`,
+    // then paired after the loop.
+    let mut plan_ids: HashSet<String> = HashSet::new();
+    let mut summary_names: Vec<String> = Vec::new();
     let mut has_context = false;
     let mut has_research = false;
     let mut has_verification = false;
@@ -82,6 +123,10 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     let mut has_uat = false;
     let mut has_spec = false;
     let mut has_eval_review = false;
+    let mut has_coverage = false;
+    let mut has_windows = false;
+    let mut has_deferred_items = false;
+    let mut has_skeleton = false;
 
     for entry in entries.flatten() {
         let name = match entry.file_name().into_string() {
@@ -132,6 +177,11 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
             has_plan_check = true;
             continue;
         }
+        // PLAN-REVIEW artifacts are review notes, not plans (#2349): skip before
+        // the PLAN match so they never count toward plan_count or set has_plans.
+        if name == "PLAN-REVIEW.md" || name.ends_with("-PLAN-REVIEW.md") {
+            continue;
+        }
         if name == "VALIDATION.md" || name.ends_with("-VALIDATION.md") {
             has_validation = true;
             continue;
@@ -144,15 +194,51 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
             has_uat = true;
             continue;
         }
-
-        // Match PLAN.md or *-PLAN.md (after PLAN-CHECK is filtered above)
-        if name == "PLAN.md" || name.ends_with("-PLAN.md") {
-            plan_count += 1;
+        // GSD 1.8.0 informational artifacts — flagged only, never counted.
+        if name == "COVERAGE.md" || name.ends_with("-COVERAGE.md") {
+            has_coverage = true;
+            continue;
+        }
+        if name == "WINDOWS.md" || name.ends_with("-WINDOWS.md") {
+            has_windows = true;
+            continue;
+        }
+        if name == "deferred-items.md" || name.ends_with("-deferred-items.md") {
+            has_deferred_items = true;
+            continue;
+        }
+        if name == "SKELETON.md" || name.ends_with("-SKELETON.md") {
+            has_skeleton = true;
+            continue;
         }
 
-        // Match SUMMARY.md or *-SUMMARY.md
+        // Pass 1 — Match PLAN.md or *-PLAN.md (after PLAN-CHECK/PLAN-REVIEW are
+        // filtered above). Derive the plan ID (filename minus the PLAN suffix;
+        // standalone PLAN.md → empty-string ID) and record it, unless the plan's
+        // frontmatter marks it `status: superseded`.
+        if name == "PLAN.md" || name.ends_with("-PLAN.md") {
+            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                if plan_frontmatter_superseded(&content) {
+                    continue;
+                }
+            }
+            let id = name
+                .strip_suffix("-PLAN.md")
+                .map(str::to_string)
+                .unwrap_or_default();
+            plan_ids.insert(id);
+            continue;
+        }
+
+        // Pass 2 (collection) — Match SUMMARY.md or *-SUMMARY.md, excluding FIX and
+        // GAPCLOSURE summaries which are never plan partners (#1988). The ID→plan
+        // pairing happens after the loop once all surviving plan IDs are known.
         if name == "SUMMARY.md" || name.ends_with("-SUMMARY.md") {
-            summary_count += 1;
+            if name.contains("-FIX-") || name.ends_with("-GAPCLOSURE-SUMMARY.md") {
+                continue;
+            }
+            summary_names.push(name);
+            continue;
         }
 
         // Match CONTEXT.md or *-CONTEXT.md
@@ -170,6 +256,21 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
             has_verification = true;
         }
     }
+
+    // Pass 2 (pairing) — a summary counts only if its ID matches a surviving
+    // (non-superseded) plan ID (matched-summary rule, #1988). Standalone
+    // SUMMARY.md derives the empty-string ID and pairs with standalone PLAN.md.
+    let plan_count: u32 = plan_ids.len() as u32;
+    let summary_count: u32 = summary_names
+        .iter()
+        .filter(|name| {
+            let id = name
+                .strip_suffix("-SUMMARY.md")
+                .map(str::to_string)
+                .unwrap_or_default();
+            plan_ids.contains(&id)
+        })
+        .count() as u32;
 
     // Determine status following GSD's priority order
     let status = if summary_count >= plan_count && plan_count > 0 {
@@ -207,7 +308,42 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         has_ai_spec,
         has_review,
         has_ui_review,
+        has_coverage,
+        has_windows,
+        has_deferred_items,
+        has_skeleton,
     }
+}
+
+/// Test whether a phase directory name belongs to the given phase number.
+///
+/// GSD 1.8.0 phase directories are no longer always `NN-slug`: they may be
+/// decimal (`0.3-slug`), milestone-prefixed (`M1-2-slug`), project-code-prefixed
+/// (`AB-29-slug`), or year-prefixed multi-segment (`14-2026-foo`). Matching must
+/// also be pad-insensitive (`3-foo` and `03-foo` both match phase `3`) while
+/// still rejecting bare-number-vs-longer-number collisions (`1` must not match
+/// `14-foo` or `1.2-foo`).
+///
+/// A candidate list is built from `phase_number` — always the raw string, plus
+/// (for all-digit numbers) the zero-padded-to-2 and leading-zeros-stripped forms.
+/// A directory matches a candidate `C` when it equals `C` or starts with `C-`;
+/// the trailing `-` is the boundary guard against longer-number collisions.
+fn phase_dir_matches(dir_name: &str, phase_number: &str) -> bool {
+    let mut candidates: Vec<String> = vec![phase_number.to_string()];
+    if !phase_number.is_empty() && phase_number.chars().all(|c| c.is_ascii_digit()) {
+        if phase_number.len() < 2 {
+            candidates.push(format!("{:0>2}", phase_number));
+        }
+        let stripped = phase_number.trim_start_matches('0');
+        candidates.push(if stripped.is_empty() {
+            "0".to_string()
+        } else {
+            stripped.to_string()
+        });
+    }
+    candidates
+        .iter()
+        .any(|c| dir_name == c || dir_name.starts_with(&format!("{c}-")))
 }
 
 /// Find a phase directory by its number, checking both active phases/ and archived milestones/.
@@ -216,21 +352,13 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
 /// 1. planning_dir/phases/ for directories starting with zero-padded phase number (e.g., "05-")
 /// 2. planning_dir/milestones/*/ for archived phases
 pub fn find_phase_dir(planning_dir: &Path, phase_number: &str) -> Option<PathBuf> {
-    // Zero-pad to 2 digits for prefix matching
-    let padded = if phase_number.len() == 1 {
-        format!("0{}", phase_number)
-    } else {
-        phase_number.to_string()
-    };
-    let prefix = format!("{}-", padded);
-
     // Check phases/ directory first
     let phases_dir = planning_dir.join("phases");
     if let Ok(entries) = std::fs::read_dir(&phases_dir) {
         for entry in entries.flatten() {
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 if let Some(name) = entry.file_name().to_str() {
-                    if name.starts_with(&prefix) {
+                    if phase_dir_matches(name, phase_number) {
                         return Some(entry.path());
                     }
                 }
@@ -251,7 +379,7 @@ pub fn find_phase_dir(planning_dir: &Path, phase_number: &str) -> Option<PathBuf
                     for phase_entry in phase_entries.flatten() {
                         if phase_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                             if let Some(name) = phase_entry.file_name().to_str() {
-                                if name.starts_with(&prefix) {
+                                if phase_dir_matches(name, phase_number) {
                                     return Some(phase_entry.path());
                                 }
                             }
@@ -268,13 +396,6 @@ pub fn find_phase_dir(planning_dir: &Path, phase_number: &str) -> Option<PathBuf
 /// Infer a phase's status by locating its directory and scanning artifacts.
 /// Archived phases (in milestones/) are always Complete per Pitfall 4.
 pub fn infer_phase_status(planning_dir: &Path, phase_number: &str) -> DiskInference {
-    let padded = if phase_number.len() == 1 {
-        format!("0{}", phase_number)
-    } else {
-        phase_number.to_string()
-    };
-    let prefix = format!("{}-", padded);
-
     // Check if phase is in milestones/ (archived = Complete)
     let milestones_dir = planning_dir.join("milestones");
     if let Ok(milestone_entries) = std::fs::read_dir(&milestones_dir) {
@@ -288,7 +409,7 @@ pub fn infer_phase_status(planning_dir: &Path, phase_number: &str) -> DiskInfere
                     for phase_entry in phase_entries.flatten() {
                         if phase_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                             if let Some(name) = phase_entry.file_name().to_str() {
-                                if name.starts_with(&prefix) {
+                                if phase_dir_matches(name, phase_number) {
                                     // Archived phase -- always Complete
                                     return DiskInference {
                                         status: DiskStatus::Complete,
@@ -561,6 +682,129 @@ mod tests {
         assert!(!result.has_eval_review);
     }
 
+    // ── Task 1: GSD 1.8.0 counting — exclusions, superseded, matched-summary ──
+
+    #[test]
+    fn test_fix_summary_not_counted() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-PLAN.md"), "plan1").unwrap();
+        fs::write(dir.path().join("05-01-SUMMARY.md"), "summary1").unwrap();
+        // A FIX summary must not inflate the count or flip status.
+        fs::write(dir.path().join("05-01-FIX-01-SUMMARY.md"), "fix").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 1);
+        assert_eq!(
+            result.summary_count, 1,
+            "FIX summary must not be counted in summary_count"
+        );
+        assert_eq!(result.status, DiskStatus::Complete);
+    }
+
+    #[test]
+    fn test_gapclosure_summary_not_counted() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-PLAN.md"), "plan1").unwrap();
+        fs::write(dir.path().join("05-02-PLAN.md"), "plan2").unwrap();
+        fs::write(dir.path().join("05-01-SUMMARY.md"), "summary1").unwrap();
+        // GAPCLOSURE summary must not flip a still-incomplete phase to Complete.
+        fs::write(dir.path().join("05-GAPCLOSURE-SUMMARY.md"), "gap").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 2);
+        assert_eq!(
+            result.summary_count, 1,
+            "GAPCLOSURE summary must not be counted"
+        );
+        assert_eq!(result.status, DiskStatus::Partial);
+    }
+
+    #[test]
+    fn test_plan_review_not_counted_as_plan() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-PLAN.md"), "plan1").unwrap();
+        fs::write(dir.path().join("05-01-PLAN-REVIEW.md"), "review").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(
+            result.plan_count, 1,
+            "PLAN-REVIEW.md must not be counted as a plan"
+        );
+        assert_eq!(result.status, DiskStatus::Planned);
+    }
+
+    #[test]
+    fn test_superseded_plan_excluded_from_counts() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-PLAN.md"), "plan1").unwrap();
+        fs::write(dir.path().join("05-01-SUMMARY.md"), "summary1").unwrap();
+        // A superseded plan is dropped from the denominator, and its summary
+        // (if any) is not counted either.
+        fs::write(
+            dir.path().join("05-02-PLAN.md"),
+            "---\nstatus: superseded\n---\nbody",
+        )
+        .unwrap();
+        fs::write(dir.path().join("05-02-SUMMARY.md"), "summary2").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(
+            result.plan_count, 1,
+            "superseded plan must be excluded from plan_count"
+        );
+        assert_eq!(
+            result.summary_count, 1,
+            "summary of a superseded plan must not be counted"
+        );
+        assert_eq!(result.status, DiskStatus::Complete);
+    }
+
+    #[test]
+    fn test_unmatched_summary_not_counted() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-PLAN.md"), "plan1").unwrap();
+        // A summary with no matching plan ID must not be counted.
+        fs::write(dir.path().join("05-99-SUMMARY.md"), "orphan").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 1);
+        assert_eq!(
+            result.summary_count, 0,
+            "summary without a matching plan must not be counted"
+        );
+        assert_eq!(result.status, DiskStatus::Planned);
+    }
+
+    #[test]
+    fn test_normal_two_plan_two_summary_still_complete() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-PLAN.md"), "plan1").unwrap();
+        fs::write(dir.path().join("05-02-PLAN.md"), "plan2").unwrap();
+        fs::write(dir.path().join("05-01-SUMMARY.md"), "summary1").unwrap();
+        fs::write(dir.path().join("05-02-SUMMARY.md"), "summary2").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 2);
+        assert_eq!(result.summary_count, 2);
+        assert_eq!(result.status, DiskStatus::Complete);
+    }
+
+    #[test]
+    fn test_standalone_summary_requires_standalone_plan() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("PLAN.md"), "plan").unwrap();
+        fs::write(dir.path().join("SUMMARY.md"), "summary").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 1);
+        assert_eq!(result.summary_count, 1);
+        assert_eq!(result.status, DiskStatus::Complete);
+    }
+
+    #[test]
+    fn test_standalone_summary_without_plan_not_counted() {
+        let dir = tempdir().unwrap();
+        // Standalone SUMMARY.md with no PLAN.md must not be counted.
+        fs::write(dir.path().join("SUMMARY.md"), "summary").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 0);
+        assert_eq!(result.summary_count, 0);
+        assert_eq!(result.status, DiskStatus::Empty);
+    }
+
     #[test]
     fn test_find_phase_dir_in_milestones() {
         let dir = tempdir().unwrap();
@@ -575,5 +819,155 @@ mod tests {
         let found = find_phase_dir(dir.path(), "03");
         assert!(found.is_some());
         assert_eq!(found.unwrap(), milestone_phase);
+    }
+
+    // ── Task 2: robust phase-token / directory matching ──
+
+    #[test]
+    fn test_phase_dir_matches_year_prefixed() {
+        assert!(phase_dir_matches("14-2026-foo", "14"));
+    }
+
+    #[test]
+    fn test_phase_dir_matches_decimal() {
+        assert!(phase_dir_matches("0.3-slug", "0.3"));
+    }
+
+    #[test]
+    fn test_phase_dir_matches_milestone_prefixed() {
+        assert!(phase_dir_matches("M1-2-slug", "M1-2"));
+    }
+
+    #[test]
+    fn test_phase_dir_matches_project_code_prefixed() {
+        assert!(phase_dir_matches("AB-29-slug", "AB-29"));
+    }
+
+    #[test]
+    fn test_phase_dir_matches_pad_insensitive() {
+        assert!(phase_dir_matches("3-foo", "3"));
+        assert!(phase_dir_matches("03-foo", "3"));
+    }
+
+    #[test]
+    fn test_phase_dir_matches_rejects_longer_number() {
+        assert!(!phase_dir_matches("14-foo", "1"));
+    }
+
+    #[test]
+    fn test_phase_dir_matches_rejects_decimal_boundary() {
+        assert!(!phase_dir_matches("1.2-foo", "1"));
+    }
+
+    #[test]
+    fn test_find_phase_dir_year_prefixed() {
+        let dir = tempdir().unwrap();
+        let phase_dir = dir.path().join("phases").join("14-2026-foo");
+        fs::create_dir_all(&phase_dir).unwrap();
+
+        let found = find_phase_dir(dir.path(), "14");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), phase_dir);
+    }
+
+    #[test]
+    fn test_find_phase_dir_decimal() {
+        let dir = tempdir().unwrap();
+        let phase_dir = dir.path().join("phases").join("0.3-foo");
+        fs::create_dir_all(&phase_dir).unwrap();
+
+        let found = find_phase_dir(dir.path(), "0.3");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), phase_dir);
+    }
+
+    // ── Task 3: COVERAGE / WINDOWS / deferred-items / SKELETON artifacts ──
+
+    #[test]
+    fn test_coverage_md_detected() {
+        let bare = tempdir().unwrap();
+        fs::write(bare.path().join("COVERAGE.md"), "coverage").unwrap();
+        assert!(infer_disk_status(bare.path()).has_coverage);
+
+        let prefixed = tempdir().unwrap();
+        fs::write(prefixed.path().join("05-COVERAGE.md"), "coverage").unwrap();
+        assert!(infer_disk_status(prefixed.path()).has_coverage);
+    }
+
+    #[test]
+    fn test_windows_md_detected() {
+        let bare = tempdir().unwrap();
+        fs::write(bare.path().join("WINDOWS.md"), "windows").unwrap();
+        assert!(infer_disk_status(bare.path()).has_windows);
+
+        let prefixed = tempdir().unwrap();
+        fs::write(prefixed.path().join("05-WINDOWS.md"), "windows").unwrap();
+        assert!(infer_disk_status(prefixed.path()).has_windows);
+    }
+
+    #[test]
+    fn test_deferred_items_md_detected() {
+        let bare = tempdir().unwrap();
+        fs::write(bare.path().join("deferred-items.md"), "deferred").unwrap();
+        assert!(infer_disk_status(bare.path()).has_deferred_items);
+
+        let prefixed = tempdir().unwrap();
+        fs::write(prefixed.path().join("05-deferred-items.md"), "deferred").unwrap();
+        assert!(infer_disk_status(prefixed.path()).has_deferred_items);
+    }
+
+    #[test]
+    fn test_skeleton_md_detected() {
+        let bare = tempdir().unwrap();
+        fs::write(bare.path().join("SKELETON.md"), "skeleton").unwrap();
+        assert!(infer_disk_status(bare.path()).has_skeleton);
+
+        let prefixed = tempdir().unwrap();
+        fs::write(prefixed.path().join("05-01-SKELETON.md"), "skeleton").unwrap();
+        assert!(infer_disk_status(prefixed.path()).has_skeleton);
+    }
+
+    #[test]
+    fn test_new_artifacts_do_not_affect_counts_or_status() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("COVERAGE.md"), "coverage").unwrap();
+        fs::write(dir.path().join("WINDOWS.md"), "windows").unwrap();
+        fs::write(dir.path().join("deferred-items.md"), "deferred").unwrap();
+        fs::write(dir.path().join("SKELETON.md"), "skeleton").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(result.has_coverage);
+        assert!(result.has_windows);
+        assert!(result.has_deferred_items);
+        assert!(result.has_skeleton);
+        assert_eq!(result.plan_count, 0);
+        assert_eq!(result.summary_count, 0);
+        assert_eq!(
+            result.status,
+            DiskStatus::Empty,
+            "informational artifacts must not change status"
+        );
+    }
+
+    #[test]
+    fn test_per_plan_security_still_detected() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-SECURITY.md"), "security").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(
+            result.has_security,
+            "05-01-SECURITY.md must still set has_security"
+        );
+        assert_eq!(result.plan_count, 0);
+        assert_eq!(result.summary_count, 0);
+    }
+
+    #[test]
+    fn test_empty_dir_has_no_new_artifacts() {
+        let dir = tempdir().unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(!result.has_coverage);
+        assert!(!result.has_windows);
+        assert!(!result.has_deferred_items);
+        assert!(!result.has_skeleton);
     }
 }
