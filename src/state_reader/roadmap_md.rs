@@ -1,4 +1,5 @@
 use regex::Regex;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RoadmapPhase {
@@ -147,7 +148,53 @@ pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
         }
     }
 
-    phases
+    merge_duplicate_phases(phases)
+}
+
+/// Collapse repeated sightings of the same phase number into one entry.
+///
+/// A standard GSD 1.8.0 ROADMAP.md describes every phase twice: once in the
+/// summary checklist near the top (`- [x] **Phase 4: Title** - desc`) and once
+/// under `## Phase Details` (`### Phase 4: Title`, with the plan items beneath
+/// it). Without this step the Phases pane lists each phase twice, and the two
+/// copies disagree — the checklist copy reports `total_plans: 0` because the
+/// next line is another header, while the detail copy carries the real counts.
+///
+/// Phases are keyed by `number` alone; that is already the identity key the
+/// caller uses when building `phase_disk_statuses`. Merge rule per field:
+/// - `completed` — logical OR (any checked copy marks the phase complete)
+/// - `name`, `description` — first non-empty value wins (the heading form
+///   carries no description, so the checklist text survives)
+/// - `total_plans`, `completed_plans` — max (the copy that actually scanned the
+///   plan list wins over the one that stopped at the next header)
+///
+/// First-seen order is preserved, and the pass is O(n) — no nested scan.
+fn merge_duplicate_phases(phases: Vec<RoadmapPhase>) -> Vec<RoadmapPhase> {
+    let mut merged: Vec<RoadmapPhase> = Vec::with_capacity(phases.len());
+    let mut index: HashMap<String, usize> = HashMap::new();
+
+    for phase in phases {
+        match index.get(&phase.number) {
+            Some(&at) => {
+                let existing = &mut merged[at];
+                existing.completed |= phase.completed;
+                if existing.name.is_empty() {
+                    existing.name = phase.name;
+                }
+                if existing.description.is_empty() {
+                    existing.description = phase.description;
+                }
+                existing.total_plans = existing.total_plans.max(phase.total_plans);
+                existing.completed_plans = existing.completed_plans.max(phase.completed_plans);
+            }
+            None => {
+                index.insert(phase.number.clone(), merged.len());
+                merged.push(phase);
+            }
+        }
+    }
+
+    merged
 }
 
 /// Returns true when a `## Progress` table Phase cell is a backlog sentinel
