@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 Phase: —
 Plan: —
 Status: v1.6.0 shipped (GSD 1.8.0 Catch-up) — no active milestone
-Last activity: 2026-07-22 - Completed quick task 260722-emn: GSD 1.8.0 catch-up; version bumped to 1.6.0 (release prep, untagged)
+Last activity: 2026-07-28 - Completed quick task 260728-kfx: dedupe phases in parse_roadmap_phases (summary-checklist + Phase Details roadmaps no longer list every phase twice)
 
 Progress: [##########] 100%
 
@@ -105,6 +105,7 @@ None yet.
 | 260722-emn | Catch up to GSD 1.8.0: README value prop + tier 1-3 state-reader/feature updates (10 plans, 5 waves) | 2026-07-22 | ca0ad3b | [260722-emn](./quick/260722-emn-catch-up-to-gsd-1-8-0-readme-value-propo/) |
 | 18 | Bump direct deps: notify-debouncer-full 0.7, serde_yml 0.0.13 | 2026-07-22 | 60f028d | — |
 | 19 | Add GitHub Actions release workflow: crates.io publish on version tags | 2026-07-22 | b174ecb | — |
+| 260728-kfx | Dedupe phases in parse_roadmap_phases so summary-checklist + Phase Details roadmaps do not list every phase twice | 2026-07-28 | df64162 | [260728-kfx](./quick/260728-kfx-dedupe-phases-in-parse-roadmap-phases-so/) |
 
 ## Session Continuity
 
