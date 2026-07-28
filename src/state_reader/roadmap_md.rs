@@ -548,6 +548,30 @@ Plans:
     }
 
     #[test]
+    fn test_parse_roadmap_dedupes_details_before_checklist() {
+        // Mirror layout: the `### Phase N:` detail heading (with its plan items)
+        // appears BEFORE the summary checklist entry for the same phase.
+        let content = r#"### Phase 2: Dashboard
+
+Plans:
+- [x] 02-01-PLAN.md -- table
+- [ ] 02-02-PLAN.md -- overlay
+
+- [x] **Phase 2: Dashboard** - Main project list
+"#;
+        let phases = parse_roadmap_phases(content);
+        assert_eq!(phases.len(), 1);
+        assert_eq!(phases[0].number, "2");
+        // OR rule picks up the later checkbox.
+        assert!(phases[0].completed);
+        // First-seen copy had an empty description; the later non-empty one fills it.
+        assert_eq!(phases[0].description, "Main project list");
+        // Max rule keeps the counts from the earlier copy that scanned the plan list.
+        assert_eq!(phases[0].total_plans, 2);
+        assert_eq!(phases[0].completed_plans, 1);
+    }
+
+    #[test]
     fn test_parse_roadmap_decimal_id_preserved() {
         // Existing decimal IDs still parse.
         let content = "- [ ] **Phase 0.3: Spike** - explore\n";
