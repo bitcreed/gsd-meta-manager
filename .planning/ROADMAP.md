@@ -81,4 +81,44 @@ listed in `STATE.md` "Quick Tasks Completed":
 Plans:
 - [ ] TBD (promote with /gsd:review-backlog when ready)
 
+### Phase 999.3: LLM-Driven Autonomous Project Execution (BACKLOG)
+
+**Goal:** Let an LLM agent — not a human — drive the GSD pipeline for a registered project to completion. The user states a goal once ("Build milestones 1-3, then brainstorm the next milestone autonomously, plan it, and execute it"); the agent decides which GSD command to run at which point and injects it into a Claude session, including `/clear` between stages to reclaim context. Model is the user's choice. Uses the Claude subscription via `claude -p` / an interactive session, not the API.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
+
+Captured 2026-07-28. Severity: minor (nothing is broken without it). Open question from
+capture: is it doable? — see notes below.
+
+Scope sketch (from capture, not yet designed):
+- A driver loop that maps project state → next GSD command. The state-reader already
+  exposes exactly the signals a driver needs (phase/plan counts, pipeline sub-stages,
+  DRPEV position), so the decision function has a real input surface today.
+- Prompt injection into a Claude session. `src/session_detector.rs` already finds live
+  `claude` PIDs with their TTY, and `src/terminal_switch.rs` already resolves a TTY to a
+  tmux pane — `tmux send-keys` to that pane is the shortest path to injection and
+  gives live user interjection for free.
+- `claude -p` is the alternative transport: simpler and headless, but one-shot per
+  invocation, so the driver owns cross-invocation continuity rather than `/clear`.
+- Overview must mark a project as LLM-driven, expose the originating prompt (so the
+  goal is legible later), show live driver state, and allow injecting messages mid-run.
+
+Known risks to resolve before planning:
+- Conflicts with the project's **Non-intrusive** constraint — driving a session is the
+  opposite of not interfering with running GSD instances. Needs an explicit opt-in and a
+  hard boundary against unattended projects.
+- `tmux send-keys` is screen-scraping, not an API: no delivery confirmation, no reliable
+  "command finished" signal, and it breaks if the pane is mid-prompt or awaiting an
+  AskUserQuestion. Needs a completion-detection story.
+- Unattended runs hit permission prompts, checkpoints, and AskUserQuestion gates that
+  assume a human. Decide what the driver auto-answers versus what parks the run.
+- Blast radius: an autonomous driver commits, branches, and possibly pushes with no
+  human in the loop. Needs a kill switch and a dry-run mode.
+- Overlaps Phase 999.2 (Container Support with Claude Command Injection) — 999.2 builds
+  the injection/monitoring plumbing, this phase builds the decision layer on top. Plan
+  them together or sequence 999.2 first.
+
 Note: Backlog 999.1 (Milestone Archive Browser) promoted to Phase 12 in v1.2.
