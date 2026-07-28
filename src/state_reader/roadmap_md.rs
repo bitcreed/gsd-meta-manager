@@ -449,6 +449,58 @@ Plans:
     }
 
     #[test]
+    fn test_parse_roadmap_dedupes_summary_and_details() {
+        // A standard GSD 1.8.0 roadmap describes each phase twice: once in the
+        // summary checklist near the top, once under `## Phase Details`. The two
+        // copies must merge into a single entry per phase number.
+        let content = r#"# Roadmap
+
+- [x] **Phase 4: Visualization** - ASCII roadmap rendering
+- [ ] **Phase 5: Queue** - Batch execution
+- [ ] **Phase 6: Sessions** - tmux attach
+
+## Phase Details
+
+### Phase 4: Visualization
+
+Plans:
+- [x] 04-01-PLAN.md -- canvas shapes
+- [x] 04-02-PLAN.md -- arrow routing
+
+### Phase 5: Queue
+
+Plans:
+- [x] 05-01-PLAN.md -- queue model
+- [ ] 05-02-PLAN.md -- executor trait
+
+### Phase 6: Sessions
+"#;
+        let phases = parse_roadmap_phases(content);
+        assert_eq!(phases.len(), 3);
+
+        // First-seen order preserved.
+        let numbers: Vec<&str> = phases.iter().map(|p| p.number.as_str()).collect();
+        assert_eq!(numbers, vec!["4", "5", "6"]);
+
+        // The literal `## Phase Details` heading is not itself a phase.
+        assert!(phases.iter().all(|p| p.name != "Details"));
+
+        // Description survives from the checklist form (heading form has none).
+        assert_eq!(phases[0].description, "ASCII roadmap rendering");
+
+        // Checkbox survives the merge (heading form always reports false).
+        assert!(phases[0].completed);
+        assert!(!phases[1].completed);
+
+        // Plan counts come from the detail section, where the plan items live.
+        assert_eq!(phases[0].total_plans, 2);
+        assert_eq!(phases[0].completed_plans, 2);
+        assert_eq!(phases[1].total_plans, 2);
+        assert_eq!(phases[1].completed_plans, 1);
+        assert_eq!(phases[2].total_plans, 0);
+    }
+
+    #[test]
     fn test_parse_roadmap_decimal_id_preserved() {
         // Existing decimal IDs still parse.
         let content = "- [ ] **Phase 0.3: Spike** - explore\n";
