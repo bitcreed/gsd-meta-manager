@@ -1,4 +1,5 @@
 use regex::Regex;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RoadmapPhase {
@@ -147,7 +148,53 @@ pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
         }
     }
 
-    phases
+    merge_duplicate_phases(phases)
+}
+
+/// Collapse repeated sightings of the same phase number into one entry.
+///
+/// A standard GSD 1.8.0 ROADMAP.md describes every phase twice: once in the
+/// summary checklist near the top (`- [x] **Phase 4: Title** - desc`) and once
+/// under `## Phase Details` (`### Phase 4: Title`, with the plan items beneath
+/// it). Without this step the Phases pane lists each phase twice, and the two
+/// copies disagree — the checklist copy reports `total_plans: 0` because the
+/// next line is another header, while the detail copy carries the real counts.
+///
+/// Phases are keyed by `number` alone; that is already the identity key the
+/// caller uses when building `phase_disk_statuses`. Merge rule per field:
+/// - `completed` — logical OR (any checked copy marks the phase complete)
+/// - `name`, `description` — first non-empty value wins (the heading form
+///   carries no description, so the checklist text survives)
+/// - `total_plans`, `completed_plans` — max (the copy that actually scanned the
+///   plan list wins over the one that stopped at the next header)
+///
+/// First-seen order is preserved, and the pass is O(n) — no nested scan.
+fn merge_duplicate_phases(phases: Vec<RoadmapPhase>) -> Vec<RoadmapPhase> {
+    let mut merged: Vec<RoadmapPhase> = Vec::with_capacity(phases.len());
+    let mut index: HashMap<String, usize> = HashMap::new();
+
+    for phase in phases {
+        match index.get(&phase.number) {
+            Some(&at) => {
+                let existing = &mut merged[at];
+                existing.completed |= phase.completed;
+                if existing.name.is_empty() {
+                    existing.name = phase.name;
+                }
+                if existing.description.is_empty() {
+                    existing.description = phase.description;
+                }
+                existing.total_plans = existing.total_plans.max(phase.total_plans);
+                existing.completed_plans = existing.completed_plans.max(phase.completed_plans);
+            }
+            None => {
+                index.insert(phase.number.clone(), merged.len());
+                merged.push(phase);
+            }
+        }
+    }
+
+    merged
 }
 
 /// Returns true when a `## Progress` table Phase cell is a backlog sentinel
@@ -446,6 +493,82 @@ Plans:
         assert_eq!(phases[0].total_plans, 2);
         assert_eq!(phases[0].completed_plans, 2);
         assert_eq!(phases[1].number, "2");
+    }
+
+    #[test]
+    fn test_parse_roadmap_dedupes_summary_and_details() {
+        // A standard GSD 1.8.0 roadmap describes each phase twice: once in the
+        // summary checklist near the top, once under `## Phase Details`. The two
+        // copies must merge into a single entry per phase number.
+        let content = r#"# Roadmap
+
+- [x] **Phase 4: Visualization** - ASCII roadmap rendering
+- [ ] **Phase 5: Queue** - Batch execution
+- [ ] **Phase 6: Sessions** - tmux attach
+
+## Phase Details
+
+### Phase 4: Visualization
+
+Plans:
+- [x] 04-01-PLAN.md -- canvas shapes
+- [x] 04-02-PLAN.md -- arrow routing
+
+### Phase 5: Queue
+
+Plans:
+- [x] 05-01-PLAN.md -- queue model
+- [ ] 05-02-PLAN.md -- executor trait
+
+### Phase 6: Sessions
+"#;
+        let phases = parse_roadmap_phases(content);
+        assert_eq!(phases.len(), 3);
+
+        // First-seen order preserved.
+        let numbers: Vec<&str> = phases.iter().map(|p| p.number.as_str()).collect();
+        assert_eq!(numbers, vec!["4", "5", "6"]);
+
+        // The literal `## Phase Details` heading is not itself a phase.
+        assert!(phases.iter().all(|p| p.name != "Details"));
+
+        // Description survives from the checklist form (heading form has none).
+        assert_eq!(phases[0].description, "ASCII roadmap rendering");
+
+        // Checkbox survives the merge (heading form always reports false).
+        assert!(phases[0].completed);
+        assert!(!phases[1].completed);
+
+        // Plan counts come from the detail section, where the plan items live.
+        assert_eq!(phases[0].total_plans, 2);
+        assert_eq!(phases[0].completed_plans, 2);
+        assert_eq!(phases[1].total_plans, 2);
+        assert_eq!(phases[1].completed_plans, 1);
+        assert_eq!(phases[2].total_plans, 0);
+    }
+
+    #[test]
+    fn test_parse_roadmap_dedupes_details_before_checklist() {
+        // Mirror layout: the `### Phase N:` detail heading (with its plan items)
+        // appears BEFORE the summary checklist entry for the same phase.
+        let content = r#"### Phase 2: Dashboard
+
+Plans:
+- [x] 02-01-PLAN.md -- table
+- [ ] 02-02-PLAN.md -- overlay
+
+- [x] **Phase 2: Dashboard** - Main project list
+"#;
+        let phases = parse_roadmap_phases(content);
+        assert_eq!(phases.len(), 1);
+        assert_eq!(phases[0].number, "2");
+        // OR rule picks up the later checkbox.
+        assert!(phases[0].completed);
+        // First-seen copy had an empty description; the later non-empty one fills it.
+        assert_eq!(phases[0].description, "Main project list");
+        // Max rule keeps the counts from the earlier copy that scanned the plan list.
+        assert_eq!(phases[0].total_plans, 2);
+        assert_eq!(phases[0].completed_plans, 1);
     }
 
     #[test]
