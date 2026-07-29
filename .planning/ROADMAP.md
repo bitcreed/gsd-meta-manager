@@ -114,12 +114,12 @@ before Phase 20 closes so the router is never built against a stubbed target.
   4. PageDown at the end of a document leaves the last line on screen instead of scrolling past the content
 
 **Research**: skip — established codebase idioms, no new external unknowns
-**Plans**: 3 plans
+**Plans**: 1/3 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 14-01-PLAN.md — UIFIX-01 pause-badge verify-first tracer + regression matrix; UIFIX-02 D-R-P-E-V pad-cell removal at the construction site
+- [x] 14-01-PLAN.md — UIFIX-01 pause-badge verify-first tracer + regression matrix; UIFIX-02 D-R-P-E-V pad-cell removal at the construction site
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -320,7 +320,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 14. UI Fixes | 0/? | Not started | - |
+| 14. UI Fixes | 1/3 | In Progress|  |
 | 15. Transport Foundation | 0/? | Not started | - |
 | 16. Run Journal & State Substrate | 0/? | Not started | - |
 | 17. Supervisor | 0/? | Not started | - |
