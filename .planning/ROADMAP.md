@@ -208,7 +208,7 @@ The Driver tab and every rendered driver surface land in Phase 18.
   - Run-log growth must be bounded (per-run cap, rotation, retain last N runs) — a 4h run is tens of MB of JSON
 
 **Research**: done — `16-RESEARCH.md` (empirically executed; every claim produced by running code)
-**Plans**: 2/6 plans executed
+**Plans**: 5/6 plans executed
 
 Plans:
 **Wave 1**
@@ -218,9 +218,9 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1)*
 
-- [ ] 16-03-PLAN.md — Run record written exactly twice, the `runs/.gitignore` posture proved against a real repo, per-run growth cap and retention
-- [ ] 16-04-PLAN.md — The reader's tolerance contract: torn lines, sequence gaps, unknown kinds carried whole, oversize step-over
-- [ ] 16-05-PLAN.md — OBS-06: `changed_path`, per-`(root, kind)` watcher dedup, the forked `FileChanged` handler, and the counted re-parse measurement with its control arm
+- [x] 16-03-PLAN.md — Run record written exactly twice, the `runs/.gitignore` posture proved against a real repo, per-run growth cap and retention
+- [x] 16-04-PLAN.md — The reader's tolerance contract: torn lines, sequence gaps, unknown kinds carried whole, oversize step-over
+- [x] 16-05-PLAN.md — OBS-06: `changed_path`, per-`(root, kind)` watcher dedup, the forked `FileChanged` handler, and the counted re-parse measurement with its control arm
 
 **Wave 3** *(blocked on Wave 2)*
 
@@ -379,7 +379,7 @@ phase's scope.
 |-------|----------------|--------|-----------|
 | 14. UI Fixes | 4/4 | Complete    | 2026-07-29 |
 | 15. Transport Foundation | 8/8 | Complete    | 2026-07-29 |
-| 16. Run Journal & State Substrate | 2/6 | In Progress|  |
+| 16. Run Journal & State Substrate | 5/6 | In Progress|  |
 | 17. Supervisor | 0/? | Not started | - |
 | 18. Driver Tab, Live Watch & Durable Injection | 0/? | Not started | - |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 0/? | Not started | - |
