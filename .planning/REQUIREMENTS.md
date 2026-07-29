@@ -55,7 +55,7 @@ interleave and corrupt each other.
 - [ ] **SAFE-01**: The driver pushes only to a reserved branch namespace; pushes outside it are blocked by a mechanism the agent cannot talk its way past
 - [ ] **SAFE-02**: Force-push and hook-bypass are blocked for driver-initiated git operations
 - [ ] **SAFE-03**: Driver-initiated pushes are scanned for secrets and blocked on detection
-- [ ] **SAFE-04**: Credentials and tokens are redacted when captured into the run log, not when rendered
+- [x] **SAFE-04**: Credentials and tokens are redacted when captured into the run log, not when rendered
 - [ ] **SAFE-05**: A driven run uses a scoped git credential rather than inheriting the user's ambient credentials or SSH agent
 - [ ] **SAFE-06**: PR creation is rate-capped per project per day
 - [ ] **SAFE-07**: `.planning/` content read by the driver is passed to the model inside an explicit untrusted-content boundary, never concatenated into instructions
@@ -63,12 +63,12 @@ interleave and corrupt each other.
 
 ### Run State & Observability (OBS)
 
-- [ ] **OBS-01**: Every run writes an append-only journal to disk that survives process death and is the source of truth for run state
+- [x] **OBS-01**: Every run writes an append-only journal to disk that survives process death and is the source of truth for run state
 - [ ] **OBS-02**: The project list marks which projects are LLM-driven, and which are parked awaiting a human
 - [ ] **OBS-03**: A user can read the originating goal prompt for any driven project, to understand what it was asked to do
 - [ ] **OBS-04**: A user can watch a run's live output, current step, elapsed time, and step history from a TUI tab
 - [ ] **OBS-05**: A user can review what a completed or failed run did, after the fact, including which commands ran and why it stopped
-- [ ] **OBS-06**: Driver journal writes do not trigger full project re-parses, so a multi-hour run does not degrade TUI responsiveness
+- [x] **OBS-06**: Driver journal writes do not trigger full project re-parses, so a multi-hour run does not degrade TUI responsiveness
 - [ ] **OBS-07**: A user can sort or filter the dashboard to surface projects that need human attention
 
 ### Steering (STEER)
@@ -143,17 +143,17 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-22.
 | SAFE-01 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Pending |
 | SAFE-02 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Pending |
 | SAFE-03 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Pending |
-| SAFE-04 | Phase 16: Run Journal & State Substrate | Pending |
+| SAFE-04 | Phase 16: Run Journal & State Substrate | Complete |
 | SAFE-05 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Pending |
 | SAFE-06 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Pending |
 | SAFE-07 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
 | SAFE-08 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
-| OBS-01 | Phase 16: Run Journal & State Substrate | Pending |
+| OBS-01 | Phase 16: Run Journal & State Substrate | Complete |
 | OBS-02 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
 | OBS-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
 | OBS-04 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
 | OBS-05 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
-| OBS-06 | Phase 16: Run Journal & State Substrate | Pending |
+| OBS-06 | Phase 16: Run Journal & State Substrate | Complete |
 | OBS-07 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
 | STEER-01 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
 | STEER-02 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
