@@ -203,12 +203,34 @@ The Driver tab and every rendered driver surface land in Phase 18.
 
 **Phase risks**:
 
-  - **OQ9 (non-blocking)**: which run artifacts are committed vs gitignored. Default answer from research: commit the small `run.json` (goal + status), gitignore the large `journal.jsonl`, and add the ignore entry at opt-in time so the driver never commits its own transcripts
+  - **OQ9 — RESOLVED at planning (D-07/D-08)**: `run.json` is committed; `journal.jsonl`, `active` and every future per-run file are gitignored. Two refinements to the research default: the ignore entry is written at **run-directory creation**, not at opt-in time, because opt-in is Phase 17's and waiting would leave a window in which a journal exists unprotected; and `run.json` is written **exactly twice** (before spawn, after exit) so the driven agent's own `git add -A` can never sweep a mid-run snapshot into an unrelated commit
   - SAFE-04 (redact-at-capture) is bound to this phase rather than to Phase 19 deliberately: PITFALLS scopes redaction to the phase that builds the log-capture path, because every log written before the retrofit stays unredacted forever
   - Run-log growth must be bounded (per-run cap, rotation, retain last N runs) — a 4h run is tens of MB of JSON
 
-**Research**: optional — not flagged by research; decide at planning time
-**Plans**: TBD
+**Research**: done — `16-RESEARCH.md` (empirically executed; every claim produced by running code)
+**Plans**: 6 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 16-01-PLAN.md — Tracer: `src/journal/` module, redact-at-capture behind the `RedactedLine` seam, append-only NDJSON writer, byte-offset tail, pure path classification
+- [ ] 16-02-PLAN.md — The bounded drain's dropped-event count becomes an observable stream event (D-33 handover from 15-08)
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 16-03-PLAN.md — Run record written exactly twice, the `runs/.gitignore` posture proved against a real repo, per-run growth cap and retention
+- [ ] 16-04-PLAN.md — The reader's tolerance contract: torn lines, sequence gaps, unknown kinds carried whole, oversize step-over
+- [ ] 16-05-PLAN.md — OBS-06: `changed_path`, per-`(root, kind)` watcher dedup, the forked `FileChanged` handler, and the counted re-parse measurement with its control arm
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 16-06-PLAN.md — `JournalRun` lifecycle and the `ExecutionEvent` consumer mapping, real-SIGKILL survival with on-disk redaction, phase gate and criteria traceability
+
+**UI hint**: no — this phase ships no visual surface. It delivers the on-disk journal,
+path classification in `watcher`/`app`, and redact-at-capture. Every rendered driver
+surface (Driver tab, live stream, badges) lands in Phase 18. Planned with `--skip-ui`;
+the repo-wide `ui-plan-gate` frontend detector fires on the ratatui codebase, not on this
+phase's scope.
 
 ### Phase 17: Supervisor — Detach, Kill Switch, Dry-Run, Opt-In Gate
 
