@@ -114,7 +114,7 @@ before Phase 20 closes so the router is never built against a stubbed target.
   4. PageDown at the end of a document leaves the last line on screen instead of scrolling past the content
 
 **Research**: skip — established codebase idioms, no new external unknowns
-**Plans**: 2/3 plans executed
+**Plans**: 3/3 plans executed
 
 Plans:
 **Wave 1**
@@ -127,7 +127,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 14-03-PLAN.md — full project gate, clippy-delta audit, success-criterion traceability, and retirement of the four source todos
+- [x] 14-03-PLAN.md — full project gate, clippy-delta audit, success-criterion traceability, and retirement of the four source todos
 
 **UI hint**: yes
 
@@ -320,7 +320,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 14. UI Fixes | 2/3 | In Progress|  |
+| 14. UI Fixes | 3/3 | In Progress|  |
 | 15. Transport Foundation | 0/? | Not started | - |
 | 16. Run Journal & State Substrate | 0/? | Not started | - |
 | 17. Supervisor | 0/? | Not started | - |
