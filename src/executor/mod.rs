@@ -741,12 +741,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_drivable_project_carries_its_alias_and_root() {
-        let project = DrivableProject::for_testing_bypassing_opt_in("demo", "/tmp/demo");
-        assert_eq!(project.alias(), "demo");
-        assert_eq!(project.root(), Path::new("/tmp/demo"));
-    }
+    // `a_drivable_project_carries_its_alias_and_root` used to live here. It
+    // asserted the two accessors off a token built through the escape hatch, and
+    // `from_registry_accepts_a_project_carrying_an_opt_in_record` below now
+    // asserts exactly the same two accessors off a token built the production
+    // way — so the coverage is unchanged and the escape hatch has no call site
+    // left under `src/` at all (D-17).
 
     /// A registry entry, opted in or not, rooted at `root`.
     fn entry(root: &Path, opted_in: bool) -> RegisteredProject {

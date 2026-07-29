@@ -32,10 +32,13 @@
 //!    discipline.
 //! 4. **Parsing is tolerant by construction and never fatal (D-30).** Serde's
 //!    strict unknown-field rejection attribute (`deny_unknown_fields`) is never
-//!    opted into anywhere in this module tree, and its absence is grepped for as
-//!    a mechanical guard — the same discipline `src/executor/stream_json.rs:6-8`
-//!    records for the wire model. Phase 20 is a known future emitter of new
-//!    `kind` values, so the reader's `kind` stays a plain `String`.
+//!    opted into anywhere under `src/`, and **that absence is now enforced by a
+//!    test rather than asserted by this paragraph**:
+//!    `tests/spawn_seam_guard.rs::no_executable_line_in_src_opts_into_strict_unknown_field_rejection`
+//!    walks every non-comment line in the tree and fails if the attribute
+//!    appears. Phase 16 claimed a grep guard that was never written; Phase 17
+//!    wrote it. Phase 20 is a known future emitter of new `kind` values, so the
+//!    reader's `kind` stays a plain `String`.
 //! 5. **Nothing in this tree logs event content (D-28).** Any `tracing` call
 //!    inside `src/journal/` carries counts, paths that have already been through
 //!    the redactor, or no event content at all. `src/executor/claude.rs:1260-1266`

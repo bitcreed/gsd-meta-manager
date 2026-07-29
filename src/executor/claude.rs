@@ -1912,56 +1912,14 @@ mod tests {
     }
 
     // ========================================================================
-    // A refused run writes zero bytes to the child's stdin (D-06, TRANS-04)
+    // `a_refused_run_writes_zero_bytes_to_the_child_stdin` used to live here.
+    //
+    // It moved to `tests/executor_transport.rs` for two reasons that agree. It
+    // spawns a real child process, and this repository's convention is that such
+    // a test belongs in `tests/` rather than in-source. And it needs a
+    // `DrivableProject`, which under `src/` it could only obtain through the
+    // opt-in escape hatch — `tests/spawn_seam_guard.rs` fences that identifier
+    // out of `src/` entirely, and keeping the fence absolute is worth more than
+    // the test's location (D-17).
     // ========================================================================
-
-    const FAKE_CLAUDE_ECHO: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/fake-claude-echo.sh"
-    );
-
-    #[tokio::test]
-    async fn a_refused_run_writes_zero_bytes_to_the_child_stdin() {
-        let scratch = tempfile::TempDir::new().expect("temp dir");
-        let stdin_log = scratch.path().join("stdin.log");
-
-        // One capability short of the required set, everything else healthy.
-        let executor = ClaudeExecutor::with_program(
-            FAKE_CLAUDE_ECHO,
-            vec![
-                OsString::from("interrupt_receipt_v1,msg_lifecycle_v1"),
-                OsString::from("2.1.220"),
-                OsString::from("none"),
-                stdin_log.clone().into_os_string(),
-            ],
-        );
-        let project = DrivableProject::for_testing_bypassing_opt_in("refused", scratch.path());
-
-        let err = executor
-            .start(
-                &project,
-                "/gsd-progress".to_string(),
-                ExecutionOptions::default(),
-            )
-            .await
-            .expect_err("a CLI missing a required capability must be refused up front");
-
-        assert!(
-            matches!(
-                err,
-                SpawnError::Capability(CapabilityError::MissingCapabilities { .. })
-            ),
-            "expected a capability refusal, got: {err:?}"
-        );
-
-        // The stand-in truncates its stdin log before writing its init, so the
-        // file existing proves the child ran; its length proves what we wrote.
-        let recorded = std::fs::metadata(&stdin_log)
-            .expect("the stand-in truncates the stdin log at startup, so it must exist");
-        assert_eq!(
-            recorded.len(),
-            0,
-            "a refused run must write zero bytes to the child's stdin — the refusal costs zero tokens and zero quota (D-06)"
-        );
-    }
 }
