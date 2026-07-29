@@ -86,7 +86,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 ### v2.0 Autonomous Orchestration (Phases 14-22)
 
 - [x] **Phase 14: UI Fixes** - Four display defects that misreport project state (completed 2026-07-29)
-- [ ] **Phase 15: Transport Foundation** - Duplex `stream-json` executor with envelope-derived outcomes
+- [x] **Phase 15: Transport Foundation** - Duplex `stream-json` executor with envelope-derived outcomes (completed 2026-07-29)
 - [ ] **Phase 16: Run Journal & State Substrate** - Durable, redacted, cheap-to-read run record
 - [ ] **Phase 17: Supervisor** - Detach, kill switch, dry-run, single-run lock, opt-in gate
 - [ ] **Phase 18: Driver Tab, Live Watch & Durable Injection** - Manual ship point: run and steer from the TUI
@@ -356,7 +356,7 @@ The Driver tab and every rendered driver surface land in Phase 18.
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 14. UI Fixes | 4/4 | Complete    | 2026-07-29 |
-| 15. Transport Foundation | 8/8 | In Progress|  |
+| 15. Transport Foundation | 8/8 | Complete    | 2026-07-29 |
 | 16. Run Journal & State Substrate | 0/? | Not started | - |
 | 17. Supervisor | 0/? | Not started | - |
 | 18. Driver Tab, Live Watch & Durable Injection | 0/? | Not started | - |
