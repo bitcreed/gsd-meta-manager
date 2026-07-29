@@ -41,6 +41,31 @@
 //!    the redactor, or no event content at all. `src/executor/claude.rs:1260-1266`
 //!    records the same discipline for the executor and names this phase as the
 //!    one that makes it real.
+//!
+//! # What this phase deliberately does not do
+//!
+//! Four questions arrive at this module looking like they belong here. None
+//! does, and each has a named owner, so a later reader can stop searching
+//! instead of reopening this module to answer something it never held:
+//!
+//! - **Detached spawn, PID liveness, and crash *reconciliation* are Phase
+//!   17's.** This phase writes the facts reconciliation reads — the pid and
+//!   pgid in [`RunRecord`], and the absent [`RunRecord::ended_at`] that marks a
+//!   run that never reached a terminal transition (D-06, D-32) — and it does no
+//!   reconciling. Nothing here spawns a process; [`JournalRun`] is driven by a
+//!   caller that hands it events.
+//! - **The driver tab, the live stream, and the interjection channel are Phase
+//!   18's.** Phase 16 ships **no UI** (D-36). The byte-offset tail in [`reader`]
+//!   exists to keep watching *cheap*, not to display anything, and
+//!   [`JournalEvent::Interjected`] is schema only until that phase exists.
+//! - **The pre-push secret scan and the tool-boundary denial are Phase 19's.**
+//!   [`redact`] is the *capture-path* half of SAFE-04 only. The complementary
+//!   control fires **before** a secret enters context; neither substitutes for
+//!   the other (D-25).
+//! - **The decision router and a run's own bounds are Phase 20's.** The
+//!   `observed`, `decided` and `parked` kinds are in the schema so that phase
+//!   adds no migration, and [`RESERVED_KINDS`] states mechanically that this
+//!   phase does not emit them (D-36).
 
 pub mod reader;
 pub mod redact;
@@ -96,6 +121,10 @@ pub const RETAIN_RUNS: usize = 10;
 /// bound is unreachable in practice; the branch that handles it is pure defence
 /// against a corrupted file, and without it a line that can never complete would
 /// stall the cursor forever and make every later event invisible.
+///
+/// Like the three growth constants above it, this is a defensible starting
+/// value with **no tuning data behind it** — it is a named constant so tuning is
+/// a one-line change.
 pub const MAX_TAIL_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The five paths that make up one run's on-disk footprint.
