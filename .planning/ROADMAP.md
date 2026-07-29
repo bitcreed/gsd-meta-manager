@@ -208,7 +208,7 @@ The Driver tab and every rendered driver surface land in Phase 18.
   - Run-log growth must be bounded (per-run cap, rotation, retain last N runs) — a 4h run is tens of MB of JSON
 
 **Research**: done — `16-RESEARCH.md` (empirically executed; every claim produced by running code)
-**Plans**: 5/6 plans executed
+**Plans**: 6/6 plans executed
 
 Plans:
 **Wave 1**
@@ -224,7 +224,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2)*
 
-- [ ] 16-06-PLAN.md — `JournalRun` lifecycle and the `ExecutionEvent` consumer mapping, real-SIGKILL survival with on-disk redaction, phase gate and criteria traceability
+- [x] 16-06-PLAN.md — `JournalRun` lifecycle and the `ExecutionEvent` consumer mapping, real-SIGKILL survival with on-disk redaction, phase gate and criteria traceability
 
 **UI hint**: no — this phase ships no visual surface. It delivers the on-disk journal,
 path classification in `watcher`/`app`, and redact-at-capture. Every rendered driver
@@ -379,7 +379,7 @@ phase's scope.
 |-------|----------------|--------|-----------|
 | 14. UI Fixes | 4/4 | Complete    | 2026-07-29 |
 | 15. Transport Foundation | 8/8 | Complete    | 2026-07-29 |
-| 16. Run Journal & State Substrate | 5/6 | In Progress|  |
+| 16. Run Journal & State Substrate | 6/6 | In Progress|  |
 | 17. Supervisor | 0/? | Not started | - |
 | 18. Driver Tab, Live Watch & Durable Injection | 0/? | Not started | - |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 0/? | Not started | - |
