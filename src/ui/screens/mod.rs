@@ -186,6 +186,26 @@ pub struct AppContext {
     ///   re-streaming is physically impossible; what this map carries is a
     ///   journal-tail handle and a pgid to signal.
     pub observed_runs: HashMap<String, crate::driver::reconcile::ObservedRun>,
+    /// The run ids **this TUI session spawned**, which decides D-07's reaping
+    /// arm at stop time.
+    ///
+    /// * It is a **separate set rather than a flag on `ObservedRun`**, and that
+    ///   is the whole reason it exists. `observed_runs` is *replaced wholesale*
+    ///   by every reconciliation scan, because the scan is authoritative and a
+    ///   merge would keep entries the disk no longer justifies — so any flag
+    ///   stored there survives at most five seconds and then silently reverts to
+    ///   whatever the disk implies. The disk cannot imply this: `run.json`
+    ///   records the driver's own pid, never who its parent was.
+    /// * A run id in this set means the driver is **our child**, so the reaping
+    ///   task `spawn_detached` created owns its `wait()`. A run id absent from it
+    ///   was adopted after a restart, was reparented to init, and can only be
+    ///   confirmed dead by re-probing `/proc` (D-07).
+    /// * It holds run ids and nothing else — no handles — so `Action` stays
+    ///   `Clone` for the same reason the sibling maps above do.
+    /// * It is never pruned, and it does not need to be: it grows by one entry
+    ///   per run this session starts, and `driver_max_concurrent` defaults to
+    ///   one. A session that starts a thousand runs has a thousand short strings.
+    pub session_spawned_runs: std::collections::HashSet<String>,
     pub watcher: Option<FileWatcher>,
     pub last_refresh: HashMap<String, std::time::Instant>,
     pub detail_scroll_offset: u16,

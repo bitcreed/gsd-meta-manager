@@ -29,11 +29,20 @@
 //! 4. **This phase runs exactly one GSD command, supplied on the command line.**
 //!    There is no loop and no sequence. The decision router is Phase 20's, which
 //!    is why [`DriveArgs::command`] is a single `String` and not a `Vec`.
+//! 5. **Stopping a run is two-layer, because there are TWO process groups, not
+//!    one (D-06).** Phase 15 spawns `claude` with `ProcessGroup::leader()`, so
+//!    the agent leads a group of its own and a signal aimed at the *driver's*
+//!    group never reaches it. Layer 1 signals the driver's group from the TUI
+//!    ([`kill`]); layer 2 is the driver's own terminate handler calling
+//!    `Executor::cancel` on the agent's group ([`run`]) — and that second layer
+//!    is a **call into code that already exists**, never a reimplementation. A
+//!    stop built from layer 1 alone looks like it works, and the tell is
+//!    `pgrep -x claude` still returning processes afterwards.
 //!
-//! [`lock`] landed in plan 17-02, [`dry_run`] in 17-04, and [`liveness`] and
-//! [`reconcile`] in 17-05. Later plans add `kill` (17-06) as a sibling. Nothing
-//! is stubbed ahead of time: an empty module for a later phase is a promise the
-//! compiler cannot keep.
+//! [`lock`] landed in plan 17-02, [`dry_run`] in 17-04, [`liveness`] and
+//! [`reconcile`] in 17-05, and [`kill`] in 17-06. Nothing is stubbed ahead of
+//! time: an empty module for a later phase is a promise the compiler cannot
+//! keep.
 
 // Deliberately **outside** the `#[cfg(unix)]` block below. Point 2 above makes
 // the *running* of an agent Unix-only; a preview is git reads and string
@@ -49,6 +58,8 @@ pub mod dry_run;
 // the reconciliation scan out of the TUI, which is cross-platform.
 pub mod liveness;
 pub mod reconcile;
+#[cfg(unix)]
+pub mod kill;
 #[cfg(unix)]
 pub mod lock;
 #[cfg(unix)]

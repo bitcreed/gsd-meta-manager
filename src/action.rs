@@ -88,4 +88,27 @@ pub enum Action {
     RunsReconciled {
         runs: Vec<crate::driver::reconcile::ObservedRun>,
     },
+    /// The user asked for the live run on `alias` to be stopped (CTRL-01).
+    ///
+    /// Carries the alias and nothing else: the pid and the process group are
+    /// read from the reconciliation scan's own observation at the moment the
+    /// stop is dispatched, never carried in the message. A pgid captured when a
+    /// key was pressed and used some milliseconds later is a pgid that may
+    /// already belong to a different run — and this is the one value in the
+    /// codebase where being stale means signalling a stranger's process group.
+    DriverStopRequested {
+        alias: String,
+    },
+    /// A stop finished, with its outcome already rendered.
+    ///
+    /// The outcome is a `String` rather than the
+    /// [`StopOutcome`](crate::driver::kill::StopOutcome) itself for one reason:
+    /// that type is `#[cfg(unix)]`, and `Action` is a cross-platform message
+    /// type this file keeps free of platform attributes. Rendering happens at
+    /// the seam that produced it, where the state is still in hand.
+    DriverStopped {
+        alias: String,
+        run_id: String,
+        outcome: String,
+    },
 }

@@ -155,6 +155,7 @@ impl App {
             reparse_dispatches: 0,
             journal_cursors: HashMap::new(),
             observed_runs: HashMap::new(),
+            session_spawned_runs: std::collections::HashSet::new(),
             watcher: None,
             last_refresh: HashMap::new(),
             detail_scroll_offset: 0,
@@ -733,6 +734,32 @@ impl App {
                     self.needs_redraw = true;
                 }
             }
+            Action::DriverStopRequested { alias } => {
+                #[cfg(unix)]
+                self.stop_driver_run(&alias);
+                // Off Unix there is no way to have started a run in the first
+                // place, so there is nothing to stop. The binding is consumed
+                // explicitly rather than left to an `unused_variables` allow.
+                #[cfg(not(unix))]
+                let _ = alias;
+            }
+            // The stop already happened; this is the report. The entry is
+            // dropped from the observed map rather than edited, because the map
+            // is a projection of the scan and a hand-edited entry would be
+            // overwritten by the next one anyway. Dropping it is what the scan
+            // itself will do five seconds later, done now so the dashboard does
+            // not show a stopped run as live in the meantime.
+            Action::DriverStopped {
+                alias,
+                run_id,
+                outcome,
+            } => {
+                self.ctx.observed_runs.remove(&alias);
+                self.ctx.session_spawned_runs.remove(&run_id);
+                self.ctx.status_message =
+                    Some((format!("{alias}: {outcome}"), std::time::Instant::now()));
+                self.needs_redraw = true;
+            }
         }
     }
 
@@ -789,6 +816,12 @@ impl App {
 
         match spawn_detached(&project_root, &argv) {
             Ok(pid) => {
+                // This session is the driver's parent, so its `wait()` belongs
+                // to the reaping task `spawn_detached` just created. Recording
+                // the run id here is what lets a later stop pick D-07's parent
+                // arm; a run absent from this set was adopted after a restart
+                // and can only be confirmed dead through `/proc`.
+                self.ctx.session_spawned_runs.insert(run_id.clone());
                 self.ctx.status_message = Some((
                     format!("Driving {alias} — run {run_id}"),
                     std::time::Instant::now(),
@@ -822,6 +855,74 @@ impl App {
                     Some(format!("Could not start a driver for '{alias}': {e}"));
             }
         }
+        self.needs_redraw = true;
+    }
+
+    /// Stop the observed run on `alias`, or refuse visibly (CTRL-01, D-06, D-07).
+    ///
+    /// The counterpart to [`App::start_driver_run`], and the order of the body is
+    /// the decision:
+    ///
+    /// 1. Read the `ObservedRun` for the alias **out of the scan's own result**.
+    ///    The pid and the pgid are taken here, at dispatch, and never carried in
+    ///    the key event that asked for the stop: a pgid captured earlier is a
+    ///    pgid that may already name a different run's group, and this is the one
+    ///    value in the codebase where being stale means signalling a stranger.
+    ///    No entry is a visible refusal through `ctx.error_message`.
+    /// 2. Choose D-07's arm from `ctx.session_spawned_runs` — `Parent` if this
+    ///    session spawned it, `Adopted` otherwise. That set exists rather than a
+    ///    flag on `ObservedRun` because the observed map is replaced wholesale by
+    ///    every scan and the disk cannot say who a driver's parent was.
+    /// 3. Dispatch on a task and take the result back as
+    ///    [`Action::DriverStopped`]. **Nothing here blocks the render thread**:
+    ///    the grace alone is twelve seconds, and a loop that stopped painting for
+    ///    twelve seconds while stopping a run would look exactly like the hang
+    ///    the stop exists to end (TRANS-03).
+    ///
+    /// Unix-only, like the rest of the driver (D-05).
+    #[cfg(unix)]
+    pub fn stop_driver_run(&mut self, alias: &str) {
+        use crate::driver::kill::ReapArm;
+
+        let Some(run) = self.ctx.observed_runs.get(alias) else {
+            self.ctx.error_message = Some(format!("No run is being observed for '{alias}'"));
+            self.needs_redraw = true;
+            return;
+        };
+        let pid = run.pid;
+        let pgid = run.pgid;
+        let run_id = run.run_id.clone();
+
+        let arm = if self.ctx.session_spawned_runs.contains(&run_id) {
+            ReapArm::Parent
+        } else {
+            ReapArm::Adopted
+        };
+
+        // The same guard `schedule_journal_tail` uses: without a channel there
+        // is nowhere to return the outcome, and a stop whose result cannot be
+        // reported is a stop the user cannot tell happened.
+        let Some(tx) = &self.ctx.event_tx else {
+            return;
+        };
+        let tx = tx.clone();
+        let alias_for_task = alias.to_string();
+        let run_id_for_task = run_id.clone();
+
+        tokio::spawn(async move {
+            let outcome =
+                crate::driver::kill::stop_run(pid, pgid, &run_id_for_task, arm).await;
+            let _ = tx.send(Action::DriverStopped {
+                alias: alias_for_task,
+                run_id: run_id_for_task,
+                outcome: outcome.to_string(),
+            });
+        });
+
+        self.ctx.status_message = Some((
+            format!("Stopping {alias} — run {run_id}"),
+            std::time::Instant::now(),
+        ));
         self.needs_redraw = true;
     }
 
@@ -1279,6 +1380,105 @@ mod tests {
             .count();
         assert_eq!(live, 0);
         assert!(admit(live, app.ctx.config.preferences.driver_max_concurrent).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stopping_an_alias_with_no_observed_run_is_refused_visibly() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        app.stop_driver_run(OBS_ALIAS);
+
+        let refusal = app
+            .ctx
+            .error_message
+            .as_deref()
+            .expect("a stop with nothing to stop must say so, not fail silently");
+        assert!(refusal.contains(OBS_ALIAS), "got: {refusal}");
+    }
+
+    /// A run the scan found but this session did not start takes D-07's
+    /// **adopted** arm.
+    ///
+    /// The distinction cannot be read off disk — `run.json` records the driver's
+    /// own pid and never who its parent was — so it lives in a set that survives
+    /// the scan replacing `observed_runs` wholesale every five seconds. This
+    /// asserts the set stays empty for a run that arrived through a scan, which
+    /// is what makes the arm `Adopted` and the `/proc` re-probe the only way to
+    /// confirm death.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_run_this_session_did_not_spawn_is_never_recorded_as_our_child() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        app.update(Action::RunsReconciled {
+            runs: vec![observed(OBS_ALIAS, "run-adopted", true)],
+        });
+
+        assert!(
+            app.ctx.observed_runs.contains_key(OBS_ALIAS),
+            "the scan's own entry must be there, or the assertion below is vacuous"
+        );
+        assert!(
+            app.ctx.session_spawned_runs.is_empty(),
+            "a run rediscovered by the scan was reparented to init when its \
+             original parent exited; claiming it as our child would make a stop \
+             wait on a `wait()` that returns ECHILD (D-07)"
+        );
+    }
+
+    /// The stop is dispatched off the render thread and its result comes back as
+    /// an `Action`.
+    ///
+    /// The twelve-second grace is why this shape is not optional: a stop that
+    /// blocked the loop would freeze the frame for twelve seconds while stopping
+    /// a run, which looks exactly like the hang the stop exists to end
+    /// (TRANS-03). The pid here belongs to no driver, so the dispatched task
+    /// takes the `AlreadyGone` path and returns immediately — what is being
+    /// asserted is the seam, not the teardown.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stop_returns_its_outcome_as_an_action_rather_than_blocking() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = obs_app(dir.path());
+        app.ctx
+            .observed_runs
+            .insert(OBS_ALIAS.to_string(), observed(OBS_ALIAS, "run-x", true));
+
+        app.stop_driver_run(OBS_ALIAS);
+        assert!(
+            app.ctx.error_message.is_none(),
+            "a stop against an observed run is not a refusal"
+        );
+
+        let action = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the stop must report back promptly, not block the loop")
+            .expect("the channel is open");
+
+        let Action::DriverStopped {
+            alias,
+            run_id,
+            outcome,
+        } = action
+        else {
+            panic!("the dispatched stop must report through DriverStopped, got {action:?}");
+        };
+        assert_eq!(alias, OBS_ALIAS);
+        assert_eq!(run_id, "run-x");
+        assert!(!outcome.is_empty(), "the outcome must render as something");
+
+        // And the handler drops the entry rather than editing it, so the
+        // dashboard does not show a stopped run as live until the next scan.
+        app.update(Action::DriverStopped {
+            alias: OBS_ALIAS.to_string(),
+            run_id: "run-x".to_string(),
+            outcome,
+        });
+        assert!(!app.ctx.observed_runs.contains_key(OBS_ALIAS));
+        assert!(!app.ctx.session_spawned_runs.contains("run-x"));
     }
 
     #[tokio::test]

@@ -4964,6 +4964,7 @@ mod tests {
             reparse_dispatches: 0,
             journal_cursors: HashMap::new(),
             observed_runs: HashMap::new(),
+            session_spawned_runs: std::collections::HashSet::new(),
             watcher: None,
             last_refresh: HashMap::new(),
             detail_scroll_offset: 0,

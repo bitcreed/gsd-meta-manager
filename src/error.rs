@@ -402,6 +402,14 @@ impl std::error::Error for LockError {}
 /// 17-05 adds a concurrency-cap variant. It is deliberately **not** marked
 /// `#[non_exhaustive]` — this crate is the only consumer, and an attribute would
 /// buy nothing but a `_` arm at every match.
+///
+/// **Plan 17-06 added no variant, and the absence is deliberate rather than an
+/// omission.** A *stopped* run is a normal terminal outcome, not an error: the
+/// driver's terminate handler tears the agent's group down, journals the reason,
+/// writes its terminal record with the killed outcome and returns `Ok(())`. A
+/// stop that surfaced as a `DriveError` would report the user's own deliberate
+/// action back to them as a failure, and would make a stop indistinguishable
+/// from a crash in every place this enum is rendered (D-06.3).
 #[derive(Debug)]
 pub enum DriveError {
     /// Driving is not supported on this platform (D-05).
