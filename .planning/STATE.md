@@ -6,9 +6,9 @@ current_phase: 17
 current_phase_name: Supervisor — Detach, Kill Switch, Dry-Run, Opt-In Gate
 status: executing
 stopped_at: v2.0 roadmap written — Phases 14-22 defined, traceability filled
-last_updated: "2026-07-29T16:37:44.004Z"
+last_updated: "2026-07-29T16:39:06.434Z"
 last_activity: 2026-07-29
-last_activity_desc: Phase 16 complete, transitioned to Phase 17
+last_activity_desc: Phase 17 execution started
 progress:
   total_phases: 9
   completed_phases: 3
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 16 — Run Journal & State Substrate
+**Current focus:** Phase 17 — Supervisor — Detach, Kill Switch, Dry-Run, Opt-In Gate
 
 ## Current Position
 
-Phase: 17 — Supervisor — Detach, Kill Switch, Dry-Run, Opt-In Gate
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-07-29 — Phase 16 complete, transitioned to Phase 17
+Phase: 17 (Supervisor — Detach, Kill Switch, Dry-Run, Opt-In Gate) — EXECUTING
+Plan: 1 of 7
+Status: Executing Phase 17
+Last activity: 2026-07-29 — Phase 17 execution started
 
 ### Phase 15 planning notes (autonomous run — review these)
 
