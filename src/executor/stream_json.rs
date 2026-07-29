@@ -27,7 +27,7 @@
 //!
 //! Casing in `system/init` is **mixed within one object**: `apiKeySource` and
 //! `permissionMode` are camelCase while `claude_code_version`, `session_id` and
-//! `output_style` are snake_case. A blanket `rename_all = "camelCase"` would
+//! `output_style` are snake_case. A blanket camelCase rename-all would
 //! silently deserialise `claude_code_version` as `None` and make the version
 //! gate pass everything, so per-field renames are used instead.
 
@@ -40,12 +40,21 @@ use serde::{Deserialize, Serialize};
 pub enum StreamMessage {
     /// `system/*` — init, hook events, thinking-token counters, task progress.
     System(SystemMessage),
+    /// `assistant` — a model turn.
+    Assistant(TurnMessage),
+    /// `user` — either a prompt echo (`isReplay`) or a tool result.
+    User(TurnMessage),
     /// `result` — closes a **turn**, not the run (D-29). Boxed because the
     /// payload dwarfs every other variant (`clippy::large_enum_variant` is a
     /// `-D warnings` build gate here, per the `src/action.rs` precedent).
     Result(Box<ResultMessage>),
     /// `control_response` — the reply to a `control_request` we wrote.
     ControlResponse(ControlResponse),
+    /// `rate_limit_event`. The payload is carried unmodelled, following the
+    /// escape-hatch idiom in `state_reader/config_json.rs`: nothing in this
+    /// phase reads it, and modelling a shape we do not consume would only add
+    /// a second thing to keep in sync with the CLI's patch cadence.
+    RateLimitEvent(serde_json::Value),
     /// A message type no version we have observed emits. Carried as
     /// forward-compat; the raw line is preserved by [`Envelope`].
     #[serde(other)]
@@ -91,6 +100,34 @@ pub struct InitMessage {
     pub claude_code_version: Option<String>,
 }
 
+/// An `assistant` or `user` turn message.
+///
+/// Both types share one shape. The message body itself is deliberately not
+/// modelled: this phase routes envelopes, and the content blocks are Phase 18's
+/// rendering concern.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TurnMessage {
+    /// Stable across the process's turns.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// The `--replay-user-messages` echo marker — the only delivery ack the
+    /// design has.
+    ///
+    /// It is camelCase on the wire **and absent rather than `false`** on
+    /// non-replay messages, so it needs both a rename and a default. It is also
+    /// emitted at *dequeue*, not at receipt: a message written mid-turn is
+    /// echoed after the preceding turn's `result`, which makes this a "started
+    /// processing" ack rather than a "received" ack (D-31).
+    #[serde(default, rename = "isReplay")]
+    pub is_replay: bool,
+    /// Non-null on subagent messages.
+    #[serde(default)]
+    pub parent_tool_use_id: Option<String>,
+    /// Per-message identity.
+    #[serde(default)]
+    pub uuid: Option<String>,
+}
+
 /// The `result` payload. One per **turn** (D-29).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ResultMessage {
@@ -116,6 +153,32 @@ pub struct ResultMessage {
     /// this run cost" (D-16).
     #[serde(default)]
     pub total_cost_usd: Option<f64>,
+    /// The agent's own summary of the turn.
+    ///
+    /// `Option` because it is **absent entirely** on error envelopes — not
+    /// empty, absent (D-32). Defaulting it to an empty string would make an
+    /// error envelope indistinguishable from a silent success. Nothing derives
+    /// an outcome from this field: outcome comes from the envelope's verdict
+    /// fields, the exit code and the disk delta, never from prose.
+    #[serde(default)]
+    pub result: Option<String>,
+    /// Present only on error envelopes, hence the default.
+    #[serde(default)]
+    pub errors: Vec<String>,
+    /// Denials the CLI recorded. Populated when `--permission-mode dontAsk`
+    /// blocked something; carried unmodelled.
+    #[serde(default)]
+    pub permission_denials: Vec<serde_json::Value>,
+    /// Success-only; absent on error envelopes.
+    #[serde(default)]
+    pub api_error_status: Option<serde_json::Value>,
+    /// Why the model stopped, as distinct from why the turn ended.
+    #[serde(default)]
+    pub stop_reason: Option<String>,
+    /// Per-envelope identity. Differs between the turns of one session, which
+    /// is what makes two `result`s from one process distinguishable (D-29).
+    #[serde(default)]
+    pub uuid: Option<String>,
 }
 
 /// A `control_response` envelope. Note the **double nesting** of `response`.

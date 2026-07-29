@@ -745,8 +745,13 @@ async fn handle_item(
 
             // A later `system/init` is informational: every queued turn emits
             // its own, and re-running the gate there would convert a start-time
-            // refusal into a mid-run abort (D-30).
-            msg @ StreamMessage::System(_) => events_tx
+            // refusal into a mid-run abort (D-30). Turn messages and rate-limit
+            // events forward verbatim for the same reason — this layer routes
+            // envelopes, it does not interpret them.
+            msg @ (StreamMessage::System(_)
+            | StreamMessage::Assistant(_)
+            | StreamMessage::User(_)
+            | StreamMessage::RateLimitEvent(_)) => events_tx
                 .send(ExecutionEvent::Message(Box::new(msg)))
                 .await
                 .is_ok(),
