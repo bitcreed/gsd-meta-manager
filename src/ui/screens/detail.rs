@@ -3606,8 +3606,48 @@ fn push_substage(lines: &mut Vec<Line<'static>>, label: &'static str, present: b
 /// Pure path logic — no filesystem I/O — so the whole UIFIX-03 contract is unit
 /// testable without constructing an `AppContext`. Returns the user-facing status
 /// message on the error path; the caller turns it into a `SetStatusMessage`.
-fn browse_edit_target(_cache: &super::ProjectViewCache) -> Result<std::path::PathBuf, &'static str> {
-    Err("unimplemented")
+fn browse_edit_target(cache: &super::ProjectViewCache) -> Result<std::path::PathBuf, &'static str> {
+    const NO_FILE: &str = "Select a markdown file to edit";
+    const READ_ONLY: &str = "Archived files are read-only";
+
+    // 1. Resolve a candidate path from the current browse depth.
+    let candidate = match cache.browser_depth {
+        crate::browser::BrowserDepth::View => {
+            // `None` content is the Phase 12 `Loading...` window; `e` is inert
+            // there rather than editing a file the user cannot yet see.
+            if cache.browser_file_content.is_none() {
+                return Err(NO_FILE);
+            }
+            let dir = cache.browser_current_dir.as_ref().ok_or(NO_FILE)?;
+            let name = cache.browser_file_name.as_ref().ok_or(NO_FILE)?;
+            dir.join(name)
+        }
+        crate::browser::BrowserDepth::List => {
+            let entry = cache
+                .browser_entries
+                .get(cache.browser_selected)
+                .ok_or(NO_FILE)?;
+            if entry.is_dir {
+                return Err(NO_FILE);
+            }
+            entry.path.clone()
+        }
+    };
+
+    // 2. Root fence: never hand $EDITOR a path outside the browse root.
+    if let Some(root) = cache.browser_root.as_ref() {
+        if !candidate.starts_with(root) {
+            return Err(NO_FILE);
+        }
+    }
+
+    // 3. Archived milestones stay immutable regardless of which tab reached
+    //    them — the same guard the Archive tab applies.
+    if candidate.to_string_lossy().contains("/milestones/") {
+        return Err(READ_ONLY);
+    }
+
+    Ok(candidate)
 }
 
 /// Build the footer key-hint spans for a tab.
@@ -3668,6 +3708,8 @@ fn footer_spans(sub_view: &DetailSubView) -> Vec<Span<'static>> {
         DetailSubView::Browse => {
             spans.push(Span::styled("[Enter]", b));
             spans.push(Span::raw("open  "));
+            spans.push(Span::styled("[e]", b));
+            spans.push(Span::raw("dit  "));
             spans.push(Span::styled("[Esc]", b));
             spans.push(Span::raw("up  "));
             spans.push(Span::styled("[g]", b));
