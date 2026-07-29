@@ -44,9 +44,10 @@ Current breakdown (counted directly from the source tree):
 | `src/session_detector.rs` | 3 | Active-session detection |
 | `src/app.rs` | 3 | Top-level event handling |
 
-There is no dedicated `tests/fixtures/` directory and no golden-file infrastructure. Test inputs
-are constructed inline as string literals (see the frontmatter examples in
+Most test inputs are constructed inline as string literals (see the frontmatter examples in
 `tests/state_reader_test.rs`) and written into per-test `TempDir`s when filesystem layout matters.
+The one exception is the executor, which has a `tests/fixtures/` directory — see
+[The executor's process fixtures](#the-executors-process-fixtures) below.
 
 ## Running Tests
 
@@ -76,6 +77,28 @@ cargo test -- --nocapture
 # Run tests single-threaded — useful when debugging tests that share global state
 cargo test -- --test-threads=1
 ```
+
+### Ignored tests: the executor teardown grace
+
+A small number of tests are marked `#[ignore]` because they wait out a **real ten-second
+period** — the grace the executor grants a `claude` process group between the terminate signal
+and the uncatchable one. `cargo test` skips them so the default loop stays fast. Run them
+explicitly:
+
+```bash
+# Every ignored test in the suite
+cargo test -- --ignored
+
+# Just the process-lifecycle ones
+cargo test --test executor_lifecycle -- --ignored
+```
+
+**Run these before tagging a release.** The ignored
+`a_child_that_ignores_the_terminate_signal_is_still_killed_and_reaped` is currently the *only*
+test that exercises the escalation half of the teardown — a child that ignores the terminate
+signal, the grace expiring, the uncatchable signal, and the reap. The fast tests cover the
+path where the terminate signal is honoured, so a regression that breaks escalation alone
+passes `cargo test` and fails only here.
 
 ### Optional: cargo-nextest
 
@@ -159,11 +182,51 @@ these sparingly; they're slow because they rebuild the binary on first run.
 
 ### Fixture strategy
 
-The codebase deliberately uses **inline string literals** for parser inputs rather than separate
-fixture files. This keeps each test self-contained and makes the expected shape obvious at the
-test site. When a test needs an on-disk layout, build it with `assert_fs::TempDir` or
-`tempfile::TempDir` and `.child("...").write_str("...")`. Do not commit fixtures under
-`tests/fixtures/` — that directory does not exist and no test currently expects it.
+Outside the executor, the codebase deliberately uses **inline string literals** for parser
+inputs rather than separate fixture files. This keeps each test self-contained and makes the
+expected shape obvious at the test site. When a test needs an on-disk layout, build it with
+`assert_fs::TempDir` or `tempfile::TempDir` and `.child("...").write_str("...")`.
+
+## The executor's process fixtures
+
+`src/executor/` drives a real `claude` CLI over a duplex NDJSON protocol, and two of its
+concerns cannot be tested with inline strings: the wire protocol, and the process lifecycle.
+Both live under `tests/fixtures/`.
+
+### Transcripts
+
+`tests/fixtures/transcripts/*.ndjson` are **redacted captures of real `claude` 2.1.220 runs**,
+not synthesised examples. They are loaded with `include_str!` at compile time — no I/O, no
+`TempDir` — and drive the parser, the capability gate and the outcome-derivation matrix. Their
+value is precisely that nobody wrote them by hand: a model that only parses invented input
+proves nothing about a CLI whose stream is 41% undocumented message subtypes. Do not edit them
+to make a test pass; capture a new one instead.
+
+### Process stand-ins
+
+`tests/fixtures/fake-claude*.sh` are small shell scripts the executor is pointed at **instead
+of the real binary**, which is how the whole transport — argv construction, process-group
+spawn, the pipe tasks, the gate, framing, teardown — is exercised with zero subscription,
+network or quota dependency. Each expresses one behaviour a transcript cannot:
+
+| Stand-in | Behaviour | What it makes provable |
+|----------|-----------|------------------------|
+| `fake-claude.sh` | Replays a transcript line by line, exits with a given code | The end-to-end read path |
+| `fake-claude-echo.sh` | Reads stdin and answers it; logs every line written to it | `send`/`interrupt` correlation, and that a refused run writes **zero bytes** |
+| `fake-claude-slow.sh` | Emits N heartbeats then either goes silent or finishes | Both deadlines: a silent run is stalled, a chattering one is not |
+| `fake-claude-spawner.sh` | Backgrounds a long-lived grandchild and announces its pid | That teardown reaches the whole process **tree**, not just the direct child |
+| `fake-claude-deaf.sh` | Ignores the terminate signal entirely | That the escalation to the uncatchable signal actually fires |
+
+All five must keep the executable bit in git (`git ls-files -s` must report mode `100755`); a
+stand-in committed as `100644` fails at spawn with a permission error rather than a useful one.
+
+### Why the lifecycle tests are Unix-only
+
+`tests/executor_lifecycle.rs` opens with `#![cfg(unix)]`, and so does `src/executor/claude.rs`'s
+module gate. Process-group spawn and group-wide signalling are `#[cfg(unix)]` in `process-wrap`,
+and taking the whole tree down is the entire reason that dependency exists — there is no
+portable subset of the behaviour left to test. The wire model, the capability gate and outcome
+derivation stay portable and are tested everywhere.
 
 ## Coverage Requirements
 

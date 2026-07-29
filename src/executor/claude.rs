@@ -24,6 +24,21 @@
 //   turn abort, no Bash-tree teardown, no `SessionEnd` hooks, no exit 143.
 //   SIGTERM to the group, grace, then SIGKILL, then an unconditional `wait()`
 //   so no zombie survives.
+// * **Process exit is never awaited unbounded (D-13).** Every `wait()` in this
+//   file is either raced by the supervisor's two caps or wrapped in an explicit
+//   bound. The two caps are independent and measure different things: the
+//   wall-clock cap measures time since spawn, and the idle cap measures time
+//   since the **reader** last observed a line. Only the second can tell a
+//   legitimately long run from a hung one — the research pass reproduced a hang
+//   that sat silent for minutes, while a real multi-step run emits events
+//   continuously, and time-since-spawn cannot separate those.
+// * **The child's environment is scrubbed of every inherited `CLAUDE*`
+//   variable.** This TUI is plausibly launched from inside a Claude Code
+//   session, so those variables would otherwise leak into the driven child and
+//   change `-p` behaviour in ways that look like "works on my machine". The one
+//   variable this executor sets deliberately —
+//   `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` — is set *after* the scrub, never
+//   inherited from a silent default (D-14).
 // * **Line framing is `BufReader` + an explicit byte bound, not a codec crate
 //   (D-05).** `tokio-util` would be added for exactly one type; the
 //   cancellation half of its justification dissolves once teardown already
@@ -44,7 +59,8 @@ use std::time::Duration;
 
 use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop, ProcessGroup};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, watch, Mutex};
+use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::error::{CapabilityError, SendError, SpawnError};
@@ -76,6 +92,17 @@ const SIGTERM: i32 = 15;
 
 /// Grace between SIGTERM and SIGKILL on the process group (D-14).
 const TEARDOWN_GRACE: Duration = Duration::from_secs(10);
+
+/// How long a cleanly-ending run's process may take to exit after its stream
+/// has already closed.
+///
+/// stdout EOF means every writer on that pipe is gone, so the child is already
+/// on its way out, and the CLI caps its own exit drain at 30 seconds. A child
+/// that has closed its stream and *still* has not exited is not ending cleanly.
+/// This bound exists so that **no** path in this file awaits process exit
+/// unbounded (D-13); when it expires the run escalates into the same four-step
+/// teardown a cap breach uses.
+const EXIT_DRAIN_CAP: Duration = Duration::from_secs(30);
 
 /// Capacity of the executor event channel.
 ///
@@ -300,11 +327,23 @@ impl ClaudeExecutor {
         let (outcome_tx, outcome_rx) = oneshot::channel();
         let (cancel_tx, cancel_rx) = oneshot::channel();
 
+        // The idle cap's clock. It is published by the READER tasks and read by
+        // the supervisor, never derived from any duration field in a terminal
+        // envelope: `duration_api_ms` aggregates across parallel API calls and
+        // was measured EXCEEDING the wall-clock `duration_ms` in a clean run,
+        // and in any case both fields arrive only *with* the envelope, which is
+        // far too late to serve as a stuck detector (D-13, Pitfall E).
+        //
+        // `Arc` rather than a cloned sender because `watch::Sender` is not
+        // `Clone`, and both readers publish into the same slot.
+        let (last_line_at, last_line_rx) = watch::channel(Instant::now());
+        let last_line_at = Arc::new(last_line_at);
+
         let pending_control: PendingControl = Arc::new(Mutex::new(Default::default()));
         let running = Arc::new(AtomicBool::new(true));
 
-        tokio::spawn(read_stdout(stdout, reader_tx));
-        tokio::spawn(read_stderr(stderr, events_tx.clone()));
+        tokio::spawn(read_stdout(stdout, reader_tx, Arc::clone(&last_line_at)));
+        tokio::spawn(read_stderr(stderr, events_tx.clone(), last_line_at));
         tokio::spawn(write_stdin(stdin, writer_rx));
 
         tokio::spawn(
@@ -320,6 +359,9 @@ impl ClaudeExecutor {
                 running: Arc::clone(&running),
                 first_message,
                 permission_mode: options.permission_mode,
+                wall_clock_cap: options.wall_clock_cap,
+                idle_cap: options.idle_cap,
+                last_line_rx,
                 before,
                 project_root: root,
             }
@@ -550,10 +592,25 @@ where
 }
 
 /// The stdout reader task. Parsing happens here and nowhere else.
-async fn read_stdout(stdout: tokio::process::ChildStdout, tx: mpsc::Sender<ReaderItem>) {
+///
+/// It also owns the idle cap's clock: every observed line stamps `last_line_at`
+/// with the instant the reader saw it, and the supervisor re-arms its idle timer
+/// from that stamp (D-13). The stamp is written *before* the item is forwarded,
+/// so a line that is merely slow to be consumed still counts as liveness — the
+/// question the idle cap answers is "is the child still producing?", not "is the
+/// driver still keeping up?".
+async fn read_stdout(
+    stdout: tokio::process::ChildStdout,
+    tx: mpsc::Sender<ReaderItem>,
+    last_line_at: Arc<watch::Sender<Instant>>,
+) {
     let mut reader = BufReader::new(stdout);
     loop {
-        match read_bounded_line(&mut reader).await {
+        let observed = read_bounded_line(&mut reader).await;
+        if !matches!(observed, Ok(BoundedLine::Eof)) {
+            last_line_at.send_replace(Instant::now());
+        }
+        match observed {
             Ok(BoundedLine::Eof) => break,
             Ok(BoundedLine::Line(line)) => {
                 if line.trim().is_empty() {
@@ -587,10 +644,23 @@ async fn read_stdout(stdout: tokio::process::ChildStdout, tx: mpsc::Sender<Reade
 }
 
 /// The stderr reader task. Never merged with stdout.
-async fn read_stderr(stderr: tokio::process::ChildStderr, tx: mpsc::Sender<ExecutionEvent>) {
+///
+/// It stamps `last_line_at` too, deliberately: a child writing diagnostics is a
+/// child that is alive, and the idle cap's job is to kill runs that have gone
+/// *silent*. Counting only stdout would let a run that is loudly retrying on
+/// stderr be torn down as stalled.
+async fn read_stderr(
+    stderr: tokio::process::ChildStderr,
+    tx: mpsc::Sender<ExecutionEvent>,
+    last_line_at: Arc<watch::Sender<Instant>>,
+) {
     let mut reader = BufReader::new(stderr);
     loop {
-        match read_bounded_line(&mut reader).await {
+        let observed = read_bounded_line(&mut reader).await;
+        if !matches!(observed, Ok(BoundedLine::Eof)) {
+            last_line_at.send_replace(Instant::now());
+        }
+        match observed {
             Ok(BoundedLine::Eof) => break,
             Ok(BoundedLine::Line(line)) => {
                 if tx.send(ExecutionEvent::Stderr(line)).await.is_err() {
@@ -652,11 +722,70 @@ struct Coordinator {
     /// What the argv asked for, so the gate can confirm the flag took effect
     /// against what `system/init` reports back (D-15).
     permission_mode: PermissionMode,
+    /// Total time since spawn this run may take (D-13).
+    wall_clock_cap: Duration,
+    /// Time since the reader last observed a line this run may go silent for
+    /// (D-13). Strictly greater than the background-subagent wait ceiling; see
+    /// [`Coordinator::run`].
+    idle_cap: Duration,
+    /// The instant the reader last observed a line. The idle arm re-arms from
+    /// this and from nothing else (D-13, Pitfall E).
+    last_line_rx: watch::Receiver<Instant>,
     before: RunSnapshot,
     project_root: PathBuf,
 }
 
+/// Which cap the supervisor breached.
+///
+/// The two are kept distinct all the way to the outcome because they mean
+/// different things to a user and to Phase 20's router: "this run was too long"
+/// is a budgeting problem, "this run went silent" is a hang.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Breach {
+    /// Time since spawn exceeded the total wall-clock cap.
+    WallClock,
+    /// Time since the reader's last observed line exceeded the idle cap.
+    Idle,
+}
+
 impl Coordinator {
+    /// The supervisor.
+    ///
+    /// One `tokio::select!` races four things against each other: the child's
+    /// exit future, the total wall-clock cap, the idle cap, and the cancel
+    /// signal — plus the stream itself, which is what the loop is otherwise
+    /// pumping. Racing them is also what resolves the borrow problem the
+    /// wrapper's API creates: `wait()` holds a `&mut` borrow of the child for
+    /// the whole life of its future, so a supervisor holding that future across
+    /// an await could never call `signal()` on the same object. When another arm
+    /// wins, `select!` drops every loser — including the exit future — and the
+    /// borrow ends before the statement after the macro runs, which is exactly
+    /// where the signal call lives.
+    ///
+    /// **The idle cap is driven by the reader, not by the envelope (D-13,
+    /// Pitfall E).** Every observed line stamps `last_line_at`; this loop
+    /// re-computes its idle deadline from that stamp on every pass, so a run
+    /// that keeps emitting keeps pushing its own deadline out and only a run
+    /// that goes *silent* trips it. Time-since-spawn cannot make that
+    /// distinction, and the duration fields on the terminal envelope arrive far
+    /// too late to try.
+    ///
+    /// **Why the two default numbers are what they are.** The wall-clock cap is
+    /// four hours and is a frank guess: no tuning data exists yet. The idle cap
+    /// is fifteen minutes and is *derived*, not guessed — the CLI waits for
+    /// background subagents up to `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`, which
+    /// this executor sets explicitly to ten minutes, and a healthy run can
+    /// therefore legitimately emit nothing for that long. **The idle cap must
+    /// stay strictly greater than that ceiling** so the ceiling always fires
+    /// first; an idle cap at or below it would kill healthy runs. When retuning,
+    /// preserve that ordering, not the numbers.
+    ///
+    /// **What these caps do NOT bound.** They bound a single `claude`
+    /// invocation. Run-level step, wall-clock and no-progress caps across a
+    /// multi-step run belong to Phase 20, and mistaking one for the other is the
+    /// easy error. Likewise `budget_usd` stays plumbed to the flag and nothing
+    /// more (D-16): it is a post-turn circuit breaker that cannot prevent the
+    /// turn it fires on from spending, so no cost enforcement is built on it.
     async fn run(self) {
         let Coordinator {
             mut child,
@@ -670,6 +799,9 @@ impl Coordinator {
             running,
             first_message,
             permission_mode,
+            wall_clock_cap,
+            idle_cap,
+            last_line_rx,
             before,
             project_root,
         } = self;
@@ -678,10 +810,27 @@ impl Coordinator {
         let mut gated = false;
         let mut cancelled = false;
         let mut refused: Option<CapabilityError> = None;
+        let mut breach: Option<Breach> = None;
         let mut turns: Vec<TurnOutcome> = Vec::new();
+
+        // Observed by the exit arm rather than by the teardown, so a child that
+        // ended on its own is never signalled and never waited on twice.
+        let mut exited = false;
+        let mut exit_status: Option<ExitStatus> = None;
+
+        // Step 2 of the teardown, running while the loop keeps draining. Set
+        // when a cancel takes step 1; when it expires the drain stops and the
+        // escalation follows. Without it a child that ignores the terminate
+        // signal is drained forever and the teardown never reaches step 3.
+        let mut grace_deadline: Option<Instant> = None;
+
+        let wall_deadline = Instant::now() + wall_clock_cap;
 
         loop {
             let mut stop = false;
+            let mut terminate = false;
+            // Re-armed on every pass from the instant the READER recorded.
+            let idle_deadline = *last_line_rx.borrow() + idle_cap;
 
             tokio::select! {
                 biased;
@@ -707,14 +856,54 @@ impl Coordinator {
                     }
                 }
 
+                // Deliberately not a `stop`: the process exiting closes stdout,
+                // so the remaining lines are already framed and in flight. The
+                // loop keeps draining them and ends on the reader's EOF, which
+                // is what stops a run's tail — including its last `result` —
+                // from being lost to a race with process exit.
+                status = child.wait(), if !exited => {
+                    exited = true;
+                    exit_status = status.ok();
+                }
+
+                _ = tokio::time::sleep_until(wall_deadline), if !exited => {
+                    breach = Some(Breach::WallClock);
+                    stop = true;
+                }
+
+                _ = tokio::time::sleep_until(idle_deadline), if !exited => {
+                    breach = Some(Breach::Idle);
+                    stop = true;
+                }
+
                 _ = &mut cancel_rx, if !cancelled => {
                     cancelled = true;
-                    // SIGTERM to the whole group. Never `kill()` — that is
-                    // SIGKILL and skips the clean path entirely (D-14).
-                    if let Err(err) = child.signal(SIGTERM) {
-                        tracing::warn!("failed to signal the claude process group: {}", err);
-                    }
+                    terminate = true;
                 }
+
+                // The grace a cancel started has run out and the child is still
+                // here. Stop draining; the escalation is below. The deadline is
+                // only read when the precondition holds, so the fallback value
+                // is never observed.
+                _ = tokio::time::sleep_until(grace_deadline.unwrap_or(wall_deadline)),
+                    if grace_deadline.is_some() && !exited =>
+                {
+                    stop = true;
+                }
+            }
+
+            // Every future the `select!` built — including the one holding the
+            // `&mut` borrow of the child — is dropped by the time control gets
+            // here, which is the only reason the signal below is legal at all.
+            if terminate {
+                // Step 1 of the teardown, taken immediately so the CLI's own
+                // clean shutdown overlaps with the drain of its remaining
+                // stream. SIGTERM to the whole GROUP; never `kill()`, which is
+                // SIGKILL and skips the clean path entirely (D-14).
+                if !exited {
+                    terminate_group(&*child);
+                }
+                grace_deadline = Some(Instant::now() + TEARDOWN_GRACE);
             }
 
             if stop {
@@ -722,14 +911,10 @@ impl Coordinator {
             }
         }
 
-        if refused.is_some() {
-            // A refused run never had its prompt released; tear the group down
-            // rather than leaving a gated process idling on stdin.
-            if let Err(err) = child.signal(SIGTERM) {
-                tracing::warn!("failed to signal the claude process group: {}", err);
-            }
-        }
-        if cancelled || refused.is_some() {
+        // A refused run never had its prompt released, and a breached run is by
+        // definition not going to end on its own; both leave a live group.
+        let tear_down = refused.is_some() || breach.is_some();
+        if tear_down || cancelled {
             let _ = writer_tx.send(WriterCommand::Close).await;
         }
         drop(writer_tx);
@@ -739,7 +924,22 @@ impl Coordinator {
             let _ = tx.send(Err(SpawnError::InitNeverObserved));
         }
 
-        let status = wait_for_exit(&mut child, cancelled || refused.is_some()).await;
+        let status = if exited {
+            exit_status
+        } else if tear_down {
+            tear_down_group(&mut child).await
+        } else if cancelled {
+            // Steps 1 and 2 already ran: the terminate signal went out the
+            // moment the cancel arrived, and its grace has been elapsing under
+            // the drain ever since. Only whatever is left of that grace is
+            // waited out here, so a cancel never costs two grace periods.
+            let remaining = grace_deadline
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or(TEARDOWN_GRACE);
+            finish_teardown(&mut child, remaining).await
+        } else {
+            await_clean_exit(&mut child).await
+        };
         running.store(false, Ordering::SeqCst);
 
         let after = capture_snapshot(project_root).await;
@@ -751,8 +951,16 @@ impl Coordinator {
             Some(err) => RunOutcome::CapabilityRefused {
                 missing: err.unmet_requirements(),
             },
-            None if cancelled => RunOutcome::Killed { turns },
-            None => derive_run_outcome(&turns, status, &before, &after),
+            // The two breaches are classified apart on purpose: "too long" and
+            // "went silent" are different failures with different remedies.
+            None => match breach {
+                Some(Breach::WallClock) => RunOutcome::TimedOut {
+                    after: wall_clock_cap,
+                },
+                Some(Breach::Idle) => RunOutcome::Stalled { idle_for: idle_cap },
+                None if cancelled => RunOutcome::Killed { turns },
+                None => derive_run_outcome(&turns, status, &before, &after),
+            },
         };
 
         if let Some(status) = status {
@@ -883,24 +1091,86 @@ async fn handle_item(
     }
 }
 
-/// Await process exit, escalating to SIGKILL if a teardown grace expires.
+/// Send SIGTERM to the process **group** — step 1 of the teardown.
 ///
-/// The `wait()` is unconditional: `ProcessGroupChild::wait()` is what reaps the
-/// whole group, and dropping the future mid-reap leaves grandchildren unreaped.
-async fn wait_for_exit(child: &mut Box<dyn ChildWrapper>, escalate: bool) -> Option<ExitStatus> {
-    if escalate {
-        match tokio::time::timeout(TEARDOWN_GRACE, child.wait()).await {
-            Ok(result) => result.ok(),
-            Err(_) => {
-                // Grace expired. `start_kill()` is SIGKILL to the group.
-                if let Err(err) = child.start_kill() {
-                    tracing::warn!("failed to SIGKILL the claude process group: {}", err);
-                }
-                child.wait().await.ok()
-            }
+/// `signal(15)` and not `start_kill()`, and emphatically not `kill()`: on a
+/// process group the wrapper's start-of-kill method sends the **uncatchable**
+/// signal, and its combined convenience method is that plus a wait. Reading
+/// `kill()` as "terminate politely" is natural and wrong, and taking it would
+/// skip the CLI's entire documented clean shutdown — the turn abort, the
+/// Bash-tree teardown through its own handler, the `SessionEnd` hooks, and the
+/// conventional signal-terminated exit status (D-14, Pitfall B).
+fn terminate_group(child: &dyn ChildWrapper) {
+    if let Err(err) = child.signal(SIGTERM) {
+        tracing::warn!("failed to SIGTERM the claude process group: {}", err);
+    }
+}
+
+/// The four-step teardown (D-14).
+///
+/// In order, and every step earns its place:
+///
+/// 1. **SIGTERM to the group.** The documented clean path — see
+///    [`terminate_group`]. Signalling the *group* rather than the child is the
+///    whole reason this executor carries a process-group dependency: `claude`
+///    spawns Bash grandchildren, and a signal to the direct child alone orphans
+///    them (T-15-30).
+/// 2. **A ten-second grace.** Enough for the CLI to abort its turn, tear its
+///    tree down and run its session-end hooks.
+/// 3. **SIGKILL to the group**, via `start_kill()`, as the backstop for a child
+///    that ignored the terminate signal.
+/// 4. **The wait, AWAITED TO COMPLETION.** This is what prevents zombies, and
+///    "to completion" is load-bearing: `ProcessGroupChild::wait()` awaits the
+///    leader, then loops a non-blocking group reap ten times, then falls back to
+///    a blocking reap on a blocking task. Dropping that future mid-reap leaves
+///    the grandchildren unreaped, so it is never raced against anything here
+///    (T-15-34).
+///
+/// A cancel takes step 1 the instant it arrives, so that the CLI's shutdown
+/// overlaps with the drain of its remaining stream rather than starting after
+/// it, and its grace elapses under that drain. That path therefore calls
+/// [`finish_teardown`] directly with whatever grace is left, and this function
+/// is for the paths that have not signalled anything yet.
+async fn tear_down_group(child: &mut Box<dyn ChildWrapper>) -> Option<ExitStatus> {
+    terminate_group(&**child);
+    finish_teardown(child, TEARDOWN_GRACE).await
+}
+
+/// Steps 2 to 4 of the teardown: wait out `grace`, escalate, then reap.
+///
+/// A zero `grace` means it has already elapsed elsewhere and the escalation is
+/// due now. The final `wait()` is deliberately unbounded and deliberately not
+/// raced against anything — see [`tear_down_group`] step 4.
+async fn finish_teardown(child: &mut Box<dyn ChildWrapper>, grace: Duration) -> Option<ExitStatus> {
+    if !grace.is_zero() {
+        if let Ok(result) = tokio::time::timeout(grace, child.wait()).await {
+            return result.ok();
         }
-    } else {
-        child.wait().await.ok()
+    }
+    if let Err(err) = child.start_kill() {
+        tracing::warn!("failed to SIGKILL the claude process group: {}", err);
+    }
+    child.wait().await.ok()
+}
+
+/// Await the exit of a run whose stream ended on its own, under a bound.
+///
+/// The bound is what keeps the D-13 promise absolute: with it, **no** path in
+/// this file awaits process exit unbounded. A child whose stdout has already
+/// reached EOF is by definition on its way out, so this expiring means the run
+/// is not ending cleanly after all — and the escalation is the same four-step
+/// teardown a cap breach takes.
+async fn await_clean_exit(child: &mut Box<dyn ChildWrapper>) -> Option<ExitStatus> {
+    match tokio::time::timeout(EXIT_DRAIN_CAP, child.wait()).await {
+        Ok(result) => result.ok(),
+        Err(_) => {
+            tracing::warn!(
+                "the claude stream closed but the process group did not exit within {} seconds; \
+                 tearing it down",
+                EXIT_DRAIN_CAP.as_secs()
+            );
+            tear_down_group(child).await
+        }
     }
 }
 
@@ -987,6 +1257,37 @@ mod tests {
                 "{absent} should be absent by default: {argv:?}"
             );
         }
+    }
+
+    // ========================================================================
+    // The two deadlines, and the ordering constraint between them (D-13, D-14)
+    // ========================================================================
+
+    #[test]
+    fn the_default_idle_cap_is_strictly_greater_than_the_background_wait_ceiling() {
+        let options = ExecutionOptions::default();
+        let ceiling = Duration::from_millis(options.bg_wait_ceiling_ms);
+        assert!(
+            options.idle_cap > ceiling,
+            "a healthy run may legitimately emit nothing while it waits for background \
+             subagents, so the idle cap must let that ceiling fire FIRST — otherwise the \
+             stuck detector kills healthy runs. idle cap {:?} vs ceiling {:?}",
+            options.idle_cap,
+            ceiling
+        );
+    }
+
+    #[test]
+    fn the_default_wall_clock_cap_is_the_looser_of_the_two_caps() {
+        let options = ExecutionOptions::default();
+        assert!(
+            options.wall_clock_cap > options.idle_cap,
+            "the idle cap is the stuck detector and the wall-clock cap is the outer \
+             backstop; inverting them would make the idle cap unreachable. wall {:?} vs \
+             idle {:?}",
+            options.wall_clock_cap,
+            options.idle_cap
+        );
     }
 
     #[tokio::test]
