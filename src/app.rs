@@ -186,6 +186,13 @@ impl App {
     /// collected turns and the disk delta as well — so fabricating one here
     /// would be a lie the UI then renders. The driver that owns the run
     /// (Phase 17) is what closes the state out.
+    ///
+    /// Nor does `ExecutionEvent::EventsDropped` move the state at all. The
+    /// count is carried for the journal (plan 16-06) and for a future Phase 18
+    /// surface, and it is deliberately not allowed to move a run's state: it is
+    /// emitted in the terminal path, after the process has stopped producing,
+    /// so letting it reach the catch-all below would let a diagnostic
+    /// manufacture liveness (D-33).
     pub fn apply_exec_event(&mut self, event: crate::main_loop::ExecEvent) {
         use crate::executor::{ExecutionEvent, RunState};
 
@@ -195,6 +202,11 @@ impl App {
         match event {
             ExecutionEvent::SessionStarted { .. } => *state = RunState::Running,
             ExecutionEvent::Exited(_) => *state = RunState::Stopping,
+            // A diagnostic about what the stream *lost*, not evidence that
+            // anything is still running. Explicit rather than left to the
+            // catch-all, which would promote an idle alias on reasoning that
+            // does not apply to a terminal-path event (D-19, D-33).
+            ExecutionEvent::EventsDropped { .. } => {}
             // Any other observed line means the process is alive and talking.
             // If we somehow never saw the gated `system/init` (a torn first
             // line, say), record that a run is at least under way rather than
