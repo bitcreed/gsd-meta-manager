@@ -36,6 +36,17 @@ uniformly, **preserving the line count and every envelope and every field**:
    over the whole line, not just `cwd` and `memory_paths.auto`, because the same prefixes
    appear inside tool-result payloads. This makes the fixtures host-independent as well as
    non-disclosing — tests can assert on the paths.
+
+   **Retrofit (phase-15 code review, finding WR-15).** The original sweep matched only the
+   *slash* form of those prefixes and therefore missed Claude Code's **dash-encoded** form
+   of the same paths — the shape it uses for session directory names under
+   `~/.claude/projects/`. `-home-<user>-<repo-path>` and `-tmp-claude-<uid>-` survived in
+   seven of the eight fixtures, disclosing the operator's username and real repository
+   location even though the slash-form scan reported clean. A second pass replaced
+   `-home-…-<repo>` with `-home-testuser-project` and `-tmp-claude-<uid>-` with
+   `-tmp-scratch-`, keeping the dash-encoded *shape* so the fixtures stay structurally
+   realistic. **Any future redaction sweep must scan both encodings** — a `/home/<user>`
+   grep alone is not sufficient evidence of a clean fixture.
 2. **UUID normalisation.** Every `session_id` in file `NN` became
    `00000000-0000-4000-8000-0000000000NN`, and every `uuid` became a zero-padded sequential
    `11111111-1111-4111-8111-%012d` counting from 1 within that file. Tests can therefore
@@ -54,9 +65,13 @@ uniformly, **preserving the line count and every envelope and every field**:
 4. **Credential re-scan.** Re-run independently against the **output**, rather than trusting
    the researcher's note: `sk-…`, `ghp_`, `gho_`, `github_pat_`, `Bearer `,
    `ANTHROPIC_API_KEY`, `oauth_token`, `AKIA…`, `xox[baprs]-` and PEM private-key headers.
-   **Zero hits**, plus zero hits for any absolute `/home/<user>` other than the placeholder.
-   Under `--setting-sources project` with subscription auth, no token material reaches the
-   stream.
+   **Zero hits** — this result held up under the WR-15 re-audit and is unchanged.
+
+   The path claim originally recorded here ("zero hits for any absolute `/home/<user>`")
+   was true only of the *slash* encoding and so overstated the sweep's coverage; see the
+   retrofit note under transform 1. As of that retrofit, both the slash and dash-encoded
+   forms scan clean. Under `--setting-sources project` with subscription auth, no token
+   material reaches the stream.
 
 ## Staging directory
 
