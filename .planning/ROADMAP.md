@@ -253,7 +253,7 @@ phase's scope.
   - The lock must be `flock(2)`, never a PID file or in-memory flag. Opt-in must be a capability type (`DrivableProject`) constructible only from a validated opt-in record, never a bool checked at scattered call sites
 
 **Research**: skip — process-group signal handling and `flock` are standard Unix patterns, corroborated across all four research documents
-**Plans**: 7/7 plans executed
+**Plans**: 8 plans — 7 executed, 1 gap closure pending (`17-REVIEW.md` found six blockers in the kill switch)
 
 Plans:
 **Wave 1**
@@ -280,6 +280,10 @@ Plans:
 **Wave 6** *(blocked on Wave 5)*
 
 - [x] 17-07-PLAN.md — Three dashboard keys and one confirmation, the two Phase 16 carry-forwards (cursor pruning, cross-batch sequence gaps), and the phase gate
+
+**Wave 7** *(blocked on Wave 6 — gap closure from `17-REVIEW.md`)*
+
+- [ ] 17-08-PLAN.md — Close the six review blockers: a stop during agent startup is acted on (CR-01), the kill switch signals a kernel-confirmed group (CR-02), the detached spawn carries the TUI's config (CR-03), a run that cannot be identified is refused (CR-04), an undeterminable liveness never reads as "gone" or "crashed" (CR-05), and unregistering cannot abandon a live agent (CR-06)
 
 ### Phase 18: Driver Tab, Live Watch & Durable Injection
 
