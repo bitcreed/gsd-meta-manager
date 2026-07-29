@@ -202,6 +202,11 @@ fn do_start_run(ctx: &mut AppContext, alias: &str) {
         Action::DriverStartRequested {
             alias: alias.to_string(),
             command: DEFAULT_DRIVE_COMMAND.to_string(),
+            // `None` until plan 18-07 gives the user a screen to type a goal
+            // into. It is deliberately not a fabricated placeholder: OBS-03
+            // renders an absent goal as `(none given)`, and inventing a summary
+            // here is exactly what D-13 forbids.
+            goal: None,
         },
         alias,
     );
@@ -345,6 +350,8 @@ mod tests {
             journal_cursors: HashMap::new(),
             observed_runs: HashMap::new(),
             session_spawned_runs: std::collections::HashSet::new(),
+            driver_output: HashMap::new(),
+            sort_mode: crate::ui::screens::SortMode::default(),
             watcher: None,
             last_refresh: HashMap::new(),
             detail_scroll_offset: 0,
@@ -398,11 +405,21 @@ mod tests {
         let mut screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::Start);
         screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
         let sent = rx.try_recv().expect("an opted-in start must dispatch");
-        let Action::DriverStartRequested { alias, command } = sent else {
+        let Action::DriverStartRequested {
+            alias,
+            command,
+            goal,
+        } = sent
+        else {
             panic!("expected DriverStartRequested, got {sent:?}");
         };
         assert_eq!(alias, ALIAS);
         assert_eq!(command, DEFAULT_DRIVE_COMMAND);
+        assert_eq!(
+            goal, None,
+            "this screen has no goal field yet (18-07 adds one), and an absent \
+             goal must travel as absent rather than as an invented summary"
+        );
     }
 
     #[test]

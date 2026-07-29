@@ -33,6 +33,13 @@ pub enum FilterColumn {
     Name,
     Phase,
     Status,
+    /// Rows satisfying [`crate::ui::screens::needs_human`] (OBS-07, D-25).
+    ///
+    /// Unlike the three column filters this one is a **predicate**, not a
+    /// column: the term still matches across every column and this narrows what
+    /// survives. `/h` alone (an empty term) is therefore "every project waiting
+    /// on a human" with no special case in the grammar.
+    NeedsHuman,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +51,12 @@ pub enum StatusCategory {
     Unknown,
 }
 
+/// Split a filter string into its term and the column or predicate it narrows.
+///
+/// The suffix grammar is `term/x`. `h` joins `n`, `p` and `s` for "needs a
+/// human" (OBS-07): the other three letters were taken and `h` is both free and
+/// mnemonic. On screen the search prompt supplies its own leading `/`, so the
+/// all-rows form renders as `//h` while the stored `filter_text` is `/h`.
 pub fn parse_filter(input: &str) -> (String, FilterColumn) {
     if let Some(term) = input.strip_suffix("/p") {
         (term.to_string(), FilterColumn::Phase)
@@ -51,6 +64,8 @@ pub fn parse_filter(input: &str) -> (String, FilterColumn) {
         (term.to_string(), FilterColumn::Name)
     } else if let Some(term) = input.strip_suffix("/s") {
         (term.to_string(), FilterColumn::Status)
+    } else if let Some(term) = input.strip_suffix("/h") {
+        (term.to_string(), FilterColumn::NeedsHuman)
     } else {
         (input.to_string(), FilterColumn::All)
     }
@@ -156,6 +171,8 @@ impl App {
             journal_cursors: HashMap::new(),
             observed_runs: HashMap::new(),
             session_spawned_runs: std::collections::HashSet::new(),
+            driver_output: HashMap::new(),
+            sort_mode: crate::ui::screens::SortMode::default(),
             watcher: None,
             last_refresh: HashMap::new(),
             detail_scroll_offset: 0,
@@ -779,20 +796,24 @@ impl App {
                     self.needs_redraw = true;
                 }
             }
-            // The goal is `None`: Phase 17 records a goal into `RunRecord.goal`
-            // when one is supplied on the command line and interprets nothing
-            // (Phase 21 owns goal decomposition), and there is no screen to type
-            // one into — that is Phase 18's. An empty string is deliberately not
-            // passed instead, because `drive_argv` omits the flag entirely for
-            // `None` and would otherwise record an empty goal verbatim.
-            Action::DriverStartRequested { alias, command } => {
+            // The goal travels from the sender and is recorded into
+            // `RunRecord.goal` verbatim, interpreting nothing (Phase 21 owns
+            // goal decomposition). `None` and `Some("")` are deliberately kept
+            // distinct all the way down: `drive_argv` omits the flag entirely
+            // for `None`, where an empty string would record an empty goal as
+            // though one had been given.
+            Action::DriverStartRequested {
+                alias,
+                command,
+                goal,
+            } => {
                 #[cfg(unix)]
-                self.start_driver_run(&alias, &command, None);
+                self.start_driver_run(&alias, &command, goal.as_deref());
                 // Off Unix there is no detached spawn to reach, so the request
-                // has nowhere to go. Both bindings are consumed explicitly
+                // has nowhere to go. The bindings are consumed explicitly
                 // rather than left to an `unused_variables` allow.
                 #[cfg(not(unix))]
-                let _ = (alias, command);
+                let _ = (alias, command, goal);
             }
             Action::DriverStopRequested { alias } => {
                 #[cfg(unix)]
@@ -813,12 +834,79 @@ impl App {
                 alias,
                 run_id,
                 outcome,
+                disposition,
             } => {
+                // WR-15's fix — mutating the two maps only when `disposition`
+                // is `RunGone` — is plan 18-05's named deliverable, along with
+                // the test that reproduces the five-second "no run" window and
+                // the permanently lost `session_spawned_runs` entry. The value
+                // is carried here now so that fix is a two-line change rather
+                // than a second round of message-type surgery (D-29).
+                let _ = disposition;
                 self.ctx.observed_runs.remove(&alias);
                 self.ctx.session_spawned_runs.remove(&run_id);
                 self.ctx.status_message =
                     Some((format!("{alias}: {outcome}"), std::time::Instant::now()));
                 self.needs_redraw = true;
+            }
+            // ── The Driver surface's four messages ────────────────────
+            //
+            // Their handlers are plan 18-05's named deliverable: the inbox
+            // append on `spawn_blocking` (D-06/D-28), the run-list scan, and
+            // the dry-run preview. The arms exist here because `Action` is
+            // matched exhaustively — a catch-all would let a later variant be
+            // added and silently ignored, which is the opposite of what this
+            // match's exhaustiveness is for.
+            //
+            // Nothing is logged from `text` or any other message body: log
+            // lines in this subsystem carry the error **kind** and counts only,
+            // never a body, because a body can carry agent output.
+            Action::DriverInjectRequested {
+                alias,
+                run_id,
+                id,
+                text,
+            } => {
+                tracing::debug!(
+                    %alias,
+                    %run_id,
+                    %id,
+                    chars = text.chars().count(),
+                    "injection requested before its handler landed (18-05)",
+                );
+            }
+            Action::DriverInjectWritten {
+                alias,
+                run_id,
+                id,
+                error,
+            } => {
+                tracing::debug!(
+                    %alias,
+                    %run_id,
+                    %id,
+                    failed = error.is_some(),
+                    "injection write reported before its handler landed (18-05)",
+                );
+            }
+            Action::DriverRunsListed { alias, inbox } => {
+                tracing::debug!(
+                    %alias,
+                    queued = inbox.len(),
+                    "run list read before its handler landed (18-05)",
+                );
+            }
+            Action::DriverDryRunLoaded {
+                alias,
+                command,
+                report,
+            } => {
+                tracing::debug!(
+                    %alias,
+                    %command,
+                    bytes = report.len(),
+                    "dry-run report built before its handler landed (18-05)",
+                );
             }
         }
     }
@@ -1051,6 +1139,11 @@ impl App {
             let _ = tx.send(Action::DriverStopped {
                 alias: alias_for_task,
                 run_id: run_id_for_task,
+                // The disposition is derived here, at the seam that still holds
+                // the typed `StopOutcome`, and travels beside the rendered
+                // text. Recovering it downstream by matching on that text would
+                // be screen-scraping this project's own output (D-29).
+                disposition: crate::action::StopDisposition::from(&outcome),
                 outcome: outcome.to_string(),
             });
         });
@@ -1620,6 +1713,7 @@ mod tests {
             alias,
             run_id,
             outcome,
+            disposition,
         } = action
         else {
             panic!("the dispatched stop must report through DriverStopped, got {action:?}");
@@ -1634,6 +1728,7 @@ mod tests {
             alias: OBS_ALIAS.to_string(),
             run_id: "run-x".to_string(),
             outcome,
+            disposition,
         });
         assert!(!app.ctx.observed_runs.contains_key(OBS_ALIAS));
         assert!(!app.ctx.session_spawned_runs.contains("run-x"));
