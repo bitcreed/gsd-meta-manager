@@ -254,8 +254,10 @@ const OWN_GITIGNORE_SUFFIX: &str = "meta-manager/runs/.gitignore";
 /// project does not churn the file — and so a user who has deliberately edited
 /// theirs keeps their edit.
 ///
-/// Private on purpose: [`create_run_dir`] is the only moment at which writing
-/// it is correct (D-08), so there is no second caller to serve.
+/// Private on purpose: [`ensure_runs_root`] is the **only** entry point that
+/// decides when writing it is correct (D-08), and both callers — the run
+/// directory and the driver's lock file — go through it. Exposing this directly
+/// would let a third caller create a protected byte without its protection.
 fn write_runs_gitignore(gitignore_path: &Path) -> anyhow::Result<bool> {
     if gitignore_path.exists() {
         return Ok(false);
@@ -274,27 +276,54 @@ fn write_runs_gitignore(gitignore_path: &Path) -> anyhow::Result<bool> {
     Ok(true)
 }
 
+/// Create the runs root with its ignore file already in place, and return it.
+///
+/// **The timing is the decision (D-08), and this function is where it is made
+/// exactly once.** The ignore entry is written at run-*directory* creation time
+/// and not at opt-in time, because a protected file that exists before its
+/// protection is exactly the class of mistake SAFE-04 exists to prevent.
+///
+/// It became callable from outside `create_run_dir` for a concrete reason: the
+/// driver's `flock` file (`runs/run.lock`, plan 17-02, D-19/D-20) is now the
+/// **first** file to land in this directory, before any run directory exists.
+/// If the lock file could be created without going through here, there would be
+/// a window in which a file inside a driven repository is neither ignored nor
+/// committed on purpose — the same window, one file earlier.
+///
+/// Idempotent: `create_dir_all` tolerates an existing root and
+/// [`write_runs_gitignore`] writes only if the file is absent, so a user's own
+/// edit of it survives.
+pub fn ensure_runs_root(planning_dir: &Path) -> anyhow::Result<PathBuf> {
+    let root = runs_root(planning_dir);
+
+    // `create_dir_all` then write, the shape `save_queue` uses for
+    // `meta-manager/` (`queue_md.rs:218-225`).
+    std::fs::create_dir_all(&root)
+        .with_context(|| format!("Failed to create the runs root at {}", root.display()))?;
+
+    write_runs_gitignore(&root.join(".gitignore"))?;
+
+    Ok(root)
+}
+
 /// Create one run's directory with its ignore posture already in place.
 ///
-/// **The timing is the decision (D-08).** The ignore entry is written at
-/// run-directory *creation*, not at opt-in time. Opt-in is Phase 17's, and
-/// waiting for it would leave a window in which a journal exists and is not
-/// ignored — a log written before its protection lands is exactly the class of
-/// mistake SAFE-04 exists to prevent.
+/// The two steps that used to live here — create the root, write the ignore
+/// file — now live in [`ensure_runs_root`], which is called **first** so the
+/// protection is on disk before the run directory it protects even exists.
+/// There remains exactly one place that decides when the ignore file lands.
 ///
-/// The parent-exclusion diagnostic runs here for the same reason: this is the
-/// one moment at which the layout is known and nothing has been written into it
-/// yet. It never fails creation; the diagnostic behind it is
+/// The parent-exclusion diagnostic runs here for the same reason it always did:
+/// this is the one moment at which the layout is known and nothing has been
+/// written into it yet. It never fails creation; the diagnostic behind it is
 /// [`parent_excludes_run_record`].
 pub fn create_run_dir(planning_dir: &Path, run_id: &str) -> anyhow::Result<RunPaths> {
     let paths = run_paths(planning_dir, run_id);
 
-    // `create_dir_all` then write, the shape `save_queue` uses for
-    // `meta-manager/` (`queue_md.rs:218-225`).
+    ensure_runs_root(planning_dir)?;
+
     std::fs::create_dir_all(&paths.dir)
         .with_context(|| format!("Failed to create the run directory {}", paths.dir.display()))?;
-
-    write_runs_gitignore(&paths.gitignore)?;
 
     // The project root is `.planning/`'s parent. A planning dir with no parent
     // is not a shape this tool produces, and the diagnostic is optional anyway.
