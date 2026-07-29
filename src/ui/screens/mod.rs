@@ -11,6 +11,8 @@ use crate::action::Action;
 use crate::app::DetailSubView;
 use crate::change_tracker::ChangeTracker;
 use crate::config::Config;
+use crate::executor::RunState;
+use crate::main_loop::ExecEvent;
 use crate::state_reader::backlog::BacklogItem;
 use crate::state_reader::git_ops::{GitDiffStat, GitLogEntry};
 use crate::state_reader::ProjectState;
@@ -21,7 +23,7 @@ use ratatui::widgets::TableState;
 use ratatui::Frame;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{Sender, UnboundedSender};
 
 pub trait Screen {
     fn handle_key(
@@ -121,6 +123,28 @@ pub struct AppContext {
     pub status_message: Option<(String, std::time::Instant)>,
     pub error_message: Option<String>,
     pub event_tx: Option<UnboundedSender<Action>>,
+    /// Long-lived sender for the **separate, bounded** executor channel (D-17).
+    ///
+    /// Two things about this field are load-bearing, and neither is stylistic:
+    ///
+    /// * It is **separate** from `event_tx`. High-volume stream traffic must
+    ///   never travel through the `Action` FIFO, because `pump`'s biased
+    ///   `select!` polls that FIFO first and would starve everything else.
+    /// * It is a clone held for the **process lifetime**. The executor channel
+    ///   legitimately has no producer between runs, and a channel with no live
+    ///   sender closes — which permanently disables its `select!` arm
+    ///   (Pitfall C). Keeping this clone alive is what stops that.
+    pub exec_tx: Option<Sender<ExecEvent>>,
+    /// Per-alias live driver state (D-19).
+    ///
+    /// A **sibling map**, shaped exactly like `last_refresh` and
+    /// `archive_cache` above. Driver state deliberately does NOT live on
+    /// `ProjectState`: that type derives `PartialEq`, and `app.rs` uses the
+    /// derived equality to suppress the "Updated: {alias}" status message.
+    /// Driver state changes every few seconds — one 68-second spike turn
+    /// emitted 22 `thinking_tokens` events — so putting it there would flood
+    /// the status bar for an entire multi-hour run.
+    pub run_states: HashMap<String, RunState>,
     pub watcher: Option<FileWatcher>,
     pub last_refresh: HashMap<String, std::time::Instant>,
     pub detail_scroll_offset: u16,

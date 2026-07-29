@@ -1,6 +1,6 @@
 use crate::action::Action;
 use crate::change_tracker::ChangeTracker;
-use crate::config::{load_config, save_config};
+use crate::config::{load_config, save_config, Config};
 use crate::registry;
 use crate::session_detector::ClaudeSession;
 use crate::state_reader::{self, ProjectState};
@@ -118,6 +118,20 @@ pub struct App {
 impl App {
     pub fn new(config_path: PathBuf) -> anyhow::Result<Self> {
         let config = load_config(&config_path)?;
+        Ok(Self::from_config(config, config_path))
+    }
+
+    /// Build an `App` with an empty config and no disk access.
+    ///
+    /// `App::new` reads `config.json` from disk, which makes it useless in a
+    /// unit test: the result depends on whatever the developer or the CI runner
+    /// happens to have registered. This constructor is what makes the
+    /// `main_loop` property tests possible without a config file.
+    pub fn new_for_test() -> Self {
+        Self::from_config(Config::new(), PathBuf::from("/nonexistent/config.json"))
+    }
+
+    fn from_config(config: Config, config_path: PathBuf) -> Self {
         let mut table_state = TableState::default();
         if !config.projects.is_empty() {
             table_state.select(Some(0));
@@ -136,6 +150,8 @@ impl App {
             status_message: None,
             error_message: None,
             event_tx: None,
+            exec_tx: None,
+            run_states: HashMap::new(),
             watcher: None,
             last_refresh: HashMap::new(),
             detail_scroll_offset: 0,
@@ -147,7 +163,7 @@ impl App {
         };
         ctx.filtered_aliases = ctx.sorted_aliases();
 
-        Ok(App {
+        App {
             should_quit: false,
             needs_redraw: true,
             ctx,
@@ -155,7 +171,42 @@ impl App {
             active_sessions: Vec::new(),
             session_poll_counter: 0,
             pending_editor: None,
-        })
+        }
+    }
+
+    /// Apply one executor event to the per-alias driver state (D-17, D-19).
+    ///
+    /// This is the executor arm's whole handler. It touches only the sibling
+    /// map on `AppContext` and the redraw flag — never `ProjectState`, whose
+    /// derived equality suppresses status-bar spam.
+    ///
+    /// Note what it deliberately does *not* do: `ExecutionEvent::Exited` moves
+    /// the alias to `Stopping`, **not** to `Finished(outcome)`. A `RunOutcome`
+    /// cannot be derived from an exit status alone — D-26's matrix needs the
+    /// collected turns and the disk delta as well — so fabricating one here
+    /// would be a lie the UI then renders. The driver that owns the run
+    /// (Phase 17) is what closes the state out.
+    pub fn apply_exec_event(&mut self, event: crate::main_loop::ExecEvent) {
+        use crate::executor::{ExecutionEvent, RunState};
+
+        let crate::main_loop::ExecEvent { alias, event } = event;
+        let state = self.ctx.run_states.entry(alias).or_default();
+
+        match event {
+            ExecutionEvent::SessionStarted { .. } => *state = RunState::Running,
+            ExecutionEvent::Exited(_) => *state = RunState::Stopping,
+            // Any other observed line means the process is alive and talking.
+            // If we somehow never saw the gated `system/init` (a torn first
+            // line, say), record that a run is at least under way rather than
+            // leaving the alias reading `Idle` while output streams.
+            _ => {
+                if *state == RunState::Idle {
+                    *state = RunState::Starting;
+                }
+            }
+        }
+
+        self.needs_redraw = true;
     }
 
     /// Load project states for all registered projects.
