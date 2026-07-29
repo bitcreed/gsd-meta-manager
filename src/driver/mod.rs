@@ -30,11 +30,13 @@
 //!    There is no loop and no sequence. The decision router is Phase 20's, which
 //!    is why [`DriveArgs::command`] is a single `String` and not a `Vec`.
 //!
-//! Later plans add `lock` (17-02), `dry_run` (17-04), `spawn`, `liveness` and
-//! `reconcile` (17-05) and `kill` (17-06) as siblings of [`run`]. They are
+//! [`lock`] landed in plan 17-02. Later plans add `dry_run` (17-04), `spawn`,
+//! `liveness` and `reconcile` (17-05) and `kill` (17-06) as siblings. They are
 //! deliberately not stubbed here: an empty module for a later phase is a
 //! promise the compiler cannot keep.
 
+#[cfg(unix)]
+pub mod lock;
 #[cfg(unix)]
 pub mod run;
 

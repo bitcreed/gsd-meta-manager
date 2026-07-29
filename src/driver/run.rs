@@ -12,22 +12,27 @@
 use std::path::PathBuf;
 
 use crate::config::RegisteredProject;
-use crate::driver::DriveArgs;
+use crate::driver::{lock, DriveArgs};
 use crate::error::DriveError;
 use crate::executor::claude::ClaudeExecutor;
 use crate::executor::{DrivableProject, ExecutionOptions, Executor, RunOutcome};
 use crate::journal::{self, JournalRun, RunRecord};
 
 /// The state one driver process holds for the duration of one run.
-///
-/// Today it owns the journal and nothing else. **Plan 17-02 adds the `flock`
-/// guard as a field on this struct, and the placement is the decision:** an
-/// advisory lock is held per *open file description*, so dropping the `File`
-/// releases it. A lock stored in a local that falls out of scope is not a lock
-/// at all (D-19, D-20).
 pub struct DriverRun {
     /// The run's journal, open from `start` to `finish`.
     journal: JournalRun,
+    /// The single-execution lock, held for the whole run (D-20.2).
+    ///
+    /// **This field is deliberately never read, and it is not bookkeeping.** An
+    /// advisory `flock` is held per *open file description*, so dropping this
+    /// value closes the descriptor and releases the lock — the field's only job
+    /// is to keep it alive, and its placement on the run state rather than in a
+    /// local is what makes "held for the run's duration" true. It is not renamed
+    /// to `_lock`: an underscore reads as "leftover" and would invite the next
+    /// reader to delete the lock along with it.
+    #[allow(dead_code)]
+    lock: lock::RunLock,
 }
 
 /// Map a derived outcome onto the short label the journal records.
@@ -114,13 +119,24 @@ fn establish_own_group() {
 ///
 /// 1. Become our own process group leader, so D-04's `pid == pgid` invariant is
 ///    established rather than assumed.
-/// 2. Start the journal — `run.json` write one of two, plus `run_started`.
-/// 3. Spawn the agent. A spawn failure still calls `finish`, so a run that
+/// 2. Take the single-execution lock, **after** the opt-in gate (which ran in
+///    [`crate::driver::drive`]) and **before** the journal. Both boundaries are
+///    the decision: a project the user never opted in must not get a lock file
+///    in its tree (T-17-14), and a *losing* run must prune nothing, create no
+///    run directory, write no `run.json` and clear nobody's `active` pointer —
+///    D-12's evidence-preservation argument applies to a loser with exactly as
+///    much force as to a crash.
+/// 3. Start the journal — `run.json` write one of two, plus `run_started`.
+/// 4. Spawn the agent. A spawn failure still calls `finish`, so a run that
 ///    started always has a terminal record (T-17-06).
-/// 4. Journal the `claude` process group id **before draining a single event**:
+/// 5. Journal the `claude` process group id **before draining a single event**:
 ///    a teardown handle recorded late is a teardown handle that can be missed.
-/// 5. Drain the event stream into the journal.
-/// 6. Finish the journal with the derived outcome — `run.json` write two.
+/// 6. Drain the event stream into the journal.
+/// 7. Finish the journal with the derived outcome — `run.json` write two.
+///
+/// The lock guard lives on [`DriverRun`], which outlives the terminal
+/// `finish` call, so the lock is released **after** the last write rather than
+/// somewhere in the middle of it.
 ///
 /// The `entry` parameter carries the opt-in record whose timestamp lands in
 /// `RunRecord.opt_in`; the [`DrivableProject`] token proves the gate ran, but by
@@ -162,10 +178,17 @@ pub async fn execute_run(
     let record = make_run_record(run_id, args, entry, &options, argv_digest);
 
     let planning_dir = project.root().join(".planning");
+
+    // The pgid argument is `std::process::id()` for the same reason the run
+    // record's is: `setpgid(0, 0)` ran at entry, so this process is its own
+    // group leader (D-04). A second `drive` against this project now refuses and
+    // names this run rather than starting alongside it (CTRL-05).
+    let lock = lock::acquire(&planning_dir, &record.run_id, std::process::id())?;
+
     let journal = JournalRun::start(&planning_dir, record).map_err(|err| DriveError::Journal {
         detail: format!("{err:#}"),
     })?;
-    let mut run = DriverRun { journal };
+    let mut run = DriverRun { journal, lock };
 
     // The only branch on the hidden development flags, and it lives here rather
     // than in `main` so the fixture never touches the production dispatch.
