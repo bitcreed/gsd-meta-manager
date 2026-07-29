@@ -1,78 +1,50 @@
 ---
 phase: 14-ui-fixes
-verified: 2026-07-28T00:00:00Z
-status: gaps_found
-score: 3/5 must-haves verified
+verified: 2026-07-29T00:00:00Z
+status: human_needed
+score: 6/6 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
-gaps:
-  - truth: "The D-R-P-E-V status display renders with no leading blank at any terminal width (ROADMAP SC2 / UIFIX-02)"
-    status: failed
-    reason: >
-      Independently reproduced with a ratatui TestBackend render harness using the exact
-      production Constraint vectors from src/ui/screens/normal.rs (Percentage(15) at the
-      >=80 tier, Percentage(20) at the >=60 tier). At terminal widths 60, 61, 62, 63, 66,
-      80, 81, 82, 83, and 85 — including the default 80-column terminal — the Status
-      column resolves to roughly 11-12 cells, one short of the 13-cell contract
-      `compact_pipeline` produces, so the trailing "V" (verified) stage is clipped to
-      "D  R  P  E ". A fully-verified project and a project still mid-pipeline (e.g.
-      "executing") render identically in the Status column at these widths — this is
-      exactly the "misreporting project state" defect class the phase exists to
-      eliminate, not a cosmetic nit. This independently confirms code review finding
-      CR-01. The phase's own tests (`test_compact_pipeline_*`) only assert the isolated
-      `Line` object carries 13 cells of span content; none of them render that `Line`
-      inside the real `Table`/`Constraint::Percentage` column, so this class of bug was
-      structurally invisible to the phase's test suite. The literal "no leading blank"
-      wording is technically true (no test width shows a leading space before "D"), but
-      the plan's own must-have and the UI-SPEC's UIFIX-02 contract both go further,
-      requiring the cell to render "identical at >=80, >=60, and <60" — which is false.
-    artifacts:
-      - path: "src/ui/screens/normal.rs"
-        issue: "Status column constraints (Constraint::Percentage(15) at the >=80 tier, ~line 319; Constraint::Percentage(20) at the >=60 tier, ~line 330) do not guarantee the 13-cell floor compact_pipeline (lines 80-109) requires."
-    missing:
-      - "A Constraint::Min(13) (or equivalent hard floor) on the Status column at both the >=80 and >=60 tiers so the column never allocates fewer than 13 cells, as the code reviewer's CR-01 fix proposes."
-      - "A render-level regression test (ratatui TestBackend) asserting the literal substring \"D  R  P  E  V\" is present in the rendered buffer row at widths 60, 80, and 120 — a unit test on compact_pipeline in isolation cannot catch a column-width clipping defect."
-  - truth: "The stored scroll offset never exceeds total_lines minus visible_height (14-02-PLAN.md must_haves truth, part of UIFIX-04)"
-    status: failed
-    reason: >
-      Confirmed by direct source read: the four *up*-direction handler sites —
-      src/ui/screens/detail.rs:691-693 (Archive FileView, `k`/Up), :716-718 (Browse View,
-      `k`/Up), :912-914 (Archive FileView, PageUp), :932-936 (Browse View, PageUp) — all
-      perform a bare `saturating_sub` on the cached offset with no call to `clamp_scroll`
-      and no read of the recorded `ViewportMetrics`, unlike their four sibling
-      down-direction sites (:583-587, :627-631, :816-820, :848-852), which are correctly
-      patched. Whenever the recorded viewport metrics shrink between key presses — the
-      ordinary case of maximizing/resizing a terminal while scrolled near the end of a
-      long document — the stored offset can remain above the new max_scroll after a
-      PageUp press, because subtracting PAGE_SCROLL_LINES from an already-too-high stored
-      value does not necessarily bring it back into range in one step. This reproduces
-      the exact "dead PageUp press" symptom the UI-SPEC's own UIFIX-04 contract table
-      requires to be eliminated ("PageUp after that: the first PageUp press visibly
-      scrolls. No dead presses."). This independently confirms code review finding
-      WR-02. The only test that names this contract row,
-      `test_clamp_scroll_first_page_up_moves_viewport` (detail.rs:4852-4864), is a pure
-      arithmetic simulation that calls `clamp_scroll` directly and manually computes
-      `offset.saturating_sub(PAGE_SCROLL_LINES)` as a stand-in for PageUp — it never
-      calls into the real `KeyCode::PageUp` handler, so it passes without exercising the
-      actual defect. The narrower ROADMAP wording ("PageDown at the end of a document
-      leaves the last line on screen") does hold — all four PageDown/Down sites are
-      genuinely and correctly clamped, confirmed by source and by the passing
-      `test_clamp_scroll_page_down_stops_at_content_end` / idempotence tests — but the
-      broader invariant this plan itself authored as a must-have does not.
-    artifacts:
-      - path: "src/ui/screens/detail.rs"
-        issue: "Up/PageUp handlers for Archive::FileView and Browse::View (lines 691-693, 716-718, 912-914, 932-936) never clamp the stored offset against ViewportMetrics."
-    missing:
-      - "Apply clamp_scroll at all four up-direction sites exactly as it is already applied at the four down-direction sites (per code review WR-02's fix suggestion)."
-      - "A test that exercises the actual KeyCode::Up/PageUp handler (not just the clamp_scroll function) with a stale/over-large stored offset and asserts the viewport moves on the first PageUp press."
+re_verification: true
+supersedes: "2026-07-28T00:00:00Z initial verification (status: gaps_found, score: 3/5)"
+re_verification_detail:
+  previous_status: gaps_found
+  previous_score: 3/5
+  gaps_closed:
+    - "The D-R-P-E-V status display renders with no leading blank at any terminal width (UIFIX-02)"
+    - "The stored scroll offset never exceeds total_lines minus visible_height on EITHER direction (UIFIX-04 general form)"
+  gaps_remaining: []
+  regressions: []
+human_verification:
+  - test: "Open the dashboard at 80 and 60 columns in a real terminal (not just the TestBackend check re-run here) and visually compare the Status column against `executing`/`v1.0 Complete` rows; also compare the alias-column start position across a paused row, an async-job row, and a session row."
+    expected: "`D` starts at the same column as sibling Status text (now independently re-confirmed at the byte level via TestBackend), and the alias text starts at the same column regardless of which badge (if any) is shown."
+    why_human: "Actual glyph advance width for `⏸`/`⏳`/`▶` varies by terminal emulator and font beyond what `unicode-width`/ratatui's `Span::width()` reports (code review WR-01, confirmed unfixed by direct source read — `alias_badge` at normal.rs:61-77 is byte-identical to the initial-verification read). The Status-column clipping defect itself is now closed and independently re-confirmed; this item is narrower and pre-existing, carried forward unchanged."
+  - test: "On the Docs (Browse) tab, press `e` on a markdown file, edit and save it in `$EDITOR`, then quit the editor and observe the TUI."
+    expected: "The TUI resumes, and the viewer shows the newly-saved content."
+    why_human: "No test in this repo drives a real terminal or the suspend/resume process boundary (WR-03, confirmed unfixed by direct source read — `main.rs`'s resume path still does not invalidate `cache.browser_file_content`). Explicitly out of 14-04's scope fence. The current shipped behavior is expected to show *stale* pre-edit content; the human check should confirm and file as a follow-up."
 ---
 
-# Phase 14: UI Fixes Verification Report
+# Phase 14: UI Fixes Verification Report (RE-VERIFICATION)
 
 **Phase Goal:** Four long-standing display defects stop misreporting project state
-**Verified:** 2026-07-28
-**Status:** gaps_found
-**Re-verification:** No — initial verification
+**Verified:** 2026-07-29
+**Status:** human_needed
+**Re-verification:** Yes — after gap closure (plan 14-04). This report **supersedes** the
+2026-07-28 initial verification (`status: gaps_found`, score 3/5).
+
+## Summary of Change Since Initial Verification
+
+Plan 14-04 was written and executed specifically to close the two FAILED truths from the
+initial verification: the Status-column clipping (UIFIX-02) and the up-direction scroll
+handlers that never clamped the stored offset (the general form of UIFIX-04). Both were
+independently re-verified in this pass — not by re-reading the SUMMARY, but by reading the
+shipped source, running the phase's own tests, and (critically) **temporarily reverting each
+fix in a scratch working-tree edit, re-running the exact test that names the gap, confirming
+it fails with the exact previously-documented symptom, then restoring the file** before
+finishing. Both gaps are genuinely closed. No regression was found in the two truths that
+already passed (UIFIX-01, UIFIX-03). Two pre-existing, explicitly-out-of-scope human
+verification items (WR-01 badge glyph width, WR-03 stale post-edit content) remain open and
+are carried forward — see Human Verification Required.
 
 ## Goal Achievement
 
@@ -80,95 +52,170 @@ gaps:
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | SC1: A project with a non-empty `HANDOFF.md` shows the pause badge on its dashboard row (UIFIX-01) | ✓ VERIFIED | `detect_handoff` (src/state_reader/mod.rs:57-99) and `alias_badge` (src/ui/screens/normal.rs:61-77) read and confirmed to match the described three-tier priority (pause > async-job > session). 9 tests in `normal.rs` + 5 in `state_reader/mod.rs` re-ran and pass (`cargo test --lib`, 204 passed). Wiring from `ProjectState.paused` (normal.rs:440-444) to `alias_badge` (normal.rs:452-459) confirmed by direct source read. |
-| 2 | SC2: The D-R-P-E-V status display renders with no leading blank at any terminal width (UIFIX-02) | ✗ FAILED | `compact_pipeline` (normal.rs:80-109) correctly produces a leading-blank-free 13-cell `Line` in isolation — but independently reproduced with a TestBackend render of the real `Table`/`Constraint::Percentage` column that the cell is placed inside: the trailing "V" is clipped at widths 60-63, 66, and 80-85 (including the default 80-column terminal). See gaps. |
-| 3 | SC3: Pressing the markdown edit key enters edit mode on the first press (UIFIX-03) | ✓ VERIFIED | `KeyCode::Char('e')` arm (detail.rs:1644) confirmed by direct source read: the `current_view == DetailSubView::Browse` block (detail.rs:1691-1701) resolves `browse_edit_target` and returns `ScreenAction::SuspendAndEdit(path)` synchronously on the first press, ahead of the generic Enqueue fall-through (detail.rs:1703+). 8 `test_browse_edit_target_*`/footer tests re-ran and pass. |
-| 4 | SC4: PageDown at the end of a document leaves the last line on screen instead of scrolling past the content (UIFIX-04) | ✓ VERIFIED (narrow) | All four PageDown/Down handler sites (detail.rs:583-587, 627-631, 816-820, 848-852) confirmed by source read to assign through `clamp_scroll` against recorded `ViewportMetrics`. 5 `test_clamp_scroll_*` tests re-ran and pass, including idempotence on repeated PageDown. |
-| 5 | The stored scroll offset never exceeds `total_lines - visible_height` (14-02-PLAN.md must-have, the general form of UIFIX-04) | ✗ FAILED | The four *up*-direction sibling sites (detail.rs:691-693, 716-718, 912-914, 932-936) do not call `clamp_scroll` at all — confirmed by direct source read. See gaps. The one test naming this property tests `clamp_scroll` in isolation, not the real `PageUp` handler. |
+| 1 | SC1: A project with a non-empty `HANDOFF.md` shows the pause badge on its dashboard row (UIFIX-01) | ✓ VERIFIED (no regression) | `alias_badge` (normal.rs:61-77) is byte-identical to the initial-verification read — confirmed via source diff (`git diff` shows no hunk touching this function in any 14-04 commit). `cargo test --lib ui::screens::normal::tests::test_badge*` re-ran and passes (1 test named `test_badge`, plus the module's other badge-priority tests in the full 16-test module run). |
+| 2 | SC2: The D-R-P-E-V status display renders with no leading blank at any terminal width (UIFIX-02) | ✓ VERIFIED (gap closed) | `dashboard_columns` (normal.rs:132-164) now applies `Constraint::Min(STATUS_COLUMN_MIN_CELLS)` (13) to the Status column at the `>=80` and `>=60` tiers; `render_main` (normal.rs:521) calls the same `dashboard_table` function the tests call, via the same outer-width/inner-rect relationship. Independently re-derived: **reverted the two `Constraint::Min` lines back to `Percentage(15)`/`Percentage(20)` in a scratch edit, re-ran the test module, and got exactly the previously-documented clipped-width list `[60, 61, 62, 63, 66, 80, 81, 82, 83, 84, 85]`** with 4 tests failing — then restored the file and re-ran green (16/16 passing). This is a genuine RED→GREEN, not a re-read of the SUMMARY's claim. |
+| 3 | SC3: Pressing the markdown edit key enters edit mode on the first press (UIFIX-03) | ✓ VERIFIED (no regression) | `browse_edit_target` (detail.rs:3724+) and the `KeyCode::Char('e')` arm (detail.rs:1698) are unchanged since the initial verification (no 14-04 commit touches lines outside 688+). `cargo test --lib ui::screens::detail::tests::test_browse_edit_target` re-ran: 7/7 pass. |
+| 4 | SC4: PageDown at the end of a document leaves the last line on screen instead of scrolling past the content (UIFIX-04, narrow) | ✓ VERIFIED (no regression) | The four down-direction sites (detail.rs ~625-640, ~848-861) are unchanged in ordering (add-then-clamp), confirmed by direct read. `test_clamp_scroll_page_down_stops_at_content_end` and `test_generic_page_down_clamps_at_content_end` (new, drives the real handler) both pass. |
+| 5 | The stored scroll offset never exceeds `total_lines - visible_height` on EITHER direction (14-04 must-have, the general form of UIFIX-04) | ✓ VERIFIED (gap closed) | All four up-direction file-view sites (`k`/Up at detail.rs:686-717, PageUp at detail.rs:933-960) now clamp via `clamp_scroll` *before* subtracting — confirmed by direct source read. Independently re-derived: **reverted all four production clamp calls back to bare `saturating_sub` in a scratch edit, re-ran the handler-level test module, and got exactly 5 failures** (`test_page_up_handler_clamps_stale_browse_offset` 70≠20, `..._archive_offset` 70≠20, `test_up_handler_clamps_stale_browse_offset` 89≠39, `..._archive_offset` 89≠39, `test_first_page_up_after_viewport_grows_moves_viewport` 70 not < 40) — then restored the file and re-ran green (25/25 passing). The tests genuinely drive `DetailScreen::handle_key`, the real production method (confirmed: `test_ctx()` builds a real `AppContext` mirroring `app.rs`'s only construction site; `press()` calls `screen.handle_key(code, KeyModifiers::NONE, ctx)` directly — no simulation layer). |
+| 6 | (14-04 must-have) The generic `_ =>` scroll fallback (PhaseList, RoadmapViz) clamps on all four of Down/Up/PageDown/PageUp, closing CD-03/IN-07 | ✓ VERIFIED | `DetailSubView` has 10 variants; 8 explicit match arms (GitHistory, Backlog, Pipeline, Queue, Sessions, Archive, Defaults, Browse) — confirmed by direct enum read (`src/app.rs:16-28`) — leaving exactly PhaseList and RoadmapViz to reach `_ =>`, confirming GD-01's corrected "exactly two" claim over CD-03's original "seven". A third `Cell<ViewportMetrics>` (`generic_viewport`) is recorded in both `render_phase_list` (detail.rs:2142) and `render_roadmap` (detail.rs:2243), and all four generic arms (detail.rs:641-645 Down, 749-757 Up, 857-861 PageDown, 989-997 PageUp) clamp through it in the load-bearing clamp-then-subtract / add-then-clamp order. `test_generic_page_up_clamps_stale_offset` and `test_generic_page_down_clamps_at_content_end` pass, driving the real handler on both PhaseList and RoadmapViz sub-views. |
 
-**Score:** 3/5 truths verified (2 failed)
+**Score:** 6/6 truths verified (0 failed). Both gaps from the initial round are genuinely closed;
+no regression in the three previously-passing truths; one additional 14-04-authored truth
+(generic fallback closure) also verified.
+
+### Ordering claim (clamp-then-subtract vs subtract-then-clamp) — independently confirmed
+
+`test_first_page_up_after_viewport_grows_moves_viewport` (detail.rs:5080-5101) asserts the
+resulting offset is *strictly less than* `max_scroll` after the first stale-offset PageUp
+press — this is the assertion that distinguishes clamp-then-subtract (correct: 90 → clamp to
+40 → subtract 20 → **20**, strictly below `max_scroll` 40, so the viewport visibly moves) from
+subtract-then-clamp (wrong: 90 → subtract 20 → 70 → clamp to 40 → lands exactly on
+`max_scroll`, which the renderer was already displaying, so the viewport does not visibly move
+— reproducing the bug through the "fix"). Read the shipped code at all four up-direction sites
+and the two generic up-direction sites: every one reads the viewport `Cell`, calls
+`clamp_scroll` on the *stored* offset, and only then applies `.saturating_sub(...)` to the
+*result* — i.e., clamp is applied to the pre-subtraction value, matching the claimed correct
+ordering, not the reverse. Confirmed independently (not by the SUMMARY's own before/after
+table) via the same revert-and-rerun method as above.
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |----------|----------|--------|---------|
-| `src/ui/screens/normal.rs` — `alias_badge` | Pure 3-tier badge priority fn | ✓ VERIFIED | Present, matches documented glyph/color/priority, wired at 2 call sites (definition + row builder), 10 tests in module, all pass |
-| `src/ui/screens/normal.rs` — `compact_pipeline` (rewritten) | Whitespace-free 13-cell Line | ⚠️ HOLLOW (partial) | The `Line` construction itself is correct (verified by test), but the artifact does not achieve its stated purpose end-to-end once placed in the real Status column — see SC2 gap |
-| `src/state_reader/mod.rs` — HANDOFF regression tests | 5 new tests inside existing `mod tests` | ✓ VERIFIED | All 5 present and passing; wiring to `parse_project_state` confirmed |
-| `src/ui/screens/detail.rs` — `browse_edit_target` | Pure path resolver, 2 guards | ✓ VERIFIED | Present, wired at the `e`-arm Browse branch, 7 tests pass. Root-fence guard (`if let Some(root) = ...`) fails open when `browser_root` is `None` (code review WR-04) — confirmed by source read, but current wiring always sets `browser_root` together with `browser_entries` (detail.rs:296-309), and `BrowserDepth::View` is only reachable by selecting a populated entry, so this fail-open pattern is not reachable through any live code path today. Flagged as a latent defense-in-depth weakness, not a live gap — see Human Verification. |
-| `src/ui/screens/detail.rs` — `clamp_scroll` / `ViewportMetrics` | Renderer's own bound, reused by handler | ⚠️ HOLLOW (partial) | Present and correctly wired at the 4 down-direction sites; absent at the 4 up-direction sibling sites — see gap #2 |
+| `src/ui/screens/normal.rs` — `dashboard_columns` / `dashboard_table` | Single source of truth for dashboard tier layout, with a 13-cell Status floor | ✓ VERIFIED | Present, wired: `render_main` (line 521) and the test-module harness `render_dashboard_interior` (line 869-914) both call `dashboard_table`, so tests cannot drift from production layout. `grep -c 'Constraint::Min(STATUS_COLUMN_MIN_CELLS)'` = 2 (both upper tiers). |
+| `src/ui/screens/normal.rs` — `compact_pipeline` | Unchanged (per GD-04) | ✓ VERIFIED unchanged | Source read confirms the function body (lines 80-109) is unmodified from the initial-verification read; the fix lives entirely in the column, as claimed. |
+| `src/ui/screens/detail.rs` — up-direction clamps (4 file-view sites) | `clamp_scroll` applied before subtracting | ✓ VERIFIED | All 4 sites present and wired: Archive `k`/Up (line 702-715), Browse `k`/Up (line 736-745), Archive PageUp (line 949-959), Browse PageUp (line 976-985). RED/GREEN independently confirmed (see truth #5). |
+| `src/ui/screens/detail.rs` — `generic_viewport` (3rd `Cell<ViewportMetrics>`) | Recorded by `render_phase_list`/`render_roadmap`, consumed by the 4 generic arms | ✓ VERIFIED | `Cell<ViewportMetrics>` count is exactly 3 (`browser_viewport`, `archive_viewport`, `generic_viewport`); struct (detail.rs:54-68), constructor (detail.rs:70-79), both render sites, all 4 handler arms confirmed by direct read. |
+| `src/ui/screens/detail.rs` — `test_ctx` fixture + real-handler tests | Drives `handle_key` with a real `AppContext`, not a simulation | ✓ VERIFIED | `test_ctx()` (detail.rs:4943-4971) mirrors `app.rs`'s only construction site field-for-field; `press()` (detail.rs:5035-5037) calls `screen.handle_key(...)` directly — confirmed this is the same method `Screen::handle_key` that production input dispatch calls (`impl Screen for DetailScreen` at detail.rs:362). |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 |------|-----|-----|--------|---------|
-| `src/state_reader/mod.rs` (parse_project_state) | `src/ui/screens/normal.rs` (alias_cell) | `state.paused` read at normal.rs:440-444 | ✓ WIRED | Confirmed |
-| `normal.rs` (alias_cell construction) | `normal.rs` (alias_badge) | `alias_badge(...)` call at normal.rs:453 | ✓ WIRED | Confirmed |
-| `detail.rs` (`KeyCode::Char('e')` Browse arm) | `detail.rs` (browse_edit_target) | `browse_edit_target(cache)` call at detail.rs:1694 | ✓ WIRED | Confirmed |
-| `detail.rs` (render_archive_tab / render_browser_tab) | `detail.rs` (PageDown/Down arms) | `clamp_scroll(...)` at 4 down-direction sites | ✓ WIRED | Confirmed |
-| `detail.rs` (render_archive_tab / render_browser_tab) | `detail.rs` (PageUp/Up arms) | expected `clamp_scroll(...)`, NOT PRESENT | ✗ NOT_WIRED | The up-direction sibling sites never read `ViewportMetrics` or call `clamp_scroll` — see gap #2 |
-| `normal.rs` (compact_pipeline) | Status column `Table` cell | expected: column width >= 13 cells at all declared tiers | ✗ NOT_WIRED (defect) | `Constraint::Percentage` at the >=80 and >=60 tiers does not guarantee a 13-cell floor; the value the `Line` carries is silently truncated by the surrounding layout — see gap #1 |
+| `normal.rs` (render_main) | `normal.rs` (dashboard_columns / dashboard_table) | `dashboard_table(rows, terminal_width)` at normal.rs:521, `terminal_width = area.width` (outer, line 384) | ✓ WIRED | Confirmed — same function, same outer-width argument, as the test harness. |
+| `detail.rs` (render_archive_tab / render_browser_tab) | `detail.rs` (Up/`k`/PageUp arms) | `clamp_scroll(...)` at all 4 up-direction sites | ✓ WIRED (was NOT_WIRED in initial report) | Independently RED/GREEN confirmed — see truth #5. |
+| `detail.rs` (render_phase_list / render_roadmap) | `detail.rs` (generic `_ =>` Down/Up/PageDown/PageUp arms) | `generic_viewport.set(...)` in both render fns, `generic_viewport.get()` in all 4 handler arms | ✓ WIRED | New in 14-04; confirmed by direct read and by 2 passing handler-level tests. |
 
 ### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
-| D-R-P-E-V column renders all 5 stages at common terminal widths | Standalone `ratatui::backend::TestBackend` render of the exact production `Table`/`Constraint` setup at widths 59-100 (temporary scratch test, removed after use; not committed) | "D  R  P  E  V" present at 59, 70, 79, 86, 100; **absent** (V clipped) at 60, 63, 66, 80, 85 | ✗ FAIL — confirms gap #1 |
-| `cargo test --lib` | `cargo test --lib` | 204 passed, 0 failed | ✓ PASS |
-| `cargo build` / `cargo clippy -- -D warnings` | per CLAUDE.md release gate | exit 0 both | ✓ PASS |
-| All 27 phase-added tests exist | `cargo test --lib -- --list \| grep -E "handoff\|compact_pipeline\|browse_edit_target\|clamp_scroll\|badge"` | all 27 named tests present | ✓ PASS |
+| Status column renders all 5 stages at the 11 previously-clipped widths + controls | `cargo test --lib ui::screens::normal::tests::test_status_column_not_clipped_at_reproduced_widths` | 1 passed | ✓ PASS |
+| Status column renders all 5 stages, full sweep 44-200 | `cargo test --lib ui::screens::normal::tests::test_status_column_renders_all_five_stages_from_44_to_200` | 1 passed | ✓ PASS |
+| RED confirmation: reverting the Status floor reproduces the exact clipped-width list | scratch edit + `cargo test --lib ui::screens::normal::tests::` | 4 failed, clipped list = `[60, 61, 62, 63, 66, 80, 81, 82, 83, 84, 85]` — exact match to both the initial verification and the code review | ✓ CONFIRMS gap was real and is now closed |
+| RED confirmation: reverting the 4 up-direction clamps reproduces the exact dead-PageUp symptom | scratch edit + `cargo test --lib ui::screens::detail::tests::` | 5 failed (90→70 instead of 20; 90→89 instead of 39) — exact match to the code review's WR-02 reproduction | ✓ CONFIRMS gap was real and is now closed |
+| `cargo test` (full suite, once) | `cargo test` | 255 passed, 0 failed | ✓ PASS |
+| `cargo build` | `cargo build` | exit 0 | ✓ PASS |
+| `cargo clippy -- -D warnings` (lib gate) | `cargo clippy -- -D warnings` | exit 0, clean | ✓ PASS |
+| `cargo clippy --all-targets` warning count unchanged | forced fresh analysis (touched the 3 baseline files) + `cargo clippy --all-targets` | exactly 5 warnings at `src/browser.rs:131,132,133`, `src/project_creator.rs:146`, `src/state_reader/mod.rs:258` — same locations as the 14-04 plan's stated baseline | ✓ PASS — count did not grow |
+| Working tree clean after all scratch edits reverted | `git status --porcelain` | no output | ✓ PASS |
+
+### Probe Execution
+
+No `scripts/*/tests/probe-*.sh` probes exist in this repository, and neither the PLAN, SUMMARY,
+nor VERIFICATION artifacts for this phase reference any probe script. Step 7c: SKIPPED (no
+probes declared or discovered).
 
 ### Requirements Coverage
 
 | Requirement | Source Plan | Description | Status | Evidence |
 |-------------|------------|--------------|--------|----------|
-| UIFIX-01 | 14-01 | Paused projects show a pause badge derived from HANDOFF.md | ✓ SATISFIED | Verified end-to-end; matches shipped Phase 11 behavior plus extracted `alias_badge` |
-| UIFIX-02 | 14-01 | The DRPEV status display has no leading blank | ✗ BLOCKED | REQUIREMENTS.md marks this `Complete`, but the underlying defect class (column clipping causing misreported status) is not fixed — see gap #1. The "no leading blank" clause narrowly holds; the phase's own broader contract ("identical at all three tiers") does not. |
-| UIFIX-03 | 14-02 | Markdown edit mode activates on key press | ✓ SATISFIED | Verified: `e` returns `SuspendAndEdit` on the first press for the Browse tab |
-| UIFIX-04 | 14-02 | PageDown scroll offset is clamped to the end of content | ⚠️ PARTIAL | The literal PageDown behavior is fixed and verified. The general "stored offset never exceeds max" invariant this same plan authored as a must-have is violated on the up-direction paths — see gap #2. REQUIREMENTS.md marks this `Complete`; that should be revisited pending the fix. |
+| UIFIX-01 | 14-01 | Paused projects show a pause badge derived from HANDOFF.md | ✓ SATISFIED (no regression) | Verified end-to-end in the initial round; re-confirmed unchanged in this round. |
+| UIFIX-02 | 14-01, 14-04 | The DRPEV status display has no leading blank | ✓ SATISFIED (gap closed) | Previously BLOCKED — the underlying column-clipping defect is now genuinely fixed and independently RED/GREEN confirmed. REQUIREMENTS.md still shows `Gaps Found`; **this re-verification recommends flipping the row to Complete.** |
+| UIFIX-03 | 14-02 | Markdown edit mode activates on key press | ✓ SATISFIED (no regression) | Re-confirmed unchanged. |
+| UIFIX-04 | 14-02, 14-04 | PageDown scroll offset is clamped to the end of content | ✓ SATISFIED (gap closed) | Previously PARTIAL — the general "stored offset never exceeds max" invariant is now enforced on both directions across all 8 sites (4 file-view + 4 generic). REQUIREMENTS.md still shows `Gaps Found`; **this re-verification recommends flipping the row to Complete.** |
 
-No orphaned requirements found — REQUIREMENTS.md's Phase 14 row set (UIFIX-01..04) matches exactly what the three plans declare.
+No orphaned requirements — REQUIREMENTS.md's Phase 14 row set (UIFIX-01..04) matches exactly
+what the four plans declare (`requirements:` frontmatter cross-referenced across 14-01
+through 14-04).
+
+**REQUIREMENTS.md traceability table currently reads `Gaps Found` for all four rows** (lines
+172-175) per plan 14-04's deliberate decision GD-03, which reserved the status flip for this
+re-verification pass rather than letting the plan mark its own work complete. Having
+independently confirmed both gaps closed with no regression, **this report recommends the
+orchestrator flip all four `Gaps Found` rows to `Complete`** in `.planning/REQUIREMENTS.md`.
 
 ### Anti-Patterns Found
 
-None. No `TBD`/`FIXME`/`XXX`/`TODO`/`HACK`/`PLACEHOLDER` markers in any of the three touched files (`normal.rs`, `detail.rs`, `state_reader/mod.rs`). Confirmed by direct grep.
+None. No `TBD`/`FIXME`/`XXX`/`TODO`/`HACK`/`PLACEHOLDER` markers in `normal.rs` or `detail.rs`
+(re-confirmed by direct grep in this pass — same clean result as the initial verification).
 
-### Additional Code-Review Findings (not scored against the four success criteria, but worth carrying forward)
+### Carried-Forward Code-Review Findings (not scored against the four success criteria)
 
-These were raised by the prior code review (`14-REVIEW.md`) and independently spot-checked here. They do not gate this phase's four named success criteria but are real, reproducible issues:
+Both were explicitly fenced out of plan 14-04's scope and independently re-confirmed
+still-present in this pass:
 
-- **WR-01 (badge glyph unequal display width):** `⏳` (U+23F3, East_Asian_Width=Wide) occupies 3 terminal cells while `⏸`/`▶` occupy 2, so the alias column is not actually aligned across badge states as the `alias_badge` docstring claims. `test_badge_is_never_two_glyphs` asserts char count, not display width, so it does not catch this. Terminal-rendering dependent — routed to human verification below.
-- **WR-03 (stale content after `$EDITOR` exits):** `cache.browser_file_content` / archive equivalent is never invalidated after `SuspendAndEdit` returns, so a user who edits and saves a file continues to see the pre-edit text in the viewer. This is outside the four stated success criteria (which only require entering edit mode on the first press, not post-edit refresh) but is a real, user-visible "misreporting" bug in spirit. Recommend filing as a follow-up.
-- **WR-04 (root fence fails open when `browser_root` is `None`):** confirmed by source read (detail.rs:3688-3692) — the `if let Some(root) = ...` guard skips the check entirely when unset. Traced the only code path that populates `browser_entries` (detail.rs:296-309) and confirmed it always sets `browser_root` in the same block, and that `BrowserDepth::View` is only reachable by selecting a populated entry — so this fail-open pattern is not reachable today, but it is a fragile invariant a future change could silently disarm with a green test suite. Recommend the reviewer's fix (`.ok_or(NO_FILE)?` instead of `if let Some`) as defense-in-depth.
-- **IN-07 (unbounded offset on non-file tabs):** deliberately deferred by this phase's own CD-03 decision, recorded honestly in both SUMMARYs. Not a gap — a documented, in-scope-limiting decision.
+- **WR-01 (badge glyph unequal display width):** unchanged. `alias_badge` still emits raw
+  `\u{23F8}`/`\u{23F3}`/`\u{25b6}` with no width normalization; the guard test still asserts
+  character count rather than display width. Routed to human verification below.
+- **WR-03 (stale content after `$EDITOR` exits):** unchanged. No 14-04 commit touches
+  `main.rs`'s resume path or `cache.browser_file_content` invalidation. Routed to human
+  verification below.
+- **WR-04, WR-05:** unchanged, untouched, not re-examined in depth this round (no claim of
+  closure was made for either; both remain recorded follow-ups per the 14-04 SUMMARY).
 
 ## Human Verification Required
 
 ### 1. D-R-P-E-V column alignment and badge glyph width, live terminal
 
-**Test:** Open the dashboard at 80 and 60 columns in a real terminal (not just the automated TestBackend check already run here) and visually compare the Status column against `executing`/`v1.0 Complete` rows; also compare the alias-column start position across a paused row, an async-job row, and a session row.
-**Expected:** `D` starts at the same column as sibling Status text, and the alias text starts at the same column regardless of which badge (if any) is shown.
-**Why human:** Actual glyph advance width varies by terminal emulator and font beyond what `unicode-width` reports (code review WR-01); this is confirmed to fail structurally in the >=60/>=80 tiers by TestBackend (see gap #1) but the exact visual severity across terminals needs an eyeball.
+**Test:** Open the dashboard at 80 and 60 columns in a real terminal (not just the TestBackend
+check re-run in this pass) and visually compare the Status column against `executing`/`v1.0
+Complete` rows; also compare the alias-column start position across a paused row, an
+async-job row, and a session row.
+**Expected:** `D` starts at the same column as sibling Status text (now independently
+re-confirmed at the byte level via TestBackend — this part of the concern is resolved), and
+the alias text starts at the same column regardless of which badge (if any) is shown.
+**Why human:** Actual glyph advance width for `⏸`/`⏳`/`▶` varies by terminal emulator and font
+beyond what `unicode-width`/ratatui's `Span::width()` reports (WR-01, confirmed unfixed).
+This is narrower than the original Status-column gap (which is now closed) but was never in
+14-04's scope.
 
 ### 2. `$EDITOR` suspend/resume round-trip and post-edit refresh
 
-**Test:** On the Docs (Browse) tab, press `e` on a markdown file, edit and save it in `$EDITOR`, then quit the editor and observe the TUI.
+**Test:** On the Docs (Browse) tab, press `e` on a markdown file, edit and save it in
+`$EDITOR`, then quit the editor and observe the TUI.
 **Expected:** The TUI resumes, and the viewer shows the newly-saved content.
-**Why human:** No test in this repo drives a real terminal or the suspend/resume process boundary (inherited from 14-01 D6 / 14-02 D11). Also surfaces WR-03: the current shipped behavior is expected to show *stale* pre-edit content, which the human check should confirm and file as a follow-up.
+**Why human:** No test in this repo drives a real terminal or the suspend/resume process
+boundary (WR-03, confirmed unfixed — inherited unchanged from 14-01/14-02, explicitly out of
+14-04's scope fence). The current shipped behavior is expected to show *stale* pre-edit
+content; the human check should confirm and file as a follow-up.
 
 ## Gaps Summary
 
-Two of the five must-have truths verified here are FAILED, both independently reproduced against the actual codebase rather than inferred from the SUMMARYs:
+**No gaps remain against the phase's four success criteria or the two 14-04-authored
+must-haves.** Both truths that FAILED in the initial 2026-07-28 verification are now
+genuinely closed:
 
-1. **UIFIX-02 (SC2) is not actually fixed at the column-width level.** The `compact_pipeline` construction-site fix is correct in isolation (13 leading-blank-free cells), but the surrounding dashboard `Table`'s `Constraint::Percentage` columns do not guarantee 13 cells at the `>=60` and `>=80` tiers, so the trailing `V` stage is silently clipped at widths 60-63, 66, and 80-85 — including the default 80-column terminal. This means a fully-verified project and a mid-pipeline project can render identically in the Status column, which is precisely the "misreporting project state" defect class the phase set out to eliminate. This is not a hypothetical — it was reproduced with a TestBackend render using the actual production `Constraint` vectors.
+1. **UIFIX-02 Status-column clipping is fixed.** `Constraint::Min(13)` at the `>=80` and
+   `>=60` tiers guarantees the Status column can never allocate fewer cells than
+   `compact_pipeline` produces. Independently confirmed by reverting the fix in a scratch
+   edit and reproducing the exact previously-documented clipped-width list, then restoring
+   and re-confirming green.
+2. **UIFIX-04's general stored-offset invariant now holds on both directions.** All four
+   up-direction file-view sites and both generic-fallback up-direction sites clamp via
+   `clamp_scroll` before subtracting, in the load-bearing clamp-then-subtract order.
+   Independently confirmed the same way: revert, reproduce the exact dead-PageUp symptom,
+   restore, re-confirm green.
 
-2. **UIFIX-04's general "stored offset never exceeds max" invariant does not hold.** All four PageDown/Down sites are correctly clamped and this narrowly satisfies the literal ROADMAP wording ("PageDown at the end... leaves the last line on screen"). But the four sibling up-direction sites (Up/`k`/PageUp on Archive FileView and Browse View) were never patched — confirmed directly in source — so the stored offset can remain out of range after a terminal resize, reproducing the exact "dead PageUp press" symptom UIFIX-04 was meant to eliminate. The one test that names this contract row tests the `clamp_scroll` function in isolation and never exercises the real key handler, so it passes without covering the actual defect.
+No regression was found in UIFIX-01 or UIFIX-03, both scope-fenced away from 14-04 and
+confirmed byte-identical at their defining functions. The full project gate passes fresh
+(`cargo build`, `cargo test` — 255 passed, `cargo clippy -- -D warnings` clean), and
+`cargo clippy --all-targets` still reports exactly 5 warnings at the same 5 pre-existing
+locations — the count did not grow.
 
-Both gaps are narrowly scoped, single-file fixes (one `Constraint::Min` change plus a render-level test; four `clamp_scroll` call sites plus one handler-level test) consistent with the size of fixes already landed in this phase. REQUIREMENTS.md currently marks UIFIX-02 and UIFIX-04 `Complete`; that should be revisited once these are closed.
+**Status is `human_needed`, not `passed`,** solely because two pre-existing, explicitly
+out-of-scope items (WR-01 badge glyph display width, WR-03 stale post-edit content) require a
+human at a real terminal to confirm — neither is a regression, neither was ever claimed fixed
+by this phase, and both were already flagged in the initial verification. Per the decision
+tree, any non-empty human-verification list routes the overall status to `human_needed` even
+when every scored truth is VERIFIED.
 
-UIFIX-01 (SC1) and UIFIX-03 (SC3) are both genuinely and fully verified — the extracted `alias_badge`/`browse_edit_target` functions are correctly wired, tested, and match the documented contract with no gap found.
+**Recommended follow-up action for the orchestrator:** flip all four `UIFIX-01..04` rows in
+`.planning/REQUIREMENTS.md` from `Gaps Found` to `Complete` — this re-verification is the
+independent confirmation plan 14-04's decision GD-03 deferred that action to.
 
 ---
 
-_Verified: 2026-07-28_
+_Verified: 2026-07-29_
 _Verifier: Claude (gsd-verifier)_
+_Re-verification of: 2026-07-28 initial verification (superseded)_
