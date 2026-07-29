@@ -269,68 +269,142 @@ pub fn parse_line(raw: &str) -> Envelope {
 mod tests {
     use super::*;
 
-    const FIXTURE_01: &str = include_str!("../../tests/fixtures/transcripts/01-success-textonly.ndjson");
+    // Compile-time fixture loading: the tests do no filesystem I/O and need no
+    // temporary directory. Every one of these is a real 2.1.220 capture, so a
+    // failure here means the model is wrong, not that the test is wrong.
+    const T01: &str = include_str!("../../tests/fixtures/transcripts/01-success-textonly.ndjson");
+    const T02: &str = include_str!("../../tests/fixtures/transcripts/02-budget-exhausted.ndjson");
+    const T03: &str =
+        include_str!("../../tests/fixtures/transcripts/03-tooluse-success-settingsources.ndjson");
+    const T04: &str =
+        include_str!("../../tests/fixtures/transcripts/04-hookhang-aborted-tools.ndjson");
+    const T05: &str =
+        include_str!("../../tests/fixtures/transcripts/05-queued-injection-two-turns.ndjson");
+    const T06: &str =
+        include_str!("../../tests/fixtures/transcripts/06-interrupt-aborted-streaming.ndjson");
+    const T07: &str = include_str!("../../tests/fixtures/transcripts/07-interrupt-early.ndjson");
+    const T08: &str =
+        include_str!("../../tests/fixtures/transcripts/08-tooluse-queued-two-turns.ndjson");
+
+    const ALL_TRANSCRIPTS: [(&str, &str); 8] = [
+        ("01-success-textonly", T01),
+        ("02-budget-exhausted", T02),
+        ("03-tooluse-success-settingsources", T03),
+        ("04-hookhang-aborted-tools", T04),
+        ("05-queued-injection-two-turns", T05),
+        ("06-interrupt-aborted-streaming", T06),
+        ("07-interrupt-early", T07),
+        ("08-tooluse-queued-two-turns", T08),
+    ];
 
     fn parse_all(transcript: &str) -> Vec<Envelope> {
         transcript
             .lines()
-            .filter(|l| !l.trim().is_empty())
+            .filter(|line| !line.trim().is_empty())
             .map(parse_line)
             .collect()
     }
 
-    #[test]
-    fn every_line_of_the_clean_baseline_parses() {
-        for env in parse_all(FIXTURE_01) {
-            assert!(
-                matches!(env, Envelope::Parsed { .. }),
-                "expected a parsed envelope, got: {env:?}"
-            );
-        }
+    fn messages(transcript: &str) -> Vec<StreamMessage> {
+        parse_all(transcript)
+            .into_iter()
+            .filter_map(|env| match env {
+                Envelope::Parsed { msg, .. } => Some(msg),
+                Envelope::Unparseable { .. } => None,
+            })
+            .collect()
     }
 
+    fn results(transcript: &str) -> Vec<Box<ResultMessage>> {
+        messages(transcript)
+            .into_iter()
+            .filter_map(|msg| match msg {
+                StreamMessage::Result(result) => Some(result),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn inits(transcript: &str) -> Vec<Box<InitMessage>> {
+        messages(transcript)
+            .into_iter()
+            .filter_map(|msg| match msg {
+                StreamMessage::System(SystemMessage::Init(init)) => Some(init),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // ========================================================================
+    // Tolerance across every golden transcript (D-09)
+    // ========================================================================
+
     #[test]
-    fn first_line_of_the_clean_baseline_is_a_system_init() {
-        let first = parse_all(FIXTURE_01).into_iter().next();
-        match first {
-            Some(Envelope::Parsed {
-                msg: StreamMessage::System(SystemMessage::Init(init)),
-                ..
-            }) => {
-                assert_eq!(
-                    init.capabilities.len(),
-                    3,
-                    "expected the three 2.1.220 capabilities, got: {:?}",
-                    init.capabilities
-                );
-                assert_eq!(
-                    init.api_key_source.as_deref(),
-                    Some("none"),
-                    "expected subscription auth, got: {:?}",
-                    init.api_key_source
-                );
-                assert_eq!(
-                    init.claude_code_version.as_deref(),
-                    Some("2.1.220"),
-                    "a blanket rename_all would null this field out (Pitfall F), got: {:?}",
-                    init.claude_code_version
+    fn every_line_of_every_golden_transcript_parses_to_a_carried_envelope() {
+        for (name, transcript) in ALL_TRANSCRIPTS {
+            for (index, env) in parse_all(transcript).into_iter().enumerate() {
+                assert!(
+                    matches!(env, Envelope::Parsed { .. }),
+                    "{name} line {} did not parse: {env:?}",
+                    index + 1
                 );
             }
-            other => panic!("expected a parsed system/init, got: {other:?}"),
         }
     }
 
     #[test]
-    fn a_torn_line_is_unparseable_and_not_unknown() {
-        let env = parse_line(r#"{"type":"result","subtype":"suc"#);
-        assert!(
-            matches!(env, Envelope::Unparseable { .. }),
-            "expected Unparseable, got: {env:?}"
-        );
+    fn no_golden_transcript_line_lands_in_the_forward_compat_unknown_variant() {
+        for (name, transcript) in ALL_TRANSCRIPTS {
+            for (index, msg) in messages(transcript).into_iter().enumerate() {
+                assert!(
+                    !matches!(msg, StreamMessage::Unknown),
+                    "{name} line {} fell through to Unknown; the model is missing a type: {msg:?}",
+                    index + 1
+                );
+            }
+        }
     }
 
     #[test]
-    fn an_unknown_message_type_is_carried_not_fatal() {
+    fn a_thinking_tokens_line_absorbs_into_the_catch_all_subtype() {
+        let raw = r#"{"type":"system","subtype":"thinking_tokens","estimated_tokens":50,"estimated_tokens_delta":50,"uuid":"u","session_id":"s"}"#;
+        match parse_line(raw) {
+            Envelope::Parsed {
+                msg: StreamMessage::System(SystemMessage::Other),
+                ..
+            } => {}
+            other => panic!("thinking_tokens must never be an error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hook_and_retry_subtypes_absorb_into_the_catch_all_too() {
+        for subtype in ["hook_started", "hook_response", "api_retry", "task_progress"] {
+            let raw = format!(r#"{{"type":"system","subtype":"{subtype}","session_id":"s"}}"#);
+            match parse_line(&raw) {
+                Envelope::Parsed {
+                    msg: StreamMessage::System(SystemMessage::Other),
+                    ..
+                } => {}
+                other => panic!("{subtype} must absorb without error, got: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_injected_unknown_field_on_system_init_is_ignored() {
+        let raw = r#"{"type":"system","subtype":"init","session_id":"s","capabilities":["a"],"brand_new_field":1,"claude_code_version":"2.1.220"}"#;
+        match parse_line(raw) {
+            Envelope::Parsed {
+                msg: StreamMessage::System(SystemMessage::Init(init)),
+                ..
+            } => assert_eq!(init.claude_code_version.as_deref(), Some("2.1.220")),
+            other => panic!("an unknown field must be ignored, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_message_type_from_no_known_version_is_carried_as_forward_compat() {
         let env = parse_line(r#"{"type":"totally_new_message_type_from_2_2_0","x":1}"#);
         assert!(
             matches!(
@@ -340,9 +414,240 @@ mod tests {
                     ..
                 }
             ),
-            "expected a carried Unknown, got: {env:?}"
+            "a future message type must be carried, not fatal: {env:?}"
         );
     }
+
+    #[test]
+    fn a_torn_line_is_unparseable_and_distinct_from_unknown() {
+        let env = parse_line(r#"{"type":"result","subtype":"suc"#);
+        assert!(
+            matches!(env, Envelope::Unparseable { .. }),
+            "a torn line is a diagnostic, not a forward-compat unknown: {env:?}"
+        );
+    }
+
+    // ========================================================================
+    // result is a TURN boundary, not a run terminator (D-29, D-30)
+    // ========================================================================
+
+    #[test]
+    fn fixture_05_yields_two_system_inits_and_two_result_envelopes() {
+        assert_eq!(
+            inits(T05).len(),
+            2,
+            "every queued turn emits its own system/init (D-30)"
+        );
+        assert_eq!(
+            results(T05).len(),
+            2,
+            "result closes a turn, not the run — one process, two results (D-29)"
+        );
+    }
+
+    #[test]
+    fn fixture_05_results_share_a_session_and_differ_per_message() {
+        let results = results(T05);
+        let first = results.first().expect("first result");
+        let second = results.get(1).expect("second result");
+
+        assert_eq!(
+            first.session_id, second.session_id,
+            "the session id is stable across turns"
+        );
+        assert!(
+            first.uuid.is_some() && second.uuid.is_some(),
+            "each envelope carries its own uuid"
+        );
+        assert_ne!(
+            first.uuid, second.uuid,
+            "the per-message uuid differs per envelope"
+        );
+    }
+
+    #[test]
+    fn fixture_05_num_turns_resets_while_cost_accumulates() {
+        let results = results(T05);
+        let first = results.first().expect("first result");
+        let second = results.get(1).expect("second result");
+
+        assert_eq!(
+            first.num_turns, second.num_turns,
+            "num_turns is per-turn and resets; it is not a run-level counter (D-29)"
+        );
+
+        let first_cost = first.total_cost_usd.expect("first cost");
+        let second_cost = second.total_cost_usd.expect("second cost");
+        assert!(
+            second_cost > first_cost,
+            "total_cost_usd accumulates across turns: {first_cost} then {second_cost}"
+        );
+    }
+
+    // ========================================================================
+    // Error envelopes carry different fields from success envelopes (D-32)
+    // ========================================================================
+
+    #[test]
+    fn fixture_02_budget_envelope_has_no_result_and_a_populated_errors_array() {
+        let results = results(T02);
+        let envelope = results.first().expect("the budget transcript has one result");
+
+        assert_eq!(envelope.subtype, "error_max_budget_usd");
+        assert_eq!(envelope.terminal_reason.as_deref(), Some("budget_exhausted"));
+        assert!(
+            envelope.result.is_none(),
+            "result is absent on error envelopes and must not default to empty: {:?}",
+            envelope.result
+        );
+        assert!(
+            !envelope.errors.is_empty(),
+            "errors is populated only on error envelopes, got: {:?}",
+            envelope.errors
+        );
+    }
+
+    #[test]
+    fn a_success_envelope_carries_a_result_and_no_errors() {
+        let results = results(T01);
+        let envelope = results.first().expect("the clean baseline has one result");
+
+        assert_eq!(envelope.subtype, "success");
+        assert_eq!(envelope.result.as_deref(), Some("PONG"));
+        assert!(
+            envelope.errors.is_empty(),
+            "errors is absent on success envelopes, got: {:?}",
+            envelope.errors
+        );
+    }
+
+    // ========================================================================
+    // The replay marker is the only delivery ack the design has (D-31)
+    // ========================================================================
+
+    #[test]
+    fn a_user_message_carrying_the_replay_marker_parses_with_it_true() {
+        let raw = r#"{"type":"user","message":{"role":"user","content":[]},"session_id":"s","isReplay":true,"uuid":"u"}"#;
+        match parse_line(raw) {
+            Envelope::Parsed {
+                msg: StreamMessage::User(turn),
+                ..
+            } => assert!(turn.is_replay, "the camelCase marker must be read"),
+            other => panic!("expected a user turn message, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_user_message_omitting_the_replay_marker_parses_with_it_false() {
+        let raw = r#"{"type":"user","message":{"role":"user","content":[]},"session_id":"s","uuid":"u"}"#;
+        match parse_line(raw) {
+            Envelope::Parsed {
+                msg: StreamMessage::User(turn),
+                ..
+            } => assert!(
+                !turn.is_replay,
+                "the marker is ABSENT rather than false on non-replay messages, so it needs a default"
+            ),
+            other => panic!("expected a user turn message, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assistant_messages_parse_as_turn_messages() {
+        let count = messages(T03)
+            .into_iter()
+            .filter(|msg| matches!(msg, StreamMessage::Assistant(_)))
+            .count();
+        assert!(
+            count > 0,
+            "the tool-use transcript contains assistant turns; none parsed as one"
+        );
+    }
+
+    // ========================================================================
+    // control_response correlation (D-31)
+    // ========================================================================
+
+    #[test]
+    fn fixture_07_exposes_still_queued_through_the_doubly_nested_response() {
+        let responses: Vec<ControlResponse> = messages(T07)
+            .into_iter()
+            .filter_map(|msg| match msg {
+                StreamMessage::ControlResponse(response) => Some(response),
+                _ => None,
+            })
+            .collect();
+
+        let response = responses
+            .first()
+            .expect("the early-interrupt transcript carries a control_response");
+
+        assert!(
+            !response.response.request_id.is_empty(),
+            "the request id must be reachable for correlation"
+        );
+        assert_eq!(
+            response.response.subtype, "success",
+            "success here means the request was ACCEPTED, not that anything was cancelled"
+        );
+        assert!(
+            response.response.still_queued().is_empty(),
+            "fixture 07 cancelled nothing meaningful, so still_queued is empty: {:?}",
+            response.response.still_queued()
+        );
+    }
+
+    // ========================================================================
+    // Rate limiting, and the gate rather than the parser refusing a bad init
+    // ========================================================================
+
+    #[test]
+    fn a_rate_limit_event_parses_into_its_own_carried_variant() {
+        let count = messages(T01)
+            .into_iter()
+            .filter(|msg| matches!(msg, StreamMessage::RateLimitEvent(_)))
+            .count();
+        assert!(
+            count > 0,
+            "the clean baseline includes a rate_limit_event in the happy path"
+        );
+    }
+
+    #[test]
+    fn a_system_init_with_no_capabilities_parses_so_the_gate_can_refuse_it() {
+        for raw in [
+            r#"{"type":"system","subtype":"init","session_id":"s"}"#,
+            r#"{"type":"system","subtype":"init","session_id":"s","capabilities":[]}"#,
+        ] {
+            match parse_line(raw) {
+                Envelope::Parsed {
+                    msg: StreamMessage::System(SystemMessage::Init(init)),
+                    ..
+                } => assert!(
+                    init.capabilities.is_empty(),
+                    "an absent or empty array parses to empty; refusing it is the gate's job"
+                ),
+                other => panic!("the parser must not refuse this, got: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_mixed_casing_of_system_init_is_read_field_by_field() {
+        let init = inits(T01);
+        let init = init.first().expect("the clean baseline opens with an init");
+        assert_eq!(
+            init.claude_code_version.as_deref(),
+            Some("2.1.220"),
+            "a blanket camelCase rename would null this field out and make the version gate pass everything (Pitfall F)"
+        );
+        assert_eq!(init.api_key_source.as_deref(), Some("none"));
+        assert_eq!(init.permission_mode.as_deref(), Some("default"));
+    }
+
+    // ========================================================================
+    // Outbound wire shape (TRANS-01)
+    // ========================================================================
 
     #[test]
     fn the_outbound_user_message_matches_the_observed_wire_shape() {
