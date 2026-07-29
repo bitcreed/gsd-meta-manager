@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 17
 current_phase_name: Supervisor — Detach, Kill Switch, Dry-Run, Opt-In Gate
 status: executing
-stopped_at: v2.0 roadmap written — Phases 14-22 defined, traceability filled
-last_updated: "2026-07-29T16:39:06.434Z"
+stopped_at: Phase 17 executed and verified (8/8 plans) — awaiting transition
+last_updated: "2026-07-29T22:40:00.000Z"
 last_activity: 2026-07-29
-last_activity_desc: Phase 17 execution started
+last_activity_desc: Phase 17 gap closure (17-08) executed; VERIFICATION passed 5/5
 progress:
   total_phases: 9
   completed_phases: 3
-  total_plans: 25
-  completed_plans: 18
-  percent: 33
+  total_plans: 26
+  completed_plans: 26
+  percent: 44
 ---
 
 # Project State
@@ -28,10 +28,40 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 
 ## Current Position
 
-Phase: 17 (Supervisor — Detach, Kill Switch, Dry-Run, Opt-In Gate) — EXECUTING
-Plan: 1 of 7
-Status: Executing Phase 17
-Last activity: 2026-07-29 — Phase 17 execution started
+Phase: 17 (Supervisor — Detach, Kill Switch, Dry-Run, Opt-In Gate) — EXECUTED & VERIFIED
+Plan: 8 of 8
+Status: Phase 17 verification passed (5/5 ROADMAP criteria, 6/6 review blockers closed) — transition not yet run
+Last activity: 2026-07-29 — Phase 17 gap closure (17-08) merged; VERIFICATION.md written
+
+### Phase 17 gap-closure notes (autonomous run — review these)
+
+- **The code review (`17-REVIEW.md`, `issues_found`) found SIX BLOCKERS after all 7 plans had
+  executed and the gate was green.** All six were in the kill switch and its liveness probe —
+  the phase's own safety contract — and each made the goal's word "stoppable" false on a
+  reachable path. Plan **17-08** closed them: CR-01 (SIGTERM buffered during
+  `Executor::start()`, orphaning the agent group), CR-02 (the stop signalled an agent-writable
+  `pgid` out of `run.json`), CR-03 (the detached spawn dropped the TUI's `--config`, so a
+  driver could run in a different project than the user selected), CR-04 (a run whose
+  `--run-id` was not on argv read as dead and could not be stopped), CR-05 (`/proc`-only
+  liveness answering `false` off Linux, consumed as "already gone"), CR-06 (unregistering a
+  project abandoned its live agent with no stop path).
+
+- **Seventeen WARNINGS (WR-02..WR-17) are deliberately DEFERRED**, with a one-line reason each
+  in `17-08-PLAN.md`'s deferral table. WR-01 was folded in because CR-02's kernel-vs-record
+  agreement check is meaningless while the record's `pgid` is assumed rather than read. The
+  highest-value carry-forwards for a later phase: **WR-02** (`run_id` is joined into a path with
+  no component validation — the run directory can escape the project, reproduced), **WR-10**
+  (blocking `flock`/fs/git inside `async fn`, which already caused an observed deadlock in
+  `tests/driver_lock.rs`), **WR-15** (`DriverStopped` drops the observed run even when nothing
+  was stopped) and **WR-16** (the hidden `--claude-program` flag ships in release builds).
+
+- **`ObservedRun.live: bool` became `liveness: Liveness` + `is_live()`** so the third state
+  CR-05 requires can be carried. Phase 18 consumes `ObservedRun`; it must read the tri-state
+  rather than reintroducing a boolean.
+
+- **`--run-id` is now REQUIRED for a real `drive`** (a preview still works without one). The
+  "generated when absent" mode `cli.rs` and `driver/mod.rs` used to document is gone, because a
+  generated id never reaches argv and therefore made the run invisible to liveness.
 
 ### Phase 15 planning notes (autonomous run — review these)
 

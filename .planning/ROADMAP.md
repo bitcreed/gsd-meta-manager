@@ -88,7 +88,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 - [x] **Phase 14: UI Fixes** - Four display defects that misreport project state (completed 2026-07-29)
 - [x] **Phase 15: Transport Foundation** - Duplex `stream-json` executor with envelope-derived outcomes (completed 2026-07-29)
 - [x] **Phase 16: Run Journal & State Substrate** - Durable, redacted, cheap-to-read run record (completed 2026-07-29)
-- [ ] **Phase 17: Supervisor** - Detach, kill switch, dry-run, single-run lock, opt-in gate
+- [x] **Phase 17: Supervisor** - Detach, kill switch, dry-run, single-run lock, opt-in gate (completed 2026-07-29)
 - [ ] **Phase 18: Driver Tab, Live Watch & Durable Injection** - Manual ship point: run and steer from the TUI
 - [ ] **Phase 19: GITSAFE — Git & Blast-Radius Envelope** - Mechanically enforced push boundary
 - [ ] **Phase 20: Deterministic Decision Router & Run Bounds** - Rules pick the next command; runs stop themselves
@@ -253,7 +253,7 @@ phase's scope.
   - The lock must be `flock(2)`, never a PID file or in-memory flag. Opt-in must be a capability type (`DrivableProject`) constructible only from a validated opt-in record, never a bool checked at scattered call sites
 
 **Research**: skip — process-group signal handling and `flock` are standard Unix patterns, corroborated across all four research documents
-**Plans**: 8 plans — 7 executed, 1 gap closure pending (`17-REVIEW.md` found six blockers in the kill switch)
+**Plans**: 8/8 plans complete
 
 Plans:
 **Wave 1**
@@ -283,7 +283,7 @@ Plans:
 
 **Wave 7** *(blocked on Wave 6 — gap closure from `17-REVIEW.md`)*
 
-- [ ] 17-08-PLAN.md — Close the six review blockers: a stop during agent startup is acted on (CR-01), the kill switch signals a kernel-confirmed group (CR-02), the detached spawn carries the TUI's config (CR-03), a run that cannot be identified is refused (CR-04), an undeterminable liveness never reads as "gone" or "crashed" (CR-05), and unregistering cannot abandon a live agent (CR-06)
+- [x] 17-08-PLAN.md — Close the six review blockers: a stop during agent startup is acted on (CR-01), the kill switch signals a kernel-confirmed group (CR-02), the detached spawn carries the TUI's config (CR-03), a run that cannot be identified is refused (CR-04), an undeterminable liveness never reads as "gone" or "crashed" (CR-05), and unregistering cannot abandon a live agent (CR-06)
 
 ### Phase 18: Driver Tab, Live Watch & Durable Injection
 
@@ -410,7 +410,7 @@ Plans:
 | 14. UI Fixes | 4/4 | Complete    | 2026-07-29 |
 | 15. Transport Foundation | 8/8 | Complete    | 2026-07-29 |
 | 16. Run Journal & State Substrate | 6/6 | Complete    | 2026-07-29 |
-| 17. Supervisor | 7/7 | In Progress|  |
+| 17. Supervisor | 8/8 | Complete   | 2026-07-29 |
 | 18. Driver Tab, Live Watch & Durable Injection | 0/? | Not started | - |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 0/? | Not started | - |
 | 20. Deterministic Decision Router & Run Bounds | 0/? | Not started | - |
