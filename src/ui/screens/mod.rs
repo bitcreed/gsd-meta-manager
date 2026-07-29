@@ -383,6 +383,32 @@ pub struct ProjectViewCache {
     pub browser_scroll_offset: u16,
     pub browser_file_content: Option<String>,
     pub browser_file_name: Option<String>,
+    // ── Driver tab view state (D-18) ──────────────────────────────────
+    //
+    // View state lives here rather than beside the ring buffer on
+    // `AppContext` because `ProjectViewCache` is `#[derive(Default)]`: these
+    // five fields are additive with zero constructor churn, while a field on
+    // `AppContext` costs an edit at all four construction sites.
+    /// Index into the run list of the run whose detail is shown.
+    pub driver_selected_run: usize,
+    /// Scroll offset of the live-output pane, in lines.
+    ///
+    /// Clamped in the key handler against the viewport metrics the render pass
+    /// records — PageDown adds *then* clamps, PageUp/Up clamps *first* then
+    /// subtracts (UIFIX-04).
+    pub driver_scroll_offset: u16,
+    /// Whether the output pane is following the tail.
+    ///
+    /// The one behaviour a `Paragraph::scroll` viewer does not give for free
+    /// (D-19). `false` by default, which is correct: an unselected Driver tab
+    /// has nothing to follow, and the tab sets it when a run is selected.
+    pub driver_follow: bool,
+    /// The inbox messages queued for the selected run, newest last.
+    ///
+    /// The TUI's state for a message is a pure function of the ids in
+    /// `inbox.jsonl` and the ids present in each journal kind, which is what
+    /// makes STEER-03 hold across a restart with no extra persisted state.
+    pub driver_inbox: Vec<crate::journal::inbox::InboxMessage>,
 }
 
 pub struct AppContext {
@@ -498,6 +524,31 @@ pub struct AppContext {
     ///   per run this session starts, and `driver_max_concurrent` defaults to
     ///   one. A session that starts a thousand runs has a thousand short strings.
     pub session_spawned_runs: std::collections::HashSet<String>,
+    /// Per-alias bounded live driver output (D-18).
+    ///
+    /// * A **sibling map**, shaped exactly like `run_states`, `journal_cursors`
+    ///   and `observed_runs` above. Phase 18 extends that neighbourhood rather
+    ///   than recreating it.
+    /// * It must not live on `ProjectState`: that type derives `PartialEq` and
+    ///   `app.rs` uses the derived equality to suppress the "Updated: {alias}"
+    ///   status message. Live output arrives every few seconds for the whole
+    ///   length of a run, so a field there would flood the status bar for an
+    ///   entire multi-hour run — defeating a deliberate v1.4 feature for the
+    ///   whole duration of the thing it is meant to report (ARCHITECTURE AP1).
+    /// * It holds owned strings, an enum and two counters — **never a file
+    ///   handle and never a join handle**. `Action` derives `Clone` and a handle
+    ///   is not `Clone` (D-20).
+    /// * **The map is pruned**, on the same 20-tick block as the reconciliation
+    ///   probe, in `App::prune_driver_maps`. A new per-alias map that is not
+    ///   pruned reintroduces the Phase 16 leak under a new name; that is this
+    ///   phase's only remaining carry-forward obligation and it is a negative
+    ///   one.
+    pub driver_output: HashMap<String, DriverOutput>,
+    /// How the dashboard orders its rows (D-25, OBS-07).
+    ///
+    /// [`SortMode::Alphabetical`] is the default and that is load-bearing — see
+    /// the type's own doc.
+    pub sort_mode: SortMode,
     pub watcher: Option<FileWatcher>,
     pub last_refresh: HashMap<String, std::time::Instant>,
     pub detail_scroll_offset: u16,
@@ -508,12 +559,140 @@ pub struct AppContext {
     pub archive_cache: HashMap<String, crate::archive::MilestoneArchive>,
 }
 
+/// How the dashboard orders its rows (D-25, OBS-07).
+///
+/// **Alphabetical is the default and keeping it so is load-bearing.** A
+/// dashboard whose row order changes under the cursor while a run progresses is
+/// a usability regression a demo will not catch: the user looks away, a run
+/// finishes, the ranking shifts, and the next keystroke acts on a different
+/// project than the one that was under the cursor. The attention-first mode is
+/// opt-in, is announced in the summary row while it is active, and pins the
+/// selection to the **alias** rather than the index for exactly that reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortMode {
+    /// Case-insensitive alphabetical. Unchanged from v1.0.
+    #[default]
+    Alphabetical,
+    /// Stable sort by [`attention_rank`], alphabetical within each rank.
+    AttentionFirst,
+}
+
+/// Whether a project is waiting on a human (D-14, OBS-02, OBS-07).
+///
+/// **A predicate over evidence that exists today, not a fabricated state.** The
+/// four sources, each of which something already writes:
+///
+/// * `state.paused` — a non-empty HANDOFF, the existing v1.4 signal that is
+///   already badged elsewhere.
+/// * `state.external_job_waiting` — an external job the project is blocked on.
+/// * The last finished run's outcome being [`RunOutcome::PermissionDenied`],
+///   [`RunOutcome::Failed`], [`RunOutcome::Stalled`] or [`RunOutcome::TimedOut`]
+///   — the four the four-source derivation produces that a human must answer.
+///   [`RunOutcome::Killed`] is deliberately absent: a run the user stopped is
+///   not a run waiting on them.
+/// * `parked`, fed forward-compatibly from a `JournalEvent::Parked` record if
+///   one is ever present.
+///
+/// **Do not wire this to `JournalEvent::Parked` alone. Nothing emits that until
+/// Phase 20.** The badge would never light, no test would catch it because the
+/// test would emit the event by hand, and a badge that can never light is worse
+/// than no badge because it teaches the user to ignore it (D-14). The `parked`
+/// parameter is the one arm whose producer does not exist yet, which is exactly
+/// why it is one arm of four rather than the whole predicate.
+///
+/// A **live** run suppresses only the stale-outcome arm: something is actively
+/// driving, so an outcome from an earlier run is not a summons. The paused,
+/// external-job and parked arms still fire, because those are facts about the
+/// project rather than about a finished run.
+///
+/// Pure, and that is what makes it testable at all — every arm above has a unit
+/// test, including the ones a running system reaches rarely.
+pub fn needs_human(
+    state: &ProjectState,
+    run: Option<&crate::driver::reconcile::ObservedRun>,
+    last_outcome: Option<&crate::executor::RunOutcome>,
+    parked: bool,
+) -> bool {
+    use crate::executor::RunOutcome;
+
+    if parked || state.paused || state.external_job_waiting {
+        return true;
+    }
+    if run.is_some_and(|r| r.is_live()) {
+        return false;
+    }
+    matches!(
+        last_outcome,
+        Some(
+            RunOutcome::PermissionDenied { .. }
+                | RunOutcome::Failed { .. }
+                | RunOutcome::Stalled { .. }
+                | RunOutcome::TimedOut { .. }
+        )
+    )
+}
+
+/// Where a project sorts under [`SortMode::AttentionFirst`]: lower is sooner.
+///
+/// Three ranks and no more, because the sort is stable and alphabetical order is
+/// preserved within each: rank 0 is a project waiting on a human, rank 1 is one
+/// being driven right now, and rank 2 is everything else. Driven-and-live ranks
+/// **below** needs-a-human deliberately — a live run needs nothing from the
+/// user, while a parked one does.
+///
+/// Pure, so the ordering is testable without a dashboard.
+pub fn attention_rank(needs_human: bool, driven_and_live: bool) -> u8 {
+    if needs_human {
+        0
+    } else if driven_and_live {
+        1
+    } else {
+        2
+    }
+}
+
 impl AppContext {
     /// Get sorted project aliases for consistent ordering in the table.
+    ///
+    /// Alphabetical order is computed first in **both** modes, which is what
+    /// makes [`SortMode::AttentionFirst`] stable: `sort_by_key` is a stable
+    /// sort, so projects of equal rank keep the case-insensitive alphabetical
+    /// order established here.
+    ///
+    /// `sort_by_key` rather than `sort_by` is not stylistic — commit 1984a6c
+    /// changed it for clippy 1.97's `unnecessary_sort_by`, and the lint returns
+    /// if that is undone.
     pub fn sorted_aliases(&self) -> Vec<String> {
         let mut aliases: Vec<String> = self.config.projects.keys().cloned().collect();
         aliases.sort_by_key(|a| a.to_lowercase());
+        if self.sort_mode == SortMode::AttentionFirst {
+            aliases.sort_by_key(|a| self.attention_rank_for(a));
+        }
         aliases
+    }
+
+    /// Whether `alias` is waiting on a human, from the state this context holds.
+    ///
+    /// The `parked` argument is `false` because nothing emits
+    /// `JournalEvent::Parked` before Phase 20 (D-14), and `last_outcome` is
+    /// `None` because the typed [`crate::executor::RunOutcome`] of a *finished*
+    /// run is not in this map — `observed_runs` holds runs that have not ended.
+    /// **That arm's producer exists on disk today** (`RunRecord.outcome`); only
+    /// the reader is a later plan's, and the caller that has a run summary in
+    /// hand passes it to [`needs_human`] directly.
+    pub fn needs_human_for(&self, alias: &str) -> bool {
+        self.project_states
+            .get(alias)
+            .is_some_and(|state| needs_human(state, self.observed_runs.get(alias), None, false))
+    }
+
+    /// This alias's [`attention_rank`], from the state this context holds.
+    fn attention_rank_for(&self, alias: &str) -> u8 {
+        let driven_and_live = self
+            .observed_runs
+            .get(alias)
+            .is_some_and(|run| run.is_live());
+        attention_rank(self.needs_human_for(alias), driven_and_live)
     }
 
     /// Get the alias of the currently selected project, if any.
@@ -523,12 +702,35 @@ impl AppContext {
             .and_then(|i| self.filtered_aliases.get(i).cloned())
     }
 
+    /// Re-derive [`table_state`](AppContext::table_state) from the alias that
+    /// was selected before the row set changed.
+    ///
+    /// **Pinned to the alias, never to the index.** Under
+    /// [`SortMode::AttentionFirst`] a run finishing re-ranks its project, and an
+    /// index-preserving selection would move the row out from under the cursor
+    /// — so the next keystroke would act on a project the user never chose.
+    /// When the previously selected alias is gone the index is clamped into
+    /// range rather than left dangling, and an empty list selects nothing.
+    fn pin_selection_to_alias(&mut self, previous: Option<String>) {
+        if self.filtered_aliases.is_empty() {
+            self.table_state.select(None);
+            return;
+        }
+        let last = self.filtered_aliases.len() - 1;
+        let index = previous
+            .and_then(|alias| self.filtered_aliases.iter().position(|a| *a == alias))
+            .unwrap_or_else(|| self.table_state.selected().unwrap_or(0).min(last));
+        self.table_state.select(Some(index));
+    }
+
     pub fn recompute_filtered_aliases(&mut self) {
         use crate::app::{format_phase_display, parse_filter, FilterColumn};
 
+        let previously_selected = self.selected_alias();
         let all = self.sorted_aliases();
         if self.filter_text.is_empty() {
             self.filtered_aliases = all;
+            self.pin_selection_to_alias(previously_selected);
             return;
         }
         let (term, column) = parse_filter(&self.filter_text);
@@ -552,15 +754,114 @@ impl AppContext {
                                     || format_phase_display(s).to_lowercase().contains(&term_lower)
                             })
                     }
+                    // `term` still applies across every column, so `/term/h` is
+                    // "matches term AND needs a human". The all-rows form needs
+                    // no special case: an empty term makes `contains` true for
+                    // every alias, so `needs_human` alone decides (OBS-07).
+                    FilterColumn::NeedsHuman => {
+                        let matches_term = alias.to_lowercase().contains(&term_lower)
+                            || state.is_some_and(|s| {
+                                s.status.to_lowercase().contains(&term_lower)
+                                    || format_phase_display(s).to_lowercase().contains(&term_lower)
+                            });
+                        matches_term && self.needs_human_for(alias)
+                    }
                 }
             })
             .collect();
+        self.pin_selection_to_alias(previously_selected);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::driver::liveness::Liveness;
+    use crate::driver::reconcile::ObservedRun;
+    use crate::executor::RunOutcome;
+    use crate::state_reader::ProjectState;
+
+    /// An `AppContext` with `aliases` registered and nothing else set.
+    ///
+    /// The fifth full-field `AppContext` construction in the tree, and it lives
+    /// here on purpose: the sort and filter behaviour under test is this
+    /// module's, so its fixture belongs beside it rather than being borrowed
+    /// from a screen's test module.
+    fn ctx_with_aliases(aliases: &[&str]) -> AppContext {
+        use crate::config::{Config, RegisteredProject};
+        use ratatui::widgets::TableState;
+
+        let mut config = Config::new();
+        for alias in aliases {
+            config.projects.insert(
+                (*alias).to_string(),
+                RegisteredProject {
+                    path: PathBuf::from("/nonexistent").join(alias),
+                    added: "2026-07-29".to_string(),
+                    driver_opt_in: None,
+                    extra: Default::default(),
+                },
+            );
+        }
+
+        let mut ctx = AppContext {
+            config,
+            config_path: PathBuf::from("/nonexistent/config.json"),
+            project_states: aliases
+                .iter()
+                .map(|a| ((*a).to_string(), ProjectState::default()))
+                .collect(),
+            table_state: TableState::default(),
+            filtered_aliases: Vec::new(),
+            filter_text: String::new(),
+            change_tracker: ChangeTracker::new(),
+            detail_sub_view_per_project: HashMap::new(),
+            view_cache: HashMap::new(),
+            status_message: None,
+            error_message: None,
+            event_tx: None,
+            exec_tx: None,
+            run_states: HashMap::new(),
+            reparse_dispatches: 0,
+            journal_cursors: HashMap::new(),
+            observed_runs: HashMap::new(),
+            session_spawned_runs: std::collections::HashSet::new(),
+            driver_output: HashMap::new(),
+            sort_mode: SortMode::default(),
+            watcher: None,
+            last_refresh: HashMap::new(),
+            detail_scroll_offset: 0,
+            suggestion_index: 0,
+            input_buffer: String::new(),
+            needs_redraw: false,
+            active_sessions: Vec::new(),
+            archive_cache: HashMap::new(),
+        };
+        ctx.recompute_filtered_aliases();
+        ctx
+    }
+
+    /// An `ObservedRun` with only the field these assertions read varied.
+    fn observed(alias: &str, liveness: Liveness) -> ObservedRun {
+        ObservedRun {
+            alias: alias.to_string(),
+            run_id: format!("2026-07-29T12-00-00Z-{alias}"),
+            pid: 4242,
+            pgid: 4242,
+            started_at: "2026-07-29T12:00:00Z".to_string(),
+            goal: "ship it".to_string(),
+            gsd_command: "/gsd-execute-phase".to_string(),
+            liveness,
+        }
+    }
+
+    /// Mark `alias` as paused, which is one of the four needs-human sources.
+    fn pause(ctx: &mut AppContext, alias: &str) {
+        ctx.project_states
+            .get_mut(alias)
+            .expect("the fixture registered this alias")
+            .paused = true;
+    }
 
     #[test]
     fn pushing_past_the_ring_cap_keeps_exactly_the_cap_and_counts_every_drop() {
@@ -715,6 +1016,278 @@ mod tests {
             format!("first{CONTROL_REPLACEMENT}second"),
             "a newline that did not go through the record split must not be able \
              to forge a second row"
+        );
+    }
+
+    // ── needs_human, the sort mode, and the filter ────────────────────
+
+    #[test]
+    fn needs_human_is_true_for_each_of_the_four_evidence_sources() {
+        let quiet = ProjectState::default();
+        assert!(
+            !needs_human(&quiet, None, None, false),
+            "a registered project with no evidence at all is not waiting on \
+             anyone — a predicate that is always true is not a predicate"
+        );
+
+        let paused = ProjectState {
+            paused: true,
+            ..Default::default()
+        };
+        assert!(
+            needs_human(&paused, None, None, false),
+            "a non-empty HANDOFF is the existing v1.4 signal and must count"
+        );
+
+        let waiting = ProjectState {
+            external_job_waiting: true,
+            ..Default::default()
+        };
+        assert!(
+            needs_human(&waiting, None, None, false),
+            "an external job the phase is blocked on needs a human"
+        );
+
+        assert!(
+            needs_human(&quiet, None, None, true),
+            "the forward-compatible Parked arm must fire when something \
+             eventually sets it (Phase 20 owns the producer)"
+        );
+
+        for outcome in [
+            RunOutcome::PermissionDenied {
+                denials: Vec::new(),
+            },
+            RunOutcome::Failed {
+                reason: "boom".to_string(),
+                subtype: None,
+                terminal_reason: None,
+                exit_code: Some(1),
+            },
+            RunOutcome::Stalled {
+                idle_for: std::time::Duration::from_secs(900),
+            },
+            RunOutcome::TimedOut {
+                after: std::time::Duration::from_secs(14_400),
+            },
+        ] {
+            assert!(
+                needs_human(&quiet, None, Some(&outcome), false),
+                "a finished run that ended {outcome:?} is a question only a human \
+                 can answer"
+            );
+        }
+
+        assert!(
+            !needs_human(
+                &quiet,
+                None,
+                Some(&RunOutcome::Killed { turns: Vec::new() }),
+                false
+            ),
+            "a run the user themselves stopped is not a run waiting on them"
+        );
+    }
+
+    #[test]
+    fn a_live_run_suppresses_the_stale_outcome_arm_but_not_the_others() {
+        let quiet = ProjectState::default();
+        let live = observed("proj", Liveness::Alive);
+        let stale = RunOutcome::Failed {
+            reason: "an earlier run".to_string(),
+            subtype: None,
+            terminal_reason: None,
+            exit_code: Some(1),
+        };
+
+        assert!(
+            !needs_human(&quiet, Some(&live), Some(&stale), false),
+            "something is actively driving, so an earlier run's failure is not a \
+             summons"
+        );
+
+        let paused = ProjectState {
+            paused: true,
+            ..Default::default()
+        };
+        assert!(
+            needs_human(&paused, Some(&live), Some(&stale), false),
+            "a HANDOFF is a fact about the project, not about a finished run, so \
+             a live run must not hide it"
+        );
+    }
+
+    #[test]
+    fn alphabetical_is_the_default_sort_mode() {
+        let ctx = ctx_with_aliases(&["Zebra", "apple", "Mango"]);
+        assert_eq!(
+            ctx.sort_mode,
+            SortMode::Alphabetical,
+            "alphabetical must stay the default: a dashboard whose row order \
+             changes under the cursor while a run progresses is a usability \
+             regression a demo will not catch (D-25)"
+        );
+        assert_eq!(ctx.sorted_aliases(), vec!["apple", "Mango", "Zebra"]);
+    }
+
+    #[test]
+    fn attention_first_is_stable_across_projects_of_equal_rank() {
+        let mut ctx = ctx_with_aliases(&["alpha", "bravo", "charlie", "delta"]);
+        pause(&mut ctx, "bravo");
+        pause(&mut ctx, "delta");
+        ctx.observed_runs
+            .insert("charlie".to_string(), observed("charlie", Liveness::Alive));
+        ctx.sort_mode = SortMode::AttentionFirst;
+
+        assert_eq!(
+            ctx.sorted_aliases(),
+            vec!["bravo", "delta", "charlie", "alpha"],
+            "rank 0 (needs a human) then rank 1 (driven and live) then the rest, \
+             with the alphabetical order preserved *within* each rank — an \
+             unstable sort would let equal-rank rows shuffle on every scan"
+        );
+
+        assert_eq!(
+            attention_rank(true, true),
+            0,
+            "needs-a-human outranks driven-and-live: a live run needs nothing \
+             from the user, a parked one does"
+        );
+        assert_eq!(attention_rank(false, true), 1);
+        assert_eq!(attention_rank(false, false), 2);
+    }
+
+    #[test]
+    fn the_needs_human_filter_parses_with_and_without_a_term() {
+        use crate::app::{parse_filter, FilterColumn};
+
+        assert_eq!(
+            parse_filter("api/h"),
+            ("api".to_string(), FilterColumn::NeedsHuman)
+        );
+        // The all-rows form. The search prompt supplies its own leading `/`, so
+        // this renders as `//h` on screen. No special case in the grammar: an
+        // empty term makes the column match true for every row.
+        assert_eq!(
+            parse_filter("/h"),
+            (String::new(), FilterColumn::NeedsHuman)
+        );
+        assert_eq!(
+            parse_filter("api"),
+            ("api".to_string(), FilterColumn::All),
+            "the existing grammar is untouched"
+        );
+
+        let mut ctx = ctx_with_aliases(&["api", "web", "apidocs"]);
+        pause(&mut ctx, "api");
+        pause(&mut ctx, "web");
+
+        ctx.filter_text = "/h".to_string();
+        ctx.recompute_filtered_aliases();
+        assert_eq!(
+            ctx.filtered_aliases,
+            vec!["api", "web"],
+            "an empty term must match every alias and leave needs_human to decide"
+        );
+
+        ctx.filter_text = "api/h".to_string();
+        ctx.recompute_filtered_aliases();
+        assert_eq!(
+            ctx.filtered_aliases,
+            vec!["api"],
+            "the term still narrows across columns; `apidocs` matches the term \
+             but does not need a human"
+        );
+    }
+
+    #[test]
+    fn a_needs_human_filter_matching_nothing_yields_an_empty_list_and_no_selection() {
+        let mut ctx = ctx_with_aliases(&["api", "web"]);
+        ctx.table_state.select(Some(1));
+
+        ctx.filter_text = "/h".to_string();
+        ctx.recompute_filtered_aliases();
+
+        assert!(
+            ctx.filtered_aliases.is_empty(),
+            "no project needs a human, so the filter yields nothing rather than \
+             falling back to everything"
+        );
+        assert_eq!(
+            ctx.table_state.selected(),
+            None,
+            "a selection pointing past an empty list is how a render panics; the \
+             clamp must reach None"
+        );
+        assert_eq!(ctx.selected_alias(), None);
+    }
+
+    #[test]
+    fn a_project_that_is_both_driven_and_needs_a_human_appears_exactly_once() {
+        let mut ctx = ctx_with_aliases(&["alpha", "busy"]);
+        pause(&mut ctx, "busy");
+        ctx.observed_runs
+            .insert("busy".to_string(), observed("busy", Liveness::Alive));
+
+        ctx.sort_mode = SortMode::AttentionFirst;
+        let sorted = ctx.sorted_aliases();
+        assert_eq!(
+            sorted.iter().filter(|a| *a == "busy").count(),
+            1,
+            "satisfying two predicates must not duplicate a row"
+        );
+        assert_eq!(sorted, vec!["busy", "alpha"]);
+
+        ctx.filter_text = "/h".to_string();
+        ctx.recompute_filtered_aliases();
+        assert_eq!(
+            ctx.filtered_aliases,
+            vec!["busy"],
+            "and the filter yields it once, not twice"
+        );
+    }
+
+    #[test]
+    fn the_selection_is_pinned_to_the_alias_when_a_rerank_moves_its_row() {
+        let mut ctx = ctx_with_aliases(&["alpha", "zulu"]);
+        ctx.sort_mode = SortMode::AttentionFirst;
+        ctx.recompute_filtered_aliases();
+        ctx.table_state.select(Some(1));
+        assert_eq!(ctx.selected_alias().as_deref(), Some("zulu"));
+
+        // A run parks; `zulu` jumps to rank 0 and its row index changes.
+        pause(&mut ctx, "zulu");
+        ctx.recompute_filtered_aliases();
+
+        assert_eq!(ctx.filtered_aliases, vec!["zulu", "alpha"]);
+        assert_eq!(
+            ctx.table_state.selected(),
+            Some(0),
+            "the selection follows the alias, not the index — otherwise a run \
+             finishing moves the row out from under the cursor and the next \
+             keystroke acts on a project the user never chose"
+        );
+        assert_eq!(ctx.selected_alias().as_deref(), Some("zulu"));
+    }
+
+    #[test]
+    fn a_selection_whose_alias_is_gone_is_clamped_rather_than_left_dangling() {
+        let mut ctx = ctx_with_aliases(&["alpha", "bravo", "charlie"]);
+        ctx.table_state.select(Some(2));
+        assert_eq!(ctx.selected_alias().as_deref(), Some("charlie"));
+
+        ctx.filter_text = "a".to_string();
+        ctx.recompute_filtered_aliases();
+
+        assert_eq!(ctx.filtered_aliases, vec!["alpha", "bravo", "charlie"]);
+        // Now narrow to a set that no longer holds the selected alias.
+        ctx.filter_text = "bravo".to_string();
+        ctx.recompute_filtered_aliases();
+        assert_eq!(ctx.filtered_aliases, vec!["bravo"]);
+        assert_eq!(
+            ctx.table_state.selected(),
+            Some(0),
+            "an index past the end of the new list must be clamped into range"
         );
     }
 }

@@ -33,6 +33,13 @@ pub enum FilterColumn {
     Name,
     Phase,
     Status,
+    /// Rows satisfying [`crate::ui::screens::needs_human`] (OBS-07, D-25).
+    ///
+    /// Unlike the three column filters this one is a **predicate**, not a
+    /// column: the term still matches across every column and this narrows what
+    /// survives. `/h` alone (an empty term) is therefore "every project waiting
+    /// on a human" with no special case in the grammar.
+    NeedsHuman,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +51,12 @@ pub enum StatusCategory {
     Unknown,
 }
 
+/// Split a filter string into its term and the column or predicate it narrows.
+///
+/// The suffix grammar is `term/x`. `h` joins `n`, `p` and `s` for "needs a
+/// human" (OBS-07): the other three letters were taken and `h` is both free and
+/// mnemonic. On screen the search prompt supplies its own leading `/`, so the
+/// all-rows form renders as `//h` while the stored `filter_text` is `/h`.
 pub fn parse_filter(input: &str) -> (String, FilterColumn) {
     if let Some(term) = input.strip_suffix("/p") {
         (term.to_string(), FilterColumn::Phase)
@@ -51,6 +64,8 @@ pub fn parse_filter(input: &str) -> (String, FilterColumn) {
         (term.to_string(), FilterColumn::Name)
     } else if let Some(term) = input.strip_suffix("/s") {
         (term.to_string(), FilterColumn::Status)
+    } else if let Some(term) = input.strip_suffix("/h") {
+        (term.to_string(), FilterColumn::NeedsHuman)
     } else {
         (input.to_string(), FilterColumn::All)
     }
@@ -156,6 +171,8 @@ impl App {
             journal_cursors: HashMap::new(),
             observed_runs: HashMap::new(),
             session_spawned_runs: std::collections::HashSet::new(),
+            driver_output: HashMap::new(),
+            sort_mode: crate::ui::screens::SortMode::default(),
             watcher: None,
             last_refresh: HashMap::new(),
             detail_scroll_offset: 0,

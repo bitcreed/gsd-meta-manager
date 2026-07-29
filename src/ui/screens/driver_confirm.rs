@@ -345,6 +345,8 @@ mod tests {
             journal_cursors: HashMap::new(),
             observed_runs: HashMap::new(),
             session_spawned_runs: std::collections::HashSet::new(),
+            driver_output: HashMap::new(),
+            sort_mode: crate::ui::screens::SortMode::default(),
             watcher: None,
             last_refresh: HashMap::new(),
             detail_scroll_offset: 0,
