@@ -164,6 +164,24 @@ async fn main() -> anyhow::Result<()> {
             app.ctx.active_sessions = initial_sessions;
             app.auto_register_new_sessions();
 
+            // Startup scan, second half: find driver runs that outlived a
+            // previous TUI session. The 20-tick block handles the same logic
+            // ongoing (every ~5s), but this closes the gap between launch and
+            // the first poll — which is the whole of "reopening the TUI shows
+            // that run still live" (CTRL-04, D-13).
+            //
+            // Synchronous for the same reason the session scan above is: the TUI
+            // is not yet in its loop, so there is no render thread to block.
+            //
+            // The scan writes nothing (D-12). A run whose driver died without an
+            // `ended_at` comes back with `live == false` and its record is left
+            // exactly as the dead driver left it.
+            app.ctx.observed_runs =
+                gsd_meta_manager::driver::reconcile::reconcile_all(&app.ctx.config.projects)
+                    .into_iter()
+                    .map(|run| (run.alias.clone(), run))
+                    .collect();
+
             event_bus.spawn_crossterm_reader();
             // Keep the 250ms tick. It drives the 20-tick session poll and the
             // 3s status-message expiry; `pump`'s 16ms redraw interval is a

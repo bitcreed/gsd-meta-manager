@@ -154,6 +154,7 @@ impl App {
             run_states: HashMap::new(),
             reparse_dispatches: 0,
             journal_cursors: HashMap::new(),
+            observed_runs: HashMap::new(),
             watcher: None,
             last_refresh: HashMap::new(),
             detail_scroll_offset: 0,
@@ -446,6 +447,26 @@ impl App {
                             let _ = tx.send(Action::SessionsDetected { sessions });
                         });
                     }
+
+                    // The driver reconciliation probe rides THIS counter and
+                    // must never get one of its own (D-13, ARCHITECTURE §4.4(c)
+                    // are both explicit). Two timers polling `/proc` and
+                    // `run.json` at slightly different phases would double the
+                    // syscall load for no extra freshness and would make "how
+                    // stale can the dashboard be?" a question with two answers.
+                    // Do not tidy this into its own interval.
+                    //
+                    // `spawn_blocking` for the same reason as the line above:
+                    // `/proc` reads and `run.json` reads are synchronous fs work
+                    // and this file's idiom for that is unambiguous.
+                    if let Some(ref tx) = self.ctx.event_tx {
+                        let tx: UnboundedSender<Action> = tx.clone();
+                        let projects = self.ctx.config.projects.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let runs = crate::driver::reconcile::reconcile_all(&projects);
+                            let _ = tx.send(Action::RunsReconciled { runs });
+                        });
+                    }
                 }
             }
             Action::RawKey(key_event) => {
@@ -685,7 +706,123 @@ impl App {
 
                 self.ctx.journal_cursors.insert((alias, run_id), cursor);
             }
+            // The scan is authoritative, so the map is **replaced** and never
+            // merged (D-12, D-13). A merge would keep a run in the map after its
+            // project was unregistered, or after it ended — the absence of an
+            // entry is how the scan says both of those things, and a merge
+            // discards exactly that information.
+            Action::RunsReconciled { runs } => {
+                let observed: HashMap<String, crate::driver::reconcile::ObservedRun> = runs
+                    .into_iter()
+                    .map(|run| (run.alias.clone(), run))
+                    .collect();
+
+                // Equality-guarded redraw, following this file's existing
+                // discipline: a scan lands every ~5s for the whole life of the
+                // process, and an unconditional redraw here would repaint the
+                // frame twelve times a minute forever with nothing changed.
+                if self.ctx.observed_runs != observed {
+                    // Counts only. A goal string is user content and a run id is
+                    // not worth a line every five seconds (D-28).
+                    tracing::debug!(
+                        observed = observed.len(),
+                        live = observed.values().filter(|run| run.live).count(),
+                        "driver reconciliation scan applied",
+                    );
+                    self.ctx.observed_runs = observed;
+                    self.needs_redraw = true;
+                }
+            }
         }
+    }
+
+    /// Start a driver run against `alias`, or refuse visibly (D-03, D-18).
+    ///
+    /// The order of the body is the decision:
+    ///
+    /// 1. Look the alias up, refusing an unknown one through `ctx.error_message`.
+    /// 2. [`admit`](crate::driver::spawn::admit) against
+    ///    `preferences.driver_max_concurrent`, counting the live entries of the
+    ///    reconciliation scan's own result. Refuse through `ctx.error_message`.
+    /// 3. Generate the run id **here** — the TUI owns the id so it knows what to
+    ///    look for afterwards, and the driver owns the record because `run.json`
+    ///    carries the driver's own pid and pgid, which only the driver knows
+    ///    (D-03).
+    /// 4. Build the argv, spawn detached, report either way.
+    ///
+    /// **There is deliberately no opt-in check here, and the absence is the
+    /// point** (D-16). The gate lives in the child, at `driver::drive`, which is
+    /// what makes CTRL-03's "never" literally true for both entry points: a user
+    /// typing `gsd-meta-manager drive foo` by hand is refused by the same code
+    /// path as this one. A second check here would put the gate at two call
+    /// sites, and "exactly one call site" is a property
+    /// `tests/spawn_seam_guard.rs` can check while "every branch remembered to
+    /// gate" is not.
+    ///
+    /// Unix-only, like the rest of the driver (D-05). The TUI itself stays
+    /// cross-platform; a Windows build simply has no way to start a run.
+    #[cfg(unix)]
+    pub fn start_driver_run(&mut self, alias: &str, command: &str, goal: Option<&str>) {
+        use crate::driver::spawn::{admit, drive_argv, spawn_detached};
+
+        let Some(project) = self.ctx.config.projects.get(alias) else {
+            self.ctx.error_message = Some(format!("No registered project named '{alias}'"));
+            self.needs_redraw = true;
+            return;
+        };
+        let project_root = project.path.clone();
+
+        let live = self
+            .ctx
+            .observed_runs
+            .values()
+            .filter(|run| run.live)
+            .count();
+        if let Err(refusal) = admit(live, self.ctx.config.preferences.driver_max_concurrent) {
+            self.ctx.error_message = Some(refusal.to_string());
+            self.needs_redraw = true;
+            return;
+        }
+
+        let run_id = crate::journal::new_run_id(chrono::Utc::now(), &uuid::Uuid::new_v4());
+        let argv = drive_argv(alias, command, &run_id, goal);
+
+        match spawn_detached(&project_root, &argv) {
+            Ok(pid) => {
+                self.ctx.status_message = Some((
+                    format!("Driving {alias} — run {run_id}"),
+                    std::time::Instant::now(),
+                ));
+                // An optimistic entry so the dashboard does not wait up to five
+                // seconds for the first scan to notice. The next scan replaces
+                // it wholesale from disk, which is what corrects it if the
+                // driver refused at its own gate and exited immediately.
+                self.ctx.observed_runs.insert(
+                    alias.to_string(),
+                    crate::driver::reconcile::ObservedRun {
+                        alias: alias.to_string(),
+                        run_id,
+                        pid,
+                        // The child is its own group leader, so pgid == pid
+                        // (D-04). The scan reads the driver's own record a few
+                        // seconds later and would correct this if it were wrong.
+                        pgid: pid,
+                        started_at: chrono::Utc::now()
+                            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                        goal: goal.unwrap_or_default().to_string(),
+                        gsd_command: command.to_string(),
+                        live: true,
+                    },
+                );
+            }
+            Err(e) => {
+                // A spawn failure is synchronous and leaves genuinely nothing on
+                // disk, which is the correct state rather than a lost run (D-03).
+                self.ctx.error_message =
+                    Some(format!("Could not start a driver for '{alias}': {e}"));
+            }
+        }
+        self.needs_redraw = true;
     }
 
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
@@ -998,6 +1135,150 @@ mod tests {
         // is not passing because the map went unused everywhere.
         app.update(planning_change(root));
         assert!(app.ctx.last_refresh.contains_key(OBS_ALIAS));
+    }
+
+    /// An `ObservedRun` with only the fields these assertions read varied.
+    fn observed(alias: &str, run_id: &str, live: bool) -> crate::driver::reconcile::ObservedRun {
+        crate::driver::reconcile::ObservedRun {
+            alias: alias.to_string(),
+            run_id: run_id.to_string(),
+            pid: 4242,
+            pgid: 4242,
+            started_at: "2026-07-29T09:00:00Z".to_string(),
+            goal: "ship it".to_string(),
+            gsd_command: "/gsd-progress".to_string(),
+            live,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reconciliation_result_replaces_the_observed_map_rather_than_merging_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        // A run the previous scan saw, whose project has since been
+        // unregistered — or whose run has since ended. Either way the new scan
+        // expresses that by NOT returning it, and a merge would keep it forever.
+        app.ctx
+            .observed_runs
+            .insert("gone".to_string(), observed("gone", "run-old", true));
+
+        app.update(Action::RunsReconciled {
+            runs: vec![observed(OBS_ALIAS, "run-new", true)],
+        });
+
+        assert_eq!(
+            app.ctx.observed_runs.len(),
+            1,
+            "the scan is authoritative: a stale entry must be dropped, not merged"
+        );
+        assert!(!app.ctx.observed_runs.contains_key("gone"));
+        assert_eq!(app.ctx.observed_runs[OBS_ALIAS].run_id, "run-new");
+
+        // An empty scan clears the map outright, which is how "every run ended"
+        // is expressed.
+        app.update(Action::RunsReconciled { runs: Vec::new() });
+        assert!(app.ctx.observed_runs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_reconciliation_result_does_not_request_a_redraw() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        app.update(Action::RunsReconciled {
+            runs: vec![observed(OBS_ALIAS, "run-a", true)],
+        });
+
+        // The scan lands every ~5s for the whole life of the process. Without
+        // the equality guard this would repaint twelve times a minute forever
+        // with nothing on screen changed.
+        app.needs_redraw = false;
+        app.update(Action::RunsReconciled {
+            runs: vec![observed(OBS_ALIAS, "run-a", true)],
+        });
+        assert!(
+            !app.needs_redraw,
+            "an identical scan result must not request a redraw"
+        );
+
+        // The control arm: a real change still does.
+        app.update(Action::RunsReconciled {
+            runs: vec![observed(OBS_ALIAS, "run-a", false)],
+        });
+        assert!(
+            app.needs_redraw,
+            "a run going from live to crashed must request a redraw, or the guard \
+             above is suppressing genuine updates too"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_driver_run_is_refused_when_the_live_count_already_meets_the_cap() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        assert_eq!(app.ctx.config.preferences.driver_max_concurrent, 1);
+        app.ctx
+            .observed_runs
+            .insert("busy".to_string(), observed("busy", "run-live", true));
+
+        app.start_driver_run(OBS_ALIAS, "/gsd-progress", None);
+
+        let refusal = app
+            .ctx
+            .error_message
+            .as_deref()
+            .expect("the refusal must be visible to the user, not silent");
+        assert!(
+            refusal.contains("driver_max_concurrent"),
+            "the refusal must name the setting that governs it, got: {refusal}"
+        );
+        assert!(
+            !app.ctx.observed_runs.contains_key(OBS_ALIAS),
+            "a refused spawn must add no optimistic entry"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_driver_run_against_an_unknown_alias_is_refused_visibly() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        app.start_driver_run("nosuchalias", "/gsd-progress", None);
+
+        let refusal = app.ctx.error_message.as_deref().expect("a visible refusal");
+        assert!(refusal.contains("nosuchalias"), "got: {refusal}");
+        assert!(app.ctx.observed_runs.is_empty());
+    }
+
+    /// A crashed run does NOT count against the cap.
+    ///
+    /// It is still surfaced — a run that died without an ending is exactly what
+    /// a user needs to be told about — but it consumes no quota, so counting it
+    /// would leave a project permanently unstartable after one crash, with no
+    /// way out but editing `config.json`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_crashed_run_does_not_consume_a_concurrency_slot() {
+        use crate::driver::spawn::admit;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.ctx
+            .observed_runs
+            .insert("dead".to_string(), observed("dead", "run-crashed", false));
+
+        let live = app
+            .ctx
+            .observed_runs
+            .values()
+            .filter(|run| run.live)
+            .count();
+        assert_eq!(live, 0);
+        assert!(admit(live, app.ctx.config.preferences.driver_max_concurrent).is_ok());
     }
 
     #[tokio::test]

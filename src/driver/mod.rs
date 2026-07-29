@@ -30,10 +30,10 @@
 //!    There is no loop and no sequence. The decision router is Phase 20's, which
 //!    is why [`DriveArgs::command`] is a single `String` and not a `Vec`.
 //!
-//! [`lock`] landed in plan 17-02 and [`dry_run`] in 17-04. Later plans add
-//! `spawn`, `liveness` and `reconcile` (17-05) and `kill` (17-06) as siblings.
-//! They are deliberately not stubbed here: an empty module for a later phase is
-//! a promise the compiler cannot keep.
+//! [`lock`] landed in plan 17-02, [`dry_run`] in 17-04, and [`liveness`] and
+//! [`reconcile`] in 17-05. Later plans add `kill` (17-06) as a sibling. Nothing
+//! is stubbed ahead of time: an empty module for a later phase is a promise the
+//! compiler cannot keep.
 
 // Deliberately **outside** the `#[cfg(unix)]` block below. Point 2 above makes
 // the *running* of an agent Unix-only; a preview is git reads and string
@@ -41,10 +41,20 @@
 // make the one mode that needs no platform facility the one mode a Windows
 // build could not even check.
 pub mod dry_run;
+// Also outside the block, and for a related but distinct reason. Both modules
+// are `/proc` and `run.json` **reads**, and D-10 is explicit that they should
+// carry `src/session_detector.rs`'s honest-failure posture — that module has no
+// platform attributes at all and its reads simply yield nothing off Linux —
+// rather than diverging from the module they copy. A `cfg` here would also gate
+// the reconciliation scan out of the TUI, which is cross-platform.
+pub mod liveness;
+pub mod reconcile;
 #[cfg(unix)]
 pub mod lock;
 #[cfg(unix)]
 pub mod run;
+#[cfg(unix)]
+pub mod spawn;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
