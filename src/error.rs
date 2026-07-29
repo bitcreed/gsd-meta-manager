@@ -449,6 +449,27 @@ pub enum DriveError {
     /// `--dry-run` is unaffected: a preview creates no run to identify (D-22,
     /// D-24).
     RunIdRequired,
+    /// The run id is present but is not a single plain path component (D-27,
+    /// WR-02).
+    ///
+    /// **The sibling of [`DriveError::RunIdRequired`], and it exists so the
+    /// common case fails loudly instead of quietly yielding `None`.**
+    /// `journal::run_paths` already refuses a traversing id, which is what makes
+    /// the hole unreachable — but a refusal that only manifests as an absent
+    /// `RunPaths` deep inside the journal would surface to the operator as a run
+    /// that simply did nothing. `--run-id '../../../../escaped'` was
+    /// *reproduced* against the shipped tree: it created `run.json` and
+    /// `journal.jsonl` outside the project, in a directory with no `.gitignore`,
+    /// and exited 0.
+    ///
+    /// It carries the offending id because the caller passed it and can only act
+    /// on the message if it names what was wrong. That is the one place the
+    /// untrusted value is echoed, and it is echoed to the operator's own
+    /// terminal rather than into a log, a journal record or a render surface.
+    RunIdInvalid {
+        /// The id that was refused, verbatim.
+        run_id: String,
+    },
     /// The opt-in gate refused before anything was spawned.
     OptIn(OptInError),
     // `DryRunUnavailable` lived here between plans 17-01 and 17-04. It said
@@ -491,6 +512,13 @@ impl fmt::Display for DriveError {
                  stoppable and countable afterwards. Pass one, or use `--dry-run`, \
                  which creates no run to identify"
             ),
+            Self::RunIdInvalid { run_id } => write!(
+                f,
+                "the run id {run_id:?} is not a single directory name, so it is refused \
+                 before anything is created. A run id names one directory under \
+                 .planning/meta-manager/runs/; it may not contain a path separator, \
+                 `..`, or a leading `/`"
+            ),
             Self::OptIn(err) => write!(f, "{err}"),
             Self::Lock(err) => write!(f, "{err}"),
             Self::Spawn(err) => write!(f, "{err}"),
@@ -511,7 +539,10 @@ impl std::error::Error for DriveError {
             Self::Lock(err) => Some(err),
             Self::Spawn(err) => Some(err),
             // No source: these carry their whole story in their own text.
-            Self::UnsupportedPlatform { .. } | Self::RunIdRequired | Self::Journal { .. } => None,
+            Self::UnsupportedPlatform { .. }
+            | Self::RunIdRequired
+            | Self::RunIdInvalid { .. }
+            | Self::Journal { .. } => None,
         }
     }
 }

@@ -78,6 +78,7 @@ use std::path::PathBuf;
 use crate::config::{Config, RegisteredProject};
 use crate::error::{DriveError, OptInError};
 use crate::executor::DrivableProject;
+use crate::journal;
 
 /// Everything one `drive` invocation was asked to do.
 ///
@@ -163,9 +164,12 @@ fn platform_refusal(liveness_supported: bool, dry_run: bool) -> Option<DriveErro
 ///    17-04 adds. **Gating before the preview branch is stricter than CTRL-03
 ///    requires, and it is deliberate:** one gate call site is mechanically
 ///    verifiable, two are an invitation to add a third.
-/// 4. Refuse a real run that cannot be stopped ([`platform_refusal`]) or cannot
-///    be identified ([`DriveError::RunIdRequired`]). Both sit **after** the
-///    dry-run branch, so neither reaches a preview.
+/// 4. Refuse a real run that cannot be stopped ([`platform_refusal`]), that
+///    cannot be identified ([`DriveError::RunIdRequired`]), or whose id is not a
+///    single plain path component ([`DriveError::RunIdInvalid`], D-27). All
+///    three sit **after** the dry-run branch, so none reaches a preview, and all
+///    three sit **before** `dispatch`, so a refused run has created nothing at
+///    all: no lock file, no run directory, no `run.json`, no journal.
 /// 5. Dispatch to the platform handler, which is the run body on Unix and a
 ///    typed refusal everywhere else (D-05).
 pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
@@ -212,8 +216,21 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
         return Err(refusal);
     }
 
-    if args.run_id.is_none() {
+    // Two questions about the same field, in the order they can be answered:
+    // is there an id at all, and is the id a name rather than a path (D-27).
+    // The second refusal is here, at the seam where a bad id first arrives,
+    // rather than only inside `journal::run_paths` — that helper's `Option` is
+    // what makes the hole *unreachable*, and this is what makes the common case
+    // fail **loudly and non-zero** instead of quietly yielding a run that did
+    // nothing. `--run-id '../../../../escaped'` was reproduced against the
+    // shipped tree writing outside the project with exit 0.
+    let Some(run_id) = args.run_id.as_deref() else {
         return Err(DriveError::RunIdRequired);
+    };
+    if !journal::is_plain_run_id(run_id) {
+        return Err(DriveError::RunIdInvalid {
+            run_id: run_id.to_string(),
+        });
     }
 
     dispatch(project, &args, entry).await

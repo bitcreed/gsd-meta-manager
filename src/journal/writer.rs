@@ -466,11 +466,37 @@ pub fn clear_active_pointer(runs_root: &Path) -> anyhow::Result<()> {
 /// directory's removal and the pointer's clear, or a hand-edited file — and the
 /// listing wins. A disagreement is logged, because it is a real anomaly even
 /// though it is recoverable.
+///
+/// **The component check runs before the existence check, and the read side is
+/// the half that matters more** (D-27, WR-02). The `active` file lives inside
+/// the driven project, so **the agent controls it** — and this subsystem runs
+/// unattended with git and push rights. The write side needs a hostile operator
+/// or a hostile script; this side needs only the agent the user already asked to
+/// run. `is_dir()` was the sole guard and a traversing path satisfies it
+/// happily, after which `reconcile_one` read `run.json` from anywhere on the
+/// filesystem and `App::schedule_journal_tail` tailed anything into a render
+/// surface. Ordering the checks the other way would ask the filesystem about the
+/// hostile path before refusing it, which is a smaller hole rather than none.
+///
+/// The signature does not change: this already answered `Option<String>`, and a
+/// pointer that names something other than a run directory is exactly the "no
+/// active run" this function is for.
 pub fn read_active_run(planning_dir: &Path) -> Option<String> {
     let root = runs_root(planning_dir);
     let raw = std::fs::read_to_string(root.join("active")).ok()?;
     let run_id = raw.trim();
     if run_id.is_empty() {
+        return None;
+    }
+    if !super::is_plain_run_id(run_id) {
+        // The same register as the stale-pointer warning below, and content-free
+        // for the same reason every log line in this tree is: the refused value
+        // is the untrusted one (D-28).
+        tracing::warn!(
+            "the active pointer under {} names a path that is not a single directory \
+             component; it is refused rather than followed",
+            root.display()
+        );
         return None;
     }
     if !root.join(run_id).is_dir() {
