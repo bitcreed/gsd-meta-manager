@@ -48,13 +48,13 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use uuid::Uuid;
 
 use crate::error::{CapabilityError, SendError, SpawnError};
-use crate::executor::gate::{self, GateFacts};
+use crate::executor::gate::{self, GateOutcome};
 use crate::executor::outcome::{derive_run_outcome, RunSnapshot};
 use crate::executor::stream_json::{parse_line, Envelope, StreamMessage, SystemMessage, UserMessage};
 use crate::executor::{
     encode_interrupt, BoxFuture, DrivableProject, ExecutionEvent, ExecutionHandle, ExecutionId,
-    ExecutionOptions, ExecutionTarget, Executor, InterruptAck, PendingControl, RunOutcome,
-    TurnOutcome, WriterCommand,
+    ExecutionOptions, ExecutionTarget, Executor, InterruptAck, PendingControl, PermissionMode,
+    RunOutcome, TurnOutcome, WriterCommand,
 };
 
 /// Upper bound on one stream line, **in bytes**.
@@ -283,6 +283,7 @@ impl ClaudeExecutor {
                 cancel_rx,
                 running: Arc::clone(&running),
                 first_message,
+                permission_mode: options.permission_mode,
                 before,
                 project_root: root,
             }
@@ -564,11 +565,14 @@ struct Coordinator {
     events_tx: mpsc::Sender<ExecutionEvent>,
     writer_tx: mpsc::Sender<WriterCommand>,
     pending_control: PendingControl,
-    gate_tx: oneshot::Sender<Result<GateFacts, SpawnError>>,
+    gate_tx: oneshot::Sender<Result<GateOutcome, SpawnError>>,
     outcome_tx: oneshot::Sender<RunOutcome>,
     cancel_rx: oneshot::Receiver<()>,
     running: Arc<AtomicBool>,
     first_message: String,
+    /// What the argv asked for, so the gate can confirm the flag took effect
+    /// against what `system/init` reports back (D-15).
+    permission_mode: PermissionMode,
     before: RunSnapshot,
     project_root: PathBuf,
 }
@@ -586,6 +590,7 @@ impl Coordinator {
             mut cancel_rx,
             running,
             first_message,
+            permission_mode,
             before,
             project_root,
         } = self;
@@ -616,6 +621,7 @@ impl Coordinator {
                                 &mut refused,
                                 &mut turns,
                                 &first_message,
+                                permission_mode,
                             )
                             .await;
                         }
@@ -660,9 +666,12 @@ impl Coordinator {
         let after = capture_snapshot(project_root).await;
 
         let outcome = match refused {
-            Some(CapabilityError::MissingCapabilities { missing, .. }) => {
-                RunOutcome::CapabilityRefused { missing }
-            }
+            // Every refusal path projects onto the same coarse outcome the TUI
+            // renders. The typed `CapabilityError` returned by `start()` is the
+            // fidelity-preserving surface; this is deliberately the lossy one.
+            Some(err) => RunOutcome::CapabilityRefused {
+                missing: err.unmet_requirements(),
+            },
             None if cancelled => RunOutcome::Killed { turns },
             None => derive_run_outcome(&turns, status, &before, &after),
         };
@@ -682,11 +691,12 @@ async fn handle_item(
     events_tx: &mpsc::Sender<ExecutionEvent>,
     writer_tx: &mpsc::Sender<WriterCommand>,
     pending_control: &PendingControl,
-    gate_tx: &mut Option<oneshot::Sender<Result<GateFacts, SpawnError>>>,
+    gate_tx: &mut Option<oneshot::Sender<Result<GateOutcome, SpawnError>>>,
     gated: &mut bool,
     refused: &mut Option<CapabilityError>,
     turns: &mut Vec<TurnOutcome>,
     first_message: &str,
+    permission_mode: PermissionMode,
 ) -> bool {
     match item {
         ReaderItem::Truncated { bytes, prefix } => {
@@ -706,7 +716,7 @@ async fn handle_item(
                 .is_ok(),
 
             StreamMessage::System(SystemMessage::Init(init)) if !*gated => {
-                match gate::check_init(&init) {
+                match gate::validate_first_init(&init, permission_mode) {
                     Ok(facts) => {
                         *gated = true;
                         if let Some(tx) = gate_tx.take() {
@@ -861,12 +871,12 @@ mod tests {
     fn the_argv_never_carries_a_permission_bypass() {
         // The forbidden tokens are assembled from fragments rather than
         // written out: this file is itself grepped for those literals as the
-        // mechanical D-15 guard, and a test asserting their absence must not
-        // be what makes the guard report their presence.
+        // mechanical D-15 and D-08 guards, and a test asserting their absence
+        // must not be what makes a guard report their presence.
         let forbidden = [
             concat!("--dangerously", "-skip-permissions"),
             concat!("bypass", "Permissions"),
-            "--bare",
+            concat!("--ba", "re"),
         ];
         let argv = argv_strings(&ExecutionOptions::default());
         for token in forbidden {

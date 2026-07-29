@@ -144,9 +144,15 @@ impl std::error::Error for SendError {
 
 /// Why the observed CLI cannot be driven.
 ///
+/// **Every variant here is a refusal, never a warning.** A refusal that becomes
+/// advice is worse than no gate at all, because the user believes they were
+/// protected (TRANS-04). Each `Display` names the concrete observed value
+/// rather than saying a check "did not match", so the diagnostic is actionable
+/// without re-running anything.
+///
 /// Feature detection is by `capabilities[]` on `system/init`, never by
-/// comparing version strings (D-06). The error always names what is missing so
-/// the user sees a capability, not a version number.
+/// comparing version strings (D-06). The version floor is a separate,
+/// narrower claim — see [`CapabilityError::VersionBelowFloor`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityError {
     /// The first `system/init` did not advertise every required capability.
@@ -158,6 +164,68 @@ pub enum CapabilityError {
         /// Everything the CLI did advertise, carried for the diagnostic.
         observed: Vec<String>,
     },
+    /// The CLI is older than the supported floor (D-07). This is not feature
+    /// detection: it is the one property `capabilities[]` cannot express,
+    /// because a CLI that truncates its own terminal envelope cannot advertise
+    /// that it does.
+    VersionBelowFloor {
+        /// The version string the CLI reported, verbatim.
+        observed: String,
+        /// The floor it failed, rendered.
+        floor: String,
+    },
+    /// The CLI reported no version, or one that is not three numeric
+    /// components. Refused rather than assumed new enough: a blanket-renamed
+    /// struct silently nulling this field is exactly how a version gate comes
+    /// to pass everything (D-07, Pitfall F).
+    VersionUnreadable {
+        /// What was reported, if anything at all.
+        observed: Option<String>,
+    },
+    /// The auth-source regression guard fired (D-08). Anthropic states the flag
+    /// that skips the keychain read will become the default for print mode in a
+    /// future release; when that happens this fails loudly at run start instead
+    /// of producing a mysteriously context-free agent mid-run. An **absent**
+    /// field is a guard failure, not a pass — a future CLI that drops the field
+    /// is precisely the silent regression being defended against.
+    AuthPathChanged {
+        /// The reported source, or `None` if the field was absent entirely.
+        observed: Option<String>,
+        /// The value that means the subscription/OAuth path is alive.
+        expected: &'static str,
+    },
+}
+
+impl CapabilityError {
+    /// The unmet requirements, one per line, for a coarse run-outcome display.
+    ///
+    /// The typed error is the fidelity-preserving surface and is what
+    /// `Executor::start` returns; this is the lossy projection onto the
+    /// outcome the TUI renders after the fact.
+    pub fn unmet_requirements(&self) -> Vec<String> {
+        match self {
+            Self::MissingCapabilities { missing, .. } => missing.clone(),
+            Self::VersionBelowFloor { observed, floor } => {
+                vec![format!("claude_code_version >= {floor} (observed {observed})")]
+            }
+            Self::VersionUnreadable { observed } => vec![format!(
+                "a readable claude_code_version (observed {})",
+                render_observed(observed)
+            )],
+            Self::AuthPathChanged { observed, expected } => vec![format!(
+                "apiKeySource == {expected} (observed {})",
+                render_observed(observed)
+            )],
+        }
+    }
+}
+
+/// Render an optional observation without ever printing a bare `None`.
+fn render_observed(observed: &Option<String>) -> String {
+    match observed {
+        Some(value) => format!("`{value}`"),
+        None => "no such field".to_string(),
+    }
 }
 
 impl fmt::Display for CapabilityError {
@@ -168,6 +236,20 @@ impl fmt::Display for CapabilityError {
                 "the claude CLI is missing required capabilities [{}]; it advertises [{}]",
                 missing.join(", "),
                 observed.join(", ")
+            ),
+            Self::VersionBelowFloor { observed, floor } => write!(
+                f,
+                "the claude CLI reports version {observed}, which is below the minimum supported version {floor}"
+            ),
+            Self::VersionUnreadable { observed } => write!(
+                f,
+                "the claude CLI did not report a readable version ({}); refusing rather than assuming it is new enough",
+                render_observed(observed)
+            ),
+            Self::AuthPathChanged { observed, expected } => write!(
+                f,
+                "the claude CLI reports apiKeySource {} rather than `{expected}`, so the subscription auth path is no longer in use",
+                render_observed(observed)
             ),
         }
     }
