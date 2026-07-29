@@ -818,7 +818,7 @@ async fn wait_for_exit(child: &mut Box<dyn ChildWrapper>, escalate: bool) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::executor::SettingSources;
+    use crate::executor::{PermissionMode, SettingSources};
 
     fn argv_strings(options: &ExecutionOptions) -> Vec<String> {
         build_argv(options)
@@ -944,5 +944,169 @@ mod tests {
             read_bounded_line(&mut reader).await.expect("read"),
             BoundedLine::Eof
         ));
+    }
+
+    // ========================================================================
+    // First-init-only (D-30)
+    // ========================================================================
+
+    /// A healthy 2.1.220 `system/init`.
+    const GOOD_INIT: &str = r#"{"type":"system","subtype":"init","session_id":"s","capabilities":["interrupt_receipt_v1","interrupt_cancel_queued_v1","msg_lifecycle_v1"],"apiKeySource":"none","claude_code_version":"2.1.220","permissionMode":"dontAsk"}"#;
+
+    /// A deliberately hostile later `system/init`: no capabilities, no version
+    /// and an auth source that would fire every guard. Re-running the gate on
+    /// it would convert a start-time refusal into a mid-run abort (D-30).
+    const HOSTILE_LATER_INIT: &str = r#"{"type":"system","subtype":"init","session_id":"s","capabilities":[],"apiKeySource":"ANTHROPIC_API_KEY"}"#;
+
+    /// Feed raw lines through `handle_item` exactly as the coordinator does.
+    ///
+    /// Returns whether the loop would keep going, the refusal (if any), the
+    /// events emitted, and every line released to the stdin writer.
+    async fn feed(lines: &[&str]) -> (bool, Option<CapabilityError>, Vec<ExecutionEvent>, Vec<String>) {
+        let (events_tx, mut events_rx) = mpsc::channel(64);
+        let (writer_tx, mut writer_rx) = mpsc::channel(64);
+        let pending_control: PendingControl = Arc::new(Mutex::new(Default::default()));
+        let (gate_tx, _gate_rx) = oneshot::channel();
+
+        let mut gate_tx = Some(gate_tx);
+        let mut gated = false;
+        let mut refused: Option<CapabilityError> = None;
+        let mut turns: Vec<TurnOutcome> = Vec::new();
+        let mut keep_going = true;
+
+        for line in lines {
+            keep_going = handle_item(
+                ReaderItem::Envelope(parse_line(line)),
+                &events_tx,
+                &writer_tx,
+                &pending_control,
+                &mut gate_tx,
+                &mut gated,
+                &mut refused,
+                &mut turns,
+                "FIRST-MESSAGE",
+                PermissionMode::DontAsk,
+            )
+            .await;
+            if !keep_going {
+                break;
+            }
+        }
+
+        drop(events_tx);
+        drop(writer_tx);
+
+        let mut events = Vec::new();
+        while let Ok(event) = events_rx.try_recv() {
+            events.push(event);
+        }
+        let mut written = Vec::new();
+        while let Ok(command) = writer_rx.try_recv() {
+            if let WriterCommand::Line(line) = command {
+                written.push(line);
+            }
+        }
+        (keep_going, refused, events, written)
+    }
+
+    #[tokio::test]
+    async fn a_second_system_init_does_not_re_run_the_gate_or_abort_the_run() {
+        let (keep_going, refused, events, written) =
+            feed(&[GOOD_INIT, HOSTILE_LATER_INIT]).await;
+
+        assert!(keep_going, "a later system/init must not stop the run (D-30)");
+        assert!(
+            refused.is_none(),
+            "a later system/init must not re-arm the guard as a mid-run abort, got: {refused:?}"
+        );
+        assert_eq!(
+            written.len(),
+            1,
+            "the prompt is released exactly once, on the first init: {written:?}"
+        );
+        assert!(
+            matches!(events.first(), Some(ExecutionEvent::SessionStarted { .. })),
+            "the first init announces the session, got: {:?}",
+            events.first()
+        );
+        assert!(
+            matches!(events.get(1), Some(ExecutionEvent::Message(_))),
+            "the second init is forwarded as informational and is not a protocol error, got: {:?}",
+            events.get(1)
+        );
+        assert_eq!(events.len(), 2, "no other event is emitted: {events:?}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_first_init_never_releases_the_prompt() {
+        let no_capabilities = r#"{"type":"system","subtype":"init","session_id":"s","capabilities":[],"apiKeySource":"none","claude_code_version":"2.1.220"}"#;
+        let (keep_going, refused, _events, written) = feed(&[no_capabilities]).await;
+
+        assert!(!keep_going, "a refusal stops the run loop");
+        assert!(
+            matches!(
+                refused,
+                Some(CapabilityError::MissingCapabilities { .. })
+            ),
+            "expected a capability refusal, got: {refused:?}"
+        );
+        assert!(
+            written.is_empty(),
+            "a refused run must never release the prompt to stdin (D-06, TRANS-04): {written:?}"
+        );
+    }
+
+    // ========================================================================
+    // A refused run writes zero bytes to the child's stdin (D-06, TRANS-04)
+    // ========================================================================
+
+    const FAKE_CLAUDE_ECHO: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/fake-claude-echo.sh"
+    );
+
+    #[tokio::test]
+    async fn a_refused_run_writes_zero_bytes_to_the_child_stdin() {
+        let scratch = tempfile::TempDir::new().expect("temp dir");
+        let stdin_log = scratch.path().join("stdin.log");
+
+        // One capability short of the required set, everything else healthy.
+        let executor = ClaudeExecutor::with_program(
+            FAKE_CLAUDE_ECHO,
+            vec![
+                OsString::from("interrupt_receipt_v1,msg_lifecycle_v1"),
+                OsString::from("2.1.220"),
+                OsString::from("none"),
+                stdin_log.clone().into_os_string(),
+            ],
+        );
+        let project = DrivableProject::for_testing("refused", scratch.path());
+
+        let err = executor
+            .start(
+                &project,
+                "/gsd-progress".to_string(),
+                ExecutionOptions::default(),
+            )
+            .await
+            .expect_err("a CLI missing a required capability must be refused up front");
+
+        assert!(
+            matches!(
+                err,
+                SpawnError::Capability(CapabilityError::MissingCapabilities { .. })
+            ),
+            "expected a capability refusal, got: {err:?}"
+        );
+
+        // The stand-in truncates its stdin log before writing its init, so the
+        // file existing proves the child ran; its length proves what we wrote.
+        let recorded = std::fs::metadata(&stdin_log)
+            .expect("the stand-in truncates the stdin log at startup, so it must exist");
+        assert_eq!(
+            recorded.len(),
+            0,
+            "a refused run must write zero bytes to the child's stdin — the refusal costs zero tokens and zero quota (D-06)"
+        );
     }
 }
