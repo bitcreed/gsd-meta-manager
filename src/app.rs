@@ -293,7 +293,22 @@ impl App {
         let (alias_for_task, run_id_for_task) = key;
 
         let planning_dir = project_path.join(".planning");
-        let journal = crate::journal::run_paths(&planning_dir, run_id).journal;
+        // No tail is scheduled for a run id that is not a plain path component
+        // (D-27, WR-02). The id reaches here from the driven project's own
+        // `active` file, so it is attacker-controlled for threat-modelling
+        // purposes, and without this guard a traversing id would have the TUI
+        // tailing an arbitrary file on the user's disk into a render surface.
+        // The refusal is logged by kind only — never the path, which is the
+        // untrusted value itself (D-28, PATTERNS §S3).
+        let Some(paths) = crate::journal::run_paths(&planning_dir, run_id) else {
+            tracing::warn!(
+                alias = %alias,
+                kind = "run_id_not_a_plain_component",
+                "journal tail refused: the run id does not name a single directory component",
+            );
+            return;
+        };
+        let journal = paths.journal;
 
         tokio::task::spawn_blocking(move || {
             let read = match crate::journal::reader::tail_lines(&journal, stored.cursor) {

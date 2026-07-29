@@ -317,8 +317,21 @@ pub fn ensure_runs_root(planning_dir: &Path) -> anyhow::Result<PathBuf> {
 /// this is the one moment at which the layout is known and nothing has been
 /// written into it yet. It never fails creation; the diagnostic behind it is
 /// [`parent_excludes_run_record`].
+///
+/// **A run id that is not a single plain path component is refused here, before
+/// anything is created** (D-27, WR-02). This is the write side of the traversal
+/// hole, and the refusal is placed ahead of [`ensure_runs_root`] on purpose: a
+/// hostile id must not so much as create the runs root, let alone a run
+/// directory outside the project. The failure is loud — it propagates through
+/// `JournalRun::start` into `DriveError::Journal` — rather than a silent skip,
+/// because a run that quietly wrote nothing would look identical to a run that
+/// worked.
 pub fn create_run_dir(planning_dir: &Path, run_id: &str) -> anyhow::Result<RunPaths> {
-    let paths = run_paths(planning_dir, run_id);
+    let Some(paths) = run_paths(planning_dir, run_id) else {
+        anyhow::bail!(
+            "the run id is not a single plain path component, so no run directory was created"
+        );
+    };
 
     ensure_runs_root(planning_dir)?;
 
@@ -709,7 +722,8 @@ mod tests {
     const EXPECTED_HOME_LITERAL: &str = "-home-redacted-project";
 
     fn open_in(dir: &Path) -> (JournalWriter, PathBuf) {
-        let paths = run_paths(&dir.join(".planning"), "2026-07-28T14-03-11Z-a3f9");
+        let paths = run_paths(&dir.join(".planning"), "2026-07-28T14-03-11Z-a3f9")
+            .expect("a plain run id yields paths");
         std::fs::create_dir_all(&paths.dir).expect("create the run directory");
         let writer = JournalWriter::open(&paths.journal).expect("open the journal");
         (writer, paths.journal)
@@ -1033,7 +1047,7 @@ mod tests {
     /// A journal opened with a test-sized cap, so the breach is reachable
     /// without writing 64 MiB.
     fn open_capped(dir: &Path, cap: u64) -> (JournalWriter, PathBuf) {
-        let paths = run_paths(&dir.join(".planning"), RID);
+        let paths = run_paths(&dir.join(".planning"), RID).expect("a plain run id yields paths");
         std::fs::create_dir_all(&paths.dir).expect("create the run directory");
         let writer = JournalWriter::open(&paths.journal)
             .expect("open the journal")

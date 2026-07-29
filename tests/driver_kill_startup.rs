@@ -123,7 +123,9 @@ impl Fixture {
     }
 
     fn journal(&self, run_id: &str) -> PathBuf {
-        gsd_meta_manager::journal::run_paths(&self.planning(), run_id).journal
+        gsd_meta_manager::journal::run_paths(&self.planning(), run_id)
+        .expect("the fixture run id is a plain path component")
+        .journal
     }
 }
 
@@ -314,7 +316,9 @@ async fn a_stop_during_agent_startup_tears_down_the_agent_group_and_records_a_ki
 
     // **The precondition that makes this a STARTUP test rather than a duplicate
     // of `tests/driver_kill.rs`.**
-    let run_json = gsd_meta_manager::journal::run_paths(&fixture.planning(), RUN_ID).run_json;
+    let run_json = gsd_meta_manager::journal::run_paths(&fixture.planning(), RUN_ID)
+        .expect("the fixture run id is a plain path component")
+        .run_json;
     assert!(
         recorded_within(&run_json, STARTUP_LIMIT).await,
         "the driver never wrote its run record, so the journal had not started and \

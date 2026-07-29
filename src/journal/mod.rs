@@ -70,6 +70,7 @@
 //!   adds no migration, and [`RESERVED_KINDS`] states mechanically that this
 //!   phase does not emit them (D-36).
 
+pub mod inbox;
 pub mod reader;
 pub mod redact;
 pub mod writer;
@@ -130,7 +131,7 @@ pub const RETAIN_RUNS: usize = 10;
 /// a one-line change.
 pub const MAX_TAIL_BYTES: u64 = 4 * 1024 * 1024;
 
-/// The five paths that make up one run's on-disk footprint.
+/// The six paths that make up one run's on-disk footprint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunPaths {
     /// `<planning>/meta-manager/runs/<run-id>/`.
@@ -139,6 +140,21 @@ pub struct RunPaths {
     pub run_json: PathBuf,
     /// The gitignored append-only journal.
     pub journal: PathBuf,
+    /// The gitignored append-only **inbox**: the TUI→driver channel (D-03,
+    /// D-05).
+    ///
+    /// **The one primitive the TUI and the detached driver share is the
+    /// filesystem.** `ExecutionHandle::stdin_tx` lives inside the driver
+    /// process, so the TUI cannot write to the agent's stdin at all; it appends
+    /// a line here and the driver tails it. A design in which the TUI "sent"
+    /// anywhere other than to a file could not survive a TUI restart and
+    /// therefore could not satisfy STEER-03.
+    ///
+    /// No `.gitignore` change is needed for it: [`writer::RUNS_GITIGNORE_BODY`]
+    /// re-includes exactly `!*/run.json`, so every other per-run file — this one
+    /// included — is ignored by the catch-all (asserted by
+    /// `tests/journal_gitignore.rs`).
+    pub inbox: PathBuf,
     /// `<planning>/meta-manager/runs/.gitignore`, shared by every run (D-08).
     pub gitignore: PathBuf,
     /// `<planning>/meta-manager/runs/active`, the cheap-to-poll run-id pointer.
@@ -150,7 +166,43 @@ pub fn runs_root(planning_dir: &Path) -> PathBuf {
     planning_dir.join("meta-manager").join("runs")
 }
 
-/// The five paths for one run, derived purely from the planning dir and run id.
+/// Whether `run_id` names **exactly one plain path component** (D-27, WR-02).
+///
+/// Non-empty, `Path::new(run_id).components()` yields exactly one item, that
+/// item is a [`Component::Normal`], and its text is the whole of `run_id`.
+///
+/// **The final equality is not redundant belt-and-braces.** `components()`
+/// silently normalises a leading `./` and a trailing `/` away, so `"./escape"`
+/// and `"escape/"` both yield one `Normal` — comparing the component back
+/// against the original string is what refuses an id whose written form is not
+/// the plain name it resolves to.
+///
+/// Modelled on [`classify_change`], which already rejects every non-`Normal`
+/// component and, like this, **refuses to normalise**: normalising means asking
+/// the filesystem, and asking the filesystem is precisely what a traversal check
+/// must not depend on. `..` is rejected as a *token*, not resolved.
+///
+/// The alternative that was declined: canonicalising the joined path and
+/// checking it is a descendant of the runs root. That reads the filesystem
+/// (so it answers differently for a path that does not exist yet, which is
+/// every new run), it follows symlinks (so a symlink planted by the driven
+/// agent decides the answer), and it cannot run on the `notify` callback
+/// thread. A token check has none of those properties.
+pub fn is_plain_run_id(run_id: &str) -> bool {
+    if run_id.is_empty() {
+        return false;
+    }
+    let mut components = Path::new(run_id).components();
+    let Some(Component::Normal(name)) = components.next() else {
+        return false;
+    };
+    if components.next().is_some() {
+        return false;
+    }
+    name == std::ffi::OsStr::new(run_id)
+}
+
+/// The six paths for one run, or `None` for a run id that is not a plain name.
 ///
 /// The layout's rationale lives here rather than at the call sites, following
 /// the `queue_md.rs:170-176` precedent of putting the *why* of a path layout on
@@ -165,16 +217,37 @@ pub fn runs_root(planning_dir: &Path) -> PathBuf {
 ///   because it is written once at run-directory creation time and protects
 ///   every run (D-08). A log written before its protection lands is exactly the
 ///   class of mistake SAFE-04 exists to prevent.
-pub fn run_paths(planning_dir: &Path, run_id: &str) -> RunPaths {
+/// - `inbox.jsonl` is the TUI→driver channel (D-03, D-05); see
+///   [`RunPaths::inbox`].
+///
+/// **The `Option` is the whole of the WR-02 fix, and its shape was chosen so a
+/// human does not have to find the call sites** (D-27). This function used to
+/// `join` an unvalidated `run_id`, and both directions were *reproduced* against
+/// the shipped tree: `--run-id '../../../../escaped'` created `run.json` and
+/// `journal.jsonl` outside the project, in a directory with no `.gitignore` and
+/// with exit 0; and `writer::read_active_run` returned whatever the `active`
+/// file held — a file that lives inside the driven project, so **the agent
+/// controls it**. This subsystem runs unattended with git and push rights.
+///
+/// A validation helper that merely *existed* would have been called at three of
+/// the five sites, which is the failure mode this signature forecloses:
+/// returning `Option` conscripts the compiler into enumerating every caller.
+/// No infallible variant is kept alongside it, because keeping one is exactly
+/// how the next caller escapes validation.
+pub fn run_paths(planning_dir: &Path, run_id: &str) -> Option<RunPaths> {
+    if !is_plain_run_id(run_id) {
+        return None;
+    }
     let root = runs_root(planning_dir);
     let dir = root.join(run_id);
-    RunPaths {
+    Some(RunPaths {
         run_json: dir.join("run.json"),
         journal: dir.join("journal.jsonl"),
+        inbox: dir.join(inbox::INBOX_FILE),
         gitignore: root.join(".gitignore"),
         active: root.join("active"),
         dir,
-    }
+    })
 }
 
 /// Build a run id of the form `2026-07-28T14-03-11Z-a3f9` (D-02).
@@ -376,14 +449,52 @@ pub enum JournalEvent {
         /// `total_cost_usd`, which accumulates across turns.
         cumulative_usd: f64,
     },
-    /// A message the user injected into a running agent.
+    /// A message the user injected into a running agent — the **delivery**
+    /// record (D-09, STEER-02).
     ///
-    /// **Schema only in this phase — Phase 18 emits it** (D-36).
+    /// Written by the driver the moment it has tried to write the message to the
+    /// agent's stdin, whether or not that write succeeded. `delivered` is
+    /// therefore the answer to *"did `Executor::send` return `Ok`"* and nothing
+    /// more: it is **not** an acknowledgement from the agent, which arrives
+    /// later as [`JournalEvent::InterjectionActedOn`] and was measured 55
+    /// seconds after the write. Rendering this as "received" or "read" would
+    /// promise an observation the mechanism cannot make (D-07).
     Interjected {
+        /// The client-generated correlation id from the inbox line (D-05).
+        ///
+        /// `Option` and `#[serde(default)]` because the variant shipped in Phase
+        /// 16 without it, so a journal written by an older build still parses.
+        /// **Text alone is not a correlation key** — a user may legitimately
+        /// send the same sentence twice, and STEER-02's states are tracked per
+        /// message rather than per string.
+        #[serde(default)]
+        id: Option<String>,
         /// The injected text.
         text: String,
         /// Whether it reached the agent, as opposed to being queued or dropped.
         delivered: bool,
+    },
+    /// The agent **dequeued** an injected message and is running it as its own
+    /// turn (D-07, D-08, STEER-02).
+    ///
+    /// The `--replay-user-messages` echo, correlated by the driver — the only
+    /// party that has parsed envelopes rather than a rendered projection.
+    /// **Schema only in this plan; plan 18-02 emits it.**
+    InterjectionActedOn {
+        /// The correlation id of the message the echo matched.
+        id: String,
+    },
+    /// An injected message that can never be delivered (D-10).
+    ///
+    /// The honest fourth state. A message appended after the driver closed the
+    /// agent's stdin (D-11) has nowhere to go, and leaving it in `queued`
+    /// forever is PITFALLS' undelivered-injection failure dressed up as a
+    /// spinner. It is named, recorded, and **not retried**.
+    InterjectionMissed {
+        /// The correlation id of the message that will not be delivered.
+        id: String,
+        /// Why it cannot be delivered, in one line.
+        reason: String,
     },
     /// The agent process exited.
     ExecFinished {
@@ -451,6 +562,15 @@ impl JournalEvent {
     /// [`MAX_RUN_JOURNAL_BYTES`] is breached, content stops and lifecycle,
     /// decision and outcome events continue, because D-31 is explicit that the
     /// run must always be able to write its terminal record.
+    ///
+    /// **[`JournalEvent::Interjected`] is content and the two interjection
+    /// transitions are not**, and the split is deliberate rather than
+    /// incidental: the delivery record carries the user's verbatim text, which
+    /// is exactly the kind of arbitrarily large payload the cap exists to bound,
+    /// while `interjection_acted_on` and `interjection_missed` carry only a
+    /// correlation id and a fixed reason. Suppressing the *transitions* would
+    /// strand a delivered message in `delivered` forever on a long run — the
+    /// silent-abandonment failure the three-state display exists to prevent.
     pub fn is_content(&self) -> bool {
         matches!(
             self,
@@ -525,6 +645,9 @@ pub const EMITTED_KINDS: &[&str] = &[
     "exec_started",
     "exec_event",
     "cost",
+    "interjected",
+    "interjection_acted_on",
+    "interjection_missed",
     "exec_finished",
     "events_dropped",
     "journal_truncated",
@@ -536,11 +659,17 @@ pub const EMITTED_KINDS: &[&str] = &[
 /// writes** (D-36).
 ///
 /// `observed`, `decided` and `parked` are Phase 20's — the D-R-P-E-V router
-/// that does not exist yet. `interjected` is Phase 18's — the TUI→driver
-/// channel that likewise does not exist yet. They are modelled now so those
-/// phases add no schema migration, and the reader tolerates them regardless
-/// (D-30): a build that has never heard of a kind still carries its payload.
-pub const RESERVED_KINDS: &[&str] = &["observed", "decided", "parked", "interjected"];
+/// that does not exist yet. They are modelled now so that phase adds no schema
+/// migration, and the reader tolerates them regardless (D-30): a build that has
+/// never heard of a kind still carries its payload.
+///
+/// **`interjected` left this list in Phase 18** and moved into
+/// [`EMITTED_KINDS`], along with the two transitions the TUI→driver channel
+/// needs. The two lists are complements and
+/// `every_reserved_kind_is_declared_and_none_is_emitted_by_this_phase` is what
+/// proves it, so a kind that is emitted while still declared reserved fails the
+/// suite rather than shipping.
+pub const RESERVED_KINDS: &[&str] = &["observed", "decided", "parked"];
 
 /// The one type a driver holds for the duration of a run (D-06, D-36).
 ///
@@ -984,8 +1113,12 @@ mod tests {
     #[test]
     fn run_paths_place_every_artifact_where_the_layout_says() {
         let planning = Path::new("/p/.planning");
-        let paths = run_paths(planning, "RID");
+        let paths = run_paths(planning, "RID").expect("a plain run id yields paths");
         assert_eq!(paths.dir, Path::new("/p/.planning/meta-manager/runs/RID"));
+        assert_eq!(
+            paths.inbox,
+            Path::new("/p/.planning/meta-manager/runs/RID/inbox.jsonl")
+        );
         assert_eq!(
             paths.run_json,
             Path::new("/p/.planning/meta-manager/runs/RID/run.json")
@@ -1026,6 +1159,7 @@ mod tests {
         }
         .is_content());
         assert!(JournalEvent::Interjected {
+            id: Some("3f2a".to_string()),
             text: "stop".to_string(),
             delivered: true,
         }
@@ -1036,6 +1170,51 @@ mod tests {
         }
         .is_content());
         assert!(!JournalEvent::EventsDropped { count: 40 }.is_content());
+        // The two interjection transitions carry an id and a fixed reason, so
+        // they are lifecycle and must survive the per-run cap — a delivered
+        // message stranded in `delivered` forever is the silent abandonment the
+        // three-state display exists to prevent.
+        assert!(!JournalEvent::InterjectionActedOn {
+            id: "3f2a".to_string(),
+        }
+        .is_content());
+        assert!(!JournalEvent::InterjectionMissed {
+            id: "3f2a".to_string(),
+            reason: "stdin closed".to_string(),
+        }
+        .is_content());
+    }
+
+    #[test]
+    fn only_a_single_plain_component_is_accepted_as_a_run_id() {
+        // WR-02's write side, at the predicate. Every rejected case below is a
+        // shape the reproduction in `17-REVIEW.md` reached or a near neighbour
+        // of it.
+        assert!(is_plain_run_id("2026-07-28T14-03-11Z-a3f9"));
+        assert!(is_plain_run_id("RID"));
+
+        for hostile in [
+            "",
+            ".",
+            "..",
+            "../escaped",
+            "../../../../escaped",
+            "a/b",
+            "/etc/passwd",
+            "/",
+            "./escaped",
+            "escaped/",
+            "a/../b",
+        ] {
+            assert!(
+                !is_plain_run_id(hostile),
+                "{hostile:?} must not be accepted as a run id"
+            );
+            assert!(
+                run_paths(Path::new("/p/.planning"), hostile).is_none(),
+                "{hostile:?} must yield no paths at all"
+            );
+        }
     }
 
     // ---- The run lifecycle and the executor mapping (plan 16-06, Task 1) ----
@@ -1318,6 +1497,21 @@ mod tests {
                 bytes_written: 1,
                 cap: 1,
             },
+            // Phase 18's three. `interjected` moved out of RESERVED_KINDS in
+            // the same edit that added it here; the two lists are complements
+            // and this loop plus the one below is what proves it.
+            JournalEvent::Interjected {
+                id: Some("3f2a".to_string()),
+                text: "skip the UI review".to_string(),
+                delivered: true,
+            },
+            JournalEvent::InterjectionActedOn {
+                id: "3f2a".to_string(),
+            },
+            JournalEvent::InterjectionMissed {
+                id: "3f2a".to_string(),
+                reason: "the agent's stdin was already closed".to_string(),
+            },
         ] {
             let kind = kind_of(&event);
             assert!(EMITTED_KINDS.contains(&kind.as_str()), "{kind} undeclared");
@@ -1340,10 +1534,6 @@ mod tests {
             JournalEvent::Parked {
                 reason: "verification_gaps_found".to_string(),
                 needs: "human".to_string(),
-            },
-            JournalEvent::Interjected {
-                text: "stop".to_string(),
-                delivered: true,
             },
         ]
         .iter()

@@ -261,7 +261,14 @@ fn run_facts_from_value(value: &serde_json::Value) -> Option<RunFacts> {
 pub fn reconcile_one(alias: &str, project_root: &Path) -> Option<ObservedRun> {
     let planning_dir = project_root.join(".planning");
     let run_id = writer::read_active_run(&planning_dir)?;
-    let paths = run_paths(&planning_dir, &run_id);
+    // One `?`, and it is the WR-02 read side (D-27). The `active` file lives
+    // inside the driven project, so the agent controls what this run id is; a
+    // fallible `run_paths` is what stops a traversing id turning this scan into
+    // a read of `run.json` from anywhere on the filesystem. Returning `None` is
+    // the right refusal here rather than a log-and-continue: this function
+    // already answers "there is no observable run" that way, and a project whose
+    // pointer is hostile has none.
+    let paths = run_paths(&planning_dir, &run_id)?;
     let facts = read_run_facts(&paths.dir)?;
 
     // The short-circuit is today's and is kept: a run already known to be over
