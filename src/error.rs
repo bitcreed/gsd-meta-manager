@@ -397,8 +397,9 @@ impl std::error::Error for LockError {}
 /// Why a `drive` invocation ended without a run.
 ///
 /// Later plans in this phase widen this enum, and each addition is a variant
-/// rather than a signature change: plan 17-02 added [`DriveError::Lock`], and
-/// plan 17-05 adds a concurrency-cap variant. It is deliberately **not** marked
+/// rather than a signature change: plan 17-02 added [`DriveError::Lock`], plan
+/// 17-04 *removed* a placeholder rather than replacing it (see below), and plan
+/// 17-05 adds a concurrency-cap variant. It is deliberately **not** marked
 /// `#[non_exhaustive]` — this crate is the only consumer, and an attribute would
 /// buy nothing but a `_` arm at every match.
 #[derive(Debug)]
@@ -410,15 +411,11 @@ pub enum DriveError {
     },
     /// The opt-in gate refused before anything was spawned.
     OptIn(OptInError),
-    /// The preview mode was requested but is not implemented in this plan.
-    ///
-    /// A `--dry-run` that silently performs a real run is the exact failure mode
-    /// CTRL-02 exists to prevent, so the flag refuses rather than executing.
-    /// Plan 17-04 replaces this arm with the real three-part preview (D-22).
-    DryRunUnavailable {
-        /// What the user asked for and what will provide it.
-        detail: String,
-    },
+    // `DryRunUnavailable` lived here between plans 17-01 and 17-04. It said
+    // "--dry-run is not implemented yet", which stopped being true the moment
+    // `driver::dry_run` landed; a variant that can never be constructed and
+    // whose text is false is worse than no variant. A preview is now a success
+    // path — it renders three sections to stdout and returns `Ok(())` (D-22).
     /// Another run already holds this project's single-execution lock, or the
     /// lock could not be taken at all (CTRL-05, D-19, D-20).
     ///
@@ -447,7 +444,6 @@ impl fmt::Display for DriveError {
                  This is a recorded accepted limitation in REQUIREMENTS, not a defect"
             ),
             Self::OptIn(err) => write!(f, "{err}"),
-            Self::DryRunUnavailable { detail } => write!(f, "{detail}"),
             Self::Lock(err) => write!(f, "{err}"),
             Self::Spawn(err) => write!(f, "{err}"),
             Self::Journal { detail } => write!(f, "the run journal failed: {detail}"),

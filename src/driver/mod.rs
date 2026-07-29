@@ -30,11 +30,17 @@
 //!    There is no loop and no sequence. The decision router is Phase 20's, which
 //!    is why [`DriveArgs::command`] is a single `String` and not a `Vec`.
 //!
-//! [`lock`] landed in plan 17-02. Later plans add `dry_run` (17-04), `spawn`,
-//! `liveness` and `reconcile` (17-05) and `kill` (17-06) as siblings. They are
-//! deliberately not stubbed here: an empty module for a later phase is a
-//! promise the compiler cannot keep.
+//! [`lock`] landed in plan 17-02 and [`dry_run`] in 17-04. Later plans add
+//! `spawn`, `liveness` and `reconcile` (17-05) and `kill` (17-06) as siblings.
+//! They are deliberately not stubbed here: an empty module for a later phase is
+//! a promise the compiler cannot keep.
 
+// Deliberately **outside** the `#[cfg(unix)]` block below. Point 2 above makes
+// the *running* of an agent Unix-only; a preview is git reads and string
+// building, so it compiles and is testable on every platform. Gating it would
+// make the one mode that needs no platform facility the one mode a Windows
+// build could not even check.
+pub mod dry_run;
 #[cfg(unix)]
 pub mod lock;
 #[cfg(unix)]
@@ -105,14 +111,24 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
     let project = DrivableProject::from_registry(&args.alias, entry)?;
 
     if args.dry_run {
-        // A preview that silently performs a real run is the exact failure
-        // CTRL-02 exists to prevent, so the flag refuses rather than executing.
-        // Plan 17-04 replaces this arm with the three-part preview (D-22).
-        return Err(DriveError::DryRunUnavailable {
-            detail: "--dry-run is not implemented yet and this build refuses rather than \
-                     performing a real run; the preview lands in plan 17-04"
-                .to_string(),
-        });
+        // Positioned **after** the gate and **before** anything Unix-only, and
+        // both halves of that sentence are decisions:
+        //
+        // Gating first means `--dry-run` against a non-opted-in project is
+        // refused too. That is stricter than CTRL-03 requires, and it keeps
+        // `from_registry` at exactly one call site — a property a test can check,
+        // while "every branch remembers to gate" is not.
+        //
+        // Branching before the lock means a preview never contends with a live
+        // run, which is what a user previewing a busy project expects. Nothing
+        // below this point runs: no lock is acquired, no journal is started, no
+        // executor is constructed, and no run id is even generated (D-23).
+        //
+        // stdout, not the journal and not the TUI (D-24). A detached driver's
+        // stdio is null, so a dry-run is by definition a foreground invocation.
+        let report = dry_run::build_report(&project, &args.command);
+        println!("{}", dry_run::render(&report));
+        return Ok(());
     }
 
     dispatch(project, &args, entry).await

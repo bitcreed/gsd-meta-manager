@@ -169,7 +169,16 @@ pub fn is_dirty(project_root: &Path) -> Option<bool> {
 // it calls them directly.
 // ============================================================================
 
-/// Run `git -C <root> <args>` and hand back its raw stdout on success.
+/// Run `git --no-optional-locks -C <root> <args>` and hand back its raw stdout.
+///
+/// **`--no-optional-locks` is load-bearing, not hygiene.** `git diff` calls
+/// `refresh_index_quietly()`, which will opportunistically *write* `.git/index`
+/// when it finds entries that are stat-dirty but content-identical. That is a
+/// git write performed by a read — precisely what D-23 promises never happens
+/// during a preview — and because such a rewrite leaves the index the same
+/// length, a fingerprint that compared only file sizes would not even catch it.
+/// Setting the flag makes "zero git writes" true by construction rather than by
+/// luck.
 ///
 /// Raw rather than trimmed because `git diff --stat` renders aligned columns
 /// with a leading space per line; trimming the blob would silently unalign the
@@ -179,6 +188,7 @@ pub fn is_dirty(project_root: &Path) -> Option<bool> {
 /// Never panics.
 fn git_read_raw(project_root: &Path, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new("git")
+        .arg("--no-optional-locks")
         .arg("-C")
         .arg(project_root)
         .args(args)
