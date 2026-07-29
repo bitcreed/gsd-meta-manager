@@ -96,10 +96,10 @@ interleave and corrupt each other.
 
 ### UI Fixes (UIFIX)
 
-- [ ] **UIFIX-01**: Paused projects show a pause badge derived from HANDOFF.md
-- [ ] **UIFIX-02**: The DRPEV status display has no leading blank
-- [ ] **UIFIX-03**: Markdown edit mode activates on key press
-- [ ] **UIFIX-04**: PageDown scroll offset is clamped to the end of content
+- [x] **UIFIX-01**: Paused projects show a pause badge derived from HANDOFF.md
+- [x] **UIFIX-02**: The DRPEV status display has no leading blank
+- [x] **UIFIX-03**: Markdown edit mode activates on key press
+- [x] **UIFIX-04**: PageDown scroll offset is clamped to the end of content
 
 ## Future Requirements
 
@@ -169,7 +169,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-22.
 | CTNR-03 | Phase 22: Container Execution Target | Pending |
 | CTNR-04 | Phase 22: Container Execution Target | Pending |
 | CTNR-05 | Phase 22: Container Execution Target | Pending |
-| UIFIX-01 | Phase 14: UI Fixes | Pending |
-| UIFIX-02 | Phase 14: UI Fixes | Pending |
-| UIFIX-03 | Phase 14: UI Fixes | Pending |
-| UIFIX-04 | Phase 14: UI Fixes | Pending |
+| UIFIX-01 | Phase 14: UI Fixes | Complete |
+| UIFIX-02 | Phase 14: UI Fixes | Complete |
+| UIFIX-03 | Phase 14: UI Fixes | Complete |
+| UIFIX-04 | Phase 14: UI Fixes | Complete |
