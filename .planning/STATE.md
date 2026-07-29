@@ -4,15 +4,15 @@ milestone: v2.0
 milestone_name: Autonomous Orchestration
 current_phase: 17
 current_phase_name: Supervisor — Detach, Kill Switch, Dry-Run, Opt-In Gate
-status: planning
+status: executing
 stopped_at: v2.0 roadmap written — Phases 14-22 defined, traceability filled
-last_updated: "2026-07-29T15:40:36.902Z"
+last_updated: "2026-07-29T16:37:44.004Z"
 last_activity: 2026-07-29
 last_activity_desc: Phase 16 complete, transitioned to Phase 17
 progress:
   total_phases: 9
   completed_phases: 3
-  total_plans: 18
+  total_plans: 25
   completed_plans: 18
   percent: 33
 ---
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 
 Phase: 17 — Supervisor — Detach, Kill Switch, Dry-Run, Opt-In Gate
 Plan: Not started
-Status: Ready to plan
+Status: Ready to execute
 Last activity: 2026-07-29 — Phase 16 complete, transitioned to Phase 17
 
 ### Phase 15 planning notes (autonomous run — review these)
