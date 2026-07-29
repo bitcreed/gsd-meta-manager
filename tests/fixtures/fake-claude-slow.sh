@@ -20,6 +20,14 @@
 #                 `result` — emit a terminal `result` envelope and exit 0. A run
 #                           that chattered past the idle cap must still reach
 #                           this.
+#                 `denied` — emit a terminal `result` envelope that says
+#                           `success` while carrying a POPULATED
+#                           `permission_denials[]`, then exit 0. This is the
+#                           `--permission-mode dontAsk` shape: the CLI's own
+#                           verdict fields look clean and the denials array is
+#                           the only thing that says the run was blocked. The
+#                           denial record is entirely synthetic and carries a
+#                           relative filename — no host path in any form.
 #
 # Every argument after the third is ignored on purpose: the executor appends the
 # real `claude` argv, and this stand-in must tolerate it exactly the way a
@@ -47,6 +55,13 @@ done
 
 if [ "$ENDING" = "result" ]; then
     printf '{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","session_id":"s","num_turns":1,"total_cost_usd":0.01,"result":"done","uuid":"result-1"}\n'
+    exit 0
+fi
+
+# `denied`: the envelope's own verdict fields say the turn succeeded. Only the
+# denials array says otherwise, and it is the array that decides the run.
+if [ "$ENDING" = "denied" ]; then
+    printf '{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","session_id":"s","num_turns":1,"total_cost_usd":0.01,"result":"done","permission_denials":[{"tool_name":"Write","tool_use_id":"toolu_denied_1","tool_input":{"file_path":"README.md"}}],"uuid":"result-1"}\n'
     exit 0
 fi
 
