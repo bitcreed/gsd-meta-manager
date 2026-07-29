@@ -4,15 +4,15 @@ milestone: v2.0
 milestone_name: Autonomous Orchestration
 current_phase: 15
 current_phase_name: Transport Foundation — Duplex stream-json Executor
-status: planning
-stopped_at: v2.0 roadmap written — Phases 14-22 defined, traceability filled
-last_updated: "2026-07-29T07:51:15.429Z"
+status: executing
+stopped_at: Phase 15 planned — 6 plans in 4 waves, OQ1/OQ2/OQ3 resolved, gates green
+last_updated: "2026-07-29T09:04:52.076Z"
 last_activity: 2026-07-29
-last_activity_desc: Phase 14 complete, transitioned to Phase 15
+last_activity_desc: Phase 15 planned; transport spikes resolved empirically
 progress:
   total_phases: 9
   completed_phases: 1
-  total_plans: 4
+  total_plans: 10
   completed_plans: 4
   percent: 11
 ---
@@ -24,14 +24,59 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 14 — UI Fixes
+**Current focus:** Phase 15 — Transport Foundation
 
 ## Current Position
 
 Phase: 15 — Transport Foundation — Duplex stream-json Executor
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-07-29 — Phase 14 complete, transitioned to Phase 15
+Plan: Not started (6 plans, 4 waves)
+Status: Ready to execute
+Last activity: 2026-07-29 — Phase 15 planned; OQ1/OQ2/OQ3 resolved empirically
+
+### Phase 15 planning notes (autonomous run — review these)
+
+- **All three MUST-SPIKE questions resolved empirically** against the local `claude` 2.1.220
+  binary during the research step, in a throwaway scratch dir, never against this repo.
+  **OQ1 CONFIRMED (bounded)** — `--setting-sources project` suppresses the `PreToolUse` hook
+  hang: without it, exit 124 with `duration_ms` 89134 vs `duration_api_ms` 3447; with it, exit 0
+  in 8s. The hung arm emits `hook_started`/`hook_response` *before* `system/init`; the mitigated
+  arm emits no hook events. The multi-step generalisation (a GSD skill spawning subagent waves)
+  remains plan 15-01 Task 1, the phase gate. **OQ2 CONFIRMED** — mid-turn stdin injection is
+  QUEUED and runs as its own turn, refuting ARCHITECTURE's AP3; `control_request{subtype:"interrupt"}`
+  works, bare `{"type":"interrupt"}` does nothing. **OQ3 CONFIRMED** — `--max-budget-usd` does
+  apply under subscription auth (`apiKeySource: "none"`), yielding
+  `error_max_budget_usd`/`budget_exhausted`, but only as a *post-turn* circuit breaker: it bounds
+  the next turn, never the current one. D-16 stands; Phase 20's quota floor is still the real cost
+  control.
+
+- **Structural finding no research document anticipated:** `type:"result"` is a **turn** boundary,
+  not a **run** terminator. A run receiving a second stdin message emits two `system/init` and two
+  `result` envelopes in one process. An executor returning on the first `result` would truncate
+  every steered run while reporting success. Recorded as amendments **D-29..D-32** in
+  `15-CONTEXT.md` so the decision-coverage gate forces the plans to handle it.
+
+- **Decision-coverage gate is live again and PASSES 32/32.** `15-CONTEXT.md` uses the
+  `- **D-NN:** …` bullet form, which fixes the `could-not-parse` failure recorded for Phase 14
+  below. Note for future phases: the gate matches `\bD-NN\b` **only inside designated sections**
+  (plan frontmatter `must_haves`/`truths`/`objective`, designated headings, XML tag bodies), so
+  plans must cite the ids inline, not merely implement the decisions.
+
+- **ROADMAP gained an authoritative `**UI hint**: no` for Phase 15.** The blocking `ui.plan-gate`
+  fired because `checkUiPresence` token-sniffed the bare word `ui` out of a risk bullet that refers
+  to *Phase 18's* injection UI. Phase 15 ships no visual surface, so the author-declaration form was
+  used rather than a transient `--skip-ui`, making the record durable for verify-work and progress.
+
+- **`--research-phase` was interpreted as `--research`.** ROADMAP's Phase 15 entry says
+  `Research: yes — /gsd-plan-phase --research-phase`, but that flag is research-**only** mode and
+  exits before the planner runs, producing no plans. Ran the full research→plan→verify flow instead.
+  The same wording appears on Phases 20 and 22 and will need the same reading.
+
+- **Seven raw spike transcripts staged, gitignored.** `.planning/phases/15-transport-foundation/transcripts-raw/`
+  holds the captured NDJSON (clean success, budget-exhausted, tool-use success, the hook hang, the
+  two-turn queued injection, interrupt-during-streaming, and the interrupt race). They carry absolute
+  host paths, so a `.gitignore` entry prevents accidental commit; plan 15-01 redacts and promotes
+  them into `tests/fixtures/` and plan 15-02 deletes the staging directory. Scanned for
+  credential-shaped strings — none found.
 
 ### Phase 14 planning notes (autonomous run — review these)
 
@@ -102,10 +147,14 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- Phase 15 must spike three MUST-SPIKE questions before it closes: (OQ1) does `claude -p`
-  run a multi-step GSD skill headlessly without hanging, (OQ2) mid-turn stdin injection
-  semantics + `control_request{subtype:"interrupt"}`, (OQ3) does `--max-budget-usd` apply
-  under subscription auth
+- ~~Phase 15 must spike three MUST-SPIKE questions before it closes~~ — **OQ2 and OQ3 are
+  CLOSED** (resolved empirically during Phase 15 research, 2026-07-29; evidence and verbatim
+  transcripts in `15-RESEARCH.md` §"Spike Outcomes"). **OQ1 is CONFIRMED at single-tool-call
+  scale only**; the multi-step generalisation — a real GSD skill spawning subagent waves, run
+  headlessly to completion — is plan **15-01 Task 1** and gates the whole phase. Two things
+  the bounded probe could not answer and Task 1 must: whether `--setting-sources project`
+  propagates to the nested `claude` processes subagent waves spawn, and what happens when a
+  long run crosses the silent 10-minute `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` ceiling.
 
 - Phase 17 must spike OQ4 (`--worktree` flag existence) before locking worktree isolation
 - Phase 22 must spike OQ5 (podman rootless uid mapping / volume permissions) with podman
