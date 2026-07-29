@@ -636,6 +636,8 @@ mod tests {
     use tempfile::TempDir;
 
     const PAUSE_BADGE: (&str, Color) = ("\u{23F8} ", Color::Cyan);
+    const ASYNC_BADGE: (&str, Color) = ("\u{23F3} ", Color::Yellow);
+    const SESSION_BADGE: (&str, Color) = ("\u{25b6} ", Color::Green);
 
     /// Build a temp project with a `.planning/` dir holding the given files.
     /// Returns the TempDir (keep it alive) — mirrors the `make_planning`
@@ -672,5 +674,50 @@ mod tests {
 
         // The same flag the dashboard row reads selects the cyan pause badge.
         assert_eq!(alias_badge(state.paused, false, false), Some(PAUSE_BADGE));
+    }
+
+    // --- UIFIX-01: badge priority (flag -> badge) -------------------------
+
+    #[test]
+    fn test_pause_badge_wins_over_session() {
+        // UI-SPEC UIFIX-01 row 5: pause replaces the session glyph.
+        assert_eq!(alias_badge(true, false, true), Some(PAUSE_BADGE));
+    }
+
+    #[test]
+    fn test_pause_badge_wins_over_async_job() {
+        // UI-SPEC UIFIX-01 row 6: pause replaces the hourglass...
+        assert_eq!(alias_badge(true, true, false), Some(PAUSE_BADGE));
+        // ...and still wins when every lower-priority indicator is also set.
+        assert_eq!(alias_badge(true, true, true), Some(PAUSE_BADGE));
+    }
+
+    #[test]
+    fn test_async_job_badge_when_not_paused() {
+        // UI-SPEC UIFIX-01 row 7: hourglass outranks the session glyph.
+        assert_eq!(alias_badge(false, true, true), Some(ASYNC_BADGE));
+        assert_eq!(alias_badge(false, false, true), Some(SESSION_BADGE));
+    }
+
+    #[test]
+    fn test_no_badge_when_nothing_active() {
+        // UI-SPEC UIFIX-01 row 4/9: the alias renders flush.
+        assert!(alias_badge(false, false, false).is_none());
+    }
+
+    #[test]
+    fn test_badge_is_never_two_glyphs() {
+        // Zero-one-many: every Some badge is exactly one glyph plus one space,
+        // so two glyphs can never appear in the alias cell.
+        for (paused, async_job, session) in [
+            (true, false, false),
+            (true, true, true),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            let (glyph, _) = alias_badge(paused, async_job, session).expect("expected a badge");
+            assert_eq!(glyph.chars().count(), 2);
+            assert!(glyph.ends_with(' '));
+        }
     }
 }
