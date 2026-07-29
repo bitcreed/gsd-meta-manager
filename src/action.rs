@@ -88,6 +88,27 @@ pub enum Action {
     RunsReconciled {
         runs: Vec<crate::driver::reconcile::ObservedRun>,
     },
+    /// The user asked for a run to be started on `alias` (CTRL-03, D-25).
+    ///
+    /// The sibling of [`Action::DriverStopRequested`], and it exists for the
+    /// same structural reason: the spawn seam is `App::start_driver_run`, a
+    /// `Screen` only ever receives `&mut AppContext`, and this file's existing
+    /// route from one to the other is a message. Adding the sibling rather than
+    /// a second mechanism is deliberate.
+    ///
+    /// `command` travels with the request because the seam takes it — Phase 17's
+    /// driver runs **exactly one** GSD command supplied by its caller, since the
+    /// decision router is Phase 20's. Today the only production sender fills it
+    /// from `driver_confirm::DEFAULT_DRIVE_COMMAND`; Phase 18's command picker
+    /// is what makes the field carry more than one value.
+    ///
+    /// **The opt-in gate is not here and is not in the handler.** It lives in
+    /// the driver process, at `DrivableProject::from_registry`, so a hand-typed
+    /// `gsd-meta-manager drive foo` is refused by the same code as this (D-16).
+    DriverStartRequested {
+        alias: String,
+        command: String,
+    },
     /// The user asked for the live run on `alias` to be stopped (CTRL-01).
     ///
     /// Carries the alias and nothing else: the pid and the process group are

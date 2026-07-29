@@ -2,6 +2,7 @@ pub mod add_project;
 pub mod create_project;
 pub mod delete_confirm;
 pub mod detail;
+pub mod driver_confirm;
 pub mod enqueue;
 pub mod help;
 pub mod normal;
@@ -185,6 +186,11 @@ pub struct AppContext {
     ///   Once the TUI has exited, the driver's stdout pipe is gone and live
     ///   re-streaming is physically impossible; what this map carries is a
     ///   journal-tail handle and a pgid to signal.
+    /// * **Phase 17 closed having added no field to `ProjectState`** — the whole
+    ///   phase's driver state is this map, `run_states`, `journal_cursors` and
+    ///   `session_spawned_runs`, all siblings here. `git diff` over
+    ///   `src/state_reader/` across the phase is the checkable form of that
+    ///   claim, and plan 17-07 records it (D-25).
     pub observed_runs: HashMap<String, crate::driver::reconcile::ObservedRun>,
     /// The run ids **this TUI session spawned**, which decides D-07's reaping
     /// arm at stop time.

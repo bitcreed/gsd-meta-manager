@@ -734,6 +734,21 @@ impl App {
                     self.needs_redraw = true;
                 }
             }
+            // The goal is `None`: Phase 17 records a goal into `RunRecord.goal`
+            // when one is supplied on the command line and interprets nothing
+            // (Phase 21 owns goal decomposition), and there is no screen to type
+            // one into — that is Phase 18's. An empty string is deliberately not
+            // passed instead, because `drive_argv` omits the flag entirely for
+            // `None` and would otherwise record an empty goal verbatim.
+            Action::DriverStartRequested { alias, command } => {
+                #[cfg(unix)]
+                self.start_driver_run(&alias, &command, None);
+                // Off Unix there is no detached spawn to reach, so the request
+                // has nowhere to go. Both bindings are consumed explicitly
+                // rather than left to an `unused_variables` allow.
+                #[cfg(not(unix))]
+                let _ = (alias, command);
+            }
             Action::DriverStopRequested { alias } => {
                 #[cfg(unix)]
                 self.stop_driver_run(&alias);

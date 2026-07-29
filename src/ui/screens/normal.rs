@@ -2,6 +2,7 @@ use super::add_project::AddProjectScreen;
 use super::create_project::CreateProjectScreen;
 use super::delete_confirm::DeleteConfirmScreen;
 use super::detail::DetailScreen;
+use super::driver_confirm::{DriverAction, DriverConfirmScreen};
 use super::help::HelpScreen;
 use super::{AppContext, Screen, ScreenAction};
 use crate::app::{classify_status, format_phase_display, StatusCategory};
@@ -220,6 +221,53 @@ impl Screen for NormalScreen {
                 if let Some(alias) = ctx.selected_alias() {
                     ctx.needs_redraw = true;
                     ScreenAction::Push(Box::new(DeleteConfirmScreen::new(alias)))
+                } else {
+                    ScreenAction::None
+                }
+            }
+            // ── The three driver keys (D-25) ──────────────────────────────
+            //
+            // This is Phase 17's ENTIRE UI surface: three keys pushing one
+            // confirmation. The Driver tab, the live stream, the dashboard
+            // badges and the rich opt-in disclosure flow are Phase 18's — see
+            // the module doc on `super::driver_confirm` for the full fence.
+            //
+            // Collision check, performed before these were written: this match
+            // already claims `q`, `j`, `k`, `a`, `c`, `d`, `/`, `?`, `Tab`,
+            // `Enter`, `Up` and `Down`, and the search sub-mode is entered by
+            // `/` and handled separately. None of `r`, `x`, `o` is among them.
+            // (`r` is bound in `detail.rs` for the roadmap toggle. That is a
+            // different screen with its own `handle_key` match, so it is not a
+            // collision — the help screen annotates both with their scope.)
+            KeyCode::Char('r') => {
+                if let Some(alias) = ctx.selected_alias() {
+                    ctx.needs_redraw = true;
+                    ScreenAction::Push(Box::new(DriverConfirmScreen::new(
+                        alias,
+                        DriverAction::Start,
+                    )))
+                } else {
+                    ScreenAction::None
+                }
+            }
+            KeyCode::Char('x') => {
+                if let Some(alias) = ctx.selected_alias() {
+                    ctx.needs_redraw = true;
+                    ScreenAction::Push(Box::new(DriverConfirmScreen::new(
+                        alias,
+                        DriverAction::Stop,
+                    )))
+                } else {
+                    ScreenAction::None
+                }
+            }
+            KeyCode::Char('o') => {
+                if let Some(alias) = ctx.selected_alias() {
+                    ctx.needs_redraw = true;
+                    ScreenAction::Push(Box::new(DriverConfirmScreen::new(
+                        alias,
+                        DriverAction::ToggleOptIn,
+                    )))
                 } else {
                     ScreenAction::None
                 }
