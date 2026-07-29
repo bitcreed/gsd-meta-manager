@@ -1643,6 +1643,21 @@ impl Screen for DetailScreen {
                     return ScreenAction::None;
                 }
 
+                // Docs (Browse) tab: open the selected markdown file in $EDITOR.
+                // Resolved in a scope so the view-cache borrow ends before the
+                // surrounding context fields are touched.
+                if current_view == DetailSubView::Browse {
+                    let target = {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        browse_edit_target(cache)
+                    };
+                    ctx.needs_redraw = true;
+                    return match target {
+                        Ok(path) => ScreenAction::SuspendAndEdit(path),
+                        Err(msg) => ScreenAction::SetStatusMessage(msg.to_string()),
+                    };
+                }
+
                 let alias = self.alias.clone();
                 let has_planning = ctx
                     .config
@@ -3586,8 +3601,20 @@ fn push_substage(lines: &mut Vec<Line<'static>>, label: &'static str, present: b
     ]));
 }
 
-/// Build the footer line with tab-appropriate key hints.
-fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
+/// Resolve the markdown file the Docs (Browse) tab's `[e]dit` key should open.
+///
+/// Pure path logic — no filesystem I/O — so the whole UIFIX-03 contract is unit
+/// testable without constructing an `AppContext`. Returns the user-facing status
+/// message on the error path; the caller turns it into a `SetStatusMessage`.
+fn browse_edit_target(_cache: &super::ProjectViewCache) -> Result<std::path::PathBuf, &'static str> {
+    Err("unimplemented")
+}
+
+/// Build the footer key-hint spans for a tab.
+///
+/// Split out of `build_footer` so the hint set is assertable: `Paragraph`
+/// exposes no public text accessor, but a `Vec<Span>` concatenates cleanly.
+fn footer_spans(sub_view: &DetailSubView) -> Vec<Span<'static>> {
     let b = Style::default().add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::raw("  "),
@@ -3667,7 +3694,12 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
     spans.push(Span::styled("[?]", b));
     spans.push(Span::raw("help"));
 
-    Paragraph::new(Line::from(spans))
+    spans
+}
+
+/// Build the footer line with tab-appropriate key hints.
+fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
+    Paragraph::new(Line::from(footer_spans(sub_view)))
 }
 
 // --- Defaults tab helpers ---
@@ -4536,5 +4568,162 @@ mod tests {
         // Empty object → empty waves, still Some (render layer skips it).
         let empty = parse_waves_manifest("{}").expect("empty object parses");
         assert!(empty.waves.is_empty());
+    }
+
+    // ── UIFIX-03: Docs (Browse) tab `[e]dit` key routing ──────────────────
+
+    use crate::browser::{BrowserDepth, BrowserEntry};
+    use crate::ui::screens::ProjectViewCache;
+    use std::path::PathBuf;
+
+    const NO_FILE_MSG: &str = "Select a markdown file to edit";
+    const READ_ONLY_MSG: &str = "Archived files are read-only";
+
+    /// A Browse cache rooted at `/proj/.planning`, sitting in a phase dir.
+    fn browse_cache() -> ProjectViewCache {
+        ProjectViewCache {
+            browser_root: Some(PathBuf::from("/proj/.planning")),
+            browser_current_dir: Some(PathBuf::from("/proj/.planning/phases/14-ui-fixes")),
+            ..Default::default()
+        }
+    }
+
+    fn md_entry(name: &str) -> BrowserEntry {
+        BrowserEntry {
+            name: name.to_string(),
+            path: PathBuf::from("/proj/.planning/phases/14-ui-fixes").join(name),
+            is_dir: false,
+        }
+    }
+
+    #[test]
+    fn test_browse_edit_target_view_depth_returns_file_path() {
+        let mut cache = browse_cache();
+        cache.browser_depth = BrowserDepth::View;
+        cache.browser_file_name = Some("14-02-PLAN.md".to_string());
+        cache.browser_file_content = Some("# Plan\n".to_string());
+
+        assert_eq!(
+            browse_edit_target(&cache),
+            Ok(PathBuf::from(
+                "/proj/.planning/phases/14-ui-fixes/14-02-PLAN.md"
+            ))
+        );
+    }
+
+    #[test]
+    fn test_browse_edit_target_list_depth_md_file() {
+        let mut cache = browse_cache();
+        cache.browser_depth = BrowserDepth::List;
+        cache.browser_entries = vec![
+            BrowserEntry {
+                name: "sub".to_string(),
+                path: PathBuf::from("/proj/.planning/phases/14-ui-fixes/sub"),
+                is_dir: true,
+            },
+            md_entry("14-02-PLAN.md"),
+        ];
+        cache.browser_selected = 1;
+
+        assert_eq!(
+            browse_edit_target(&cache),
+            Ok(PathBuf::from(
+                "/proj/.planning/phases/14-ui-fixes/14-02-PLAN.md"
+            ))
+        );
+    }
+
+    #[test]
+    fn test_browse_edit_target_list_depth_directory_is_rejected() {
+        let mut cache = browse_cache();
+        cache.browser_depth = BrowserDepth::List;
+        cache.browser_entries = vec![BrowserEntry {
+            name: "sub".to_string(),
+            path: PathBuf::from("/proj/.planning/phases/14-ui-fixes/sub"),
+            is_dir: true,
+        }];
+        cache.browser_selected = 0;
+
+        assert_eq!(browse_edit_target(&cache), Err(NO_FILE_MSG));
+    }
+
+    #[test]
+    fn test_browse_edit_target_empty_listing_is_rejected() {
+        let mut cache = browse_cache();
+        cache.browser_depth = BrowserDepth::List;
+        cache.browser_entries = Vec::new();
+        cache.browser_selected = 0;
+
+        assert_eq!(browse_edit_target(&cache), Err(NO_FILE_MSG));
+    }
+
+    #[test]
+    fn test_browse_edit_target_milestones_path_is_read_only() {
+        let mut cache = browse_cache();
+        cache.browser_depth = BrowserDepth::View;
+        cache.browser_current_dir =
+            Some(PathBuf::from("/proj/.planning/milestones/v1.2-phases"));
+        cache.browser_file_name = Some("11-SUMMARY.md".to_string());
+        cache.browser_file_content = Some("archived".to_string());
+
+        assert_eq!(browse_edit_target(&cache), Err(READ_ONLY_MSG));
+    }
+
+    #[test]
+    fn test_browse_edit_target_outside_root_is_rejected() {
+        let mut cache = browse_cache();
+        cache.browser_depth = BrowserDepth::List;
+        cache.browser_entries = vec![BrowserEntry {
+            name: "passwd.md".to_string(),
+            path: PathBuf::from("/etc/passwd.md"),
+            is_dir: false,
+        }];
+        cache.browser_selected = 0;
+
+        assert_eq!(browse_edit_target(&cache), Err(NO_FILE_MSG));
+    }
+
+    #[test]
+    fn test_browse_edit_target_loading_content_is_inert() {
+        let mut cache = browse_cache();
+        cache.browser_depth = BrowserDepth::View;
+        cache.browser_file_name = Some("14-02-PLAN.md".to_string());
+        // Still in the Phase 12 `Loading...` window.
+        cache.browser_file_content = None;
+
+        assert_eq!(browse_edit_target(&cache), Err(NO_FILE_MSG));
+    }
+
+    fn footer_text(sub_view: &DetailSubView) -> String {
+        footer_spans(sub_view)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn test_browse_footer_has_edit_hint() {
+        let text = footer_text(&DetailSubView::Browse);
+        assert!(text.contains("[e]dit  "));
+
+        // Ordering matches the Archive arm: [Enter]open  [e]dit  … [Esc]up
+        let open = text.find("[Enter]open").expect("open hint present");
+        let edit = text.find("[e]dit").expect("edit hint present");
+        let up = text.find("[Esc]up").expect("up hint present");
+        assert!(open < edit);
+        assert!(edit < up);
+    }
+
+    #[test]
+    fn test_other_footers_unchanged_by_browse_edit_hint() {
+        assert_eq!(
+            footer_text(&DetailSubView::Backlog),
+            "  [Esc]back  [1-9]tabs  [j/k]scroll  [Enter]xpand  [e]nqueue  [?]help"
+        );
+        assert_eq!(
+            footer_text(&DetailSubView::Defaults),
+            "  [Esc]back  [1-9]tabs  [j/k]scroll  [Enter]edit  [x] clear  [d] defaults  \
+             [r]eload  [?]help"
+        );
     }
 }
