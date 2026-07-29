@@ -80,7 +80,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
-use crate::executor::stream_json::StreamMessage;
+use crate::executor::stream_json::{ResultMessage, StreamMessage, SystemMessage, TurnMessage};
 use crate::executor::ExecutionEvent;
 
 /// Where a project's run directories live, relative to its `.planning/` (D-01).
@@ -907,6 +907,120 @@ fn stream_label(message: &StreamMessage) -> &'static str {
     }
 }
 
+/// A readable text projection of one observed stream message (OBS-04).
+///
+/// **The agent's own words may be displayed as content and may never drive a
+/// badge, a colour, a status word or a sort key.** That is D-13, and it is not
+/// hypothetical: the incident it is drawn from is an agent that deleted a
+/// production database during an explicit freeze, hid it, fabricated ~4000 fake
+/// users and fake test results, and falsely claimed rollback was impossible.
+/// Self-report is testimony, not telemetry. A run's status comes from
+/// [`RunRecord::outcome`], [`JournalEvent::RunEnded`] and
+/// [`JournalEvent::ExecFinished`]'s exit code — never from anything this
+/// function returns. **Do not undo this by deriving anything from the string.**
+///
+/// **It deliberately does not sanitise, and that is a division of
+/// responsibility rather than an omission.** Terminal-control stripping happens
+/// at buffer-append time in the TUI, because `journal.jsonl` is *evidence* and
+/// is read by tools other than that renderer: stripping the `ESC` bytes an
+/// agent emitted at write time would destroy the record that it emitted them.
+/// The renderer strips unconditionally before a byte reaches a display buffer.
+/// Secret redaction is a separate control and already applies here, at the
+/// [`redact::RedactedLine`] seam every journal write goes through.
+///
+/// Why this takes a whole [`StreamMessage`] rather than the [`TurnMessage`] it
+/// mostly renders: the role is carried by the envelope's `type`, which *is* the
+/// enum variant, so a turn alone cannot say whether it is the agent speaking or
+/// the user. Every arm composes a real string; none falls back to a `Debug`
+/// rendering, which is the whole point of the function.
+fn exec_message_text(message: &StreamMessage) -> String {
+    match message {
+        StreamMessage::Assistant(turn) => compose_turn("assistant", turn),
+        // The replay marker is protocol evidence off the parsed envelope, not
+        // prose, so naming it here is honest. It is emitted at **dequeue**: the
+        // correlation that turns it into an `acted-on` transition is the
+        // driver's, from `is_replay`, never from this string (D-07, D-08).
+        StreamMessage::User(turn) => {
+            let role = if turn.is_replay { "user (replay)" } else { "user" };
+            compose_turn(role, turn)
+        }
+        StreamMessage::System(SystemMessage::Init(init)) => format!(
+            "system: init (claude {}, session {})",
+            init.claude_code_version.as_deref().unwrap_or("unreported"),
+            init.session_id.as_deref().unwrap_or("unreported"),
+        ),
+        StreamMessage::System(SystemMessage::Other) => {
+            "system: a subtype this build does not model".to_string()
+        }
+        StreamMessage::Result(result) => turn_result_text(result),
+        StreamMessage::ControlResponse(response) => format!(
+            "control_response: {} (request {})",
+            response.response.subtype, response.response.request_id
+        ),
+        // `Display` on a `serde_json::Value` is its JSON rendering — a real
+        // string off the wire rather than a Rust struct dump.
+        StreamMessage::RateLimitEvent(value) => format!("rate_limit_event: {value}"),
+        StreamMessage::Unknown => "a message type this build does not model".to_string(),
+    }
+}
+
+/// One turn as `role: text`, or the bare role when the turn rendered to nothing.
+fn compose_turn(role: &str, turn: &TurnMessage) -> String {
+    let text = turn.text_content();
+    if text.is_empty() {
+        format!("{role}:")
+    } else {
+        format!("{role}: {text}")
+    }
+}
+
+/// A readable text projection of one `result` envelope — a **turn** boundary.
+///
+/// Composed from the facts the stream reported, in the spirit of the
+/// `LineTruncated` arm below: the journal restates what the envelope said rather
+/// than inventing a third rendering of it. The agent's own prose is appended as
+/// content and carries no authority; see [`exec_message_text`] for the rule.
+///
+/// [`ResultMessage::result`] is an `Option` because it is **absent entirely on
+/// error envelopes** — not empty, absent (Phase 15 D-32). Defaulting it to an
+/// empty string would make an error envelope indistinguishable from a silent
+/// success, so the absence is preserved by simply omitting the line.
+fn turn_result_text(result: &ResultMessage) -> String {
+    let subtype = if result.subtype.is_empty() {
+        "no subtype reported"
+    } else {
+        result.subtype.as_str()
+    };
+    let mut text = format!("turn ended: {subtype}");
+    if let Some(reason) = result.terminal_reason.as_deref() {
+        text.push_str(&format!(" ({reason})"));
+    }
+    if result.is_error {
+        text.push_str(" [error]");
+    }
+    if let Some(ms) = result.duration_ms {
+        // Per-turn and resets (D-29), so it is labelled per-turn. A steered run
+        // emits one `result` per turn.
+        text.push_str(&format!("; {:.1}s this turn", ms as f64 / 1000.0));
+    }
+    if let Some(cost) = result.total_cost_usd {
+        // Cumulative across turns, and **notional rather than billed** — the
+        // caveat `JournalEvent::Cost` already carries, said where a human reads
+        // it (D-12).
+        text.push_str(&format!("; ${cost:.2} cumulative, notional"));
+    }
+    for error in &result.errors {
+        text.push_str(&format!("\nerror: {error}"));
+    }
+    if let Some(prose) = result.result.as_deref() {
+        if !prose.is_empty() {
+            text.push('\n');
+            text.push_str(prose);
+        }
+    }
+    text
+}
+
 /// Project one [`ExecutionEvent`] onto the journal's vocabulary (D-36).
 ///
 /// This is the whole of Phase 16's consumer wiring: the journal reads the
@@ -918,13 +1032,16 @@ fn stream_label(message: &StreamMessage) -> &'static str {
 ///
 /// Two constraints on the projection, both deliberate:
 ///
-/// 1. **No serialisation derive is added to [`StreamMessage`] or any other
-///    Phase 15 wire type in order to journal it.** The debug rendering is the
-///    projection available *without* widening a type this phase is told not to
-///    widen; it passes through the redactor like every other string (D-22); and
-///    Phase 18 may well want a richer projection once it has a surface to render
-///    one into. Reaching for `#[derive(Serialize)]` here would spend a
-///    permanent constraint on a temporary convenience.
+/// 1. **No serialisation derive is added to [`StreamMessage`] or any other wire
+///    type in order to journal it.** Phase 16 stored `format!("{message:?}")`
+///    here for exactly that reason — a `Debug` rendering was the projection
+///    available without widening a type it was told not to widen. The surface
+///    that renders these strings now exists, so the projection is
+///    [`exec_message_text`] and [`turn_result_text`]: readable prose composed
+///    from a minimally-modelled message body. Reaching for
+///    `#[derive(Serialize)]` here would still spend a permanent constraint on a
+///    temporary convenience, and every text still passes through the redactor
+///    like any other string (D-22).
 /// 2. **The cost figure is notional, not billed.** Phase 15-05's caveat is
 ///    carried into [`JournalEvent::ExecFinished`]'s and [`JournalEvent::Cost`]'s
 ///    field docs rather than restated: the CLI reports a modelled number and
@@ -950,7 +1067,7 @@ pub fn from_exec_event(ev: &ExecutionEvent, argv_digest: &str) -> Option<Journal
         },
         ExecutionEvent::Message(message) => JournalEvent::ExecEvent {
             stream: stream_label(message).to_string(),
-            text: format!("{message:?}"),
+            text: exec_message_text(message),
         },
         ExecutionEvent::Unknown { raw } => JournalEvent::ExecEvent {
             stream: "unknown".to_string(),
@@ -974,7 +1091,7 @@ pub fn from_exec_event(ev: &ExecutionEvent, argv_digest: &str) -> Option<Journal
         },
         ExecutionEvent::TurnCompleted(result) => JournalEvent::ExecEvent {
             stream: "turn_completed".to_string(),
-            text: format!("{result:?}"),
+            text: turn_result_text(result),
         },
         ExecutionEvent::Cost { cumulative_usd } => JournalEvent::Cost {
             cumulative_usd: *cumulative_usd,
@@ -1552,6 +1669,150 @@ mod tests {
                 "{kind} cannot be both emitted and reserved"
             );
         }
+    }
+
+    // ---- The readable text projection (plan 18-03, Task 1; OBS-04) ----
+
+    fn stream_message(json: serde_json::Value) -> StreamMessage {
+        serde_json::from_value(json).expect("the fixture is a valid stream message")
+    }
+
+    fn result_message(json: serde_json::Value) -> ResultMessage {
+        serde_json::from_value(json).expect("the fixture is a valid result envelope")
+    }
+
+    /// The text a journalled `ExecEvent` actually carries, through the real
+    /// mapping rather than by calling the projection directly.
+    fn journalled_text(event: &ExecutionEvent) -> String {
+        match from_exec_event(event, "fnv1a64:0000000000000000") {
+            Some(JournalEvent::ExecEvent { text, .. }) => text,
+            other => panic!("expected an exec_event, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_text_only_turn_journals_the_agents_words_not_a_debug_struct() {
+        let text = journalled_text(&ExecutionEvent::Message(Box::new(stream_message(
+            serde_json::json!({
+                "type": "assistant",
+                "message": { "role": "assistant", "content": [{ "type": "text", "text": "reading src/driver/run.rs" }] },
+                "session_id": "s",
+            }),
+        ))));
+        assert_eq!(text, "assistant: reading src/driver/run.rs");
+        assert!(
+            !text.contains("TurnMessage {"),
+            "a pane full of Debug structs satisfies \"watch its output\" only in the letter"
+        );
+    }
+
+    #[test]
+    fn a_tool_use_turn_keeps_a_visible_label_in_the_journal() {
+        let text = journalled_text(&ExecutionEvent::Message(Box::new(stream_message(
+            serde_json::json!({
+                "type": "assistant",
+                "message": { "role": "assistant", "content": [
+                    { "type": "text", "text": "checking the version" },
+                    { "type": "tool_use", "id": "toolu_01", "name": "Read", "input": { "file_path": "/tmp/Cargo.toml" } },
+                ] },
+            }),
+        ))));
+        assert_eq!(text, "assistant: checking the version\n[tool_use: Read]");
+    }
+
+    #[test]
+    fn a_turn_with_no_message_body_journals_a_short_string_and_does_not_panic() {
+        let text = journalled_text(&ExecutionEvent::Message(Box::new(stream_message(
+            serde_json::json!({ "type": "assistant", "session_id": "s" }),
+        ))));
+        assert_eq!(text, "assistant:");
+    }
+
+    #[test]
+    fn an_error_result_envelope_with_no_result_field_projects_without_panicking() {
+        // `result` is ABSENT on error envelopes, not empty (Phase 15 D-32).
+        let text = journalled_text(&ExecutionEvent::TurnCompleted(Box::new(result_message(
+            serde_json::json!({
+                "type": "result",
+                "subtype": "error_max_budget_usd",
+                "is_error": true,
+                "terminal_reason": "budget_exhausted",
+                "duration_ms": 3568,
+                "total_cost_usd": 1.83,
+                "errors": ["budget of $1.00 exhausted"],
+            }),
+        ))));
+        assert_eq!(
+            text,
+            "turn ended: error_max_budget_usd (budget_exhausted) [error]; 3.6s this turn; \
+             $1.83 cumulative, notional\nerror: budget of $1.00 exhausted"
+        );
+        assert!(
+            !text.contains("ResultMessage {"),
+            "the turn boundary must read as facts, not as a struct dump"
+        );
+    }
+
+    #[test]
+    fn a_success_result_envelope_carries_its_prose_as_content_and_nothing_more() {
+        let text = journalled_text(&ExecutionEvent::TurnCompleted(Box::new(result_message(
+            serde_json::json!({
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": 1804,
+                "total_cost_usd": 0.12,
+                "result": "PONG",
+            }),
+        ))));
+        assert_eq!(
+            text,
+            "turn ended: success; 1.8s this turn; $0.12 cumulative, notional\nPONG"
+        );
+    }
+
+    #[test]
+    fn a_multibyte_turn_reaches_the_journal_byte_identically() {
+        // The projection slices nothing, so there is no byte boundary to split.
+        let words = "🚀 起動しました — ✅";
+        let text = journalled_text(&ExecutionEvent::Message(Box::new(stream_message(
+            serde_json::json!({
+                "type": "assistant",
+                "message": { "role": "assistant", "content": [{ "type": "text", "text": words }] },
+            }),
+        ))));
+        assert_eq!(text, format!("assistant: {words}"));
+    }
+
+    #[test]
+    fn the_projection_does_not_sanitise_because_the_journal_is_evidence() {
+        // Terminal-control stripping is the RENDERER's, at buffer-append time:
+        // the journal is read by tools other than that renderer, and stripping
+        // at write time would destroy the record that the agent emitted these
+        // bytes at all. This test pins the division of responsibility so a
+        // later reader cannot "fix" it here by accident.
+        let hostile = "\u{1b}[2Jall tests passed";
+        let text = journalled_text(&ExecutionEvent::Message(Box::new(stream_message(
+            serde_json::json!({
+                "type": "assistant",
+                "message": { "role": "assistant", "content": [{ "type": "text", "text": hostile }] },
+            }),
+        ))));
+        assert!(
+            text.contains('\u{1b}'),
+            "the escape byte is evidence and must survive to disk: {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_replayed_user_turn_is_named_as_a_replay_in_its_projection() {
+        let text = journalled_text(&ExecutionEvent::Message(Box::new(stream_message(
+            serde_json::json!({
+                "type": "user",
+                "isReplay": true,
+                "message": { "role": "user", "content": [{ "type": "text", "text": "skip the UI review" }] },
+            }),
+        ))));
+        assert_eq!(text, "user (replay): skip the UI review");
     }
 
     #[test]
