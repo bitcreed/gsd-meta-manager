@@ -24,14 +24,25 @@
 //   turn abort, no Bash-tree teardown, no `SessionEnd` hooks, no exit 143.
 //   SIGTERM to the group, grace, then SIGKILL, then an unconditional `wait()`
 //   so no zombie survives.
-// * **Process exit is never awaited unbounded (D-13).** Every `wait()` in this
-//   file is either raced by the supervisor's two caps or wrapped in an explicit
-//   bound. The two caps are independent and measure different things: the
-//   wall-clock cap measures time since spawn, and the idle cap measures time
-//   since the **reader** last observed a line. Only the second can tell a
-//   legitimately long run from a hung one — the research pass reproduced a hang
-//   that sat silent for minutes, while a real multi-step run emits events
-//   continuously, and time-since-spawn cannot separate those.
+// * **Process exit is never awaited unbounded (D-13), and here is the
+//   mechanism.** Every bound this file owns is evaluated at the TOP of every
+//   supervisor pass, not only when the `select!` happens to reach an arm: a
+//   `biased;` macro with a hot stream arm never polls its later arms at all,
+//   and the winning arm's body awaits outside the macro, where every timer
+//   future has already been dropped. The hand-off to the caller is itself
+//   bounded by the earliest armed deadline, so a consumer that stops draining
+//   cannot park the supervisor with every cap and the cancel signal switched
+//   off. The drain that follows an observed exit is bounded too, and that bound
+//   is deliberately not guarded by the exited flag — a bound that switches off
+//   when the child exits is not a bound. The cost of a consumer stalled past
+//   the forward ceiling is one **counted, logged dropped event**; the benefit
+//   is that a run always ends and always reports how.
+//   The two caps are independent and measure different things: the wall-clock
+//   cap measures time since spawn, and the idle cap measures time since the
+//   **reader** last observed a line. Only the second can tell a legitimately
+//   long run from a hung one — the research pass reproduced a hang that sat
+//   silent for minutes, while a real multi-step run emits events continuously,
+//   and time-since-spawn cannot separate those.
 // * **The child's environment is scrubbed of every inherited `CLAUDE*`
 //   variable.** This TUI is plausibly launched from inside a Claude Code
 //   session, so those variables would otherwise leak into the driven child and
@@ -104,6 +115,13 @@ const TEARDOWN_GRACE: Duration = Duration::from_secs(10);
 /// This bound exists so that **no** path in this file awaits process exit
 /// unbounded (D-13); when it expires the run escalates into the same four-step
 /// teardown a cap breach uses.
+///
+/// **Not to be confused with [`POST_EXIT_DRAIN_CAP`], which is its mirror.**
+/// The two bound opposite directions and the names are close enough that the
+/// distinction is worth stating rather than leaving to be rediscovered:
+///
+/// * this one bounds *"the stream closed — is the process gone?"*;
+/// * that one bounds *"the process is gone — is the stream closed?"*.
 const EXIT_DRAIN_CAP: Duration = Duration::from_secs(30);
 
 /// Capacity of the executor event channel.
@@ -805,16 +823,42 @@ enum Breach {
 impl Coordinator {
     /// The supervisor.
     ///
-    /// One `tokio::select!` races four things against each other: the child's
-    /// exit future, the total wall-clock cap, the idle cap, and the cancel
-    /// signal — plus the stream itself, which is what the loop is otherwise
-    /// pumping. Racing them is also what resolves the borrow problem the
+    /// **Two layers, and keeping them apart is the whole design.** The
+    /// `tokio::select!` is the WAKE-UP mechanism: it parks the loop until
+    /// something worth looking at happens — a stream line, the child's exit,
+    /// one of the timers, the cancel signal. The unconditional block at the top
+    /// of every pass is the ENFORCEMENT mechanism: it reads the wall-clock cap,
+    /// the idle cap, the grace, the post-exit drain bound and the cancel signal
+    /// on *every* pass, whatever the `select!` did or did not reach.
+    ///
+    /// Arm ordering is therefore a stream-fidelity preference and never a
+    /// correctness dependency. That distinction is not decorative. Under the
+    /// single-layer shape this loop used to have, `biased;` with the reader
+    /// first meant a child emitting faster than the loop retired kept arm 1
+    /// permanently ready and the later arms were never polled at all; and once
+    /// the reader arm won, the loop sat awaiting a send *outside* the macro,
+    /// with every timer future already dropped. Either way both caps and the
+    /// cancel were unenforceable exactly when a runaway run made them matter
+    /// (CR-01). The forward to the caller is bounded by the earliest armed
+    /// deadline for the same reason.
+    ///
+    /// Racing the exit future is also what resolves the borrow problem the
     /// wrapper's API creates: `wait()` holds a `&mut` borrow of the child for
     /// the whole life of its future, so a supervisor holding that future across
     /// an await could never call `signal()` on the same object. When another arm
     /// wins, `select!` drops every loser — including the exit future — and the
     /// borrow ends before the statement after the macro runs, which is exactly
     /// where the signal call lives.
+    ///
+    /// **An observed exit is not a reaped group.** `ProcessGroupChild::wait`
+    /// awaits the leader and caches its status before reaping the rest of the
+    /// group, so a partially-polled wait future dropped by another arm winning
+    /// — which the tail of lines after the leader exits makes likely — leaves
+    /// that status cached and the next `wait()` returning immediately, with
+    /// group members still alive. `exited` therefore means "the leader is gone",
+    /// never "nothing of this run is still running", and the post-exit path
+    /// bounds its drain and tears the group down whenever EOF has not proven
+    /// otherwise (CR-02).
     ///
     /// **The idle cap is driven by the reader, not by the envelope (D-13,
     /// Pitfall E).** Every observed line stamps `last_line_at`; this loop

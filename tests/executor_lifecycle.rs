@@ -237,8 +237,24 @@ async fn a_torn_down_run_is_reaped_and_reports_an_exit_status() {
     );
 }
 
+/// Deliberately NOT ignored, though it waits out the real ten-second teardown
+/// grace and that cost is the point rather than an oversight.
+///
+/// It carried an ignore attribute for exactly that ~10 second cost, and it is
+/// the ONLY proof the SIGKILL escalation path works at all. Three things
+/// changed that trade:
+///
+/// 1. The escalation now has a **second entry point**. The post-exit branch
+///    tears the group down whenever the group was not proven reaped, so the
+///    path is reachable from an ordinary run's tail and not only from an
+///    explicit cancel. A path with two entry points and zero CI coverage is
+///    precisely the shape that produced CR-02.
+/// 2. The ~10 seconds is wall-clock, not additive: the harness runs the tests
+///    in this integration binary concurrently on threads, so the cost is
+///    absorbed by the slower tests beside it rather than added to them.
+/// 3. This plan forbids new ignored tests. Keeping a stale one while adding
+///    bounded ones would be inconsistent.
 #[tokio::test]
-#[ignore = "waits out the real ten-second teardown grace"]
 async fn a_child_that_ignores_the_terminate_signal_is_still_killed_and_reaped() {
     let scratch = TempDir::new().expect("temp dir");
     let project = DrivableProject::for_testing("deaf", scratch.path());
