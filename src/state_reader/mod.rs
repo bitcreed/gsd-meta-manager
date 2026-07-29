@@ -345,6 +345,73 @@ mod tests {
     }
 
     #[test]
+    fn test_handoff_md_non_empty_sets_paused() {
+        // UI-SPEC UIFIX-01 row 1: non-empty HANDOFF.md after trim → paused,
+        // context is the first non-empty non-heading line.
+        let td = make_planning(&[
+            ("STATE.md", "---\nstatus: executing\n---\n"),
+            (
+                "HANDOFF.md",
+                "# Handoff\n\nPick up at plan 14-02\n\nmore detail\n",
+            ),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert!(state.paused);
+        assert_eq!(state.pause_context.as_deref(), Some("Pick up at plan 14-02"));
+    }
+
+    #[test]
+    fn test_handoff_json_non_empty_sets_paused_with_context() {
+        // UI-SPEC UIFIX-01 row 2: HANDOFF.json `next_action` becomes the context.
+        let td = make_planning(&[
+            ("STATE.md", "---\nstatus: executing\n---\n"),
+            (
+                "HANDOFF.json",
+                "{\"next_action\":\"Run /gsd-execute-phase 14\"}",
+            ),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert!(state.paused);
+        assert_eq!(
+            state.pause_context.as_deref(),
+            Some("Run /gsd-execute-phase 14")
+        );
+    }
+
+    #[test]
+    fn test_handoff_md_whitespace_only_is_not_paused() {
+        // UI-SPEC UIFIX-01 row 3: a whitespace-only file is not a pause signal.
+        let td = make_planning(&[
+            ("STATE.md", "---\nstatus: executing\n---\n"),
+            ("HANDOFF.md", "   \n\t\n  \n"),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert!(!state.paused);
+        assert!(state.pause_context.is_none());
+    }
+
+    #[test]
+    fn test_no_handoff_file_is_not_paused() {
+        // UI-SPEC UIFIX-01 row 4: no HANDOFF file at all.
+        let td = make_planning(&[("STATE.md", "---\nstatus: executing\n---\n")]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert!(!state.paused);
+        assert!(state.pause_context.is_none());
+    }
+
+    #[test]
+    fn test_handoff_json_invalid_is_paused_without_context() {
+        // UI-SPEC UIFIX-01 row 8: the badge never depends on JSON parsing.
+        let td = make_planning(&[
+            ("STATE.md", "---\nstatus: executing\n---\n"),
+            ("HANDOFF.json", "{not valid json at all"),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert!(state.paused);
+        assert!(state.pause_context.is_none());
+    }
+
+    #[test]
     fn test_all_phases_complete_is_intermediate() {
         // `All phases complete` (ADR-2207 intermediate) must NOT render a
         // premature `<milestone> Complete`.
