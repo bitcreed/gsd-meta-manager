@@ -93,6 +93,65 @@ pub fn project_last_activity(project_root: &Path) -> Option<chrono::DateTime<chr
     git_last_commit_time(project_root).or_else(|| mtime_last_activity(project_root))
 }
 
+/// A project's current git `HEAD` commit sha, in full.
+///
+/// Synchronous by design, matching `git_last_commit_time` above: its consumer
+/// is the run snapshot in `src/executor/outcome.rs`, which calls it from the
+/// same blocking closure as `parse_project_state`. Passes the repository root
+/// as an argument (`-C`) rather than setting a working directory, consistently
+/// with [`is_dirty`].
+///
+/// Returns `None` — never an error — when the directory is not a git
+/// repository, has no commits yet, or git is unavailable. A project that is
+/// simply not under version control is a normal case, not a failure. Never
+/// panics.
+pub fn head_sha(project_root: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project_root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    Some(trimmed.to_string())
+}
+
+/// Whether a project's working tree carries any uncommitted change.
+///
+/// **Untracked files count as dirty.** `git status --porcelain` reports them by
+/// default, and an agent that creates a new file without committing it has
+/// unambiguously changed the project — which is exactly the corroboration
+/// signal the run delta wants.
+///
+/// Synchronous and `-C`-based for the same reasons as [`head_sha`]. Returns
+/// `None` — never an error — when the directory is not a git repository or git
+/// is unavailable. Never panics.
+pub fn is_dirty(project_root: &Path) -> Option<bool> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project_root)
+        .args(["status", "--porcelain"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Some(!stdout.trim().is_empty())
+}
+
 #[derive(Debug, Clone)]
 pub struct GitLogEntry {
     pub hash: String,
@@ -314,6 +373,84 @@ mod tests {
             mtime_last_activity(&missing).is_none(),
             "expected None for a path that does not exist"
         );
+    }
+
+    // ========================================================================
+    // The run-delta git half (D-11)
+    // ========================================================================
+
+    #[test]
+    fn head_sha_and_is_dirty_report_a_clean_repo_with_one_commit() {
+        let tmp =
+            std::env::temp_dir().join(format!("gsd_git_ops_test_headclean_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        if !try_init_repo_with_commit(&tmp) {
+            // Sandbox forbids git commit — skip gracefully.
+            let _ = std::fs::remove_dir_all(&tmp);
+            return;
+        }
+
+        let sha = head_sha(&tmp);
+        assert!(
+            sha.as_deref().is_some_and(|s| s.len() >= 7),
+            "expected a HEAD sha in a repo with one commit, got: {sha:?}"
+        );
+        assert_eq!(
+            is_dirty(&tmp),
+            Some(false),
+            "a freshly committed tree is clean"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn an_untracked_file_flips_the_dirty_flag() {
+        let tmp =
+            std::env::temp_dir().join(format!("gsd_git_ops_test_dirty_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        if !try_init_repo_with_commit(&tmp) {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return;
+        }
+
+        assert_eq!(is_dirty(&tmp), Some(false), "clean before the write");
+        std::fs::write(tmp.join("untracked.txt"), "new work").unwrap();
+        assert_eq!(
+            is_dirty(&tmp),
+            Some(true),
+            "an untracked file is a change the agent made and must read as dirty"
+        );
+
+        // The sha must NOT move for an uncommitted change — the two signals are
+        // independent.
+        let sha_before = head_sha(&tmp);
+        assert!(sha_before.is_some(), "the repo still has its commit");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn both_new_helpers_return_none_for_a_non_git_dir_without_erroring() {
+        let tmp = std::env::temp_dir()
+            .join(format!("gsd_git_ops_test_headnogit_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        assert!(
+            head_sha(&tmp).is_none(),
+            "a directory that is not a repository has no HEAD"
+        );
+        assert!(
+            is_dirty(&tmp).is_none(),
+            "an unknown dirty state is None, never a fabricated false"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
