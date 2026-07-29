@@ -42,6 +42,13 @@ Inherited from:
 
 Stack is fixed. ROADMAP marks Phase 14 `Research: skip`. No stack decision is re-opened here.
 
+**Visual hierarchy — unchanged.** Focal points on every surface this phase touches (dashboard row,
+Browse footer, markdown viewer) are inherited verbatim from the Phase 11 and Phase 12 UI-SPECs and
+are NOT re-derived here. Cyan remains the sole attention-drawing accent (see Color); the phase adds
+no new focal point, removes none, and re-ranks none. The only visual delta in the entire phase is
+the two pad cells removed from the D-R-P-E-V cell (UIFIX-02). *(Added per gsd-ui-checker
+Dimension 2 recommendation, 2026-07-28 — non-blocking.)*
+
 ---
 
 ## Spacing Scale
