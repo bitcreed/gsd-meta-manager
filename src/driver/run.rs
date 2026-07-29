@@ -70,12 +70,24 @@ fn outcome_label(outcome: &RunOutcome) -> &'static str {
 /// record carries the driver's own pid and pgid, which only the driver knows. A
 /// spawn failure is synchronous and reportable in the TUI, and correctly leaves
 /// nothing at all on disk rather than a half-record (D-03).
+///
+/// **`pgid` is a parameter and not a second `std::process::id()` call, and that
+/// is WR-01.** The two are equal for every run that reaches this point, but they
+/// were equal here because the same expression was written twice rather than
+/// because anything had been observed. On a failed `setpgid` — `EPERM` for a
+/// session leader is the realistic one — the process does **not** lead its own
+/// group, and the record asserted a leadership it did not hold. What that costs
+/// downstream is concrete: `kill::resolve_signal_target` compares the recorded
+/// group against the kernel's, so such a record makes every stop against that run
+/// refuse, and the user's kill switch stops working for a reason nothing on
+/// screen can explain. The caller passes what [`current_group`] reports.
 fn make_run_record(
     run_id: String,
     args: &DriveArgs,
     entry: &RegisteredProject,
     options: &ExecutionOptions,
     argv_digest: String,
+    pgid: u32,
 ) -> RunRecord {
     RunRecord {
         run_id,
@@ -90,11 +102,14 @@ fn make_run_record(
             .map(|record| record.opted_in_at.clone()),
         started_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         session_id: options.session_id.to_string(),
-        // D-04's arithmetic, unchanged: both are the driver's own pid, and a
-        // plan that computes them differently is wrong. `establish_own_group`
-        // is what makes the equality honest rather than assumed.
+        // D-04's arithmetic still holds — `pid == pgid` for every run that gets
+        // here — but it now holds because the group was **observed** rather than
+        // because the same expression was written on both lines. A record that
+        // asserts a leadership the process does not hold is worse than one that
+        // reports an inherited group: the first makes the kill switch refuse,
+        // the second at least tells the truth about what to signal.
         pid: std::process::id(),
-        pgid: std::process::id(),
+        pgid,
         // Empty until the first `system/init`. Record what is known; nothing
         // overwrites it, because `run.json` is written exactly twice.
         claude_code_version: String::new(),
@@ -104,7 +119,22 @@ fn make_run_record(
     }
 }
 
-/// Become this process's own group leader, so `pgid == pid` is a fact.
+/// The process group this process is **actually** in, straight from the kernel.
+///
+/// `getpgrp()`, which cannot fail: every process is in exactly one group.
+///
+/// **Split out of [`establish_own_group`] rather than inlined into it, and the
+/// reason is testability without collateral damage.** A test that wanted to
+/// cross-check the syscall against `liveness::process_group`'s `/proc` parse
+/// could not call `establish_own_group`, because `setpgid` in a shared test
+/// binary would move **the harness's own process group** — every other test in
+/// the same process, and the runner's job control with them. This function
+/// observes and changes nothing, so the cross-check costs nothing.
+fn current_group() -> u32 {
+    rustix::process::getpgrp().as_raw_nonzero().get() as u32
+}
+
+/// Become this process's own group leader, and report the group it ends up in.
 ///
 /// `setpgid(0, 0)`. Under the TUI's spawn — which already applies
 /// `process_group(0)` — this is a harmless no-op. It exists for the other launch
@@ -115,13 +145,23 @@ fn make_run_record(
 ///
 /// An `EPERM` — the process is already a session leader — is downgraded to a
 /// warning carrying the error **kind** only. It is not a reason to refuse a run.
-fn establish_own_group() {
+///
+/// **It returns [`current_group`] rather than nothing, and that return value is
+/// WR-01.** The previous doc said this call *"is what makes the equality honest
+/// rather than assumed"*, and that was true of the call and false of the record:
+/// `make_run_record` wrote `std::process::id()` into `pgid` unconditionally, so
+/// on the very failure path the `warn!` above describes the record still claimed
+/// group leadership. Returning the group the kernel reports is what closes the
+/// gap between the warning and the document — the record now says what happened,
+/// including when what happened was not what was asked for.
+fn establish_own_group() -> u32 {
     if let Err(err) = rustix::process::setpgid(None, None) {
         tracing::warn!(
             kind = ?err.kind(),
             "could not become process group leader; the recorded pgid may name an inherited group",
         );
     }
+    current_group()
 }
 
 /// **Layers 2 and 3 of D-06's four-step stop**, in the order that makes them
@@ -264,16 +304,23 @@ pub async fn execute_run(
             ),
         })?;
 
-    establish_own_group();
+    let pgid = establish_own_group();
 
     let options = ExecutionOptions::default();
 
     // The TUI owns the id so it knows what to look for; the driver owns the
     // record (D-03).
-    let run_id = args
-        .run_id
-        .clone()
-        .unwrap_or_else(|| journal::new_run_id(chrono::Utc::now(), &options.session_id));
+    //
+    // A **second** line of defence, not the tested one: `driver::drive` refuses
+    // an absent run id before anything is created, and that refusal is what
+    // `drive_refuses_a_real_run_that_carries_no_run_id_without_touching_disk`
+    // exercises. This one exists so a future direct caller of `execute_run` —
+    // there is none today — cannot reintroduce a run that `liveness::probe`
+    // cannot see. The driver used to GENERATE an id here when none was supplied,
+    // which produced a run whose id appeared on no argv: invisible to the probe,
+    // reported crashed by every scan, and un-stoppable because a stop answered
+    // already-gone without signalling (CR-04).
+    let run_id = args.run_id.clone().ok_or(DriveError::RunIdRequired)?;
 
     // The executor's own generated argv is not reachable from here — the
     // builder is private to `src/executor/claude.rs` — so the digest covers the
@@ -293,15 +340,17 @@ pub async fn execute_run(
     argv.push(args.command.clone());
     let argv_digest = journal::argv_digest(&argv);
 
-    let record = make_run_record(run_id, args, entry, &options, argv_digest);
+    let record = make_run_record(run_id, args, entry, &options, argv_digest, pgid);
 
     let planning_dir = project.root().join(".planning");
 
-    // The pgid argument is `std::process::id()` for the same reason the run
-    // record's is: `setpgid(0, 0)` ran at entry, so this process is its own
-    // group leader (D-04). A second `drive` against this project now refuses and
-    // names this run rather than starting alongside it (CTRL-05).
-    let lock = lock::acquire(&planning_dir, &record.run_id, std::process::id())?;
+    // The same observed group the record carries, and for the same reason
+    // (WR-01): `setpgid(0, 0)` ran at entry, but its success is not something to
+    // assume — the lock's holder record and `run.json` must name the same group,
+    // or a stop resolved through one would refuse against the other. A second
+    // `drive` against this project now refuses and names this run rather than
+    // starting alongside it (CTRL-05).
+    let lock = lock::acquire(&planning_dir, &record.run_id, pgid)?;
 
     let journal = JournalRun::start(&planning_dir, record).map_err(|err| DriveError::Journal {
         detail: format!("{err:#}"),
@@ -396,6 +445,97 @@ pub async fn execute_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Aliased on import rather than called through its module path, and the
+    // rename is load-bearing rather than stylistic. `tests/spawn_seam_guard.rs`
+    // treats `process_group(` as a process-SPAWN marker, and its left word
+    // boundary accepts a `::` — so an inline `liveness::process_group(…)` here
+    // would report this module, which spawns nothing, as a spawn site. The
+    // guard's own doc names the right fix for that class (`kill_process_group(`
+    // is the same case) and names the wrong one: putting a file that spawns
+    // nothing onto a spawn allowlist, which "quietly turns an audit into a list
+    // of files somebody once had to add". An identifier character before the
+    // marker is exactly what the boundary was built to accept.
+    use crate::driver::liveness::process_group as kernel_process_group;
+
+    /// A `DriveArgs` carrying nothing this module's own assertions vary.
+    fn args() -> DriveArgs {
+        DriveArgs {
+            alias: "demo".to_string(),
+            command: "/gsd-progress".to_string(),
+            run_id: Some("2026-07-29T12-00-00Z-aaaa".to_string()),
+            dry_run: false,
+            goal: None,
+            claude_program: None,
+            claude_args: Vec::new(),
+        }
+    }
+
+    /// A registry entry with no opt-in record; `make_run_record` only reads the
+    /// opt-in timestamp, which is legitimately absent for a hand-typed run.
+    fn entry() -> RegisteredProject {
+        RegisteredProject {
+            path: std::path::PathBuf::from("/nonexistent"),
+            added: "2026-07-29T12:00:00Z".to_string(),
+            driver_opt_in: None,
+            extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn the_run_record_carries_the_group_it_was_given_and_not_a_second_copy_of_the_pid() {
+        // A group this process cannot possibly be in, so an implementation that
+        // ignored the argument and wrote `std::process::id()` twice — which is
+        // what WR-01 describes — could not pass by coincidence.
+        const SENTINEL_PGID: u32 = 4_242_424;
+
+        let record = make_run_record(
+            "2026-07-29T12-00-00Z-aaaa".to_string(),
+            &args(),
+            &entry(),
+            &ExecutionOptions::default(),
+            "fnv1a64:0000000000000000".to_string(),
+            SENTINEL_PGID,
+        );
+
+        assert_eq!(
+            record.pgid, SENTINEL_PGID,
+            "the record must carry the group it was HANDED. Writing \
+             std::process::id() here made the record assert a leadership a failed \
+             setpgid means the process does not hold — and \
+             kill::resolve_signal_target then refuses every stop against that run \
+             (WR-01, D-04)"
+        );
+        assert_eq!(
+            record.pid,
+            std::process::id(),
+            "the pid is still this process's own; the two fields are simply no \
+             longer the same expression"
+        );
+    }
+
+    #[test]
+    fn the_current_group_agrees_with_the_proc_parse() {
+        // Two independent sources of one fact: the `getpgrp` syscall and the
+        // `/proc/<pid>/stat` field parse `kill::resolve_signal_target` compares
+        // the record against. If either the syscall wrapper or the stat field
+        // index were wrong, every stop in the product would refuse — and the two
+        // would disagree here first.
+        //
+        // Deliberately NOT `establish_own_group()`: `setpgid` in a shared test
+        // binary would move the harness's own process group, and with it every
+        // other test in this process.
+        let from_syscall = current_group();
+        let from_proc = kernel_process_group(std::process::id())
+            .expect("this process's own /proc/<pid>/stat is readable");
+
+        assert_eq!(
+            from_syscall, from_proc,
+            "getpgrp() and the /proc pgrp field must name the same group. A \
+             disagreement means one of the two is reading the wrong thing, and \
+             the consequence is a kill switch that refuses every stop (D-04)"
+        );
+    }
 
     #[test]
     fn the_outcome_label_for_a_stopped_run_is_killed() {

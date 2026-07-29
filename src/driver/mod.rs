@@ -11,13 +11,18 @@
 //!    dashboard and the driver can never drift in how they read a project. It is
 //!    deliberately **not** an in-process tokio task (which cannot survive the
 //!    TUI closing), not `systemd-run`, and not tmux.
-//! 2. **Driving is Unix-only, deliberately and explicitly (D-05).** The
-//!    implementation submodules carry the `#[cfg(unix)]`; the `Drive` subcommand
-//!    does **not**. On a non-Unix platform the subcommand still parses and
-//!    [`drive`] returns [`DriveError::UnsupportedPlatform`] naming the missing
-//!    facility, because an accepted limitation that surfaces as "unknown
-//!    subcommand" is indistinguishable from a bug. This mirrors the posture at
-//!    `src/executor/mod.rs:22-28`.
+//! 2. **Driving needs two platform facilities, not one, and both refusals are
+//!    typed rather than silent (D-05).** The implementation submodules carry the
+//!    `#[cfg(unix)]`; the `Drive` subcommand does **not**, so on a non-Unix
+//!    platform it still parses and [`drive`] returns
+//!    [`DriveError::UnsupportedPlatform`] naming the missing detachment
+//!    facility — an accepted limitation that surfaces as "unknown subcommand" is
+//!    indistinguishable from a bug. A **real** run additionally requires a
+//!    determinable liveness, which is the `/proc` probe the kill switch and the
+//!    reconciliation scan are both built on; where that is unavailable
+//!    [`platform_refusal`] refuses with the same typed variant and a detail that
+//!    names the probe. Both mirror the posture at `src/executor/mod.rs:22-28`.
+//!    Neither applies to `--dry-run`.
 //! 3. **The driver's working directory is the project root itself, never a
 //!    worktree (D-21).** OQ4 was resolved empirically — `claude --worktree`
 //!    exists and works — and declined for five concrete reasons, chief among
@@ -89,11 +94,16 @@ pub struct DriveArgs {
     /// field that accepted a sequence now would imply a loop that does not
     /// exist.
     pub command: String,
-    /// The run id to record under, or `None` to generate one.
+    /// The run id to record under. **Required for a real run**; `None` is legal
+    /// only with [`dry_run`](Self::dry_run).
     ///
-    /// The TUI supplies it so it knows what to look for afterwards; the driver
-    /// owns the record, because `run.json` carries the driver's own pid and pgid
-    /// which only the driver knows (D-03).
+    /// It is supplied by the caller and never generated here: the TUI supplies it
+    /// so it knows what to look for afterwards, and the driver owns the record,
+    /// because `run.json` carries the driver's own pid and pgid which only the
+    /// driver knows (D-03). A real run with `None` is refused by [`drive`] with
+    /// [`DriveError::RunIdRequired`] before anything is created — an id the
+    /// driver invented for itself would appear on no caller's argv, and that is
+    /// precisely what made a run invisible to `liveness::probe` (CR-04).
     pub run_id: Option<String>,
     /// Preview only, execute nothing (D-24). Plan 17-04 implements it.
     pub dry_run: bool,
@@ -103,6 +113,40 @@ pub struct DriveArgs {
     pub claude_program: Option<PathBuf>,
     /// Test and development only: leading arguments for `claude_program`.
     pub claude_args: Vec<OsString>,
+}
+
+/// Whether a **real** run may be started on a platform whose liveness
+/// determinability is `liveness_supported` (CR-05).
+///
+/// **The principle in one line: it must be impossible to start what cannot be
+/// stopped.** Where `driver::liveness`'s `/proc` technique does not apply, the
+/// kill switch cannot tell a running agent from a finished one, the
+/// reconciliation scan cannot tell a live run from a crashed one, and the
+/// concurrency cap cannot count. A run started there is an autonomous agent with
+/// git and push rights that the tool has no honest way to observe or terminate.
+/// The refusal is the only answer that does not lie about that.
+///
+/// **Pure, and that is what makes it testable at all.**
+/// [`liveness::LIVENESS_SUPPORTED`] is `true` on the only platform CI runs, so a
+/// gate written as a `#[cfg]` block or an inline read of the constant could never
+/// have its refusal branch executed — the one branch whose whole job is to be
+/// honest with a user this project cannot otherwise reach. Fed the non-Linux
+/// answer directly, it is one assertion.
+///
+/// `dry_run` is exempt, and the exemption is not an oversight: a preview starts
+/// no process, so there is nothing to stop and nothing to observe. A preview that
+/// stopped working on the platform where a run cannot run would be useless
+/// exactly where it is most useful (D-22, D-24).
+fn platform_refusal(liveness_supported: bool, dry_run: bool) -> Option<DriveError> {
+    if liveness_supported || dry_run {
+        return None;
+    }
+    Some(DriveError::UnsupportedPlatform {
+        detail: "the /proc liveness probe that the kill switch and the reconciliation \
+                 scan are both built on is unavailable here, so a run could be started \
+                 but neither observed nor stopped"
+            .to_string(),
+    })
 }
 
 /// Run one GSD command against `alias`, or refuse.
@@ -119,7 +163,10 @@ pub struct DriveArgs {
 ///    17-04 adds. **Gating before the preview branch is stricter than CTRL-03
 ///    requires, and it is deliberate:** one gate call site is mechanically
 ///    verifiable, two are an invitation to add a third.
-/// 4. Dispatch to the platform handler, which is the run body on Unix and a
+/// 4. Refuse a real run that cannot be stopped ([`platform_refusal`]) or cannot
+///    be identified ([`DriveError::RunIdRequired`]). Both sit **after** the
+///    dry-run branch, so neither reaches a preview.
+/// 5. Dispatch to the platform handler, which is the run body on Unix and a
 ///    typed refusal everywhere else (D-05).
 pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
     let entry = config
@@ -150,6 +197,23 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
         let report = dry_run::build_report(&project, &args.command);
         println!("{}", dry_run::render(&report));
         return Ok(());
+    }
+
+    // Both refusals below are positioned, and the position is the decision.
+    //
+    // **After the gate**, so `from_registry` keeps its single production call
+    // site and an unregistered or non-opted-in alias is still refused first
+    // (D-16). **After the dry-run branch**, because a preview creates no run to
+    // identify and starts no process to stop, so neither refusal is about
+    // anything a preview does (D-22, D-24). And **before `dispatch`**, so a
+    // refused run has created nothing at all: no lock file, no run directory, no
+    // `run.json`, no journal.
+    if let Some(refusal) = platform_refusal(liveness::LIVENESS_SUPPORTED, args.dry_run) {
+        return Err(refusal);
+    }
+
+    if args.run_id.is_none() {
+        return Err(DriveError::RunIdRequired);
     }
 
     dispatch(project, &args, entry).await
@@ -214,6 +278,107 @@ mod tests {
                 .count(),
             0,
             "a refused drive writes nothing at all (CTRL-03)"
+        );
+    }
+
+    /// A project root with `.planning/`, plus a config whose entry carries a
+    /// driver opt-in — so the gate at the top of [`drive`] passes and the
+    /// refusals below are the branch under test rather than an incidental one.
+    fn opted_in(root: &std::path::Path) -> Config {
+        std::fs::create_dir_all(root.join(".planning")).expect("scratch .planning");
+        let mut config = Config::new();
+        config.projects.insert(
+            "demo".to_string(),
+            RegisteredProject {
+                path: root.to_path_buf(),
+                added: "2026-07-29T12:00:00Z".to_string(),
+                driver_opt_in: Some(crate::config::DriverOptIn {
+                    opted_in_at: "2026-07-29T11:59:00Z".to_string(),
+                    claude_md_digest: None,
+                }),
+                extra: Default::default(),
+            },
+        );
+        config
+    }
+
+    #[tokio::test]
+    async fn drive_refuses_a_real_run_that_carries_no_run_id_without_touching_disk() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let config = opted_in(root.path());
+
+        let mut args = args("demo");
+        args.run_id = None;
+
+        let err = drive(args, &config)
+            .await
+            .expect_err("a real run with no run id must be refused");
+
+        assert!(
+            matches!(err, DriveError::RunIdRequired),
+            "the refusal must be the typed one, got: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("--run-id"),
+            "the refusal must name the flag, or the caller cannot act on it, got: {err}"
+        );
+        assert!(
+            !root.path().join(".planning/meta-manager").exists(),
+            "a refused run must have created NOTHING. A refusal that left a runs \
+             root, a lock file or a journal behind would mean something had already \
+             started before the check ran (CR-04)"
+        );
+    }
+
+    #[tokio::test]
+    async fn drive_still_previews_when_there_is_no_run_id_because_a_preview_creates_no_run() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let config = opted_in(root.path());
+
+        let mut args = args("demo");
+        args.run_id = None;
+        args.dry_run = true;
+
+        drive(args, &config)
+            .await
+            .expect("a preview creates no run to identify, so the run-id refusal must not reach it");
+
+        // The inertness control, over the one directory this call could have
+        // created. D-23's full zero-write property — including the git reflog —
+        // is `tests/driver_dry_run.rs`'s and is not duplicated here.
+        assert!(
+            !root.path().join(".planning/meta-manager").exists(),
+            "a preview writes nothing (D-23)"
+        );
+    }
+
+    #[test]
+    fn the_platform_gate_refuses_a_real_run_where_liveness_cannot_be_determined() {
+        let refusal = platform_refusal(false, false)
+            .expect("a real run must be refused where liveness cannot be determined");
+        assert!(
+            matches!(refusal, DriveError::UnsupportedPlatform { .. }),
+            "the refusal reuses the accepted-limitation variant rather than adding \
+             a second one, got: {refusal:?}"
+        );
+        assert!(
+            refusal.to_string().contains("/proc"),
+            "the detail must name the facility concretely, in the style D-05 \
+             requires — 'not supported' with no noun is indistinguishable from a \
+             bug, got: {refusal}"
+        );
+
+        assert!(
+            platform_refusal(true, false).is_none(),
+            "the ordinary case must be transparent"
+        );
+        assert!(
+            platform_refusal(false, true).is_none(),
+            "a PREVIEW must survive the refusal, and the exemption is deliberate \
+             rather than an oversight: a preview starts no process, so there is \
+             nothing to stop and nothing to observe. A preview that stopped \
+             working on the platform where a run cannot run would be useless \
+             exactly where it is most useful (D-22, D-24)"
         );
     }
 
