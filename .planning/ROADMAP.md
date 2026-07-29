@@ -114,7 +114,7 @@ before Phase 20 closes so the router is never built against a stubbed target.
   4. PageDown at the end of a document leaves the last line on screen instead of scrolling past the content
 
 **Research**: skip — established codebase idioms, no new external unknowns
-**Plans**: 1/3 plans executed
+**Plans**: 2/3 plans executed
 
 Plans:
 **Wave 1**
@@ -123,7 +123,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 14-02-PLAN.md — UIFIX-03 route `e` on the Docs tab to the existing SuspendAndEdit path; UIFIX-04 clamp the stored scroll offset to the renderer's own bound
+- [x] 14-02-PLAN.md — UIFIX-03 route `e` on the Docs tab to the existing SuspendAndEdit path; UIFIX-04 clamp the stored scroll offset to the renderer's own bound
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -320,7 +320,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 14. UI Fixes | 1/3 | In Progress|  |
+| 14. UI Fixes | 2/3 | In Progress|  |
 | 15. Transport Foundation | 0/? | Not started | - |
 | 16. Run Journal & State Substrate | 0/? | Not started | - |
 | 17. Supervisor | 0/? | Not started | - |
