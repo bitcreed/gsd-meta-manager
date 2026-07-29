@@ -241,6 +241,69 @@ async fn a_duplicate_start_refuses_promptly_rather_than_blocking() {
     completed.expect("run A runs to completion");
 }
 
+/// The named WR-10 / D-28 regression: the run body's blocking work runs on the
+/// blocking pool, so the async runtime is never parked.
+///
+/// **Current-thread on purpose, and that is the whole test.** The comment above
+/// records the deadlock this repository *observed*: a blocking `flock` inside an
+/// `async fn`, on a runtime with one thread, defeats `tokio::time::timeout`
+/// outright — the timer, the attempting task and the timeout itself all share
+/// that thread, and `Timeout::poll` polls its inner future inline, so a parked
+/// thread polls nothing at all. Its sibling above buys its way out of that with
+/// four workers; this one deliberately does not, because the property under test
+/// is *where the blocking call runs*, not how many threads can absorb it.
+///
+/// **Against a tree where the wrap is missing and the acquire blocks, this test
+/// HANGS rather than fails**, which is strictly worse than a red test and is why
+/// that is said here out loud rather than left for the next person to discover
+/// at 3am. The assertion is therefore on the timeout being *able to fire* — a
+/// bound that cannot fire is not a bound — and the timeout is generous by orders
+/// of magnitude against a `LOCK_NB` syscall on the blocking pool.
+///
+/// The attempt runs on its own task and the test awaits the **join handle**,
+/// never the call itself: this file's own header records why, and awaiting the
+/// call directly would put the stuck poll and the timer on the same task as well
+/// as the same thread.
+///
+/// The lock is held by a plain guard rather than by a live run, because this
+/// test is about where the acquisition executes and not about who wins — and a
+/// foreign holder keeps the assertion down to a single `drive`.
+#[tokio::test(flavor = "current_thread")]
+async fn acquiring_the_run_lock_does_not_block_the_async_runtime() {
+    let root = project_root();
+    let planning = planning_of(root.path());
+
+    let held = lock::acquire(&planning, RUN_A, std::process::id())
+        .expect("this test takes the lock before anything contends for it");
+
+    let root_owned = root.path().to_path_buf();
+    let attempt = tokio::spawn(async move { second_drive(&root_owned).await });
+
+    let err = tokio::time::timeout(Duration::from_secs(5), attempt)
+        .await
+        .expect(
+            "the bound must be ENFORCEABLE. A timeout that expires here means the \
+             attempt was slow; a timeout that never resolves at all means the one \
+             runtime thread was parked inside a synchronous syscall, which is the \
+             deadlock recorded at the top of this file (D-28, WR-10)",
+        )
+        .expect("the attempting task did not panic");
+
+    let DriveError::Lock(LockError::HeldBy { run_id, .. }) = &err else {
+        panic!("the refusal must still be the who-holds-it variant, got: {err:?}");
+    };
+    assert_eq!(
+        run_id, RUN_A,
+        "moving the acquire onto the blocking pool must not change WHAT it \
+         answers — only which thread finds out"
+    );
+
+    // Explicit, and not merely `let _`: the descriptor is the lock, so the
+    // release has to happen after the assertions rather than wherever the
+    // compiler happens to end the binding's scope.
+    drop(held);
+}
+
 #[tokio::test]
 async fn the_losing_reader_does_not_truncate_the_lock_file() {
     let root = project_root();

@@ -18,7 +18,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::config::RegisteredProject;
 use crate::driver::{kill, liveness, lock, DriveArgs};
-use crate::error::DriveError;
+use crate::error::{DriveError, LockError};
 use crate::executor::claude::ClaudeExecutor;
 use crate::executor::stream_json::UserMessage;
 use crate::executor::{
@@ -799,9 +799,19 @@ fn journal_as_missed(journal: &mut JournalRun, messages: Vec<InboxMessage>) -> u
 /// by that buffering, which is why the driver responds to a stop issued before it
 /// has finished starting rather than after.
 ///
+/// **The two shorter ones are now genuine await points rather than synchronous
+/// calls, and that is D-28 / WR-10.** `lock::acquire` and `JournalRun::start`
+/// each run on `tokio::task::spawn_blocking`, so the syscalls inside them can no
+/// longer park the thread the terminate handler is waiting on. They still need no
+/// `select!` arm — the buffering above covers them exactly as it covered their
+/// synchronous predecessors — but the buffering only helps a thread that is still
+/// able to poll, which is the property the wrap restores.
+///
 /// The lock guard lives on [`DriverRun`], which outlives the terminal
 /// `finish` call, so the lock is released **after** the last write rather than
-/// somewhere in the middle of it.
+/// somewhere in the middle of it. It is also moved back **out** of the blocking
+/// task rather than dropped inside it; the call site below says why at length,
+/// and the short version is that dropping a `RunLock` releases the lock.
 ///
 /// The `entry` parameter carries the opt-in record whose timestamp lands in
 /// `RunRecord.opt_in`; the [`DrivableProject`] token proves the gate ran, but by
@@ -886,11 +896,58 @@ pub async fn execute_run(
     // or a stop resolved through one would refuse against the other. A second
     // `drive` against this project now refuses and names this run rather than
     // starting alongside it (CTRL-05).
-    let lock = lock::acquire(&planning_dir, &record.run_id, pgid)?;
+    // **No blocking syscall inside an `async fn`** (D-28, WR-10), and **the
+    // deadlock that discipline prevents was OBSERVED rather than theorised**:
+    // `tests/driver_lock.rs:201-215` records a blocking `flock` inside an
+    // `async fn` defeating `tokio::time::timeout` outright on a current-thread
+    // runtime, because `Timeout::poll` polls its inner future inline and a
+    // parked thread polls nothing at all. `lock::acquire` opens a file, calls
+    // `flock`, may read the holder's record and writes its own — every one of
+    // those is a synchronous syscall, and the arm this driver most needs to keep
+    // reachable is the terminate arm.
+    //
+    // **The `RunLock` is moved back OUT of the task, and that is the load-bearing
+    // half of this wrap.** `RunLock` holds the `File` whose descriptor *is* the
+    // advisory lock and it deliberately has **no `Drop` impl**, so a `RunLock`
+    // dropped inside the blocking closure would close the descriptor and release
+    // the lock silently — while the run carried on believing it held it. A second
+    // `drive` against the same project would then start alongside this one, which
+    // is precisely the concurrency the lock exists to close (CTRL-05, D-20.2,
+    // T-18-11). Returning the guard through the join handle is what keeps "held
+    // for the run's duration" true.
+    //
+    // **The declined alternative was leaving the lock inside the task and
+    // re-acquiring it afterwards.** That reintroduces a window in which the
+    // project is unlocked — between the closure's return and the re-acquire —
+    // which is the same race with a smaller name, and it would additionally make
+    // a *losing* re-acquire a mid-run failure rather than a start-time refusal.
+    let lock_planning = planning_dir.clone();
+    let lock_run_id = record.run_id.clone();
+    let lock = tokio::task::spawn_blocking(move || lock::acquire(&lock_planning, &lock_run_id, pgid))
+        .await
+        .map_err(|_| {
+            DriveError::Lock(LockError::Unavailable {
+                detail: "the lock acquisition task did not run to completion".to_string(),
+            })
+        })??;
 
-    let journal = JournalRun::start(&planning_dir, record).map_err(|err| DriveError::Journal {
-        detail: format!("{err:#}"),
-    })?;
+    // **No blocking syscall inside an `async fn`** (D-28, WR-10), for the same
+    // reason and with the same provenance. `JournalRun::start` prunes the runs
+    // directory and writes `run.json` plus the first record synchronously, and a
+    // prune walks however many retained runs are on disk.
+    //
+    // The `JournalRun` is moved back out for the same reason the `RunLock` is:
+    // it owns the run's open files and its clock, and a journal dropped inside
+    // the task would close the run directory the caller is about to write to.
+    let journal_planning = planning_dir.clone();
+    let journal = tokio::task::spawn_blocking(move || JournalRun::start(&journal_planning, record))
+        .await
+        .map_err(|_| DriveError::Journal {
+            detail: "the journal start task did not run to completion".to_string(),
+        })?
+        .map_err(|err| DriveError::Journal {
+            detail: format!("{err:#}"),
+        })?;
     let mut run = DriverRun { journal, lock };
 
     // The agent's process group, published the instant the child exists rather
