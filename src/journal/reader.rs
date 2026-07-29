@@ -71,6 +71,31 @@ pub struct TailCursor {
     pub offset: u64,
 }
 
+/// How far into a journal a reader has consumed **and what it last saw**.
+///
+/// The byte offset alone is not enough to detect a lost event. `seq_gaps` only
+/// ever compared records *within one batch*, and `ReadDiagnostics::last_seq` was
+/// returned and then thrown away by every caller — so a discontinuity that fell
+/// between the last record of one tail read and the first record of the next was
+/// invisible. That is exactly the shape a multi-hour run produces, and exactly
+/// when a lost event matters. Carrying `last_seq` beside the offset is what lets
+/// the next batch's check be seeded with [`seq_gaps_from`] (D-28).
+///
+/// **`Copy` is load-bearing, not incidental.** `App::schedule_journal_tail`
+/// calls `.copied()` on its map lookup (PATTERNS note 4); a field that made this
+/// type non-`Copy` — a `String`, a `Vec`, a path — would break that call site
+/// rather than merely widening the struct. `the_journal_cursor_is_copy` exists
+/// to fail loudly if that ever happens.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct JournalCursor {
+    /// Where the next read starts.
+    pub cursor: TailCursor,
+    /// The `seq` of the last record this reader observed, or `0` before any
+    /// record has been seen. Zero is the "nothing seen yet" sentinel and is
+    /// safe as one because the writer's counter starts at 1.
+    pub last_seq: u64,
+}
+
 /// The result of one tail read.
 #[derive(Debug, Default)]
 pub struct TailRead {
@@ -262,11 +287,52 @@ pub struct ReadDiagnostics {
 /// Any step other than exactly `+1` counts, so a repeated or backwards `seq` is
 /// reported too. Both are equally impossible under the writer's monotonic
 /// counter, and equally worth surfacing if they ever appear.
+///
+/// Equivalent to [`seq_gaps_from`] with no previously-observed `seq`, and
+/// implemented as exactly that so there is **one** copy of the comparison. A
+/// whole-journal read starts at offset zero and has no earlier batch to be
+/// discontinuous with, which is why this is the right entry point for
+/// [`read_all`] and the seeded one is the right entry point for a tail.
 pub fn seq_gaps(records: &[JournalRecord]) -> Vec<(u64, u64)> {
-    records
-        .windows(2)
-        .filter(|pair| pair[1].seq != pair[0].seq + 1)
-        .map(|pair| (pair[0].seq, pair[1].seq))
+    seq_gaps_from(0, records)
+}
+
+/// Every discontinuity in `records`, **including one that straddles the
+/// boundary** with a previous batch (D-28).
+///
+/// `prev_last_seq` is the `seq` of the last record the caller already consumed,
+/// or `0` if it has consumed none. When it is non-zero and the first record's
+/// `seq` is not `prev_last_seq + 1`, that boundary pair is the first gap
+/// reported; the within-batch comparison supplies the rest.
+///
+/// **This is the bug it closes.** [`seq_gaps`] only ever compared records inside
+/// a single batch, and [`ReadDiagnostics::last_seq`] was returned but never
+/// stored by any caller — so a gap falling *between* two tail reads was
+/// invisible. A tailing reader that polls every few seconds for hours is
+/// precisely the caller that produces that shape, and a lost event is precisely
+/// what `seq` exists to reveal.
+///
+/// Zero is the "nothing seen yet" sentinel rather than an `Option` because the
+/// writer's counter starts at 1, so no real record can carry it — and because
+/// the value is stored in a `Copy` cursor whose whole job is to be cheap.
+///
+/// A gap is still a **reported diagnostic and never an error**, for the same
+/// reason [`seq_gaps`] gives (D-03, D-30).
+pub fn seq_gaps_from(prev_last_seq: u64, records: &[JournalRecord]) -> Vec<(u64, u64)> {
+    let boundary = records
+        .first()
+        .filter(|_| prev_last_seq != 0)
+        .filter(|first| first.seq != prev_last_seq + 1)
+        .map(|first| (prev_last_seq, first.seq));
+
+    boundary
+        .into_iter()
+        .chain(
+            records
+                .windows(2)
+                .filter(|pair| pair[1].seq != pair[0].seq + 1)
+                .map(|pair| (pair[0].seq, pair[1].seq)),
+        )
         .collect()
 }
 
@@ -607,6 +673,137 @@ mod tests {
         assert!(seq_gaps(&records).is_empty());
         assert!(seq_gaps(&records[..1]).is_empty(), "one record has no pair");
         assert!(seq_gaps(&[]).is_empty());
+    }
+
+    /// Parse a batch of lines exactly as `App::schedule_journal_tail` does.
+    fn records_of(read: &TailRead) -> Vec<JournalRecord> {
+        read.lines
+            .iter()
+            .filter_map(|line| match parse_line(line) {
+                ParsedLine::Record(record) => Some(record),
+                ParsedLine::Unparseable { .. } => None,
+            })
+            .collect()
+    }
+
+    /// D-28, and the reason it needs **two** reads.
+    ///
+    /// A single-batch test cannot detect this: the old `seq_gaps` compared only
+    /// within one batch, so it passes on the broken implementation for any gap
+    /// that happens to sit inside a batch. The discontinuity here falls *between*
+    /// the two reads — seq 2 is the last record of batch one and seq 4 is the
+    /// first record of batch two — which is invisible to a within-batch filter
+    /// no matter how the batches are shaped.
+    #[test]
+    fn a_gap_that_straddles_two_tail_reads_is_detected() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let journal = dir.path().join("journal.jsonl");
+
+        // Batch one: an unbroken 1, 2.
+        append(&journal, &record_line(1, "run_started"));
+        append(&journal, &record_line(2, "exec_event"));
+        let first = tail_lines(&journal, TailCursor::default()).expect("read");
+        let first_records = records_of(&first);
+        assert_eq!(first_records.len(), 2);
+        assert!(
+            seq_gaps_from(0, &first_records).is_empty(),
+            "the first batch is unbroken and must report nothing"
+        );
+        let stored = JournalCursor {
+            cursor: first.cursor,
+            last_seq: first_records.last().expect("records").seq,
+        };
+        assert_eq!(stored.last_seq, 2);
+
+        // seq 3 never arrives. Batch two starts at 4.
+        append(&journal, &record_line(4, "exec_event"));
+        append(&journal, &record_line(5, "run_ended"));
+        let second = tail_lines(&journal, stored.cursor).expect("read");
+        let second_records = records_of(&second);
+        assert_eq!(
+            second_records.iter().map(|r| r.seq).collect::<Vec<_>>(),
+            vec![4, 5],
+            "the second read must genuinely be a second BATCH, not a re-read"
+        );
+
+        // The within-batch check sees nothing, which is the whole point.
+        assert!(
+            second_records
+                .windows(2)
+                .all(|pair| pair[1].seq == pair[0].seq + 1),
+            "4,5 is internally unbroken — an unseeded check cannot see this gap"
+        );
+
+        assert_eq!(
+            seq_gaps_from(stored.last_seq, &second_records),
+            vec![(2, 4)],
+            "the seeded check must report the boundary pair (last seen, next seen)"
+        );
+    }
+
+    /// The two functions are one implementation, so an unseeded call and a
+    /// zero-seeded call cannot diverge.
+    #[test]
+    fn seq_gaps_from_zero_matches_the_unseeded_gap_check() {
+        let build = |seqs: &[u64]| -> Vec<JournalRecord> {
+            seqs.iter()
+                .map(|seq| match parse_line(&record_line(*seq, "exec_event")) {
+                    ParsedLine::Record(record) => record,
+                    ParsedLine::Unparseable { error, .. } => panic!("{error}"),
+                })
+                .collect()
+        };
+
+        for seqs in [
+            vec![],
+            vec![1],
+            vec![1, 2, 3],
+            vec![1, 3, 4],
+            vec![1, 2, 5, 6, 9],
+            // A repeated and a backwards step, both of which the writer's
+            // monotonic counter makes impossible and both of which are still
+            // reported if they ever appear.
+            vec![4, 4, 5],
+            vec![7, 6],
+        ] {
+            let records = build(&seqs);
+            assert_eq!(
+                seq_gaps(&records),
+                seq_gaps_from(0, &records),
+                "unseeded and zero-seeded must agree for {seqs:?}"
+            );
+        }
+
+        // And a zero seed reports no boundary gap even when the batch starts
+        // somewhere other than 1 — "nothing seen yet" cannot be discontinuous
+        // with anything.
+        let records = build(&[42, 43]);
+        assert!(seq_gaps_from(0, &records).is_empty());
+        assert_eq!(seq_gaps_from(41, &records), Vec::new());
+        assert_eq!(seq_gaps_from(7, &records), vec![(7, 42)]);
+    }
+
+    /// `JournalCursor` must stay `Copy`.
+    ///
+    /// `App::schedule_journal_tail` calls `.copied()` on its map lookup; a field
+    /// that made this type non-`Copy` would break that call site rather than
+    /// merely widening the struct. Binding the value twice is a compile-time
+    /// assertion — under a move-only type the second binding does not compile.
+    #[test]
+    fn the_journal_cursor_is_copy() {
+        fn assert_copy<T: Copy>(_: &T) {}
+
+        let cursor = JournalCursor {
+            cursor: TailCursor { offset: 128 },
+            last_seq: 9,
+        };
+        let first = cursor;
+        let second = cursor;
+        assert_copy(&cursor);
+        assert_eq!(first, second);
+        assert_eq!(first.cursor.offset, 128);
+        assert_eq!(second.last_seq, 9);
+        assert_eq!(JournalCursor::default().last_seq, 0);
     }
 
     #[test]

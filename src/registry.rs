@@ -167,6 +167,18 @@ pub fn is_opted_in(config: &Config, alias: &str) -> bool {
 }
 
 /// Remove a project from the registry by alias.
+///
+/// **It deliberately touches no UI-side map, and the omission is structural
+/// rather than an oversight** (D-27): this module is free functions over a
+/// `&mut Config` and has no access to `AppContext`, where the driver state lives
+/// — `run_states`, `observed_runs` and `journal_cursors`. Those are cleaned in
+/// exactly two places, and this sentence exists so the next reader finds them
+/// instead of concluding the leak is still open:
+///
+/// * `ui::screens::delete_confirm::do_remove_project` — the interactive path,
+///   which drops them in the same block as `project_states` and `last_refresh`.
+/// * `App::prune_driver_maps` — the backstop, on the existing 20-tick block, for
+///   every removal that does not go through that screen.
 pub fn remove_project(config: &mut Config, alias: &str) -> Result<()> {
     if config.projects.remove(alias).is_none() {
         bail!("Project not found: {}", alias);

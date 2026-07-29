@@ -89,6 +89,17 @@ fn do_remove_project(ctx: &mut AppContext, alias: &str) {
             ctx.detail_sub_view_per_project.remove(alias);
             ctx.last_refresh.remove(alias);
 
+            // The driver maps join the three above (D-27). `registry::remove_project`
+            // cleans none of them — it takes a `&mut Config` and has no access to
+            // `AppContext` at all — so this is the **immediate** path, and
+            // `App::prune_driver_maps` is the backstop for every removal that
+            // does not come through this screen. `journal_cursors` is keyed
+            // `(alias, run_id)`, so it is filtered rather than removed by key.
+            ctx.run_states.remove(alias);
+            ctx.observed_runs.remove(alias);
+            ctx.journal_cursors
+                .retain(|(cursor_alias, _), _| cursor_alias != alias);
+
             ctx.status_message =
                 Some((format!("Removed \"{}\"", alias), std::time::Instant::now()));
 

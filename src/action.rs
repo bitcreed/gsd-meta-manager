@@ -65,14 +65,21 @@ pub enum Action {
     /// `Box` in this file, on `ProjectStateLoaded`, is there because
     /// `ProjectState` really is 360 bytes.)
     ///
-    /// Every field is plain data — `String`, `Vec`, and a cursor of `u64` —
-    /// so `Action` stays `Clone` and no file handle or join handle leaks into
-    /// a message type (D-20).
+    /// Every field is plain data — `String`, `Vec`, and a `Copy` cursor of two
+    /// `u64`s — so `Action` stays `Clone` and no file handle or join handle
+    /// leaks into a message type (D-20). The cursor gained its second `u64` in
+    /// plan 17-07 and the variant is 88 bytes rather than 80; the sizing
+    /// reasoning above is unchanged by eight bytes.
+    ///
+    /// The cursor carries the last observed `seq` alongside the byte offset
+    /// because a gap that straddles two tail reads is invisible to a check that
+    /// only compares within one batch — see
+    /// [`JournalCursor`](crate::journal::reader::JournalCursor) (D-28).
     DriverJournalAppended {
         alias: String,
         run_id: String,
         records: Vec<crate::journal::reader::JournalRecord>,
-        cursor: crate::journal::reader::TailCursor,
+        cursor: crate::journal::reader::JournalCursor,
     },
     /// One reconciliation scan completed (D-13).
     ///
