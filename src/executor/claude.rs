@@ -48,13 +48,13 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use uuid::Uuid;
 
 use crate::error::{CapabilityError, SendError, SpawnError};
-use crate::executor::gate::{self, GateFacts};
+use crate::executor::gate::{self, GateOutcome};
 use crate::executor::outcome::{derive_run_outcome, RunSnapshot};
 use crate::executor::stream_json::{parse_line, Envelope, StreamMessage, SystemMessage, UserMessage};
 use crate::executor::{
     encode_interrupt, BoxFuture, DrivableProject, ExecutionEvent, ExecutionHandle, ExecutionId,
-    ExecutionOptions, ExecutionTarget, Executor, InterruptAck, PendingControl, RunOutcome,
-    TurnOutcome, WriterCommand,
+    ExecutionOptions, ExecutionTarget, Executor, InterruptAck, PendingControl, PermissionMode,
+    RunOutcome, TurnOutcome, WriterCommand,
 };
 
 /// Upper bound on one stream line, **in bytes**.
@@ -86,6 +86,42 @@ const EVENT_CHANNEL_CAPACITY: usize = 8192;
 
 /// Capacity of the stdin writer's command channel.
 const WRITER_CHANNEL_CAPACITY: usize = 64;
+
+/// The `terminal_reason` a turn carries when an interrupt actually stopped it.
+pub const ABORTED_STREAMING: &str = "aborted_streaming";
+
+/// Whether an interrupt actually stopped a turn.
+///
+/// **This is the only honest answer to "did my interrupt work?", and it is
+/// deliberately not derived from the acknowledgement.** The acknowledgement
+/// cannot answer it, for two measured reasons:
+///
+/// * [`InterruptAck::subtype`] of `success` acknowledges that the *request was
+///   accepted*, never that the thing the caller meant was cancelled. In golden
+///   transcript 07 that acceptance arrived on the wire **before the target turn
+///   had even been dequeued** — the replay echo follows it. Reporting a
+///   cancellation there would have been a claim about a turn that had not
+///   started.
+/// * [`InterruptAck::still_queued`] is the authoritative statement of what
+///   **remains queued** — the `interrupt_cancel_queued_v1` accounting surfacing
+///   — and it is empty in *both* golden interrupt transcripts. An empty array
+///   means nothing was waiting behind the interrupt; it is not evidence that
+///   anything stopped.
+///
+/// What actually confirms a turn stopped arrives **later on the stream**: the
+/// CLI flushes the partial assistant message, injects a synthetic
+/// `[Request interrupted by user]` user message, and closes the turn with
+/// `terminal_reason: "aborted_streaming"` (D-31, Pitfall D). A caller must
+/// therefore keep watching the stream after the ack rather than reporting on
+/// the ack.
+///
+/// Reporting an accepted-but-nothing-stopped-yet interrupt as a cancellation is
+/// the repudiation threat T-15-18; this function is its mitigation.
+pub fn interrupt_stopped_a_turn(turns: &[TurnOutcome]) -> bool {
+    turns
+        .iter()
+        .any(|turn| turn.terminal_reason.as_deref() == Some(ABORTED_STREAMING))
+}
 
 /// Build the spawn argv.
 ///
@@ -283,6 +319,7 @@ impl ClaudeExecutor {
                 cancel_rx,
                 running: Arc::clone(&running),
                 first_message,
+                permission_mode: options.permission_mode,
                 before,
                 project_root: root,
             }
@@ -326,6 +363,31 @@ impl Executor for ClaudeExecutor {
         Box::pin(self.start_run(project, command, options))
     }
 
+    /// Write one NDJSON user message to the held child stdin and flush.
+    ///
+    /// **Written directly, with no driver-side turn-boundary flush buffer
+    /// (D-31).** The committed architecture pass prescribed one, on the belief
+    /// that a mid-turn message is ignored *and* lost from history. The phase
+    /// spike refutes the second half on 2.1.220: the message is **queued and
+    /// executed as its own turn**. The CLI already performs exactly the
+    /// buffering that workaround prescribed, so a driver-side duplicate would
+    /// buy nothing and would make the `still_queued` accounting harder to
+    /// reason about.
+    ///
+    /// **The replay echo is a "started processing" acknowledgement, not a
+    /// "received" acknowledgement.** The `--replay-user-messages` echo carries
+    /// `isReplay: true` and is emitted at **dequeue**, not at receipt: the
+    /// spike wrote a message ~12 seconds into a run and saw it echoed 45
+    /// milliseconds *after the previous turn's terminal envelope*, roughly 55
+    /// seconds later. Reading it as a delivery receipt is the easy mistake, and
+    /// it is exactly the distinction Phase 18's queued → delivered → acted-on
+    /// display is built on.
+    ///
+    /// The stdin handle is never closed or dropped here. It stays alive for the
+    /// whole run; dropping it is the EOF that ends the run cleanly, and EOF
+    /// means "no more input", not "stop" — the spike closed stdin 14 seconds
+    /// into a 71-second run and Claude drained its queue, finished, and exited
+    /// 0. Use [`ExecutionHandle::close_input`] for that, deliberately.
     fn send<'a>(
         &'a self,
         handle: &'a mut ExecutionHandle,
@@ -337,6 +399,24 @@ impl Executor for ClaudeExecutor {
         })
     }
 
+    /// Write an interrupt as a `control_request` and await its correlated
+    /// response.
+    ///
+    /// Only the request-and-response form is ever written. The single-field
+    /// interrupt form that community sources describe was empirically refuted
+    /// on 2.1.220 — it produces no response and has no effect — so it is never
+    /// emitted; see [`crate::executor::encode_interrupt`].
+    ///
+    /// Correlation is explicit: a oneshot is registered in the handle's
+    /// `pending_control` map under a caller-generated request id, and the
+    /// reader resolves it only on a response carrying that same id. Nothing
+    /// here assumes the next response on the wire is this request's.
+    ///
+    /// **Read the result honestly.** The returned [`InterruptAck`] carries the
+    /// acceptance subtype and the `still_queued` list read from the doubly
+    /// nested response field, and *neither* is a statement that anything was
+    /// cancelled — see [`interrupt_stopped_a_turn`], which is the check a
+    /// caller must use before telling a user their interrupt worked.
     fn interrupt<'a>(
         &'a self,
         handle: &'a mut ExecutionHandle,
@@ -564,11 +644,14 @@ struct Coordinator {
     events_tx: mpsc::Sender<ExecutionEvent>,
     writer_tx: mpsc::Sender<WriterCommand>,
     pending_control: PendingControl,
-    gate_tx: oneshot::Sender<Result<GateFacts, SpawnError>>,
+    gate_tx: oneshot::Sender<Result<GateOutcome, SpawnError>>,
     outcome_tx: oneshot::Sender<RunOutcome>,
     cancel_rx: oneshot::Receiver<()>,
     running: Arc<AtomicBool>,
     first_message: String,
+    /// What the argv asked for, so the gate can confirm the flag took effect
+    /// against what `system/init` reports back (D-15).
+    permission_mode: PermissionMode,
     before: RunSnapshot,
     project_root: PathBuf,
 }
@@ -586,6 +669,7 @@ impl Coordinator {
             mut cancel_rx,
             running,
             first_message,
+            permission_mode,
             before,
             project_root,
         } = self;
@@ -616,6 +700,7 @@ impl Coordinator {
                                 &mut refused,
                                 &mut turns,
                                 &first_message,
+                                permission_mode,
                             )
                             .await;
                         }
@@ -660,9 +745,12 @@ impl Coordinator {
         let after = capture_snapshot(project_root).await;
 
         let outcome = match refused {
-            Some(CapabilityError::MissingCapabilities { missing, .. }) => {
-                RunOutcome::CapabilityRefused { missing }
-            }
+            // Every refusal path projects onto the same coarse outcome the TUI
+            // renders. The typed `CapabilityError` returned by `start()` is the
+            // fidelity-preserving surface; this is deliberately the lossy one.
+            Some(err) => RunOutcome::CapabilityRefused {
+                missing: err.unmet_requirements(),
+            },
             None if cancelled => RunOutcome::Killed { turns },
             None => derive_run_outcome(&turns, status, &before, &after),
         };
@@ -682,11 +770,12 @@ async fn handle_item(
     events_tx: &mpsc::Sender<ExecutionEvent>,
     writer_tx: &mpsc::Sender<WriterCommand>,
     pending_control: &PendingControl,
-    gate_tx: &mut Option<oneshot::Sender<Result<GateFacts, SpawnError>>>,
+    gate_tx: &mut Option<oneshot::Sender<Result<GateOutcome, SpawnError>>>,
     gated: &mut bool,
     refused: &mut Option<CapabilityError>,
     turns: &mut Vec<TurnOutcome>,
     first_message: &str,
+    permission_mode: PermissionMode,
 ) -> bool {
     match item {
         ReaderItem::Truncated { bytes, prefix } => {
@@ -706,7 +795,7 @@ async fn handle_item(
                 .is_ok(),
 
             StreamMessage::System(SystemMessage::Init(init)) if !*gated => {
-                match gate::check_init(&init) {
+                match gate::validate_first_init(&init, permission_mode) {
                     Ok(facts) => {
                         *gated = true;
                         if let Some(tx) = gate_tx.take() {
@@ -818,7 +907,7 @@ async fn wait_for_exit(child: &mut Box<dyn ChildWrapper>, escalate: bool) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::executor::SettingSources;
+    use crate::executor::{PermissionMode, SettingSources};
 
     fn argv_strings(options: &ExecutionOptions) -> Vec<String> {
         build_argv(options)
@@ -861,12 +950,12 @@ mod tests {
     fn the_argv_never_carries_a_permission_bypass() {
         // The forbidden tokens are assembled from fragments rather than
         // written out: this file is itself grepped for those literals as the
-        // mechanical D-15 guard, and a test asserting their absence must not
-        // be what makes the guard report their presence.
+        // mechanical D-15 and D-08 guards, and a test asserting their absence
+        // must not be what makes a guard report their presence.
         let forbidden = [
             concat!("--dangerously", "-skip-permissions"),
             concat!("bypass", "Permissions"),
-            "--bare",
+            concat!("--ba", "re"),
         ];
         let argv = argv_strings(&ExecutionOptions::default());
         for token in forbidden {
@@ -944,5 +1033,169 @@ mod tests {
             read_bounded_line(&mut reader).await.expect("read"),
             BoundedLine::Eof
         ));
+    }
+
+    // ========================================================================
+    // First-init-only (D-30)
+    // ========================================================================
+
+    /// A healthy 2.1.220 `system/init`.
+    const GOOD_INIT: &str = r#"{"type":"system","subtype":"init","session_id":"s","capabilities":["interrupt_receipt_v1","interrupt_cancel_queued_v1","msg_lifecycle_v1"],"apiKeySource":"none","claude_code_version":"2.1.220","permissionMode":"dontAsk"}"#;
+
+    /// A deliberately hostile later `system/init`: no capabilities, no version
+    /// and an auth source that would fire every guard. Re-running the gate on
+    /// it would convert a start-time refusal into a mid-run abort (D-30).
+    const HOSTILE_LATER_INIT: &str = r#"{"type":"system","subtype":"init","session_id":"s","capabilities":[],"apiKeySource":"ANTHROPIC_API_KEY"}"#;
+
+    /// Feed raw lines through `handle_item` exactly as the coordinator does.
+    ///
+    /// Returns whether the loop would keep going, the refusal (if any), the
+    /// events emitted, and every line released to the stdin writer.
+    async fn feed(lines: &[&str]) -> (bool, Option<CapabilityError>, Vec<ExecutionEvent>, Vec<String>) {
+        let (events_tx, mut events_rx) = mpsc::channel(64);
+        let (writer_tx, mut writer_rx) = mpsc::channel(64);
+        let pending_control: PendingControl = Arc::new(Mutex::new(Default::default()));
+        let (gate_tx, _gate_rx) = oneshot::channel();
+
+        let mut gate_tx = Some(gate_tx);
+        let mut gated = false;
+        let mut refused: Option<CapabilityError> = None;
+        let mut turns: Vec<TurnOutcome> = Vec::new();
+        let mut keep_going = true;
+
+        for line in lines {
+            keep_going = handle_item(
+                ReaderItem::Envelope(parse_line(line)),
+                &events_tx,
+                &writer_tx,
+                &pending_control,
+                &mut gate_tx,
+                &mut gated,
+                &mut refused,
+                &mut turns,
+                "FIRST-MESSAGE",
+                PermissionMode::DontAsk,
+            )
+            .await;
+            if !keep_going {
+                break;
+            }
+        }
+
+        drop(events_tx);
+        drop(writer_tx);
+
+        let mut events = Vec::new();
+        while let Ok(event) = events_rx.try_recv() {
+            events.push(event);
+        }
+        let mut written = Vec::new();
+        while let Ok(command) = writer_rx.try_recv() {
+            if let WriterCommand::Line(line) = command {
+                written.push(line);
+            }
+        }
+        (keep_going, refused, events, written)
+    }
+
+    #[tokio::test]
+    async fn a_second_system_init_does_not_re_run_the_gate_or_abort_the_run() {
+        let (keep_going, refused, events, written) =
+            feed(&[GOOD_INIT, HOSTILE_LATER_INIT]).await;
+
+        assert!(keep_going, "a later system/init must not stop the run (D-30)");
+        assert!(
+            refused.is_none(),
+            "a later system/init must not re-arm the guard as a mid-run abort, got: {refused:?}"
+        );
+        assert_eq!(
+            written.len(),
+            1,
+            "the prompt is released exactly once, on the first init: {written:?}"
+        );
+        assert!(
+            matches!(events.first(), Some(ExecutionEvent::SessionStarted { .. })),
+            "the first init announces the session, got: {:?}",
+            events.first()
+        );
+        assert!(
+            matches!(events.get(1), Some(ExecutionEvent::Message(_))),
+            "the second init is forwarded as informational and is not a protocol error, got: {:?}",
+            events.get(1)
+        );
+        assert_eq!(events.len(), 2, "no other event is emitted: {events:?}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_first_init_never_releases_the_prompt() {
+        let no_capabilities = r#"{"type":"system","subtype":"init","session_id":"s","capabilities":[],"apiKeySource":"none","claude_code_version":"2.1.220"}"#;
+        let (keep_going, refused, _events, written) = feed(&[no_capabilities]).await;
+
+        assert!(!keep_going, "a refusal stops the run loop");
+        assert!(
+            matches!(
+                refused,
+                Some(CapabilityError::MissingCapabilities { .. })
+            ),
+            "expected a capability refusal, got: {refused:?}"
+        );
+        assert!(
+            written.is_empty(),
+            "a refused run must never release the prompt to stdin (D-06, TRANS-04): {written:?}"
+        );
+    }
+
+    // ========================================================================
+    // A refused run writes zero bytes to the child's stdin (D-06, TRANS-04)
+    // ========================================================================
+
+    const FAKE_CLAUDE_ECHO: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/fake-claude-echo.sh"
+    );
+
+    #[tokio::test]
+    async fn a_refused_run_writes_zero_bytes_to_the_child_stdin() {
+        let scratch = tempfile::TempDir::new().expect("temp dir");
+        let stdin_log = scratch.path().join("stdin.log");
+
+        // One capability short of the required set, everything else healthy.
+        let executor = ClaudeExecutor::with_program(
+            FAKE_CLAUDE_ECHO,
+            vec![
+                OsString::from("interrupt_receipt_v1,msg_lifecycle_v1"),
+                OsString::from("2.1.220"),
+                OsString::from("none"),
+                stdin_log.clone().into_os_string(),
+            ],
+        );
+        let project = DrivableProject::for_testing("refused", scratch.path());
+
+        let err = executor
+            .start(
+                &project,
+                "/gsd-progress".to_string(),
+                ExecutionOptions::default(),
+            )
+            .await
+            .expect_err("a CLI missing a required capability must be refused up front");
+
+        assert!(
+            matches!(
+                err,
+                SpawnError::Capability(CapabilityError::MissingCapabilities { .. })
+            ),
+            "expected a capability refusal, got: {err:?}"
+        );
+
+        // The stand-in truncates its stdin log before writing its init, so the
+        // file existing proves the child ran; its length proves what we wrote.
+        let recorded = std::fs::metadata(&stdin_log)
+            .expect("the stand-in truncates the stdin log at startup, so it must exist");
+        assert_eq!(
+            recorded.len(),
+            0,
+            "a refused run must write zero bytes to the child's stdin — the refusal costs zero tokens and zero quota (D-06)"
+        );
     }
 }
