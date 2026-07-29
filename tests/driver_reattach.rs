@@ -354,7 +354,9 @@ async fn a_fresh_scan_finds_the_orphaned_run_live_with_its_last_journal_step() {
     // The read goes through the same two functions the TUI uses — a byte-offset
     // tail then a per-line parse — because after a restart the journal is the
     // only source there is.
-    let journal = gsd_meta_manager::journal::run_paths(&fixture.planning(), RUN_ID).journal;
+    let journal = gsd_meta_manager::journal::run_paths(&fixture.planning(), RUN_ID)
+        .expect("the fixture run id is a plain path component")
+        .journal;
     let tail = reader::tail_lines(&journal, TailCursor::default()).expect("the journal is readable");
     assert!(
         !tail.lines.is_empty(),
@@ -422,7 +424,9 @@ async fn a_run_killed_without_an_ending_is_reported_crashed_and_nothing_on_disk_
         "the driver never came up"
     );
 
-    let run_json = gsd_meta_manager::journal::run_paths(&fixture.planning(), RUN_ID).run_json;
+    let run_json = gsd_meta_manager::journal::run_paths(&fixture.planning(), RUN_ID)
+        .expect("the fixture run id is a plain path component")
+        .run_json;
     let raw = std::fs::read_to_string(&run_json).expect("the run record is on disk");
     let record: serde_json::Value = serde_json::from_str(&raw).expect("the run record parses");
     assert!(

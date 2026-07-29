@@ -59,6 +59,12 @@ pub enum Commands {
         // reported crashed by every scan, and un-stoppable because a stop
         // answered already-gone without signalling (CR-04). `driver::drive`
         // refuses a real run with no id before anything is created.
+        // It must also be a **single plain path component**, and that refusal
+        // likewise lives in `driver::drive` rather than in a `value_parser`
+        // here: the id reaches the run body from a hand-typed invocation, from
+        // the TUI's argv builder, and from `writer::read_active_run` — a
+        // validator wired to this one flag would guard the one path that is
+        // already the least interesting (D-27, WR-02).
         /// Run id to record this run under; required unless `--dry-run`
         #[arg(long)]
         run_id: Option<String>,

@@ -81,14 +81,16 @@ async fn drive_once(root: &Path) {
 
 /// The parsed `run.json` for the fixed run id under `root`.
 fn run_record(root: &Path) -> Value {
-    let paths = gsd_meta_manager::journal::run_paths(&root.join(".planning"), RUN_ID);
+    let paths = gsd_meta_manager::journal::run_paths(&root.join(".planning"), RUN_ID)
+        .expect("the fixture run id is a plain path component");
     let raw = std::fs::read_to_string(&paths.run_json).expect("run.json exists and is readable");
     serde_json::from_str(&raw).expect("run.json parses")
 }
 
 /// Every record in the fixed run's journal, in order.
 fn journal_records(root: &Path) -> Vec<Value> {
-    let paths = gsd_meta_manager::journal::run_paths(&root.join(".planning"), RUN_ID);
+    let paths = gsd_meta_manager::journal::run_paths(&root.join(".planning"), RUN_ID)
+        .expect("the fixture run id is a plain path component");
     std::fs::read_to_string(&paths.journal)
         .expect("journal.jsonl exists and is readable")
         .lines()
@@ -102,7 +104,8 @@ async fn a_drive_against_an_opted_in_project_leaves_a_complete_run_on_disk() {
     let root = project_root();
     drive_once(root.path()).await;
 
-    let paths = gsd_meta_manager::journal::run_paths(&root.path().join(".planning"), RUN_ID);
+    let paths = gsd_meta_manager::journal::run_paths(&root.path().join(".planning"), RUN_ID)
+        .expect("the fixture run id is a plain path component");
     assert!(paths.dir.is_dir(), "the run directory must exist on disk");
 
     let record = run_record(root.path());

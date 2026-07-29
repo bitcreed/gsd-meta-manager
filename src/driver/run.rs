@@ -9,7 +9,7 @@
 //! Phase 16's `JournalRun`. Both were shipped complete and both were dead code
 //! until this file existed; `src/journal/mod.rs` says so in as many words.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rustix::process::Signal;
@@ -19,9 +19,12 @@ use crate::config::RegisteredProject;
 use crate::driver::{kill, liveness, lock, DriveArgs};
 use crate::error::DriveError;
 use crate::executor::claude::ClaudeExecutor;
+use crate::executor::stream_json::UserMessage;
 use crate::executor::{
-    DrivableProject, ExecutionHandle, ExecutionOptions, Executor, RunOutcome,
+    DrivableProject, ExecutionEvent, ExecutionHandle, ExecutionOptions, Executor, RunOutcome,
 };
+use crate::journal::inbox::{self, InboxMessage};
+use crate::journal::reader::TailCursor;
 use crate::journal::{self, JournalEvent, JournalRun, RunRecord};
 
 /// The diagnostic code the terminate-signal shutdown journals before its
@@ -69,6 +72,29 @@ const STARTUP_REAP_BOUND: Duration = Duration::from_secs(2);
 /// still a pid, so the wait is "gone soon" rather than "gone now" — the same
 /// reasoning, and the same tenth of a second, as `kill::DEATH_POLL_INTERVAL`.
 const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// How often the drain loop looks in this run's `inbox.jsonl` for a message the
+/// user queued from the TUI (D-04, STEER-01).
+///
+/// **Polling, deliberately, rather than a `notify` watcher.** The driver is a
+/// detached process that has no watcher today, and adding one to save half a
+/// second is not a trade this phase needs to make: the unit of work here is
+/// *minutes* — a GSD command running an agent turn — so a sub-second injection
+/// latency buys nothing a user can perceive. A watcher would also put a second
+/// event source and a second failure mode inside a process whose entire value is
+/// being simple enough to survive its parent.
+///
+/// 750 ms is a defensible starting value with **no tuning data behind it** — it
+/// is a named constant so tuning is a one-line change, following the
+/// `main_loop.rs:41-49` idiom.
+const INBOX_POLL_INTERVAL: Duration = Duration::from_millis(750);
+
+/// The reason recorded on every message the run could not deliver (D-10).
+///
+/// A fixed sentence rather than one composed at the call site, so the four-state
+/// display renders one string and a later reader greps for one thing.
+const MISSED_AFTER_CLOSE: &str =
+    "the agent's stdin was already closed when this message reached the driver";
 
 /// The state one driver process holds for the duration of one run.
 pub struct DriverRun {
@@ -403,6 +429,156 @@ async fn shutdown_during_startup(pgid_rx: &mut oneshot::Receiver<u32>, journal: 
     }
 }
 
+/// Read every complete inbox line after `cursor`, off the async worker.
+///
+/// **The read runs on `tokio::task::spawn_blocking` and never inline** (D-28,
+/// WR-10). It is synchronous filesystem work, and this repository has *observed*
+/// what a blocking syscall inside an `async fn` costs: `tests/driver_lock.rs`
+/// records a blocking `flock` defeating `tokio::time::timeout` outright on a
+/// current-thread runtime. A blocking read on the driver's one poll thread would
+/// stall the terminate arm — the arm whose whole job is to be reachable.
+///
+/// An I/O failure is a warning and an empty batch, never a run-ending error: an
+/// unreadable inbox costs the user their steering, and killing the run over it
+/// would cost them the run as well. Every log line carries the error **kind**
+/// only — never a path and never a message body, because a body is text the user
+/// typed (T-18-03, PATTERNS §S3).
+async fn read_inbox(inbox_path: &Path, cursor: &mut TailCursor) -> Vec<InboxMessage> {
+    let path = inbox_path.to_path_buf();
+    let start = *cursor;
+
+    let read = match tokio::task::spawn_blocking(move || inbox::tail(&path, start)).await {
+        Ok(Ok(read)) => read,
+        Ok(Err(err)) => {
+            tracing::warn!(kind = ?err.kind(), "inbox tail failed");
+            return Vec::new();
+        }
+        Err(_) => {
+            tracing::warn!("the inbox tail task did not run to completion");
+            return Vec::new();
+        }
+    };
+
+    *cursor = read.cursor;
+
+    // Both diagnostic flags are surfaced rather than swallowed, following
+    // `App::schedule_journal_tail`. Under this design's own invariants an inbox
+    // is never truncated in place, so `restarted` can only mean an invariant
+    // broke — and its consequence is re-delivery of messages already sent.
+    if read.restarted {
+        tracing::warn!(
+            restarted = true,
+            "inbox tail: the file shrank and the cursor was reset",
+        );
+    }
+    if read.skipped_oversize {
+        tracing::warn!(
+            skipped_oversize = true,
+            "inbox tail: stepped over a line that exceeded the read bound",
+        );
+    }
+    if read.unparseable > 0 {
+        // A count, never the line (D-28).
+        tracing::warn!(
+            count = read.unparseable,
+            "inbox tail: complete lines did not parse as messages",
+        );
+    }
+
+    read.messages
+}
+
+/// Deliver every queued message to the agent's stdin, journalling each attempt.
+///
+/// Returns how many were **delivered**, not how many were drained, and the
+/// difference is load-bearing: the caller uses the answer to decide whether to
+/// expect another turn. A message that was drained but whose write failed
+/// produces no new turn, so counting it would park the run waiting for a
+/// `result` that is never coming.
+///
+/// `delivered` on the journal record is exactly *"`Executor::send` returned
+/// `Ok`"* and is never rendered as an acknowledgement from the agent (D-07);
+/// that transition is `interjection_acted_on`, measured 55 seconds later.
+///
+/// **There is no turn-boundary flush buffer here, and there must never be one**
+/// (D-02). ARCHITECTURE's AP3 — buffer a mid-turn message and flush it at the
+/// `result` boundary — was *refuted* empirically against CLI 2.1.220 by Phase
+/// 15's spike: a message written mid-turn is queued by the CLI and executed as
+/// its own turn, so a driver-side buffer would duplicate the CLI's own queue and
+/// make queued-message accounting incoherent.
+/// `tests/executor_transport.rs::a_message_sent_mid_turn_is_not_buffered_by_the_driver`
+/// is the regression guard that fails anyone who adds one.
+async fn deliver_pending_inbox(
+    executor: &ClaudeExecutor,
+    handle: &mut ExecutionHandle,
+    journal: &mut JournalRun,
+    inbox_path: &Path,
+    cursor: &mut TailCursor,
+) -> usize {
+    let mut delivered_count = 0usize;
+
+    for message in read_inbox(inbox_path, cursor).await {
+        let delivered = match executor
+            .send(handle, UserMessage::text(message.text.clone()))
+            .await
+        {
+            Ok(()) => {
+                delivered_count += 1;
+                true
+            }
+            Err(err) => {
+                // The error KIND only, never the message body (T-18-03).
+                tracing::warn!(
+                    kind = ?err,
+                    "could not write an injected message to the agent's stdin",
+                );
+                false
+            }
+        };
+
+        if let Err(err) = journal.record(&JournalEvent::Interjected {
+            id: Some(message.id),
+            text: message.text,
+            delivered,
+        }) {
+            tracing::warn!(kind = ?err.kind(), "journal write failed");
+        }
+    }
+
+    delivered_count
+}
+
+/// Journal every remaining inbox message as undeliverable (D-10).
+///
+/// **The honest fourth state.** Once the agent's stdin is closed it can never be
+/// reopened, so a message that arrives afterwards has nowhere to go. Leaving it
+/// in `queued` forever is PITFALLS' undelivered-injection failure dressed up as
+/// a spinner, and it is the one thing the user's own steering intent must never
+/// suffer: every message reaches a named terminal state the user can see.
+///
+/// It runs once, after the event stream has ended, which is the only point at
+/// which "nothing further will be delivered" is a fact rather than a guess. It
+/// is deliberately **not** a retry: the run is over.
+async fn sweep_inbox_as_missed(
+    journal: &mut JournalRun,
+    inbox_path: &Path,
+    cursor: &mut TailCursor,
+) -> usize {
+    let messages = read_inbox(inbox_path, cursor).await;
+    let count = messages.len();
+
+    for message in messages {
+        if let Err(err) = journal.record(&JournalEvent::InterjectionMissed {
+            id: message.id,
+            reason: MISSED_AFTER_CLOSE.to_string(),
+        }) {
+            tracing::warn!(kind = ?err.kind(), "journal write failed");
+        }
+    }
+
+    count
+}
+
 /// Run one GSD command to completion and leave a complete run directory.
 ///
 /// In order, and the order is the decision:
@@ -594,28 +770,22 @@ pub async fn execute_run(
 
     run.journal.set_claude_pgid(handle.pgid);
 
-    // One command means one message, so signal end-of-input immediately. EOF is
-    // "no more input", not "stop": the CLI drains what is queued, finishes and
-    // exits on its own. Without it a real `claude` would wait for a second turn
-    // that this phase never sends.
-    //
-    // Raced the same way, and the second-longest await in the window. By this
-    // point there **is** a handle, so a stop here takes the ordinary layer-2 path
-    // through `Executor::cancel` and no second teardown is written (D-06.2).
-    tokio::select! {
-        biased;
+    // The inbox this run is steered through, and the driver's own cursor into it
+    // (D-03, D-04). The cursor lives here, in the run's own state, because the
+    // inbox is per-run and nothing outside this loop consumes it.
+    let inbox_path = run.journal.paths().inbox.clone();
+    let mut inbox_cursor = TailCursor::default();
 
-        _ = term.recv() => {
-            shutdown_on_terminate(&executor, &mut handle, &mut run.journal).await;
-            return Ok(());
-        }
+    // The first tick fires immediately, which is what makes a message queued
+    // *before* the driver existed arrive without waiting out a full interval.
+    // `Delay` rather than the default burst behaviour: a poll the loop was too
+    // busy to service is worth doing once, not N times in a row.
+    let mut inbox_poll = tokio::time::interval(INBOX_POLL_INTERVAL);
+    inbox_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-        result = handle.close_input() => {
-            if let Err(err) = result {
-                tracing::warn!(kind = ?err, "could not signal end-of-input to the agent");
-            }
-        }
-    }
+    // Whether the agent can still be written to. It starts `true`, and **that
+    // is the change that makes steering physically possible** (D-11).
+    let mut stdin_open = true;
 
     // `biased`, with the terminate arm FIRST, following `src/main_loop.rs:130`.
     //
@@ -624,11 +794,34 @@ pub async fn execute_run(
     // essentially always ready — so a stop request would lose the race for as
     // long as the stream kept producing, which is the entire duration of the run
     // the user is trying to stop. A stop that loses to a busy event queue is a
-    // stop the user experiences as ignored (D-06.1).
+    // stop the user experiences as ignored (D-06.1). The inbox poll goes **last**
+    // for the mirror-image reason: it is the only arm whose work can wait.
     //
     // `tokio::select!` drops the other arms' futures before it runs the chosen
     // arm's body, which is what lets the terminate arm take `&mut handle` while
     // the event arm's future borrowed it.
+    //
+    // **When stdin closes, and why it is here rather than after the spawn**
+    // (D-11). Until this plan, `close_input()` ran immediately after the spawn
+    // with the comment *"one command means one message"* — correct for Phase 17
+    // and fatal for Phase 18, because the writer task breaks its loop on
+    // `Close` and every later `Executor::send` returns `WriterGone`. **While that
+    // line stood, STEER-01/02/03 were not merely unimplemented but physically
+    // impossible.** The rule that replaces it is four steps:
+    //
+    // 1. Do **not** close stdin after spawn.
+    // 2. On each `ExecutionEvent::TurnCompleted` — a `result`, which closes a
+    //    TURN and not the run (Phase 15 D-29) — drain the inbox one final time.
+    // 3. If a message was delivered, the agent runs it as a new turn and the
+    //    loop repeats from step 2. This supports N human-steered turns for free.
+    // 4. If nothing was delivered, `close_input()`. EOF is "no more input", not
+    //    "stop": the CLI drains what is queued, finishes, and **exits 0**.
+    //
+    // The final drain at step 2 is what resolves the common race in the user's
+    // favour; anything arriving after the close is `missed`, named, and not
+    // retried (D-10) — see the sweep below the loop. No new bound is needed:
+    // `ExecutionOptions`' idle cap and wall-clock cap remain the backstop for an
+    // agent that goes quiet with stdin open.
     loop {
         tokio::select! {
             biased;
@@ -645,17 +838,78 @@ pub async fn execute_run(
             event = handle.events.recv() => {
                 match event {
                     Some(event) => {
+                        let turn_boundary = matches!(event, ExecutionEvent::TurnCompleted(_));
+
                         if let Err(err) = run.journal.record_exec(&event) {
                             // The error KIND only. Never a message body, which
                             // could carry agent output (T-17-05).
                             tracing::warn!(kind = ?err.kind(), "journal write failed");
                         }
+
+                        if turn_boundary && stdin_open {
+                            let delivered = deliver_pending_inbox(
+                                &executor,
+                                &mut handle,
+                                &mut run.journal,
+                                &inbox_path,
+                                &mut inbox_cursor,
+                            )
+                            .await;
+
+                            if delivered == 0 {
+                                // Raced the same way and for the same reason as
+                                // every other await in this file: by this point
+                                // there **is** a handle, so a stop here takes
+                                // the ordinary layer-2 path through
+                                // `Executor::cancel` and no second teardown is
+                                // written (D-06.2).
+                                tokio::select! {
+                                    biased;
+
+                                    _ = term.recv() => {
+                                        shutdown_on_terminate(
+                                            &executor,
+                                            &mut handle,
+                                            &mut run.journal,
+                                        )
+                                        .await;
+                                        return Ok(());
+                                    }
+
+                                    result = handle.close_input() => {
+                                        if let Err(err) = result {
+                                            tracing::warn!(
+                                                kind = ?err,
+                                                "could not signal end-of-input to the agent",
+                                            );
+                                        }
+                                    }
+                                }
+                                stdin_open = false;
+                            }
+                        }
                     }
                     None => break,
                 }
             }
+
+            _ = inbox_poll.tick(), if stdin_open => {
+                deliver_pending_inbox(
+                    &executor,
+                    &mut handle,
+                    &mut run.journal,
+                    &inbox_path,
+                    &mut inbox_cursor,
+                )
+                .await;
+            }
         }
     }
+
+    // The stream has ended, so nothing further can be delivered. Anything still
+    // in the inbox reaches its own named terminal state instead of sitting in
+    // `queued` forever (D-10).
+    sweep_inbox_as_missed(&mut run.journal, &inbox_path, &mut inbox_cursor).await;
 
     let outcome = handle.wait_outcome().await;
     run.journal
@@ -819,6 +1073,85 @@ mod tests {
             }),
             outcome_label(&RunOutcome::Killed { turns: Vec::new() })
         );
+    }
+
+    /// The other side of D-11's boundary, and the reason it is testable here
+    /// rather than end to end.
+    ///
+    /// The *delivered* side is proved by `tests/driver_inbox.rs` against a real
+    /// child process. The *missed* side cannot be reached that way without a
+    /// sleep: it needs a message to land after the driver has closed stdin, and
+    /// "after" in a live run is a race no assertion can pin. So the sweep is
+    /// exercised directly against a real `JournalRun` and a real inbox file,
+    /// which is the whole of what runs once the event stream has ended.
+    ///
+    /// The load-bearing assertion is that the ids come back. A sweep that
+    /// journalled a *count* would satisfy "nothing is silently abandoned" in
+    /// prose and leave the four-state display unable to say **which** message
+    /// was lost, which is the only version of that answer a user can act on.
+    #[tokio::test]
+    async fn a_message_left_in_the_inbox_when_the_stream_ends_is_journaled_as_missed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let planning = dir.path().join(".planning");
+
+        let record = make_run_record(
+            "2026-07-29T12-00-00Z-aaaa".to_string(),
+            &args(),
+            &entry(),
+            &ExecutionOptions::default(),
+            journal::argv_digest(&["claude".to_string()]),
+            4242,
+        );
+        let mut journal = JournalRun::start(&planning, record).expect("start the run");
+        let inbox_path = journal.paths().inbox.clone();
+
+        let first = InboxMessage::new("this one was delivered");
+        let second = InboxMessage::new("this one arrived too late");
+        inbox::append(&inbox_path, &first).expect("append");
+
+        // Consume the first message the way the drain loop would, so the cursor
+        // sits exactly where the close left it.
+        let mut cursor = TailCursor::default();
+        assert_eq!(read_inbox(&inbox_path, &mut cursor).await.len(), 1);
+
+        inbox::append(&inbox_path, &second).expect("append after the close");
+        assert_eq!(
+            sweep_inbox_as_missed(&mut journal, &inbox_path, &mut cursor).await,
+            1,
+            "only the message that arrived after the cursor may be swept"
+        );
+        journal.finish("succeeded_no_changes").expect("finish");
+
+        let (records, _) =
+            crate::journal::reader::read_all(&journal.paths().journal).expect("read");
+        let missed: Vec<_> = records
+            .iter()
+            .filter(|record| record.kind == "interjection_missed")
+            .collect();
+        assert_eq!(missed.len(), 1, "one message, one terminal state");
+        assert_eq!(
+            missed[0].rest["id"], second.id,
+            "the record must name WHICH message was lost, not merely that one was"
+        );
+        assert_eq!(missed[0].rest["reason"], MISSED_AFTER_CLOSE);
+        assert!(
+            !records
+                .iter()
+                .any(|record| record.kind == "interjection_missed"
+                    && record.rest["id"] == first.id),
+            "a message already past the cursor must never be re-reported as missed"
+        );
+    }
+
+    #[test]
+    fn the_inbox_poll_interval_is_sized_for_a_unit_of_work_measured_in_minutes() {
+        // The bound in both directions is the decision, not the number. Too
+        // short and a detached process burns syscalls forever for a latency no
+        // human perceives; too long and the injection the user just typed feels
+        // dropped. CONTEXT fixes the order at 500ms-1s and prefers polling to a
+        // `notify` watcher outright.
+        assert!(INBOX_POLL_INTERVAL >= Duration::from_millis(500));
+        assert!(INBOX_POLL_INTERVAL <= Duration::from_secs(1));
     }
 
     #[test]

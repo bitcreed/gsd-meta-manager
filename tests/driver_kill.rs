@@ -111,7 +111,9 @@ impl Fixture {
     }
 
     fn journal(&self, run_id: &str) -> PathBuf {
-        gsd_meta_manager::journal::run_paths(&self.planning(), run_id).journal
+        gsd_meta_manager::journal::run_paths(&self.planning(), run_id)
+        .expect("the fixture run id is a plain path component")
+        .journal
     }
 }
 
@@ -478,7 +480,9 @@ async fn the_adopted_arm_confirms_death_by_probing_proc_rather_than_by_wait() {
     // that has actually reached its drain loop — see `recorded_within`.
     assert!(
         recorded_within(
-            &gsd_meta_manager::journal::run_paths(&fixture.planning(), RUN_ID).run_json,
+            &gsd_meta_manager::journal::run_paths(&fixture.planning(), RUN_ID)
+        .expect("the fixture run id is a plain path component")
+        .run_json,
             STARTUP_LIMIT
         )
         .await,
@@ -534,7 +538,9 @@ async fn a_stopped_run_leaves_a_terminal_record_and_a_released_lock() {
     );
 
     // The run must be un-ended before the stop, or nothing below is about a stop.
-    let run_json = gsd_meta_manager::journal::run_paths(&fixture.planning(), RUN_ID).run_json;
+    let run_json = gsd_meta_manager::journal::run_paths(&fixture.planning(), RUN_ID)
+        .expect("the fixture run id is a plain path component")
+        .run_json;
     assert!(
         recorded_within(&run_json, STARTUP_LIMIT).await,
         "the driver never wrote its run record; a stop against a run that has not \

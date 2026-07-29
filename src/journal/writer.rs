@@ -317,8 +317,21 @@ pub fn ensure_runs_root(planning_dir: &Path) -> anyhow::Result<PathBuf> {
 /// this is the one moment at which the layout is known and nothing has been
 /// written into it yet. It never fails creation; the diagnostic behind it is
 /// [`parent_excludes_run_record`].
+///
+/// **A run id that is not a single plain path component is refused here, before
+/// anything is created** (D-27, WR-02). This is the write side of the traversal
+/// hole, and the refusal is placed ahead of [`ensure_runs_root`] on purpose: a
+/// hostile id must not so much as create the runs root, let alone a run
+/// directory outside the project. The failure is loud — it propagates through
+/// `JournalRun::start` into `DriveError::Journal` — rather than a silent skip,
+/// because a run that quietly wrote nothing would look identical to a run that
+/// worked.
 pub fn create_run_dir(planning_dir: &Path, run_id: &str) -> anyhow::Result<RunPaths> {
-    let paths = run_paths(planning_dir, run_id);
+    let Some(paths) = run_paths(planning_dir, run_id) else {
+        anyhow::bail!(
+            "the run id is not a single plain path component, so no run directory was created"
+        );
+    };
 
     ensure_runs_root(planning_dir)?;
 
@@ -453,11 +466,37 @@ pub fn clear_active_pointer(runs_root: &Path) -> anyhow::Result<()> {
 /// directory's removal and the pointer's clear, or a hand-edited file — and the
 /// listing wins. A disagreement is logged, because it is a real anomaly even
 /// though it is recoverable.
+///
+/// **The component check runs before the existence check, and the read side is
+/// the half that matters more** (D-27, WR-02). The `active` file lives inside
+/// the driven project, so **the agent controls it** — and this subsystem runs
+/// unattended with git and push rights. The write side needs a hostile operator
+/// or a hostile script; this side needs only the agent the user already asked to
+/// run. `is_dir()` was the sole guard and a traversing path satisfies it
+/// happily, after which `reconcile_one` read `run.json` from anywhere on the
+/// filesystem and `App::schedule_journal_tail` tailed anything into a render
+/// surface. Ordering the checks the other way would ask the filesystem about the
+/// hostile path before refusing it, which is a smaller hole rather than none.
+///
+/// The signature does not change: this already answered `Option<String>`, and a
+/// pointer that names something other than a run directory is exactly the "no
+/// active run" this function is for.
 pub fn read_active_run(planning_dir: &Path) -> Option<String> {
     let root = runs_root(planning_dir);
     let raw = std::fs::read_to_string(root.join("active")).ok()?;
     let run_id = raw.trim();
     if run_id.is_empty() {
+        return None;
+    }
+    if !super::is_plain_run_id(run_id) {
+        // The same register as the stale-pointer warning below, and content-free
+        // for the same reason every log line in this tree is: the refused value
+        // is the untrusted one (D-28).
+        tracing::warn!(
+            "the active pointer under {} names a path that is not a single directory \
+             component; it is refused rather than followed",
+            root.display()
+        );
         return None;
     }
     if !root.join(run_id).is_dir() {
@@ -709,7 +748,8 @@ mod tests {
     const EXPECTED_HOME_LITERAL: &str = "-home-redacted-project";
 
     fn open_in(dir: &Path) -> (JournalWriter, PathBuf) {
-        let paths = run_paths(&dir.join(".planning"), "2026-07-28T14-03-11Z-a3f9");
+        let paths = run_paths(&dir.join(".planning"), "2026-07-28T14-03-11Z-a3f9")
+            .expect("a plain run id yields paths");
         std::fs::create_dir_all(&paths.dir).expect("create the run directory");
         let writer = JournalWriter::open(&paths.journal).expect("open the journal");
         (writer, paths.journal)
@@ -1033,7 +1073,7 @@ mod tests {
     /// A journal opened with a test-sized cap, so the breach is reachable
     /// without writing 64 MiB.
     fn open_capped(dir: &Path, cap: u64) -> (JournalWriter, PathBuf) {
-        let paths = run_paths(&dir.join(".planning"), RID);
+        let paths = run_paths(&dir.join(".planning"), RID).expect("a plain run id yields paths");
         std::fs::create_dir_all(&paths.dir).expect("create the run directory");
         let writer = JournalWriter::open(&paths.journal)
             .expect("open the journal")
