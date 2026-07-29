@@ -16,6 +16,7 @@
 use std::ffi::OsString;
 use std::time::{Duration, Instant};
 
+use gsd_meta_manager::error::SendError;
 use gsd_meta_manager::executor::claude::ClaudeExecutor;
 use gsd_meta_manager::executor::{
     DrivableProject, ExecutionEvent, ExecutionHandle, ExecutionOptions, Executor, RunOutcome,
@@ -266,6 +267,111 @@ async fn a_child_that_ignores_the_terminate_signal_is_still_killed_and_reaped() 
         gone_within(child, Duration::from_secs(5)).await,
         "the deaf child {child} survived the uncatchable signal"
     );
+}
+
+// ============================================================================
+// An unanswered control request can never park its caller (D-13, D-31, CR-03)
+//
+// Two independent release paths, one test each. Both wrap the call in a hard
+// `tokio::time::timeout`, because the defect being guarded against is an
+// unbounded await: without the inner bound a regression would HANG the suite
+// instead of failing it, and a hung CI job reports nothing at all.
+// ============================================================================
+
+/// Release path A: the run ended, so the registered waiter is dropped.
+#[tokio::test]
+async fn an_unanswered_interrupt_is_released_by_the_run_end_drain() {
+    let scratch = TempDir::new().expect("temp dir");
+    let project = DrivableProject::for_testing("drained", scratch.path());
+    // Announces itself, drains stdin in the background, and answers nothing.
+    let executor = slow(0, "0", "silent");
+
+    // The idle cap ends the run at ~600ms. The control cap is left at its
+    // 30-second default precisely so it CANNOT be what releases the caller —
+    // that is what makes this test about the drain and not about the timeout.
+    let mut handle = executor
+        .start(&project, "/gsd-progress".to_string(), capped(30_000, 600))
+        .await
+        .expect("start");
+
+    let started = Instant::now();
+    let result = tokio::time::timeout(Duration::from_secs(15), executor.interrupt(&mut handle))
+        .await
+        .expect(
+            "interrupt() never returned. A control_request the child never answers must not \
+             park its caller for the process lifetime — that is the unbounded await D-13 \
+             forbids (CR-03)",
+        );
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(result, Err(SendError::ControlResponseLost { .. })),
+        "a run that has ended can never answer a control request, so the waiter must be \
+         released with an honest ControlResponseLost rather than a confident wrong answer. \
+         Got: {result:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "the run-end drain must release the caller the INSTANT the run ends, not when the \
+         30-second control cap expires — that difference is the whole point of having a \
+         drain as well as a cap. Observed: {elapsed:?}"
+    );
+    assert!(
+        handle.pending_control.lock().await.is_empty(),
+        "a released waiter must leave no entry behind in the correlation map"
+    );
+}
+
+/// Release path B: the child is alive and emitting, so only the cap can fire.
+#[tokio::test]
+async fn an_unanswered_interrupt_on_a_live_child_is_released_by_the_control_response_cap() {
+    let scratch = TempDir::new().expect("temp dir");
+    let project = DrivableProject::for_testing("capped-control", scratch.path());
+    // Twenty seconds of continuous heartbeats: neither deadline can fire and
+    // the child is demonstrably alive, so the drain cannot be what releases the
+    // caller either. Only the control cap is left.
+    let executor = slow(400, "0.05", "result");
+
+    let options = ExecutionOptions {
+        control_response_cap: Duration::from_millis(400),
+        ..capped(60_000, 30_000)
+    };
+    let mut handle = executor
+        .start(&project, "/gsd-progress".to_string(), options)
+        .await
+        .expect("start");
+
+    let started = Instant::now();
+    let result = tokio::time::timeout(Duration::from_secs(15), executor.interrupt(&mut handle))
+        .await
+        .expect(
+            "interrupt() never returned against a live child. An acknowledgement that never \
+             arrives must be bounded, not awaited forever (D-13, CR-03)",
+        );
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(result, Err(SendError::ControlResponseLost { .. })),
+        "an unanswered request is lost, and saying so is preferable to claiming a \
+         cancellation that never happened (D-31). Got: {result:?}"
+    );
+    assert!(
+        elapsed >= Duration::from_millis(400),
+        "the cap must actually be waited out rather than short-circuited by something \
+         else ending the run. Observed: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "the cap must fire promptly once it expires. Observed: {elapsed:?}"
+    );
+    assert!(
+        handle.pending_control.lock().await.is_empty(),
+        "a released waiter must leave no entry behind in the correlation map"
+    );
+
+    // Tear the chatty child down rather than leaving it running out its full
+    // twenty seconds of heartbeats.
+    executor.cancel(&mut handle).await;
 }
 
 // ============================================================================

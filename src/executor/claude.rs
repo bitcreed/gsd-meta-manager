@@ -387,6 +387,7 @@ impl ClaudeExecutor {
             pgid,
             claude_code_version: facts.claude_code_version.unwrap_or_default(),
             pending_control,
+            control_response_cap: options.control_response_cap,
             stdin_tx: writer_tx,
             running,
             cancel_tx: Some(cancel_tx),
@@ -480,8 +481,23 @@ impl Executor for ClaudeExecutor {
             let line = encode_interrupt(&request_id)?;
             handle.write_line(line).await?;
 
-            match rx.await {
-                Ok(response) => Ok(InterruptAck::from_response(&response)),
+            // The cap is `Copy`, so reading it here creates no borrow that
+            // outlives the expression and the map lock below stays legal.
+            match tokio::time::timeout(handle.control_response_cap, rx).await {
+                // Correlated on the request id, never on arrival order.
+                Ok(Ok(response)) => Ok(InterruptAck::from_response(&response)),
+                // The sender was dropped: the run ended and its drain released
+                // every waiter. A finished run can never answer a control
+                // request, so there is nothing left to wait for.
+                Ok(Err(_)) => {
+                    handle.pending_control.lock().await.remove(&request_id);
+                    Err(SendError::ControlResponseLost { request_id })
+                }
+                // The cap elapsed against a child that is still alive and
+                // simply did not answer. A bounded, honest "lost" beats a
+                // confident wrong answer: an acknowledgement is acceptance and
+                // never cancellation, so inventing one here would be the
+                // repudiation threat itself (D-13, D-31).
                 Err(_) => {
                     handle.pending_control.lock().await.remove(&request_id);
                     Err(SendError::ControlResponseLost { request_id })
@@ -979,6 +995,14 @@ impl Coordinator {
             let _ = events_tx.send(ExecutionEvent::Exited(status)).await;
         }
         drop(events_tx);
+
+        // Dropping every registered sender is what releases each blocked caller
+        // with `ControlResponseLost`. A run that has ended can never answer a
+        // control request, and leaving this map populated for the process
+        // lifetime is exactly what made that error variant unreachable — the
+        // waiter simply sat on its oneshot forever (D-13, CR-03).
+        pending_control.lock().await.clear();
+
         let _ = outcome_tx.send(outcome);
     }
 }

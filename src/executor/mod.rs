@@ -256,6 +256,20 @@ pub struct ExecutionOptions {
     pub bg_wait_ceiling_ms: u64,
     /// `-n/--name`.
     pub name: Option<String>,
+    /// How long a caller waits for the `control_response` correlated to its
+    /// `control_request` before the wait is abandoned.
+    ///
+    /// This is a **protocol-layer** reply and does not depend on the model
+    /// finishing a turn — the observed acknowledgement is near-immediate — so
+    /// the bound is generous by orders of magnitude against what a healthy CLI
+    /// takes. It exists so that no caller can be parked for the process
+    /// lifetime waiting on an answer that is never coming (D-13, D-31).
+    ///
+    /// It is the outer of two release paths. The inner one is the run-end
+    /// drain, which releases every blocked caller the instant the run ends;
+    /// this cap is what covers a child that is still alive and simply not
+    /// answering.
+    pub control_response_cap: Duration,
 }
 
 impl Default for ExecutionOptions {
@@ -274,6 +288,7 @@ impl Default for ExecutionOptions {
             idle_cap: Duration::from_secs(15 * 60),
             bg_wait_ceiling_ms: 600_000,
             name: None,
+            control_response_cap: Duration::from_secs(30),
         }
     }
 }
@@ -328,6 +343,10 @@ pub struct ExecutionHandle {
     pub claude_code_version: String,
     /// Correlates a `control_request` id to whoever is awaiting its response.
     pub pending_control: PendingControl,
+
+    /// How long [`Executor::interrupt`] waits for its correlated response
+    /// before abandoning the wait. Carried from [`ExecutionOptions`] at spawn.
+    pub(crate) control_response_cap: Duration,
 
     pub(crate) stdin_tx: mpsc::Sender<WriterCommand>,
     pub(crate) running: Arc<AtomicBool>,
@@ -641,6 +660,22 @@ mod tests {
         let project = DrivableProject::for_testing("demo", "/tmp/demo");
         assert_eq!(project.alias(), "demo");
         assert_eq!(project.root(), Path::new("/tmp/demo"));
+    }
+
+    #[test]
+    fn the_default_control_response_cap_is_bounded_and_non_zero() {
+        let cap = ExecutionOptions::default().control_response_cap;
+        assert!(
+            cap > Duration::ZERO,
+            "a zero cap would abandon every request before the child could answer it"
+        );
+        assert!(
+            cap <= Duration::from_secs(60),
+            "the acknowledgement is a protocol-layer reply and does not wait on a turn, so \
+             the cap must stay bounded and generous rather than effectively absent — an \
+             unbounded wait is what let an unanswered interrupt park its caller for the \
+             whole process lifetime (D-13, CR-03). Observed: {cap:?}"
+        );
     }
 
     #[test]
