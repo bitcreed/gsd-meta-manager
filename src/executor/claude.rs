@@ -934,8 +934,11 @@ impl Coordinator {
         let mut drain_expired = false;
 
         // Events lost because a stalled consumer did not take them inside the
-        // forward bound. Counted so the loss is reportable; the count is the
-        // only thing that ever reaches the log (T-15-53).
+        // forward bound. Counted so the loss is reportable: the count reaches
+        // the log as it accumulates, and now also the stream — once, at the
+        // end, via `report_dropped`, because a journal reads the stream and not
+        // the log (D-33). The count is the only thing that ever leaves this
+        // loop; the lost events themselves never do (T-15-53).
         let mut dropped_events: u64 = 0;
 
         let wall_deadline = Instant::now() + wall_clock_cap;
@@ -1222,6 +1225,12 @@ impl Coordinator {
             },
         };
 
+        // Ahead of the terminal event on purpose: a journal reading the stream
+        // in order then sees the loss before the ending, so a truncated run
+        // history is distinguishable from a complete one (D-33). Best-effort
+        // and bounded — see `report_dropped`.
+        report_dropped(&events_tx, dropped_events).await;
+
         if let Some(status) = status {
             // Bounded for the same reason every in-loop hand-off is. This send
             // sits between "the outcome is decided" and "the outcome is sent",
@@ -1305,7 +1314,17 @@ async fn forward(
 /// when the run ends the report is lost and only the warning in [`forward`]
 /// remains — an acceptable degradation, because a lost diagnostic is strictly
 /// better than a parked run.
-async fn report_dropped(_sender: &mpsc::Sender<ExecutionEvent>, _dropped: u64) {}
+async fn report_dropped(sender: &mpsc::Sender<ExecutionEvent>, dropped: u64) {
+    if dropped == 0 {
+        return;
+    }
+
+    let _ = tokio::time::timeout(
+        EVENT_FORWARD_TIMEOUT,
+        sender.send(ExecutionEvent::EventsDropped { count: dropped }),
+    )
+    .await;
+}
 
 /// Handle one reader item. Returns `false` when the run loop should stop.
 #[allow(clippy::too_many_arguments)]
@@ -1709,14 +1728,19 @@ mod tests {
     // The dropped-event report (D-33)
     // ========================================================================
 
+    // The channel locals below are deliberately NOT named after the run loop's
+    // own sender. That name plus the helper's is the grep that asserts there is
+    // exactly ONE call site in the terminal path, and a test reusing the name
+    // would leave that check unable to tell one call site from four.
+
     #[tokio::test]
     async fn a_run_that_dropped_nothing_reports_nothing() {
-        let (events_tx, mut events_rx) = mpsc::channel(8);
+        let (report_tx, mut report_rx) = mpsc::channel(8);
 
-        report_dropped(&events_tx, 0).await;
+        report_dropped(&report_tx, 0).await;
 
         assert!(
-            matches!(events_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            matches!(report_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
             "a run that lost nothing must emit no report at all — the absence \
              of the event is the signal (D-33)"
         );
@@ -1724,11 +1748,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_run_that_dropped_events_reports_the_count_once() {
-        let (events_tx, mut events_rx) = mpsc::channel(8);
+        let (report_tx, mut report_rx) = mpsc::channel(8);
 
-        report_dropped(&events_tx, 40).await;
+        report_dropped(&report_tx, 40).await;
 
-        match events_rx
+        match report_rx
             .try_recv()
             .expect("a lossy run must report its count on the stream, not only to the log")
         {
@@ -1740,7 +1764,7 @@ mod tests {
         }
 
         assert!(
-            matches!(events_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            matches!(report_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
             "one report per run, not one per dropped event"
         );
     }
@@ -1750,14 +1774,14 @@ mod tests {
         // Capacity one, already full, and a receiver that is held but never
         // read: exactly the stalled consumer whose channel the report has to
         // squeeze into. An unbounded send here would park the run forever.
-        let (events_tx, _events_rx) = mpsc::channel(1);
-        events_tx
+        let (report_tx, _report_rx) = mpsc::channel(1);
+        report_tx
             .send(ExecutionEvent::Stderr("fills the only slot".to_string()))
             .await
             .expect("the receiver is still held");
 
         let started = Instant::now();
-        report_dropped(&events_tx, 7).await;
+        report_dropped(&report_tx, 7).await;
         let elapsed = started.elapsed();
 
         // A wall-clock assertion is warranted here and nowhere else in this
