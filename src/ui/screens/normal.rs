@@ -108,6 +108,79 @@ fn compact_pipeline(status: &DiskStatus) -> Line<'static> {
     Line::from(spans)
 }
 
+/// The exact number of terminal cells `compact_pipeline` produces:
+/// five one-cell stage letters plus four two-cell inter-stage gaps
+/// (`D  R  P  E  V`). The Status column must never be allocated fewer
+/// cells than this, or the trailing `V` is clipped and a fully-verified
+/// project renders identically to a mid-pipeline one (UIFIX-02 / CR-01).
+const STATUS_COLUMN_MIN_CELLS: u16 = 13;
+
+/// Resolve the dashboard's header cells and column constraints for a terminal width.
+///
+/// Single source of truth for the three width tiers, so the render-level tests
+/// cannot drift from what `render_main` actually lays out.
+///
+/// `terminal_width` is the **outer** area width (borders included), which is what
+/// selects the tier — but the returned constraints are resolved by `Table` against
+/// the block's **inner** width, two cells narrower. That two-cell gap is exactly why
+/// a percentage-based Status column clipped at width 80; the `Constraint::Min` floor
+/// below is immune to it.
+///
+/// The `<60` tier is deliberately left on percentages (decision GD-02): its
+/// `Percentage(30)` already yields 13+ cells from width 44 upward, and adding a floor
+/// there would starve the Alias column at very narrow widths.
+fn dashboard_columns(terminal_width: u16) -> (Vec<&'static str>, Vec<Constraint>) {
+    if terminal_width >= 80 {
+        (
+            vec!["Alias", "Phase", "Status", "Progress", "Backlog"],
+            vec![
+                Constraint::Percentage(25),
+                Constraint::Percentage(30),
+                Constraint::Min(STATUS_COLUMN_MIN_CELLS),
+                Constraint::Percentage(15),
+                Constraint::Percentage(15),
+            ],
+        )
+    } else if terminal_width >= 60 {
+        (
+            vec!["Alias", "Phase", "Status", "Progress"],
+            vec![
+                Constraint::Percentage(30),
+                Constraint::Percentage(35),
+                Constraint::Min(STATUS_COLUMN_MIN_CELLS),
+                Constraint::Percentage(15),
+            ],
+        )
+    } else {
+        (
+            vec!["Alias", "Phase", "Status"],
+            vec![
+                Constraint::Percentage(35),
+                Constraint::Percentage(35),
+                Constraint::Percentage(30),
+            ],
+        )
+    }
+}
+
+/// Build the dashboard `Table` for a terminal width from already-built rows.
+///
+/// Pairs with [`dashboard_columns`] so the header cells and the constraint vector
+/// can never disagree. `terminal_width` is the outer area width — see
+/// [`dashboard_columns`] for why.
+fn dashboard_table<'a>(rows: Vec<Row<'a>>, terminal_width: u16) -> Table<'a> {
+    let (header_cells, widths) = dashboard_columns(terminal_width);
+
+    let header = Row::new(header_cells)
+        .style(Style::default().add_modifier(Modifier::BOLD))
+        .bottom_margin(0);
+
+    Table::new(rows, widths)
+        .header(header)
+        .row_highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED))
+        .highlight_symbol("> ")
+}
+
 impl Screen for NormalScreen {
     fn handle_key(
         &mut self,
@@ -310,42 +383,6 @@ impl NormalScreen {
 
             let terminal_width = area.width;
 
-            let (header_cells, widths) = if terminal_width >= 80 {
-                (
-                    vec!["Alias", "Phase", "Status", "Progress", "Backlog"],
-                    vec![
-                        Constraint::Percentage(25),
-                        Constraint::Percentage(30),
-                        Constraint::Percentage(15),
-                        Constraint::Percentage(15),
-                        Constraint::Percentage(15),
-                    ],
-                )
-            } else if terminal_width >= 60 {
-                (
-                    vec!["Alias", "Phase", "Status", "Progress"],
-                    vec![
-                        Constraint::Percentage(30),
-                        Constraint::Percentage(35),
-                        Constraint::Percentage(20),
-                        Constraint::Percentage(15),
-                    ],
-                )
-            } else {
-                (
-                    vec!["Alias", "Phase", "Status"],
-                    vec![
-                        Constraint::Percentage(35),
-                        Constraint::Percentage(35),
-                        Constraint::Percentage(30),
-                    ],
-                )
-            };
-
-            let header = Row::new(header_cells)
-                .style(Style::default().add_modifier(Modifier::BOLD))
-                .bottom_margin(0);
-
             let rows: Vec<Row> = ctx
                 .filtered_aliases
                 .iter()
@@ -481,12 +518,7 @@ impl NormalScreen {
                 })
                 .collect();
 
-            let table = Table::new(rows, &widths)
-                .header(header)
-                .row_highlight_style(
-                    Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                )
-                .highlight_symbol("> ");
+            let table = dashboard_table(rows, terminal_width);
 
             // We need a mutable table_state for rendering
             let mut table_state = ctx.table_state;
@@ -813,5 +845,210 @@ mod tests {
         assert!(empty_colors[1..]
             .iter()
             .all(|(_, fg)| *fg == Some(Color::DarkGray)));
+    }
+
+    // --- UIFIX-02: rendered-frame regression (gap closure, 14-04) ----------
+    //
+    // Every test above asserts the *isolated* `Line` object. That is exactly
+    // why the clipping defect was invisible: `compact_pipeline` was always
+    // correct, and the column holding it was not. The tests below render a
+    // real frame through the production `dashboard_table` and read the cells
+    // back out of the buffer.
+
+    /// The literal 13-cell string the Status column must never clip.
+    const PIPELINE: &str = "D  R  P  E  V";
+
+    /// Build the interior (inside the borders) text lines of a rendered
+    /// dashboard, from the top border downward: index 0 is the header row,
+    /// index 1 onward are the data rows.
+    ///
+    /// The x range is restricted to the columns strictly inside the left and
+    /// right border, so every returned string is pure ASCII and byte offsets
+    /// equal column offsets — which is what makes the alignment assertion in
+    /// `test_status_column_aligns_with_plain_status_text` sound.
+    fn render_dashboard_interior(width: u16, rows: Vec<Vec<Line<'static>>>) -> Vec<String> {
+        use ratatui::backend::TestBackend;
+        use ratatui::widgets::TableState;
+        use ratatui::Terminal;
+
+        let row_count = rows.len() as u16;
+        // top border + header + data rows + bottom border, plus slack.
+        let height = row_count + 4;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("TestBackend terminal");
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                // The same bordered block `render_main` builds, and the same
+                // outer-width/inner-rect relationship: the tier is selected
+                // from the OUTER width while the columns are laid out over
+                // the INNER width, two cells narrower.
+                let outer_block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(" GSD Manager ");
+                let inner = outer_block.inner(area);
+                frame.render_widget(outer_block, area);
+
+                let table_rows: Vec<Row> = rows.into_iter().map(Row::new).collect();
+                let table = dashboard_table(table_rows, area.width);
+                let mut table_state = TableState::default();
+                frame.render_stateful_widget(table, inner, &mut table_state);
+            })
+            .expect("draw dashboard frame");
+
+        let buffer = terminal.backend().buffer().clone();
+        (0..row_count + 1)
+            .map(|i| {
+                let y = 1 + i;
+                (1..width.saturating_sub(1))
+                    .map(|x| {
+                        buffer
+                            .cell((x, y))
+                            .map(|cell| cell.symbol())
+                            .unwrap_or(" ")
+                            .to_string()
+                    })
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// The rendered data rows only — the header line dropped.
+    fn render_dashboard_rows(width: u16, rows: Vec<Vec<Line<'static>>>) -> Vec<String> {
+        let mut lines = render_dashboard_interior(width, rows);
+        lines.remove(0);
+        lines
+    }
+
+    /// One dashboard row whose Status cell is the full D-R-P-E-V pipeline.
+    fn pipeline_row() -> Vec<Line<'static>> {
+        vec![
+            Line::from("proj"),
+            Line::from("14 ui-fixes"),
+            compact_pipeline(&DiskStatus::Complete),
+            Line::from("3/7 phases"),
+            Line::from("-"),
+        ]
+    }
+
+    #[test]
+    fn test_dashboard_columns_status_floor_at_upper_tiers() {
+        // The Status column carries a hard 13-cell floor at both upper tiers,
+        // so no percentage arithmetic can ever starve it below what
+        // `compact_pipeline` produces. `Constraint` is `PartialEq`, so this is
+        // a direct equality check against the production constraint.
+        let (headers_80, widths_80) = dashboard_columns(80);
+        assert_eq!(headers_80.len(), 5);
+        assert_eq!(widths_80.len(), 5);
+        assert_eq!(widths_80[2], Constraint::Min(STATUS_COLUMN_MIN_CELLS));
+
+        let (headers_60, widths_60) = dashboard_columns(60);
+        assert_eq!(headers_60.len(), 4);
+        assert_eq!(widths_60.len(), 4);
+        assert_eq!(widths_60[2], Constraint::Min(STATUS_COLUMN_MIN_CELLS));
+
+        // The narrowest tier is deliberately left on percentages (GD-02): it
+        // already holds all five stages from width 44 up, and a floor there
+        // would starve the Alias column instead.
+        let (headers_40, widths_40) = dashboard_columns(40);
+        assert_eq!(headers_40.len(), 3);
+        assert_eq!(widths_40.len(), 3);
+        assert_eq!(widths_40[2], Constraint::Percentage(30));
+    }
+
+    #[test]
+    fn test_dashboard_columns_header_and_width_counts_match() {
+        // Header vector and width vector must stay the same length at every
+        // tier, with Status always at index 2 — the invariant that keeps the
+        // per-row cell vector in `render_main` from drifting out of step.
+        for width in [200u16, 120, 80, 79, 60, 59, 40, 20] {
+            let (headers, widths) = dashboard_columns(width);
+            assert_eq!(
+                headers.len(),
+                widths.len(),
+                "header/width count mismatch at width {}",
+                width
+            );
+            assert_eq!(
+                headers[2], "Status",
+                "Status not at index 2 at width {}",
+                width
+            );
+        }
+    }
+
+    #[test]
+    fn test_status_column_renders_all_five_stages_from_44_to_200() {
+        // The gap: a fully-verified project and a mid-pipeline project must
+        // never render an identical Status cell. Sweep every supported width.
+        let mut clipped: Vec<u16> = Vec::new();
+        for width in 44u16..=200 {
+            let rows = render_dashboard_rows(width, vec![pipeline_row()]);
+            if !rows[0].contains(PIPELINE) {
+                clipped.push(width);
+            }
+        }
+        assert!(
+            clipped.is_empty(),
+            "Status column clipped at widths {:?}",
+            clipped
+        );
+    }
+
+    #[test]
+    fn test_status_column_not_clipped_at_reproduced_widths() {
+        // The eleven widths the verifier and the code reviewer independently
+        // reproduced as clipping the trailing `V`, plus 59, 86 and 120 as
+        // controls. Named for the reproduction so the gap traces to this test.
+        const REPRODUCED: [u16; 11] = [60, 61, 62, 63, 66, 80, 81, 82, 83, 84, 85];
+        const CONTROLS: [u16; 3] = [59, 86, 120];
+
+        for width in REPRODUCED.iter().chain(CONTROLS.iter()) {
+            let rows = render_dashboard_rows(*width, vec![pipeline_row()]);
+            assert!(
+                rows[0].contains(PIPELINE),
+                "width {} clipped the pipeline: {:?}",
+                width,
+                rows[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_status_column_aligns_with_plain_status_text() {
+        // The pipeline cell must begin at the same buffer column as a sibling
+        // plain-text Status value, at the default 80-column terminal.
+        let mut plain_row = pipeline_row();
+        plain_row[2] = Line::from("executing");
+
+        let rows = render_dashboard_rows(80, vec![pipeline_row(), plain_row]);
+
+        let pipeline_at = rows[0]
+            .find(PIPELINE)
+            .expect("pipeline present in the rendered row");
+        let plain_at = rows[1]
+            .find("executing")
+            .expect("plain status present in the rendered row");
+        assert_eq!(
+            pipeline_at, plain_at,
+            "pipeline starts at {} but plain status starts at {}",
+            pipeline_at, plain_at
+        );
+    }
+
+    #[test]
+    fn test_dashboard_table_with_no_rows_renders_header() {
+        // Zero registered projects must still lay out the header, at all
+        // three tiers, without panicking.
+        for width in [80u16, 60, 40] {
+            let lines = render_dashboard_interior(width, Vec::new());
+            assert!(
+                lines[0].contains("Status"),
+                "Status header missing at width {}: {:?}",
+                width,
+                lines[0]
+            );
+        }
     }
 }
