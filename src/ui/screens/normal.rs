@@ -720,4 +720,93 @@ mod tests {
             assert!(glyph.ends_with(' '));
         }
     }
+
+    // --- UIFIX-02: D-R-P-E-V has no leading blank -------------------------
+
+    const ALL_DISK_STATUSES: [DiskStatus; 7] = [
+        DiskStatus::NoDirectory,
+        DiskStatus::Empty,
+        DiskStatus::Discussed,
+        DiskStatus::Researched,
+        DiskStatus::Planned,
+        DiskStatus::Partial,
+        DiskStatus::Complete,
+    ];
+
+    /// Concatenate a rendered `Line`'s span contents into a plain String.
+    fn rendered(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// Collect the (letter, color) pairs of the stage spans, located by content
+    /// rather than by index so separator spans cannot shift the assertion.
+    fn stage_colors(line: &Line<'_>) -> Vec<(String, Option<Color>)> {
+        line.spans
+            .iter()
+            .filter(|s| matches!(s.content.as_ref(), "D" | "R" | "P" | "E" | "V"))
+            .map(|s| (s.content.to_string(), s.style.fg))
+            .collect()
+    }
+
+    #[test]
+    fn test_compact_pipeline_has_no_leading_blank() {
+        for status in ALL_DISK_STATUSES {
+            let text = rendered(&compact_pipeline(&status));
+            // Assert on the first *char*, not a byte index, so a multi-byte
+            // glyph elsewhere in the row cannot invalidate the check.
+            let first = text.chars().next().expect("pipeline cell is never empty");
+            assert_eq!(first, 'D', "status {:?} rendered {:?}", status, text);
+            assert!(
+                !first.is_whitespace(),
+                "status {:?} rendered a leading blank: {:?}",
+                status,
+                text
+            );
+        }
+    }
+
+    #[test]
+    fn test_compact_pipeline_exact_cells_and_width() {
+        for status in ALL_DISK_STATUSES {
+            let line = compact_pipeline(&status);
+            let text = rendered(&line);
+            assert_eq!(text, "D  R  P  E  V", "status {:?}", status);
+            assert_eq!(line.width(), 13, "status {:?}", status);
+            assert_eq!(text.chars().next_back(), Some('V'), "status {:?}", status);
+        }
+    }
+
+    #[test]
+    fn test_compact_pipeline_stage_colors_preserved() {
+        // Planned: D, R, P reached (Green); E is next up (Yellow); V not started.
+        let line = compact_pipeline(&DiskStatus::Planned);
+        assert_eq!(
+            stage_colors(&line),
+            vec![
+                ("D".to_string(), Some(Color::Green)),
+                ("R".to_string(), Some(Color::Green)),
+                ("P".to_string(), Some(Color::Green)),
+                ("E".to_string(), Some(Color::Yellow)),
+                ("V".to_string(), Some(Color::DarkGray)),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_compact_pipeline_no_workflow_data_still_renders_five_stages() {
+        // A project with no workflow data on disk never yields a short cell.
+        let none = compact_pipeline(&DiskStatus::NoDirectory);
+        assert_eq!(rendered(&none), "D  R  P  E  V");
+        assert!(stage_colors(&none)
+            .iter()
+            .all(|(_, fg)| *fg == Some(Color::DarkGray)));
+
+        let empty = compact_pipeline(&DiskStatus::Empty);
+        assert_eq!(rendered(&empty), "D  R  P  E  V");
+        let empty_colors = stage_colors(&empty);
+        assert_eq!(empty_colors[0], ("D".to_string(), Some(Color::Yellow)));
+        assert!(empty_colors[1..]
+            .iter()
+            .all(|(_, fg)| *fg == Some(Color::DarkGray)));
+    }
 }
