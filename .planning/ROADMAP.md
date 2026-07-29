@@ -253,7 +253,7 @@ phase's scope.
   - The lock must be `flock(2)`, never a PID file or in-memory flag. Opt-in must be a capability type (`DrivableProject`) constructible only from a validated opt-in record, never a bool checked at scattered call sites
 
 **Research**: skip — process-group signal handling and `flock` are standard Unix patterns, corroborated across all four research documents
-**Plans**: 5/7 plans executed
+**Plans**: 6/7 plans executed
 
 Plans:
 **Wave 1**
@@ -275,7 +275,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4)*
 
-- [ ] 17-06-PLAN.md — CTRL-01: the two-layer kill switch reusing Phase 15's group teardown, both reaping arms, and the 15-second grandchild-and-zombie proof
+- [x] 17-06-PLAN.md — CTRL-01: the two-layer kill switch reusing Phase 15's group teardown, both reaping arms, and the 15-second grandchild-and-zombie proof
 
 **Wave 6** *(blocked on Wave 5)*
 
@@ -406,7 +406,7 @@ Plans:
 | 14. UI Fixes | 4/4 | Complete    | 2026-07-29 |
 | 15. Transport Foundation | 8/8 | Complete    | 2026-07-29 |
 | 16. Run Journal & State Substrate | 6/6 | Complete    | 2026-07-29 |
-| 17. Supervisor | 5/7 | In Progress|  |
+| 17. Supervisor | 6/7 | In Progress|  |
 | 18. Driver Tab, Live Watch & Durable Injection | 0/? | Not started | - |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 0/? | Not started | - |
 | 20. Deterministic Decision Router & Run Bounds | 0/? | Not started | - |
