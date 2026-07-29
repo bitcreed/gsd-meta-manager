@@ -410,6 +410,15 @@ impl std::error::Error for LockError {}
 /// stop that surfaced as a `DriveError` would report the user's own deliberate
 /// action back to them as a failure, and would make a stop indistinguishable
 /// from a crash in every place this enum is rendered (D-06.3).
+///
+/// **Plan 17-08 added exactly one variant, [`DriveError::RunIdRequired`], and
+/// deliberately did not add a second.** The other refusal it introduces — a real
+/// run on a platform whose liveness cannot be determined — reuses
+/// [`DriveError::UnsupportedPlatform`] with a second, narrower detail. That
+/// variant already means "a facility this needs is missing here, and it is a
+/// recorded limitation rather than a defect", which is exactly what an absent
+/// `/proc` is; a variant of its own would widen an enum four call sites match on
+/// in order to say the same sentence twice.
 #[derive(Debug)]
 pub enum DriveError {
     /// Driving is not supported on this platform (D-05).
@@ -417,6 +426,29 @@ pub enum DriveError {
         /// Which facility is missing, named concretely.
         detail: String,
     },
+    /// A **real** run was asked for with no run id (CR-04).
+    ///
+    /// The run id is the only thing that makes a driver findable. It reaches
+    /// `/proc/<pid>/cmdline` through the driver's own argv, and
+    /// `driver::liveness::probe` matches on it — so a run whose id is not on the
+    /// argv is invisible to every consumer of that module at once, and the three
+    /// consequences are three separate CTRL failures:
+    ///
+    /// * `reconcile_one` finds a live pid whose cmdline does not name the run and
+    ///   reports a perfectly healthy run as **crashed** (CTRL-04);
+    /// * `kill::stop_run` takes the already-gone branch and returns *"already
+    ///   finished; nothing was signalled"* **before sending any signal**, while
+    ///   the agent runs on with git and push rights (CTRL-01);
+    /// * `admit` under-counts the live runs, so the concurrency cap can be
+    ///   exceeded and one user's quota burned N times over (CTRL-05).
+    ///
+    /// The driver used to generate an id when none arrived, which produced
+    /// exactly that state and looked like success. It is refused **before**
+    /// anything is created, so a refused run leaves nothing on disk to clean up.
+    ///
+    /// `--dry-run` is unaffected: a preview creates no run to identify (D-22,
+    /// D-24).
+    RunIdRequired,
     /// The opt-in gate refused before anything was spawned.
     OptIn(OptInError),
     // `DryRunUnavailable` lived here between plans 17-01 and 17-04. It said
@@ -451,6 +483,14 @@ impl fmt::Display for DriveError {
                 "driving is not supported on this platform: {detail}. \
                  This is a recorded accepted limitation in REQUIREMENTS, not a defect"
             ),
+            // The flag is named explicitly: a refusal a caller cannot act on is
+            // a bug report rather than an error message.
+            Self::RunIdRequired => write!(
+                f,
+                "a real run needs a `--run-id`, which is what makes it findable, \
+                 stoppable and countable afterwards. Pass one, or use `--dry-run`, \
+                 which creates no run to identify"
+            ),
             Self::OptIn(err) => write!(f, "{err}"),
             Self::Lock(err) => write!(f, "{err}"),
             Self::Spawn(err) => write!(f, "{err}"),
@@ -460,12 +500,18 @@ impl fmt::Display for DriveError {
 }
 
 impl std::error::Error for DriveError {
+    // Exhaustive rather than `_ => None`, since plan 17-08. The wildcard meant a
+    // variant added later that DID wrap an error would silently lose its source
+    // — the chain would simply stop, and nothing would say so. Spelling every
+    // arm out makes the next author decide, which is the only moment the
+    // decision is cheap.
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::OptIn(err) => Some(err),
             Self::Lock(err) => Some(err),
             Self::Spawn(err) => Some(err),
-            _ => None,
+            // No source: these carry their whole story in their own text.
+            Self::UnsupportedPlatform { .. } | Self::RunIdRequired | Self::Journal { .. } => None,
         }
     }
 }

@@ -757,7 +757,7 @@ impl App {
                     // not worth a line every five seconds (D-28).
                     tracing::debug!(
                         observed = observed.len(),
-                        live = observed.values().filter(|run| run.live).count(),
+                        live = observed.values().filter(|run| run.is_live()).count(),
                         "driver reconciliation scan applied",
                     );
                     self.ctx.observed_runs = observed;
@@ -909,12 +909,18 @@ impl App {
             return;
         };
         let project_root = project.path.clone();
+        // Cloned beside `project_root` and for the same borrow-checker reason:
+        // `project` borrows `self.ctx.config`, and the `admit` call below needs
+        // `self.ctx` again. It is the config the TUI itself is using, and handing
+        // it to the child is what stops the spawned driver resolving this alias in
+        // a different registry (CR-03).
+        let config_path = self.ctx.config_path.clone();
 
         let live = self
             .ctx
             .observed_runs
             .values()
-            .filter(|run| run.live)
+            .filter(|run| run.is_live())
             .count();
         if let Err(refusal) = admit(live, self.ctx.config.preferences.driver_max_concurrent) {
             self.ctx.error_message = Some(refusal.to_string());
@@ -923,7 +929,7 @@ impl App {
         }
 
         let run_id = crate::journal::new_run_id(chrono::Utc::now(), &uuid::Uuid::new_v4());
-        let argv = drive_argv(alias, command, &run_id, goal);
+        let argv = drive_argv(&config_path, alias, command, &run_id, goal);
 
         match spawn_detached(&project_root, &argv) {
             Ok(pid) => {
@@ -955,7 +961,11 @@ impl App {
                             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                         goal: goal.unwrap_or_default().to_string(),
                         gsd_command: command.to_string(),
-                        live: true,
+                        // `Alive` and not the probe's answer: the spawn just
+                        // succeeded, so this entry asserts what this process
+                        // knows first-hand rather than what /proc could say
+                        // about a pid that is microseconds old.
+                        liveness: crate::driver::liveness::Liveness::Alive,
                     },
                 );
             }
@@ -1248,6 +1258,15 @@ mod tests {
     const OBS_ALIAS: &str = "proj";
     const OBS_RUN: &str = "2026-07-29T09-00-00Z-a3f9";
 
+    /// The two liveness answers these tests build fixtures from.
+    ///
+    /// Named locally so the assertions below read as "a live run" and "a crashed
+    /// run" rather than as a path repeated forty times, and so the third answer
+    /// — `Liveness::Unknown`, which no `App`-level assertion here depends on — is
+    /// conspicuously absent rather than silently unused.
+    const ALIVE: crate::driver::liveness::Liveness = crate::driver::liveness::Liveness::Alive;
+    const DEAD: crate::driver::liveness::Liveness = crate::driver::liveness::Liveness::Dead;
+
     /// One `App` with one registered project at `root`, and a live `event_tx`.
     ///
     /// Every OBS-06 test below builds through this one helper, so a handler
@@ -1359,7 +1378,11 @@ mod tests {
     }
 
     /// An `ObservedRun` with only the fields these assertions read varied.
-    fn observed(alias: &str, run_id: &str, live: bool) -> crate::driver::reconcile::ObservedRun {
+    fn observed(
+        alias: &str,
+        run_id: &str,
+        liveness: crate::driver::liveness::Liveness,
+    ) -> crate::driver::reconcile::ObservedRun {
         crate::driver::reconcile::ObservedRun {
             alias: alias.to_string(),
             run_id: run_id.to_string(),
@@ -1368,7 +1391,7 @@ mod tests {
             started_at: "2026-07-29T09:00:00Z".to_string(),
             goal: "ship it".to_string(),
             gsd_command: "/gsd-progress".to_string(),
-            live,
+            liveness,
         }
     }
 
@@ -1382,10 +1405,10 @@ mod tests {
         // expresses that by NOT returning it, and a merge would keep it forever.
         app.ctx
             .observed_runs
-            .insert("gone".to_string(), observed("gone", "run-old", true));
+            .insert("gone".to_string(), observed("gone", "run-old", ALIVE));
 
         app.update(Action::RunsReconciled {
-            runs: vec![observed(OBS_ALIAS, "run-new", true)],
+            runs: vec![observed(OBS_ALIAS, "run-new", ALIVE)],
         });
 
         assert_eq!(
@@ -1408,7 +1431,7 @@ mod tests {
         let (mut app, _rx) = obs_app(dir.path());
 
         app.update(Action::RunsReconciled {
-            runs: vec![observed(OBS_ALIAS, "run-a", true)],
+            runs: vec![observed(OBS_ALIAS, "run-a", ALIVE)],
         });
 
         // The scan lands every ~5s for the whole life of the process. Without
@@ -1416,7 +1439,7 @@ mod tests {
         // with nothing on screen changed.
         app.needs_redraw = false;
         app.update(Action::RunsReconciled {
-            runs: vec![observed(OBS_ALIAS, "run-a", true)],
+            runs: vec![observed(OBS_ALIAS, "run-a", ALIVE)],
         });
         assert!(
             !app.needs_redraw,
@@ -1425,7 +1448,7 @@ mod tests {
 
         // The control arm: a real change still does.
         app.update(Action::RunsReconciled {
-            runs: vec![observed(OBS_ALIAS, "run-a", false)],
+            runs: vec![observed(OBS_ALIAS, "run-a", DEAD)],
         });
         assert!(
             app.needs_redraw,
@@ -1443,7 +1466,7 @@ mod tests {
         assert_eq!(app.ctx.config.preferences.driver_max_concurrent, 1);
         app.ctx
             .observed_runs
-            .insert("busy".to_string(), observed("busy", "run-live", true));
+            .insert("busy".to_string(), observed("busy", "run-live", ALIVE));
 
         app.start_driver_run(OBS_ALIAS, "/gsd-progress", None);
 
@@ -1490,13 +1513,13 @@ mod tests {
         let (mut app, _rx) = obs_app(dir.path());
         app.ctx
             .observed_runs
-            .insert("dead".to_string(), observed("dead", "run-crashed", false));
+            .insert("dead".to_string(), observed("dead", "run-crashed", DEAD));
 
         let live = app
             .ctx
             .observed_runs
             .values()
-            .filter(|run| run.live)
+            .filter(|run| run.is_live())
             .count();
         assert_eq!(live, 0);
         assert!(admit(live, app.ctx.config.preferences.driver_max_concurrent).is_ok());
@@ -1534,7 +1557,7 @@ mod tests {
         let (mut app, _rx) = obs_app(dir.path());
 
         app.update(Action::RunsReconciled {
-            runs: vec![observed(OBS_ALIAS, "run-adopted", true)],
+            runs: vec![observed(OBS_ALIAS, "run-adopted", ALIVE)],
         });
 
         assert!(
@@ -1565,7 +1588,7 @@ mod tests {
         let (mut app, mut rx) = obs_app(dir.path());
         app.ctx
             .observed_runs
-            .insert(OBS_ALIAS.to_string(), observed(OBS_ALIAS, "run-x", true));
+            .insert(OBS_ALIAS.to_string(), observed(OBS_ALIAS, "run-x", ALIVE));
 
         app.stop_driver_run(OBS_ALIAS);
         assert!(
@@ -1661,10 +1684,10 @@ mod tests {
             .insert(OBS_ALIAS.to_string(), crate::executor::RunState::Running);
         app.ctx
             .observed_runs
-            .insert("gone".to_string(), observed("gone", "run-gone", true));
+            .insert("gone".to_string(), observed("gone", "run-gone", ALIVE));
         app.ctx.observed_runs.insert(
             OBS_ALIAS.to_string(),
-            observed(OBS_ALIAS, "run-here", true),
+            observed(OBS_ALIAS, "run-here", ALIVE),
         );
 
         app.prune_driver_maps();
@@ -1771,10 +1794,15 @@ mod tests {
         app.ctx
             .run_states
             .insert(OBS_ALIAS.to_string(), crate::executor::RunState::Running);
-        app.ctx.observed_runs.insert(
-            OBS_ALIAS.to_string(),
-            observed(OBS_ALIAS, "run-here", true),
-        );
+        // `DEAD`, and the choice is load-bearing since plan 17-08: the removal
+        // path now REFUSES a project whose observed run is not known to be
+        // finished (CR-06), so a live run here would make this test assert the
+        // refusal rather than the D-27 cleanup it is about. A crashed run is
+        // nothing left to abandon, so it is removable — and it still exercises
+        // the sibling-map cleanup, which is this test's actual subject.
+        app.ctx
+            .observed_runs
+            .insert(OBS_ALIAS.to_string(), observed(OBS_ALIAS, "run-here", DEAD));
 
         let mut screen = DeleteConfirmScreen::new(OBS_ALIAS.to_string());
         screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut app.ctx);

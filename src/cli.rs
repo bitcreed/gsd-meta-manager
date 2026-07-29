@@ -51,7 +51,15 @@ pub enum Commands {
         #[arg(long)]
         command: String,
         // The TUI supplies it so it knows what to look for afterwards (D-03).
-        /// Run id to record this run under; generated when absent
+        //
+        // It is **not** generated when absent, and this comment used to say it
+        // was. A comment that describes a mode the code refuses is the next
+        // reader's bug: a driver-generated id appears on no caller's argv, which
+        // is exactly what made a run invisible to `driver::liveness::probe` —
+        // reported crashed by every scan, and un-stoppable because a stop
+        // answered already-gone without signalling (CR-04). `driver::drive`
+        // refuses a real run with no id before anything is created.
+        /// Run id to record this run under; required unless `--dry-run`
         #[arg(long)]
         run_id: Option<String>,
         /// Report what the run would do without executing anything
