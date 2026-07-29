@@ -420,6 +420,14 @@ None — no external service configuration required.
   This plan added none — the inbox cursor lives in the driver process's own run
   state, not on `AppContext`.
 
+## Self-Check: PASSED
+
+All four created files present on disk (`src/journal/inbox.rs`,
+`tests/driver_inbox.rs`, `tests/journal_run_paths.rs`,
+`tests/fixtures/fake-claude-turns.sh`); all three commits present in
+`git log` (`412a913`, `63353ff`, `2a0af76`); no unexpected deletions in either
+task commit; working tree clean.
+
 ---
 *Phase: 18-driver-tab-live-watch-durable-injection*
 *Completed: 2026-07-29*
