@@ -6,6 +6,7 @@ pub mod change_tracker;
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod executor;
 pub mod project_creator;
 pub mod registry;
 pub mod session_detector;
