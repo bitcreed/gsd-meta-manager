@@ -2,6 +2,7 @@
 name = "gsd-meta-manager"
 version = "1.6.0"
 edition = "2021"
+rust-version = "1.87"
 authors = ["Andreas Brauchli <andy@bitcreed.us>"]
 description = "TUI command center for managing multiple GSD-run projects from a single interface."
 license = "MIT"
@@ -32,6 +33,13 @@ futures = "0.3"
 notify = "8"
 notify-debouncer-full = "0.7"
 tui-textarea = { version = "0.7", features = ["ratatui"] }
+# `tokio1` is NOT a default feature and the crate is inert without it. This
+# dependency's own manifest declares rust-version = "1.87.0", which is where
+# the [package] rust-version floor above comes from.
+# No line-framing crate is added: NDJSON framing uses tokio::io::BufReader::lines()
+# plus an explicit byte-length bound, so tokio-util is deliberately not a dependency.
+process-wrap = { version = "9.1.0", features = ["tokio1"] }
+uuid = { version = "1.24", features = ["v4", "serde"] }
 
 [dev-dependencies]
 assert_fs = "1"

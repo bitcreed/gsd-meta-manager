@@ -10,7 +10,7 @@ see [CONFIGURATION.md](CONFIGURATION.md); for system internals see
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| Rust toolchain | `>=1.85` (stable) | Required to build the binary. Includes `cargo`. Install via [rustup](https://rustup.rs). The crate uses `edition = "2021"` and depends on `notify 8.x` (MSRV 1.85). |
+| Rust toolchain | `>=1.87` (stable) | Required to build the binary. Includes `cargo`. Install via [rustup](https://rustup.rs). The crate declares `rust-version = "1.87"`; the floor comes from the `process-wrap` 9.1.0 dependency, whose own manifest declares `rust-version = "1.87.0"`. |
 | Git | any recent | Needed to clone the repository. |
 | A terminal | any | crossterm targets Linux, macOS, and Windows. A truecolor terminal is recommended for the dashboard colors. |
 | (Optional) `tmux` | any | Required only for the "switch to existing Claude session" feature in the TUI. |
@@ -147,10 +147,11 @@ is not on your `$PATH`, either add it (e.g., `export PATH="$HOME/.cargo/bin:$PAT
 in your shell profile) or invoke the binary by its full path
 (`target/release/gsd-meta-manager` after `cargo build --release`).
 
-### "error: package requires rustc 1.85 or newer"
+### "error: package requires rustc 1.87 or newer"
 
 Your Rust toolchain is too old. Update with `rustup update stable` and confirm
-with `rustc --version`. The MSRV is driven by the `notify` 8.x dependency.
+with `rustc --version`. The MSRV is driven by the `process-wrap` 9.1.0
+dependency, whose own manifest declares `rust-version = "1.87.0"`.
 
 ### Empty dashboard after `add`
 

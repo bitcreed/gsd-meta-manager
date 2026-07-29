@@ -7,9 +7,9 @@ renderer), code organization, commit conventions, and the milestone release flow
 
 ## Prerequisites
 
-- **Rust 1.85+** (stable) -- required by the `Cargo.toml` `edition = "2021"` setup and
-  the upstream `notify` MSRV. Install via [rustup](https://rustup.rs) and confirm with
-  `rustc --version`.
+- **Rust 1.87+** (stable) -- the floor comes from the `process-wrap` 9.1.0 dependency,
+  whose own published manifest declares `rust-version = "1.87.0"`. Install via
+  [rustup](https://rustup.rs) and confirm with `rustc --version`.
 - **Git** -- for branch and tag operations.
 - A POSIX-ish terminal that supports the crossterm event stream (Linux, macOS, or
   Windows Terminal). The TUI uses `crossterm`'s alternate screen + raw mode, so
