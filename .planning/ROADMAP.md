@@ -306,9 +306,22 @@ Plans:
   - Reuse the existing D-R-P-E-V pipeline widget as the step timeline. A second progress display is an explicit anti-feature
   - Live re-streaming after a TUI restart is impossible by construction (the child's stdout pipe is gone); reattachment is journal-based and read-only
 
-**Research**: optional — not flagged by research; decide at planning time
-**Plans**: TBD
+**Research**: optional — skipped by decision at planning time; every external unknown (mid-turn stdin semantics, the `isReplay` dequeue ack, `result` as a turn boundary) was settled empirically by Phase 15's OQ2 spike and is carried in 15-CONTEXT D-29..D-32 and 18-CONTEXT D-02/D-07
+**Plans**: 11 plans (6 waves)
 **UI hint**: yes
+
+Plans:
+- [ ] 18-01-PLAN.md — Tracer: end-to-end durable injection spine + path-traversal fix (D-27/WR-02)
+- [ ] 18-02-PLAN.md — Driver honesty: acted-on, missed, and the blocking-call boundary (D-28/WR-10)
+- [ ] 18-03-PLAN.md — Journal read surfaces: readable output projection + run listing
+- [ ] 18-04-PLAN.md — State layer: bounded ring buffer, sanitiser, needs-human predicate, Action types
+- [ ] 18-05-PLAN.md — Controller: stop-disposition fix (D-29/WR-15), schedulers, the redraw seam
+- [ ] 18-06-PLAN.md — Dashboard: driven/parked badges, sort toggle, needs-human filter
+- [ ] 18-07-PLAN.md — Injection input screen and the command + goal start flow
+- [ ] 18-08-PLAN.md — Release gate for the hidden agent-override flags (D-30/WR-16)
+- [ ] 18-09-PLAN.md — Driver tab: 11th tab, tab-bar tiering, two panes, header, pipeline row
+- [ ] 18-10-PLAN.md — Live output pane, four-state injection display, after-the-fact run review
+- [ ] 18-11-PLAN.md — Help screen, dry-run preview, mechanical close-out
 
 ### Phase 19: GITSAFE — Git & Blast-Radius Envelope
 
