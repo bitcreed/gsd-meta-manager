@@ -53,6 +53,18 @@ fn slow(heartbeats: u32, interval: &str, ending: &str) -> ClaudeExecutor {
     )
 }
 
+/// An executor pointed at the paced stand-in with its pacing removed.
+///
+/// A zero interval means the stand-in emits as fast as the shell can print —
+/// `printf` and the arithmetic are builtins and no `sleep` is forked — which is
+/// what fills the executor's 8192-slot event channel and, with a consumer that
+/// never drains it, keeps it full. That is the CR-01 condition: a supervisor
+/// parked handing one event to a stalled consumer is a supervisor with every cap
+/// and the cancel signal disabled.
+fn flooding(lines: u32) -> ClaudeExecutor {
+    slow(lines, "0", "result")
+}
+
 /// Options with test-sized caps.
 ///
 /// The production defaults encode an ordering constraint — the idle cap must
@@ -483,4 +495,100 @@ async fn a_run_that_outlives_the_wall_clock_cap_is_reported_as_timed_out() {
              to a user and are never collapsed (D-13). Got: {other:?}"
         ),
     }
+}
+
+// ============================================================================
+// A stalled event consumer cannot disable the caps or the cancel signal
+// (D-13, CR-01)
+//
+// Both tests here deliberately NEVER read `handle.events`. The receiver stays
+// alive inside the handle, so the bounded channel fills and stays full — which
+// is exactly the state the TUI is in during its documented blocking `$EDITOR`
+// shell-out. Every existing lifecycle test drains immediately and therefore
+// reaches neither condition.
+//
+// Both wrap the awaited call in a hard `tokio::time::timeout`, because the
+// defect being guarded against is an unbounded park: without the inner bound a
+// regression would HANG the suite instead of failing it, and a hung CI job
+// reports nothing at all.
+// ============================================================================
+
+#[tokio::test]
+async fn a_wall_clock_cap_still_fires_while_the_event_consumer_is_blocked() {
+    let scratch = TempDir::new().expect("temp dir");
+    let project = DrivableProject::for_testing("flood-wall", scratch.path());
+    let executor = flooding(50_000);
+
+    // A three-second wall cap and an idle cap far out of reach: only the wall
+    // cap can end this run, so what the assertion observes is unambiguous.
+    let mut handle = executor
+        .start(&project, "/gsd-progress".to_string(), capped(3_000, 30_000))
+        .await
+        .expect("start");
+
+    let started = Instant::now();
+    let outcome = tokio::time::timeout(Duration::from_secs(60), handle.wait_outcome())
+        .await
+        .expect(
+            "the run never reported an outcome. A consumer that stops draining must never be \
+             able to disable the wall-clock cap — that cap is the only bound on a runaway \
+             run's subscription quota spend, and a supervisor parked on a send has it, the \
+             idle cap and the cancel signal all switched off at once (D-13, CR-01)",
+        );
+    let elapsed = started.elapsed();
+
+    match outcome {
+        RunOutcome::TimedOut { after } => assert_eq!(
+            after,
+            Duration::from_millis(3_000),
+            "the timed-out outcome carries the cap that was actually breached"
+        ),
+        other => panic!(
+            "a flooding run whose consumer never drains must still be reported as TIMED OUT. \
+             Got: {other:?}"
+        ),
+    }
+    assert!(
+        elapsed < Duration::from_secs(30),
+        "the cap must fire on its own schedule rather than whenever the flood happens to \
+         relent. Observed: {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_cancel_is_still_honoured_while_the_event_consumer_is_blocked() {
+    let scratch = TempDir::new().expect("temp dir");
+    let project = DrivableProject::for_testing("flood-cancel", scratch.path());
+    let executor = flooding(50_000);
+
+    // Both caps far out of reach: ONLY the cancel can end this run.
+    let mut handle = executor
+        .start(&project, "/gsd-progress".to_string(), capped(60_000, 30_000))
+        .await
+        .expect("start");
+
+    // Long enough that the channel is demonstrably full and the supervisor is
+    // demonstrably parked handing an event to a consumer that will never take
+    // it.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let started = Instant::now();
+    let outcome = tokio::time::timeout(Duration::from_secs(60), executor.cancel(&mut handle))
+        .await
+        .expect(
+            "cancel() never returned. A cancel the user explicitly asked for cannot be \
+             conditional on the TUI keeping up with the stream — a kill switch that only \
+             works while nothing is wrong is not a kill switch (D-13, CR-01)",
+        );
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(outcome, RunOutcome::Killed { .. }),
+        "a cancelled run is a kill however fast the child was emitting, got: {outcome:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(30),
+        "the cancel must take effect within the forward bound plus the teardown, not \
+         whenever the flood relents. Observed: {elapsed:?}"
+    );
 }
