@@ -4961,6 +4961,8 @@ mod tests {
             event_tx: None,
             exec_tx: None,
             run_states: HashMap::new(),
+            reparse_dispatches: 0,
+            journal_cursors: HashMap::new(),
             watcher: None,
             last_refresh: HashMap::new(),
             detail_scroll_offset: 0,

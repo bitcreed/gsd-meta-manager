@@ -9,7 +9,7 @@ use crate::ui::screens::{AppContext, Screen, ScreenAction};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::widgets::TableState;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -152,6 +152,8 @@ impl App {
             event_tx: None,
             exec_tx: None,
             run_states: HashMap::new(),
+            reparse_dispatches: 0,
+            journal_cursors: HashMap::new(),
             watcher: None,
             last_refresh: HashMap::new(),
             detail_scroll_offset: 0,
@@ -219,6 +221,133 @@ impl App {
         }
 
         self.needs_redraw = true;
+    }
+
+    /// **The only place a full project re-parse is scheduled.**
+    ///
+    /// That claim is not decoration — the OBS-06 test asserts
+    /// `ctx.reparse_dispatches` does not move across five hundred journal
+    /// appends, and the assertion is only as strong as this being the sole
+    /// writer of that counter. If a second dispatch site ever appears, route it
+    /// through here rather than duplicating the body.
+    ///
+    /// `parse_project_state` reads STATE.md, ROADMAP.md, QUEUE.md, HANDOFF,
+    /// every phase directory's disk inference and every workstream, and shells
+    /// out to git for last-activity. It is the bill "free watching" was quietly
+    /// running up.
+    ///
+    /// The counter is incremented **before** the `spawn_blocking` so the count
+    /// is synchronous and cannot race the blocking task (RESEARCH §7.3).
+    fn schedule_reparse(&mut self, alias: &str, project_path: &Path) {
+        let Some(tx) = &self.ctx.event_tx else {
+            return;
+        };
+        let tx = tx.clone();
+        let alias_for_task = alias.to_string();
+        let planning_dir = project_path.join(".planning");
+
+        self.ctx.reparse_dispatches += 1;
+        tokio::task::spawn_blocking(move || {
+            let state = state_reader::parse_project_state(&planning_dir);
+            let _ = tx.send(Action::ProjectStateLoaded {
+                alias: alias_for_task,
+                state: Box::new(state),
+            });
+        });
+        self.ctx
+            .last_refresh
+            .insert(alias.to_string(), std::time::Instant::now());
+    }
+
+    /// Schedule a byte-offset tail of one run's journal (D-12, D-16).
+    ///
+    /// Note the three things this deliberately does **not** do, because they
+    /// are the literal content of OBS-06:
+    ///
+    /// * It does **not** call `parse_project_state`. A tail costs
+    ///   bytes-appended-since-the-last-read, so its cost is proportional to
+    ///   actual new data rather than to project size — that proportionality is
+    ///   the whole difference (D-15).
+    /// * It does **not** touch `last_refresh`. Sharing the 500 ms dedup map
+    ///   would let a journal append suppress a genuine `STATE.md` re-parse for
+    ///   half a second, trading a performance bug for a correctness bug (D-14).
+    /// * It does **not** increment `reparse_dispatches`.
+    ///
+    /// The read runs on `spawn_blocking` with its result returned as an
+    /// `Action` on a cloned sender, following the idiom this file already uses
+    /// for the re-parse and for session detection. No file I/O on the render
+    /// thread (D-16).
+    fn schedule_journal_tail(&mut self, alias: &str, project_path: &Path, run_id: &str) {
+        let Some(tx) = &self.ctx.event_tx else {
+            return;
+        };
+        let tx = tx.clone();
+
+        let key = (alias.to_string(), run_id.to_string());
+        let cursor = self.ctx.journal_cursors.get(&key).copied().unwrap_or_default();
+        let (alias_for_task, run_id_for_task) = key;
+
+        let planning_dir = project_path.join(".planning");
+        let journal = crate::journal::run_paths(&planning_dir, run_id).journal;
+
+        tokio::task::spawn_blocking(move || {
+            let read = match crate::journal::reader::tail_lines(&journal, cursor) {
+                Ok(read) => read,
+                Err(e) => {
+                    // The error KIND only. Neither the path nor the message
+                    // body is logged (D-28).
+                    tracing::warn!(
+                        alias = %alias_for_task,
+                        run_id = %run_id_for_task,
+                        kind = ?e.kind(),
+                        "journal tail failed",
+                    );
+                    return;
+                }
+            };
+
+            if read.restarted {
+                tracing::warn!(
+                    alias = %alias_for_task,
+                    run_id = %run_id_for_task,
+                    restarted = true,
+                    "journal tail: the file shrank and the cursor was reset",
+                );
+            }
+            if read.skipped_oversize {
+                tracing::warn!(
+                    alias = %alias_for_task,
+                    run_id = %run_id_for_task,
+                    skipped_oversize = true,
+                    "journal tail: stepped over a line that exceeded the read bound",
+                );
+            }
+
+            let mut records = Vec::with_capacity(read.lines.len());
+            let mut unparseable: u64 = 0;
+            for line in &read.lines {
+                match crate::journal::reader::parse_line(line) {
+                    crate::journal::reader::ParsedLine::Record(record) => records.push(record),
+                    // A count, never the line (D-28).
+                    crate::journal::reader::ParsedLine::Unparseable { .. } => unparseable += 1,
+                }
+            }
+            if unparseable > 0 {
+                tracing::warn!(
+                    alias = %alias_for_task,
+                    run_id = %run_id_for_task,
+                    count = unparseable,
+                    "journal tail: lines did not parse",
+                );
+            }
+
+            let _ = tx.send(Action::DriverJournalAppended {
+                alias: alias_for_task,
+                run_id: run_id_for_task,
+                records,
+                cursor: read.cursor,
+            });
+        });
     }
 
     /// Load project states for all registered projects.
@@ -327,7 +456,7 @@ impl App {
             }
             Action::FileChanged {
                 project_path,
-                changed_path: _,
+                changed_path,
             } => {
                 // Find the alias matching this project path
                 let alias = self
@@ -339,34 +468,42 @@ impl App {
                     .map(|(alias, _)| alias.clone());
 
                 if let Some(alias) = alias {
-                    // Dedup: skip if last refresh was less than 500ms ago
-                    let now = std::time::Instant::now();
-                    if let Some(last) = self.ctx.last_refresh.get(&alias) {
-                        if now.duration_since(*last) < std::time::Duration::from_millis(500) {
-                            return;
+                    // Classify BEFORE the dedup check. D-14 is explicit that
+                    // the two routes must not share `last_refresh`: if the
+                    // driver route went through the 500ms map, one journal
+                    // append could suppress a genuine STATE.md re-parse for
+                    // half a second — a performance bug traded for a
+                    // correctness bug.
+                    match crate::journal::classify_change(&project_path, &changed_path) {
+                        crate::journal::ChangeKind::DriverJournal { run_id } => {
+                            // No extra throttle here, deliberately (D-15). A
+                            // tail read costs bytes-appended-since-the-last-
+                            // read, so its cost tracks actual new data rather
+                            // than project size — which is the whole
+                            // difference from `parse_project_state`, and the
+                            // 200ms watcher debounce already floors the rate.
+                            self.schedule_journal_tail(&alias, &project_path, &run_id);
                         }
-                    }
+                        crate::journal::ChangeKind::Planning => {
+                            // Dedup: skip if last refresh was less than 500ms ago
+                            let now = std::time::Instant::now();
+                            if let Some(last) = self.ctx.last_refresh.get(&alias) {
+                                if now.duration_since(*last)
+                                    < std::time::Duration::from_millis(500)
+                                {
+                                    return;
+                                }
+                            }
 
-                    // Use spawn_blocking for async file I/O
-                    if let Some(tx) = &self.ctx.event_tx {
-                        let tx = tx.clone();
-                        let alias_for_task = alias.clone();
-                        let planning_dir = project_path.join(".planning");
-                        tokio::task::spawn_blocking(move || {
-                            let state = state_reader::parse_project_state(&planning_dir);
-                            let _ = tx.send(Action::ProjectStateLoaded {
-                                alias: alias_for_task,
-                                state: Box::new(state),
-                            });
-                        });
-                        self.ctx.last_refresh.insert(alias, now);
-                    }
+                            self.schedule_reparse(&alias, &project_path);
 
-                    // Auto-start watcher if not yet watching
-                    let planning_dir_check = project_path.join(".planning");
-                    if planning_dir_check.is_dir() {
-                        if let Some(ref mut watcher) = self.ctx.watcher {
-                            let _ = watcher.watch(&planning_dir_check);
+                            // Auto-start watcher if not yet watching
+                            let planning_dir_check = project_path.join(".planning");
+                            if planning_dir_check.is_dir() {
+                                if let Some(ref mut watcher) = self.ctx.watcher {
+                                    let _ = watcher.watch(&planning_dir_check);
+                                }
+                            }
                         }
                     }
                 }
@@ -511,11 +648,43 @@ impl App {
                 cache.archive_loading = false;
                 self.needs_redraw = true;
             }
-            // Placeholder so this commit builds. The producer
-            // (`schedule_journal_tail`) and this arm's real body — the cursor
-            // advance and the sequence-gap diagnostic — land together in the
-            // next commit; nothing emits this variant yet.
-            Action::DriverJournalAppended { .. } => {}
+            // One tail read landed. This handler touches its own cursor entry
+            // and nothing else — modelled on `apply_exec_event`, which
+            // likewise records what it deliberately does *not* do.
+            //
+            // It does NOT set `needs_redraw`. This phase ships no surface that
+            // renders journal content (D-36), so a redraw here would schedule
+            // a frame that cannot differ from the one already on screen. Read
+            // the omission as a choice, not as a bug — Phase 18 is what adds
+            // the surface and the flag together.
+            //
+            // It also does NOT touch `ProjectState` (D-18) or `last_refresh`
+            // (D-14).
+            Action::DriverJournalAppended {
+                alias,
+                run_id,
+                records,
+                cursor,
+            } => {
+                // `seq` is monotonic from 1 and exists so a tailing reader can
+                // detect gaps (D-03). A gap is reported as a COUNT and never
+                // as a parse failure, and never with a record body (D-28,
+                // D-30).
+                let gaps = records
+                    .windows(2)
+                    .filter(|pair| pair[1].seq != pair[0].seq + 1)
+                    .count();
+                if gaps > 0 {
+                    tracing::warn!(
+                        alias = %alias,
+                        run_id = %run_id,
+                        count = gaps,
+                        "journal tail: sequence gaps observed",
+                    );
+                }
+
+                self.ctx.journal_cursors.insert((alias, run_id), cursor);
+            }
         }
     }
 
