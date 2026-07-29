@@ -24,14 +24,25 @@
 //   turn abort, no Bash-tree teardown, no `SessionEnd` hooks, no exit 143.
 //   SIGTERM to the group, grace, then SIGKILL, then an unconditional `wait()`
 //   so no zombie survives.
-// * **Process exit is never awaited unbounded (D-13).** Every `wait()` in this
-//   file is either raced by the supervisor's two caps or wrapped in an explicit
-//   bound. The two caps are independent and measure different things: the
-//   wall-clock cap measures time since spawn, and the idle cap measures time
-//   since the **reader** last observed a line. Only the second can tell a
-//   legitimately long run from a hung one — the research pass reproduced a hang
-//   that sat silent for minutes, while a real multi-step run emits events
-//   continuously, and time-since-spawn cannot separate those.
+// * **Process exit is never awaited unbounded (D-13), and here is the
+//   mechanism.** Every bound this file owns is evaluated at the TOP of every
+//   supervisor pass, not only when the `select!` happens to reach an arm: a
+//   `biased;` macro with a hot stream arm never polls its later arms at all,
+//   and the winning arm's body awaits outside the macro, where every timer
+//   future has already been dropped. The hand-off to the caller is itself
+//   bounded by the earliest armed deadline, so a consumer that stops draining
+//   cannot park the supervisor with every cap and the cancel signal switched
+//   off. The drain that follows an observed exit is bounded too, and that bound
+//   is deliberately not guarded by the exited flag — a bound that switches off
+//   when the child exits is not a bound. The cost of a consumer stalled past
+//   the forward ceiling is one **counted, logged dropped event**; the benefit
+//   is that a run always ends and always reports how.
+//   The two caps are independent and measure different things: the wall-clock
+//   cap measures time since spawn, and the idle cap measures time since the
+//   **reader** last observed a line. Only the second can tell a legitimately
+//   long run from a hung one — the research pass reproduced a hang that sat
+//   silent for minutes, while a real multi-step run emits events continuously,
+//   and time-since-spawn cannot separate those.
 // * **The child's environment is scrubbed of every inherited `CLAUDE*`
 //   variable.** This TUI is plausibly launched from inside a Claude Code
 //   session, so those variables would otherwise leak into the driven child and
@@ -104,6 +115,13 @@ const TEARDOWN_GRACE: Duration = Duration::from_secs(10);
 /// This bound exists so that **no** path in this file awaits process exit
 /// unbounded (D-13); when it expires the run escalates into the same four-step
 /// teardown a cap breach uses.
+///
+/// **Not to be confused with [`POST_EXIT_DRAIN_CAP`], which is its mirror.**
+/// The two bound opposite directions and the names are close enough that the
+/// distinction is worth stating rather than leaving to be rediscovered:
+///
+/// * this one bounds *"the stream closed — is the process gone?"*;
+/// * that one bounds *"the process is gone — is the stream closed?"*.
 const EXIT_DRAIN_CAP: Duration = Duration::from_secs(30);
 
 /// Capacity of the executor event channel.
@@ -115,6 +133,42 @@ const EVENT_CHANNEL_CAPACITY: usize = 8192;
 
 /// Capacity of the stdin writer's command channel.
 const WRITER_CHANNEL_CAPACITY: usize = 64;
+
+/// An absolute ceiling on how long the supervisor may be parked handing **one**
+/// event to its consumer.
+///
+/// The consumer is a TUI that can legitimately stop draining for a while — the
+/// blocking `$EDITOR` shell-out is the known case — so this ceiling is generous
+/// rather than tight. But it is finite, and that is the whole point: a
+/// supervisor parked on a send is a supervisor whose wall-clock cap, idle cap,
+/// grace and cancel signal are **all** disabled at once, because every one of
+/// them lives in a `select!` the loop is no longer inside (CR-01). The per-pass
+/// forward deadline is the earliest of this ceiling and every armed bound, so a
+/// cap that expires mid-send unparks the supervisor at exactly the right
+/// instant.
+///
+/// The cost of a stall longer than this is one **counted, logged** dropped
+/// event. A dropped diagnostic is strictly preferable to an unbounded park: the
+/// former loses a line of run history and says so, the latter loses the run.
+pub const EVENT_FORWARD_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long the loop keeps draining already-framed stream lines after the child
+/// **leader** has been observed exited.
+///
+/// The mirror of [`EXIT_DRAIN_CAP`], and routinely confused with it: that one
+/// bounds *"the stream closed, is the process gone?"*, this one bounds *"the
+/// process is gone, is the stream closed?"*.
+///
+/// Five seconds because once the leader has exited the remaining lines are
+/// already framed and in flight, and the CLI terminates its background Bash
+/// tasks about five seconds after the final result. A stream still open after
+/// that is being held by something that outlived the leader — a backgrounded
+/// grandchild that inherited stdout — which is precisely the condition this
+/// bound exists to end.
+///
+/// It is deliberately **not** guarded by the exited flag. A bound that switches
+/// off when the child exits is not a bound (CR-02).
+pub const POST_EXIT_DRAIN_CAP: Duration = Duration::from_secs(5);
 
 /// The `terminal_reason` a turn carries when an interrupt actually stopped it.
 pub const ABORTED_STREAMING: &str = "aborted_streaming";
@@ -769,16 +823,42 @@ enum Breach {
 impl Coordinator {
     /// The supervisor.
     ///
-    /// One `tokio::select!` races four things against each other: the child's
-    /// exit future, the total wall-clock cap, the idle cap, and the cancel
-    /// signal — plus the stream itself, which is what the loop is otherwise
-    /// pumping. Racing them is also what resolves the borrow problem the
+    /// **Two layers, and keeping them apart is the whole design.** The
+    /// `tokio::select!` is the WAKE-UP mechanism: it parks the loop until
+    /// something worth looking at happens — a stream line, the child's exit,
+    /// one of the timers, the cancel signal. The unconditional block at the top
+    /// of every pass is the ENFORCEMENT mechanism: it reads the wall-clock cap,
+    /// the idle cap, the grace, the post-exit drain bound and the cancel signal
+    /// on *every* pass, whatever the `select!` did or did not reach.
+    ///
+    /// Arm ordering is therefore a stream-fidelity preference and never a
+    /// correctness dependency. That distinction is not decorative. Under the
+    /// single-layer shape this loop used to have, `biased;` with the reader
+    /// first meant a child emitting faster than the loop retired kept arm 1
+    /// permanently ready and the later arms were never polled at all; and once
+    /// the reader arm won, the loop sat awaiting a send *outside* the macro,
+    /// with every timer future already dropped. Either way both caps and the
+    /// cancel were unenforceable exactly when a runaway run made them matter
+    /// (CR-01). The forward to the caller is bounded by the earliest armed
+    /// deadline for the same reason.
+    ///
+    /// Racing the exit future is also what resolves the borrow problem the
     /// wrapper's API creates: `wait()` holds a `&mut` borrow of the child for
     /// the whole life of its future, so a supervisor holding that future across
     /// an await could never call `signal()` on the same object. When another arm
     /// wins, `select!` drops every loser — including the exit future — and the
     /// borrow ends before the statement after the macro runs, which is exactly
     /// where the signal call lives.
+    ///
+    /// **An observed exit is not a reaped group.** `ProcessGroupChild::wait`
+    /// awaits the leader and caches its status before reaping the rest of the
+    /// group, so a partially-polled wait future dropped by another arm winning
+    /// — which the tail of lines after the leader exits makes likely — leaves
+    /// that status cached and the next `wait()` returning immediately, with
+    /// group members still alive. `exited` therefore means "the leader is gone",
+    /// never "nothing of this run is still running", and the post-exit path
+    /// bounds its drain and tears the group down whenever EOF has not proven
+    /// otherwise (CR-02).
     ///
     /// **The idle cap is driven by the reader, not by the envelope (D-13,
     /// Pitfall E).** Every observed line stamps `last_line_at`; this loop
@@ -847,6 +927,17 @@ impl Coordinator {
         // signal is drained forever and the teardown never reaches step 3.
         let mut grace_deadline: Option<Instant> = None;
 
+        // Armed by the exit arm and by nothing else, and read by the loop head
+        // and by an arm that is NOT guarded on `exited`: an observed exit is
+        // what starts this clock, but it must never be what stops it (CR-02).
+        let mut drain_deadline: Option<Instant> = None;
+        let mut drain_expired = false;
+
+        // Events lost because a stalled consumer did not take them inside the
+        // forward bound. Counted so the loss is reportable; the count is the
+        // only thing that ever reaches the log (T-15-53).
+        let mut dropped_events: u64 = 0;
+
         let wall_deadline = Instant::now() + wall_clock_cap;
 
         loop {
@@ -854,6 +945,99 @@ impl Coordinator {
             let mut terminate = false;
             // Re-armed on every pass from the instant the READER recorded.
             let idle_deadline = *last_line_rx.borrow() + idle_cap;
+
+            // ================================================================
+            // Enforcement. Every bound this supervisor owns is evaluated HERE,
+            // unconditionally, on every pass — never only when the `select!`
+            // below happens to reach an arm.
+            //
+            // The `select!` is `biased;` with the reader first, so a child that
+            // emits faster than the loop retires keeps arm 1 permanently ready
+            // and the later arms are never polled at all; and the reader arm's
+            // body awaits OUTSIDE the macro, so while that await is pending
+            // every timer future has already been dropped. Either way the caps
+            // and the cancel were unenforceable exactly when they mattered
+            // most (CR-01). Hoisting them here makes arm ordering a
+            // stream-fidelity preference rather than a correctness dependency.
+            // ================================================================
+            let now = Instant::now();
+
+            if !cancelled && cancel_rx.try_recv().is_ok() {
+                cancelled = true;
+                // A cancel that arrives after the child has already been
+                // observed exited must still end the loop. Under the old shape
+                // it set `terminate`, whose every consequence was guarded on
+                // `!exited` — so it was swallowed and the run hung on (CR-02).
+                if exited {
+                    stop = true;
+                } else {
+                    terminate = true;
+                }
+            }
+
+            // Guarding the two breach checks on `!cancelled` is required, not
+            // incidental. Evaluating them every pass would otherwise make the
+            // pre-existing breach-outranks-cancel race in the outcome match
+            // fire far more often than it does today; the guard keeps that race
+            // exactly as frequent as it already is. Fixing the race itself is
+            // WR-02's and is out of scope here.
+            if !exited && !cancelled {
+                if now >= wall_deadline {
+                    breach = Some(Breach::WallClock);
+                    stop = true;
+                } else if now >= idle_deadline {
+                    breach = Some(Breach::Idle);
+                    stop = true;
+                }
+            }
+
+            if grace_deadline.is_some_and(|deadline| now >= deadline) {
+                stop = true;
+            }
+
+            if drain_deadline.is_some_and(|deadline| now >= deadline) {
+                drain_expired = true;
+                stop = true;
+            }
+
+            // A terminate observed HERE is acted on HERE. Deferring it to the
+            // post-`select!` block would park it behind the very send the
+            // cancel exists to interrupt.
+            if terminate || stop {
+                if terminate {
+                    // Step 1 of the teardown, taken immediately so the CLI's
+                    // own clean shutdown overlaps with the drain of its
+                    // remaining stream. SIGTERM to the whole GROUP; never
+                    // `kill()`, which is SIGKILL and skips the clean path
+                    // entirely (D-14).
+                    if !exited {
+                        terminate_group(&*child);
+                    }
+                    grace_deadline = Some(now + TEARDOWN_GRACE);
+                }
+                if stop {
+                    break;
+                }
+                // The bounds were just re-armed; re-evaluate them before
+                // parking again. At most one extra pass, and it cannot spin:
+                // `cancelled` is now set, so this branch is not reachable twice.
+                continue;
+            }
+
+            // The hand-off to the caller can never outlive the earliest armed
+            // bound, so a cap expiring while the supervisor is parked unparks
+            // it at exactly the right instant and the loop head above then
+            // classifies the breach on the next pass.
+            let mut forward_deadline = now + EVENT_FORWARD_TIMEOUT;
+            if !exited && !cancelled {
+                forward_deadline = forward_deadline.min(wall_deadline).min(idle_deadline);
+            }
+            if let Some(deadline) = grace_deadline {
+                forward_deadline = forward_deadline.min(deadline);
+            }
+            if let Some(deadline) = drain_deadline {
+                forward_deadline = forward_deadline.min(deadline);
+            }
 
             tokio::select! {
                 biased;
@@ -873,6 +1057,8 @@ impl Coordinator {
                                 &mut envelopes,
                                 &first_message,
                                 permission_mode,
+                                forward_deadline,
+                                &mut dropped_events,
                             )
                             .await;
                         }
@@ -887,6 +1073,12 @@ impl Coordinator {
                 status = child.wait(), if !exited => {
                     exited = true;
                     exit_status = status.ok();
+                    // The tail of already-framed lines gets this long to
+                    // arrive, and no longer. stdout EOF is the clean escape;
+                    // this is the bound for when there is not one, because a
+                    // descendant that outlived the leader is holding the write
+                    // end open (CR-02).
+                    drain_deadline = Some(Instant::now() + POST_EXIT_DRAIN_CAP);
                 }
 
                 _ = tokio::time::sleep_until(wall_deadline), if !exited => {
@@ -911,6 +1103,20 @@ impl Coordinator {
                 _ = tokio::time::sleep_until(grace_deadline.unwrap_or(wall_deadline)),
                     if grace_deadline.is_some() && !exited =>
                 {
+                    stop = true;
+                }
+
+                // The post-exit drain has run out and stdout still has not
+                // reached EOF. Gated ONLY on the deadline being armed and
+                // emphatically NOT on `exited`: the exited flag is what arms
+                // this bound, so guarding the bound on it would switch off the
+                // one escape from the state it exists to escape (CR-02). Same
+                // fallback idiom as the grace arm — the precondition means the
+                // fallback value is never observed.
+                _ = tokio::time::sleep_until(drain_deadline.unwrap_or(wall_deadline)),
+                    if drain_deadline.is_some() =>
+                {
+                    drain_expired = true;
                     stop = true;
                 }
             }
@@ -947,7 +1153,32 @@ impl Coordinator {
             let _ = tx.send(Err(SpawnError::InitNeverObserved));
         }
 
-        let status = if exited {
+        // **An observed exit is not a reaped group.** `ProcessGroupChild::wait`
+        // awaits the leader and CACHES its status, so a partially-polled wait
+        // future dropped by another `select!` arm winning leaves that status
+        // cached with the group never reaped — and the next `wait()` then
+        // returns `Ready` immediately. "Exited" therefore means "the leader is
+        // gone", never "nothing of this run is left running" (CR-02, T-15-52).
+        //
+        // The two exited branches are split on exactly that distinction: stdout
+        // EOF inside the drain bound proves every writer on the pipe is gone,
+        // and nothing more is owed. The bound expiring proves the opposite.
+        let status = if exited && !drain_expired {
+            // The group reached stdout EOF and is proven done. This is the path
+            // every healthy run takes, and it is deliberately unchanged.
+            exit_status
+        } else if exited {
+            // Something outlived the leader and is holding the pipe open. Run
+            // the full documented four-step teardown and DISCARD its returned
+            // status: the teardown here is for the survivors, not for the
+            // verdict — the leader's own already-observed status is the
+            // authoritative liveness signal and is what gets reported.
+            tracing::warn!(
+                "the claude leader exited but its stream stayed open for {} seconds; \
+                 tearing the process group down",
+                POST_EXIT_DRAIN_CAP.as_secs()
+            );
+            let _ = tear_down_group(&mut child).await;
             exit_status
         } else if tear_down {
             tear_down_group(&mut child).await
@@ -992,7 +1223,17 @@ impl Coordinator {
         };
 
         if let Some(status) = status {
-            let _ = events_tx.send(ExecutionEvent::Exited(status)).await;
+            // Bounded for the same reason every in-loop hand-off is. This send
+            // sits between "the outcome is decided" and "the outcome is sent",
+            // and it goes to the same bounded channel a stalled consumer has
+            // already filled — so left unbounded it is a third way for a run to
+            // end without `outcome_tx` ever being sent, which is the one thing
+            // that must never happen (CR-01).
+            let _ = tokio::time::timeout(
+                EVENT_FORWARD_TIMEOUT,
+                events_tx.send(ExecutionEvent::Exited(status)),
+            )
+            .await;
         }
         drop(events_tx);
 
@@ -1004,6 +1245,43 @@ impl Coordinator {
         pending_control.lock().await.clear();
 
         let _ = outcome_tx.send(outcome);
+    }
+}
+
+/// Hand one event to the caller, under a deadline.
+///
+/// The single funnel every supervisor-side event goes through, and the reason
+/// the supervisor's own bounds cannot be disabled by its consumer. Returns:
+///
+/// * `true` on a delivered event;
+/// * `false` when the receiver is gone — the established "stop producing"
+///   convention this file already uses;
+/// * `true` on an elapsed deadline, after counting the loss, so the loop
+///   continues and re-evaluates its bounds rather than parking further.
+///
+/// The warning carries the running **count** and the channel capacity and
+/// nothing else — no event, no raw line, no message body. Redact-at-capture
+/// does not land until Phase 16, so anything logged here stays unredacted
+/// forever (T-15-53).
+async fn forward(
+    sender: &mpsc::Sender<ExecutionEvent>,
+    event: ExecutionEvent,
+    forward_deadline: Instant,
+    dropped: &mut u64,
+) -> bool {
+    match tokio::time::timeout_at(forward_deadline, sender.send(event)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(_)) => false,
+        Err(_) => {
+            *dropped += 1;
+            tracing::warn!(
+                "the executor event consumer did not drain within the forward bound; \
+                 {} event(s) dropped so far from a channel of {} slots",
+                *dropped,
+                EVENT_CHANNEL_CAPACITY
+            );
+            true
+        }
     }
 }
 
@@ -1020,23 +1298,38 @@ async fn handle_item(
     envelopes: &mut Vec<ResultMessage>,
     first_message: &str,
     permission_mode: PermissionMode,
+    forward_deadline: Instant,
+    dropped: &mut u64,
 ) -> bool {
     match item {
         ReaderItem::Truncated { bytes, prefix } => {
-            events_tx
-                .send(ExecutionEvent::LineTruncated { bytes, prefix })
-                .await
-                .is_ok()
-        }
-        ReaderItem::Envelope(Envelope::Unparseable { raw, error }) => events_tx
-            .send(ExecutionEvent::Unparseable { raw, error })
+            forward(
+                events_tx,
+                ExecutionEvent::LineTruncated { bytes, prefix },
+                forward_deadline,
+                dropped,
+            )
             .await
-            .is_ok(),
+        }
+        ReaderItem::Envelope(Envelope::Unparseable { raw, error }) => {
+            forward(
+                events_tx,
+                ExecutionEvent::Unparseable { raw, error },
+                forward_deadline,
+                dropped,
+            )
+            .await
+        }
         ReaderItem::Envelope(Envelope::Parsed { raw, msg }) => match msg {
-            StreamMessage::Unknown => events_tx
-                .send(ExecutionEvent::Unknown { raw })
+            StreamMessage::Unknown => {
+                forward(
+                    events_tx,
+                    ExecutionEvent::Unknown { raw },
+                    forward_deadline,
+                    dropped,
+                )
                 .await
-                .is_ok(),
+            }
 
             StreamMessage::System(SystemMessage::Init(init)) if !*gated => {
                 match gate::validate_first_init(&init, permission_mode) {
@@ -1045,8 +1338,9 @@ async fn handle_item(
                         if let Some(tx) = gate_tx.take() {
                             let _ = tx.send(Ok(facts.clone()));
                         }
-                        if events_tx
-                            .send(ExecutionEvent::SessionStarted {
+                        if !forward(
+                            events_tx,
+                            ExecutionEvent::SessionStarted {
                                 session_id: facts.session_id.unwrap_or_default(),
                                 capabilities: facts.capabilities,
                                 claude_code_version: facts
@@ -1054,9 +1348,11 @@ async fn handle_item(
                                     .unwrap_or_default(),
                                 api_key_source: facts.api_key_source,
                                 permission_mode: facts.permission_mode,
-                            })
-                            .await
-                            .is_err()
+                            },
+                            forward_deadline,
+                            dropped,
+                        )
+                        .await
                         {
                             return false;
                         }
@@ -1084,10 +1380,15 @@ async fn handle_item(
             msg @ (StreamMessage::System(_)
             | StreamMessage::Assistant(_)
             | StreamMessage::User(_)
-            | StreamMessage::RateLimitEvent(_)) => events_tx
-                .send(ExecutionEvent::Message(Box::new(msg)))
+            | StreamMessage::RateLimitEvent(_)) => {
+                forward(
+                    events_tx,
+                    ExecutionEvent::Message(Box::new(msg)),
+                    forward_deadline,
+                    dropped,
+                )
                 .await
-                .is_ok(),
+            }
 
             StreamMessage::Result(result) => {
                 // The whole envelope, verbatim off the wire, before the box is
@@ -1095,12 +1396,15 @@ async fn handle_item(
                 // nowhere else, so anything that projects first loses it.
                 envelopes.push((*result).clone());
                 if let Some(cost) = result.total_cost_usd {
-                    if events_tx
-                        .send(ExecutionEvent::Cost {
+                    if !forward(
+                        events_tx,
+                        ExecutionEvent::Cost {
                             cumulative_usd: cost,
-                        })
-                        .await
-                        .is_err()
+                        },
+                        forward_deadline,
+                        dropped,
+                    )
+                    .await
                     {
                         return false;
                     }
@@ -1108,10 +1412,13 @@ async fn handle_item(
                 // Deliberately no `break` here: `result` closes a TURN, not the
                 // run. Stopping on the first one truncates every steered run
                 // while reporting success (D-29).
-                events_tx
-                    .send(ExecutionEvent::TurnCompleted(result))
-                    .await
-                    .is_ok()
+                forward(
+                    events_tx,
+                    ExecutionEvent::TurnCompleted(result),
+                    forward_deadline,
+                    dropped,
+                )
+                .await
             }
 
             StreamMessage::ControlResponse(response) => {
@@ -1119,12 +1426,13 @@ async fn handle_item(
                 if let Some(waiter) = pending_control.lock().await.remove(&request_id) {
                     let _ = waiter.send(response.clone());
                 }
-                events_tx
-                    .send(ExecutionEvent::Message(Box::new(
-                        StreamMessage::ControlResponse(response),
-                    )))
-                    .await
-                    .is_ok()
+                forward(
+                    events_tx,
+                    ExecutionEvent::Message(Box::new(StreamMessage::ControlResponse(response))),
+                    forward_deadline,
+                    dropped,
+                )
+                .await
             }
         },
     }
@@ -1402,6 +1710,11 @@ mod tests {
         let mut refused: Option<CapabilityError> = None;
         let mut envelopes: Vec<ResultMessage> = Vec::new();
         let mut keep_going = true;
+        // Far out of reach, and a throwaway counter: these tests are about the
+        // first-init routing, and a forward that could expire under them would
+        // change what they mean.
+        let forward_deadline = Instant::now() + Duration::from_secs(3600);
+        let mut dropped = 0u64;
 
         for line in lines {
             keep_going = handle_item(
@@ -1415,6 +1728,8 @@ mod tests {
                 &mut envelopes,
                 "FIRST-MESSAGE",
                 PermissionMode::DontAsk,
+                forward_deadline,
+                &mut dropped,
             )
             .await;
             if !keep_going {

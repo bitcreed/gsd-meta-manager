@@ -13,7 +13,15 @@
 #   heartbeats  how many `system/thinking_tokens` lines to emit after the init.
 #               `0` means the stand-in goes silent immediately after announcing
 #               itself, which is the hang the idle cap exists to catch.
-#   interval    seconds between heartbeats, as `sleep` understands it.
+#   interval    seconds between heartbeats, as `sleep` understands it. The exact
+#               string `0` is a **fast path**: the `sleep` call is skipped
+#               entirely rather than invoked with a zero argument, because
+#               `sleep` is an external program and forking one per heartbeat
+#               caps the emission rate far below what a flood test needs.
+#               `printf` and the arithmetic are shell builtins, so with the fork
+#               removed this loop emits tens of thousands of lines per second —
+#               enough to fill a bounded 8192-slot channel and keep it full,
+#               which is the stalled-consumer condition CR-01 is about.
 #   ending      what happens once the heartbeats are done:
 #                 `silent` — sleep effectively forever, emitting nothing. The
 #                           idle cap must fire.
@@ -48,7 +56,13 @@ printf '{"type":"system","subtype":"init","session_id":"s","permissionMode":"don
 emitted=0
 while [ "$emitted" -lt "$HEARTBEATS" ]; do
     emitted=$((emitted + 1))
-    sleep "$INTERVAL"
+    # The zero-interval fast path: never fork a `sleep` just to sleep for no
+    # time. Every other interval is passed through unchanged, so no existing
+    # caller's pacing moves.
+    case "$INTERVAL" in
+    0) ;;
+    *) sleep "$INTERVAL" ;;
+    esac
     printf '{"type":"system","subtype":"thinking_tokens","estimated_tokens":%s,"estimated_tokens_delta":1,"session_id":"s","uuid":"beat-%s"}\n' \
         "$emitted" "$emitted"
 done

@@ -34,7 +34,7 @@ interleave and corrupt each other.
 
 ### Transport & Execution (TRANS)
 
-- [ ] **TRANS-01**: The driver runs a GSD command by spawning `claude -p` with duplex `stream-json` over stdio, and parses the structured result envelope rather than scraping text
+- [x] **TRANS-01**: The driver runs a GSD command by spawning `claude -p` with duplex `stream-json` over stdio, and parses the structured result envelope rather than scraping text
 - [ ] **TRANS-02**: Run outcome is derived from the `type:"result"` envelope (`subtype`, `is_error`, `terminal_reason`, `permission_denials[]`), exit code, disk state, and git — never from the agent's prose summary
 - [ ] **TRANS-03**: The TUI event loop reads input while a run is streaming output, so control keys stay responsive throughout a multi-hour run
 - [ ] **TRANS-04**: The tool detects Claude CLI capabilities at runtime via `system/init` feature detection and refuses to start a run against an unsupported CLI, with a clear message
@@ -128,7 +128,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-22.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| TRANS-01 | Phase 15: Transport Foundation | Pending |
+| TRANS-01 | Phase 15: Transport Foundation | Complete |
 | TRANS-02 | Phase 15: Transport Foundation | Pending |
 | TRANS-03 | Phase 15: Transport Foundation | Pending |
 | TRANS-04 | Phase 15: Transport Foundation | Pending |
