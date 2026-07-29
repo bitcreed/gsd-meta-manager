@@ -818,6 +818,12 @@ impl Coordinator {
         let mut exited = false;
         let mut exit_status: Option<ExitStatus> = None;
 
+        // Step 2 of the teardown, running while the loop keeps draining. Set
+        // when a cancel takes step 1; when it expires the drain stops and the
+        // escalation follows. Without it a child that ignores the terminate
+        // signal is drained forever and the teardown never reaches step 3.
+        let mut grace_deadline: Option<Instant> = None;
+
         let wall_deadline = Instant::now() + wall_clock_cap;
 
         loop {
@@ -874,17 +880,30 @@ impl Coordinator {
                     cancelled = true;
                     terminate = true;
                 }
+
+                // The grace a cancel started has run out and the child is still
+                // here. Stop draining; the escalation is below. The deadline is
+                // only read when the precondition holds, so the fallback value
+                // is never observed.
+                _ = tokio::time::sleep_until(grace_deadline.unwrap_or(wall_deadline)),
+                    if grace_deadline.is_some() && !exited =>
+                {
+                    stop = true;
+                }
             }
 
             // Every future the `select!` built — including the one holding the
             // `&mut` borrow of the child — is dropped by the time control gets
             // here, which is the only reason the signal below is legal at all.
-            if terminate && !exited {
+            if terminate {
                 // Step 1 of the teardown, taken immediately so the CLI's own
                 // clean shutdown overlaps with the drain of its remaining
                 // stream. SIGTERM to the whole GROUP; never `kill()`, which is
                 // SIGKILL and skips the clean path entirely (D-14).
-                terminate_group(&*child);
+                if !exited {
+                    terminate_group(&*child);
+                }
+                grace_deadline = Some(Instant::now() + TEARDOWN_GRACE);
             }
 
             if stop {
@@ -908,10 +927,16 @@ impl Coordinator {
         let status = if exited {
             exit_status
         } else if tear_down {
-            tear_down_group(&mut child, false).await
+            tear_down_group(&mut child).await
         } else if cancelled {
-            // Step 1 already ran the moment the cancel arrived.
-            tear_down_group(&mut child, true).await
+            // Steps 1 and 2 already ran: the terminate signal went out the
+            // moment the cancel arrived, and its grace has been elapsing under
+            // the drain ever since. Only whatever is left of that grace is
+            // waited out here, so a cancel never costs two grace periods.
+            let remaining = grace_deadline
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or(TEARDOWN_GRACE);
+            finish_teardown(&mut child, remaining).await
         } else {
             await_clean_exit(&mut child).await
         };
@@ -1101,26 +1126,31 @@ fn terminate_group(child: &dyn ChildWrapper) {
 ///    the grandchildren unreaped, so it is never raced against anything here
 ///    (T-15-34).
 ///
-/// `already_terminated` says step 1 has already run. A cancel takes it the
-/// instant it arrives, so the CLI's shutdown overlaps with the drain of its
-/// remaining stream rather than starting after it; re-signalling a group that is
-/// already on its way out would only log noise when the group has gone.
-async fn tear_down_group(
-    child: &mut Box<dyn ChildWrapper>,
-    already_terminated: bool,
-) -> Option<ExitStatus> {
-    if !already_terminated {
-        terminate_group(&**child);
-    }
-    match tokio::time::timeout(TEARDOWN_GRACE, child.wait()).await {
-        Ok(result) => result.ok(),
-        Err(_) => {
-            if let Err(err) = child.start_kill() {
-                tracing::warn!("failed to SIGKILL the claude process group: {}", err);
-            }
-            child.wait().await.ok()
+/// A cancel takes step 1 the instant it arrives, so that the CLI's shutdown
+/// overlaps with the drain of its remaining stream rather than starting after
+/// it, and its grace elapses under that drain. That path therefore calls
+/// [`finish_teardown`] directly with whatever grace is left, and this function
+/// is for the paths that have not signalled anything yet.
+async fn tear_down_group(child: &mut Box<dyn ChildWrapper>) -> Option<ExitStatus> {
+    terminate_group(&**child);
+    finish_teardown(child, TEARDOWN_GRACE).await
+}
+
+/// Steps 2 to 4 of the teardown: wait out `grace`, escalate, then reap.
+///
+/// A zero `grace` means it has already elapsed elsewhere and the escalation is
+/// due now. The final `wait()` is deliberately unbounded and deliberately not
+/// raced against anything — see [`tear_down_group`] step 4.
+async fn finish_teardown(child: &mut Box<dyn ChildWrapper>, grace: Duration) -> Option<ExitStatus> {
+    if !grace.is_zero() {
+        if let Ok(result) = tokio::time::timeout(grace, child.wait()).await {
+            return result.ok();
         }
     }
+    if let Err(err) = child.start_kill() {
+        tracing::warn!("failed to SIGKILL the claude process group: {}", err);
+    }
+    child.wait().await.ok()
 }
 
 /// Await the exit of a run whose stream ended on its own, under a bound.
@@ -1139,7 +1169,7 @@ async fn await_clean_exit(child: &mut Box<dyn ChildWrapper>) -> Option<ExitStatu
                  tearing it down",
                 EXIT_DRAIN_CAP.as_secs()
             );
-            tear_down_group(child, false).await
+            tear_down_group(child).await
         }
     }
 }
