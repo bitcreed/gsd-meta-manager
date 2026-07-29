@@ -2,6 +2,49 @@ use crate::state_reader::git_ops::{GitDiffStat, GitLogEntry};
 use crate::state_reader::ProjectState;
 use crossterm::event::KeyEvent;
 
+/// Whether a stopped run is actually gone (WR-15, D-29).
+///
+/// A **state**, not a message — the same register as
+/// [`StopOutcome`](crate::driver::kill::StopOutcome), whose doc records the
+/// house rule from `src/error.rs`'s module header: a driver UI needs something
+/// it can render rather than a string it must parse. The rendered text travels
+/// **alongside** this value in [`Action::DriverStopped::outcome`] for the status
+/// line, and is never parsed back out to recover the state.
+///
+/// Deliberately **portable**, and that is the whole reason it exists rather than
+/// `StopOutcome` travelling in the message: `StopOutcome` is `#[cfg(unix)]` and
+/// `Action` is a cross-platform message type this file keeps free of platform
+/// attributes.
+///
+/// The bug it closes: `app.rs`'s handler unconditionally dropped the run from
+/// `observed_runs` **and** `session_spawned_runs`, so a stop whose signal was
+/// never delivered left the dashboard showing no run for up to five seconds and
+/// removed the session-spawned record **permanently** — after which a later stop
+/// took the `Adopted` reaping arm for a run this session did spawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopDisposition {
+    /// The run is gone. Mutating the observed maps is safe.
+    RunGone,
+    /// The run may still be live, so nothing may be dropped on this report.
+    ///
+    /// Covers both halves of the WR-15 reproduction: `SignalFailed` means the
+    /// signal was **never delivered**, and `AlreadyGone` means **nothing was
+    /// signalled** — in neither case has anything established that the run
+    /// ended (D-29).
+    MayStillBeLive,
+}
+
+#[cfg(unix)]
+impl From<&crate::driver::kill::StopOutcome> for StopDisposition {
+    fn from(outcome: &crate::driver::kill::StopOutcome) -> Self {
+        use crate::driver::kill::StopOutcome;
+        match outcome {
+            StopOutcome::ExitedOnTerminate | StopOutcome::ExitedAfterKill => Self::RunGone,
+            StopOutcome::AlreadyGone | StopOutcome::SignalFailed { .. } => Self::MayStillBeLive,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Action {
     Tick,
@@ -103,11 +146,28 @@ pub enum Action {
     /// route from one to the other is a message. Adding the sibling rather than
     /// a second mechanism is deliberate.
     ///
-    /// `command` travels with the request because the seam takes it — Phase 17's
-    /// driver runs **exactly one** GSD command supplied by its caller, since the
-    /// decision router is Phase 20's. Today the only production sender fills it
-    /// from `driver_confirm::DEFAULT_DRIVE_COMMAND`; Phase 18's command picker
-    /// is what makes the field carry more than one value.
+    /// `command` travels with the request because the seam takes it — a driver
+    /// run executes **exactly one** GSD command supplied by its caller, since
+    /// the decision router is Phase 20's. Phase 18's command picker (D-23) is
+    /// what makes the field carry more than one value: it seeds from
+    /// `queue_md::suggest_next_commands` with
+    /// `driver_confirm::DEFAULT_DRIVE_COMMAND` as the default *selection*
+    /// rather than the only value.
+    ///
+    /// `goal` is the originating prompt, **stored verbatim and never
+    /// paraphrased** (D-23, OBS-03). It is `Option<String>` rather than
+    /// `String` because "the user gave no goal" and "the user gave an empty
+    /// goal" are the same fact and the display renders it `(none given)` — a
+    /// fabricated summary in its place is the failure D-13 exists to prevent.
+    /// It flows into the `goal: Option<&str>` parameter `App::start_driver_run`
+    /// already accepts, so OBS-03 needs no new plumbing below the UI.
+    ///
+    /// Both fields are plain data — `String` and `Option<String>` — so `Action`
+    /// stays `Clone` and no file handle or join handle leaks into a message type
+    /// (D-20). A `String` is 24 bytes and an `Option<String>` is 24, so this
+    /// variant is 72 bytes: far under the ~200-byte *difference* RESEARCH §8.3
+    /// measured `clippy::large_enum_variant` firing on, so nothing here needs
+    /// boxing.
     ///
     /// **The opt-in gate is not here and is not in the handler.** It lives in
     /// the driver process, at `DrivableProject::from_registry`, so a hand-typed
@@ -115,6 +175,7 @@ pub enum Action {
     DriverStartRequested {
         alias: String,
         command: String,
+        goal: Option<String>,
     },
     /// The user asked for the live run on `alias` to be stopped (CTRL-01).
     ///
@@ -127,16 +188,182 @@ pub enum Action {
     DriverStopRequested {
         alias: String,
     },
-    /// A stop finished, with its outcome already rendered.
+    /// A stop finished, with its outcome already rendered **and** its
+    /// disposition carried as a value (WR-15, D-29).
     ///
     /// The outcome is a `String` rather than the
     /// [`StopOutcome`](crate::driver::kill::StopOutcome) itself for one reason:
     /// that type is `#[cfg(unix)]`, and `Action` is a cross-platform message
     /// type this file keeps free of platform attributes. Rendering happens at
     /// the seam that produced it, where the state is still in hand.
+    ///
+    /// `disposition` is the half the rendered string cannot supply. **A handler
+    /// that must decide whether the run is gone can only get that from a value**
+    /// — recovering it by matching on the rendered text would be screen-scraping
+    /// this project's own output. See [`StopDisposition`] for the bug.
     DriverStopped {
         alias: String,
         run_id: String,
         outcome: String,
+        disposition: StopDisposition,
     },
+    /// The user asked for `text` to be queued into the live run on `alias`
+    /// (STEER-01, D-06).
+    ///
+    /// The message travels to the driver **through the filesystem and nothing
+    /// else** (D-03): the TUI holds no handle on the run, so this action's
+    /// handler appends one line to `runs/<run-id>/inbox.jsonl` on
+    /// `spawn_blocking` and the driver tails it. There is no shortcut, and any
+    /// design in which the TUI "sends" anywhere other than to a file cannot
+    /// survive a TUI restart and therefore cannot satisfy STEER-03.
+    ///
+    /// `id` is generated by the TUI **at queue time**, before any other process
+    /// has seen the line, which is what makes the `queued` state addressable at
+    /// all. Text alone is not a correlation key: a user may legitimately send
+    /// the same sentence twice, and STEER-02's states are tracked per message
+    /// rather than per string (D-05).
+    ///
+    /// Every field is a `String` — 24 bytes each, 96 for the variant, well under
+    /// the ~200-byte difference `clippy::large_enum_variant` fires on — so
+    /// nothing needs boxing, `Action` stays `Clone`, and **no file handle or
+    /// join handle leaks into a message type** (D-20).
+    DriverInjectRequested {
+        alias: String,
+        run_id: String,
+        id: String,
+        text: String,
+    },
+    /// The durable append for one injected message finished (STEER-03, D-06).
+    ///
+    /// `error` is `Option<String>` rather than a `Result` deliberately: a
+    /// `Result` in a message type invites a caller to `?` it into an unrelated
+    /// error domain, where the failure loses the alias, the run and the message
+    /// id that make it actionable. The option **is** the disposition and the
+    /// string is the text the UI shows.
+    ///
+    /// The status shown for the message is not set to `queued` until this
+    /// arrives with `error: None`, because STEER-03's criterion is survival of
+    /// the writing process — a buffered write that dies with the TUI satisfies
+    /// the UI and fails the criterion. The append pays `sync_data()` before this
+    /// is sent.
+    ///
+    /// Plain data throughout (three `String`s and an `Option<String>`), so
+    /// `Action` stays `Clone` and no handle enters the message (D-20).
+    DriverInjectWritten {
+        alias: String,
+        run_id: String,
+        id: String,
+        error: Option<String>,
+    },
+    /// The inbox for one alias's selected run was read off disk (STEER-02).
+    ///
+    /// The payload is the **whole** inbox rather than a delta, for the same
+    /// reason [`Action::RunsReconciled`] carries the whole scan: the read is
+    /// authoritative, and a message that is no longer in the file is expressed
+    /// by its absence and by nothing else.
+    ///
+    /// A `Vec` is a fixed 24 bytes regardless of what it holds, so this variant
+    /// is 48 bytes and needs no boxing (RESEARCH §8.3 measured
+    /// `clippy::large_enum_variant` firing on a ~200-byte *difference*). Every
+    /// field is plain data, so `Action` stays `Clone` and **no file handle or
+    /// join handle leaks into a message type** (D-20) — which matters
+    /// especially here, because the producer is a `spawn_blocking` task that
+    /// really does hold an open file (D-28) and must drop it before sending.
+    ///
+    /// **Deliberately missing: `runs: Vec<crate::journal::RunSummary>`.**
+    /// `RunSummary` is plan 18-03's deliverable, and 18-03 executed as a
+    /// wave-2 sibling of 18-04 in a separate worktree — the type did not exist
+    /// in this plan's tree, so a field naming it could not compile and every
+    /// gate in this plan would have failed on it. Plan 18-05, which owns the
+    /// handler and runs in wave 3 with both merged, adds the field and the
+    /// matching `ProjectViewCache::driver_runs`. This note is the seam.
+    DriverRunsListed {
+        alias: String,
+        inbox: Vec<crate::journal::inbox::InboxMessage>,
+    },
+    /// A dry-run report was built for `alias` and is ready to show (D-26).
+    ///
+    /// `report` is the already-rendered text from `dry_run::render`, not the
+    /// structured report, because the pane shows it verbatim and the section
+    /// headers are pinned by test. Building it shells out to `git` twice, which
+    /// is why it happens on `spawn_blocking` and returns through a message
+    /// rather than on the render thread — **this is one of the WR-10 call
+    /// sites** the Phase 17 review named (D-28).
+    ///
+    /// Surfacing the report is TRANS-05-adjacent rather than required: Phase 18
+    /// *surfaces* it and does not police it, and git blast-radius enforcement is
+    /// Phase 19's.
+    ///
+    /// Three `String`s, 72 bytes, plain data — `Action` stays `Clone` and no
+    /// handle enters the message (D-20).
+    DriverDryRunLoaded {
+        alias: String,
+        command: String,
+        report: String,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_signal_that_was_never_delivered_never_reports_the_run_as_gone() {
+        use crate::driver::kill::StopOutcome;
+
+        // The two that establish the run ended.
+        for outcome in [StopOutcome::ExitedOnTerminate, StopOutcome::ExitedAfterKill] {
+            assert_eq!(
+                StopDisposition::from(&outcome),
+                StopDisposition::RunGone,
+                "{outcome:?} means the driver was observed to be gone"
+            );
+        }
+
+        // The two that do not. `SignalFailed` means the signal was never
+        // delivered and `AlreadyGone` means nothing was signalled — mapping
+        // either to `RunGone` is precisely the WR-15 defect.
+        for outcome in [
+            StopOutcome::AlreadyGone,
+            StopOutcome::SignalFailed {
+                detail: "PermissionDenied".to_string(),
+            },
+        ] {
+            assert_eq!(
+                StopDisposition::from(&outcome),
+                StopDisposition::MayStillBeLive,
+                "{outcome:?} establishes nothing about whether the run ended, so \
+                 the observed maps must not be mutated on it"
+            );
+        }
+    }
+
+    #[test]
+    fn every_new_variant_is_plain_data_so_action_stays_clone() {
+        // The compiler proves the claim; the test names it so a later field
+        // addition that breaks `Clone` fails here with the reason attached.
+        let action = Action::DriverInjectWritten {
+            alias: "proj".to_string(),
+            run_id: "2026-07-29T12-00-00Z-abcd".to_string(),
+            id: "3f2a".to_string(),
+            error: None,
+        };
+        let copy = action.clone();
+        assert!(matches!(copy, Action::DriverInjectWritten { .. }));
+
+        let listed = Action::DriverRunsListed {
+            alias: "proj".to_string(),
+            inbox: Vec::new(),
+        };
+        assert!(matches!(listed.clone(), Action::DriverRunsListed { .. }));
+
+        let stopped = Action::DriverStopped {
+            alias: "proj".to_string(),
+            run_id: "2026-07-29T12-00-00Z-abcd".to_string(),
+            outcome: "stopped".to_string(),
+            disposition: StopDisposition::RunGone,
+        };
+        assert!(matches!(stopped.clone(), Action::DriverStopped { .. }));
+    }
 }
