@@ -123,8 +123,53 @@ Deferred to a later milestone — deliberately out of v2.0 scope:
 
 ## Traceability
 
-Filled by the roadmapper.
+Every v2.0 requirement maps to exactly one phase. Phase numbering continues from
+the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-22.
 
-| Requirement | Phase |
-|-------------|-------|
-| _pending_ | _pending_ |
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| TRANS-01 | Phase 15: Transport Foundation | Pending |
+| TRANS-02 | Phase 15: Transport Foundation | Pending |
+| TRANS-03 | Phase 15: Transport Foundation | Pending |
+| TRANS-04 | Phase 15: Transport Foundation | Pending |
+| TRANS-05 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
+| CTRL-01 | Phase 17: Supervisor | Pending |
+| CTRL-02 | Phase 17: Supervisor | Pending |
+| CTRL-03 | Phase 17: Supervisor | Pending |
+| CTRL-04 | Phase 17: Supervisor | Pending |
+| CTRL-05 | Phase 17: Supervisor | Pending |
+| CTRL-06 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
+| CTRL-07 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
+| SAFE-01 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Pending |
+| SAFE-02 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Pending |
+| SAFE-03 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Pending |
+| SAFE-04 | Phase 16: Run Journal & State Substrate | Pending |
+| SAFE-05 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Pending |
+| SAFE-06 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Pending |
+| SAFE-07 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
+| SAFE-08 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
+| OBS-01 | Phase 16: Run Journal & State Substrate | Pending |
+| OBS-02 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
+| OBS-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
+| OBS-04 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
+| OBS-05 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
+| OBS-06 | Phase 16: Run Journal & State Substrate | Pending |
+| OBS-07 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
+| STEER-01 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
+| STEER-02 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
+| STEER-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
+| DRIVE-01 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
+| DRIVE-02 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
+| DRIVE-03 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
+| DRIVE-04 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
+| DRIVE-05 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
+| DRIVE-06 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
+| CTNR-01 | Phase 22: Container Execution Target | Pending |
+| CTNR-02 | Phase 22: Container Execution Target | Pending |
+| CTNR-03 | Phase 22: Container Execution Target | Pending |
+| CTNR-04 | Phase 22: Container Execution Target | Pending |
+| CTNR-05 | Phase 22: Container Execution Target | Pending |
+| UIFIX-01 | Phase 14: UI Fixes | Pending |
+| UIFIX-02 | Phase 14: UI Fixes | Pending |
+| UIFIX-03 | Phase 14: UI Fixes | Pending |
+| UIFIX-04 | Phase 14: UI Fixes | Pending |

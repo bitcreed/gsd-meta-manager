@@ -3,10 +3,10 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Autonomous Orchestration
 status: planning
-last_updated: "2026-07-29T04:43:58.040Z"
-last_activity: 2026-07-28
+last_updated: "2026-07-29T00:00:00.000Z"
+last_activity: 2026-07-29
 progress:
-  total_phases: 0
+  total_phases: 9
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** v1.6.0 shipped — ready for the next milestone (`/gsd:new-milestone`)
+**Current focus:** v2.0 Autonomous Orchestration — roadmap set (Phases 14-22), ready to plan Phase 14
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 14 of 22 (v2.0 spans Phases 14-22; 0 of 9 complete)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-07-28 — Milestone v2.0 started
+Status: Roadmap complete — ready for `/gsd-plan-phase 14`
+Last activity: 2026-07-29 — v2.0 roadmap created, 45/45 requirements mapped
 
 ## Performance Metrics
 
@@ -73,11 +73,22 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-None yet.
+- Phase 15 must spike three MUST-SPIKE questions before it closes: (OQ1) does `claude -p`
+  run a multi-step GSD skill headlessly without hanging, (OQ2) mid-turn stdin injection
+  semantics + `control_request{subtype:"interrupt"}`, (OQ3) does `--max-budget-usd` apply
+  under subscription auth
+- Phase 17 must spike OQ4 (`--worktree` flag existence) before locking worktree isolation
+- Phase 22 must spike OQ5 (podman rootless uid mapping / volume permissions) with podman
+  actually installed
+- MSRV rises 1.85 -> 1.87 in Phase 15 (process-wrap floor)
 
 ### Blockers/Concerns
 
 - Tab bar overflow at 80 columns when adding 8th tab (Archive) -- resolve at Phase 12 design time
+- `--bare` is slated to become the `-p` default and is incompatible with subscription
+  auth; Phase 15 ships a version gate and a regression guard against it
+- Phase 13's queue-execution design self-dated "valid until 2026-04-30"; re-verify GSD's
+  autonomous-mode / checkpoint contract during Phase 20 research
 
 ### Quick Tasks Completed
 
@@ -106,6 +117,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-07-22T00:00:00.000Z
-Stopped at: Tagged v1.6.0 — GSD 1.8.0 Catch-up
+Last session: 2026-07-29T00:00:00.000Z
+Stopped at: v2.0 roadmap written — Phases 14-22 defined, traceability filled
 Resume file: None
