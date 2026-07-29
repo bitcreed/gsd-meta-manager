@@ -114,7 +114,7 @@ before Phase 20 closes so the router is never built against a stubbed target.
   4. PageDown at the end of a document leaves the last line on screen instead of scrolling past the content
 
 **Research**: skip — established codebase idioms, no new external unknowns
-**Plans**: 3/3 plans executed
+**Plans**: 4 plans (3 executed, 1 gap-closure pending)
 
 Plans:
 **Wave 1**
@@ -128,6 +128,10 @@ Plans:
 **Wave 3** *(blocked on Wave 2 completion)*
 
 - [x] 14-03-PLAN.md — full project gate, clippy-delta audit, success-criterion traceability, and retirement of the four source todos
+
+**Wave 4** *(gap closure — blocked on Wave 3 completion)*
+
+- [ ] 14-04-PLAN.md — close the two verification gaps: UIFIX-02 Status-column 13-cell floor + rendered-buffer regression test; UIFIX-04 clamp the four up-direction scroll sites and the generic fallback (CD-03)
 
 **UI hint**: yes
 
