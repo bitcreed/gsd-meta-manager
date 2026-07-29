@@ -314,3 +314,15 @@ None — no external service configuration required.
 ---
 *Phase: 14-ui-fixes*
 *Completed: 2026-07-29*
+
+## Self-Check: PASSED
+
+- `src/ui/screens/detail.rs` — FOUND on disk
+- `.planning/phases/14-ui-fixes/14-02-SUMMARY.md` — FOUND on disk
+- Commit `e631dc8` (Task 1 RED) — FOUND in git log
+- Commit `5b5fe07` (Task 1 GREEN) — FOUND in git log
+- Commit `b86b140` (Task 2 RED) — FOUND in git log
+- Commit `a8f37aa` (Task 2 GREEN) — FOUND in git log
+- All plan `<verification>` items 1-6 re-run and passing (see Verification Results)
+- All 14 task `<acceptance_criteria>` re-run; every one matched its expected value
+- TDD gate sequence present per task: `test(...)` RED commit precedes its `fix(...)` GREEN commit for both tasks. No REFACTOR commit was needed — neither GREEN left cleanup behind.
