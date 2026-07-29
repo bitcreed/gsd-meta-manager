@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Autonomous Orchestration
 current_phase: 15
-current_phase_name: Transport Foundation — Duplex stream-json Executor
+current_phase_name: transport-foundation
 status: executing
 stopped_at: Phase 15 planned — 6 plans in 4 waves, OQ1/OQ2/OQ3 resolved, gates green
-last_updated: "2026-07-29T09:04:52.076Z"
+last_updated: "2026-07-29T09:09:04.332Z"
 last_activity: 2026-07-29
-last_activity_desc: Phase 15 planned; transport spikes resolved empirically
+last_activity_desc: Phase 15 execution started
 progress:
   total_phases: 9
   completed_phases: 1
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 15 — Transport Foundation
+**Current focus:** Phase 15 — transport-foundation
 
 ## Current Position
 
-Phase: 15 — Transport Foundation — Duplex stream-json Executor
-Plan: Not started (6 plans, 4 waves)
-Status: Ready to execute
-Last activity: 2026-07-29 — Phase 15 planned; OQ1/OQ2/OQ3 resolved empirically
+Phase: 15 (transport-foundation) — EXECUTING
+Plan: 1 of 6
+Status: Executing Phase 15
+Last activity: 2026-07-29 — Phase 15 execution started
 
 ### Phase 15 planning notes (autonomous run — review these)
 
