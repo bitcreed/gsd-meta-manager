@@ -145,6 +145,29 @@ pub struct AppContext {
     /// emitted 22 `thinking_tokens` events — so putting it there would flood
     /// the status bar for an entire multi-hour run.
     pub run_states: HashMap<String, RunState>,
+    /// Count of full `parse_project_state` dispatches this process has issued.
+    ///
+    /// * **Load-bearing for OBS-06.** A driver journal append must never
+    ///   increment it. `App::schedule_reparse` is the only writer, which is
+    ///   what makes the assertion "zero re-parses" mean anything.
+    /// * It is deliberately **not** `#[cfg(test)]`-gated, for two reasons: a
+    ///   gated counter means the test exercises a different binary than
+    ///   production, and the count is a legitimate diagnostic in its own right
+    ///   that Phase 18's driver surface may want to render.
+    pub reparse_dispatches: u64,
+    /// Byte offset into each run journal, keyed by `(alias, run_id)` (D-13).
+    ///
+    /// * A **sibling map**, shaped exactly like `run_states` above and
+    ///   `last_refresh` / `archive_cache` below. Phase 16 extends that
+    ///   neighbourhood rather than recreating it (D-19).
+    /// * It must not live on `ProjectState`: that type derives `PartialEq` and
+    ///   `app.rs` uses the derived equality to suppress the "Updated: {alias}"
+    ///   status message. A journal offset moves every few seconds, so a field
+    ///   there would flood the status bar for an entire multi-hour run (D-18).
+    /// * It holds offsets, run ids and counts — **never a file handle or a
+    ///   join handle**. `Action` derives `Clone` and a handle is not `Clone`
+    ///   (D-20).
+    pub journal_cursors: HashMap<(String, String), crate::journal::reader::TailCursor>,
     pub watcher: Option<FileWatcher>,
     pub last_refresh: HashMap<String, std::time::Instant>,
     pub detail_scroll_offset: u16,
