@@ -688,8 +688,17 @@ impl Screen for DetailScreen {
                                     cache.archive_selected[2].saturating_sub(1);
                             }
                             ArchiveDepth::FileView { .. } => {
-                                cache.archive_scroll_offset =
-                                    cache.archive_scroll_offset.saturating_sub(1);
+                                // Clamp FIRST, subtract second. The reverse order lands a
+                                // stale-high offset exactly on max_scroll — the value the
+                                // renderer was already displaying — so the first press would
+                                // not visibly move the viewport (UIFIX-04 / WR-02).
+                                let vp = self.archive_viewport.get();
+                                cache.archive_scroll_offset = clamp_scroll(
+                                    cache.archive_scroll_offset,
+                                    vp.total_lines,
+                                    vp.visible_height,
+                                )
+                                .saturating_sub(1);
                             }
                         }
                         ctx.needs_redraw = true;
@@ -713,8 +722,14 @@ impl Screen for DetailScreen {
                                     cache.browser_selected.saturating_sub(1);
                             }
                             BrowserDepth::View => {
-                                cache.browser_scroll_offset =
-                                    cache.browser_scroll_offset.saturating_sub(1);
+                                // Clamp FIRST, subtract second — see the Archive sibling.
+                                let vp = self.browser_viewport.get();
+                                cache.browser_scroll_offset = clamp_scroll(
+                                    cache.browser_scroll_offset,
+                                    vp.total_lines,
+                                    vp.visible_height,
+                                )
+                                .saturating_sub(1);
                             }
                         }
                         ctx.needs_redraw = true;
@@ -909,8 +924,14 @@ impl Screen for DetailScreen {
                                     cache.archive_selected[2].saturating_sub(PAGE_SCROLL_LINES as usize);
                             }
                             ArchiveDepth::FileView { .. } => {
-                                cache.archive_scroll_offset =
-                                    cache.archive_scroll_offset.saturating_sub(PAGE_SCROLL_LINES);
+                                // Clamp FIRST, subtract second — see the `k`/Up sibling.
+                                let vp = self.archive_viewport.get();
+                                cache.archive_scroll_offset = clamp_scroll(
+                                    cache.archive_scroll_offset,
+                                    vp.total_lines,
+                                    vp.visible_height,
+                                )
+                                .saturating_sub(PAGE_SCROLL_LINES);
                             }
                         }
                         ctx.needs_redraw = true;
@@ -930,9 +951,14 @@ impl Screen for DetailScreen {
                                     .saturating_sub(PAGE_SCROLL_LINES as usize);
                             }
                             BrowserDepth::View => {
-                                cache.browser_scroll_offset = cache
-                                    .browser_scroll_offset
-                                    .saturating_sub(PAGE_SCROLL_LINES);
+                                // Clamp FIRST, subtract second — see the `k`/Up sibling.
+                                let vp = self.browser_viewport.get();
+                                cache.browser_scroll_offset = clamp_scroll(
+                                    cache.browser_scroll_offset,
+                                    vp.total_lines,
+                                    vp.visible_height,
+                                )
+                                .saturating_sub(PAGE_SCROLL_LINES);
                             }
                         }
                         ctx.needs_redraw = true;
@@ -4861,5 +4887,210 @@ mod tests {
         let after_page_up = offset.saturating_sub(PAGE_SCROLL_LINES);
         assert_eq!(after_page_up, 50);
         assert!(after_page_up < offset);
+    }
+
+    // --- UIFIX-04: real key-handler tests (gap closure, 14-04) -------------
+    //
+    // Every scroll test above calls `clamp_scroll` directly and simulates the
+    // key press with hand-written arithmetic. That is exactly why the
+    // up-direction defect was invisible: `clamp_scroll` was always correct,
+    // and the Up/PageUp handlers never called it. The tests below drive the
+    // real `handle_key` through a constructed `AppContext`.
+
+    const TEST_ALIAS: &str = "proj";
+
+    /// A minimal `AppContext`, mirroring the single production construction
+    /// site in `app.rs`. The repository had no such fixture before 14-04.
+    fn test_ctx() -> AppContext {
+        use crate::config::Config;
+        use ratatui::widgets::TableState;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        AppContext {
+            config: Config::new(),
+            config_path: PathBuf::from("gsd-meta-manager-test-config.json"),
+            project_states: HashMap::new(),
+            table_state: TableState::default(),
+            filtered_aliases: Vec::new(),
+            filter_text: String::new(),
+            change_tracker: ChangeTracker::new(),
+            detail_sub_view_per_project: HashMap::new(),
+            view_cache: HashMap::new(),
+            status_message: None,
+            error_message: None,
+            event_tx: None,
+            watcher: None,
+            last_refresh: HashMap::new(),
+            detail_scroll_offset: 0,
+            suggestion_index: 0,
+            input_buffer: String::new(),
+            needs_redraw: false,
+            active_sessions: Vec::new(),
+            archive_cache: HashMap::new(),
+        }
+    }
+
+    /// A DetailScreen and AppContext parked on the Browse file view, with the
+    /// given recorded viewport metrics and stored scroll offset.
+    fn browse_fixture(
+        total_lines: u16,
+        visible_height: u16,
+        stored_offset: u16,
+    ) -> (DetailScreen, AppContext) {
+        use crate::browser::BrowserDepth;
+
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        screen.browser_viewport.set(ViewportMetrics {
+            total_lines,
+            visible_height,
+        });
+
+        let mut ctx = test_ctx();
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Browse);
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        cache.browser_depth = BrowserDepth::View;
+        cache.browser_scroll_offset = stored_offset;
+        cache.browser_file_content = Some("line\n".repeat(total_lines as usize));
+
+        (screen, ctx)
+    }
+
+    /// The Archive equivalent of [`browse_fixture`].
+    fn archive_fixture(
+        total_lines: u16,
+        visible_height: u16,
+        stored_offset: u16,
+    ) -> (DetailScreen, AppContext) {
+        use crate::archive::ArchiveDepth;
+
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        screen.archive_viewport.set(ViewportMetrics {
+            total_lines,
+            visible_height,
+        });
+
+        let mut ctx = test_ctx();
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Archive);
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        cache.archive_depth = ArchiveDepth::FileView {
+            milestone: "v1.0".to_string(),
+            phase_idx: None,
+            file_idx: 0,
+        };
+        cache.archive_scroll_offset = stored_offset;
+
+        (screen, ctx)
+    }
+
+    fn browse_offset(ctx: &AppContext) -> u16 {
+        ctx.view_cache[TEST_ALIAS].browser_scroll_offset
+    }
+
+    fn archive_offset(ctx: &AppContext) -> u16 {
+        ctx.view_cache[TEST_ALIAS].archive_scroll_offset
+    }
+
+    fn press(screen: &mut DetailScreen, ctx: &mut AppContext, code: KeyCode) {
+        screen.handle_key(code, KeyModifiers::NONE, ctx);
+    }
+
+    #[test]
+    fn test_page_up_handler_clamps_stale_browse_offset() {
+        // Viewport grew to 60 visible lines while the stored offset was still
+        // 90; max_scroll is now 40. Clamp-then-subtract yields 40 - 20 = 20.
+        let (mut screen, mut ctx) = browse_fixture(100, 60, 90);
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(browse_offset(&ctx), 20);
+    }
+
+    #[test]
+    fn test_page_up_handler_clamps_stale_archive_offset() {
+        let (mut screen, mut ctx) = archive_fixture(100, 60, 90);
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(archive_offset(&ctx), 20);
+    }
+
+    #[test]
+    fn test_up_handler_clamps_stale_browse_offset() {
+        // Same stale offset, single-line delta: 40 - 1 = 39.
+        let (mut screen, mut ctx) = browse_fixture(100, 60, 90);
+        press(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(browse_offset(&ctx), 39);
+
+        // `k` is the vim-key alias for the same handler arm.
+        let (mut screen, mut ctx) = browse_fixture(100, 60, 90);
+        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert_eq!(browse_offset(&ctx), 39);
+    }
+
+    #[test]
+    fn test_up_handler_clamps_stale_archive_offset() {
+        let (mut screen, mut ctx) = archive_fixture(100, 60, 90);
+        press(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(archive_offset(&ctx), 39);
+
+        let (mut screen, mut ctx) = archive_fixture(100, 60, 90);
+        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert_eq!(archive_offset(&ctx), 39);
+    }
+
+    #[test]
+    fn test_first_page_up_after_viewport_grows_moves_viewport() {
+        // The UI-SPEC contract row: the FIRST PageUp press must visibly move
+        // the viewport. This is the test that distinguishes clamp-then-subtract
+        // from subtract-then-clamp — the latter would land exactly on
+        // max_scroll (40), which the renderer was already displaying, so the
+        // strict inequality below would fail while the offset still "changed".
+        let max_scroll = 100u16 - 60;
+        let (mut screen, mut ctx) = browse_fixture(100, 60, 90);
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert!(
+            browse_offset(&ctx) < max_scroll,
+            "first PageUp left the offset at {}, which is not below max_scroll {}",
+            browse_offset(&ctx),
+            max_scroll
+        );
+
+        // And when the offset already sits exactly on max_scroll, the first
+        // PageUp still yields a strictly smaller offset.
+        let (mut screen, mut ctx) = browse_fixture(100, 60, max_scroll);
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert!(browse_offset(&ctx) < max_scroll);
+    }
+
+    #[test]
+    fn test_page_up_at_zero_offset_is_inert() {
+        // Zero-line document, and the pre-first-render state where both
+        // recorded metrics are still zero: Up and PageUp are no-ops at the
+        // zero floor, with no panic and no underflow.
+        for code in [KeyCode::PageUp, KeyCode::Up] {
+            let (mut screen, mut ctx) = browse_fixture(0, 0, 0);
+            press(&mut screen, &mut ctx, code);
+            assert_eq!(browse_offset(&ctx), 0);
+
+            let (mut screen, mut ctx) = archive_fixture(0, 0, 0);
+            press(&mut screen, &mut ctx, code);
+            assert_eq!(archive_offset(&ctx), 0);
+        }
+
+        // A document shorter than the viewport never scrolls: max_scroll is 0.
+        let (mut screen, mut ctx) = browse_fixture(30, 30, 0);
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(browse_offset(&ctx), 0);
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(browse_offset(&ctx), 0);
+
+        // While the file content is still None (the Loading window), the
+        // up-direction handlers stay inert at the floor.
+        let (mut screen, mut ctx) = browse_fixture(100, 60, 0);
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .browser_file_content = None;
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(browse_offset(&ctx), 0);
     }
 }
