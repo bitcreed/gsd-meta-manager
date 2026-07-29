@@ -615,8 +615,13 @@ impl JournalRun {
         let mut writer = writer::JournalWriter::open(&paths.journal)?;
         writer.append(&JournalEvent::RunStarted {
             goal: record.goal.clone(),
-            // Phase 17 owns dry-run; until it exists every run is a real one.
-            // The field is written now so that phase adds no schema migration.
+            // Dry-run exists as of plan 17-04, and the literal `false` is still
+            // correct — for a different and now **permanent** reason. D-23
+            // requires a preview to write nothing, so `drive()` renders its
+            // report and returns before a run id is generated; a dry-run
+            // therefore produces no journal at all and can never reach this
+            // line. Every run that does reach it is a real one, by construction
+            // rather than by "until it exists".
             dry_run: false,
             target: record.target.clone(),
         })?;
