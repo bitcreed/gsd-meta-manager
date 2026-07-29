@@ -157,7 +157,26 @@ Plans:
   - `run_tui_loop`'s single-consumer `rx.recv().await` must become a `tokio::select!` here — a prerequisite, not an incidental cleanup
 
 **Research**: yes — `/gsd-plan-phase --research-phase`. The stream-json protocol details are officially undocumented; needs a dedicated empirical spike, not just planning-time reading
-**Plans**: TBD
+**Plans**: 6 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 15-01-PLAN.md — OQ1 multi-step spike (the phase gate, D-27/D-28), MSRV 1.87 + process-wrap/uuid, eight redacted golden transcripts
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 15-02-PLAN.md — tracer: one GSD command end-to-end from spawn to RunOutcome, plus the tolerant NDJSON model verified against all eight fixtures
+
+**Wave 3** *(blocked on Wave 2 completion — three plans run in parallel)*
+
+- [ ] 15-03-PLAN.md — fail-closed capability/version/auth-path gate (TRANS-04) and the duplex `send`/`interrupt` control channel
+- [ ] 15-05-PLAN.md — four-source outcome derivation matrix with disk and git corroboration (TRANS-02)
+- [ ] 15-06-PLAN.md — `tokio::select!` event-loop restructure with `pump()` in the library and three deterministic responsiveness proofs (TRANS-03)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 15-04-PLAN.md — supervisor with dual deadlines and four-step process-group teardown, with unix-gated lifecycle tests
 
 **UI hint**: no — this phase ships no visual surface. TRANS-03 restructures the
 `run_tui_loop` event loop (input responsiveness), but adds no widget, screen, or layout.
