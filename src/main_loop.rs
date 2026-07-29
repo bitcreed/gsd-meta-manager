@@ -186,3 +186,216 @@ pub async fn pump(
         else => PumpOutcome::Idle,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::executor::ExecutionEvent;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::time::Instant;
+
+    // ── Why these tests flood with ten thousand events ────────────────────
+    //
+    // Normal operation will NOT stress this loop. The 15-01 spike's 68-second
+    // turn emitted roughly 27 events in total — 22 `thinking_tokens`, 2
+    // `assistant`, 1 `user`, 1 `init`, 1 `result` — i.e. well under one event
+    // per second, because the partial-message flag that produces token-level
+    // deltas is deliberately absent from D-01's argv baseline.
+    //
+    // That is exactly why the flood tests below use ten thousand events: a test
+    // that replays realistic traffic proves nothing about a design guarding
+    // against pressure that realistic traffic never applies. The test has to
+    // manufacture the pressure itself.
+    //
+    // If a later phase wants token-level rendering (Phase 18), turning on
+    // partial messages raises the event rate by orders of magnitude. The
+    // bounded batch drain is what makes that safe, and these tests are what
+    // prove it still holds.
+    //
+    // Deliberately NOT written: any wall-clock keypress-latency percentile
+    // assertion. It passes on a developer laptop, fails on a loaded runner,
+    // gets `#[ignore]`d within a month, and at that point TRANS-03 has no
+    // verification at all. Properties 1 and 2 below are PRIORITY and PROGRESS
+    // properties, which is what makes them deterministic.
+
+    const FLOOD: usize = 10_000;
+
+    /// A cheap stand-in for a real stream event. The loop routes envelopes and
+    /// does not interpret them, so the variant is irrelevant to what is proven.
+    fn dummy_event(alias: &str) -> ExecEvent {
+        ExecEvent::new(alias, ExecutionEvent::Stderr("noise".to_string()))
+    }
+
+    fn key(code: KeyCode) -> Action {
+        Action::RawKey(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    /// Property 1 (the real one, TRANS-03 / D-17): a keypress is never queued
+    /// behind stream traffic.
+    ///
+    /// A naive FIFO drains the flood first and fails this. Removing `biased;`
+    /// fails this. Merging the executor channel into the `Action` FIFO fails
+    /// this. It is a priority property, so it is deterministic — no timing, no
+    /// terminal, no flake.
+    #[tokio::test]
+    async fn keypress_is_handled_before_a_flood_of_executor_events() {
+        let (act_tx, mut act_rx) = mpsc::unbounded_channel();
+        let (exec_tx, mut exec_rx) = mpsc::channel(EXEC_CHANNEL_CAPACITY * 2);
+
+        // Flood the executor channel FIRST.
+        for _ in 0..FLOOD {
+            exec_tx
+                .try_send(dummy_event("acme"))
+                .expect("executor channel must hold the whole flood");
+        }
+        // THEN enqueue exactly one quit keypress.
+        act_tx.send(key(KeyCode::Char('q'))).expect("send keypress");
+
+        let mut app = App::new_for_test();
+        assert!(!app.should_quit, "precondition: app starts not quitting");
+
+        // Exactly ONE pump iteration.
+        let outcome = pump(&mut app, &mut act_rx, &mut exec_rx, EXEC_BATCH).await;
+
+        assert!(
+            app.should_quit,
+            "keypress starved behind {} queued executor events (pump returned {:?})",
+            exec_rx.len(),
+            outcome,
+        );
+        assert_eq!(
+            outcome,
+            PumpOutcome::Action,
+            "the first pump iteration must have serviced the Action arm, not {:?}",
+            outcome,
+        );
+        assert_eq!(
+            exec_rx.len(),
+            FLOOD,
+            "the keypress iteration must not have touched the executor queue; {} of {} events were consumed",
+            FLOOD - exec_rx.len(),
+            FLOOD,
+        );
+    }
+
+    /// Property 2 (D-17): a burst is drained in bounded batches, so control
+    /// returns to the loop head instead of draining everything.
+    #[tokio::test]
+    async fn executor_burst_is_drained_in_bounded_batches() {
+        // Keep `_act_tx` alive: dropping it closes the Action channel, which
+        // would disable arm 1 rather than leave it pending, and the test would
+        // then be proving something weaker than it claims.
+        let (_act_tx, mut act_rx) = mpsc::unbounded_channel::<Action>();
+        let (exec_tx, mut exec_rx) = mpsc::channel(EXEC_CHANNEL_CAPACITY * 2);
+
+        for _ in 0..FLOOD {
+            exec_tx
+                .try_send(dummy_event("acme"))
+                .expect("executor channel must hold the whole flood");
+        }
+
+        let mut app = App::new_for_test();
+        let outcome = pump(&mut app, &mut act_rx, &mut exec_rx, EXEC_BATCH).await;
+
+        assert_eq!(
+            outcome,
+            PumpOutcome::ExecEvents(EXEC_BATCH),
+            "one pump iteration must apply exactly EXEC_BATCH ({}) events, got {:?}",
+            EXEC_BATCH,
+            outcome,
+        );
+        assert_eq!(
+            exec_rx.len(),
+            FLOOD - EXEC_BATCH,
+            "one pump iteration must drain at most EXEC_BATCH ({}) events, but {} of {} were consumed",
+            EXEC_BATCH,
+            FLOOD - exec_rx.len(),
+            FLOOD,
+        );
+    }
+
+    /// Property 3 (supporting, TRANS-03): frames keep rendering while the
+    /// executor channel is saturated.
+    ///
+    /// Timing-flavoured but robust: the bound is generous, so it fails only if
+    /// redraws stop entirely — which is the actual failure mode the criterion
+    /// names.
+    ///
+    /// Two details make the load real rather than nominal. The runtime is
+    /// **multi-threaded**, so the flooding task genuinely races the render loop
+    /// the way a reader task races it in production; on the default
+    /// single-threaded runtime the consumer simply takes turns with the
+    /// producer and the queue never backs up past one batch. And the channel is
+    /// **pre-filled to capacity** before the first frame, so saturation is a
+    /// precondition of the measurement rather than something the test hopes
+    /// will emerge during it. `peak_queue` is asserted for exactly that reason:
+    /// without it, a harness that quietly failed to apply any load would still
+    /// report a comfortable frame count.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tui_renders_repeatedly_while_the_executor_channel_is_saturated() {
+        const MEASURE: Duration = Duration::from_secs(2);
+        const MIN_FRAMES: usize = 20;
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(120, 40)).expect("TestBackend terminal");
+        let (_act_tx, mut act_rx) = mpsc::unbounded_channel::<Action>();
+        let (exec_tx, mut exec_rx) = mpsc::channel::<ExecEvent>(EXEC_CHANNEL_CAPACITY);
+
+        // Saturate before the first frame is drawn.
+        while exec_tx.try_send(dummy_event("acme")).is_ok() {}
+        assert_eq!(
+            exec_rx.len(),
+            EXEC_CHANNEL_CAPACITY,
+            "precondition: the channel must start full",
+        );
+
+        // Then keep topping it up for longer than we measure, so it is still
+        // saturated when the last frame is counted.
+        let flooder = tokio::spawn(async move {
+            let until = Instant::now() + MEASURE + Duration::from_millis(500);
+            while Instant::now() < until {
+                if exec_tx.send(dummy_event("acme")).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let mut app = App::new_for_test();
+        let mut draw_count = 0usize;
+        let mut peak_queue = 0usize;
+
+        let until = Instant::now() + MEASURE;
+        while Instant::now() < until {
+            // The same redraw-flag sync and draw the real loop performs.
+            if app.ctx.needs_redraw {
+                app.needs_redraw = true;
+                app.ctx.needs_redraw = false;
+            }
+            if app.needs_redraw {
+                terminal
+                    .draw(|frame| crate::ui::render(frame, &mut app))
+                    .expect("draw under load");
+                app.needs_redraw = false;
+                draw_count += 1;
+            }
+            peak_queue = peak_queue.max(exec_rx.len());
+            pump(&mut app, &mut act_rx, &mut exec_rx, EXEC_BATCH).await;
+        }
+
+        flooder.abort();
+
+        assert!(
+            peak_queue > EXEC_BATCH,
+            "the channel was never actually saturated (peak queue depth {peak_queue}); \
+             the test proved nothing about behaviour under load",
+        );
+        assert!(
+            draw_count > MIN_FRAMES,
+            "only {draw_count} frames rendered in {:?} under a saturated executor channel \
+             (peak queue depth {peak_queue}); expected more than {MIN_FRAMES}",
+            MEASURE,
+        );
+    }
+}
