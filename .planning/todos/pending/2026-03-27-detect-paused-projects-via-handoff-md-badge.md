@@ -2,6 +2,7 @@
 created: 2026-03-27T20:23:29.151Z
 title: Detect paused projects via HANDOFF.md badge
 area: ui
+resolves_phase: 14
 files:
   - src/state_reader/mod.rs
   - src/ui/screens/normal.rs

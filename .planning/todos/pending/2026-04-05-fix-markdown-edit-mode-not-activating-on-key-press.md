@@ -2,6 +2,7 @@
 created: 2026-04-05T08:31:19.586Z
 title: Fix markdown edit mode not activating on key press
 area: ui
+resolves_phase: 14
 files: []
 ---
 
