@@ -157,7 +157,7 @@ Plans:
   - `run_tui_loop`'s single-consumer `rx.recv().await` must become a `tokio::select!` here — a prerequisite, not an incidental cleanup
 
 **Research**: yes — `/gsd-plan-phase --research-phase`. The stream-json protocol details are officially undocumented; needs a dedicated empirical spike, not just planning-time reading
-**Plans**: 7/8 plans executed
+**Plans**: 8/8 plans executed
 
 Plans:
 **Wave 1**
@@ -184,7 +184,7 @@ Plans:
 
 **Wave 6** *(gap closure — blocked on Wave 5 completion)*
 
-- [ ] 15-08-PLAN.md — close SC-1/CR-01+CR-02 by evaluating every supervisor bound per loop pass, bounding the event forward, and bounding the post-exit drain so a descendant holding stdout can never hang the run (TRANS-01)
+- [x] 15-08-PLAN.md — close SC-1/CR-01+CR-02 by evaluating every supervisor bound per loop pass, bounding the event forward, and bounding the post-exit drain so a descendant holding stdout can never hang the run (TRANS-01)
 
 **UI hint**: no — this phase ships no visual surface. TRANS-03 restructures the
 `run_tui_loop` event loop (input responsiveness), but adds no widget, screen, or layout.
@@ -356,7 +356,7 @@ The Driver tab and every rendered driver surface land in Phase 18.
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 14. UI Fixes | 4/4 | Complete    | 2026-07-29 |
-| 15. Transport Foundation | 7/8 | In Progress|  |
+| 15. Transport Foundation | 8/8 | In Progress|  |
 | 16. Run Journal & State Substrate | 0/? | Not started | - |
 | 17. Supervisor | 0/? | Not started | - |
 | 18. Driver Tab, Live Watch & Durable Injection | 0/? | Not started | - |
