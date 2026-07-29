@@ -157,7 +157,7 @@ Plans:
   - `run_tui_loop`'s single-consumer `rx.recv().await` must become a `tokio::select!` here — a prerequisite, not an incidental cleanup
 
 **Research**: yes — `/gsd-plan-phase --research-phase`. The stream-json protocol details are officially undocumented; needs a dedicated empirical spike, not just planning-time reading
-**Plans**: 6/6 plans executed
+**Plans**: 6/8 plans executed (2 gap-closure plans added after verification returned `gaps_found` on SC-1 and SC-2)
 
 Plans:
 **Wave 1**
@@ -177,6 +177,14 @@ Plans:
 **Wave 4** *(blocked on Wave 3 completion)*
 
 - [x] 15-04-PLAN.md — supervisor with dual deadlines and four-step process-group teardown, with unix-gated lifecycle tests
+
+**Wave 5** *(gap closure — blocked on Wave 4 completion)*
+
+- [ ] 15-07-PLAN.md — close SC-2/CR-04 by deriving the outcome from the full `result` envelopes so a permission-blocked run reports `PermissionDenied`, and close CR-03 by bounding and draining the control-response wait (TRANS-01, TRANS-02)
+
+**Wave 6** *(gap closure — blocked on Wave 5 completion)*
+
+- [ ] 15-08-PLAN.md — close SC-1/CR-01+CR-02 by evaluating every supervisor bound per loop pass, bounding the event forward, and bounding the post-exit drain so a descendant holding stdout can never hang the run (TRANS-01)
 
 **UI hint**: no — this phase ships no visual surface. TRANS-03 restructures the
 `run_tui_loop` event loop (input responsiveness), but adds no widget, screen, or layout.
