@@ -39,6 +39,11 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     "src/executor/claude.rs",
     // Git shell-out inside this module's own in-source test helper. No agent.
     "src/executor/outcome.rs",
+    // A `sleep` child inside this module's own in-source tests, so the "already
+    // gone" path can be pointed at a REAL pid that has been reaped rather than
+    // at a number chosen to be implausible. The module's production surface
+    // signals two existing process groups and spawns nothing.
+    "src/driver/kill.rs",
     // A `sleep` child inside this module's own in-source tests, so the pid-reuse
     // probe can be pointed at a REAL live pid whose cmdline lacks the run id.
     // No agent, and nothing in the module's production surface spawns anything.
@@ -66,6 +71,37 @@ const SPAWN_ALLOWLIST: &[&str] = &[
 
 /// The three shapes a process spawn takes in this tree.
 const SPAWN_MARKERS: &[&str] = &["Command::new(", "CommandWrap::with_new(", "process_group("];
+
+/// Whether `line` calls `marker`, as opposed to merely containing its letters.
+///
+/// **A plain `contains` is wrong here and plan 17-06 is where it first bit.**
+/// `rustix::process::kill_process_group(` contains `process_group(`, so a module
+/// that only *signals* an existing group was reported as a process-spawn site —
+/// and the only way to make the suite green would have been to put a file that
+/// spawns nothing onto a **spawn** allowlist, which quietly turns an audit into
+/// a list of files somebody once had to add. `test_kill_process_group` and any
+/// future `…_process_group` helper are the same case.
+///
+/// The fix is a left word boundary: the character immediately before the match
+/// must not be one that could continue a Rust identifier or a path. `.` and `::`
+/// still match, so `cmd.as_std_mut().process_group(0)` and
+/// `CommandExt::process_group(` are found exactly as before. The right side
+/// needs no boundary because every marker already ends in `(`.
+fn calls_marker(line: &str, marker: &str) -> bool {
+    let mut from = 0;
+    while let Some(offset) = line[from..].find(marker) {
+        let at = from + offset;
+        let preceded_by_identifier = line[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        if !preceded_by_identifier {
+            return true;
+        }
+        from = at + marker.len();
+    }
+    false
+}
 
 /// Serde's strict unknown-field rejection attribute, assembled at **runtime**
 /// from two halves.
@@ -271,7 +307,7 @@ fn every_process_spawn_site_in_src_is_on_the_allowlist() {
     let mut observed: Vec<String> = Vec::new();
     for file in &files {
         let spawns = executable_lines(file)
-            .any(|(_, line)| SPAWN_MARKERS.iter().any(|marker| line.contains(marker)));
+            .any(|(_, line)| SPAWN_MARKERS.iter().any(|marker| calls_marker(line, marker)));
         if spawns {
             observed.push(file.0.clone());
         }
@@ -305,6 +341,44 @@ fn every_process_spawn_site_in_src_is_on_the_allowlist() {
         "the agent spawn seam must still take the capability type and never a bare path — \
          that signature is what makes the opt-in gate a compile-time property (D-16)"
     );
+}
+
+#[test]
+fn a_signal_to_a_process_group_is_not_mistaken_for_a_spawn() {
+    // The guard-of-the-guard. Without the left word boundary in `calls_marker`,
+    // the marker `process_group(` matches inside `kill_process_group(`, and a
+    // module that only signals an existing group is reported as a process-spawn
+    // site. The only way to make the suite green then is to put a file that
+    // spawns nothing onto a SPAWN allowlist — which converts an audit of "every
+    // spawn takes a capability type" into a list of files somebody once had to
+    // add, silently and without anybody noticing the meaning changed.
+    for line in [
+        "    rustix::process::kill_process_group(group, sig).map_err(Error::from)",
+        "    let _ = rustix::process::test_kill_process_group(group);",
+    ] {
+        assert!(
+            !calls_marker(line, "process_group("),
+            "signalling an existing process group is not spawning one: {line}"
+        );
+    }
+
+    // The control arm, and it is not optional: a boundary check that rejected
+    // everything would also pass the loop above while disabling the audit
+    // outright. These are the two real spawn shapes in the tree.
+    for line in [
+        "    cmd.as_std_mut().process_group(0);",
+        "    .process_group(0)",
+        "    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);",
+    ] {
+        assert!(
+            calls_marker(line, "process_group("),
+            "a genuine detached spawn must still be found: {line}"
+        );
+    }
+    assert!(calls_marker(
+        "    let mut cmd = std::process::Command::new(program);",
+        "Command::new("
+    ));
 }
 
 #[test]

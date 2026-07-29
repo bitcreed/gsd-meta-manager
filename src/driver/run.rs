@@ -15,8 +15,19 @@ use crate::config::RegisteredProject;
 use crate::driver::{lock, DriveArgs};
 use crate::error::DriveError;
 use crate::executor::claude::ClaudeExecutor;
-use crate::executor::{DrivableProject, ExecutionOptions, Executor, RunOutcome};
-use crate::journal::{self, JournalRun, RunRecord};
+use crate::executor::{
+    DrivableProject, ExecutionHandle, ExecutionOptions, Executor, RunOutcome,
+};
+use crate::journal::{self, JournalEvent, JournalRun, RunRecord};
+
+/// The diagnostic code the terminate-signal shutdown journals before its
+/// terminal record.
+///
+/// A fixed identifier rather than a sentence, because it is what a later reader
+/// greps for: a run that ends with the killed outcome could have been stopped
+/// from the TUI, stopped from a shell, or stopped by a service manager, and this
+/// record is the only thing that says a terminate signal is what arrived.
+const TERMINATE_DIAGNOSTIC_CODE: &str = "terminate_signal_shutdown";
 
 /// The state one driver process holds for the duration of one run.
 pub struct DriverRun {
@@ -113,6 +124,83 @@ fn establish_own_group() {
     }
 }
 
+/// **Layers 2 and 3 of D-06's four-step stop**, in the order that makes them
+/// work.
+///
+/// The stop the user presses is two-layer because there are **two process
+/// groups, not one**: Phase 15 spawns `claude` with `ProcessGroup::leader()`, so
+/// its pgid is distinct from this driver's and the TUI's
+/// `kill(-driver_pgid, SIGTERM)` does not reach it. Layer 1 (the signal to this
+/// process's group) and layer 4 (the grace, the escalation and the reap) belong
+/// to [`crate::driver::kill`]; the two below belong here:
+///
+/// 1. **Layer 2 — `Executor::cancel`, and that single call is the whole of it.**
+///    It is Phase 15's already-built sequence at `src/executor/claude.rs:1482-1549`:
+///    SIGTERM to the `claude` process **group**, a ten-second grace, SIGKILL,
+///    then an `wait()` that is deliberately unbounded and deliberately raced
+///    against nothing, because that final wait is what stops the grandchildren
+///    becoming zombies.
+///
+///    **A second teardown must not be written here, and the reason is specific
+///    rather than stylistic** (D-06.2). `process-wrap`'s `start_kill()` and its
+///    `kill()` convenience both send the **uncatchable** signal; `signal(15)` is
+///    the only graceful path, and reading `kill()` as "terminate politely" is
+///    natural and wrong. Re-implementing that distinction here is exactly how
+///    the CLI's documented clean shutdown — the turn abort, the Bash-tree
+///    teardown through its own handler, the `SessionEnd` hooks — gets silently
+///    skipped, which is the failure mode the whole two-layer design exists to
+///    prevent.
+///
+/// 2. **The reason, journaled before the ending.** A `Diagnostic` carrying
+///    [`TERMINATE_DIAGNOSTIC_CODE`], written first so the *why* survives even if
+///    the terminal write is the one that fails.
+///
+/// 3. **Layer 3 — the terminal record.** This is the write that makes a stopped
+///    run distinguishable from a crashed one on disk: a crashed run has no
+///    `ended_at` (that absence *is* Phase 16's crash contract), a stopped one has
+///    `ended_at` plus the killed outcome. `src/driver/reconcile.rs` reads exactly
+///    that difference, so skipping it would make every stop look like a crash.
+///
+/// The outcome label comes from the outcome `cancel` actually returned rather
+/// than from a hard-coded `Killed`: the coordinator maps a cancelled run onto
+/// [`RunOutcome::Killed`] at `src/executor/claude.rs:1223`, so this reports
+/// `killed` by construction, and in the rare case a wall-clock or idle breach
+/// was classified in the same pass it reports the breach truthfully instead of
+/// overwriting it with a label that is merely expected.
+///
+/// The lock is **not** released here. Releasing it is dropping [`DriverRun`],
+/// which happens after this returns, so the release lands after the last write
+/// rather than in the middle of it (D-20.2). An explicit unlock would be a second
+/// release path for one resource.
+async fn shutdown_on_terminate(
+    executor: &ClaudeExecutor,
+    handle: &mut ExecutionHandle,
+    journal: &mut JournalRun,
+) {
+    let outcome = executor.cancel(handle).await;
+
+    if let Err(err) = journal.record(&JournalEvent::Diagnostic {
+        code: TERMINATE_DIAGNOSTIC_CODE.to_string(),
+        detail: "the driver received the terminate signal and tore down its agent process group"
+            .to_string(),
+    }) {
+        // The error KIND only, never a message body (T-17-05). A journal that
+        // cannot take the diagnostic must still be given the chance to take the
+        // terminal record, which is the more important of the two.
+        tracing::warn!(
+            kind = ?err.kind(),
+            "could not journal the terminate-signal diagnostic",
+        );
+    }
+
+    if let Err(err) = journal.finish(outcome_label(&outcome)) {
+        tracing::warn!(
+            detail = %format!("{err:#}"),
+            "could not close the journal after a terminate-signal shutdown",
+        );
+    }
+}
+
 /// Run one GSD command to completion and leave a complete run directory.
 ///
 /// In order, and the order is the decision:
@@ -131,7 +219,8 @@ fn establish_own_group() {
 ///    started always has a terminal record (T-17-06).
 /// 5. Journal the `claude` process group id **before draining a single event**:
 ///    a teardown handle recorded late is a teardown handle that can be missed.
-/// 6. Drain the event stream into the journal.
+/// 6. Drain the event stream into the journal, racing the terminate signal
+///    **first** — see the `biased` `select!` below.
 /// 7. Finish the journal with the derived outcome — `run.json` write two.
 ///
 /// The lock guard lives on [`DriverRun`], which outlives the terminal
@@ -146,6 +235,35 @@ pub async fn execute_run(
     args: &DriveArgs,
     entry: &RegisteredProject,
 ) -> Result<(), DriveError> {
+    // Installed FIRST — before the group is established, before the lock, and
+    // before a single byte lands on disk.
+    //
+    // **A driver that cannot observe the terminate signal is a driver that
+    // cannot be stopped**, because layer 2 of D-06 is precisely this handler
+    // calling `Executor::cancel`. Without it, the TUI's SIGTERM would reach the
+    // driver's default disposition, the process would die *immediately*, and the
+    // `claude` group — which is a different process group and never received
+    // anything — would be orphaned along with its Bash grandchildren. That is
+    // the exact failure CTRL-01 exists to prevent, so this refuses rather than
+    // warning and continuing, and refusing here costs nothing: nothing has been
+    // created yet, so there is no half-run to clean up.
+    //
+    // The refusal is `UnsupportedPlatform` rather than a new `DriveError`
+    // variant. `tokio::signal::unix::signal` fails only for signals the kernel
+    // does not let a process catch, so a build where this errors on SIGTERM is a
+    // platform that cannot support driving at all — which is what that variant
+    // already says (D-05). A variant of its own would widen an enum three later
+    // plans in this phase also match on, to describe a branch no supported
+    // platform reaches.
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|err| DriveError::UnsupportedPlatform {
+            detail: format!(
+                "the terminate-signal handler could not be installed ({}), so a stop \
+                 request could not tear the agent's process group down",
+                err.kind()
+            ),
+        })?;
+
     establish_own_group();
 
     let options = ExecutionOptions::default();
@@ -225,11 +343,31 @@ pub async fn execute_run(
         tracing::warn!(kind = ?err, "could not signal end-of-input to the agent");
     }
 
-    // A `select!` loop with a single arm today. Plan 17-06 adds its SIGTERM arm
-    // here without restructuring the body — the one seam this plan deliberately
-    // leaves open, and a variant addition rather than an architectural change.
+    // `biased`, with the terminate arm FIRST, following `src/main_loop.rs:130`.
+    //
+    // Arm order is the decision, not a formality. Without `biased` the macro
+    // picks a ready arm at random, and with a fast agent the event arm is
+    // essentially always ready — so a stop request would lose the race for as
+    // long as the stream kept producing, which is the entire duration of the run
+    // the user is trying to stop. A stop that loses to a busy event queue is a
+    // stop the user experiences as ignored (D-06.1).
+    //
+    // `tokio::select!` drops the other arms' futures before it runs the chosen
+    // arm's body, which is what lets the terminate arm take `&mut handle` while
+    // the event arm's future borrowed it.
     loop {
         tokio::select! {
+            biased;
+
+            _ = term.recv() => {
+                shutdown_on_terminate(&executor, &mut handle, &mut run.journal).await;
+                // Returning here drops `run`, and with it the `RunLock` — the
+                // descriptor close IS the release (D-20.2). Nothing below this
+                // point runs, so the terminal record written by the call above
+                // is not followed by a second one.
+                return Ok(());
+            }
+
             event = handle.events.recv() => {
                 match event {
                     Some(event) => {
@@ -253,4 +391,45 @@ pub async fn execute_run(
         })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_outcome_label_for_a_stopped_run_is_killed() {
+        // One line, and it is what stops a later refactor silently relabelling a
+        // stop as a failure. `src/driver/reconcile.rs` and the TUI both read the
+        // `outcome` string off `run.json`, and a stop that arrives there as
+        // `failed` tells the user their run broke when in fact they stopped it.
+        assert_eq!(
+            outcome_label(&RunOutcome::Killed { turns: Vec::new() }),
+            "killed"
+        );
+
+        // The neighbour that would be reached if the terminate path ever stopped
+        // going through `Executor::cancel` and started letting the run fall out
+        // of its drain instead. Pinned so the two stay distinguishable.
+        assert_ne!(
+            outcome_label(&RunOutcome::Failed {
+                reason: "x".to_string(),
+                subtype: None,
+                terminal_reason: None,
+                exit_code: None,
+            }),
+            outcome_label(&RunOutcome::Killed { turns: Vec::new() })
+        );
+    }
+
+    #[test]
+    fn the_terminate_diagnostic_code_is_a_stable_grep_target() {
+        // The code travels into `journal.jsonl` verbatim and is what a later
+        // reader searches for, so it is snake_case and carries no timestamp, pid
+        // or run id — those live in the record around it.
+        assert_eq!(TERMINATE_DIAGNOSTIC_CODE, "terminate_signal_shutdown");
+        assert!(TERMINATE_DIAGNOSTIC_CODE
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c == '_'));
+    }
 }
