@@ -14,6 +14,7 @@
 
 use std::ffi::OsString;
 use std::path::Path;
+use std::time::Duration;
 
 use gsd_meta_manager::executor::claude::{interrupt_stopped_a_turn, ClaudeExecutor};
 use gsd_meta_manager::executor::stream_json::{parse_line, Envelope, StreamMessage, UserMessage};
@@ -27,6 +28,11 @@ const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/f
 const FAKE_CLAUDE_ECHO: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/fake-claude-echo.sh"
+);
+/// The paced stand-in, here for its `denied` ending only.
+const FAKE_SLOW: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/fake-claude-slow.sh"
 );
 const CLEAN_BASELINE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -68,6 +74,21 @@ fn reacting(stdin_log: &Path) -> ClaudeExecutor {
             OsString::from("2.1.220"),
             OsString::from("none"),
             stdin_log.to_path_buf().into_os_string(),
+        ],
+    )
+}
+
+/// Build an executor whose stand-in closes its single turn with a `success`
+/// envelope carrying a populated `permission_denials[]` — the
+/// `--permission-mode dontAsk` shape, where every verdict field on the envelope
+/// looks clean and only the denials array says the run was blocked.
+fn denying() -> ClaudeExecutor {
+    ClaudeExecutor::with_program(
+        FAKE_SLOW,
+        vec![
+            OsString::from("0"),
+            OsString::from("0"),
+            OsString::from("denied"),
         ],
     )
 }
@@ -238,6 +259,57 @@ async fn starting_against_a_missing_project_root_never_spawns() {
         result.is_err(),
         "a project root that is not a directory must be refused before spawn"
     );
+}
+
+/// A `--permission-mode dontAsk` run that was blocked must never be reported as
+/// a success — through the REAL `Coordinator`, against a real spawned child.
+///
+/// The outcome unit tests already prove the derivation matrix ranks a populated
+/// denials array above the envelope's own verdict. What they cannot prove, and
+/// what this test exists for, is that the denials array *survives the transport*
+/// — that the coordinator hands the derivation the full `result` envelopes
+/// rather than a projection that has already dropped the one field which
+/// distinguishes a blocked run from a clean one.
+#[tokio::test]
+async fn a_permission_blocked_run_is_reported_as_permission_denied_not_success() {
+    // No `.planning/` and no git: the disk-and-git delta is empty, so a
+    // derivation that cannot see the denials lands squarely on the no-changes
+    // success variant. That is the exact wrong answer being guarded against.
+    let scratch = TempDir::new().expect("temp dir");
+    let project = DrivableProject::for_testing("denied", scratch.path());
+    let executor = denying();
+
+    let mut handle = executor
+        .start(
+            &project,
+            "/gsd-progress".to_string(),
+            ExecutionOptions::default(),
+        )
+        .await
+        .expect("the paced stand-in advertises every required capability");
+
+    // A hard bound, so a regression FAILS rather than hanging CI.
+    let outcome = tokio::time::timeout(Duration::from_secs(30), handle.wait_outcome())
+        .await
+        .expect("the run must report an outcome; a driver that never answers is its own bug");
+
+    match outcome {
+        RunOutcome::PermissionDenied { denials } => assert_eq!(
+            denials.len(),
+            1,
+            "the CLI's own denial records must reach the caller so the driver can say \
+             WHICH tool was refused; the shape is carried unmodelled on purpose: {denials:?}"
+        ),
+        other => panic!(
+            "a run blocked by `--permission-mode dontAsk` was reported as {other:?}. The \
+             terminal envelope said `success` with `is_error: false` and \
+             `terminal_reason: completed`, and its populated `permission_denials[]` is the \
+             ONLY signal that nothing was allowed to happen — which is why the derivation \
+             must see the full envelope and not a projection of it. Reporting this as a \
+             success is the untrusted-workspace silent failure the phase spike surfaced: a \
+             human reads it as a completed step and moves on (SC-2, TRANS-02, CR-04)"
+        ),
+    }
 }
 
 // ============================================================================

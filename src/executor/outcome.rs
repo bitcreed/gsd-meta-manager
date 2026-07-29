@@ -11,11 +11,13 @@
 //! version line, and a typed enum would need a catch-all on each and would
 //! still lose the actual string.
 //!
-//! Plan 15-05 expands [`derive_run_outcome`] into the full D-26 matrix and
-//! fills the two git fields from new helpers beside the existing ones in
-//! `state_reader/git_ops.rs`. Both are functionality gaps fillable without any
-//! signature or architecture change — which is why the four-argument shape is
-//! fixed here rather than grown later.
+//! [`derive_run_outcome_from_envelopes`] is the **only** run-outcome entry
+//! point, and it deliberately takes the full `result` envelopes rather than the
+//! [`TurnOutcome`] projection of them. An envelope-discarding sibling used to
+//! sit beside it and hard-coded an empty denials source; the production
+//! coordinator called that one, so a `--permission-mode dontAsk` run that was
+//! blocked from doing anything reported as a plain success (CR-04). Two entry
+//! points onto one matrix is what made that possible, so there is now one.
 
 use std::path::Path;
 use std::process::ExitStatus;
@@ -152,30 +154,20 @@ pub fn run_cost_usd(turns: &[TurnOutcome]) -> Option<f64> {
     turns.last().and_then(|turn| turn.total_cost_usd)
 }
 
-/// Derive the run-level outcome from the four corroboration sources.
-///
-/// `turns` is every `result` envelope observed, in stream order — a run that
-/// uses `send` emits one per turn (D-29). The run-level verdict comes from the
-/// **last** of them.
-///
-/// This projection cannot see `permission_denials[]`, which lives on the full
-/// envelope and not on [`TurnOutcome`]. Prefer
-/// [`derive_run_outcome_from_envelopes`] wherever the envelopes themselves are
-/// still in hand: it is the same matrix with the denials source connected.
-pub fn derive_run_outcome(
-    turns: &[TurnOutcome],
-    exit: Option<ExitStatus>,
-    before: &RunSnapshot,
-    after: &RunSnapshot,
-) -> RunOutcome {
-    derive(turns, Vec::new(), exit, before, after)
-}
-
 /// Derive the run-level outcome from the **full** terminal envelopes.
 ///
 /// The complete four-source derivation. D-10 names `permission_denials[]` as
 /// part of the envelope source, and that array survives only on the envelope,
 /// so this is the entry point that can report a permission refusal.
+///
+/// `envelopes` is every `result` envelope observed, in stream order — a run
+/// that uses `send` emits one per turn (D-29). The run-level verdict comes from
+/// the **last** of them; denials are collected from all of them.
+///
+/// This is the **only** run-outcome entry point, and it reads the denials
+/// array. A sibling that took the [`TurnOutcome`] projection — which cannot
+/// carry `permission_denials[]` — is what let a blocked run be reported as a
+/// success, so no second entry point onto this matrix exists.
 ///
 /// The envelopes' prose summaries are read by no branch of the derivation.
 pub fn derive_run_outcome_from_envelopes(
@@ -430,20 +422,27 @@ mod tests {
         }
     }
 
-    fn turn(subtype: &str, is_error: bool, terminal_reason: Option<&str>) -> TurnOutcome {
-        TurnOutcome {
-            subtype: subtype.to_string(),
-            is_error,
-            terminal_reason: terminal_reason.map(str::to_string),
-            num_turns: Some(1),
-            total_cost_usd: Some(0.5),
-            session_id: Some("s".to_string()),
-        }
+    /// A synthetic `result` envelope carrying exactly these verdict fields, and
+    /// an empty denials array.
+    ///
+    /// Formatted as a raw line and parsed through [`envelope_from`], never
+    /// built by struct update: `ResultMessage` derives no `Default`, and
+    /// building a test envelope from a line is the house idiom here because it
+    /// is the same path the wire takes. `terminal_reason` is emitted only when
+    /// `Some`, so an absent reason is genuinely absent rather than null.
+    fn envelope(subtype: &str, is_error: bool, terminal_reason: Option<&str>) -> ResultMessage {
+        let reason = match terminal_reason {
+            Some(reason) => format!(r#""terminal_reason":"{reason}","#),
+            None => String::new(),
+        };
+        envelope_from(&format!(
+            r#"{{"type":"result","subtype":"{subtype}","is_error":{is_error},{reason}"session_id":"s","num_turns":1,"total_cost_usd":0.5,"permission_denials":[]}}"#
+        ))
     }
 
     #[test]
     fn a_stream_with_no_terminal_envelope_is_never_a_success() {
-        let outcome = derive_run_outcome(&[], None, &snapshot(), &snapshot());
+        let outcome = derive_run_outcome_from_envelopes(&[], None, &snapshot(), &snapshot());
         match outcome {
             RunOutcome::Failed { reason, .. } => assert!(
                 reason.contains("terminal `result` envelope"),
@@ -455,8 +454,8 @@ mod tests {
 
     #[test]
     fn success_with_no_disk_delta_is_its_own_outcome() {
-        let outcome = derive_run_outcome(
-            &[turn("success", false, Some("completed"))],
+        let outcome = derive_run_outcome_from_envelopes(
+            &[envelope("success", false, Some("completed"))],
             None,
             &snapshot(),
             &snapshot(),
@@ -472,8 +471,8 @@ mod tests {
         let before = snapshot();
         let mut after = snapshot();
         after.project_state.current_phase = "15".to_string();
-        let outcome = derive_run_outcome(
-            &[turn("success", false, Some("completed"))],
+        let outcome = derive_run_outcome_from_envelopes(
+            &[envelope("success", false, Some("completed"))],
             None,
             &before,
             &after,
@@ -486,8 +485,12 @@ mod tests {
 
     #[test]
     fn an_unrecognised_subtype_falls_back_to_a_failure_carrying_the_strings() {
-        let outcome = derive_run_outcome(
-            &[turn("error_from_a_future_version", true, Some("who_knows"))],
+        let outcome = derive_run_outcome_from_envelopes(
+            &[envelope(
+                "error_from_a_future_version",
+                true,
+                Some("who_knows"),
+            )],
             None,
             &snapshot(),
             &snapshot(),
@@ -507,10 +510,10 @@ mod tests {
 
     #[test]
     fn the_last_envelope_decides_a_multi_turn_run() {
-        let outcome = derive_run_outcome(
+        let outcome = derive_run_outcome_from_envelopes(
             &[
-                turn("success", false, Some("completed")),
-                turn("error_during_execution", true, Some("aborted_streaming")),
+                envelope("success", false, Some("completed")),
+                envelope("error_during_execution", true, Some("aborted_streaming")),
             ],
             None,
             &snapshot(),
@@ -1003,10 +1006,10 @@ mod tests {
     #[test]
     fn a_later_failing_turn_overrides_an_earlier_succeeding_one() {
         let (before, after) = artifact_delta();
-        let outcome = derive_run_outcome(
+        let outcome = derive_run_outcome_from_envelopes(
             &[
-                turn("success", false, Some("completed")),
-                turn("error_max_budget_usd", true, Some("budget_exhausted")),
+                envelope("success", false, Some("completed")),
+                envelope("error_max_budget_usd", true, Some("budget_exhausted")),
             ],
             exit_status(1),
             &before,

@@ -65,8 +65,10 @@ use uuid::Uuid;
 
 use crate::error::{CapabilityError, SendError, SpawnError};
 use crate::executor::gate::{self, GateOutcome};
-use crate::executor::outcome::{derive_run_outcome, RunSnapshot};
-use crate::executor::stream_json::{parse_line, Envelope, StreamMessage, SystemMessage, UserMessage};
+use crate::executor::outcome::{derive_run_outcome_from_envelopes, RunSnapshot};
+use crate::executor::stream_json::{
+    parse_line, Envelope, ResultMessage, StreamMessage, SystemMessage, UserMessage,
+};
 use crate::executor::{
     encode_interrupt, BoxFuture, DrivableProject, ExecutionEvent, ExecutionHandle, ExecutionId,
     ExecutionOptions, ExecutionTarget, Executor, InterruptAck, PendingControl, PermissionMode,
@@ -811,7 +813,12 @@ impl Coordinator {
         let mut cancelled = false;
         let mut refused: Option<CapabilityError> = None;
         let mut breach: Option<Breach> = None;
-        let mut turns: Vec<TurnOutcome> = Vec::new();
+        // The **full** terminal envelopes, not a projection of them. Only the
+        // envelope carries `permission_denials[]`, and a run that was blocked
+        // by `--permission-mode dontAsk` is otherwise indistinguishable from a
+        // clean one: every verdict field on it says success. Collecting the
+        // projection here is what reported a refused run as a success (CR-04).
+        let mut envelopes: Vec<ResultMessage> = Vec::new();
 
         // Observed by the exit arm rather than by the teardown, so a child that
         // ended on its own is never signalled and never waited on twice.
@@ -847,7 +854,7 @@ impl Coordinator {
                                 &mut gate_tx,
                                 &mut gated,
                                 &mut refused,
-                                &mut turns,
+                                &mut envelopes,
                                 &first_message,
                                 permission_mode,
                             )
@@ -944,6 +951,11 @@ impl Coordinator {
 
         let after = capture_snapshot(project_root).await;
 
+        // The per-turn projection, rebuilt for the outcomes that carry it. The
+        // derivation itself is handed the envelopes, so nothing downstream of
+        // here loses a field the verdict depends on.
+        let turns: Vec<TurnOutcome> = envelopes.iter().map(TurnOutcome::from_result).collect();
+
         let outcome = match refused {
             // Every refusal path projects onto the same coarse outcome the TUI
             // renders. The typed `CapabilityError` returned by `start()` is the
@@ -959,7 +971,7 @@ impl Coordinator {
                 },
                 Some(Breach::Idle) => RunOutcome::Stalled { idle_for: idle_cap },
                 None if cancelled => RunOutcome::Killed { turns },
-                None => derive_run_outcome(&turns, status, &before, &after),
+                None => derive_run_outcome_from_envelopes(&envelopes, status, &before, &after),
             },
         };
 
@@ -981,7 +993,7 @@ async fn handle_item(
     gate_tx: &mut Option<oneshot::Sender<Result<GateOutcome, SpawnError>>>,
     gated: &mut bool,
     refused: &mut Option<CapabilityError>,
-    turns: &mut Vec<TurnOutcome>,
+    envelopes: &mut Vec<ResultMessage>,
     first_message: &str,
     permission_mode: PermissionMode,
 ) -> bool {
@@ -1054,7 +1066,10 @@ async fn handle_item(
                 .is_ok(),
 
             StreamMessage::Result(result) => {
-                turns.push(TurnOutcome::from_result(&result));
+                // The whole envelope, verbatim off the wire, before the box is
+                // moved into the event. `permission_denials[]` lives here and
+                // nowhere else, so anything that projects first loses it.
+                envelopes.push((*result).clone());
                 if let Some(cost) = result.total_cost_usd {
                     if events_tx
                         .send(ExecutionEvent::Cost {
@@ -1361,7 +1376,7 @@ mod tests {
         let mut gate_tx = Some(gate_tx);
         let mut gated = false;
         let mut refused: Option<CapabilityError> = None;
-        let mut turns: Vec<TurnOutcome> = Vec::new();
+        let mut envelopes: Vec<ResultMessage> = Vec::new();
         let mut keep_going = true;
 
         for line in lines {
@@ -1373,7 +1388,7 @@ mod tests {
                 &mut gate_tx,
                 &mut gated,
                 &mut refused,
-                &mut turns,
+                &mut envelopes,
                 "FIRST-MESSAGE",
                 PermissionMode::DontAsk,
             )
