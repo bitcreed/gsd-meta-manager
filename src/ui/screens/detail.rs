@@ -16,8 +16,27 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs};
 use ratatui::Frame;
+use std::cell::Cell;
 
 const PAGE_SCROLL_LINES: u16 = 20;
+
+/// Viewport metrics recorded by the last render pass of a markdown file view.
+///
+/// Both fields are zero before the first render, which yields a max scroll of
+/// zero — the correct pre-first-render floor, not a crash.
+#[derive(Clone, Copy, Default)]
+struct ViewportMetrics {
+    total_lines: u16,
+    visible_height: u16,
+}
+
+/// Clamp a stored scroll offset to the last-rendered viewport.
+///
+/// Uses the identical `total_lines - visible_height` formula the render path
+/// already applies for display, so the two cannot drift apart.
+fn clamp_scroll(offset: u16, total_lines: u16, visible_height: u16) -> u16 {
+    offset.min(total_lines.saturating_sub(visible_height))
+}
 
 const TAB_TITLES: [&str; 10] = [
     "1:Phases",
@@ -35,6 +54,12 @@ const TAB_TITLES: [&str; 10] = [
 pub struct DetailScreen {
     pub alias: String,
     pub scroll_offset: u16,
+    /// Last-rendered viewport metrics for the Docs (Browse) file view.
+    /// Interior mutability: `Screen::render` takes `&self`, so the render pass
+    /// cannot write into the view cache (see plan 14-02 CD-01).
+    browser_viewport: Cell<ViewportMetrics>,
+    /// Last-rendered viewport metrics for the Archive file view.
+    archive_viewport: Cell<ViewportMetrics>,
 }
 
 impl DetailScreen {
@@ -42,6 +67,8 @@ impl DetailScreen {
         Self {
             alias,
             scroll_offset: 0,
+            browser_viewport: Cell::default(),
+            archive_viewport: Cell::default(),
         }
     }
 }
@@ -552,8 +579,12 @@ impl Screen for DetailScreen {
                                 }
                             }
                             ArchiveDepth::FileView { .. } => {
-                                cache.archive_scroll_offset =
-                                    cache.archive_scroll_offset.saturating_add(1);
+                                let vp = self.archive_viewport.get();
+                                cache.archive_scroll_offset = clamp_scroll(
+                                    cache.archive_scroll_offset.saturating_add(1),
+                                    vp.total_lines,
+                                    vp.visible_height,
+                                );
                             }
                         }
                         ctx.needs_redraw = true;
@@ -592,8 +623,12 @@ impl Screen for DetailScreen {
                                 }
                             }
                             BrowserDepth::View => {
-                                cache.browser_scroll_offset =
-                                    cache.browser_scroll_offset.saturating_add(1);
+                                let vp = self.browser_viewport.get();
+                                cache.browser_scroll_offset = clamp_scroll(
+                                    cache.browser_scroll_offset.saturating_add(1),
+                                    vp.total_lines,
+                                    vp.visible_height,
+                                );
                             }
                         }
                         ctx.needs_redraw = true;
@@ -777,8 +812,12 @@ impl Screen for DetailScreen {
                                 }
                             }
                             ArchiveDepth::FileView { .. } => {
-                                cache.archive_scroll_offset =
-                                    cache.archive_scroll_offset.saturating_add(PAGE_SCROLL_LINES);
+                                let vp = self.archive_viewport.get();
+                                cache.archive_scroll_offset = clamp_scroll(
+                                    cache.archive_scroll_offset.saturating_add(PAGE_SCROLL_LINES),
+                                    vp.total_lines,
+                                    vp.visible_height,
+                                );
                             }
                         }
                         ctx.needs_redraw = true;
@@ -805,9 +844,12 @@ impl Screen for DetailScreen {
                                 }
                             }
                             BrowserDepth::View => {
-                                cache.browser_scroll_offset = cache
-                                    .browser_scroll_offset
-                                    .saturating_add(PAGE_SCROLL_LINES);
+                                let vp = self.browser_viewport.get();
+                                cache.browser_scroll_offset = clamp_scroll(
+                                    cache.browser_scroll_offset.saturating_add(PAGE_SCROLL_LINES),
+                                    vp.total_lines,
+                                    vp.visible_height,
+                                );
                             }
                         }
                         ctx.needs_redraw = true;
@@ -1641,6 +1683,21 @@ impl Screen for DetailScreen {
                     }
                     // Not in FileView depth -- no-op for 'e'
                     return ScreenAction::None;
+                }
+
+                // Docs (Browse) tab: open the selected markdown file in $EDITOR.
+                // Resolved in a scope so the view-cache borrow ends before the
+                // surrounding context fields are touched.
+                if current_view == DetailSubView::Browse {
+                    let target = {
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        browse_edit_target(cache)
+                    };
+                    ctx.needs_redraw = true;
+                    return match target {
+                        Ok(path) => ScreenAction::SuspendAndEdit(path),
+                        Err(msg) => ScreenAction::SetStatusMessage(msg.to_string()),
+                    };
                 }
 
                 let alias = self.alias.clone();
@@ -2801,6 +2858,10 @@ impl DetailScreen {
                     let text_area = file_chunks[1];
 
                     let visible_height = text_area.height;
+                    self.archive_viewport.set(ViewportMetrics {
+                        total_lines,
+                        visible_height,
+                    });
                     let max_scroll = total_lines.saturating_sub(visible_height);
                     let scroll = cache.archive_scroll_offset.min(max_scroll);
 
@@ -2941,6 +3002,10 @@ impl DetailScreen {
                     let text_area = file_chunks[1];
 
                     let visible_height = text_area.height;
+                    self.browser_viewport.set(ViewportMetrics {
+                        total_lines,
+                        visible_height,
+                    });
                     let max_scroll = total_lines.saturating_sub(visible_height);
                     let scroll = cache.browser_scroll_offset.min(max_scroll);
 
@@ -3586,8 +3651,60 @@ fn push_substage(lines: &mut Vec<Line<'static>>, label: &'static str, present: b
     ]));
 }
 
-/// Build the footer line with tab-appropriate key hints.
-fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
+/// Resolve the markdown file the Docs (Browse) tab's `[e]dit` key should open.
+///
+/// Pure path logic — no filesystem I/O — so the whole UIFIX-03 contract is unit
+/// testable without constructing an `AppContext`. Returns the user-facing status
+/// message on the error path; the caller turns it into a `SetStatusMessage`.
+fn browse_edit_target(cache: &super::ProjectViewCache) -> Result<std::path::PathBuf, &'static str> {
+    const NO_FILE: &str = "Select a markdown file to edit";
+    const READ_ONLY: &str = "Archived files are read-only";
+
+    // 1. Resolve a candidate path from the current browse depth.
+    let candidate = match cache.browser_depth {
+        crate::browser::BrowserDepth::View => {
+            // `None` content is the Phase 12 `Loading...` window; `e` is inert
+            // there rather than editing a file the user cannot yet see.
+            if cache.browser_file_content.is_none() {
+                return Err(NO_FILE);
+            }
+            let dir = cache.browser_current_dir.as_ref().ok_or(NO_FILE)?;
+            let name = cache.browser_file_name.as_ref().ok_or(NO_FILE)?;
+            dir.join(name)
+        }
+        crate::browser::BrowserDepth::List => {
+            let entry = cache
+                .browser_entries
+                .get(cache.browser_selected)
+                .ok_or(NO_FILE)?;
+            if entry.is_dir {
+                return Err(NO_FILE);
+            }
+            entry.path.clone()
+        }
+    };
+
+    // 2. Root fence: never hand $EDITOR a path outside the browse root.
+    if let Some(root) = cache.browser_root.as_ref() {
+        if !candidate.starts_with(root) {
+            return Err(NO_FILE);
+        }
+    }
+
+    // 3. Archived milestones stay immutable regardless of which tab reached
+    //    them — the same guard the Archive tab applies.
+    if candidate.to_string_lossy().contains("/milestones/") {
+        return Err(READ_ONLY);
+    }
+
+    Ok(candidate)
+}
+
+/// Build the footer key-hint spans for a tab.
+///
+/// Split out of `build_footer` so the hint set is assertable: `Paragraph`
+/// exposes no public text accessor, but a `Vec<Span>` concatenates cleanly.
+fn footer_spans(sub_view: &DetailSubView) -> Vec<Span<'static>> {
     let b = Style::default().add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::raw("  "),
@@ -3641,6 +3758,8 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
         DetailSubView::Browse => {
             spans.push(Span::styled("[Enter]", b));
             spans.push(Span::raw("open  "));
+            spans.push(Span::styled("[e]", b));
+            spans.push(Span::raw("dit  "));
             spans.push(Span::styled("[Esc]", b));
             spans.push(Span::raw("up  "));
             spans.push(Span::styled("[g]", b));
@@ -3667,7 +3786,12 @@ fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
     spans.push(Span::styled("[?]", b));
     spans.push(Span::raw("help"));
 
-    Paragraph::new(Line::from(spans))
+    spans
+}
+
+/// Build the footer line with tab-appropriate key hints.
+fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
+    Paragraph::new(Line::from(footer_spans(sub_view)))
 }
 
 // --- Defaults tab helpers ---
@@ -4536,5 +4660,206 @@ mod tests {
         // Empty object → empty waves, still Some (render layer skips it).
         let empty = parse_waves_manifest("{}").expect("empty object parses");
         assert!(empty.waves.is_empty());
+    }
+
+    // ── UIFIX-03: Docs (Browse) tab `[e]dit` key routing ──────────────────
+
+    use crate::browser::{BrowserDepth, BrowserEntry};
+    use crate::ui::screens::ProjectViewCache;
+    use std::path::PathBuf;
+
+    const NO_FILE_MSG: &str = "Select a markdown file to edit";
+    const READ_ONLY_MSG: &str = "Archived files are read-only";
+
+    /// A Browse cache rooted at `/proj/.planning`, sitting in a phase dir.
+    fn browse_cache() -> ProjectViewCache {
+        ProjectViewCache {
+            browser_root: Some(PathBuf::from("/proj/.planning")),
+            browser_current_dir: Some(PathBuf::from("/proj/.planning/phases/14-ui-fixes")),
+            ..Default::default()
+        }
+    }
+
+    fn md_entry(name: &str) -> BrowserEntry {
+        BrowserEntry {
+            name: name.to_string(),
+            path: PathBuf::from("/proj/.planning/phases/14-ui-fixes").join(name),
+            is_dir: false,
+        }
+    }
+
+    #[test]
+    fn test_browse_edit_target_view_depth_returns_file_path() {
+        let mut cache = browse_cache();
+        cache.browser_depth = BrowserDepth::View;
+        cache.browser_file_name = Some("14-02-PLAN.md".to_string());
+        cache.browser_file_content = Some("# Plan\n".to_string());
+
+        assert_eq!(
+            browse_edit_target(&cache),
+            Ok(PathBuf::from(
+                "/proj/.planning/phases/14-ui-fixes/14-02-PLAN.md"
+            ))
+        );
+    }
+
+    #[test]
+    fn test_browse_edit_target_list_depth_md_file() {
+        let mut cache = browse_cache();
+        cache.browser_depth = BrowserDepth::List;
+        cache.browser_entries = vec![
+            BrowserEntry {
+                name: "sub".to_string(),
+                path: PathBuf::from("/proj/.planning/phases/14-ui-fixes/sub"),
+                is_dir: true,
+            },
+            md_entry("14-02-PLAN.md"),
+        ];
+        cache.browser_selected = 1;
+
+        assert_eq!(
+            browse_edit_target(&cache),
+            Ok(PathBuf::from(
+                "/proj/.planning/phases/14-ui-fixes/14-02-PLAN.md"
+            ))
+        );
+    }
+
+    #[test]
+    fn test_browse_edit_target_list_depth_directory_is_rejected() {
+        let mut cache = browse_cache();
+        cache.browser_depth = BrowserDepth::List;
+        cache.browser_entries = vec![BrowserEntry {
+            name: "sub".to_string(),
+            path: PathBuf::from("/proj/.planning/phases/14-ui-fixes/sub"),
+            is_dir: true,
+        }];
+        cache.browser_selected = 0;
+
+        assert_eq!(browse_edit_target(&cache), Err(NO_FILE_MSG));
+    }
+
+    #[test]
+    fn test_browse_edit_target_empty_listing_is_rejected() {
+        let mut cache = browse_cache();
+        cache.browser_depth = BrowserDepth::List;
+        cache.browser_entries = Vec::new();
+        cache.browser_selected = 0;
+
+        assert_eq!(browse_edit_target(&cache), Err(NO_FILE_MSG));
+    }
+
+    #[test]
+    fn test_browse_edit_target_milestones_path_is_read_only() {
+        let mut cache = browse_cache();
+        cache.browser_depth = BrowserDepth::View;
+        cache.browser_current_dir =
+            Some(PathBuf::from("/proj/.planning/milestones/v1.2-phases"));
+        cache.browser_file_name = Some("11-SUMMARY.md".to_string());
+        cache.browser_file_content = Some("archived".to_string());
+
+        assert_eq!(browse_edit_target(&cache), Err(READ_ONLY_MSG));
+    }
+
+    #[test]
+    fn test_browse_edit_target_outside_root_is_rejected() {
+        let mut cache = browse_cache();
+        cache.browser_depth = BrowserDepth::List;
+        cache.browser_entries = vec![BrowserEntry {
+            name: "passwd.md".to_string(),
+            path: PathBuf::from("/etc/passwd.md"),
+            is_dir: false,
+        }];
+        cache.browser_selected = 0;
+
+        assert_eq!(browse_edit_target(&cache), Err(NO_FILE_MSG));
+    }
+
+    #[test]
+    fn test_browse_edit_target_loading_content_is_inert() {
+        let mut cache = browse_cache();
+        cache.browser_depth = BrowserDepth::View;
+        cache.browser_file_name = Some("14-02-PLAN.md".to_string());
+        // Still in the Phase 12 `Loading...` window.
+        cache.browser_file_content = None;
+
+        assert_eq!(browse_edit_target(&cache), Err(NO_FILE_MSG));
+    }
+
+    fn footer_text(sub_view: &DetailSubView) -> String {
+        footer_spans(sub_view)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn test_browse_footer_has_edit_hint() {
+        let text = footer_text(&DetailSubView::Browse);
+        assert!(text.contains("[e]dit  "));
+
+        // Ordering matches the Archive arm: [Enter]open  [e]dit  … [Esc]up
+        let open = text.find("[Enter]open").expect("open hint present");
+        let edit = text.find("[e]dit").expect("edit hint present");
+        let up = text.find("[Esc]up").expect("up hint present");
+        assert!(open < edit);
+        assert!(edit < up);
+    }
+
+    #[test]
+    fn test_other_footers_unchanged_by_browse_edit_hint() {
+        assert_eq!(
+            footer_text(&DetailSubView::Backlog),
+            "  [Esc]back  [1-9]tabs  [j/k]scroll  [Enter]xpand  [e]nqueue  [?]help"
+        );
+        assert_eq!(
+            footer_text(&DetailSubView::Defaults),
+            "  [Esc]back  [1-9]tabs  [j/k]scroll  [Enter]edit  [x] clear  [d] defaults  \
+             [r]eload  [?]help"
+        );
+    }
+
+    // ── UIFIX-04: stored scroll offset is clamped to the rendered viewport ──
+
+    #[test]
+    fn test_clamp_scroll_page_down_stops_at_content_end() {
+        // 100-line document in a 30-line viewport → max_scroll = 70, which
+        // leaves the last content line on screen.
+        assert_eq!(clamp_scroll(60 + PAGE_SCROLL_LINES, 100, 30), 70);
+    }
+
+    #[test]
+    fn test_clamp_scroll_repeated_page_down_is_idempotent() {
+        // Already at the end: further PageDown presses do not grow the offset.
+        assert_eq!(clamp_scroll(70 + PAGE_SCROLL_LINES, 100, 30), 70);
+        assert_eq!(clamp_scroll(clamp_scroll(90, 100, 30) + PAGE_SCROLL_LINES, 100, 30), 70);
+    }
+
+    #[test]
+    fn test_clamp_scroll_short_document_never_scrolls() {
+        // total_lines <= visible_height → max_scroll = 0, PageDown is a no-op.
+        assert_eq!(clamp_scroll(PAGE_SCROLL_LINES, 10, 30), 0);
+        assert_eq!(clamp_scroll(PAGE_SCROLL_LINES, 30, 30), 0);
+    }
+
+    #[test]
+    fn test_clamp_scroll_pre_first_render_floor() {
+        // Before the first render both metrics are zero — a safe floor.
+        assert_eq!(clamp_scroll(PAGE_SCROLL_LINES, 0, 0), 0);
+    }
+
+    #[test]
+    fn test_clamp_scroll_first_page_up_moves_viewport() {
+        // Backstop for the UI-SPEC long-document row: after repeated PageDown
+        // past the end, the *first* PageUp must move the viewport.
+        let mut offset = 0u16;
+        for _ in 0..10 {
+            offset = clamp_scroll(offset.saturating_add(PAGE_SCROLL_LINES), 100, 30);
+        }
+        assert_eq!(offset, 70);
+
+        let after_page_up = offset.saturating_sub(PAGE_SCROLL_LINES);
+        assert_eq!(after_page_up, 50);
+        assert!(after_page_up < offset);
     }
 }
