@@ -86,19 +86,24 @@ fn compact_pipeline(status: &DiskStatus) -> Line<'static> {
         ("V", DiskStatus::Complete),
     ];
 
-    let spans: Vec<Span> = stages
-        .iter()
-        .map(|(label, threshold)| {
-            let color = if *status >= *threshold {
-                Color::Green
-            } else if *status == prev_status(*threshold) {
-                Color::Yellow
-            } else {
-                Color::DarkGray
-            };
-            Span::styled(format!(" {} ", label), Style::default().fg(color))
-        })
-        .collect();
+    // Build `D  R  P  E  V` with the two-cell inter-stage gap only *between*
+    // stages — never before `D` or after `V`, so the cell aligns with sibling
+    // Status values such as `executing` and `v1.0 Complete` (UIFIX-02).
+    // Each stage letter stays its own span so per-letter color survives.
+    let mut spans: Vec<Span> = Vec::with_capacity(stages.len() * 2 - 1);
+    for (i, (label, threshold)) in stages.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("  "));
+        }
+        let color = if *status >= *threshold {
+            Color::Green
+        } else if *status == prev_status(*threshold) {
+            Color::Yellow
+        } else {
+            Color::DarkGray
+        };
+        spans.push(Span::styled(*label, Style::default().fg(color)));
+    }
 
     Line::from(spans)
 }
