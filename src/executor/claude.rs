@@ -275,6 +275,17 @@ fn push(argv: &mut Vec<OsString>, arg: impl AsRef<OsStr>) {
 pub struct ClaudeExecutor {
     program: PathBuf,
     leading_args: Vec<OsString>,
+    /// Where the agent's process group id is published the instant the child
+    /// exists, for a caller that may never receive an [`ExecutionHandle`].
+    ///
+    /// **The `Arc` is here so the struct keeps its derived `Clone` and `Debug`,
+    /// and for no other reason** — a bare `oneshot::Sender` is neither. The slot
+    /// is take-once by construction: [`start_run`](ClaudeExecutor::start_run)
+    /// takes the sender out, and a `oneshot` can be sent on exactly once anyway,
+    /// so a cloned executor started twice publishes for the first start and
+    /// silently does not for the second. That is the honest behaviour for a
+    /// channel whose receiver is a single driver's single run.
+    spawn_observer: Arc<Mutex<Option<oneshot::Sender<u32>>>>,
 }
 
 impl Default for ClaudeExecutor {
@@ -289,6 +300,7 @@ impl ClaudeExecutor {
         Self {
             program: PathBuf::from("claude"),
             leading_args: Vec::new(),
+            spawn_observer: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -302,7 +314,35 @@ impl ClaudeExecutor {
         Self {
             program: program.into(),
             leading_args,
+            spawn_observer: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Publish the agent's process group id on `tx` the instant the child exists.
+    ///
+    /// **A builder on the concrete type, deliberately not a method on the
+    /// [`Executor`] trait.** That trait is what every Phase 15 caller programs
+    /// against and what every future backend — a container, a remote runner —
+    /// will implement; a Unix process-group id is a fact about *this* backend's
+    /// spawn, and putting it in the portable contract would oblige a backend that
+    /// has no process groups to describe one.
+    ///
+    /// **What makes the channel trustworthy is an invariant of `start_run`:** the
+    /// child is spawned synchronously at `wrap.spawn()` and the pgid is read on
+    /// the very next statement, with no `.await` between them. So a caller that
+    /// receives nothing here can conclude the agent child does not exist — not
+    /// that it exists and the message was late.
+    ///
+    /// The driver is the caller, and the failure this closes is CR-01: a stop
+    /// that lands while `start` is still awaiting the capability gate has no
+    /// [`ExecutionHandle`] and therefore no `pgid`, so it has no handle on the
+    /// **agent's** group — which is a different process group from the driver's,
+    /// because `claude` is spawned with `ProcessGroup::leader()`. Tearing down the
+    /// group the signal reached is not tearing down the group that matters
+    /// (D-06, D-09).
+    pub fn observing_spawn(mut self, tx: oneshot::Sender<u32>) -> Self {
+        self.spawn_observer = Arc::new(Mutex::new(Some(tx)));
+        self
     }
 
     async fn start_run(
@@ -363,6 +403,23 @@ impl ClaudeExecutor {
         // is obtained — and it is recorded immediately, because a teardown with
         // no group handle is not a teardown.
         let pgid = child.id().ok_or(SpawnError::PidUnavailable)?;
+
+        // Published HERE, before the gate is awaited, and that position is the
+        // whole point (CR-01). The `ExecutionHandle` this function eventually
+        // returns also carries the pgid — but a caller parked at `gate_rx.await`
+        // below has no handle yet, and the documented hook hang
+        // (`src/executor/mod.rs:225-239`) makes that window minutes rather than
+        // microseconds. A driver stopped inside that window without this channel
+        // has nothing to tear down but its OWN group, and `claude` leads a group
+        // of its own — so the group that was signalled is not the group that had
+        // to go (D-06, D-09).
+        //
+        // A closed receiver is ignored: the driver may have finished normally and
+        // dropped it, which is not an error and is not this function's business.
+        if let Some(observer) = self.spawn_observer.lock().await.take() {
+            let _ = observer.send(pgid);
+        }
+
         let stdin = child
             .stdin()
             .take()

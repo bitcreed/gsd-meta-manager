@@ -10,9 +10,13 @@
 //! until this file existed; `src/journal/mod.rs` says so in as many words.
 
 use std::path::PathBuf;
+use std::time::Duration;
+
+use rustix::process::Signal;
+use tokio::sync::oneshot;
 
 use crate::config::RegisteredProject;
-use crate::driver::{lock, DriveArgs};
+use crate::driver::{kill, liveness, lock, DriveArgs};
 use crate::error::DriveError;
 use crate::executor::claude::ClaudeExecutor;
 use crate::executor::{
@@ -28,6 +32,43 @@ use crate::journal::{self, JournalEvent, JournalRun, RunRecord};
 /// from the TUI, stopped from a shell, or stopped by a service manager, and this
 /// record is the only thing that says a terminate signal is what arrived.
 const TERMINATE_DIAGNOSTIC_CODE: &str = "terminate_signal_shutdown";
+
+/// How long the agent's group is given between the terminate signal and the
+/// uncatchable one **when the stop arrives during startup**.
+///
+/// **Five seconds, not the drain path's ten, and the difference is the state the
+/// agent is in.** The drain path's ten seconds exist for a working agent: a turn
+/// to abort, a Bash tree mid-command with its own signal handler, and a
+/// `SessionEnd` hook chain that is allowed to finish. During startup the agent is
+/// parked at — or before — its first `system/init`. There is no turn, no
+/// grandchild mid-build, and no hook chain worth ten seconds of a user's stop.
+///
+/// The upper bound is not taste. The whole startup teardown has to fit inside
+/// [`crate::driver::kill::DRIVER_TEARDOWN_GRACE`], the twelve seconds the TUI
+/// gives the driver before it escalates to SIGKILL — and a driver SIGKILLed
+/// mid-teardown orphans the agent group, which is the exact failure this path
+/// exists to prevent. Five plus [`STARTUP_REAP_BOUND`] plus the journal's two is
+/// nine, which fits with three to spare, and
+/// `the_startup_stop_budget_fits_inside_the_driver_teardown_grace` asserts that
+/// rather than this comment claiming it. The drain path does not fit and does not
+/// need to: those twelve seconds were sized *for* it, by
+/// `the_driver_grace_exceeds_the_claude_group_grace_plus_slack`.
+const STARTUP_AGENT_GRACE: Duration = Duration::from_secs(5);
+
+/// How long the uncatchable signal is given to take effect on the startup path.
+///
+/// SIGKILL cannot be caught, so this is a reap window rather than a grace, and it
+/// mirrors `kill::KILL_REAP_BOUND` for the same reason: two seconds is enough to
+/// observe a `/proc` entry disappear and short enough to leave room in the
+/// budget above.
+const STARTUP_REAP_BOUND: Duration = Duration::from_secs(2);
+
+/// How often the agent group is re-probed while waiting out either bound above.
+///
+/// A signal is delivered asynchronously and a just-signalled process is briefly
+/// still a pid, so the wait is "gone soon" rather than "gone now" — the same
+/// reasoning, and the same tenth of a second, as `kill::DEATH_POLL_INTERVAL`.
+const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// The state one driver process holds for the duration of one run.
 pub struct DriverRun {
@@ -241,6 +282,127 @@ async fn shutdown_on_terminate(
     }
 }
 
+/// Whether the agent process has left, counting a **zombie as gone**.
+///
+/// The `'Z'` arm is the load-bearing half. This driver is the agent's parent and
+/// is about to exit without reaping it — the whole point of
+/// [`shutdown_during_startup`] is that the process leaves immediately afterwards
+/// — so a zombie here is an *exited* process waiting for init to adopt and reap
+/// it. Treating it as still-running would burn the remaining grace waiting for
+/// something that has already happened, and on the escalation path that wait is
+/// subtracted directly from the budget the TUI is counting down.
+fn agent_has_exited(pid: u32) -> bool {
+    matches!(liveness::process_state(pid), None | Some('Z'))
+}
+
+/// Poll until `pid` has left, giving up after `limit`. Reports whether it did.
+async fn agent_gone_within(pid: u32, limit: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        if agent_has_exited(pid) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(STARTUP_POLL_INTERVAL).await;
+    }
+}
+
+/// The stop that arrives while the agent is still starting (CR-01).
+///
+/// **The window this closes, precisely.** `tokio::signal::unix::signal` replaces
+/// SIGTERM's default disposition the moment it is constructed, at the very top of
+/// [`execute_run`] — so from that instant the driver survives a terminate signal.
+/// Until plan 17-08 nothing polled `term.recv()` until the drain loop two hundred
+/// lines later, which meant a stop issued while `Executor::start` was in flight
+/// was **swallowed**: the driver ignored the TUI's SIGTERM, the TUI escalated to
+/// SIGKILL after its twelve-second grace, and the `claude` group — a *different*
+/// process group that had never been signalled — was orphaned with its
+/// grandchildren. The documented `SessionStart` hook hang
+/// (`src/executor/mod.rs:225-239`) makes that window minutes rather than
+/// microseconds.
+///
+/// **Why this tears the group down itself rather than trusting the Coordinator.**
+/// Dropping the `start` future does drop `cancel_tx`, and the Coordinator's
+/// cancellation arm does tear the agent group down. But that teardown is
+/// unobservable from here — there is no handle, no outcome and no channel back —
+/// and it dies with the tokio runtime the instant this process exits, which is
+/// the next thing that happens. The driver must not return until it has *seen*
+/// the group go, so it signals the group itself and waits.
+///
+/// It reaches the group through [`kill::signal_group`] and never through a direct
+/// `rustix` call, so the "process group 0 is the caller's own group" refusal
+/// exists in exactly one place in the tree (D-08).
+async fn shutdown_during_startup(pgid_rx: &mut oneshot::Receiver<u32>, journal: &mut JournalRun) {
+    // A non-blocking read, and it has to be: by the time this body runs
+    // `tokio::select!` has already dropped the `start` future, so nothing further
+    // will ever be sent on this channel and an `.await` here would hang until the
+    // sender dropped. `Ok` means the agent child exists and its group is known;
+    // any `Err` means the spawn had not reached `child.id()` yet, so there is no
+    // agent and nothing to tear down.
+    let agent_pgid = pgid_rx.try_recv().ok();
+
+    if let Some(agent_pgid) = agent_pgid {
+        if let Err(err) = kill::signal_group(agent_pgid, Signal::TERM) {
+            // The error KIND only, never a message body (T-17-05).
+            tracing::warn!(
+                kind = ?err.kind(),
+                "could not send the terminate signal to the agent process group during startup",
+            );
+        }
+
+        if !agent_gone_within(agent_pgid, STARTUP_AGENT_GRACE).await {
+            tracing::warn!(
+                agent_pgid,
+                "the agent group outlasted its startup grace; escalating to the \
+                 uncatchable signal",
+            );
+            if let Err(err) = kill::signal_group(agent_pgid, Signal::KILL) {
+                tracing::warn!(
+                    kind = ?err.kind(),
+                    "could not send the uncatchable signal to the agent process group",
+                );
+            }
+            let _ = agent_gone_within(agent_pgid, STARTUP_REAP_BOUND).await;
+        }
+    }
+
+    // The same diagnostic CODE the drain-loop path writes, deliberately: it is
+    // what a later reader greps for, and a second code for "stopped, but earlier"
+    // would split one question across two searches. The *detail* carries the
+    // difference, including whether there was an agent group at all.
+    if let Err(err) = journal.record(&JournalEvent::Diagnostic {
+        code: TERMINATE_DIAGNOSTIC_CODE.to_string(),
+        detail: match agent_pgid {
+            Some(_) => "the driver received the terminate signal while the agent was still \
+                        starting, and tore down the agent process group"
+                .to_string(),
+            None => "the driver received the terminate signal before the agent process \
+                     existed, so there was no agent process group to tear down"
+                .to_string(),
+        },
+    }) {
+        tracing::warn!(
+            kind = ?err.kind(),
+            "could not journal the terminate-signal diagnostic",
+        );
+    }
+
+    // Hard-coded, unlike `shutdown_on_terminate`, and the difference is not an
+    // inconsistency. That path has an `ExecutionHandle` and therefore a
+    // `RunOutcome` to derive a label from — including the rare case where a
+    // wall-clock or idle breach was classified in the same pass. Here there is no
+    // handle and no outcome: the run was stopped before one could exist, and
+    // "killed" is the only truthful thing to write.
+    if let Err(err) = journal.finish("killed") {
+        tracing::warn!(
+            detail = %format!("{err:#}"),
+            "could not close the journal after a startup terminate-signal shutdown",
+        );
+    }
+}
+
 /// Run one GSD command to completion and leave a complete run directory.
 ///
 /// In order, and the order is the decision:
@@ -262,6 +424,20 @@ async fn shutdown_on_terminate(
 /// 6. Drain the event stream into the journal, racing the terminate signal
 ///    **first** — see the `biased` `select!` below.
 /// 7. Finish the journal with the derived outcome — `run.json` write two.
+///
+/// **The terminate signal is raced against every await between the handler's
+/// installation and step 7 — not only the drain loop.** This doc used to say the
+/// signal was raced "first", which was true of the drain loop and false of
+/// everything before it, and CR-01 is what that cost. The awaits in the window
+/// were `lock::acquire`, `JournalRun::start`, `executor.start` and
+/// `close_input`; the last two are long — `start` blocks on the capability gate,
+/// which the documented hook hang can park for minutes — and each is now the
+/// second arm of a `biased` `select!` whose first arm is `term.recv()`. The
+/// synchronous steps in that window need no arm of their own, because tokio
+/// **buffers** a signal delivered before the first `recv()`: whichever poll comes
+/// first acts on it. `establish_own_group` and the two shorter awaits are covered
+/// by that buffering, which is why the driver responds to a stop issued before it
+/// has finished starting rather than after.
 ///
 /// The lock guard lives on [`DriverRun`], which outlives the terminal
 /// `finish` call, so the lock is released **after** the last write rather than
@@ -357,17 +533,51 @@ pub async fn execute_run(
     })?;
     let mut run = DriverRun { journal, lock };
 
+    // The agent's process group, published the instant the child exists rather
+    // than only on the `ExecutionHandle` (CR-01). A stop that lands while `start`
+    // is still awaiting the capability gate never receives a handle, so without
+    // this channel it would have no way to reach the agent's group — which is a
+    // *different* group from this driver's, and therefore the one that survives a
+    // signal aimed here (D-06, D-09).
+    let (pgid_tx, mut pgid_rx) = oneshot::channel::<u32>();
+
     // The only branch on the hidden development flags, and it lives here rather
     // than in `main` so the fixture never touches the production dispatch.
     let executor = match &args.claude_program {
         Some(program) => ClaudeExecutor::with_program(program, args.claude_args.clone()),
         None => ClaudeExecutor::new(),
+    }
+    .observing_spawn(pgid_tx);
+
+    // `biased`, terminate arm FIRST — the same discipline as the drain loop
+    // below, for a sharper reason. There the cost of losing the race is a
+    // *delayed* stop; here it is a **swallowed** one. `Executor::start` blocks on
+    // the capability gate, and the documented `SessionStart` hook hang parks it
+    // for minutes, during which the driver would ignore the TUI's SIGTERM, get
+    // SIGKILLed at the end of the twelve-second grace, and orphan the agent group
+    // it never signalled. That is CR-01, and `tests/driver_kill_startup.rs` is
+    // the three-process proof.
+    //
+    // Losing the race also drops the `start` future, which drops `cancel_tx` and
+    // fires the Coordinator's own cancellation — but that teardown is
+    // unobservable from here and dies with the runtime, which is why
+    // `shutdown_during_startup` tears the group down explicitly instead of
+    // relying on it.
+    let started = tokio::select! {
+        biased;
+
+        _ = term.recv() => {
+            shutdown_during_startup(&mut pgid_rx, &mut run.journal).await;
+            // Returning drops `run` and with it the `RunLock` — the descriptor
+            // close IS the release (D-20.2). The terminal record was written by
+            // the call above, so nothing below runs and no second one follows.
+            return Ok(());
+        }
+
+        result = executor.start(&project, args.command.clone(), options) => result,
     };
 
-    let mut handle = match executor
-        .start(&project, args.command.clone(), options)
-        .await
-    {
+    let mut handle = match started {
         Ok(handle) => handle,
         Err(err) => {
             // A run that started always has a terminal record, even when the
@@ -388,8 +598,23 @@ pub async fn execute_run(
     // "no more input", not "stop": the CLI drains what is queued, finishes and
     // exits on its own. Without it a real `claude` would wait for a second turn
     // that this phase never sends.
-    if let Err(err) = handle.close_input().await {
-        tracing::warn!(kind = ?err, "could not signal end-of-input to the agent");
+    //
+    // Raced the same way, and the second-longest await in the window. By this
+    // point there **is** a handle, so a stop here takes the ordinary layer-2 path
+    // through `Executor::cancel` and no second teardown is written (D-06.2).
+    tokio::select! {
+        biased;
+
+        _ = term.recv() => {
+            shutdown_on_terminate(&executor, &mut handle, &mut run.journal).await;
+            return Ok(());
+        }
+
+        result = handle.close_input() => {
+            if let Err(err) = result {
+                tracing::warn!(kind = ?err, "could not signal end-of-input to the agent");
+            }
+        }
     }
 
     // `biased`, with the terminate arm FIRST, following `src/main_loop.rs:130`.
@@ -534,6 +759,40 @@ mod tests {
             "getpgrp() and the /proc pgrp field must name the same group. A \
              disagreement means one of the two is reading the wrong thing, and \
              the consequence is a kill switch that refuses every stop (D-04)"
+        );
+    }
+
+    /// What the startup teardown still has to do after the agent group is gone:
+    /// the diagnostic append, the terminal `run.json` write, and this process's
+    /// own exit.
+    ///
+    /// A named budget rather than a fudge factor, following
+    /// `tests/executor_lifecycle.rs:43-46`'s convention of mirroring a value
+    /// where the reasoning about it happens.
+    const JOURNAL_BUDGET: Duration = Duration::from_secs(2);
+
+    #[test]
+    fn the_startup_stop_budget_fits_inside_the_driver_teardown_grace() {
+        let budget = STARTUP_AGENT_GRACE + STARTUP_REAP_BOUND + JOURNAL_BUDGET;
+        assert!(
+            budget <= crate::driver::kill::DRIVER_TEARDOWN_GRACE,
+            "the whole startup teardown ({budget:?}) must fit inside the grace the \
+             TUI gives the driver ({:?}). A breach is not a slow stop: the TUI \
+             SIGKILLs the driver mid-teardown, which orphans the agent process \
+             group and its grandchildren — the exact failure this path exists to \
+             prevent, reintroduced by a number",
+            crate::driver::kill::DRIVER_TEARDOWN_GRACE
+        );
+
+        // And the startup grace is deliberately SHORTER than the drain path's,
+        // which is the claim the constant's doc makes. Pinned so a later edit
+        // that "harmonises" the two has to face the budget above.
+        assert!(
+            STARTUP_AGENT_GRACE < Duration::from_secs(10),
+            "the startup grace must stay below the drain path's ten seconds: \
+             during startup there is no turn to abort, no Bash tree mid-command \
+             and no SessionEnd chain, and the ten-second version does not fit the \
+             budget asserted above"
         );
     }
 

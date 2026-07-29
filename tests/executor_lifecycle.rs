@@ -39,6 +39,11 @@ const FAKE_ORPHAN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/fake-claude-orphan.sh"
 );
+/// The stand-in that never emits `system/init`, so `start` never returns.
+const FAKE_SILENT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/fake-claude-silent.sh"
+);
 
 /// The real grace between the terminate signal and the uncatchable one. The
 /// constant itself is private to the executor; this is the observable value the
@@ -676,5 +681,95 @@ async fn a_descendant_holding_stdout_after_the_leader_exits_cannot_hang_the_run(
     assert!(
         reported_an_exit(&events),
         "the run must still report the leader's own exit status. Observed events: {events:?}"
+    );
+}
+
+// ============================================================================
+// The spawn observer: a teardown handle for a start that never returns (CR-01)
+//
+// `ExecutionHandle` carries the agent's pgid, and for every test above that is
+// enough — they all get a handle. The driver does not always get one: a stop
+// that lands while `start` is still blocked on the capability gate leaves it
+// with no handle and therefore no way to reach the agent's process group, which
+// is a DIFFERENT group from the driver's own. The observer channel is what
+// closes that window, and this is the test that it is fed before the gate rather
+// than after it.
+// ============================================================================
+
+#[tokio::test]
+async fn the_spawn_observer_publishes_the_agent_pgid_even_when_the_gate_never_opens() {
+    use gsd_meta_manager::driver::liveness;
+
+    let scratch = TempDir::new().expect("temp dir");
+    let pidfile = scratch.path().join("agent-pids");
+    let project = DrivableProject::for_testing_bypassing_opt_in("silent", scratch.path());
+
+    let (tx, mut rx) = tokio::sync::oneshot::channel::<u32>();
+    let executor =
+        ClaudeExecutor::with_program(FAKE_SILENT, vec![OsString::from(pidfile.as_os_str())])
+            .observing_spawn(tx);
+
+    // The fixture never emits `system/init`, so `start` blocks on the capability
+    // gate indefinitely. Racing it against a short sleep and asserting the SLEEP
+    // won is what proves the parked state rather than assuming it: without that
+    // assertion this test would pass identically against a fixture that started
+    // normally, and would then be proving nothing about the startup window.
+    let parked = tokio::select! {
+        _ = executor.start(&project, "/gsd-progress".to_string(), capped(30_000, 20_000)) => false,
+        _ = tokio::time::sleep(Duration::from_secs(2)) => true,
+    };
+    assert!(
+        parked,
+        "the silent stand-in must leave `start` parked on the capability gate. If \
+         `start` returned, the fixture emitted a system/init it must never emit, and \
+         this test is measuring the ordinary path instead of the startup window"
+    );
+
+    let pgid = rx
+        .try_recv()
+        .expect("the observer must receive the agent pgid BEFORE the gate is awaited");
+
+    // The published number names a real process rather than something the
+    // observer invented. The pid file is the only channel the fixture has — the
+    // journal is fed from the event drain, and the drain never runs here — and
+    // the first value in it is the stand-in's own `$$`. The executor spawns the
+    // agent as a group LEADER, so that pid and the pgid are the same number.
+    let pidfile_contents = std::fs::read_to_string(&pidfile).unwrap_or_default();
+    let announced: Vec<u32> = pidfile_contents
+        .split_whitespace()
+        .filter_map(|token| token.parse().ok())
+        .collect();
+    assert_eq!(
+        announced.first().copied(),
+        Some(pgid),
+        "the published pgid must be the stand-in's own pid; a mismatch means the \
+         observer published something that is not the agent's group, and a teardown \
+         aimed at it would miss (D-06, D-09). Pid file read: {pidfile_contents:?}"
+    );
+
+    // Losing the `select!` above dropped the `start` future, which dropped
+    // `cancel_tx`, which fires the Coordinator's cancellation arm and tears the
+    // agent group down. That this is an ASSERTION rather than a best-effort
+    // cleanup is deliberate: it documents the exact behaviour
+    // `driver::run::shutdown_during_startup` chooses NOT to rely on, because the
+    // Coordinator's teardown is unobservable to the driver and dies with the
+    // runtime the instant the driver process exits — which is the driver's very
+    // next act after a startup stop.
+    //
+    // No signal is sent from this test and no `kill` shell-out is added: this
+    // file spawns only through `ClaudeExecutor`.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut gone = false;
+    while Instant::now() < deadline {
+        if liveness::process_state(pgid).is_none() {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        gone,
+        "the agent {pgid} outlived the dropped `start` future, so the Coordinator's \
+         cancellation path did not run"
     );
 }
