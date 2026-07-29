@@ -208,13 +208,13 @@ The Driver tab and every rendered driver surface land in Phase 18.
   - Run-log growth must be bounded (per-run cap, rotation, retain last N runs) — a 4h run is tens of MB of JSON
 
 **Research**: done — `16-RESEARCH.md` (empirically executed; every claim produced by running code)
-**Plans**: 6 plans
+**Plans**: 2/6 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 16-01-PLAN.md — Tracer: `src/journal/` module, redact-at-capture behind the `RedactedLine` seam, append-only NDJSON writer, byte-offset tail, pure path classification
-- [ ] 16-02-PLAN.md — The bounded drain's dropped-event count becomes an observable stream event (D-33 handover from 15-08)
+- [x] 16-01-PLAN.md — Tracer: `src/journal/` module, redact-at-capture behind the `RedactedLine` seam, append-only NDJSON writer, byte-offset tail, pure path classification
+- [x] 16-02-PLAN.md — The bounded drain's dropped-event count becomes an observable stream event (D-33 handover from 15-08)
 
 **Wave 2** *(blocked on Wave 1)*
 
@@ -379,7 +379,7 @@ phase's scope.
 |-------|----------------|--------|-----------|
 | 14. UI Fixes | 4/4 | Complete    | 2026-07-29 |
 | 15. Transport Foundation | 8/8 | Complete    | 2026-07-29 |
-| 16. Run Journal & State Substrate | 0/? | Not started | - |
+| 16. Run Journal & State Substrate | 2/6 | In Progress|  |
 | 17. Supervisor | 0/? | Not started | - |
 | 18. Driver Tab, Live Watch & Durable Injection | 0/? | Not started | - |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 0/? | Not started | - |
