@@ -233,3 +233,9 @@ and the reason is written into the arm so a future reader does not read it as a 
 - Sequence-gap detection is **within one tail batch only** — no last-seen `seq` is stored across
   batches, so a gap straddling two tail reads is invisible. Storing the last `seq` alongside the
   cursor would close that; it was out of this plan's scope.
+
+## Self-Check: PASSED
+
+All five modified source files present. All four commits (`28717be`, `c1a3f03`, `fcf9c62`,
+`002002f`) present in `git log`. Working tree clean. `STATE.md` and `ROADMAP.md` untouched, as
+required for a parallel worktree executor.
