@@ -343,6 +343,367 @@ impl RedactedLine {
 mod tests {
     use super::*;
 
+    /// The credential and path shapes this redactor is pinned to, as
+    /// `(name, input, expected)`.
+    ///
+    /// Every row asserts an **exact** output. A row asserting merely that the
+    /// output changed would pass against a redactor that mangles prose.
+    ///
+    /// Six rows are the WR-15 cases and are deliberately separate rather than
+    /// folded into one general "path" case: `tests/fixtures/transcripts/README.md`
+    /// records that the original Phase 15 sweep matched only the slash form and
+    /// missed the dash-encoded shapes in **seven of eight** fixtures, and
+    /// concludes that any future sweep must scan both encodings (D-24). A grep
+    /// for the slash form alone is not evidence of a clean capture.
+    ///
+    /// Three rows expect their input back verbatim. Those are as load-bearing as
+    /// the matches: D-25's tuning direction is over-redaction, but total prose
+    /// destruction is not the goal.
+    const CORPUS: &[(&str, &str, &str)] = &[
+        // ---- paths, slash encoding ----
+        (
+            "slash home",
+            "cwd is /home/blk/projects/rust/gsd-meta-manager/src",
+            "cwd is /home/[REDACTED:user]/projects/rust/gsd-meta-manager/src",
+        ),
+        (
+            "macos home",
+            "cwd is /Users/andy/Code/thing",
+            "cwd is /home/[REDACTED:user]/Code/thing",
+        ),
+        (
+            "silverblue home",
+            "cwd is /var/home/blk/projects/x",
+            "cwd is /home/[REDACTED:user]/projects/x",
+        ),
+        (
+            "slash tmp scratch",
+            "scratch /tmp/claude-1000/work",
+            "scratch /tmp/claude-[REDACTED:uid]/work",
+        ),
+        // ---- paths, dash encoding (WR-15) ----
+        (
+            "dash home nested in a slash path",
+            "/home/blk/.claude/projects/-home-blk-projects-rust-gsd-meta-manager/x.jsonl",
+            "/home/[REDACTED:user]/.claude/projects/-home-redacted-project/x.jsonl",
+        ),
+        (
+            "dash home under a slash tmp path",
+            "/tmp/x/-home-blk-projects-y/z",
+            "/tmp/x/-home-redacted-project/z",
+        ),
+        (
+            "dash users home",
+            "sess dir -Users-andy-Code-thing here",
+            "sess dir -home-redacted-project here",
+        ),
+        (
+            "dash tmp scratch directory",
+            "/tmp/claude-1000/-home-blk-projects-rust-gsd-meta-manager/4661fdcd/scratchpad",
+            "/tmp/claude-[REDACTED:uid]/-home-redacted-project/4661fdcd/scratchpad",
+        ),
+        (
+            "dash tmp claude session prefix",
+            "sess -tmp-claude-1000--home-blk-projects-x/memory/",
+            "sess -tmp-scratch-/memory/",
+        ),
+        // ---- credentials ----
+        (
+            "anthropic key",
+            "key sk-ant-api03-AbCdEf012345_-XyZ end",
+            "key [REDACTED:anthropic-key] end",
+        ),
+        (
+            "generic provider key",
+            "OPENAI sk-proj-abcdefghijklmnopqrstuvwxyz012345 end",
+            "OPENAI [REDACTED:api-key] end",
+        ),
+        (
+            "github classic token",
+            "token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 end",
+            "token [REDACTED:github-token] end",
+        ),
+        (
+            "github fine-grained token",
+            "github_pat_11ABCDEFG0abcdefghijklmnop_qrstuvwxyz01234",
+            "[REDACTED:github-token]",
+        ),
+        (
+            "aws access key id",
+            "AWS AKIAIOSFODNN7EXAMPLE here",
+            "AWS [REDACTED:aws-key-id] here",
+        ),
+        (
+            "slack token",
+            "xoxb-1234567890-abcdefghijkl",
+            "[REDACTED:slack-token]",
+        ),
+        (
+            "jwt",
+            "tok eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U end",
+            "tok [REDACTED:jwt] end",
+        ),
+        (
+            "url userinfo",
+            "clone https://andy:hunter2@github.com/org/repo.git",
+            "clone [REDACTED:userinfo]@github.com/org/repo.git",
+        ),
+        (
+            "pem private key block",
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD9\nabcdefgh\n-----END RSA PRIVATE KEY-----",
+            "[REDACTED:private-key]",
+        ),
+        // ---- headers. `authz basic` is the leak-1 regression row: a value scan
+        //      that stopped at whitespace redacted only the scheme word and
+        //      wrote the base64 credential to disk.
+        (
+            "authorization bearer header",
+            "Authorization: Bearer abc123def456ghi789",
+            "[REDACTED:authorization]",
+        ),
+        (
+            "authorization basic header with base64",
+            "authorization: Basic dXNlcjpwYXNzd29yZA==",
+            "[REDACTED:authorization]",
+        ),
+        (
+            "bare bearer scheme",
+            "hdr was Bearer abc123def456ghi789 ok",
+            "hdr was [REDACTED:bearer] ok",
+        ),
+        // ---- environment assignments ----
+        (
+            "env token",
+            "GITHUB_TOKEN=ghp_zzzzzzzzzzzzzzzzzzzzzzzzzz",
+            "[REDACTED:env]",
+        ),
+        (
+            "env secret",
+            "MY_SECRET=supersecretvalue rest",
+            "[REDACTED:env] rest",
+        ),
+        (
+            "env anthropic key",
+            "ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxx",
+            "[REDACTED:env]",
+        ),
+        (
+            "env password",
+            "DB_PASSWORD: hunter2 and more",
+            "[REDACTED:env] and more",
+        ),
+        // ---- structured payload ----
+        (
+            "path in a json leaf",
+            r#"{"memory_paths":{"/home/blk/.claude/CLAUDE.md":1}}"#,
+            r#"{"memory_paths":{"/home/[REDACTED:user]/.claude/CLAUDE.md":1}}"#,
+        ),
+        // ---- deliberate NON-matches (D-25) ----
+        (
+            "prose naming a planning path",
+            "The phase writes .planning/meta-manager/runs/ and is fine.",
+            "The phase writes .planning/meta-manager/runs/ and is fine.",
+        ),
+        (
+            "url with a port but no userinfo",
+            "see https://example.com:8443/path/to/x",
+            "see https://example.com:8443/path/to/x",
+        ),
+        (
+            "env var name with no assignment",
+            "the API_KEY variable is documented",
+            "the API_KEY variable is documented",
+        ),
+    ];
+
+    #[test]
+    fn every_corpus_case_redacts_exactly_as_specified() {
+        assert!(
+            CORPUS.len() >= 27,
+            "the corpus is a floor, not a sample: {} rows",
+            CORPUS.len()
+        );
+
+        for (name, input, expected) in CORPUS {
+            assert_eq!(&redact(input), expected, "corpus row `{name}`");
+        }
+
+        // The leak-1 regression, asserted by name rather than by hoping a row
+        // covers it: the base64 must be gone, not merely the scheme word.
+        let (_, basic_input, basic_expected) = CORPUS
+            .iter()
+            .find(|(name, _, _)| *name == "authorization basic header with base64")
+            .expect("the header row must stay in the corpus");
+        assert!(basic_input.contains("dXNlcjpwYXNzd29yZA=="));
+        assert!(
+            !basic_expected.contains("dXNlcjpwYXNzd29yZA=="),
+            "the credential after the scheme word must not survive"
+        );
+
+        // The deliberate non-matches, counted so a later edit cannot quietly
+        // turn the redactor into a prose shredder.
+        let unchanged = CORPUS
+            .iter()
+            .filter(|(_, input, expected)| input == expected)
+            .count();
+        assert!(
+            unchanged >= 3,
+            "at least three rows must expect their input back verbatim, found {unchanged}"
+        );
+    }
+
+    #[test]
+    fn redaction_is_idempotent_over_the_whole_corpus() {
+        // The cheapest possible detector for "a replacement literal is itself
+        // redactable" and for "rule A ate rule B's output". It iterates the same
+        // CORPUS the exactness test uses, so a row added there is automatically
+        // covered here.
+        for (name, input, _) in CORPUS {
+            let once = redact(input);
+            let twice = redact(&once);
+            assert_eq!(once, twice, "corpus row `{name}` is not a fixed point");
+        }
+    }
+
+    #[test]
+    fn object_keys_are_redacted_and_collisions_are_disambiguated() {
+        let mut value = serde_json::json!({
+            "text": "run with GITHUB_TOKEN=ghp_zzzzzzzzzzzzzzzzzzzzzzzzzz in /home/blk/p",
+            "memory_paths": {
+                "/home/blk/.claude/CLAUDE.md": 1,
+                "/home/andy/.claude/CLAUDE.md": 2
+            },
+            "nested": [ { "cwd": "/home/blk/x" }, [ "/home/blk/y" ] ],
+            "cost": 1.83,
+            "ok": true,
+            "nil": null
+        });
+        redact_value(&mut value);
+
+        let base = "/home/[REDACTED:user]/.claude/CLAUDE.md";
+        let paths = value["memory_paths"]
+            .as_object()
+            .expect("memory_paths stays an object");
+        assert!(paths.contains_key(base), "keys must be redacted too (D-23)");
+        assert!(
+            paths.contains_key(&format!("{base}#2")),
+            "two distinct keys collapsing to one literal must be disambiguated, \
+             never silently overwritten: {paths:?}"
+        );
+        assert_eq!(paths.len(), 2, "no field may be lost to a key collision");
+
+        // Non-string scalars are untouched by construction — this is exactly why
+        // the tree walk cannot corrupt a payload.
+        assert_eq!(value["cost"], serde_json::json!(1.83));
+        assert_eq!(value["ok"], serde_json::json!(true));
+        assert_eq!(value["nil"], serde_json::Value::Null);
+
+        assert_eq!(value["nested"][0]["cwd"], "/home/[REDACTED:user]/x");
+        assert_eq!(value["nested"][1][0], "/home/[REDACTED:user]/y");
+        assert_eq!(
+            value["text"],
+            "run with [REDACTED:env] in /home/[REDACTED:user]/p"
+        );
+
+        let rendered = serde_json::to_string(&value).expect("serialises");
+        serde_json::from_str::<Value>(&rendered).expect("and reparses as valid JSON");
+    }
+
+    #[test]
+    fn a_payload_with_embedded_newlines_still_serialises_to_one_line() {
+        let value = serde_json::json!({
+            "kind": "exec_event",
+            "text": "line one\nline two\r\n{\"kind\":\"forged\",\"seq\":99}\n",
+        });
+        let line = RedactedLine::new(value);
+
+        assert!(
+            !line.as_line().contains('\n'),
+            "a raw newline in the line would forge a second NDJSON record"
+        );
+        assert!(!line.as_line().contains('\r'));
+        assert!(
+            line.as_line().contains("\\n"),
+            "the newline must survive as an escape inside the string"
+        );
+        serde_json::from_str::<Value>(line.as_line()).expect("still valid JSON");
+    }
+
+    #[test]
+    fn an_oversize_payload_is_truncated_on_a_char_boundary_with_a_marker() {
+        // A three-byte character, so the cap lands mid-character: 8192 is not a
+        // multiple of 3. A naive byte slice here panics.
+        let char_bytes = "€".len();
+        assert_eq!(char_bytes, 3);
+        assert_ne!(MAX_EVENT_PAYLOAD_BYTES % char_bytes, 0);
+
+        let original = "€".repeat(4_000);
+        let original_len = original.len();
+        let mut value = serde_json::json!({ "text": original });
+        cap_payload(&mut value, MAX_EVENT_PAYLOAD_BYTES);
+
+        let text = value["text"].as_str().expect("still a string leaf");
+        let kept = MAX_EVENT_PAYLOAD_BYTES - (MAX_EVENT_PAYLOAD_BYTES % char_bytes);
+        let removed = original_len - kept;
+        let marker = format!("…[truncated {removed} bytes]");
+
+        assert!(text.ends_with(&marker), "got tail: {:?}", &text[text.len() - 40..]);
+        assert!(
+            text.len() <= MAX_EVENT_PAYLOAD_BYTES + marker.len(),
+            "at most the cap plus the marker, got {}",
+            text.len()
+        );
+        assert!(
+            text.starts_with('€'),
+            "the truncation must land on a character boundary"
+        );
+        assert_eq!(text.chars().next(), Some('€'));
+
+        // And the capped tree still serialises to one valid line.
+        let line = RedactedLine::new(serde_json::json!({ "text": "€".repeat(4_000) }));
+        serde_json::from_str::<Value>(line.as_line()).expect("valid JSON");
+        assert!(line.as_line().contains("truncated"));
+    }
+
+    #[test]
+    fn the_runtime_home_prefix_is_redacted_in_both_encodings() {
+        // Deliberately does not depend on the developer's actual home: whatever
+        // `dirs::home_dir()` returns, both encodings of it must map to the same
+        // fixed literals the generic rules produce, and the result must be a
+        // fixed point.
+        let Some(home) = dirs::home_dir().and_then(|p| p.to_str().map(str::to_owned)) else {
+            // No discoverable home on this host: the host layer is inert and
+            // there is nothing to assert. The generic shape rules are covered by
+            // the corpus. Passing trivially is the correct behaviour here.
+            return;
+        };
+        if home.len() < 2 {
+            return;
+        }
+
+        let slash = format!("cwd is {home}/projects/thing");
+        let out = redact(&slash);
+        assert!(!out.contains(&home), "the runtime home survived: {out}");
+        assert!(
+            out.contains("/home/[REDACTED:user]"),
+            "the slash form must map to the generic literal: {out}"
+        );
+        assert_eq!(redact(&out), out, "and be a fixed point");
+
+        let dashed_home = home.replace('/', "-");
+        let dashed = format!("sess {dashed_home}-projects-thing here");
+        let out = redact(&dashed);
+        assert!(
+            !out.contains(&dashed_home),
+            "the dash-encoded runtime home survived: {out}"
+        );
+        assert!(
+            out.contains("-home-redacted-project"),
+            "the dash form must map to the generic literal: {out}"
+        );
+        assert_eq!(redact(&out), out, "and be a fixed point");
+    }
+
     #[test]
     fn the_only_constructor_redacts_before_it_serialises() {
         let value = serde_json::json!({
