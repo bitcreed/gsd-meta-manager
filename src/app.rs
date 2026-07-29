@@ -186,6 +186,13 @@ impl App {
     /// collected turns and the disk delta as well — so fabricating one here
     /// would be a lie the UI then renders. The driver that owns the run
     /// (Phase 17) is what closes the state out.
+    ///
+    /// Nor does `ExecutionEvent::EventsDropped` move the state at all. The
+    /// count is carried for the journal (plan 16-06) and for a future Phase 18
+    /// surface, and it is deliberately not allowed to move a run's state: it is
+    /// emitted in the terminal path, after the process has stopped producing,
+    /// so letting it reach the catch-all below would let a diagnostic
+    /// manufacture liveness (D-33).
     pub fn apply_exec_event(&mut self, event: crate::main_loop::ExecEvent) {
         use crate::executor::{ExecutionEvent, RunState};
 
@@ -195,6 +202,11 @@ impl App {
         match event {
             ExecutionEvent::SessionStarted { .. } => *state = RunState::Running,
             ExecutionEvent::Exited(_) => *state = RunState::Stopping,
+            // A diagnostic about what the stream *lost*, not evidence that
+            // anything is still running. Explicit rather than left to the
+            // catch-all, which would promote an idle alias on reasoning that
+            // does not apply to a terminal-path event (D-19, D-33).
+            ExecutionEvent::EventsDropped { .. } => {}
             // Any other observed line means the process is alive and talking.
             // If we somehow never saw the gated `system/init` (a torn first
             // line, say), record that a run is at least under way rather than
@@ -637,5 +649,45 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(format_phase_display(&state), "Live State");
+    }
+
+    #[test]
+    fn a_drop_report_does_not_move_a_runs_state() {
+        use crate::executor::{ExecutionEvent, RunState};
+        use crate::main_loop::ExecEvent;
+
+        let mut app = App::new_for_test();
+        app.ctx
+            .run_states
+            .insert("busy".to_string(), RunState::Running);
+
+        app.apply_exec_event(ExecEvent::new(
+            "busy",
+            ExecutionEvent::EventsDropped { count: 40 },
+        ));
+
+        assert_eq!(
+            app.ctx.run_states.get("busy"),
+            Some(&RunState::Running),
+            "a drop report is a diagnostic; it must not disturb a state the \
+             stream already established"
+        );
+
+        // The load-bearing half. The catch-all arm promotes an `Idle` alias to
+        // `Starting` on the reasoning that any observed line means the process
+        // is alive and talking — but this report is emitted in the terminal
+        // path, *after* the process stopped producing. If this assertion ever
+        // reads `Starting`, the catch-all has reclaimed the variant and a
+        // diagnostic is manufacturing liveness again (D-19, D-33).
+        app.apply_exec_event(ExecEvent::new(
+            "quiet",
+            ExecutionEvent::EventsDropped { count: 40 },
+        ));
+
+        assert_eq!(
+            app.ctx.run_states.get("quiet"),
+            Some(&RunState::Idle),
+            "a drop report must not promote an idle alias to Starting"
+        );
     }
 }
