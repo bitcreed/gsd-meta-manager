@@ -3,8 +3,10 @@ use assert_fs::TempDir;
 use std::path::PathBuf;
 
 // Import the library's modules
-use gsd_meta_manager::config::{load_config, save_config, Config};
-use gsd_meta_manager::registry::{add_project, list_projects, remove_project};
+use gsd_meta_manager::config::{load_config, save_config, Config, CONFIG_SCHEMA_VERSION};
+use gsd_meta_manager::registry::{
+    add_project, clear_opt_in, is_opted_in, list_projects, record_opt_in, remove_project,
+};
 
 #[test]
 fn add_project_with_valid_alias_and_planning_dir_succeeds() {
@@ -134,9 +136,50 @@ fn save_config_then_load_config_roundtrips() {
     save_config(&config, &config_path).unwrap();
     let loaded = load_config(&config_path).unwrap();
 
-    assert_eq!(loaded.version, 1);
+    // Against the constant, not a literal: a config this build writes carries
+    // this build's schema version, and pinning the number here would need
+    // editing on every future bump for no gain.
+    assert_eq!(loaded.version, CONFIG_SCHEMA_VERSION);
     assert!(loaded.projects.contains_key("roundtrip"));
     assert_eq!(loaded.projects["roundtrip"].path, project_temp.path());
+}
+
+#[test]
+fn a_round_trip_through_save_and_load_preserves_an_opt_in_record() {
+    let temp = TempDir::new().unwrap();
+    let config_path = temp.path().join("config.json");
+
+    let project_temp = TempDir::new().unwrap();
+    project_temp.child(".planning").create_dir_all().unwrap();
+    project_temp
+        .child("CLAUDE.md")
+        .write_str("# Project instructions\n")
+        .unwrap();
+
+    let mut config = Config::new();
+    add_project(&mut config, "opted", project_temp.path()).unwrap();
+    record_opt_in(&mut config, "opted").unwrap();
+    let recorded = config.projects["opted"].driver_opt_in.clone().unwrap();
+
+    save_config(&config, &config_path).unwrap();
+    let loaded = load_config(&config_path).unwrap();
+
+    assert!(
+        is_opted_in(&loaded, "opted"),
+        "an opt-in that does not survive a save and load is not an opt-in"
+    );
+    assert_eq!(
+        loaded.projects["opted"].driver_opt_in.as_ref(),
+        Some(&recorded),
+        "both fields of the record round-trip verbatim, digest included"
+    );
+
+    // And the withdrawal round-trips too, as an absence rather than a marker.
+    let mut loaded = loaded;
+    clear_opt_in(&mut loaded, "opted").unwrap();
+    save_config(&loaded, &config_path).unwrap();
+    let reloaded = load_config(&config_path).unwrap();
+    assert!(!is_opted_in(&reloaded, "opted"));
 }
 
 #[test]
@@ -145,7 +188,7 @@ fn load_config_on_nonexistent_file_returns_default() {
     let config_path = temp.path().join("does_not_exist.json");
 
     let config = load_config(&config_path).unwrap();
-    assert_eq!(config.version, 1);
+    assert_eq!(config.version, CONFIG_SCHEMA_VERSION);
     assert!(config.projects.is_empty());
 }
 

@@ -1,4 +1,4 @@
-use crate::config::{Config, RegisteredProject};
+use crate::config::{Config, DriverOptIn, RegisteredProject};
 use crate::session_detector::ClaudeSession;
 use anyhow::{bail, Result};
 use std::collections::HashSet;
@@ -43,7 +43,15 @@ pub fn add_project(config: &mut Config, alias: &str, path: &Path) -> Result<()> 
             // `auto_register_from_sessions` reaches this line, so this explicit
             // `None` is what proves discovery can never enrol a project into
             // being driven (D-14, D-15).
+            //
+            // Written out at the site rather than with a struct-update
+            // shorthand on purpose: `..Default::default()` would absorb the next
+            // field silently, and the compile error that forced this line to
+            // exist is the whole mechanism.
             driver_opt_in: None,
+            // A fresh entry carries no unknown fields. Also explicit, for the
+            // same reason.
+            extra: Default::default(),
         },
     );
 
@@ -74,10 +82,88 @@ pub fn add_project_unchecked(config: &mut Config, alias: &str, path: &Path) -> R
             added: now,
             // See `add_project`: never set by any registration path (D-14).
             driver_opt_in: None,
+            extra: Default::default(),
         },
     );
 
     Ok(())
+}
+
+/// Record the user's deliberate opt-in for `alias`.
+///
+/// **This is the only function outside tests that constructs a [`DriverOptIn`],
+/// and that uniqueness is the point (D-14).** Because a record can come into
+/// existence in exactly one place, a `Some(record)` sitting in a `config.json` is
+/// proof of a deliberate user action rather than a bit that could have been
+/// flipped from anywhere. `tests/spawn_seam_guard.rs`-style greps can check
+/// "constructed once"; they cannot check "every branch remembered to ask".
+///
+/// The timestamp is
+/// `chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)` — the same
+/// call `JournalRun::finish` makes, deliberately not this module's older bare
+/// `to_rfc3339()`, so an opt-in stamp and a run's `ended_at` compare directly
+/// without normalising.
+///
+/// **Does not persist.** The caller calls `save_config`, consistently with every
+/// other function in this module.
+pub fn record_opt_in(config: &mut Config, alias: &str) -> Result<()> {
+    let Some(entry) = config.projects.get_mut(alias) else {
+        bail!("Project not found: {}", alias);
+    };
+
+    let digest = claude_md_digest(&entry.path);
+    entry.driver_opt_in = Some(DriverOptIn {
+        opted_in_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        claude_md_digest: digest,
+    });
+
+    Ok(())
+}
+
+/// A digest of `<project_root>/CLAUDE.md` as it stands right now.
+///
+/// Reuses [`crate::journal::argv_digest`], which adds no hashing code and no
+/// dependency. Two facts about that function are the reason it is the right one
+/// here, and both are already stated on it: it is FNV-1a based, and it is
+/// **explicitly not a security control**. That is exactly what this needs — a
+/// cheap identity fingerprint for *drift detection*, never an integrity check.
+///
+/// **Phase 17 records the digest and acts on nothing.** Phase 21 re-confirms the
+/// opt-in when the file drifts; recording it now is what saves that phase a
+/// second migration of a user-owned file.
+///
+/// `None` when `CLAUDE.md` is absent or unreadable — both are ordinary states for
+/// a project, not failures.
+fn claude_md_digest(project_root: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(project_root.join("CLAUDE.md")).ok()?;
+    Some(crate::journal::argv_digest(&[contents]))
+}
+
+/// Withdraw the opt-in for `alias`, removing the record entirely.
+///
+/// Setting the field back to `None` rather than storing a "revoked" marker: the
+/// gate asks one question — is there a record? — and a second representation of
+/// "no" is a second thing that can be got wrong. Like [`record_opt_in`], this
+/// does not persist.
+pub fn clear_opt_in(config: &mut Config, alias: &str) -> Result<()> {
+    let Some(entry) = config.projects.get_mut(alias) else {
+        bail!("Project not found: {}", alias);
+    };
+    entry.driver_opt_in = None;
+    Ok(())
+}
+
+/// Whether `alias` carries an opt-in record.
+///
+/// A cheap read for the UI (plan 17-07). **Not a gate**: the gate is
+/// `DrivableProject::from_registry`, which lives in the driver process so a
+/// hand-typed `drive` is refused by the same code as a TUI-initiated one (D-16).
+/// An unregistered alias answers `false`.
+pub fn is_opted_in(config: &Config, alias: &str) -> bool {
+    config
+        .projects
+        .get(alias)
+        .is_some_and(|entry| entry.driver_opt_in.is_some())
 }
 
 /// Remove a project from the registry by alias.
@@ -278,6 +364,105 @@ mod tests {
         assert_eq!(added[0].0, "myproj-2");
         assert!(config.projects.contains_key("myproj"));
         assert!(config.projects.contains_key("myproj-2"));
+    }
+
+    #[test]
+    fn record_opt_in_stamps_a_record_with_a_second_precision_timestamp() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".planning")).unwrap();
+        std::fs::write(dir.path().join("CLAUDE.md"), "# Project\n").unwrap();
+        let mut config = empty_config();
+        add_project(&mut config, "opted", dir.path()).unwrap();
+
+        assert!(
+            !is_opted_in(&config, "opted"),
+            "registration alone never opts a project in (D-14)"
+        );
+
+        record_opt_in(&mut config, "opted").unwrap();
+
+        let record = config.projects["opted"]
+            .driver_opt_in
+            .as_ref()
+            .expect("record_opt_in constructs the record");
+
+        // Second precision, RFC3339, `Z` — the shape `JournalRun::finish` writes,
+        // so an opt-in stamp and a run's `ended_at` compare without normalising.
+        assert!(
+            record.opted_in_at.ends_with('Z'),
+            "the stamp is UTC with a Z suffix, got: {}",
+            record.opted_in_at
+        );
+        assert!(
+            !record.opted_in_at.contains('.'),
+            "second precision means no fractional part, got: {}",
+            record.opted_in_at
+        );
+        assert_eq!(
+            record.opted_in_at.len(),
+            20,
+            "`YYYY-MM-DDTHH:MM:SSZ` is 20 characters, got: {}",
+            record.opted_in_at
+        );
+
+        let digest = record
+            .claude_md_digest
+            .as_ref()
+            .expect("a project with a CLAUDE.md records its digest");
+        assert!(
+            digest.starts_with("fnv1a64:"),
+            "the digest reuses `journal::argv_digest`, got: {digest}"
+        );
+
+        assert!(is_opted_in(&config, "opted"));
+    }
+
+    #[test]
+    fn clear_opt_in_removes_the_record_entirely() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".planning")).unwrap();
+        let mut config = empty_config();
+        add_project(&mut config, "opted", dir.path()).unwrap();
+        record_opt_in(&mut config, "opted").unwrap();
+
+        clear_opt_in(&mut config, "opted").unwrap();
+
+        assert!(
+            config.projects["opted"].driver_opt_in.is_none(),
+            "withdrawal removes the record; there is no second representation of 'no'"
+        );
+        assert!(!is_opted_in(&config, "opted"));
+        assert!(
+            config.projects.contains_key("opted"),
+            "withdrawing the opt-in never unregisters the project"
+        );
+    }
+
+    #[test]
+    fn auto_registration_leaves_every_discovered_project_not_opted_in() {
+        let dir_a = tempdir().unwrap();
+        let dir_b = tempdir().unwrap();
+        std::fs::create_dir(dir_a.path().join(".planning")).unwrap();
+        std::fs::create_dir(dir_b.path().join(".planning")).unwrap();
+        // A CLAUDE.md present at discovery time must make no difference at all.
+        std::fs::write(dir_a.path().join("CLAUDE.md"), "# A\n").unwrap();
+
+        let mut config = empty_config();
+        let sessions = vec![
+            make_session(dir_a.path().to_path_buf()),
+            make_session(dir_b.path().to_path_buf()),
+        ];
+
+        let added = auto_register_from_sessions(&mut config, &sessions);
+
+        assert_eq!(added.len(), 2, "both discovered projects register");
+        for (alias, entry) in &config.projects {
+            assert!(
+                entry.driver_opt_in.is_none(),
+                "discovery may REGISTER; driving requires a separate, explicit, \
+                 persisted opt-in — but '{alias}' came back opted in (D-15)"
+            );
+        }
     }
 
     #[test]

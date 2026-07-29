@@ -757,6 +757,7 @@ mod tests {
                 opted_in_at: "2026-07-29T00:00:00Z".to_string(),
                 claude_md_digest: None,
             }),
+            extra: Default::default(),
         }
     }
 
