@@ -102,9 +102,23 @@ pub struct InitMessage {
 
 /// An `assistant` or `user` turn message.
 ///
-/// Both types share one shape. The message body itself is deliberately not
-/// modelled: this phase routes envelopes, and the content blocks are Phase 18's
-/// rendering concern.
+/// Both types share one shape. The message body is modelled **only as far as
+/// rendering needs it** (OBS-04): [`MessageBody`] carries the content blocks so
+/// [`TurnMessage::text_content`] can project a turn into readable prose for a
+/// live output pane. Before that projection existed the journal stored a Rust
+/// `Debug` rendering of this struct, which satisfies "watch its output" only in
+/// the letter — a pane full of `TurnMessage { session_id: Some(..), .. }` is
+/// not output a human can read.
+///
+/// What is still deliberately **not** modelled, and why:
+///
+/// - A `tool_use` block's `input` and a `tool_result` block's `content`. Both
+///   are unbounded, arbitrarily-shaped payloads; the projection names the block
+///   instead of expanding it, so one tool result cannot dominate the journal's
+///   per-run byte cap or flush a bounded output buffer.
+/// - `usage`, `stop_reason`, `model`, and the per-message ids on the body.
+///   Nothing renders them, and a modelled field is a field that must be kept in
+///   sync with the CLI's patch cadence.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TurnMessage {
     /// Stable across the process's turns.
@@ -126,6 +140,143 @@ pub struct TurnMessage {
     /// Per-message identity.
     #[serde(default)]
     pub uuid: Option<String>,
+    /// The message body, when the envelope carries one.
+    ///
+    /// snake_case on the wire and the same name as the field, so no rename.
+    /// Deserialised through [`tolerant_message_body`] rather than plain
+    /// `Option<MessageBody>`: `#[serde(default)]` rescues an **absent** field,
+    /// and nothing else. A body that arrives as some shape other than an object
+    /// would still be a hard parse error, and a hard parse error here does not
+    /// degrade to a missing field — it fails the whole envelope and lands the
+    /// line in `ExecutionEvent::Unparseable`.
+    #[serde(default, deserialize_with = "tolerant_message_body")]
+    pub message: Option<MessageBody>,
+}
+
+/// The body of an `assistant` or `user` turn: its content blocks, and nothing
+/// else this build has a use for.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MessageBody {
+    /// The content blocks, in wire order.
+    ///
+    /// See [`tolerant_content`] for why this is not a plain
+    /// `#[serde(default)] Vec<ContentBlock>`.
+    #[serde(default, deserialize_with = "tolerant_content")]
+    pub content: Vec<ContentBlock>,
+}
+
+/// One content block inside a [`MessageBody`].
+///
+/// Every field is `Option` **and** `#[serde(default)]`, which is this file's
+/// posture applied to a shape that changes faster than anything else in the
+/// protocol: a block type no build has heard of must degrade to a missing field
+/// and a bracketed label, never to a parse failure.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ContentBlock {
+    /// The block discriminator: `text`, `tool_use`, `tool_result`, `thinking`,
+    /// and whatever ships next.
+    ///
+    /// `type` on the wire is a Rust keyword, hence the rename — the same reason
+    /// [`UserMessage`]'s own `kind` field carries one. Deliberately a `String`
+    /// and not an enum, for the reason the module doc gives for `subtype`.
+    #[serde(default, rename = "type")]
+    pub block_type: Option<String>,
+    /// The rendered text of a `text` block. Absent on every other block type.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// The tool name on a `tool_use` block. Absent elsewhere.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl ContentBlock {
+    /// This block as one readable string.
+    ///
+    /// A text block renders as its text. **Every other block renders as a short
+    /// bracketed label naming its type** — and is deliberately not dropped: a
+    /// tool call that vanishes from the output pane is work the user cannot see
+    /// happening. The label is not expanded into the block's payload; see
+    /// [`TurnMessage`]'s doc for why.
+    fn render(&self) -> String {
+        let kind = self.block_type.as_deref().unwrap_or("");
+        if kind == "text" || (kind.is_empty() && self.text.is_some()) {
+            return self.text.clone().unwrap_or_default();
+        }
+        let label = if kind.is_empty() { "block" } else { kind };
+        match self.name.as_deref() {
+            Some(name) if !name.is_empty() => format!("[{label}: {name}]"),
+            _ => format!("[{label}]"),
+        }
+    }
+}
+
+impl TurnMessage {
+    /// The turn's content as one readable string, blocks in wire order.
+    ///
+    /// Renderable blocks are joined with `\n` because a consumer splits on
+    /// newlines into separate display lines anyway, and because a bracketed
+    /// tool label run together with prose reads as neither. A turn with no body,
+    /// an empty body, or a body of blocks that render to nothing yields an empty
+    /// string; nothing here panics, unwraps or indexes.
+    ///
+    /// **This is a projection for display only.** Delivery correlation reads
+    /// [`TurnMessage::is_replay`] off the parsed envelope, never this string —
+    /// reconstructing protocol semantics from a rendered projection is
+    /// screen-scraping in another guise (D-08).
+    pub fn text_content(&self) -> String {
+        let Some(body) = self.message.as_ref() else {
+            return String::new();
+        };
+        body.content
+            .iter()
+            .map(ContentBlock::render)
+            .filter(|rendered| !rendered.is_empty())
+            .collect::<Vec<String>>()
+            .join("\n")
+    }
+}
+
+/// Deserialise a turn's `message` field, tolerating any shape but an object.
+///
+/// A non-object body (a bare string, `null`, a number) yields `None` rather
+/// than an error, so the envelope still parses and the turn still routes.
+fn tolerant_message_body<'de, D>(deserializer: D) -> Result<Option<MessageBody>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if !value.is_object() {
+        return Ok(None);
+    }
+    Ok(serde_json::from_value(value).ok())
+}
+
+/// Deserialise a body's `content` field, tolerating every shape it is known to
+/// take and every shape it is not.
+///
+/// - An **array** maps element-wise; a block that will not deserialise becomes
+///   an empty block rather than failing its siblings.
+/// - A **string** becomes one text block. The wire has carried both forms for
+///   `content` on different message types, and the string form must not be a
+///   parse failure.
+/// - Anything else yields no blocks.
+fn tolerant_content<'de, D>(deserializer: D) -> Result<Vec<ContentBlock>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .map(|item| serde_json::from_value(item).unwrap_or_default())
+            .collect(),
+        serde_json::Value::String(text) => vec![ContentBlock {
+            block_type: Some("text".to_string()),
+            text: Some(text),
+            name: None,
+        }],
+        _ => Vec::new(),
+    })
 }
 
 /// The `result` payload. One per **turn** (D-29).
@@ -148,6 +299,14 @@ pub struct ResultMessage {
     /// **Per-turn and resets** — it is not a run-level counter (D-29).
     #[serde(default)]
     pub num_turns: Option<u64>,
+    /// Wall-clock milliseconds for **this turn**, which likewise resets (D-29).
+    ///
+    /// Observed on success and error envelopes alike. Anything presenting it
+    /// must label it per-turn: a steered run emits one `result` per turn, so
+    /// showing this as "how long the run took" would understate a multi-turn
+    /// run by every turn but the last.
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
     /// **Cumulative across turns.** Under subscription auth this is a notional
     /// price for work that is not billed per call — never present it as "what
     /// this run cost" (D-16).
@@ -706,6 +865,145 @@ mod tests {
         );
         assert_eq!(init.api_key_source.as_deref(), Some("none"));
         assert_eq!(init.permission_mode.as_deref(), Some("default"));
+    }
+
+    // ========================================================================
+    // The content-block model and its text projection (OBS-04)
+    // ========================================================================
+
+    fn turn(raw: &str) -> TurnMessage {
+        match parse_line(raw) {
+            Envelope::Parsed {
+                msg: StreamMessage::Assistant(turn) | StreamMessage::User(turn),
+                ..
+            } => turn,
+            other => panic!("expected a turn message, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_text_only_turn_projects_to_its_own_text() {
+        let turn = turn(
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"0.4.2"}]},"session_id":"s"}"#,
+        );
+        assert_eq!(turn.text_content(), "0.4.2");
+    }
+
+    #[test]
+    fn two_text_blocks_project_in_wire_order_on_their_own_lines() {
+        let turn = turn(
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"first"},{"type":"text","text":"second"}]}}"#,
+        );
+        assert_eq!(turn.text_content(), "first\nsecond");
+    }
+
+    #[test]
+    fn a_tool_use_block_keeps_a_visible_label_naming_the_tool() {
+        let turn = turn(
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"Read","input":{"file_path":"/tmp/Cargo.toml"}}]},"session_id":"s"}"#,
+        );
+        assert_eq!(
+            turn.text_content(),
+            "[tool_use: Read]",
+            "a tool call that vanishes from the pane is work the user cannot see"
+        );
+    }
+
+    #[test]
+    fn a_tool_result_block_is_labelled_rather_than_expanded() {
+        let turn = turn(
+            r#"{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01","type":"tool_result","content":"1\t[package]\n"}]}}"#,
+        );
+        assert_eq!(turn.text_content(), "[tool_result]");
+    }
+
+    #[test]
+    fn a_turn_with_no_body_projects_to_an_empty_string_without_panicking() {
+        let bodyless = turn(r#"{"type":"assistant","session_id":"s","uuid":"u"}"#);
+        assert!(bodyless.message.is_none());
+        assert_eq!(bodyless.text_content(), "");
+
+        let empty = turn(r#"{"type":"assistant","message":{"role":"assistant","content":[]}}"#);
+        assert_eq!(empty.text_content(), "");
+    }
+
+    #[test]
+    fn a_multibyte_turn_projects_its_scalars_intact() {
+        let turn = turn(
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"🚀 起動しました"}]}}"#,
+        );
+        assert_eq!(turn.text_content(), "🚀 起動しました");
+    }
+
+    #[test]
+    fn a_content_block_shape_no_build_has_seen_degrades_to_a_label_not_a_parse_failure() {
+        // The whole reason every added field is `Option` + `#[serde(default)]`:
+        // an unknown block must not fail the envelope and land the line in
+        // `ExecutionEvent::Unparseable`.
+        let turn = turn(
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"holographic_projection","frames":9}]}}"#,
+        );
+        assert_eq!(turn.text_content(), "[holographic_projection]");
+    }
+
+    #[test]
+    fn a_body_or_content_of_the_wrong_shape_still_parses_as_a_carried_envelope() {
+        // `#[serde(default)]` rescues an ABSENT field and nothing else, so both
+        // of these would be hard parse errors without the tolerant readers.
+        for raw in [
+            r#"{"type":"assistant","message":"a bare string body","session_id":"s"}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":42}}"#,
+            r#"{"type":"assistant","message":null}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":7}]}}"#,
+        ] {
+            let env = parse_line(raw);
+            assert!(
+                matches!(
+                    env,
+                    Envelope::Parsed {
+                        msg: StreamMessage::Assistant(_),
+                        ..
+                    }
+                ),
+                "a body shape we do not model must never be a parse failure: {env:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_string_content_field_becomes_one_text_block() {
+        let turn = turn(r#"{"type":"user","message":{"role":"user","content":"plain text body"}}"#);
+        assert_eq!(turn.text_content(), "plain text body");
+    }
+
+    #[test]
+    fn every_golden_transcript_turn_projects_without_a_debug_rendering() {
+        for (name, transcript) in ALL_TRANSCRIPTS {
+            for msg in messages(transcript) {
+                let turn = match msg {
+                    StreamMessage::Assistant(turn) | StreamMessage::User(turn) => turn,
+                    _ => continue,
+                };
+                let text = turn.text_content();
+                assert!(
+                    !text.contains("TurnMessage {") && !text.contains("Some("),
+                    "{name} projected a Debug rendering rather than readable text: {text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_per_turn_duration_is_read_off_both_success_and_error_envelopes() {
+        assert_eq!(
+            results(T01).first().expect("a result").duration_ms,
+            Some(1804)
+        );
+        assert_eq!(
+            results(T02).first().expect("a result").duration_ms,
+            Some(3568),
+            "an error envelope reports its turn duration too"
+        );
     }
 
     // ========================================================================

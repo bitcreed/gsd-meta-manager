@@ -80,7 +80,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
-use crate::executor::stream_json::StreamMessage;
+use crate::executor::stream_json::{ResultMessage, StreamMessage, SystemMessage, TurnMessage};
 use crate::executor::ExecutionEvent;
 
 /// Where a project's run directories live, relative to its `.planning/` (D-01).
@@ -268,6 +268,186 @@ pub fn new_run_id(now: chrono::DateTime<chrono::Utc>, session_uuid: &uuid::Uuid)
         .replace(':', "-");
     let simple = session_uuid.simple().to_string();
     format!("{stamp}-{}", &simple[..4])
+}
+
+/// One run's list row, built from `run.json` and **nothing else** (OBS-05).
+///
+/// Every field here comes from the one committed per-run artifact, which is
+/// what makes enumerating a project's runs cost one `read_dir` plus one small
+/// read per run rather than a journal parse per run. A project holding the full
+/// [`RETAIN_RUNS`] history would otherwise pay up to ten
+/// [`MAX_RUN_JOURNAL_BYTES`]-bounded parses to draw a list.
+///
+/// **`outcome` is evidence, never prose.** It is [`RunRecord::outcome`], which
+/// the driver derives from exit codes, envelope verdict fields and a disk
+/// snapshot; nothing that renders a status word from a [`RunSummary`] may reach
+/// for the agent's own summary of what it did (D-13).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunSummary {
+    /// The run id, which is also the directory name.
+    pub run_id: String,
+    /// RFC3339 UTC timestamp of the run's first write.
+    pub started_at: String,
+    /// RFC3339 UTC timestamp of the terminal transition.
+    ///
+    /// **`None` means the run never reached one** — it is either live or it
+    /// crashed, and telling those apart is a liveness probe's job, not this
+    /// function's (D-06, D-32).
+    pub ended_at: Option<String>,
+    /// The originating goal prompt, verbatim (OBS-03). Empty when none was given.
+    pub goal: String,
+    /// The GSD command the run was started with.
+    pub gsd_command: String,
+    /// The derived run outcome, rendered. `None` until the terminal write.
+    pub outcome: Option<String>,
+}
+
+/// Every run on disk for one project, newest first (OBS-05).
+///
+/// **This is blocking filesystem work — one `read_dir` and one small read per
+/// run — and every caller is required to invoke it on
+/// [`tokio::task::spawn_blocking`]** (D-28). That requirement is not
+/// theoretical: `tests/driver_lock.rs:201-215` records a blocking call inside an
+/// `async fn` defeating `tokio::time::timeout` on a current-thread runtime in
+/// this very repository, and on the TUI side the same mistake is a frozen frame
+/// rather than an error. No async wrapper is offered here on purpose — this
+/// module has no runtime dependency today and should not gain one to enforce a
+/// rule the call site is the right place to apply.
+///
+/// **It never reads a journal.** Neither [`reader::read_all`] nor
+/// [`reader::tail_lines`] is reachable from here; a list row that cost a journal
+/// parse would make entering the driver tab slow in exact proportion to how much
+/// the project has been driven, which is backwards.
+///
+/// Skipping rules, and why each is not silent:
+///
+/// - A directory entry whose name is not a single plain path component is
+///   refused by [`run_paths`] before anything is joined or read (D-27, WR-02).
+/// - A run directory whose `run.json` is missing or unparseable is skipped with
+///   a `tracing::warn!` naming the run id and the error **kind** — never file
+///   content, per this module's logging rule. It is a real anomaly on a tree
+///   this tool owns, so it must not vanish; it also must not abort the listing,
+///   because one damaged record would then hide every healthy run beside it.
+/// - A missing runs root is not an anomaly at all: it is a project that has
+///   never been driven. It yields an empty list and logs nothing.
+pub fn list_runs(planning_dir: &Path) -> Vec<RunSummary> {
+    let root = runs_root(planning_dir);
+    let entries = match std::fs::read_dir(&root) {
+        Ok(entries) => entries,
+        // Never driven: an empty list is the honest answer, not a warning.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            tracing::warn!(
+                "Failed to list the runs root at {}: {:?}",
+                root.display(),
+                error.kind()
+            );
+            return Vec::new();
+        }
+    };
+
+    let mut runs: Vec<RunSummary> = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        // A non-UTF-8 name cannot be a run id: `new_run_id`'s format is ASCII by
+        // construction. Converted with `into_string` rather than
+        // `to_string_lossy` deliberately — a lossy conversion would hand a name
+        // that is not the name on disk to the path join below.
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if let Some(summary) = read_run_summary(planning_dir, &name) {
+            runs.push(summary);
+        }
+    }
+
+    sort_run_summaries_newest_first(&mut runs);
+    runs
+}
+
+/// One run's summary, or `None` for an id, a record or a document this cannot
+/// safely read.
+///
+/// Split out of [`list_runs`] so both halves are testable: the traversal refusal
+/// can be exercised against a real planted file **outside** the runs root, which
+/// a `read_dir` walk can never produce and therefore can never prove.
+fn read_run_summary(planning_dir: &Path, run_id: &str) -> Option<RunSummary> {
+    // The fallible join is the whole traversal guard, and it comes first: a
+    // hostile id is refused before any path is touched (D-27).
+    let paths = run_paths(planning_dir, run_id)?;
+
+    let raw = match std::fs::read_to_string(&paths.run_json) {
+        Ok(raw) => raw,
+        Err(error) => {
+            tracing::warn!(
+                "Skipping run {run_id}: run.json is unreadable ({:?})",
+                error.kind()
+            );
+            return None;
+        }
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        tracing::warn!("Skipping run {run_id}: run.json did not parse as JSON");
+        return None;
+    };
+
+    Some(run_summary_from_value(run_id, &value))
+}
+
+/// The field extraction, over a `Value` rather than through [`RunRecord`].
+///
+/// The same tolerance `writer::has_end_timestamp` already applies on the write
+/// path (D-30): a record written by a schema this build has never seen must
+/// still list, and every field this row needs is optional to it. Going through
+/// [`RunRecord`] would make one added required field turn every older run
+/// invisible in the UI.
+fn run_summary_from_value(run_id: &str, value: &serde_json::Value) -> RunSummary {
+    let string_field = |key: &str| -> String {
+        value
+            .get(key)
+            .and_then(|field| field.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let optional_field = |key: &str| -> Option<String> {
+        value
+            .get(key)
+            .filter(|field| !field.is_null())
+            .and_then(|field| field.as_str())
+            .map(|field| field.to_string())
+    };
+
+    RunSummary {
+        run_id: run_id.to_string(),
+        started_at: string_field("started_at"),
+        ended_at: optional_field("ended_at"),
+        goal: string_field("goal"),
+        gsd_command: string_field("gsd_command"),
+        outcome: optional_field("outcome"),
+    }
+}
+
+/// Sort run summaries **newest first**: lexicographic order on `run_id`,
+/// descending.
+///
+/// **Lexicographic order is chronological order, and that is load-bearing
+/// rather than a happy accident.** [`new_run_id`] produces
+/// `2026-07-28T14-03-11Z-a3f9` — a fixed-width, zero-padded, UTC RFC3339 stamp
+/// with a random suffix that only breaks ties — so byte order *is* time order,
+/// and `run_id_sorts_lexicographically_in_chronological_order` pins it. This is
+/// the same property on-disk retention (`writer::prune_runs`) and
+/// `App::prune_driver_maps` already rely on to pick the newest runs without
+/// opening a single file.
+///
+/// **The declined alternative is parsing `started_at` and sorting on the
+/// timestamp.** It is worse twice over: it costs a parse per row for an ordering
+/// the id already carries, and it *disagrees* with the id whenever a clock moves
+/// — leaving the run list, the pruner and the map bound sorting a project's runs
+/// three different ways.
+pub fn sort_run_summaries_newest_first(runs: &mut [RunSummary]) {
+    runs.sort_by(|left, right| right.run_id.cmp(&left.run_id));
 }
 
 /// A non-cryptographic identity digest of a spawned command line.
@@ -907,6 +1087,124 @@ fn stream_label(message: &StreamMessage) -> &'static str {
     }
 }
 
+/// A readable text projection of one observed stream message (OBS-04).
+///
+/// **The agent's own words may be displayed as content and may never drive a
+/// badge, a colour, a status word or a sort key.** That is D-13, and it is not
+/// hypothetical: the incident it is drawn from is an agent that deleted a
+/// production database during an explicit freeze, hid it, fabricated ~4000 fake
+/// users and fake test results, and falsely claimed rollback was impossible.
+/// Self-report is testimony, not telemetry. A run's status comes from
+/// [`RunRecord::outcome`], [`JournalEvent::RunEnded`] and
+/// [`JournalEvent::ExecFinished`]'s exit code — never from anything this
+/// function returns. **Do not undo this by deriving anything from the string.**
+///
+/// **It deliberately does not sanitise, and that is a division of
+/// responsibility rather than an omission.** Terminal-control stripping happens
+/// at buffer-append time in the TUI, because `journal.jsonl` is *evidence* and
+/// is read by tools other than that renderer: stripping the `ESC` bytes an
+/// agent emitted at write time would destroy the record that it emitted them.
+/// The renderer strips unconditionally before a byte reaches a display buffer.
+/// Secret redaction is a separate control and already applies here, at the
+/// [`redact::RedactedLine`] seam every journal write goes through.
+///
+/// Why this takes a whole [`StreamMessage`] rather than the [`TurnMessage`] it
+/// mostly renders: the role is carried by the envelope's `type`, which *is* the
+/// enum variant, so a turn alone cannot say whether it is the agent speaking or
+/// the user. Every arm composes a real string; none falls back to a `Debug`
+/// rendering, which is the whole point of the function.
+fn exec_message_text(message: &StreamMessage) -> String {
+    match message {
+        StreamMessage::Assistant(turn) => compose_turn("assistant", turn),
+        // The replay marker is protocol evidence off the parsed envelope, not
+        // prose, so naming it here is honest. It is emitted at **dequeue**: the
+        // correlation that turns it into an `acted-on` transition is the
+        // driver's, from `is_replay`, never from this string (D-07, D-08).
+        StreamMessage::User(turn) => {
+            let role = if turn.is_replay {
+                "user (replay)"
+            } else {
+                "user"
+            };
+            compose_turn(role, turn)
+        }
+        StreamMessage::System(SystemMessage::Init(init)) => format!(
+            "system: init (claude {}, session {})",
+            init.claude_code_version.as_deref().unwrap_or("unreported"),
+            init.session_id.as_deref().unwrap_or("unreported"),
+        ),
+        StreamMessage::System(SystemMessage::Other) => {
+            "system: a subtype this build does not model".to_string()
+        }
+        StreamMessage::Result(result) => turn_result_text(result),
+        StreamMessage::ControlResponse(response) => format!(
+            "control_response: {} (request {})",
+            response.response.subtype, response.response.request_id
+        ),
+        // `Display` on a `serde_json::Value` is its JSON rendering — a real
+        // string off the wire rather than a Rust struct dump.
+        StreamMessage::RateLimitEvent(value) => format!("rate_limit_event: {value}"),
+        StreamMessage::Unknown => "a message type this build does not model".to_string(),
+    }
+}
+
+/// One turn as `role: text`, or the bare role when the turn rendered to nothing.
+fn compose_turn(role: &str, turn: &TurnMessage) -> String {
+    let text = turn.text_content();
+    if text.is_empty() {
+        format!("{role}:")
+    } else {
+        format!("{role}: {text}")
+    }
+}
+
+/// A readable text projection of one `result` envelope — a **turn** boundary.
+///
+/// Composed from the facts the stream reported, in the spirit of the
+/// `LineTruncated` arm below: the journal restates what the envelope said rather
+/// than inventing a third rendering of it. The agent's own prose is appended as
+/// content and carries no authority; see [`exec_message_text`] for the rule.
+///
+/// [`ResultMessage::result`] is an `Option` because it is **absent entirely on
+/// error envelopes** — not empty, absent (Phase 15 D-32). Defaulting it to an
+/// empty string would make an error envelope indistinguishable from a silent
+/// success, so the absence is preserved by simply omitting the line.
+fn turn_result_text(result: &ResultMessage) -> String {
+    let subtype = if result.subtype.is_empty() {
+        "no subtype reported"
+    } else {
+        result.subtype.as_str()
+    };
+    let mut text = format!("turn ended: {subtype}");
+    if let Some(reason) = result.terminal_reason.as_deref() {
+        text.push_str(&format!(" ({reason})"));
+    }
+    if result.is_error {
+        text.push_str(" [error]");
+    }
+    if let Some(ms) = result.duration_ms {
+        // Per-turn and resets (D-29), so it is labelled per-turn. A steered run
+        // emits one `result` per turn.
+        text.push_str(&format!("; {:.1}s this turn", ms as f64 / 1000.0));
+    }
+    if let Some(cost) = result.total_cost_usd {
+        // Cumulative across turns, and **notional rather than billed** — the
+        // caveat `JournalEvent::Cost` already carries, said where a human reads
+        // it (D-12).
+        text.push_str(&format!("; ${cost:.2} cumulative, notional"));
+    }
+    for error in &result.errors {
+        text.push_str(&format!("\nerror: {error}"));
+    }
+    if let Some(prose) = result.result.as_deref() {
+        if !prose.is_empty() {
+            text.push('\n');
+            text.push_str(prose);
+        }
+    }
+    text
+}
+
 /// Project one [`ExecutionEvent`] onto the journal's vocabulary (D-36).
 ///
 /// This is the whole of Phase 16's consumer wiring: the journal reads the
@@ -918,13 +1216,16 @@ fn stream_label(message: &StreamMessage) -> &'static str {
 ///
 /// Two constraints on the projection, both deliberate:
 ///
-/// 1. **No serialisation derive is added to [`StreamMessage`] or any other
-///    Phase 15 wire type in order to journal it.** The debug rendering is the
-///    projection available *without* widening a type this phase is told not to
-///    widen; it passes through the redactor like every other string (D-22); and
-///    Phase 18 may well want a richer projection once it has a surface to render
-///    one into. Reaching for `#[derive(Serialize)]` here would spend a
-///    permanent constraint on a temporary convenience.
+/// 1. **No serialisation derive is added to [`StreamMessage`] or any other wire
+///    type in order to journal it.** Phase 16 stored `format!("{message:?}")`
+///    here for exactly that reason — a `Debug` rendering was the projection
+///    available without widening a type it was told not to widen. The surface
+///    that renders these strings now exists, so the projection is
+///    [`exec_message_text`] and [`turn_result_text`]: readable prose composed
+///    from a minimally-modelled message body. Reaching for
+///    `#[derive(Serialize)]` here would still spend a permanent constraint on a
+///    temporary convenience, and every text still passes through the redactor
+///    like any other string (D-22).
 /// 2. **The cost figure is notional, not billed.** Phase 15-05's caveat is
 ///    carried into [`JournalEvent::ExecFinished`]'s and [`JournalEvent::Cost`]'s
 ///    field docs rather than restated: the CLI reports a modelled number and
@@ -950,7 +1251,7 @@ pub fn from_exec_event(ev: &ExecutionEvent, argv_digest: &str) -> Option<Journal
         },
         ExecutionEvent::Message(message) => JournalEvent::ExecEvent {
             stream: stream_label(message).to_string(),
-            text: format!("{message:?}"),
+            text: exec_message_text(message),
         },
         ExecutionEvent::Unknown { raw } => JournalEvent::ExecEvent {
             stream: "unknown".to_string(),
@@ -974,7 +1275,7 @@ pub fn from_exec_event(ev: &ExecutionEvent, argv_digest: &str) -> Option<Journal
         },
         ExecutionEvent::TurnCompleted(result) => JournalEvent::ExecEvent {
             stream: "turn_completed".to_string(),
-            text: format!("{result:?}"),
+            text: turn_result_text(result),
         },
         ExecutionEvent::Cost { cumulative_usd } => JournalEvent::Cost {
             cumulative_usd: *cumulative_usd,
@@ -1552,6 +1853,309 @@ mod tests {
                 "{kind} cannot be both emitted and reserved"
             );
         }
+    }
+
+    // ---- Enumerating the runs on disk (plan 18-03, Task 2; OBS-05) ----
+
+    /// A finished run on disk, written through the real writer.
+    fn plant_run(planning: &Path, run_id: &str, goal: &str, command: &str) {
+        let mut record = run_record(run_id);
+        record.goal = goal.to_string();
+        record.gsd_command = command.to_string();
+        let mut run = JournalRun::start(planning, record).expect("start the run");
+        run.finish("succeeded_with_changes")
+            .expect("finish the run");
+    }
+
+    #[test]
+    fn an_absent_or_empty_runs_root_lists_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let planning = dir.path().join(".planning");
+
+        assert!(
+            list_runs(&planning).is_empty(),
+            "a project that has never been driven has no runs and is not an anomaly"
+        );
+
+        std::fs::create_dir_all(runs_root(&planning)).expect("create the runs root");
+        assert!(list_runs(&planning).is_empty());
+    }
+
+    #[test]
+    fn a_traversing_run_id_is_refused_before_any_record_is_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let planning = dir.path().join(".planning");
+        plant_run(&planning, RUN_ID, "a real run", "/gsd:execute-phase 18");
+
+        // A perfectly valid record, planted OUTSIDE the runs root — exactly what
+        // WR-02's read side reached. `read_dir` can never yield a traversing
+        // name, so the refusal is only provable by calling the reader directly.
+        let escaped = planning.join("escaped");
+        std::fs::create_dir_all(&escaped).expect("create the escape directory");
+        std::fs::write(
+            escaped.join("run.json"),
+            serde_json::to_string(&run_record("2026-07-28T14-03-99Z-ffff"))
+                .expect("serialise the record"),
+        )
+        .expect("plant the record");
+
+        for hostile in ["../escaped", "../../escaped", "./escaped", "a/b", "..", ""] {
+            assert!(
+                read_run_summary(&planning, hostile).is_none(),
+                "{hostile:?} must be refused before anything is joined or read"
+            );
+        }
+
+        // The positive control: the guard refuses traversal, not reading.
+        assert!(
+            read_run_summary(&planning, RUN_ID).is_some(),
+            "a plain run id must still be read, or the guard passes by being broken"
+        );
+    }
+
+    #[test]
+    fn a_directory_with_no_record_is_skipped_without_hiding_its_neighbours() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let planning = dir.path().join(".planning");
+        plant_run(&planning, RUN_ID, "a real run", "/gsd:execute-phase 18");
+
+        // A run directory whose record never landed, and a stray file that is
+        // not a directory at all.
+        std::fs::create_dir_all(runs_root(&planning).join("2026-07-29T09-00-00Z-dead"))
+            .expect("create the recordless directory");
+        std::fs::write(runs_root(&planning).join("2026-07-29T10-00-00Z-file"), "")
+            .expect("write the stray file");
+
+        let runs = list_runs(&planning);
+        assert_eq!(
+            runs.iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![RUN_ID],
+            "one damaged entry must not hide the healthy run beside it"
+        );
+    }
+
+    #[test]
+    fn three_runs_come_back_newest_first() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let planning = dir.path().join(".planning");
+
+        // Planted OUT of order, and the earliest stamp deliberately carries the
+        // lexically largest suffix — a sort the random tail could influence
+        // would fail here.
+        let middle = "2026-07-28T14-03-12Z-0000";
+        let oldest = "2026-07-28T14-03-11Z-ffff";
+        let newest = "2026-07-29T00-00-00Z-0001";
+        for run_id in [middle, newest, oldest] {
+            plant_run(&planning, run_id, "g", "/gsd:progress");
+        }
+
+        let runs = list_runs(&planning);
+        assert_eq!(
+            runs.iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![newest, middle, oldest],
+            "lexicographic descending is chronological newest-first (new_run_id's format)"
+        );
+
+        // And the sort is a pure function over a slice, so it is assertable
+        // without a filesystem at all.
+        let mut shuffled = runs.clone();
+        shuffled.reverse();
+        sort_run_summaries_newest_first(&mut shuffled);
+        assert_eq!(shuffled, runs);
+    }
+
+    #[test]
+    fn a_records_goal_and_command_surface_verbatim() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let planning = dir.path().join(".planning");
+        let goal = "ship the driver tab — 起動 🚀";
+        plant_run(&planning, RUN_ID, goal, "/gsd:execute-phase 18");
+
+        let runs = list_runs(&planning);
+        let run = runs.first().expect("the planted run lists");
+        assert_eq!(
+            run.goal, goal,
+            "the goal is stored verbatim, never paraphrased"
+        );
+        assert_eq!(run.gsd_command, "/gsd:execute-phase 18");
+        assert_eq!(run.started_at, "2026-07-28T14:03:11Z");
+        assert_eq!(
+            run.outcome.as_deref(),
+            Some("succeeded_with_changes"),
+            "the outcome is the driver's derivation, never the agent's prose (D-13)"
+        );
+        assert!(run.ended_at.is_some(), "a finished run carries its ending");
+    }
+
+    #[test]
+    fn a_record_from_an_unknown_schema_still_produces_a_row() {
+        // D-30's tolerance applied to the list: one added required field must
+        // not make every older run invisible in the UI.
+        let summary = run_summary_from_value(
+            RUN_ID,
+            &serde_json::json!({
+                "started_at": "2026-07-28T14:03:11Z",
+                "goal": "g",
+                "ended_at": serde_json::Value::Null,
+                "a_field_from_2027": 1,
+            }),
+        );
+        assert_eq!(summary.run_id, RUN_ID);
+        assert_eq!(summary.goal, "g");
+        assert_eq!(
+            summary.gsd_command, "",
+            "an absent field is empty, not fatal"
+        );
+        assert_eq!(summary.ended_at, None, "an explicit null is not an ending");
+        assert_eq!(summary.outcome, None);
+    }
+
+    // ---- The readable text projection (plan 18-03, Task 1; OBS-04) ----
+
+    fn stream_message(json: serde_json::Value) -> StreamMessage {
+        serde_json::from_value(json).expect("the fixture is a valid stream message")
+    }
+
+    fn result_message(json: serde_json::Value) -> ResultMessage {
+        serde_json::from_value(json).expect("the fixture is a valid result envelope")
+    }
+
+    /// The text a journalled `ExecEvent` actually carries, through the real
+    /// mapping rather than by calling the projection directly.
+    fn journalled_text(event: &ExecutionEvent) -> String {
+        match from_exec_event(event, "fnv1a64:0000000000000000") {
+            Some(JournalEvent::ExecEvent { text, .. }) => text,
+            other => panic!("expected an exec_event, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_text_only_turn_journals_the_agents_words_not_a_debug_struct() {
+        let text = journalled_text(&ExecutionEvent::Message(Box::new(stream_message(
+            serde_json::json!({
+                "type": "assistant",
+                "message": { "role": "assistant", "content": [{ "type": "text", "text": "reading src/driver/run.rs" }] },
+                "session_id": "s",
+            }),
+        ))));
+        assert_eq!(text, "assistant: reading src/driver/run.rs");
+        assert!(
+            !text.contains("TurnMessage {"),
+            "a pane full of Debug structs satisfies \"watch its output\" only in the letter"
+        );
+    }
+
+    #[test]
+    fn a_tool_use_turn_keeps_a_visible_label_in_the_journal() {
+        let text = journalled_text(&ExecutionEvent::Message(Box::new(stream_message(
+            serde_json::json!({
+                "type": "assistant",
+                "message": { "role": "assistant", "content": [
+                    { "type": "text", "text": "checking the version" },
+                    { "type": "tool_use", "id": "toolu_01", "name": "Read", "input": { "file_path": "/tmp/Cargo.toml" } },
+                ] },
+            }),
+        ))));
+        assert_eq!(text, "assistant: checking the version\n[tool_use: Read]");
+    }
+
+    #[test]
+    fn a_turn_with_no_message_body_journals_a_short_string_and_does_not_panic() {
+        let text = journalled_text(&ExecutionEvent::Message(Box::new(stream_message(
+            serde_json::json!({ "type": "assistant", "session_id": "s" }),
+        ))));
+        assert_eq!(text, "assistant:");
+    }
+
+    #[test]
+    fn an_error_result_envelope_with_no_result_field_projects_without_panicking() {
+        // `result` is ABSENT on error envelopes, not empty (Phase 15 D-32).
+        let text = journalled_text(&ExecutionEvent::TurnCompleted(Box::new(result_message(
+            serde_json::json!({
+                "type": "result",
+                "subtype": "error_max_budget_usd",
+                "is_error": true,
+                "terminal_reason": "budget_exhausted",
+                "duration_ms": 3568,
+                "total_cost_usd": 1.83,
+                "errors": ["budget of $1.00 exhausted"],
+            }),
+        ))));
+        assert_eq!(
+            text,
+            "turn ended: error_max_budget_usd (budget_exhausted) [error]; 3.6s this turn; \
+             $1.83 cumulative, notional\nerror: budget of $1.00 exhausted"
+        );
+        assert!(
+            !text.contains("ResultMessage {"),
+            "the turn boundary must read as facts, not as a struct dump"
+        );
+    }
+
+    #[test]
+    fn a_success_result_envelope_carries_its_prose_as_content_and_nothing_more() {
+        let text = journalled_text(&ExecutionEvent::TurnCompleted(Box::new(result_message(
+            serde_json::json!({
+                "type": "result",
+                "subtype": "success",
+                "duration_ms": 1804,
+                "total_cost_usd": 0.12,
+                "result": "PONG",
+            }),
+        ))));
+        assert_eq!(
+            text,
+            "turn ended: success; 1.8s this turn; $0.12 cumulative, notional\nPONG"
+        );
+    }
+
+    #[test]
+    fn a_multibyte_turn_reaches_the_journal_byte_identically() {
+        // The projection slices nothing, so there is no byte boundary to split.
+        let words = "🚀 起動しました — ✅";
+        let text = journalled_text(&ExecutionEvent::Message(Box::new(stream_message(
+            serde_json::json!({
+                "type": "assistant",
+                "message": { "role": "assistant", "content": [{ "type": "text", "text": words }] },
+            }),
+        ))));
+        assert_eq!(text, format!("assistant: {words}"));
+    }
+
+    #[test]
+    fn the_projection_does_not_sanitise_because_the_journal_is_evidence() {
+        // Terminal-control stripping is the RENDERER's, at buffer-append time:
+        // the journal is read by tools other than that renderer, and stripping
+        // at write time would destroy the record that the agent emitted these
+        // bytes at all. This test pins the division of responsibility so a
+        // later reader cannot "fix" it here by accident.
+        let hostile = "\u{1b}[2Jall tests passed";
+        let text = journalled_text(&ExecutionEvent::Message(Box::new(stream_message(
+            serde_json::json!({
+                "type": "assistant",
+                "message": { "role": "assistant", "content": [{ "type": "text", "text": hostile }] },
+            }),
+        ))));
+        assert!(
+            text.contains('\u{1b}'),
+            "the escape byte is evidence and must survive to disk: {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_replayed_user_turn_is_named_as_a_replay_in_its_projection() {
+        let text = journalled_text(&ExecutionEvent::Message(Box::new(stream_message(
+            serde_json::json!({
+                "type": "user",
+                "isReplay": true,
+                "message": { "role": "user", "content": [{ "type": "text", "text": "skip the UI review" }] },
+            }),
+        ))));
+        assert_eq!(text, "user (replay): skip the UI review");
     }
 
     #[test]
