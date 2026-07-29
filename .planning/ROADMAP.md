@@ -110,7 +110,13 @@ before Phase 20 closes so the router is never built against a stubbed target.
   3. Pressing the markdown edit key enters edit mode on the first press
   4. PageDown at the end of a document leaves the last line on screen instead of scrolling past the content
 **Research**: skip — established codebase idioms, no new external unknowns
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 14-01-PLAN.md — UIFIX-01 pause-badge verify-first tracer + regression matrix; UIFIX-02 D-R-P-E-V pad-cell removal at the construction site
+- [ ] 14-02-PLAN.md — UIFIX-03 route `e` on the Docs tab to the existing SuspendAndEdit path; UIFIX-04 clamp the stored scroll offset to the renderer's own bound
+- [ ] 14-03-PLAN.md — full project gate, clippy-delta audit, success-criterion traceability, and retirement of the four source todos
+
 **UI hint**: yes
 
 ### Phase 15: Transport Foundation — Duplex stream-json Executor
