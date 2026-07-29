@@ -247,4 +247,13 @@ Carried forward from the plan, unchanged:
   over 65,535 rendered lines wraps and now also caps the scroll clamp.
 - **IN-09** — repository-wide `cargo fmt` drift (96 diffs in `detail.rs`, 1 in `normal.rs`, plus
   others), and the five pre-existing all-targets clippy lints.
+
+## Self-Check: PASSED
+
+- `14-04-SUMMARY.md` present at `.planning/phases/14-ui-fixes/14-04-SUMMARY.md`.
+- All four commits present on `worktree-agent-a8ec79863ef24a953`, each touching only its intended
+  files: `e27ab10` (`normal.rs`), `e1ac518` (`detail.rs`), `0e4bcdf` (`detail.rs`), `c7aae1b`
+  (SUMMARY only).
+- Working tree clean; no deletions in any commit.
+- STATE.md and ROADMAP.md untouched, as required in worktree mode.
 </content>
