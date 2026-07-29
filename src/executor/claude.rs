@@ -286,6 +286,17 @@ pub struct ClaudeExecutor {
     /// silently does not for the second. That is the honest behaviour for a
     /// channel whose receiver is a single driver's single run.
     spawn_observer: Arc<Mutex<Option<oneshot::Sender<u32>>>>,
+    /// Where the **raw wire line** of every `user` replay echo is published, for
+    /// a caller that has to correlate the echo against something it sent.
+    ///
+    /// A plain `Option<UnboundedSender>` rather than the `Arc<Mutex<Option<..>>>`
+    /// its neighbour needs, because `mpsc::UnboundedSender` is already `Clone`
+    /// and `Debug` and may be sent on many times — the take-once dance above
+    /// exists only because a `oneshot::Sender` is neither.
+    ///
+    /// See [`ClaudeExecutor::observing_replay_echoes`] for why this carries the
+    /// raw line rather than a projection of it.
+    replay_observer: Option<mpsc::UnboundedSender<String>>,
 }
 
 impl Default for ClaudeExecutor {
@@ -301,6 +312,7 @@ impl ClaudeExecutor {
             program: PathBuf::from("claude"),
             leading_args: Vec::new(),
             spawn_observer: Arc::new(Mutex::new(None)),
+            replay_observer: None,
         }
     }
 
@@ -315,6 +327,7 @@ impl ClaudeExecutor {
             program: program.into(),
             leading_args,
             spawn_observer: Arc::new(Mutex::new(None)),
+            replay_observer: None,
         }
     }
 
@@ -342,6 +355,38 @@ impl ClaudeExecutor {
     /// (D-06, D-09).
     pub fn observing_spawn(mut self, tx: oneshot::Sender<u32>) -> Self {
         self.spawn_observer = Arc::new(Mutex::new(Some(tx)));
+        self
+    }
+
+    /// Publish the **raw wire line** of every `user` replay echo on `tx`.
+    ///
+    /// A builder on the concrete type for the same reason as
+    /// [`observing_spawn`](ClaudeExecutor::observing_spawn): `--replay-user-messages`
+    /// is a fact about *this* backend's protocol, and a future container or
+    /// remote backend should not be obliged to describe one.
+    ///
+    /// **It carries the RAW LINE, not a projection of it, and that is the whole
+    /// decision** (D-08). The only consumer is the driver, whose job is to
+    /// correlate the echo against the text it sent; correlating on a rendered
+    /// string is exactly the screen-scraping D-01 forbids in another guise, so
+    /// this layer hands over the bytes it received and interprets none of them.
+    /// The one thing it *does* interpret is the envelope's own
+    /// `is_replay` marker, because that is what decides whether a line belongs
+    /// on this channel at all — and this layer already has the parsed envelope,
+    /// so asking it that question costs nothing and keeps every non-echo line
+    /// off the channel entirely.
+    ///
+    /// **Unbounded, deliberately.** A bounded channel here would put the
+    /// coordinator — the task that owns the caps, the cancel and the teardown —
+    /// at the mercy of a consumer that is slow to drain, which is the failure
+    /// [`forward`]'s deadline exists to prevent on the event channel. The queue
+    /// is bounded in practice by the number of user messages one run sends, and
+    /// the driver drains it on every pass of its own loop.
+    ///
+    /// A closed receiver is ignored: the driver may have finished normally and
+    /// dropped it, which is not an error and is not this function's business.
+    pub fn observing_replay_echoes(mut self, tx: mpsc::UnboundedSender<String>) -> Self {
+        self.replay_observer = Some(tx);
         self
     }
 
@@ -477,6 +522,7 @@ impl ClaudeExecutor {
                 last_line_rx,
                 before,
                 project_root: root,
+                replay_observer: self.replay_observer.clone(),
             }
             .run(),
         );
@@ -862,6 +908,9 @@ struct Coordinator {
     last_line_rx: watch::Receiver<Instant>,
     before: RunSnapshot,
     project_root: PathBuf,
+    /// Where the raw line of every `user` replay echo is republished, when a
+    /// caller asked for it (see [`ClaudeExecutor::observing_replay_echoes`]).
+    replay_observer: Option<mpsc::UnboundedSender<String>>,
 }
 
 /// Which cap the supervisor breached.
@@ -959,6 +1008,7 @@ impl Coordinator {
             last_line_rx,
             before,
             project_root,
+            replay_observer,
         } = self;
 
         let mut gate_tx = Some(gate_tx);
@@ -1119,6 +1169,7 @@ impl Coordinator {
                                 permission_mode,
                                 forward_deadline,
                                 &mut dropped_events,
+                                replay_observer.as_ref(),
                             )
                             .await;
                         }
@@ -1398,6 +1449,7 @@ async fn handle_item(
     permission_mode: PermissionMode,
     forward_deadline: Instant,
     dropped: &mut u64,
+    replay_observer: Option<&mpsc::UnboundedSender<String>>,
 ) -> bool {
     match item {
         ReaderItem::Truncated { bytes, prefix } => {
@@ -1479,6 +1531,24 @@ async fn handle_item(
             | StreamMessage::Assistant(_)
             | StreamMessage::User(_)
             | StreamMessage::RateLimitEvent(_)) => {
+                // The replay echo, republished RAW to whoever asked for it —
+                // **before** the event is forwarded, so a consumer that sees
+                // both never sees the event first (D-07, D-08).
+                //
+                // The filter is the envelope's own `is_replay` marker, read off
+                // the parsed message rather than sniffed out of the string: a
+                // `user` message without it is a tool result, which is not an
+                // echo of anything the driver sent and must never be able to
+                // ack an injected message. The send itself is infallible-ish by
+                // construction — an unbounded channel cannot apply backpressure
+                // to this task — so a coordinator that is tearing a run down can
+                // never be parked here.
+                if let (Some(observer), StreamMessage::User(turn)) = (replay_observer, &msg) {
+                    if turn.is_replay {
+                        let _ = observer.send(raw.clone());
+                    }
+                }
+
                 forward(
                     events_tx,
                     ExecutionEvent::Message(Box::new(msg)),
@@ -1898,6 +1968,7 @@ mod tests {
                 PermissionMode::DontAsk,
                 forward_deadline,
                 &mut dropped,
+                None,
             )
             .await;
             if !keep_going {

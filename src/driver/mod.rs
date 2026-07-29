@@ -198,7 +198,49 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
         //
         // stdout, not the journal and not the TUI (D-24). A detached driver's
         // stdio is null, so a dry-run is by definition a foreground invocation.
-        let report = dry_run::build_report(&project, &args.command);
+        //
+        // **No blocking syscall inside an `async fn`** (D-28, WR-10).
+        // `build_report` makes two synchronous `std::process::Command` calls to
+        // `git`, and a `git` invocation on a large or cold repository is not
+        // microseconds. **The deadlock this discipline prevents was OBSERVED,
+        // not theorised** — `tests/driver_lock.rs:201-215` records a blocking
+        // `flock` inside an `async fn` defeating `tokio::time::timeout` outright
+        // on a current-thread runtime, because `Timeout::poll` polls its inner
+        // future inline and a parked thread polls nothing at all.
+        //
+        // The preview is a foreground CLI invocation today, so the cost of
+        // getting this wrong is only a stalled process. It is wrapped anyway
+        // because Phase 18 puts a TUI-side caller on this path, and there the
+        // same stall is a frozen frame the user cannot escape.
+        //
+        // The token is **cloned** into the closure rather than moved, and that
+        // is not fussiness: the fallback below needs one too, and building a
+        // second one would mean a second `DrivableProject::from_registry` call
+        // site — the exact uniqueness `tests/spawn_seam_guard.rs` exists to
+        // check, and a property a comment cannot hold.
+        let command = args.command.clone();
+        let cloned = project.clone();
+        let report = match tokio::task::spawn_blocking(move || {
+            dry_run::build_report(&cloned, &command)
+        })
+        .await
+        {
+            Ok(report) => report,
+            // Reachable only if the closure panicked or the runtime is shutting
+            // down — `build_report` does neither, and `git_ops` reports a failed
+            // shell-out as data rather than by unwinding. Re-running inline is
+            // `ClaudeExecutor::capture_snapshot`'s answer to the same question
+            // and this repository's established one: it keeps the preview
+            // honest on a path no healthy run reaches, at the cost of a blocking
+            // call in a process that is already ending anyway.
+            Err(err) => {
+                tracing::warn!(
+                    panicked = err.is_panic(),
+                    "the dry-run report task did not run to completion",
+                );
+                dry_run::build_report(&project, &args.command)
+            }
+        };
         println!("{}", dry_run::render(&report));
         return Ok(());
     }

@@ -9,15 +9,16 @@
 //! Phase 16's `JournalRun`. Both were shipped complete and both were dead code
 //! until this file existed; `src/journal/mod.rs` says so in as many words.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rustix::process::Signal;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::config::RegisteredProject;
 use crate::driver::{kill, liveness, lock, DriveArgs};
-use crate::error::DriveError;
+use crate::error::{DriveError, LockError};
 use crate::executor::claude::ClaudeExecutor;
 use crate::executor::stream_json::UserMessage;
 use crate::executor::{
@@ -95,6 +96,163 @@ const INBOX_POLL_INTERVAL: Duration = Duration::from_millis(750);
 /// display renders one string and a later reader greps for one thing.
 const MISSED_AFTER_CLOSE: &str =
     "the agent's stdin was already closed when this message reached the driver";
+
+/// The wire name of the marker that makes a `user` envelope a **replay echo**.
+///
+/// camelCase on the wire, and **absent rather than `false`** on an ordinary
+/// message — so the test is "is this exactly `true`", never "is this not
+/// `false`". The parsed model spells the same field `is_replay`
+/// (`src/executor/stream_json.rs:113-122`) and
+/// [`ClaudeExecutor::observing_replay_echoes`](crate::executor::claude::ClaudeExecutor::observing_replay_echoes)
+/// filters on it before a line ever reaches this module; re-reading it here is
+/// the second of two independent checks, and it is cheap.
+const REPLAY_MARKER: &str = "isReplay";
+
+/// Messages written to the agent's stdin that have not yet been echoed back.
+///
+/// A FIFO of `(id, text as sent)`, and both halves are load-bearing. The **id**
+/// is what the journal record names, because text alone is not a correlation
+/// key — a user may legitimately send the same sentence twice, and STEER-02's
+/// states are per message rather than per string. The **text** is the only thing
+/// the echo carries that can be matched against, because the CLI's replay echo
+/// reproduces the body and mints its own `uuid`.
+///
+/// Nothing prunes this except a matched echo and the end of the run, and that is
+/// correct: it holds at most one entry per message the user injected, which is a
+/// number bounded by how fast a human types.
+#[derive(Debug, Default)]
+struct PendingAcks {
+    entries: VecDeque<(String, String)>,
+}
+
+impl PendingAcks {
+    /// Record that `text` was written to stdin under `id`.
+    ///
+    /// Called at exactly one moment: immediately after `Executor::send` returned
+    /// `Ok`. A message whose write failed is never pushed, because it will never
+    /// be echoed and would sit here shadowing a later identical message.
+    fn push_delivered(&mut self, id: String, text: String) {
+        self.entries.push_back((id, text));
+    }
+
+    /// The id of the message `echoed_text` acks, if any.
+    fn match_echo(&mut self, echoed_text: &str) -> Option<String> {
+        match_replay_echo(&mut self.entries, echoed_text)
+    }
+
+    /// Take every id still waiting for an echo when the run ends.
+    ///
+    /// **These messages were delivered and are not `missed`.** Each keeps its
+    /// `interjected` record and simply never gains an `interjection_acted_on`,
+    /// which is the honest answer: the run ended before the agent dequeued them,
+    /// and fabricating the transition would assert an observation the driver
+    /// never made. The ids are returned so the count can be logged; they are
+    /// deliberately not journaled as anything.
+    fn drain_undelivered(&mut self) -> Vec<String> {
+        self.entries.drain(..).map(|(id, _)| id).collect()
+    }
+}
+
+/// The id of the first pending message whose text is **exactly** `echoed_text`.
+///
+/// **`is_replay: true` is emitted at DEQUEUE, not at receipt.** Measured against
+/// CLI 2.1.220: a message written at t=12s was echoed at t=68s, 45 ms after the
+/// *previous* turn's `result` (D-07, Phase 15 D-31). The echo therefore means
+/// *"the agent has started processing this"*, and the only correct word for the
+/// state it establishes is **acted-on**. **"received", "read" and "acknowledged"
+/// are forbidden renderings**: each promises an observation 55 seconds earlier
+/// than the one the protocol actually supports, and the whole point of the
+/// three-state display is that each state names evidence that exists.
+///
+/// Matching is **exact `String` equality on the UTF-8 text as sent** — no
+/// trimming, no Unicode normalisation, no case folding. Anything looser would
+/// let a message the user did not send ack one they did. The scan runs **front
+/// to back and removes the first match**, so two legitimately identical messages
+/// are acked in delivery order; matching the newest first would let the second
+/// echo re-ack the first message and leave the second showing `delivered`
+/// forever.
+///
+/// **Pure, and that is what makes it testable at all** — the register of
+/// `driver/mod.rs:129-135`. Exercising this against a real agent would need a
+/// process, a dequeue delay and two messages with the same body; fed a deque
+/// directly it is four assertions.
+///
+/// **The declined alternative was correlating in the TUI** from
+/// `ExecEvent.text`. That was rejected because `ExecEvent.text` is a *projection*
+/// written for a human to read, and reconstructing protocol semantics from a
+/// rendered string is exactly the screen-scraping D-01 forbids, wearing a
+/// different hat. Only the driver has parsed envelopes, so only the driver can
+/// answer this honestly (D-08).
+fn match_replay_echo(pending: &mut VecDeque<(String, String)>, echoed_text: &str) -> Option<String> {
+    let index = pending.iter().position(|(_, text)| text == echoed_text)?;
+    pending.remove(index).map(|(id, _)| id)
+}
+
+/// The text an echoed `user` line carries, or `None` if it is not an echo.
+///
+/// The driver re-reads the `is_replay` marker off the raw line rather than
+/// trusting the executor's filter alone, and then walks the body itself. Both
+/// halves are deliberate: this is the party D-08 makes responsible for the
+/// protocol reading, and a `user` line **without** the marker is a tool result —
+/// not an echo of anything the driver sent, and never allowed to ack an injected
+/// message.
+///
+/// Tolerant by construction, following `src/executor/stream_json.rs`'s whole
+/// premise: a body shape no version we know emits yields `None` and a logged
+/// non-event, never a parse failure and never a run-ending error. `content` is
+/// accepted both as an array of blocks and as a bare string, because the CLI has
+/// shipped both shapes; only `text` blocks contribute, and they are concatenated
+/// in order so a multi-block echo of a single-block send still compares equal.
+fn replay_echo_text(raw: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+
+    if value.get(REPLAY_MARKER).and_then(serde_json::Value::as_bool) != Some(true) {
+        return None;
+    }
+
+    match value.get("message")?.get("content")? {
+        serde_json::Value::String(text) => Some(text.clone()),
+        serde_json::Value::Array(blocks) => {
+            let mut text = String::new();
+            for block in blocks {
+                if block.get("type").and_then(serde_json::Value::as_str) == Some("text") {
+                    if let Some(chunk) = block.get("text").and_then(serde_json::Value::as_str) {
+                        text.push_str(chunk);
+                    }
+                }
+            }
+            Some(text)
+        }
+        _ => None,
+    }
+}
+
+/// Turn one observed replay echo into an `interjection_acted_on` record.
+///
+/// An **unmatched** echo is logged by kind and otherwise ignored. That is the
+/// right answer rather than a lenient one: the agent echoes every `user` message
+/// it dequeues, including the run's own command prompt, and a hostile or merely
+/// unexpected echo carrying text the driver never sent must not be able to
+/// invent a transition. It is informational in exactly the way a later
+/// `system/init` is (Phase 15 D-30), and it must never abort a run.
+///
+/// **No log line ever carries the echoed text.** It is either the user's own
+/// words or the agent's, and both are message bodies (T-18-12, `PATTERNS` §S3).
+fn correlate_replay_echo(pending: &mut PendingAcks, journal: &mut JournalRun, raw: &str) {
+    let Some(text) = replay_echo_text(raw) else {
+        tracing::debug!("a replay echo carried no readable text body");
+        return;
+    };
+
+    let Some(id) = pending.match_echo(&text) else {
+        tracing::debug!("a replay echo matched no message this driver delivered");
+        return;
+    };
+
+    if let Err(err) = journal.record(&JournalEvent::InterjectionActedOn { id }) {
+        tracing::warn!(kind = ?err.kind(), "journal write failed");
+    }
+}
 
 /// The state one driver process holds for the duration of one run.
 pub struct DriverRun {
@@ -514,6 +672,7 @@ async fn deliver_pending_inbox(
     journal: &mut JournalRun,
     inbox_path: &Path,
     cursor: &mut TailCursor,
+    pending: &mut PendingAcks,
 ) -> usize {
     let mut delivered_count = 0usize;
 
@@ -524,6 +683,11 @@ async fn deliver_pending_inbox(
         {
             Ok(()) => {
                 delivered_count += 1;
+                // The `{id → text}` D-08 requires, recorded at the only moment
+                // it is true: the write returned `Ok`, so an echo of this text
+                // can now legitimately arrive. Pushing before the write would
+                // let a failed send shadow a later identical message.
+                pending.push_delivered(message.id.clone(), message.text.clone());
                 true
             }
             Err(err) => {
@@ -556,15 +720,35 @@ async fn deliver_pending_inbox(
 /// a spinner, and it is the one thing the user's own steering intent must never
 /// suffer: every message reaches a named terminal state the user can see.
 ///
-/// It runs once, after the event stream has ended, which is the only point at
-/// which "nothing further will be delivered" is a fact rather than a guess. It
-/// is deliberately **not** a retry: the run is over.
+/// It is reached from **two** places and classifies in **one**: the drain
+/// loop's inbox poll once stdin has closed, and a final pass after the event
+/// stream has ended. The two are the same question asked at two moments — "can
+/// this still be delivered?" — and the answer is `no` from `close_input()`
+/// onwards. Keeping the classification in [`journal_as_missed`] rather than at
+/// each branch is what stops the two answers drifting apart.
+///
+/// It is deliberately **not** a retry: stdin cannot be reopened.
 async fn sweep_inbox_as_missed(
     journal: &mut JournalRun,
     inbox_path: &Path,
     cursor: &mut TailCursor,
 ) -> usize {
-    let messages = read_inbox(inbox_path, cursor).await;
+    journal_as_missed(journal, read_inbox(inbox_path, cursor).await)
+}
+
+/// Write the terminal `missed` record for each of `messages`. **The only
+/// emission site.**
+///
+/// One message, one record, no retry. Each message arrives here exactly once
+/// because the cursor has already advanced past it, which is what makes
+/// `interjection_missed` and `interjected` mutually exclusive for one id: a
+/// message the drain loop delivered was consumed by [`deliver_pending_inbox`]
+/// and can never be read a second time.
+///
+/// The `reason` is [`MISSED_AFTER_CLOSE`], a fixed machine-readable string; the
+/// human-readable gloss belongs to the render layer, which must not have to
+/// parse prose written here.
+fn journal_as_missed(journal: &mut JournalRun, messages: Vec<InboxMessage>) -> usize {
     let count = messages.len();
 
     for message in messages {
@@ -615,9 +799,19 @@ async fn sweep_inbox_as_missed(
 /// by that buffering, which is why the driver responds to a stop issued before it
 /// has finished starting rather than after.
 ///
+/// **The two shorter ones are now genuine await points rather than synchronous
+/// calls, and that is D-28 / WR-10.** `lock::acquire` and `JournalRun::start`
+/// each run on `tokio::task::spawn_blocking`, so the syscalls inside them can no
+/// longer park the thread the terminate handler is waiting on. They still need no
+/// `select!` arm — the buffering above covers them exactly as it covered their
+/// synchronous predecessors — but the buffering only helps a thread that is still
+/// able to poll, which is the property the wrap restores.
+///
 /// The lock guard lives on [`DriverRun`], which outlives the terminal
 /// `finish` call, so the lock is released **after** the last write rather than
-/// somewhere in the middle of it.
+/// somewhere in the middle of it. It is also moved back **out** of the blocking
+/// task rather than dropped inside it; the call site below says why at length,
+/// and the short version is that dropping a `RunLock` releases the lock.
 ///
 /// The `entry` parameter carries the opt-in record whose timestamp lands in
 /// `RunRecord.opt_in`; the [`DrivableProject`] token proves the gate ran, but by
@@ -702,11 +896,58 @@ pub async fn execute_run(
     // or a stop resolved through one would refuse against the other. A second
     // `drive` against this project now refuses and names this run rather than
     // starting alongside it (CTRL-05).
-    let lock = lock::acquire(&planning_dir, &record.run_id, pgid)?;
+    // **No blocking syscall inside an `async fn`** (D-28, WR-10), and **the
+    // deadlock that discipline prevents was OBSERVED rather than theorised**:
+    // `tests/driver_lock.rs:201-215` records a blocking `flock` inside an
+    // `async fn` defeating `tokio::time::timeout` outright on a current-thread
+    // runtime, because `Timeout::poll` polls its inner future inline and a
+    // parked thread polls nothing at all. `lock::acquire` opens a file, calls
+    // `flock`, may read the holder's record and writes its own — every one of
+    // those is a synchronous syscall, and the arm this driver most needs to keep
+    // reachable is the terminate arm.
+    //
+    // **The `RunLock` is moved back OUT of the task, and that is the load-bearing
+    // half of this wrap.** `RunLock` holds the `File` whose descriptor *is* the
+    // advisory lock and it deliberately has **no `Drop` impl**, so a `RunLock`
+    // dropped inside the blocking closure would close the descriptor and release
+    // the lock silently — while the run carried on believing it held it. A second
+    // `drive` against the same project would then start alongside this one, which
+    // is precisely the concurrency the lock exists to close (CTRL-05, D-20.2,
+    // T-18-11). Returning the guard through the join handle is what keeps "held
+    // for the run's duration" true.
+    //
+    // **The declined alternative was leaving the lock inside the task and
+    // re-acquiring it afterwards.** That reintroduces a window in which the
+    // project is unlocked — between the closure's return and the re-acquire —
+    // which is the same race with a smaller name, and it would additionally make
+    // a *losing* re-acquire a mid-run failure rather than a start-time refusal.
+    let lock_planning = planning_dir.clone();
+    let lock_run_id = record.run_id.clone();
+    let lock = tokio::task::spawn_blocking(move || lock::acquire(&lock_planning, &lock_run_id, pgid))
+        .await
+        .map_err(|_| {
+            DriveError::Lock(LockError::Unavailable {
+                detail: "the lock acquisition task did not run to completion".to_string(),
+            })
+        })??;
 
-    let journal = JournalRun::start(&planning_dir, record).map_err(|err| DriveError::Journal {
-        detail: format!("{err:#}"),
-    })?;
+    // **No blocking syscall inside an `async fn`** (D-28, WR-10), for the same
+    // reason and with the same provenance. `JournalRun::start` prunes the runs
+    // directory and writes `run.json` plus the first record synchronously, and a
+    // prune walks however many retained runs are on disk.
+    //
+    // The `JournalRun` is moved back out for the same reason the `RunLock` is:
+    // it owns the run's open files and its clock, and a journal dropped inside
+    // the task would close the run directory the caller is about to write to.
+    let journal_planning = planning_dir.clone();
+    let journal = tokio::task::spawn_blocking(move || JournalRun::start(&journal_planning, record))
+        .await
+        .map_err(|_| DriveError::Journal {
+            detail: "the journal start task did not run to completion".to_string(),
+        })?
+        .map_err(|err| DriveError::Journal {
+            detail: format!("{err:#}"),
+        })?;
     let mut run = DriverRun { journal, lock };
 
     // The agent's process group, published the instant the child exists rather
@@ -717,13 +958,22 @@ pub async fn execute_run(
     // signal aimed here (D-06, D-09).
     let (pgid_tx, mut pgid_rx) = oneshot::channel::<u32>();
 
+    // The raw wire line of every `user` replay echo, which is the **only**
+    // evidence the protocol offers that the agent has started on an injected
+    // message (D-07, D-08). Unbounded on purpose: this channel must never be
+    // able to park the executor's coordinator, which owns the caps, the cancel
+    // and the teardown. Its depth is bounded by the number of user messages one
+    // run sends, and the loop below drains it on every pass.
+    let (echo_tx, mut echo_rx) = mpsc::unbounded_channel::<String>();
+
     // The only branch on the hidden development flags, and it lives here rather
     // than in `main` so the fixture never touches the production dispatch.
     let executor = match &args.claude_program {
         Some(program) => ClaudeExecutor::with_program(program, args.claude_args.clone()),
         None => ClaudeExecutor::new(),
     }
-    .observing_spawn(pgid_tx);
+    .observing_spawn(pgid_tx)
+    .observing_replay_echoes(echo_tx);
 
     // `biased`, terminate arm FIRST — the same discipline as the drain loop
     // below, for a sharper reason. There the cost of losing the race is a
@@ -787,6 +1037,16 @@ pub async fn execute_run(
     // is the change that makes steering physically possible** (D-11).
     let mut stdin_open = true;
 
+    // Every message written to stdin that has not yet been echoed back, and the
+    // state the acted-on transition is derived from (D-08).
+    let mut pending_acks = PendingAcks::default();
+
+    // Whether the echo channel can still produce. It cannot close while the run
+    // is live — `executor` owns the sender and outlives this loop — so this flag
+    // exists purely so a future refactor that *does* drop it early cannot turn a
+    // closed channel into a permanently ready arm spinning the poll thread.
+    let mut echo_open = true;
+
     // `biased`, with the terminate arm FIRST, following `src/main_loop.rs:130`.
     //
     // Arm order is the decision, not a formality. Without `biased` the macro
@@ -795,7 +1055,11 @@ pub async fn execute_run(
     // long as the stream kept producing, which is the entire duration of the run
     // the user is trying to stop. A stop that loses to a busy event queue is a
     // stop the user experiences as ignored (D-06.1). The inbox poll goes **last**
-    // for the mirror-image reason: it is the only arm whose work can wait.
+    // for the mirror-image reason: it is the only arm whose work can wait, and
+    // the only one that touches the filesystem. The replay-echo arm sits between
+    // them — its work is a string compare against a deque, and the state it
+    // records happened 55 seconds ago (D-07), so it is neither urgent nor
+    // expensive.
     //
     // `tokio::select!` drops the other arms' futures before it runs the chosen
     // arm's body, which is what lets the terminate arm take `&mut handle` while
@@ -853,6 +1117,7 @@ pub async fn execute_run(
                                 &mut run.journal,
                                 &inbox_path,
                                 &mut inbox_cursor,
+                                &mut pending_acks,
                             )
                             .await;
 
@@ -893,17 +1158,74 @@ pub async fn execute_run(
                 }
             }
 
-            _ = inbox_poll.tick(), if stdin_open => {
-                deliver_pending_inbox(
-                    &executor,
-                    &mut handle,
-                    &mut run.journal,
-                    &inbox_path,
-                    &mut inbox_cursor,
-                )
-                .await;
+            // The acted-on transition, and the only arm that produces it. It
+            // sits after the event arm because an echo is never urgent — the
+            // state it establishes happened 55 seconds ago (D-07) — and before
+            // the inbox poll because it is the cheaper of the two: a string
+            // compare against a deque, with no filesystem call at all.
+            echo = echo_rx.recv(), if echo_open => {
+                match echo {
+                    Some(raw) => correlate_replay_echo(
+                        &mut pending_acks,
+                        &mut run.journal,
+                        &raw,
+                    ),
+                    // Unreachable while `executor` is alive; see `echo_open`.
+                    None => echo_open = false,
+                }
+            }
+
+            _ = inbox_poll.tick() => {
+                if stdin_open {
+                    deliver_pending_inbox(
+                        &executor,
+                        &mut handle,
+                        &mut run.journal,
+                        &inbox_path,
+                        &mut inbox_cursor,
+                        &mut pending_acks,
+                    )
+                    .await;
+                } else {
+                    // **The arm keeps polling after the close, and that is the
+                    // point** (D-10). Nothing read here can ever be delivered —
+                    // stdin cannot be reopened — so each message is journaled
+                    // `missed` the moment it is seen rather than at the end of
+                    // the run. The difference is what the user watches: a
+                    // message that reports its fate within a poll interval,
+                    // versus one that sits in `queued` for however long the
+                    // agent takes to finish, indistinguishable from a slow
+                    // agent. That indistinguishability is PITFALLS' Pitfall 11
+                    // wearing a spinner.
+                    sweep_inbox_as_missed(
+                        &mut run.journal,
+                        &inbox_path,
+                        &mut inbox_cursor,
+                    )
+                    .await;
+                }
             }
         }
+    }
+
+    // The stream has ended, so every echo that will ever arrive has arrived.
+    // Drained without awaiting: a `recv()` here would park until the executor's
+    // sender dropped, which happens after this function returns.
+    while let Ok(raw) = echo_rx.try_recv() {
+        correlate_replay_echo(&mut pending_acks, &mut run.journal, &raw);
+    }
+
+    // Whatever is left was **delivered and never dequeued**. It keeps its
+    // `interjected` record and gains no `interjection_acted_on`, because the
+    // driver never observed one and inventing it would be the lie the whole
+    // three-state display exists to prevent. A count only — never an id and
+    // never a body — because this is the ordinary end of a run and not a fault.
+    let unacked = pending_acks.drain_undelivered().len();
+    if unacked > 0 {
+        tracing::debug!(
+            count = unacked,
+            "the run ended before the agent dequeued every delivered message",
+        );
     }
 
     // The stream has ended, so nothing further can be delivered. Anything still
@@ -1152,6 +1474,197 @@ mod tests {
         // `notify` watcher outright.
         assert!(INBOX_POLL_INTERVAL >= Duration::from_millis(500));
         assert!(INBOX_POLL_INTERVAL <= Duration::from_secs(1));
+    }
+
+    // ========================================================================
+    // The replay-echo correlator (D-07, D-08, STEER-02)
+    //
+    // Exhaustive here rather than end to end, and that is what the free
+    // function bought: reaching the duplicate-text case against a real agent
+    // would need a process, a dequeue delay and two messages with the same
+    // body, and the assertion would still be about the order of two records.
+    // ========================================================================
+
+    /// A pending FIFO built from `(id, text)` literals.
+    fn pending(entries: &[(&str, &str)]) -> VecDeque<(String, String)> {
+        entries
+            .iter()
+            .map(|(id, text)| (id.to_string(), text.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn an_echo_against_an_empty_deque_matches_nothing() {
+        let mut deque = pending(&[]);
+        assert_eq!(match_replay_echo(&mut deque, "anything"), None);
+        assert!(deque.is_empty());
+    }
+
+    #[test]
+    fn an_echo_matches_the_pending_message_with_the_same_text() {
+        let mut deque = pending(&[("id-1", "skip the UI review")]);
+        assert_eq!(
+            match_replay_echo(&mut deque, "skip the UI review"),
+            Some("id-1".to_string())
+        );
+        assert!(
+            deque.is_empty(),
+            "a matched message must leave the queue, or its echo could ack it \
+             twice"
+        );
+    }
+
+    #[test]
+    fn two_identical_texts_are_matched_in_delivery_order() {
+        // The case the whole FIFO exists for. Two identical messages are
+        // legitimate — a user may say "continue" twice — and matching the
+        // NEWEST first would let the second echo re-ack the first message,
+        // leaving the second showing `delivered` for the rest of the run.
+        let mut deque = pending(&[("first", "continue"), ("second", "continue")]);
+
+        assert_eq!(
+            match_replay_echo(&mut deque, "continue"),
+            Some("first".to_string()),
+            "the FIRST delivered message is acked first"
+        );
+        assert_eq!(
+            match_replay_echo(&mut deque, "continue"),
+            Some("second".to_string()),
+            "and the second echo acks the second message, not the first again"
+        );
+        assert!(deque.is_empty());
+    }
+
+    #[test]
+    fn a_non_matching_echo_leaves_the_deque_untouched() {
+        // The run's own command prompt is echoed exactly like an injected
+        // message is, so this is the common case and not an edge one. An
+        // implementation that popped the front on any echo would ack a message
+        // the agent has not started, which is the failure D-07 names.
+        let mut deque = pending(&[("id-1", "skip the UI review")]);
+
+        assert_eq!(match_replay_echo(&mut deque, "/gsd-progress"), None);
+        assert_eq!(
+            deque.len(),
+            1,
+            "an unmatched echo must consume nothing: the message it did not \
+             name is still waiting for its own"
+        );
+
+        // And the comparison is exact. Each of these differs from the stored
+        // text only by something a lenient matcher would forgive, and each must
+        // still miss (no trimming, no case folding, no normalisation).
+        for near_miss in [
+            " skip the UI review",
+            "skip the UI review ",
+            "Skip the UI review",
+            "skip  the UI review",
+        ] {
+            assert_eq!(
+                match_replay_echo(&mut deque, near_miss),
+                None,
+                "{near_miss:?} is not the text that was sent"
+            );
+        }
+        assert_eq!(deque.len(), 1);
+    }
+
+    #[test]
+    fn the_echo_text_comes_out_of_the_wire_body_only_when_the_replay_marker_is_true() {
+        const TEXT: &str = "skip the UI review \u{1F680}";
+
+        let echo = format!(
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":{}}}]}},"isReplay":true,"uuid":"echo-1"}}"#,
+            serde_json::to_string(TEXT).expect("the text encodes")
+        );
+        assert_eq!(
+            replay_echo_text(&echo).as_deref(),
+            Some(TEXT),
+            "a multi-byte body must come back byte for byte, or exact equality \
+             can never match what was sent"
+        );
+
+        // A `user` message WITHOUT the marker is a tool result. Acking an
+        // injected message from one would report the agent as having started on
+        // the user's steering when it was in fact reporting a Bash exit code.
+        let tool_result = format!(
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"text","text":{}}}]}}}}"#,
+            serde_json::to_string(TEXT).expect("the text encodes")
+        );
+        assert_eq!(replay_echo_text(&tool_result), None);
+
+        // Tolerant by construction: a shape no version we know emits yields
+        // `None`, never a panic and never a parse failure that could end a run.
+        assert_eq!(replay_echo_text("{not json"), None);
+        assert_eq!(replay_echo_text(r#"{"isReplay":true}"#), None);
+        assert_eq!(
+            replay_echo_text(r#"{"isReplay":true,"message":{"content":"bare string"}}"#)
+                .as_deref(),
+            Some("bare string"),
+            "`content` has shipped as a bare string as well as an array"
+        );
+    }
+
+    #[test]
+    fn a_delivered_message_awaiting_its_echo_is_never_reported_as_missed() {
+        // The distinction Task 2's doc turns on, pinned as a test because the
+        // two states are one word apart and mean opposite things: `missed` says
+        // the message NEVER reached the agent, while an un-acked pending entry
+        // says it reached the agent and the run ended before the agent got to
+        // it. `drain_undelivered` therefore journals nothing at all.
+        let mut acks = PendingAcks::default();
+        acks.push_delivered("id-1".to_string(), "continue".to_string());
+        acks.push_delivered("id-2".to_string(), "and again".to_string());
+
+        assert_eq!(acks.match_echo("continue"), Some("id-1".to_string()));
+        assert_eq!(
+            acks.drain_undelivered(),
+            vec!["id-2".to_string()],
+            "only the message that never came back is left, and it is returned \
+             for a COUNT — nothing here writes a journal record"
+        );
+    }
+
+    /// D-11's idle interaction, asserted where the driver actually decides it.
+    ///
+    /// **The failure mode this guards is a run that hangs for fifteen minutes
+    /// looking healthy.** Once stdin stays open for the life of a steerable run,
+    /// an agent that goes quiet is held only by `ExecutionOptions`' idle cap —
+    /// and the driver's terminal record is derived from the outcome that cap
+    /// produces, through [`outcome_label`] and nothing else. So the property to
+    /// pin is that the derivation reports the breach rather than laundering it
+    /// into a success.
+    ///
+    /// The breach itself — an idle cap firing and producing
+    /// [`RunOutcome::Stalled`] — is proved against a real silent child at
+    /// `tests/executor_lifecycle.rs:435`. Reproducing that here would need a
+    /// per-run idle-cap knob on `DriveArgs`, which is the new code path this
+    /// test was asked *not* to add.
+    #[test]
+    fn a_run_idle_at_the_empty_inbox_step_is_reported_stalled_not_succeeded() {
+        let stalled = outcome_label(&RunOutcome::Stalled {
+            idle_for: Duration::from_secs(900),
+        });
+
+        assert_eq!(stalled, "stalled");
+        for success in [
+            outcome_label(&RunOutcome::SucceededWithChanges {
+                turns: Vec::new(),
+                total_cost_usd: None,
+            }),
+            outcome_label(&RunOutcome::SucceededNoChanges {
+                turns: Vec::new(),
+                total_cost_usd: None,
+            }),
+        ] {
+            assert_ne!(
+                stalled, success,
+                "a run parked at the empty-inbox step for the idle cap must not \
+                 reach the journal wearing a success label: `reconcile.rs` and \
+                 the TUI both read this string, and a hang reported as a success \
+                 is a hang nobody investigates"
+            );
+        }
     }
 
     #[test]
