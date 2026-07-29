@@ -270,6 +270,186 @@ pub fn new_run_id(now: chrono::DateTime<chrono::Utc>, session_uuid: &uuid::Uuid)
     format!("{stamp}-{}", &simple[..4])
 }
 
+/// One run's list row, built from `run.json` and **nothing else** (OBS-05).
+///
+/// Every field here comes from the one committed per-run artifact, which is
+/// what makes enumerating a project's runs cost one `read_dir` plus one small
+/// read per run rather than a journal parse per run. A project holding the full
+/// [`RETAIN_RUNS`] history would otherwise pay up to ten
+/// [`MAX_RUN_JOURNAL_BYTES`]-bounded parses to draw a list.
+///
+/// **`outcome` is evidence, never prose.** It is [`RunRecord::outcome`], which
+/// the driver derives from exit codes, envelope verdict fields and a disk
+/// snapshot; nothing that renders a status word from a [`RunSummary`] may reach
+/// for the agent's own summary of what it did (D-13).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunSummary {
+    /// The run id, which is also the directory name.
+    pub run_id: String,
+    /// RFC3339 UTC timestamp of the run's first write.
+    pub started_at: String,
+    /// RFC3339 UTC timestamp of the terminal transition.
+    ///
+    /// **`None` means the run never reached one** — it is either live or it
+    /// crashed, and telling those apart is a liveness probe's job, not this
+    /// function's (D-06, D-32).
+    pub ended_at: Option<String>,
+    /// The originating goal prompt, verbatim (OBS-03). Empty when none was given.
+    pub goal: String,
+    /// The GSD command the run was started with.
+    pub gsd_command: String,
+    /// The derived run outcome, rendered. `None` until the terminal write.
+    pub outcome: Option<String>,
+}
+
+/// Every run on disk for one project, newest first (OBS-05).
+///
+/// **This is blocking filesystem work — one `read_dir` and one small read per
+/// run — and every caller is required to invoke it on
+/// [`tokio::task::spawn_blocking`]** (D-28). That requirement is not
+/// theoretical: `tests/driver_lock.rs:201-215` records a blocking call inside an
+/// `async fn` defeating `tokio::time::timeout` on a current-thread runtime in
+/// this very repository, and on the TUI side the same mistake is a frozen frame
+/// rather than an error. No async wrapper is offered here on purpose — this
+/// module has no runtime dependency today and should not gain one to enforce a
+/// rule the call site is the right place to apply.
+///
+/// **It never reads a journal.** Neither [`reader::read_all`] nor
+/// [`reader::tail_lines`] is reachable from here; a list row that cost a journal
+/// parse would make entering the driver tab slow in exact proportion to how much
+/// the project has been driven, which is backwards.
+///
+/// Skipping rules, and why each is not silent:
+///
+/// - A directory entry whose name is not a single plain path component is
+///   refused by [`run_paths`] before anything is joined or read (D-27, WR-02).
+/// - A run directory whose `run.json` is missing or unparseable is skipped with
+///   a `tracing::warn!` naming the run id and the error **kind** — never file
+///   content, per this module's logging rule. It is a real anomaly on a tree
+///   this tool owns, so it must not vanish; it also must not abort the listing,
+///   because one damaged record would then hide every healthy run beside it.
+/// - A missing runs root is not an anomaly at all: it is a project that has
+///   never been driven. It yields an empty list and logs nothing.
+pub fn list_runs(planning_dir: &Path) -> Vec<RunSummary> {
+    let root = runs_root(planning_dir);
+    let entries = match std::fs::read_dir(&root) {
+        Ok(entries) => entries,
+        // Never driven: an empty list is the honest answer, not a warning.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            tracing::warn!(
+                "Failed to list the runs root at {}: {:?}",
+                root.display(),
+                error.kind()
+            );
+            return Vec::new();
+        }
+    };
+
+    let mut runs: Vec<RunSummary> = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        // A non-UTF-8 name cannot be a run id: `new_run_id`'s format is ASCII by
+        // construction. Converted with `into_string` rather than
+        // `to_string_lossy` deliberately — a lossy conversion would hand a name
+        // that is not the name on disk to the path join below.
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if let Some(summary) = read_run_summary(planning_dir, &name) {
+            runs.push(summary);
+        }
+    }
+
+    sort_run_summaries_newest_first(&mut runs);
+    runs
+}
+
+/// One run's summary, or `None` for an id, a record or a document this cannot
+/// safely read.
+///
+/// Split out of [`list_runs`] so both halves are testable: the traversal refusal
+/// can be exercised against a real planted file **outside** the runs root, which
+/// a `read_dir` walk can never produce and therefore can never prove.
+fn read_run_summary(planning_dir: &Path, run_id: &str) -> Option<RunSummary> {
+    // The fallible join is the whole traversal guard, and it comes first: a
+    // hostile id is refused before any path is touched (D-27).
+    let paths = run_paths(planning_dir, run_id)?;
+
+    let raw = match std::fs::read_to_string(&paths.run_json) {
+        Ok(raw) => raw,
+        Err(error) => {
+            tracing::warn!(
+                "Skipping run {run_id}: run.json is unreadable ({:?})",
+                error.kind()
+            );
+            return None;
+        }
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        tracing::warn!("Skipping run {run_id}: run.json did not parse as JSON");
+        return None;
+    };
+
+    Some(run_summary_from_value(run_id, &value))
+}
+
+/// The field extraction, over a `Value` rather than through [`RunRecord`].
+///
+/// The same tolerance `writer::has_end_timestamp` already applies on the write
+/// path (D-30): a record written by a schema this build has never seen must
+/// still list, and every field this row needs is optional to it. Going through
+/// [`RunRecord`] would make one added required field turn every older run
+/// invisible in the UI.
+fn run_summary_from_value(run_id: &str, value: &serde_json::Value) -> RunSummary {
+    let string_field = |key: &str| -> String {
+        value
+            .get(key)
+            .and_then(|field| field.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let optional_field = |key: &str| -> Option<String> {
+        value
+            .get(key)
+            .filter(|field| !field.is_null())
+            .and_then(|field| field.as_str())
+            .map(|field| field.to_string())
+    };
+
+    RunSummary {
+        run_id: run_id.to_string(),
+        started_at: string_field("started_at"),
+        ended_at: optional_field("ended_at"),
+        goal: string_field("goal"),
+        gsd_command: string_field("gsd_command"),
+        outcome: optional_field("outcome"),
+    }
+}
+
+/// Sort run summaries **newest first**: lexicographic order on `run_id`,
+/// descending.
+///
+/// **Lexicographic order is chronological order, and that is load-bearing
+/// rather than a happy accident.** [`new_run_id`] produces
+/// `2026-07-28T14-03-11Z-a3f9` — a fixed-width, zero-padded, UTC RFC3339 stamp
+/// with a random suffix that only breaks ties — so byte order *is* time order,
+/// and `run_id_sorts_lexicographically_in_chronological_order` pins it. This is
+/// the same property on-disk retention (`writer::prune_runs`) and
+/// `App::prune_driver_maps` already rely on to pick the newest runs without
+/// opening a single file.
+///
+/// **The declined alternative is parsing `started_at` and sorting on the
+/// timestamp.** It is worse twice over: it costs a parse per row for an ordering
+/// the id already carries, and it *disagrees* with the id whenever a clock moves
+/// — leaving the run list, the pruner and the map bound sorting a project's runs
+/// three different ways.
+pub fn sort_run_summaries_newest_first(runs: &mut [RunSummary]) {
+    runs.sort_by(|left, right| right.run_id.cmp(&left.run_id));
+}
+
 /// A non-cryptographic identity digest of a spawned command line.
 ///
 /// FNV-1a 64 over `argv` joined by the ASCII unit separator, rendered as
@@ -941,7 +1121,11 @@ fn exec_message_text(message: &StreamMessage) -> String {
         // correlation that turns it into an `acted-on` transition is the
         // driver's, from `is_replay`, never from this string (D-07, D-08).
         StreamMessage::User(turn) => {
-            let role = if turn.is_replay { "user (replay)" } else { "user" };
+            let role = if turn.is_replay {
+                "user (replay)"
+            } else {
+                "user"
+            };
             compose_turn(role, turn)
         }
         StreamMessage::System(SystemMessage::Init(init)) => format!(
@@ -1669,6 +1853,165 @@ mod tests {
                 "{kind} cannot be both emitted and reserved"
             );
         }
+    }
+
+    // ---- Enumerating the runs on disk (plan 18-03, Task 2; OBS-05) ----
+
+    /// A finished run on disk, written through the real writer.
+    fn plant_run(planning: &Path, run_id: &str, goal: &str, command: &str) {
+        let mut record = run_record(run_id);
+        record.goal = goal.to_string();
+        record.gsd_command = command.to_string();
+        let mut run = JournalRun::start(planning, record).expect("start the run");
+        run.finish("succeeded_with_changes")
+            .expect("finish the run");
+    }
+
+    #[test]
+    fn an_absent_or_empty_runs_root_lists_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let planning = dir.path().join(".planning");
+
+        assert!(
+            list_runs(&planning).is_empty(),
+            "a project that has never been driven has no runs and is not an anomaly"
+        );
+
+        std::fs::create_dir_all(runs_root(&planning)).expect("create the runs root");
+        assert!(list_runs(&planning).is_empty());
+    }
+
+    #[test]
+    fn a_traversing_run_id_is_refused_before_any_record_is_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let planning = dir.path().join(".planning");
+        plant_run(&planning, RUN_ID, "a real run", "/gsd:execute-phase 18");
+
+        // A perfectly valid record, planted OUTSIDE the runs root — exactly what
+        // WR-02's read side reached. `read_dir` can never yield a traversing
+        // name, so the refusal is only provable by calling the reader directly.
+        let escaped = planning.join("escaped");
+        std::fs::create_dir_all(&escaped).expect("create the escape directory");
+        std::fs::write(
+            escaped.join("run.json"),
+            serde_json::to_string(&run_record("2026-07-28T14-03-99Z-ffff"))
+                .expect("serialise the record"),
+        )
+        .expect("plant the record");
+
+        for hostile in ["../escaped", "../../escaped", "./escaped", "a/b", "..", ""] {
+            assert!(
+                read_run_summary(&planning, hostile).is_none(),
+                "{hostile:?} must be refused before anything is joined or read"
+            );
+        }
+
+        // The positive control: the guard refuses traversal, not reading.
+        assert!(
+            read_run_summary(&planning, RUN_ID).is_some(),
+            "a plain run id must still be read, or the guard passes by being broken"
+        );
+    }
+
+    #[test]
+    fn a_directory_with_no_record_is_skipped_without_hiding_its_neighbours() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let planning = dir.path().join(".planning");
+        plant_run(&planning, RUN_ID, "a real run", "/gsd:execute-phase 18");
+
+        // A run directory whose record never landed, and a stray file that is
+        // not a directory at all.
+        std::fs::create_dir_all(runs_root(&planning).join("2026-07-29T09-00-00Z-dead"))
+            .expect("create the recordless directory");
+        std::fs::write(runs_root(&planning).join("2026-07-29T10-00-00Z-file"), "")
+            .expect("write the stray file");
+
+        let runs = list_runs(&planning);
+        assert_eq!(
+            runs.iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![RUN_ID],
+            "one damaged entry must not hide the healthy run beside it"
+        );
+    }
+
+    #[test]
+    fn three_runs_come_back_newest_first() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let planning = dir.path().join(".planning");
+
+        // Planted OUT of order, and the earliest stamp deliberately carries the
+        // lexically largest suffix — a sort the random tail could influence
+        // would fail here.
+        let middle = "2026-07-28T14-03-12Z-0000";
+        let oldest = "2026-07-28T14-03-11Z-ffff";
+        let newest = "2026-07-29T00-00-00Z-0001";
+        for run_id in [middle, newest, oldest] {
+            plant_run(&planning, run_id, "g", "/gsd:progress");
+        }
+
+        let runs = list_runs(&planning);
+        assert_eq!(
+            runs.iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![newest, middle, oldest],
+            "lexicographic descending is chronological newest-first (new_run_id's format)"
+        );
+
+        // And the sort is a pure function over a slice, so it is assertable
+        // without a filesystem at all.
+        let mut shuffled = runs.clone();
+        shuffled.reverse();
+        sort_run_summaries_newest_first(&mut shuffled);
+        assert_eq!(shuffled, runs);
+    }
+
+    #[test]
+    fn a_records_goal_and_command_surface_verbatim() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let planning = dir.path().join(".planning");
+        let goal = "ship the driver tab — 起動 🚀";
+        plant_run(&planning, RUN_ID, goal, "/gsd:execute-phase 18");
+
+        let runs = list_runs(&planning);
+        let run = runs.first().expect("the planted run lists");
+        assert_eq!(
+            run.goal, goal,
+            "the goal is stored verbatim, never paraphrased"
+        );
+        assert_eq!(run.gsd_command, "/gsd:execute-phase 18");
+        assert_eq!(run.started_at, "2026-07-28T14:03:11Z");
+        assert_eq!(
+            run.outcome.as_deref(),
+            Some("succeeded_with_changes"),
+            "the outcome is the driver's derivation, never the agent's prose (D-13)"
+        );
+        assert!(run.ended_at.is_some(), "a finished run carries its ending");
+    }
+
+    #[test]
+    fn a_record_from_an_unknown_schema_still_produces_a_row() {
+        // D-30's tolerance applied to the list: one added required field must
+        // not make every older run invisible in the UI.
+        let summary = run_summary_from_value(
+            RUN_ID,
+            &serde_json::json!({
+                "started_at": "2026-07-28T14:03:11Z",
+                "goal": "g",
+                "ended_at": serde_json::Value::Null,
+                "a_field_from_2027": 1,
+            }),
+        );
+        assert_eq!(summary.run_id, RUN_ID);
+        assert_eq!(summary.goal, "g");
+        assert_eq!(
+            summary.gsd_command, "",
+            "an absent field is empty, not fatal"
+        );
+        assert_eq!(summary.ended_at, None, "an explicit null is not an ending");
+        assert_eq!(summary.outcome, None);
     }
 
     // ---- The readable text projection (plan 18-03, Task 1; OBS-04) ----
