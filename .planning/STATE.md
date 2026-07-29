@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Autonomous Orchestration
-current_phase: 17
-current_phase_name: Supervisor — Detach, Kill Switch, Dry-Run, Opt-In Gate
-status: executing
-stopped_at: Phase 17 executed and verified (8/8 plans) — awaiting transition
-last_updated: "2026-07-29T22:40:00.000Z"
+current_phase: 18
+current_phase_name: Driver Tab, Live Watch & Durable Injection
+status: planning
+stopped_at: v2.0 roadmap written — Phases 14-22 defined, traceability filled
+last_updated: "2026-07-29T21:26:23.739Z"
 last_activity: 2026-07-29
-last_activity_desc: Phase 17 gap closure (17-08) executed; VERIFICATION passed 5/5
+last_activity_desc: Phase 17 complete, transitioned to Phase 18
 progress:
   total_phases: 9
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 26
   completed_plans: 26
   percent: 44
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 
 ## Current Position
 
-Phase: 17 (Supervisor — Detach, Kill Switch, Dry-Run, Opt-In Gate) — EXECUTED & VERIFIED
-Plan: 8 of 8
-Status: Phase 17 verification passed (5/5 ROADMAP criteria, 6/6 review blockers closed) — transition not yet run
-Last activity: 2026-07-29 — Phase 17 gap closure (17-08) merged; VERIFICATION.md written
+Phase: 18 — Driver Tab, Live Watch & Durable Injection
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-07-29 — Phase 17 complete, transitioned to Phase 18
 
 ### Phase 17 gap-closure notes (autonomous run — review these)
 
@@ -137,7 +137,7 @@ Last activity: 2026-07-29 — Phase 17 gap closure (17-08) merged; VERIFICATION.
 
 **Velocity:**
 
-- Total plans completed: 18
+- Total plans completed: 26
 - Average duration: --
 - Total execution time: 0 hours
 
@@ -148,6 +148,7 @@ Last activity: 2026-07-29 — Phase 17 gap closure (17-08) merged; VERIFICATION.
 | 14 | 4 | - | - |
 | 15 | 8 | - | - |
 | 16 | 6 | - | - |
+| 17 | 8 | - | - |
 
 **Recent Trend (from v1.1):**
 
