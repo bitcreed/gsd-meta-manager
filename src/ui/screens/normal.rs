@@ -51,6 +51,31 @@ fn prev_status(threshold: DiskStatus) -> DiskStatus {
     }
 }
 
+/// Select the single leading badge for a dashboard alias cell.
+///
+/// Badge priority (Phase 14 UI-SPEC, `### Badge Priority Rule`):
+/// pause > external-job-waiting > active session. At most one badge ever
+/// renders, so the alias column stays aligned. The glyph is always a fixed
+/// `&'static str` — never text derived from a HANDOFF file, so no handoff
+/// body can leak onto the dashboard row.
+fn alias_badge(
+    is_paused: bool,
+    external_job_waiting: bool,
+    has_session: bool,
+) -> Option<(&'static str, Color)> {
+    if is_paused {
+        // Pause badge takes priority over all other indicators
+        Some(("\u{23F8} ", Color::Cyan))
+    } else if external_job_waiting {
+        // Hourglass: waiting on an async job, not stuck
+        Some(("\u{23F3} ", Color::Yellow))
+    } else if has_session {
+        Some(("\u{25b6} ", Color::Green))
+    } else {
+        None
+    }
+}
+
 /// Render the compact D-R-P-E-V pipeline for unfocused dashboard rows.
 fn compact_pipeline(status: &DiskStatus) -> Line<'static> {
     let stages: [(&str, DiskStatus); 5] = [
@@ -419,26 +444,14 @@ impl NormalScreen {
                         .unwrap_or(false);
 
                     // Badge priority: pause > external-job-waiting > session.
-                    let alias_cell: Line = if is_paused {
-                        // Pause badge takes priority over all other indicators
-                        Line::from(vec![
-                            Span::styled("\u{23F8} ", Style::default().fg(Color::Cyan)),
-                            Span::raw(alias.clone()),
-                        ])
-                    } else if external_job_waiting {
-                        // Hourglass: waiting on an async job, not stuck
-                        Line::from(vec![
-                            Span::styled("\u{23F3} ", Style::default().fg(Color::Yellow)),
-                            Span::raw(alias.clone()),
-                        ])
-                    } else if has_session {
-                        Line::from(vec![
-                            Span::styled("\u{25b6} ", Style::default().fg(Color::Green)),
-                            Span::raw(alias.clone()),
-                        ])
-                    } else {
-                        Line::from(alias.clone())
-                    };
+                    let alias_cell: Line =
+                        match alias_badge(is_paused, external_job_waiting, has_session) {
+                            Some((glyph, color)) => Line::from(vec![
+                                Span::styled(glyph, Style::default().fg(color)),
+                                Span::raw(alias.clone()),
+                            ]),
+                            None => Line::from(alias.clone()),
+                        };
 
                     let cells: Vec<Line> = if terminal_width >= 80 {
                         vec![
@@ -613,4 +626,51 @@ fn move_selection_up(ctx: &mut AppContext) {
     let current = ctx.table_state.selected().unwrap_or(0);
     let next = if current == 0 { count - 1 } else { current - 1 };
     ctx.table_state.select(Some(next));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state_reader::parse_project_state;
+    use std::fs;
+    use tempfile::TempDir;
+
+    const PAUSE_BADGE: (&str, Color) = ("\u{23F8} ", Color::Cyan);
+
+    /// Build a temp project with a `.planning/` dir holding the given files.
+    /// Returns the TempDir (keep it alive) — mirrors the `make_planning`
+    /// fixture in `state_reader::tests`.
+    fn make_planning(files: &[(&str, &str)]) -> TempDir {
+        let td = TempDir::new().unwrap();
+        let planning = td.path().join(".planning");
+        fs::create_dir_all(&planning).unwrap();
+        for (rel, content) in files {
+            fs::write(planning.join(rel), content).unwrap();
+        }
+        td
+    }
+
+    // --- UIFIX-01: end-to-end tracer -------------------------------------
+
+    #[test]
+    fn test_paused_project_shows_pause_badge_end_to_end() {
+        // A real HANDOFF.md on disk → state reader → ProjectState → badge.
+        let td = make_planning(&[
+            ("STATE.md", "---\nstatus: executing\n---\n"),
+            (
+                "HANDOFF.md",
+                "# Handoff\n\nResume with /gsd-execute-phase 14\n",
+            ),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+
+        assert!(state.paused);
+        assert_eq!(
+            state.pause_context.as_deref(),
+            Some("Resume with /gsd-execute-phase 14")
+        );
+
+        // The same flag the dashboard row reads selects the cyan pause badge.
+        assert_eq!(alias_badge(state.paused, false, false), Some(PAUSE_BADGE));
+    }
 }
