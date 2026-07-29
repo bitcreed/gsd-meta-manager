@@ -40,6 +40,14 @@ tui-textarea = { version = "0.7", features = ["ratatui"] }
 # plus an explicit byte-length bound, so tokio-util is deliberately not a dependency.
 process-wrap = { version = "9.1.0", features = ["tokio1"] }
 uuid = { version = "1.24", features = ["v4", "serde"] }
+# One crate covers BOTH jobs the supervisor needs — process-group signalling
+# (`kill_process_group`, plan 17-06) and the single-execution advisory lock
+# (`flock`, plan 17-02) — which is why `fs4` was declined (D-08).
+# It resolves to 1.1.4, the exact version already present in Cargo.lock
+# transitively via ratatui/crossterm, so it adds zero new compilation units to
+# the graph. It is pure Rust with no libc linkage, which matches the deliberate
+# no-`nix`/no-`libc` posture documented at `src/executor/claude.rs:102-103`.
+rustix = { version = "1.1", features = ["process", "fs"] }
 
 [dev-dependencies]
 assert_fs = "1"

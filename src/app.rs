@@ -915,6 +915,7 @@ mod tests {
             RegisteredProject {
                 path: root.to_path_buf(),
                 added: "2026-07-29".to_string(),
+                driver_opt_in: None,
             },
         );
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();

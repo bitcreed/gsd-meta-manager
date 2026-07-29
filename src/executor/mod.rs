@@ -42,7 +42,8 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use uuid::Uuid;
 
-use crate::error::{SendError, SpawnError};
+use crate::config::RegisteredProject;
+use crate::error::{OptInError, SendError, SpawnError};
 use crate::executor::stream_json::{
     ControlRequest, ControlResponse, ResultMessage, StreamMessage, UserMessage,
 };
@@ -114,12 +115,24 @@ pub trait Executor {
 /// so a call site cannot spawn an agent against a directory the user never
 /// opted in.
 ///
-/// The fields are private, so only this module can construct one. Phase 17
-/// supplies the validated `driver_opt_in` config record as the **only**
-/// production constructor; [`DrivableProject::for_testing`] is the explicitly
-/// named test/dev escape hatch until then. Adding the parameter now costs one
-/// signature; retrofitting it later means auditing every call site added
-/// between now and then.
+/// The fields are private, so only this module can construct one, and
+/// [`DrivableProject::from_registry`] is the **only production constructor**: it
+/// requires a `RegisteredProject` carrying a validated `driver_opt_in` record
+/// (D-16). [`DrivableProject::for_testing_bypassing_opt_in`] is the
+/// `#[doc(hidden)]` test-and-development escape hatch, and it exists only
+/// because integration tests in `tests/` are separate crates that cannot see
+/// `#[cfg(test)]` items.
+///
+/// **The gate lives in the driver process, not in the TUI, and that is the
+/// load-bearing property.** It means a user typing `gsd-meta-manager drive foo`
+/// by hand passes through exactly the same code as a TUI-initiated run, which is
+/// what makes CTRL-03's "a non-opted-in project is never spawned against"
+/// literally true rather than true of one entry point.
+///
+/// The escape hatch is fenced out of `src/` by
+/// `tests/spawn_seam_guard.rs::the_escape_hatch_has_no_call_site_in_src`, which
+/// walks every non-comment line under `src/` and fails if the identifier appears
+/// anywhere but its own definition. **A comment is not a guard; that test is.**
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DrivableProject {
     alias: String,
@@ -127,12 +140,58 @@ pub struct DrivableProject {
 }
 
 impl DrivableProject {
-    /// Construct a token without a validated opt-in record.
+    /// The **only production constructor**: build a token from a registry entry
+    /// that carries a validated opt-in record (D-14, D-16).
     ///
-    /// **Test and development only.** Phase 17 adds the production constructor
-    /// that reads the user's `driver_opt_in` record; until it exists this is
-    /// the only way to build one, and the name is deliberately loud.
-    pub fn for_testing(alias: impl Into<String>, root: impl Into<PathBuf>) -> Self {
+    /// The two refusals are ordered, and the order is the decision: a project
+    /// with no `driver_opt_in` record is refused before its path is even
+    /// examined, so an unusable path can never be reported for a project the
+    /// user never designated in the first place. Both refusals happen **before
+    /// any process is launched**, which is what makes the gate structural.
+    ///
+    /// `UnknownAlias` is deliberately **not** raised here: this function is
+    /// handed the entry, so the registry lookup — and therefore that refusal —
+    /// belongs to the caller that performs it.
+    pub fn from_registry(
+        alias: &str,
+        project: &RegisteredProject,
+    ) -> Result<DrivableProject, OptInError> {
+        if project.driver_opt_in.is_none() {
+            return Err(OptInError::NotOptedIn {
+                alias: alias.to_string(),
+            });
+        }
+        if !project.path.is_dir() {
+            return Err(OptInError::RootUnusable {
+                alias: alias.to_string(),
+                root: project.path.clone(),
+            });
+        }
+        Ok(Self {
+            alias: alias.to_string(),
+            root: project.path.clone(),
+        })
+    }
+
+    /// Construct a token **without** a validated opt-in record.
+    ///
+    /// **Test and development only, and the name is the alarm.** The production
+    /// constructor is [`DrivableProject::from_registry`]; every call to this one
+    /// is a call that bypasses the user's opt-in, which is why it reads as an
+    /// accusation at the call site.
+    ///
+    /// It cannot simply be deleted: integration tests under `tests/` are
+    /// separate crates and cannot see `#[cfg(test)]` items, and a Cargo feature
+    /// would break a bare `cargo test`. What keeps it honest instead is
+    /// `tests/spawn_seam_guard.rs::the_escape_hatch_has_no_call_site_in_src`,
+    /// which proves mechanically that it has zero non-comment occurrences under
+    /// `src/` outside this definition. **A comment is not a guard; that test
+    /// is.**
+    #[doc(hidden)]
+    pub fn for_testing_bypassing_opt_in(
+        alias: impl Into<String>,
+        root: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             alias: alias.into(),
             root: root.into(),
@@ -684,9 +743,59 @@ mod tests {
 
     #[test]
     fn a_drivable_project_carries_its_alias_and_root() {
-        let project = DrivableProject::for_testing("demo", "/tmp/demo");
+        let project = DrivableProject::for_testing_bypassing_opt_in("demo", "/tmp/demo");
         assert_eq!(project.alias(), "demo");
         assert_eq!(project.root(), Path::new("/tmp/demo"));
+    }
+
+    /// A registry entry, opted in or not, rooted at `root`.
+    fn entry(root: &Path, opted_in: bool) -> RegisteredProject {
+        RegisteredProject {
+            path: root.to_path_buf(),
+            added: "2026-07-29T00:00:00Z".to_string(),
+            driver_opt_in: opted_in.then(|| crate::config::DriverOptIn {
+                opted_in_at: "2026-07-29T00:00:00Z".to_string(),
+                claude_md_digest: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn from_registry_refuses_a_project_with_no_opt_in_record() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let err = DrivableProject::from_registry("demo", &entry(root.path(), false))
+            .expect_err("a project with no opt-in record must never yield a token");
+        assert_eq!(
+            err,
+            OptInError::NotOptedIn {
+                alias: "demo".to_string()
+            },
+            "registration is not opt-in; driving requires a deliberate record (D-14)"
+        );
+    }
+
+    #[test]
+    fn from_registry_accepts_a_project_carrying_an_opt_in_record() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let project = DrivableProject::from_registry("demo", &entry(root.path(), true))
+            .expect("an opted-in project with a usable root yields a token");
+        assert_eq!(project.alias(), "demo");
+        assert_eq!(project.root(), root.path());
+    }
+
+    #[test]
+    fn from_registry_refuses_a_registered_path_that_is_not_a_directory() {
+        let parent = tempfile::TempDir::new().expect("temp dir");
+        let missing = parent.path().join("was-moved-away");
+        let err = DrivableProject::from_registry("demo", &entry(&missing, true))
+            .expect_err("a stale registry entry must not spawn an agent against a vanished path");
+        assert_eq!(
+            err,
+            OptInError::RootUnusable {
+                alias: "demo".to_string(),
+                root: missing,
+            }
+        );
     }
 
     #[test]

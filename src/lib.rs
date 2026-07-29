@@ -5,6 +5,7 @@ pub mod browser;
 pub mod change_tracker;
 pub mod cli;
 pub mod config;
+pub mod driver;
 pub mod error;
 pub mod executor;
 pub mod journal;

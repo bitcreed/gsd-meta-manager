@@ -927,6 +927,7 @@ dependencies = [
  "process-wrap",
  "ratatui 0.30.2",
  "regex",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "serde_yml",

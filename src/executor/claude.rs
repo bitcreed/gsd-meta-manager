@@ -1935,7 +1935,7 @@ mod tests {
                 stdin_log.clone().into_os_string(),
             ],
         );
-        let project = DrivableProject::for_testing("refused", scratch.path());
+        let project = DrivableProject::for_testing_bypassing_opt_in("refused", scratch.path());
 
         let err = executor
             .start(

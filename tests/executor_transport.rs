@@ -149,7 +149,7 @@ async fn tracer_runs_one_command_end_to_end() {
     let scratch = TempDir::new().expect("temp dir");
     std::fs::create_dir_all(scratch.path().join(".planning")).expect("scratch .planning");
 
-    let project = DrivableProject::for_testing("tracer", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("tracer", scratch.path());
     let executor = replaying(CLEAN_BASELINE, 0);
 
     let mut handle = executor
@@ -248,7 +248,7 @@ async fn tracer_runs_one_command_end_to_end() {
 
 #[tokio::test]
 async fn starting_against_a_missing_project_root_never_spawns() {
-    let project = DrivableProject::for_testing("gone", "/nonexistent/gsd-meta-manager/tracer");
+    let project = DrivableProject::for_testing_bypassing_opt_in("gone", "/nonexistent/gsd-meta-manager/tracer");
     let executor = replaying(CLEAN_BASELINE, 0);
 
     let result = executor
@@ -276,7 +276,7 @@ async fn a_permission_blocked_run_is_reported_as_permission_denied_not_success()
     // derivation that cannot see the denials lands squarely on the no-changes
     // success variant. That is the exact wrong answer being guarded against.
     let scratch = TempDir::new().expect("temp dir");
-    let project = DrivableProject::for_testing("denied", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("denied", scratch.path());
     let executor = denying();
 
     let mut handle = executor
@@ -320,7 +320,7 @@ async fn a_permission_blocked_run_is_reported_as_permission_denied_not_success()
 async fn send_writes_the_observed_ndjson_wire_shape_to_the_child_stdin() {
     let scratch = TempDir::new().expect("temp dir");
     let stdin_log = scratch.path().join("stdin.log");
-    let project = DrivableProject::for_testing("send", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("send", scratch.path());
     let executor = reacting(&stdin_log);
 
     let mut handle = executor
@@ -363,7 +363,7 @@ async fn send_writes_the_observed_ndjson_wire_shape_to_the_child_stdin() {
 async fn a_message_sent_mid_turn_is_not_buffered_by_the_driver() {
     let scratch = TempDir::new().expect("temp dir");
     let stdin_log = scratch.path().join("stdin.log");
-    let project = DrivableProject::for_testing("mid-turn", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("mid-turn", scratch.path());
     let executor = reacting(&stdin_log);
 
     let mut handle = executor
@@ -432,7 +432,7 @@ async fn a_message_sent_mid_turn_is_not_buffered_by_the_driver() {
 async fn interrupt_correlates_on_request_id_and_reports_what_remains_queued() {
     let scratch = TempDir::new().expect("temp dir");
     let stdin_log = scratch.path().join("stdin.log");
-    let project = DrivableProject::for_testing("interrupt", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("interrupt", scratch.path());
     let executor = reacting(&stdin_log);
 
     let mut handle = executor

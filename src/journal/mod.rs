@@ -339,6 +339,19 @@ pub enum JournalEvent {
         session_id: String,
         /// [`argv_digest`] of the spawned command line.
         argv_digest: String,
+        /// The `claude` process **group** id (D-09).
+        ///
+        /// `claude` is spawned as its own group leader, so its pgid is distinct
+        /// from the driver's: a signal to the driver's group does not reach it.
+        /// A driver killed with SIGKILL therefore skips its own teardown and
+        /// would leave an **untraceable** `claude` tree behind — so the precise
+        /// handle is journaled at the moment it becomes known.
+        ///
+        /// `Option` because [`from_exec_event`] is a pure per-event projection
+        /// and `ExecutionEvent::SessionStarted` carries no pgid. The value is
+        /// **stamped by the run**, exactly as [`JournalEvent::ExecFinished`]'s
+        /// `cost_usd` and `duration_s` already are.
+        claude_pgid: Option<u32>,
     },
     /// One observed thing on the agent's stream.
     ///
@@ -560,6 +573,11 @@ pub struct JournalRun {
     /// subscription runs are not billed per token, and nothing downstream
     /// should present this as an invoice.
     last_cost_usd: Option<f64>,
+    /// The `claude` process group id, once the driver has one (D-09).
+    ///
+    /// Run-scoped rather than per-event, for the same reason the cost total is:
+    /// no single [`ExecutionEvent`] carries it, and the run does.
+    claude_pgid: Option<u32>,
     record_writes: usize,
 }
 
@@ -606,8 +624,19 @@ impl JournalRun {
             record,
             started: Instant::now(),
             last_cost_usd: None,
+            claude_pgid: None,
             record_writes: 1,
         })
+    }
+
+    /// Record the `claude` process group id for this run (D-09).
+    ///
+    /// Call it the instant the spawn returns and **before** draining a single
+    /// event: a teardown handle recorded late is a teardown handle that can be
+    /// missed. It only affects `exec_started` records written after this call,
+    /// which is why the ordering matters rather than being tidy.
+    pub fn set_claude_pgid(&mut self, pgid: u32) {
+        self.claude_pgid = Some(pgid);
     }
 
     /// Close a run out: announce, stamp, record, unpoint.
@@ -660,9 +689,10 @@ impl JournalRun {
             return Ok(());
         };
 
-        // The two run-scoped fields no single event can know. `from_exec_event`
-        // is a pure per-event projection, so it leaves them empty and the run
-        // — which owns the clock and the cost total — stamps them here.
+        // The run-scoped fields no single event can know. `from_exec_event` is a
+        // pure per-event projection, so it leaves them empty and the run — which
+        // owns the clock, the cost total and the spawned group's handle — stamps
+        // them here.
         if let JournalEvent::ExecFinished {
             cost_usd,
             duration_s,
@@ -671,6 +701,9 @@ impl JournalRun {
         {
             *cost_usd = self.last_cost_usd;
             *duration_s = self.started.elapsed().as_secs();
+        }
+        if let JournalEvent::ExecStarted { claude_pgid, .. } = &mut event {
+            *claude_pgid = self.claude_pgid;
         }
 
         self.record(&event)
@@ -773,6 +806,10 @@ pub fn from_exec_event(ev: &ExecutionEvent, argv_digest: &str) -> Option<Journal
         ExecutionEvent::SessionStarted { session_id, .. } => JournalEvent::ExecStarted {
             session_id: session_id.clone(),
             argv_digest: argv_digest.to_string(),
+            // Stamped by `JournalRun::record_exec`, which owns the run's handle
+            // on the spawned group. A caller using this function standalone gets
+            // the session id and the digest and nothing else (D-09).
+            claude_pgid: None,
         },
         ExecutionEvent::Message(message) => JournalEvent::ExecEvent {
             stream: stream_label(message).to_string(),
