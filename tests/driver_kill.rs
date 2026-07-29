@@ -328,6 +328,12 @@ fn present(pid: u32) -> bool {
     liveness::process_state(pid).is_some()
 }
 
+// `assertions_on_constants` is allowed for the `LIVENESS_SUPPORTED` precondition
+// below, and the lint firing is itself the evidence it is doing its job: the
+// constant is `true` here, which is what clippy observes, and `false` on a
+// platform where the /proc technique does not apply — where this test would then
+// fail loudly rather than pass by measuring nothing (D-05, CR-05).
+#[allow(clippy::assertions_on_constants)]
 #[tokio::test]
 async fn stopping_a_run_leaves_no_claude_no_grandchild_and_no_zombie() {
     // If the grace ever grows past the point at which the criterion verifies,
@@ -338,6 +344,19 @@ async fn stopping_a_run_leaves_no_claude_no_grandchild_and_no_zombie() {
         VERIFY_AFTER > DRIVER_TEARDOWN_GRACE,
         "criterion #1 verifies at {VERIFY_AFTER:?}, which must stay above the \
          teardown grace ({DRIVER_TEARDOWN_GRACE:?})"
+    );
+
+    // The second precondition, and it guards a subtler vacuity than the first.
+    // Every assertion below is a `/proc` read: where the technique does not
+    // apply, `process_state` yields `None` for every pid, so `!present(…)` is
+    // trivially true and `is_zombie` answers `false` without looking. The zombie
+    // half of criterion #1 would then pass by measuring nothing at all — and it
+    // is the half no other test covers (CR-05).
+    assert!(
+        liveness::LIVENESS_SUPPORTED,
+        "the four halves of criterion #1 are all /proc reads. Where the /proc \
+         technique does not apply they pass VACUOUSLY, and the zombie half — \
+         which nothing else in the suite measures — passes loudest of all"
     );
 
     const RUN_ID: &str = "2026-07-29T13-00-00Z-kill";
