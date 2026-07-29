@@ -873,4 +873,163 @@ mod tests {
             "a drop report must not promote an idle alias to Starting"
         );
     }
+
+    // ── OBS-06: counting the re-parses ───────────────────────────────────
+    //
+    // The seam is a plain `u64` on `AppContext`, bumped in `schedule_reparse`.
+    // A `static AtomicUsize` inside `parse_project_state` would be more literal
+    // and is deliberately REJECTED: cargo runs a crate's tests as threads
+    // inside one process, so every other test that constructs project state
+    // would increment the same static concurrently, and the failure would be
+    // intermittent. Per-`App` state is the right scope — please do not
+    // "improve" this seam back into a flaky one (RESEARCH §7.4).
+    //
+    // Deliberately NOT written: any wall-clock timing assertion. `main_loop.rs`
+    // already records the reasoning for the same repository (its tests module,
+    // "it passes on a developer laptop, fails on a loaded runner, gets
+    // `#[ignore]`d within a month, and at that point the requirement has no
+    // verification at all"). D-17 permits a generous comparative timing number
+    // as corroboration, but the counter is the load-bearing evidence and a
+    // timing number must never be the only evidence. Read this absence as a
+    // choice.
+    //
+    // `#[tokio::test]` is required throughout: both schedulers call
+    // `spawn_blocking`, which panics without a runtime.
+
+    const OBS_ALIAS: &str = "proj";
+    const OBS_RUN: &str = "2026-07-29T09-00-00Z-a3f9";
+
+    /// One `App` with one registered project at `root`, and a live `event_tx`.
+    ///
+    /// Every OBS-06 test below builds through this one helper, so a handler
+    /// change cannot satisfy the zero-arm by breaking the control arm.
+    /// `App::new_for_test` leaves `event_tx` as `None`, and `schedule_reparse`
+    /// returns early without a sender — so without this the counter would read
+    /// zero for the wrong reason.
+    fn obs_app(root: &std::path::Path) -> (App, tokio::sync::mpsc::UnboundedReceiver<Action>) {
+        use crate::config::RegisteredProject;
+
+        let mut app = App::new_for_test();
+        app.ctx.config.projects.insert(
+            OBS_ALIAS.to_string(),
+            RegisteredProject {
+                path: root.to_path_buf(),
+                added: "2026-07-29".to_string(),
+            },
+        );
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        app.ctx.event_tx = Some(tx);
+        (app, rx)
+    }
+
+    fn journal_change(root: &std::path::Path) -> Action {
+        Action::FileChanged {
+            project_path: root.to_path_buf(),
+            changed_path: root.join(format!(
+                ".planning/meta-manager/runs/{OBS_RUN}/journal.jsonl"
+            )),
+        }
+    }
+
+    fn planning_change(root: &std::path::Path) -> Action {
+        Action::FileChanged {
+            project_path: root.to_path_buf(),
+            changed_path: root.join(".planning/STATE.md"),
+        }
+    }
+
+    #[tokio::test]
+    async fn journal_appends_never_trigger_a_full_reparse() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        let (mut app, _rx) = obs_app(root);
+
+        let before = app.ctx.reparse_dispatches;
+        for _ in 0..500 {
+            app.update(journal_change(root));
+        }
+
+        assert_eq!(
+            app.ctx.reparse_dispatches, before,
+            "OBS-06: five hundred journal appends leaked {} full re-parses",
+            app.ctx.reparse_dispatches - before
+        );
+    }
+
+    // The control arm, and it is NOT optional. A test that only asserts zero
+    // would pass against a handler that dropped `FileChanged` entirely — which
+    // would break the dashboard outright while satisfying OBS-06 (RESEARCH
+    // §7.3).
+    #[tokio::test]
+    async fn a_planning_write_still_triggers_a_reparse() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        let (mut app, _rx) = obs_app(root);
+
+        let before = app.ctx.reparse_dispatches;
+        app.update(planning_change(root));
+
+        assert_eq!(
+            app.ctx.reparse_dispatches,
+            before + 1,
+            "a planning write must still schedule exactly one re-parse, got {}",
+            app.ctx.reparse_dispatches
+        );
+    }
+
+    #[tokio::test]
+    async fn the_driver_route_leaves_the_refresh_dedup_map_untouched() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        let (mut app, _rx) = obs_app(root);
+
+        for _ in 0..10 {
+            app.update(journal_change(root));
+        }
+        assert!(
+            app.ctx.last_refresh.is_empty(),
+            "D-14: the driver route must not touch the 500ms dedup map, or a \
+             journal append could suppress a genuine state refresh"
+        );
+
+        // And the planning route still records into it, so the assertion above
+        // is not passing because the map went unused everywhere.
+        app.update(planning_change(root));
+        assert!(app.ctx.last_refresh.contains_key(OBS_ALIAS));
+    }
+
+    #[tokio::test]
+    async fn a_tail_result_advances_only_its_own_cursor() {
+        use crate::journal::reader::TailCursor;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        let mine = (OBS_ALIAS.to_string(), "run-a".to_string());
+        let theirs = (OBS_ALIAS.to_string(), "run-b".to_string());
+        app.ctx
+            .journal_cursors
+            .insert(mine.clone(), TailCursor { offset: 10 });
+        app.ctx
+            .journal_cursors
+            .insert(theirs.clone(), TailCursor { offset: 20 });
+
+        app.update(Action::DriverJournalAppended {
+            alias: OBS_ALIAS.to_string(),
+            run_id: "run-a".to_string(),
+            records: Vec::new(),
+            cursor: TailCursor { offset: 99 },
+        });
+
+        assert_eq!(
+            app.ctx.journal_cursors.get(&mine),
+            Some(&TailCursor { offset: 99 }),
+            "the tail's own cursor must advance"
+        );
+        assert_eq!(
+            app.ctx.journal_cursors.get(&theirs),
+            Some(&TailCursor { offset: 20 }),
+            "a sibling run's cursor must not move"
+        );
+    }
 }
