@@ -20,6 +20,7 @@
 use std::path::Path;
 use std::process::ExitStatus;
 
+use crate::executor::stream_json::ResultMessage;
 use crate::executor::{RunOutcome, TurnOutcome};
 use crate::state_reader::{self, git_ops, ProjectState};
 
@@ -180,6 +181,32 @@ pub fn derive_run_outcome(
     }
 }
 
+/// Derive the run-level outcome from the **full** terminal envelopes.
+///
+/// Implemented in the GREEN step of plan 15-05.
+pub fn derive_run_outcome_from_envelopes(
+    _envelopes: &[ResultMessage],
+    _exit: Option<ExitStatus>,
+    _before: &RunSnapshot,
+    _after: &RunSnapshot,
+) -> RunOutcome {
+    unimplemented!("15-05 GREEN")
+}
+
+/// The run-level turn count.
+///
+/// Implemented in the GREEN step of plan 15-05.
+pub fn run_turn_count(_turns: &[TurnOutcome]) -> u64 {
+    unimplemented!("15-05 GREEN")
+}
+
+/// The run-level cumulative cost.
+///
+/// Implemented in the GREEN step of plan 15-05.
+pub fn run_cost_usd(_turns: &[TurnOutcome]) -> Option<f64> {
+    unimplemented!("15-05 GREEN")
+}
+
 /// A human-readable classification for a non-success terminal envelope.
 fn describe_failure(subtype: &str, terminal_reason: Option<&str>) -> String {
     match (subtype, terminal_reason) {
@@ -199,6 +226,92 @@ fn describe_failure(subtype: &str, terminal_reason: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::executor::stream_json::{parse_line, Envelope, StreamMessage};
+
+    // Compile-time fixture loading: the matrix does no filesystem I/O. Every
+    // one of these is a real 2.1.220 capture, so a failure here means the
+    // derivation is wrong, not that the test is wrong.
+    const T01: &str = include_str!("../../tests/fixtures/transcripts/01-success-textonly.ndjson");
+    const T02: &str = include_str!("../../tests/fixtures/transcripts/02-budget-exhausted.ndjson");
+    const T04: &str =
+        include_str!("../../tests/fixtures/transcripts/04-hookhang-aborted-tools.ndjson");
+    const T05: &str =
+        include_str!("../../tests/fixtures/transcripts/05-queued-injection-two-turns.ndjson");
+    const T06: &str =
+        include_str!("../../tests/fixtures/transcripts/06-interrupt-aborted-streaming.ndjson");
+    const T08: &str =
+        include_str!("../../tests/fixtures/transcripts/08-tooluse-queued-two-turns.ndjson");
+
+    /// Every `result` envelope of a transcript, in stream order.
+    fn envelopes(transcript: &str) -> Vec<ResultMessage> {
+        transcript
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .filter_map(|line| match parse_line(line) {
+                Envelope::Parsed {
+                    msg: StreamMessage::Result(result),
+                    ..
+                } => Some(*result),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// One `result` envelope parsed from a raw line.
+    fn envelope_from(raw: &str) -> ResultMessage {
+        match parse_line(raw) {
+            Envelope::Parsed {
+                msg: StreamMessage::Result(result),
+                ..
+            } => *result,
+            other => panic!("expected a result envelope, got: {other:?}"),
+        }
+    }
+
+    /// The single `result` line of a transcript, as raw text — so a test can
+    /// mutate one field of a real capture rather than invent a whole envelope.
+    fn result_line(transcript: &str) -> &str {
+        transcript
+            .lines()
+            .find(|line| line.contains(r#""type":"result""#))
+            .expect("the transcript carries a result envelope")
+    }
+
+    fn turns_of(transcript: &str) -> Vec<TurnOutcome> {
+        envelopes(transcript)
+            .iter()
+            .map(TurnOutcome::from_result)
+            .collect()
+    }
+
+    /// A process exit status carrying `code`. `std::process::ExitStatus` has no
+    /// portable constructor, so both platform extensions are used.
+    #[cfg(unix)]
+    fn exit_status(code: i32) -> Option<ExitStatus> {
+        use std::os::unix::process::ExitStatusExt;
+        // The raw wait status packs the exit code into the high byte.
+        Some(ExitStatus::from_raw(code << 8))
+    }
+
+    #[cfg(windows)]
+    fn exit_status(code: i32) -> Option<ExitStatus> {
+        use std::os::windows::process::ExitStatusExt;
+        Some(ExitStatus::from_raw(code as u32))
+    }
+
+    /// A snapshot pair where nothing moved.
+    fn no_delta() -> (RunSnapshot, RunSnapshot) {
+        (snapshot(), snapshot())
+    }
+
+    /// A snapshot pair where a planning artifact moved.
+    fn artifact_delta() -> (RunSnapshot, RunSnapshot) {
+        let before = snapshot();
+        let mut after = snapshot();
+        after.project_state.current_phase = "15".to_string();
+        (before, after)
+    }
 
     fn snapshot() -> RunSnapshot {
         RunSnapshot {
@@ -465,5 +578,359 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ========================================================================
+    // The derivation matrix (D-26): one test per distinguishable combination of
+    // subtype x is_error x terminal_reason x exit code x disk-changed.
+    // ========================================================================
+
+    #[test]
+    fn fixture_01_success_completed_exit_zero_with_changes_is_a_success_with_changes() {
+        let (before, after) = artifact_delta();
+        let outcome =
+            derive_run_outcome_from_envelopes(&envelopes(T01), exit_status(0), &before, &after);
+        assert!(
+            matches!(outcome, RunOutcome::SucceededWithChanges { .. }),
+            "the clean baseline plus a real delta is a success with changes, got: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn success_without_changes_is_noop() {
+        let (before, after) = no_delta();
+        let outcome =
+            derive_run_outcome_from_envelopes(&envelopes(T01), exit_status(0), &before, &after);
+        assert!(
+            matches!(outcome, RunOutcome::SucceededNoChanges { .. }),
+            "an envelope saying success while nothing moved on disk or in git is a no-op, \
+             not a success — this is ROADMAP success criterion 2, got: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn a_moved_head_alone_is_enough_for_a_success_with_changes() {
+        let mut before = snapshot();
+        before.head_sha = Some("aaaaaaa".to_string());
+        before.dirty = Some(false);
+        let mut after = before.clone();
+        after.head_sha = Some("bbbbbbb".to_string());
+
+        let outcome =
+            derive_run_outcome_from_envelopes(&envelopes(T01), exit_status(0), &before, &after);
+        assert!(
+            matches!(outcome, RunOutcome::SucceededWithChanges { .. }),
+            "artifacts unchanged but HEAD moved: any one of the three signals is \
+             sufficient, got: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn fixture_02_budget_exhausted_is_a_failure_classified_as_the_budget_ceiling() {
+        let (before, after) = no_delta();
+        let outcome =
+            derive_run_outcome_from_envelopes(&envelopes(T02), exit_status(1), &before, &after);
+        match outcome {
+            RunOutcome::Failed {
+                reason,
+                subtype,
+                terminal_reason,
+                exit_code,
+            } => {
+                assert_eq!(subtype.as_deref(), Some("error_max_budget_usd"));
+                assert_eq!(terminal_reason.as_deref(), Some("budget_exhausted"));
+                assert_eq!(exit_code, Some(1));
+                assert!(
+                    reason.contains("budget"),
+                    "the classification must name the budget ceiling, got: {reason}"
+                );
+            }
+            other => panic!("expected a budget failure, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fixture_02_absent_result_field_never_aborts_the_derivation() {
+        let envelope = envelopes(T02);
+        let envelope = envelope.first().expect("the budget transcript has a result");
+        assert!(
+            envelope.result.is_none(),
+            "precondition: the budget envelope omits the prose field entirely (D-32)"
+        );
+
+        let (before, after) = no_delta();
+        let outcome = derive_run_outcome_from_envelopes(
+            std::slice::from_ref(envelope),
+            exit_status(1),
+            &before,
+            &after,
+        );
+        assert!(
+            matches!(outcome, RunOutcome::Failed { .. }),
+            "an absent prose field must classify normally, never panic, got: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn fixture_04_aborted_tools_with_exit_124_is_a_timeout_not_a_claude_verdict() {
+        let (before, after) = no_delta();
+        let outcome =
+            derive_run_outcome_from_envelopes(&envelopes(T04), exit_status(124), &before, &after);
+        assert!(
+            matches!(outcome, RunOutcome::TimedOut { .. }),
+            "exit 124 came from an EXTERNAL timeout, never from Claude, and the \
+             aborted-tools terminal reason is what classifies it (D-10), got: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn fixture_06_aborted_streaming_with_exit_1_is_a_kill_classified_as_interrupted() {
+        let (before, after) = no_delta();
+        let outcome =
+            derive_run_outcome_from_envelopes(&envelopes(T06), exit_status(1), &before, &after);
+        match outcome {
+            RunOutcome::Killed { turns } => assert_eq!(
+                turns.len(),
+                1,
+                "the interrupt transcript closes exactly one turn"
+            ),
+            other => panic!("an interrupted stream is a kill, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_max_turns_envelope_is_a_failure_classified_as_the_turn_ceiling() {
+        let raw = result_line(T01).replace(
+            r#""subtype":"success""#,
+            r#""subtype":"error_max_turns""#,
+        );
+        let (before, after) = no_delta();
+        let outcome = derive_run_outcome_from_envelopes(
+            &[envelope_from(&raw)],
+            exit_status(1),
+            &before,
+            &after,
+        );
+        match outcome {
+            RunOutcome::Failed {
+                reason, subtype, ..
+            } => {
+                assert_eq!(subtype.as_deref(), Some("error_max_turns"));
+                assert!(
+                    reason.contains("turn ceiling"),
+                    "the classification must name the turn ceiling, got: {reason}"
+                );
+            }
+            other => panic!("expected a turn-limit failure, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_non_empty_permission_denials_array_is_its_own_outcome_and_carries_the_denials() {
+        let raw = result_line(T01).replace(
+            r#""permission_denials":[]"#,
+            r#""permission_denials":[{"tool_name":"Write","rule":"workspace not trusted"}]"#,
+        );
+        let (before, after) = no_delta();
+        let outcome = derive_run_outcome_from_envelopes(
+            &[envelope_from(&raw)],
+            exit_status(0),
+            &before,
+            &after,
+        );
+        match outcome {
+            RunOutcome::PermissionDenied { denials } => {
+                assert_eq!(denials.len(), 1, "the denial records must be carried");
+                assert_eq!(
+                    denials[0].get("tool_name").and_then(|v| v.as_str()),
+                    Some("Write"),
+                    "the driver must be able to say WHICH tool was denied (D-10)"
+                );
+            }
+            other => panic!(
+                "a populated denials array outranks a success envelope — it is the \
+                 untrusted-workspace tell the spike found (P2), got: {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn a_success_envelope_with_a_non_zero_exit_code_surfaces_the_disagreement() {
+        let (before, after) = artifact_delta();
+        let outcome =
+            derive_run_outcome_from_envelopes(&envelopes(T01), exit_status(1), &before, &after);
+        match outcome {
+            RunOutcome::Failed {
+                reason,
+                subtype,
+                exit_code,
+                ..
+            } => {
+                assert_eq!(subtype.as_deref(), Some("success"));
+                assert_eq!(exit_code, Some(1));
+                assert!(
+                    reason.contains("disagree"),
+                    "the disagreement between the envelope and the exit status must be \
+                     surfaced, not silently resolved, got: {reason}"
+                );
+            }
+            other => panic!(
+                "a success envelope must not silently become a success when the process \
+                 exited non-zero, got: {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn a_failure_envelope_with_exit_zero_is_still_a_failure() {
+        let (before, after) = artifact_delta();
+        let outcome =
+            derive_run_outcome_from_envelopes(&envelopes(T02), exit_status(0), &before, &after);
+        assert!(
+            matches!(outcome, RunOutcome::Failed { .. }),
+            "the exit code is a liveness signal, never the authoritative verdict (D-10), \
+             got: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn an_unobserved_exit_status_is_not_read_as_a_disagreement() {
+        let (before, after) = artifact_delta();
+        let outcome = derive_run_outcome_from_envelopes(&envelopes(T01), None, &before, &after);
+        assert!(
+            matches!(outcome, RunOutcome::SucceededWithChanges { .. }),
+            "a failed wait() means the exit status is unknown, not that it disagreed, \
+             got: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn zero_terminal_envelopes_is_a_failure_even_on_a_clean_exit() {
+        for exit in [exit_status(0), None] {
+            let (before, after) = artifact_delta();
+            let outcome = derive_run_outcome_from_envelopes(&[], exit, &before, &after);
+            match outcome {
+                RunOutcome::Failed { reason, .. } => assert!(
+                    reason.contains("terminal `result` envelope"),
+                    "the failure must name the missing envelope, got: {reason}"
+                ),
+                other => panic!(
+                    "a stream that closed with nothing to corroborate is never a success, \
+                     got: {other:?}"
+                ),
+            }
+        }
+    }
+
+    // ========================================================================
+    // Multi-turn: result closes a TURN, not the run (D-29)
+    // ========================================================================
+
+    #[test]
+    fn multi_turn_yields_exactly_one_run_outcome_derived_from_the_last_envelope() {
+        let envelopes = envelopes(T05);
+        assert_eq!(
+            envelopes.len(),
+            2,
+            "precondition: fixture 05 carries two terminal envelopes in one process"
+        );
+        let last_cost = envelopes[1].total_cost_usd.expect("the last cost");
+
+        let (before, after) = artifact_delta();
+        let outcome =
+            derive_run_outcome_from_envelopes(&envelopes, exit_status(0), &before, &after);
+
+        match outcome {
+            RunOutcome::SucceededWithChanges {
+                turns,
+                total_cost_usd,
+            } => {
+                assert_eq!(
+                    turns.len(),
+                    2,
+                    "both turns are carried on the single run outcome"
+                );
+                assert_eq!(
+                    total_cost_usd,
+                    Some(last_cost),
+                    "the run verdict and its cost come from the LAST envelope (D-29)"
+                );
+            }
+            other => panic!("two envelopes must yield ONE run outcome, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_run_turn_count_is_summed_while_the_run_cost_comes_from_the_last_envelope() {
+        // Fixture 05: num_turns resets to 1 on both envelopes, cost accumulates.
+        let turns = turns_of(T05);
+        assert_eq!(
+            run_turn_count(&turns),
+            2,
+            "num_turns is per-turn and resets, so a run-level count must be SUMMED (D-29)"
+        );
+        let envelopes = envelopes(T05);
+        assert_eq!(
+            run_cost_usd(&turns),
+            envelopes[1].total_cost_usd,
+            "total_cost_usd accumulates, so the run cost is the LAST envelope's value"
+        );
+        assert!(
+            run_cost_usd(&turns) > envelopes[0].total_cost_usd,
+            "and it is strictly greater than the first envelope's"
+        );
+
+        // Fixture 08: the tool round-trip makes turn 2 report 2 internal turns.
+        let turns = turns_of(T08);
+        assert_eq!(
+            run_turn_count(&turns),
+            3,
+            "1 on turn 1 plus 2 on turn 2 — the A3 sub-probe's observed counts"
+        );
+    }
+
+    #[test]
+    fn a_later_failing_turn_overrides_an_earlier_succeeding_one() {
+        let (before, after) = artifact_delta();
+        let outcome = derive_run_outcome(
+            &[
+                turn("success", false, Some("completed")),
+                turn("error_max_budget_usd", true, Some("budget_exhausted")),
+            ],
+            exit_status(1),
+            &before,
+            &after,
+        );
+        assert!(
+            matches!(outcome, RunOutcome::Failed { .. }),
+            "an executor that returns on the FIRST envelope truncates every steered run \
+             while reporting success (Pitfall A), got: {outcome:?}"
+        );
+    }
+
+    // ========================================================================
+    // The prose is never a derivation source (T-15-20, TRANS-02)
+    // ========================================================================
+
+    #[test]
+    fn the_agents_prose_summary_changes_nothing_about_the_outcome() {
+        let honest = envelope_from(result_line(T01));
+        let lying = envelope_from(
+            &result_line(T01).replace(
+                r#""result":"PONG""#,
+                r#""result":"I rewrote every file in the repository""#,
+            ),
+        );
+        assert_ne!(
+            honest.result, lying.result,
+            "precondition: the two envelopes differ only in their prose"
+        );
+
+        let (before, after) = no_delta();
+        assert_eq!(
+            derive_run_outcome_from_envelopes(&[honest], exit_status(0), &before, &after),
+            derive_run_outcome_from_envelopes(&[lying], exit_status(0), &before, &after),
+            "no branch of the derivation may read the model-authored summary (D-10)"
+        );
     }
 }
