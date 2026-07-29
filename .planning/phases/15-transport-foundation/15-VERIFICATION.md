@@ -1,82 +1,18 @@
 ---
 phase: 15-transport-foundation
 verified: 2026-07-29T00:00:00Z
-status: gaps_found
-score: 2/4 roadmap success criteria verified (2 failed)
+status: passed
+score: 4/4 roadmap success criteria verified
 behavior_unverified: 0
 overrides_applied: 0
-gaps:
-  - truth: "A run's outcome — succeeded, errored, permission-denied, killed — is reported from the type:\"result\" envelope, exit code, disk state, and git, and is correct even when the agent's own prose summary says otherwise (roadmap SC-2)"
-    status: failed
-    reason: >
-      Confirmed by direct code inspection (matches code review CR-04). The
-      production coordinator (src/executor/claude.rs:962) calls
-      `derive_run_outcome(&turns, ...)`, and `derive_run_outcome` (outcome.rs:165-172)
-      hard-codes `Vec::new()` for the permission-denials source. The only entry
-      point that reads `permission_denials[]` is
-      `derive_run_outcome_from_envelopes` (outcome.rs:181), and a full-tree grep
-      (`grep -rn "derive_run_outcome_from_envelopes" src/`) shows it is referenced
-      only from outcome.rs's own `#[cfg(test)]` module — never from
-      src/executor/claude.rs. Consequently a run that `--permission-mode dontAsk`
-      blocked (a `success` envelope with a populated `permission_denials[]` and no
-      disk delta) falls through to `RunOutcome::SucceededNoChanges` in production —
-      reported as a success. This is not a missing feature; it is a wrong answer
-      for exactly the untrusted-workspace case the phase's own spike (P2 finding
-      in 15-SPIKE-OQ1.md) surfaced as a real, silent failure mode.
-    artifacts:
-      - path: "src/executor/claude.rs"
-        issue: "Line 962 calls derive_run_outcome (envelope-discarding path) instead of derive_run_outcome_from_envelopes; TurnOutcome::from_result (line 1057) is built directly from the result envelope and the envelope itself is dropped, so permission_denials[] never survives to the derivation."
-      - path: "src/executor/outcome.rs"
-        issue: "derive_run_outcome (lines 165-172) is a real production entry point that silently discards the denials source; only its sibling derive_run_outcome_from_envelopes reads permission_denials[], and it is unreachable from src/."
-    missing:
-      - "Coordinator::run must collect Vec<ResultMessage> (the full envelopes) rather than only Vec<TurnOutcome>, and call derive_run_outcome_from_envelopes at claude.rs:962."
-      - "An end-to-end regression test driving a stand-in whose terminal envelope carries a non-empty permission_denials[] through the real Coordinator (not just the outcome.rs unit tests), asserting RunOutcome::PermissionDenied is reported."
-  - truth: "The tool can run a GSD command through claude -p ... and know exactly how it ended, without hanging (roadmap SC-1, phase goal)"
-    status: failed
-    reason: >
-      Confirmed by direct code inspection (matches code review CR-01/CR-02/CR-03).
-      The phase's own doc comment on Coordinator::run claims "no path in this file
-      awaits process exit unbounded" (D-13), but three independent, reachable code
-      paths contradict that:
-      (1) The supervisor's tokio::select! at claude.rs:835-893 is `biased;` with
-      the reader arm first (line 838), and that arm's body `.await`s
-      `handle_item(...)` — itself calling `events_tx.send(...).await` on a
-      *bounded* 8192-capacity channel — OUTSIDE the select. While that await is
-      pending, no other arm (wall-clock deadline, idle deadline, or cancel) is
-      polled at all, so a fast-emitting child or a stalled TUI consumer disables
-      every cap and the cancel signal simultaneously.
-      (2) Once `exited` flips true (claude.rs:864-867), every deadline/grace arm
-      is guarded `if !exited` (lines 869, 874, 889) and the post-loop dispatch at
-      line 927 (`if exited { exit_status }`) skips tear_down_group entirely. The
-      only remaining live arms are reader_rx.recv() (which returns only on stdout
-      EOF — i.e. only once every process holding the write end of that pipe,
-      including any backgrounded Bash grandchild, is gone) and cancel_rx (which,
-      per its guard chain, can no longer trigger any actual signal or bounded
-      wait once exited is true). A live descendant holding stdout after the
-      leader exits therefore hangs the coordinator, `wait_outcome()`, and
-      `Executor::cancel()` for the process lifetime — never sending outcome_tx.
-      (3) `interrupt()` (claude.rs:462-489) inserts a oneshot into
-      `pending_control` and awaits it with no timeout; a full-tree grep confirms
-      no call anywhere clears `pending_control` at run end (only the two
-      per-request removal sites at lines 484 and 1080 exist), so an unanswered
-      interrupt hangs the caller for the process lifetime.
-      15-SPIKE-OQ1.md's real 774.6s /gsd-execute-phase run is genuine evidence
-      that the happy path completes cleanly, but it does not exercise any of
-      these three conditions (fast stream + blocked consumer, an orphaned
-      descendant surviving the leader, or an unanswered interrupt), so it cannot
-      stand in for them. The phase goal's own wording — "know exactly how it
-      ended" — is precisely what these three paths defeat: the coordinator can
-      reach a state where outcome_tx is never sent and the caller has no way to
-      learn anything.
-    artifacts:
-      - path: "src/executor/claude.rs"
-        issue: "Coordinator::run's supervisor loop (789-972): biased select prioritizes the reader arm ahead of both deadline arms and cancel, and the reader arm's body performs an unbounded send outside the select; post-exit guards (`if !exited`) disable every remaining cap/cancel escalation, and the reader-EOF-only escape can be defeated by a surviving descendant holding stdout."
-        issue2: "interrupt() (462-489) awaits an un-timeout-bounded oneshot with no run-end drain of pending_control."
-    missing:
-      - "Deadlines and cancel must be evaluated unconditionally each loop pass (not only when select! reaches them), and the forward to events_tx must be bounded (timeout or try_send-with-overflow) so a stalled consumer cannot park the supervisor with every cap disabled."
-      - "An absolute post-exit drain bound (not guarded by !exited) that still calls tear_down_group / terminate_group when the group has not been proven reaped, so a descendant holding stdout cannot hang the run forever."
-      - "pending_control cleared at run end (dropping every waiter) and/or a bounded timeout on interrupt()'s rx.await, so an unanswered interrupt cannot hang the caller for the process lifetime."
-      - "A regression test exercising each of the three conditions (fast stream/blocked consumer, exited-but-descendant-alive, interrupt with no control_response) — none of the existing tests reach any of them (tests/executor_lifecycle.rs's idle-cap test paces heartbeats at 50ms with an immediately-drained channel)."
+re_verification:
+  previous_status: gaps_found
+  previous_score: 2/4 roadmap success criteria verified
+  gaps_closed:
+    - "SC-2 / TRANS-02 / CR-04 — a permission-blocked run reported as success"
+    - "SC-1 / TRANS-01 / CR-01, CR-02, CR-03 — three reachable unbounded-hang paths in the supervisor and in interrupt()"
+  gaps_remaining: []
+  regressions: []
 deferred: []
 ---
 
@@ -85,8 +21,9 @@ deferred: []
 **Phase Goal:** The tool can run a GSD command through `claude -p` over a structured
 two-way protocol and know exactly how it ended
 **Verified:** 2026-07-29
-**Status:** gaps_found
-**Re-verification:** No — initial verification
+**Status:** passed
+**Re-verification:** Yes — after gap closure (plans 15-07 and 15-08, closing the two gaps
+recorded in this file's prior version at commit `d2d8761`)
 
 ## Goal Achievement
 
@@ -94,83 +31,110 @@ two-way protocol and know exactly how it ended
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | A real multi-step GSD skill runs headlessly against a scratch project to completion, without hanging | ✗ FAILED | 15-SPIKE-OQ1.md proves the **happy path** completes (exit 0, 774.6s, real disk/git changes) — genuine positive evidence. But direct code inspection of `src/executor/claude.rs` confirms three reachable, unbounded-hang code paths the phase's own doc comments claim do not exist (CR-01/CR-02/CR-03, verified below). The general "without hanging" guarantee is not held by the shipped code. |
-| 2 | A run's outcome — succeeded, errored, permission-denied, killed — is reported from the `type:"result"` envelope, exit code, disk state, and git, and is correct even when the agent's own prose summary says otherwise | ✗ FAILED | Prose-immunity is real and tested (`the_agents_prose_summary_changes_nothing_about_the_outcome`, outcome.rs:1026). But the production call site (`claude.rs:962`) never reaches the denials-aware derivation (`derive_run_outcome_from_envelopes`) — confirmed by grep across `src/`. A `dontAsk`-blocked run is reported as `SucceededNoChanges` (success), directly contradicting the "permission-denied" case this criterion explicitly names. |
-| 3 | The TUI keeps redrawing and accepting keypresses while a run streams output for minutes at a time | ✓ VERIFIED | `src/main_loop.rs`'s `pump()` is a biased `select!` with input first, a bounded (`EXEC_BATCH=64`) executor-event drain second, and a 16ms redraw tick third. Three deterministic property tests confirm: a keypress is serviced ahead of 10,000 queued executor events on the very first `pump` call (`keypress_is_handled_before_a_flood_of_executor_events`), a burst drains in bounded batches (`executor_burst_is_drained_in_bounded_batches`), and frames keep rendering (>20 in 2s) while the channel stays saturated under a real multi-threaded flooder (`tui_renders_repeatedly_while_the_executor_channel_is_saturated`). |
-| 4 | Starting a run against a Claude CLI missing a required `system/init` capability is refused up front, naming the missing capability, rather than failing mid-run | ✓ VERIFIED | `src/executor/gate.rs`'s `validate_first_init` fails closed on missing/empty capabilities, unreadable/absent version, and non-subscription/absent auth source, naming every missing capability (`CapabilityError::MissingCapabilities`). Wired: `claude.rs`'s `Coordinator` blocks `start_run`'s `gate_rx.await` until the first `system/init` is validated, and only then releases the first message to stdin (`handle_item`, claude.rs:1005-1041). `a_refused_run_writes_zero_bytes_to_the_child_stdin` (claude.rs:1459) proves the refusal costs zero stdin bytes end-to-end through a real spawned stand-in, not just a unit-level gate check. |
+| 1 | A real multi-step GSD skill runs headlessly against a scratch project to completion, without hanging | ✓ VERIFIED | The three CR-01/CR-02 defects are closed and independently re-derived from source, not from the SUMMARYs. `Coordinator::run` (`src/executor/claude.rs:943-1141`) now evaluates the wall-clock cap, the idle cap, the grace deadline, the post-exit drain deadline and the cancel signal in an **unconditional block at the top of every loop pass** (lines 963-1025), before `select!` runs — confirmed by direct reading, not by trusting the doc comment. The hand-off to the caller goes through a single `forward()` funnel (line 1266) bounded by `tokio::time::timeout_at(forward_deadline, ...)`, where `forward_deadline` is the earliest of `EVENT_FORWARD_TIMEOUT` (5s) and every armed bound (lines 1031-1040) — `grep -cE "events_tx$" src/executor/claude.rs` returns `0` (all eight direct sends inside `handle_item` now route through `forward`), confirmed live. The post-exit drain (`POST_EXIT_DRAIN_CAP`, 5s) is armed by the exit arm and read by a `select!` arm gated **only** on `drain_deadline.is_some()` (line 1117), explicitly not on `exited` — and the post-loop dispatch (lines 1166-1196) runs the full four-step teardown whenever `exited && drain_expired`, discarding the teardown's own status and reporting the leader's already-observed one. I independently ran the three regression tests by name (not trusting the SUMMARY's numbers): `a_wall_clock_cap_still_fires_while_the_event_consumer_is_blocked` (8.02s, PASS, never reads `handle.events`), `a_cancel_is_still_honoured_while_the_event_consumer_is_blocked` (20.12s, PASS), `a_descendant_holding_stdout_after_the_leader_exits_cannot_hang_the_run` (5.01s, PASS, asserts the descendant is gone within 5s). All three carry their own hard `tokio::time::timeout` (60s), so a regression fails rather than hangs. The previously `#[ignore]`d SIGKILL-escalation test (`a_child_that_ignores_the_terminate_signal_is_still_killed_and_reaped`) is un-ignored and passes in 10.01s, independently confirmed; `grep -rnE "^[[:space:]]*#\[ignore" tests/ src/` returns zero hits tree-wide. |
+| 2 | A run's outcome — succeeded, errored, permission-denied, killed — is reported from the `type:"result"` envelope, exit code, disk state, and git, and is correct even when the agent's own prose summary says otherwise | ✓ VERIFIED | CR-04 is closed. `src/executor/outcome.rs` now exposes exactly **one** run-outcome entry point — `grep -cE "^pub fn derive_run_outcome" src/executor/outcome.rs` returns `1`, and `grep -rn "derive_run_outcome" src/ | grep -v "_from_envelopes"` returns **zero hits** across the whole `src/` tree: the envelope-discarding sibling is deleted, not deprecated. The production call site is `src/executor/claude.rs:1221` (`None => derive_run_outcome_from_envelopes(&envelopes, status, &before, &after)`), reached from a coordinator that collects `Vec<ResultMessage>` (the local `envelopes`, line 917) rather than a `TurnOutcome` projection — `handle_item`'s `StreamMessage::Result` arm (line 1397) pushes the full envelope, including `permission_denials[]`, before the box moves into `ExecutionEvent::TurnCompleted`. I independently ran `a_permission_blocked_run_is_reported_as_permission_denied_not_success` (`tests/executor_transport.rs:274`) by name: PASS in 0.01s, driving a real spawned stand-in (`fake-claude-slow.sh`'s new `denied` ending, verified to emit a populated `permission_denials` array with no host path) through the real `Coordinator`, asserting `RunOutcome::PermissionDenied { denials }` with `denials.len() == 1`. `outcome.rs`'s own unit test `the_agents_prose_summary_changes_nothing_about_the_outcome` (prose-immunity) is unregressed. |
+| 3 | The TUI keeps redrawing and accepting keypresses while a run streams output for minutes at a time | ✓ VERIFIED (unregressed) | `src/main_loop.rs` was fenced out of both gap-closure plans and is byte-identical to its pre-replan state — `git diff --name-only 5dbfb63..HEAD -- src/main_loop.rs src/executor/gate.rs` returns empty, confirmed directly, and `git status --porcelain src/main_loop.rs src/executor/gate.rs` is empty on the current tree. The three `pump()` responsiveness tests (`keypress_is_handled_before_a_flood_of_executor_events`, `executor_burst_is_drained_in_bounded_batches`, `tui_renders_repeatedly_while_the_executor_channel_is_saturated`) still pass — `cargo test --lib main_loop` reports 3 passed, independently re-run. Light regression confirmation only, per the re-verification instructions; not re-derived from scratch. |
+| 4 | Starting a run against a Claude CLI missing a required `system/init` capability is refused up front, naming the missing capability, rather than failing mid-run | ✓ VERIFIED (unregressed) | `src/executor/gate.rs` was likewise fenced out and untouched (same `git diff` above). `a_refused_run_writes_zero_bytes_to_the_child_stdin` (now living in `src/executor/claude.rs`'s own `#[cfg(test)] mod tests`, not `tests/executor_transport.rs` — a harmless relocation, not a regression) was independently re-run by name: PASS. The gate's wiring into `Coordinator::run`'s first-`system/init` arm (lines 1334-1373) is unchanged by either gap-closure plan, and the later-init informational arm beside it (D-30) still forwards verbatim without re-running the gate. Light regression confirmation only, per the re-verification instructions; not re-derived from scratch. |
 
-**Score:** 2/4 roadmap success criteria verified as met by the shipped code.
+**Score:** 4/4 roadmap success criteria verified as met by the shipped code.
 
-### Requirements Coverage
+### Gap Closure Verification (this pass's primary job)
 
-| Requirement | Source Plan(s) | Description | Status | Evidence |
-|---|---|---|---|---|
-| TRANS-01 | 15-01, 15-02, 15-03 | Spawn `claude -p` with duplex stream-json, parse structured envelope not text | ✓ SATISFIED | `build_argv` emits the duplex stream-json baseline; `stream_json.rs` is a tolerant serde model verified line-by-line against 8 golden transcripts; parsing happens only in the reader task, never the render thread. |
-| TRANS-02 | 15-01, 15-02, 15-04, 15-05 | Outcome derived from result envelope (incl. `permission_denials[]`), exit code, disk, git — never prose | ✗ BLOCKED | See gap above (CR-04): the requirement's own text names `permission_denials[]` as a required source, and it is unreachable from the shipped production path. |
-| TRANS-03 | 15-02, 15-06 | TUI event loop stays responsive while a run streams output | ✓ SATISFIED | See Truth 3. |
-| TRANS-04 | 15-02, 15-03 | Runtime capability detection via `system/init`, refuses unsupported CLI with clear message | ✓ SATISFIED | See Truth 4. |
+**GAP 1 (SC-2 / TRANS-02 / CR-04) — both `missing:` bullets closed:**
 
-No orphaned requirements: all four IDs declared across the phase's plan frontmatter (`requirements:` fields in 15-01 through 15-06) match exactly the four TRANS IDs REQUIREMENTS.md maps to Phase 15. TRANS-05 is correctly out of scope (mapped to Phase 18 in REQUIREMENTS.md).
+1. *"Coordinator::run must collect Vec<ResultMessage> ... and call derive_run_outcome_from_envelopes"* — **CLOSED.** Verified directly against source: `envelopes: Vec<ResultMessage>` at `claude.rs:917`, pushed at `claude.rs:1397`, consumed at the call site `claude.rs:1221`. The envelope-discarding entry point is deleted from `outcome.rs`, not merely unreferenced (`grep -rn "derive_run_outcome" src/ | grep -v "_from_envelopes"` = 0 hits).
+2. *"An end-to-end regression test driving a stand-in whose terminal envelope carries a non-empty permission_denials[] through the real Coordinator"* — **CLOSED.** `a_permission_blocked_run_is_reported_as_permission_denied_not_success` independently re-run: PASS, 0.01s, real spawned child, real `Coordinator`.
+
+**GAP 2 (SC-1 / TRANS-01 / CR-01, CR-02, CR-03) — all four `missing:` bullets closed:**
+
+1. *"Deadlines and cancel must be evaluated unconditionally each loop pass ... and the forward to events_tx must be bounded"* — **CLOSED.** Verified directly: the unconditional block at `claude.rs:963-1025`, and the bounded `forward()` funnel at `claude.rs:1266-1286` used by all eight prior direct sends (`grep -cE "events_tx$" src/executor/claude.rs` = 0; the lone remaining direct send, the post-loop `Exited` send, is itself wrapped in `tokio::time::timeout` at line 1232 — a deviation the SUMMARY flagged and I independently confirmed in the source, since an unbounded send there would have been a third way to lose `outcome_tx`).
+2. *"An absolute post-exit drain bound (not guarded by !exited) that still calls tear_down_group / terminate_group when the group has not been proven reaped"* — **CLOSED.** `POST_EXIT_DRAIN_CAP` (line 171) is armed unconditionally in the exit arm (line 1081) and its `select!` arm is gated only on `drain_deadline.is_some()` (line 1117), verified to have no `exited` conjunct in that guard by direct reading. The post-loop dispatch (lines 1166-1196) runs the four-step teardown on `exited && drain_expired`.
+3. *"pending_control cleared at run end ... and/or a bounded timeout on interrupt()'s rx.await"* — **CLOSED, both, not either.** `pending_control.lock().await.clear()` appears exactly once (`claude.rs:1245`), immediately before `outcome_tx` is sent; `interrupt()` wraps its `rx.await` in `tokio::time::timeout(handle.control_response_cap, rx)` (`claude.rs:540`), default 30s. Both release paths independently re-run by name: `an_unanswered_interrupt_is_released_by_the_run_end_drain` (0.61s) and `an_unanswered_interrupt_on_a_live_child_is_released_by_the_control_response_cap` (0.41s), both PASS.
+4. *"A regression test exercising each of the three conditions"* — **CLOSED**, one test per condition, all independently re-run by name and all PASS: fast-stream/blocked-consumer → `a_wall_clock_cap_still_fires_while_the_event_consumer_is_blocked` + `a_cancel_is_still_honoured_while_the_event_consumer_is_blocked`; exited-but-descendant-alive → `a_descendant_holding_stdout_after_the_leader_exits_cannot_hang_the_run`; interrupt-with-no-response → the two tests in bullet 3. Every one of these five tests carries its own hard `tokio::time::timeout`, confirmed by direct reading of each test body, not by trusting the SUMMARY's claim.
+
+No `missing:` bullet from the prior verification is left open.
+
+### Required Artifacts
+
+| Artifact | Expected | Status | Details |
+|---|---|---|---|
+| `src/executor/claude.rs` | coordinator collects `Vec<ResultMessage>`; per-pass unconditional bound evaluation; bounded `forward()`; `interrupt` cap-bounded; run-end `pending_control` drain; post-exit drain always reaps | ✓ VERIFIED | All confirmed by direct line-level reading, not SUMMARY trust. |
+| `src/executor/mod.rs` | `ExecutionOptions::control_response_cap` and matching `ExecutionHandle` field | ✓ VERIFIED | `mod.rs:272` (option, default 30s at `:291`), `:349` (handle field), unit test at `:666`. |
+| `src/executor/outcome.rs` | single, denials-aware run-outcome entry point | ✓ VERIFIED | Exactly one `pub fn derive_run_outcome*`; module doc rewritten to state this. |
+| `tests/fixtures/fake-claude-slow.sh` | `denied` ending emitting populated `permission_denials[]`; zero-interval flood fast path | ✓ VERIFIED | Both present; no host path (grep for literal and dash-encoded forms returns 0). |
+| `tests/fixtures/fake-claude-orphan.sh` | descendant that outlives the leader and holds stdout | ✓ VERIFIED | New file, executable, no `wait`, fully synthetic, read in full. |
+| `tests/executor_transport.rs` | permission-denied end-to-end regression test | ✓ VERIFIED | Read in full; real `Coordinator`, real spawned stand-in. |
+| `tests/executor_lifecycle.rs` | five new regression tests (2 interrupt, 2 flood, 1 orphan) + un-ignored escalation test | ✓ VERIFIED | All six read in full and independently re-run by name; all PASS with the measured durations matching the SUMMARY's claims. |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 |---|---|---|---|---|
-| `src/executor/claude.rs` (Coordinator) | `src/executor/gate.rs` | `validate_first_init` called before first message released to stdin | ✓ WIRED | Confirmed at claude.rs:1005-1041: gate runs on the first `system/init`, prompt released only in the `Ok` branch. |
-| `src/executor/claude.rs` (Coordinator) | `ExecutionHandle.pending_control` | interrupt registers oneshot under request id, reader resolves it | ⚠️ PARTIAL | Registration/resolution wiring exists and is tested (`a_second_system_init_...`, handle_item's `ControlResponse` arm at 1078-1089), but the map is never drained at run end (CR-03) — the *link* is wired, the *lifecycle* around it is not bounded. |
-| `src/executor/claude.rs` (Coordinator) | `derive_run_outcome*` in `src/executor/outcome.rs` | Coordinator calls the outcome derivation with full envelopes | ✗ NOT WIRED (partial function) | Coordinator calls `derive_run_outcome` (envelope-discarding), never `derive_run_outcome_from_envelopes` (denials-aware). See CR-04 gap above. |
-| `src/main_loop.rs` (`pump`) | `src/app.rs` (`apply_exec_event`) | executor events routed to app state | ✓ WIRED | Confirmed and property-tested. |
-| `src/executor/git_ops.rs` (`head_sha`, `is_dirty`) | `src/executor/outcome.rs` (`RunSnapshot::capture`) | git half of the disk/git delta | ✓ WIRED | `RunSnapshot::capture` calls both helpers; tested end-to-end in `capture_fills_the_git_half_in_a_real_repository`. |
+| `Coordinator::run` | `derive_run_outcome_from_envelopes` | production call site, full envelopes | ✓ WIRED | Was "NOT WIRED (partial function)" in the prior report; now confirmed wired at `claude.rs:1221`, the only entry point in existence. |
+| `handle_item`'s `StreamMessage::Result` arm | the coordinator's envelope vector | `envelopes.push((*result).clone())` before the box moves | ✓ WIRED | `claude.rs:1397`. |
+| `ClaudeExecutor::interrupt` | `ExecutionHandle::pending_control` | registration, cap, run-end drain | ✓ WIRED (closed lifecycle) | Was "⚠️ PARTIAL" (wired but unbounded) in the prior report; now both the cap (`timeout(handle.control_response_cap, rx)`) and the run-end drain (`pending_control.lock().await.clear()`) close the lifecycle at both ends, confirmed by direct reading and by two independently-passing regression tests. |
+| supervisor loop head | `wall_deadline` / `idle_deadline` / `grace_deadline` / `drain_deadline` / `cancel_rx` | unconditional per-pass evaluation | ✓ WIRED | `claude.rs:963-1025`, confirmed to run before `select!` on every pass. |
+| `src/main_loop.rs` (`pump`) | `src/app.rs` (`apply_exec_event`) | executor events routed to app state | ✓ WIRED (unregressed) | File untouched by either gap-closure plan; not re-derived. |
 
 ### Anti-Patterns Found
 
 | File | Line | Pattern | Severity | Impact |
 |---|---|---|---|---|
-| — | — | No `TBD`/`FIXME`/`XXX`/`TODO`/`HACK`/placeholder markers found in any phase-15 file (`src/executor/*`, `src/main_loop.rs`, `src/app.rs`, `src/lib.rs`, `src/error.rs`) | — | None — clean on this axis. |
+| — | — | No `TBD`/`FIXME`/`XXX`/`TODO`/`HACK`/placeholder markers found in any file touched by 15-07 or 15-08 (`src/executor/claude.rs`, `src/executor/mod.rs`, `src/executor/outcome.rs`, the four test files, the two new/modified fixtures) | — | None — clean, independently re-swept. |
 
-The two BLOCKER-class defects found are not debt markers or stubs; they are logic errors in otherwise substantive, well-tested, well-documented code (a `biased select!` ordering choice with an unbounded await inside the winning arm's body, and a hard-coded `Vec::new()` in a function that has a fully-correct sibling). This is the "artifact present, substantive, wired — but the invariant it's supposed to hold does not hold" failure mode the goal-backward methodology is built to catch, and it was caught here by cross-referencing the code review's specific line citations against the actual file.
-
-### Independently confirmed code-review findings (BLOCKER)
-
-I read `src/executor/claude.rs` and `src/executor/outcome.rs` directly (not merely trusting 15-REVIEW.md's prose) and independently confirm:
-
-- **CR-01** (starvation/suspension of deadlines and cancel): confirmed. `biased;` at claude.rs:836, reader arm first at 838, `handle_item(...).await` inside that arm's body (not inside the `select!`), `events_tx.send(...).await` inside `handle_item` on the 8192-capacity bounded channel (claude.rs:990-1088).
-- **CR-02** (post-exit hang, no teardown): confirmed. Every deadline/grace arm guarded `if !exited` (claude.rs:869, 874, 889); post-loop dispatch (`if exited { exit_status }`, line 927) never calls `tear_down_group` when `exited` is true.
-- **CR-03** (interrupt can hang forever): confirmed. No call site anywhere clears `pending_control` at run end; `rx.await` at claude.rs:481 has no timeout. Full grep of `pending_control` across `src/executor/claude.rs` and `src/executor/mod.rs` shows only per-request insert/remove, no run-end drain.
-- **CR-04** (permission-denied misreported as success): confirmed. `claude.rs:962` calls `derive_run_outcome` (outcome.rs:165-172, hard-codes `Vec::new()` for denials); `derive_run_outcome_from_envelopes` (outcome.rs:181-196, the denials-aware entry point) is referenced only by its own test module — grep across `src/` and `tests/` confirms zero non-test call sites.
-- **WR-15** (dash-encoded host paths in fixtures): I did not re-scan this in depth per the orchestrator's note that it was already remediated in commit `0a9b6d8` and re-scanned clean; treating as resolved per that instruction.
-
-I did not independently re-verify every one of the 17 WARNING items in 15-REVIEW.md line-by-line (WR-01 through WR-14, WR-16, WR-17); they describe secondary robustness/hygiene gaps (grace-period race, breach-vs-cancel ordering, dropped turn accounting on TimedOut/Stalled, unbounded stdin-writer leak on clean runs, stderr-reader keeping `handle.events` open forever, `#[ignore]`d SIGKILL test, blocking I/O on join failure, unreachable safety mitigations beyond CR-04, predictable `/tmp` paths in two unit tests, unvalidated `budget_usd` reaching argv, over-broad `pub` visibility on `pending_control`/`with_program`, stale README section, and `RunState` stuck at `Stopping` forever) — none of these independently changes the pass/fail verdict on the four roadmap success criteria, but they represent real follow-up work and are consistent with (not contradicted by) my own reading of the files I did inspect.
-
-### Behavioral Spot-Checks
+### Behavioral Spot-Checks (independently run, not trusted from SUMMARY)
 
 | Behavior | Command | Result | Status |
 |---|---|---|---|
-| Full test suite passes (already verified by orchestrator; not re-run in full per spot-check constraints) | `cargo test` | 355 passed, 0 failed, 1 ignored | ✓ PASS (relied on orchestrator's gate) |
-| The ignored SIGKILL-escalation test passes | `cargo test -- --ignored` | passes in 10.01s | ✓ PASS (relied on orchestrator's gate) |
-| `derive_run_outcome_from_envelopes` is reachable only from tests | `grep -rn "derive_run_outcome_from_envelopes" src/` | 3 hits, all in `src/executor/outcome.rs` (1 definition + 2 in its own `#[cfg(test)] mod tests`) | ✓ CONFIRMS CR-04 |
-| `pending_control` is never cleared at run end | `grep -n "pending_control" src/executor/claude.rs src/executor/mod.rs` | Only insert (342, 355, 387, 473), per-request remove (484, 1080), and the field declaration (330, 716) — no `.clear()` anywhere | ✓ CONFIRMS CR-03 |
-| No debt markers in phase-15 files | `grep -rniE "TBD\|FIXME\|XXX\|TODO\|HACK\|placeholder"` across `src/executor/`, `src/main_loop.rs`, `src/app.rs`, `src/lib.rs`, `src/error.rs` | No matches | ✓ PASS |
+| Full workspace build | `cargo build` | exit 0 | ✓ PASS |
+| Full test suite | `cargo test` | `363 passed (7 suites, 22.60s)` — matches the measured baseline exactly | ✓ PASS |
+| Lib clippy gate | `cargo clippy -- -D warnings` | `No issues found` | ✓ PASS |
+| `--all-targets` clippy delta | `cargo clippy --all-targets` (after touching a source file to bust the cache) | `0 errors, 5 warnings` — 3x `browser.rs` literal-bool `assert_eq!`, 1x `project_creator.rs` owned-instance, 1x `state_reader/mod.rs` items-after-test-module — none in an executor or test file | ✓ PASS |
+| Permission-denied regression (named) | `cargo test --test executor_transport a_permission_blocked_run_is_reported_as_permission_denied_not_success` | 1 passed, 0.01s | ✓ PASS |
+| Interrupt regressions (named) | `cargo test --test executor_lifecycle an_unanswered_interrupt` | 2 passed, 0.61s | ✓ PASS |
+| Wall-clock-under-flood regression (named) | `cargo test --test executor_lifecycle a_wall_clock_cap_still_fires_while_the_event_consumer_is_blocked` | 1 passed, 8.02s | ✓ PASS |
+| Cancel-under-flood regression (named) | `cargo test --test executor_lifecycle a_cancel_is_still_honoured_while_the_event_consumer_is_blocked` | 1 passed, 20.12s | ✓ PASS |
+| Orphan-descendant regression (named) | `cargo test --test executor_lifecycle a_descendant_holding_stdout_after_the_leader_exits_cannot_hang_the_run` | 1 passed, 5.01s | ✓ PASS |
+| Un-ignored SIGKILL escalation (named) | `cargo test --test executor_lifecycle a_child_that_ignores_the_terminate_signal_is_still_killed_and_reaped` | 1 passed, 10.01s | ✓ PASS |
+| Full lifecycle suite | `cargo test --test executor_lifecycle` | 11 passed, 0 failed, 0 ignored | ✓ PASS |
+| Full transport suite | `cargo test --test executor_transport` | 7 passed, 0 failed | ✓ PASS |
+| No ignored test anywhere | `grep -rnE "^[[:space:]]*#\[ignore" tests/ src/` | 0 hits | ✓ PASS |
+| No host-path leak in new/modified fixtures | `grep -rnE "/home/[a-zA-Z]|home-blk" tests/fixtures/fake-claude-slow.sh tests/fixtures/fake-claude-orphan.sh` | 0 hits | ✓ PASS |
+| Gate/main-loop scope fence held | `git diff --name-only 5dbfb63..HEAD -- src/main_loop.rs src/executor/gate.rs` | empty | ✓ PASS |
+| SC-4 unregressed (named, relocated) | `cargo test --lib a_refused_run_writes_zero_bytes_to_the_child_stdin` | 1 passed | ✓ PASS |
+| SC-3 unregressed | `cargo test --lib main_loop` | 3 passed | ✓ PASS |
+
+### Requirements Coverage
+
+| Requirement | Source Plan(s) | Description | Status | Evidence |
+|---|---|---|---|---|
+| TRANS-01 | 15-01, 15-02, 15-03, 15-04, 15-07, 15-08 | Spawn `claude -p` with duplex stream-json, parse structured envelope not text; process never awaits exit unbounded | ✓ SATISFIED | Transport shape verified in the initial pass, unregressed; the CR-01/CR-02/CR-03 hang paths (also TRANS-01, since they defeat "know exactly how it ended" without hanging) are now closed and independently re-verified above. |
+| TRANS-02 | 15-01, 15-02, 15-04, 15-05, 15-07 | Outcome derived from result envelope (incl. `permission_denials[]`), exit code, disk, git — never prose | ✓ SATISFIED | CR-04 closed; the production call site now reaches the denials-aware derivation, independently confirmed by source reading and a real end-to-end test. |
+| TRANS-03 | 15-02, 15-06 | TUI event loop stays responsive while a run streams output | ✓ SATISFIED (unregressed) | File untouched by gap closure; tests independently re-run. |
+| TRANS-04 | 15-02, 15-03 | Runtime capability detection via `system/init`, refuses unsupported CLI with clear message | ✓ SATISFIED (unregressed) | File untouched by gap closure; test independently re-run. |
+
+No orphaned requirements: all four IDs declared across the phase's eight plans (15-01 through 15-08) match exactly the four TRANS IDs REQUIREMENTS.md maps to Phase 15. TRANS-05 is correctly out of scope (mapped to Phase 18 in REQUIREMENTS.md).
+
+**Note:** `.planning/REQUIREMENTS.md` lines 38-40 still show `[ ]` (unchecked) for TRANS-02/03/04 as of this verification pass — only TRANS-01 is checked. This is a requirements-tracking-document staleness issue, not a code gap: the shipped code satisfies all four, as detailed above. Flagged here as an administrative follow-up (updating the checkboxes), not a phase gap.
 
 ### Probe Execution
 
-Not applicable — this phase has no `scripts/*/tests/probe-*.sh` convention; the phase's own gating artifact is `15-SPIKE-OQ1.md`, a manually-run, narratively-documented spike (not a scripted probe), and it was read and its evidence weighed above rather than re-executed (re-running it would require spawning a real headless `claude -p` run against a fresh scratch project for ~13 minutes, which is out of scope for a verification pass and would not change the code-level findings).
+Not applicable — this phase has no `scripts/*/tests/probe-*.sh` convention. The gap-closure verification instead ran the specific named regression tests the two gap-closure plans introduced, plus the full project gate, all independently re-executed in this verification pass rather than trusted from either SUMMARY.
 
 ### Human Verification Required
 
-None. Every truth resolved to VERIFIED or FAILED by direct code inspection cross-referenced against the code review; nothing here requires a human to observe runtime/visual behavior that grep cannot see.
+None. Every truth resolved to VERIFIED by direct code inspection cross-referenced against the prior verification's specific line citations, corroborated by independently re-running every named regression test (not merely reading the SUMMARY's reported numbers). Nothing here requires a human to observe runtime/visual behavior that grep and a real test run cannot see.
 
 ### Gaps Summary
 
-Two of the four roadmap success criteria are not actually met by the shipped code, and both gaps trace to confirmed logic defects (not missing tests, not stubs) in the supervisor loop and the outcome derivation call site:
+None. Both gaps recorded in the prior verification (`d2d8761`) are closed:
 
-1. **SC-1 ("...without hanging")** is true for the demonstrated happy path (15-SPIKE-OQ1.md is genuine, valuable evidence) but false as a general guarantee: the supervisor's `biased select!` can starve every deadline and the cancel signal while draining a fast stream into a blocked consumer, and once the child is observed exited, every remaining cap/teardown path is disabled — leaving only stdout EOF as the escape, which a surviving descendant can hold open forever. `interrupt()` has the same shape of problem: an unanswered control response hangs the caller for the process's whole lifetime, with no drain at run end. These are exactly the situations the phase goal's "know exactly how it ended" promises to prevent, and the doc comments in `claude.rs` assert (incorrectly, per this reading) that they cannot occur.
+- **GAP 1 (SC-2 / TRANS-02 / CR-04)**: the production coordinator now collects full `ResultMessage` envelopes and calls the single, denials-aware `derive_run_outcome_from_envelopes` — the envelope-discarding sibling is deleted from the codebase, not merely unreferenced, confirmed by a zero-hit grep across all of `src/`. An end-to-end test drives a real spawned stand-in through the real `Coordinator` and asserts `RunOutcome::PermissionDenied`.
+- **GAP 2 (SC-1 / TRANS-01 / CR-01, CR-02, CR-03)**: the supervisor now evaluates every deadline and the cancel signal unconditionally at the top of every loop pass, independent of `select!` arm ordering; the hand-off to the caller is bounded by the earliest armed deadline so a stalled consumer cannot disable the caps or cancel; the post-exit drain is bounded and explicitly not guarded by the `exited` flag, and the post-loop dispatch always tears the group down when it has not been proven reaped; `interrupt()`'s wait is bounded by a configurable cap and `pending_control` is cleared at run end, closing the control-response lifecycle at both ends. Five new regression tests, each carrying its own hard timeout, independently confirmed passing at the durations the SUMMARY reported.
 
-2. **SC-2 ("...correct even when the agent's own prose summary says otherwise")** is true for the prose-immunity half (tested, verified) but false for the permission-denied half, which the criterion explicitly names: the production coordinator discards each `result` envelope's `permission_denials[]` and calls the outcome function that cannot see it, so a `dontAsk`-blocked run — the exact untrusted-workspace scenario the phase's own spike (P2) surfaced as a real, silently-misleading failure mode — is reported as a plain success.
+SC-3 and SC-4 were confirmed unregressed via a light check (file-untouched confirmation plus an independent re-run of their existing tests), per the re-verification scope — not re-derived from scratch.
 
-Both defects are narrow, mechanical fixes (swap one call site for its already-implemented, already-tested sibling for CR-04; restructure the supervisor's deadline evaluation to not depend on `select!` reaching an arm, and bound the post-exit drain and the interrupt wait, for CR-01/02/03) rather than architectural rework — the correct logic already exists in the codebase in each case (`derive_run_outcome_from_envelopes`, the documented four-step teardown, the cap-racing design) and simply is not reached from every path it needs to be reached from.
-
-SC-3 and SC-4 are both genuinely, substantively met: the TUI responsiveness guarantee and the capability gate are implemented, wired end-to-end (not just unit-tested in isolation), and proven under deliberately adversarial test conditions (10,000-event floods, a real spawned refusing stand-in).
+One administrative note, not a gap: `.planning/REQUIREMENTS.md`'s checkboxes for TRANS-02/03/04 remain unchecked and should be updated to reflect that all four Phase 15 requirements are now satisfied.
 
 ---
 
