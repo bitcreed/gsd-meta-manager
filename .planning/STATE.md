@@ -4,15 +4,15 @@ milestone: v2.0
 milestone_name: Autonomous Orchestration
 current_phase: 16
 current_phase_name: Run Journal & State Substrate
-status: planning
+status: executing
 stopped_at: v2.0 roadmap written — Phases 14-22 defined, traceability filled
-last_updated: "2026-07-29T13:25:48.699Z"
+last_updated: "2026-07-29T14:33:00.787Z"
 last_activity: 2026-07-29
 last_activity_desc: Phase 15 complete, transitioned to Phase 16
 progress:
   total_phases: 9
   completed_phases: 2
-  total_plans: 12
+  total_plans: 18
   completed_plans: 12
   percent: 22
 ---
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 
 Phase: 16 — Run Journal & State Substrate
 Plan: Not started
-Status: Ready to plan
+Status: Ready to execute
 Last activity: 2026-07-29 — Phase 15 complete, transitioned to Phase 16
 
 ### Phase 15 planning notes (autonomous run — review these)
