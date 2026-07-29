@@ -85,7 +85,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 
 ### v2.0 Autonomous Orchestration (Phases 14-22)
 
-- [ ] **Phase 14: UI Fixes** - Four display defects that misreport project state
+- [x] **Phase 14: UI Fixes** - Four display defects that misreport project state (completed 2026-07-29)
 - [ ] **Phase 15: Transport Foundation** - Duplex `stream-json` executor with envelope-derived outcomes
 - [ ] **Phase 16: Run Journal & State Substrate** - Durable, redacted, cheap-to-read run record
 - [ ] **Phase 17: Supervisor** - Detach, kill switch, dry-run, single-run lock, opt-in gate
@@ -324,7 +324,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 14. UI Fixes | 4/4 | In Progress|  |
+| 14. UI Fixes | 4/4 | Complete    | 2026-07-29 |
 | 15. Transport Foundation | 0/? | Not started | - |
 | 16. Run Journal & State Substrate | 0/? | Not started | - |
 | 17. Supervisor | 0/? | Not started | - |
