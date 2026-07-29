@@ -1,0 +1,318 @@
+// ============================================================================
+// The mechanical spawn-seam audit (D-17, PITFALLS:521)
+//
+// One rule governs every assertion below: **a comment is not a guard; the test
+// is.** `src/executor/mod.rs` says the opt-in escape hatch has no production
+// call site, and `src/journal/` has claimed since Phase 16 that the strict
+// unknown-field attribute is kept out by a grep. Prose cannot enforce either.
+// This file does.
+//
+// It is an integration test rather than an in-source one because it reads the
+// source tree, and a test that walks `src/` has no business living inside it.
+// It is deliberately **portable** — no `#![cfg(unix)]` — because none of the
+// properties it checks are platform-dependent.
+//
+// **The walk covers `src/` only, never `tests/`.** That is what lets this file's
+// own prose name the tokens it forbids without invalidating its own gate.
+// ============================================================================
+
+use std::path::{Path, PathBuf};
+
+/// The tree under audit. Resolved at compile time, so the test is
+/// cwd-independent — the idiom `tests/executor_lifecycle.rs:26-29` already uses.
+const SRC_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+
+/// The identifier that bypasses the opt-in gate, and the one file allowed to
+/// mention it.
+const ESCAPE_HATCH: &str = "for_testing_bypassing_opt_in";
+const ESCAPE_HATCH_HOME: &str = "src/executor/mod.rs";
+
+/// Every file under `src/` permitted to contain a process-spawn site.
+///
+/// **This is a declared allowlist, not a habit.** A later plan in this phase
+/// adds `src/driver/spawn.rs`; whoever adds it must add the entry here in the
+/// same commit, and that deliberate edit is the entire point — a spawn site that
+/// nobody had to think about is how an agent comes to be launched against a
+/// directory the user never opted in.
+const SPAWN_ALLOWLIST: &[&str] = &[
+    // The agent spawn. The one that takes the capability type.
+    "src/executor/claude.rs",
+    // Git shell-out inside this module's own in-source test helper. No agent.
+    "src/executor/outcome.rs",
+    // `git check-ignore` for the run-record ignore diagnostic. No agent.
+    "src/journal/writer.rs",
+    // The TUI's blocking `$EDITOR` shell-out. No agent.
+    "src/main.rs",
+    // `git init` and the project-creation hook shell-out. No agent.
+    "src/project_creator.rs",
+    // `pgrep -x claude` for session detection. Reads only, spawns no agent.
+    "src/session_detector.rs",
+    // Git reads that back project state. No agent.
+    "src/state_reader/git_ops.rs",
+    // The `gsd-tools` launcher. No agent.
+    "src/state_reader/queue_md.rs",
+    // tmux, for switching the user to an existing session. No agent.
+    "src/terminal_switch.rs",
+    // `which` plus the terminal launch for "open in terminal". No agent.
+    "src/ui/screens/detail.rs",
+];
+
+/// The three shapes a process spawn takes in this tree.
+const SPAWN_MARKERS: &[&str] = &["Command::new(", "CommandWrap::with_new(", "process_group("];
+
+/// Serde's strict unknown-field rejection attribute, assembled at **runtime**
+/// from two halves.
+///
+/// Written this way on purpose: spelled out as one literal, this file's own
+/// source would match a naive `grep -r` of the repository for the attribute and
+/// the guard would start reporting itself. The halves are meaningless apart.
+const REJECT_HEAD: &str = "deny_unknown";
+const REJECT_TAIL: &str = "_fields";
+
+/// One source file: its path relative to the crate root, and its numbered lines.
+type SourceFile = (String, Vec<(usize, String)>);
+
+/// Every `*.rs` file under `src/`, recursively, sorted by path.
+///
+/// The recursive `read_dir` shape follows `src/journal/writer.rs:571` and
+/// `src/archive.rs:116`. An unreadable entry is skipped rather than panicked on,
+/// exactly as those do.
+fn source_files() -> Vec<SourceFile> {
+    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut out = Vec::new();
+    collect(Path::new(SRC_ROOT), &base, &mut out);
+    assert!(
+        !out.is_empty(),
+        "the audit walked {SRC_ROOT} and found no Rust source at all, which means \
+         it is auditing nothing"
+    );
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+fn collect(dir: &Path, base: &Path, out: &mut Vec<SourceFile>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            collect(&path, base, out);
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let relative = path
+            .strip_prefix(base)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let lines = text
+            .lines()
+            .enumerate()
+            .map(|(index, line)| (index + 1, line.to_string()))
+            .collect();
+        out.push((relative, lines));
+    }
+}
+
+/// The lines of `file` that are not comments.
+///
+/// A line whose trimmed form starts with `//` is dropped, so a doc comment
+/// naming a forbidden token cannot invalidate its own gate. That filter is what
+/// lets the code below be documented in the very terms it forbids.
+fn executable_lines(file: &SourceFile) -> impl Iterator<Item = &(usize, String)> {
+    file.1
+        .iter()
+        .filter(|(_, line)| !line.trim_start().starts_with("//"))
+}
+
+/// Every `(path, line number, line)` under `src/` whose executable text contains
+/// `needle`.
+fn executable_hits(files: &[SourceFile], needle: &str) -> Vec<(String, usize, String)> {
+    let mut hits = Vec::new();
+    for file in files {
+        for (number, line) in executable_lines(file) {
+            if line.contains(needle) {
+                hits.push((file.0.clone(), *number, line.trim().to_string()));
+            }
+        }
+    }
+    hits
+}
+
+/// Render hits for a failure message, one per line.
+fn render(hits: &[(String, usize, String)]) -> String {
+    hits.iter()
+        .map(|(path, number, line)| format!("\n  {path}:{number}: {line}"))
+        .collect::<String>()
+}
+
+#[test]
+fn the_escape_hatch_has_no_call_site_in_src() {
+    let files = source_files();
+    let hits = executable_hits(&files, ESCAPE_HATCH);
+
+    let offenders: Vec<_> = hits
+        .iter()
+        .filter(|(path, _, _)| path != ESCAPE_HATCH_HOME)
+        .cloned()
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "`{ESCAPE_HATCH}` bypasses the user's opt-in. A production call site means the \
+         compiler is no longer what enforces the gate, and CTRL-03's \"never\" stops being \
+         literally true (D-17, PITFALLS:521). Offending lines:{}",
+        render(&offenders)
+    );
+
+    assert_eq!(
+        hits.len(),
+        1,
+        "the escape hatch must appear on exactly one executable line — its own \
+         definition in {ESCAPE_HATCH_HOME}. Found:{}",
+        render(&hits)
+    );
+    assert!(
+        hits[0].2.contains("pub fn"),
+        "the single occurrence must be the `pub fn` definition, not a use of it. \
+         Found:{}",
+        render(&hits)
+    );
+}
+
+#[test]
+fn drivable_project_has_exactly_two_constructors_and_private_fields() {
+    let files = source_files();
+    let executor = files
+        .iter()
+        .find(|(path, _)| path == ESCAPE_HATCH_HOME)
+        .unwrap_or_else(|| panic!("{ESCAPE_HATCH_HOME} must exist"));
+
+    let production: Vec<_> = executable_lines(executor)
+        .filter(|(_, line)| line.contains("pub fn from_registry"))
+        .collect();
+    assert_eq!(
+        production.len(),
+        1,
+        "there is exactly one production constructor for the capability token (D-16); \
+         found {} in {ESCAPE_HATCH_HOME}",
+        production.len()
+    );
+
+    let hatch: Vec<_> = executable_lines(executor)
+        .filter(|(_, line)| line.contains(&format!("pub fn {ESCAPE_HATCH}")))
+        .collect();
+    assert_eq!(
+        hatch.len(),
+        1,
+        "there is exactly one escape hatch, and a second would be a second way to \
+         bypass the gate; found {}",
+        hatch.len()
+    );
+
+    // The struct body, from its opening line to the first line that is a bare
+    // closing brace at column zero.
+    let mut body = Vec::new();
+    let mut inside = false;
+    for (number, line) in &executor.1 {
+        if line.starts_with("pub struct DrivableProject {") {
+            inside = true;
+            continue;
+        }
+        if inside {
+            if line == "}" {
+                break;
+            }
+            body.push((*number, line.clone()));
+        }
+    }
+    assert!(
+        !body.is_empty(),
+        "the audit could not locate the `DrivableProject` struct body, so it is \
+         checking nothing"
+    );
+
+    let public: Vec<_> = body
+        .iter()
+        .filter(|(_, line)| line.trim_start().starts_with("pub "))
+        .map(|(number, line)| {
+            (
+                ESCAPE_HATCH_HOME.to_string(),
+                *number,
+                line.trim().to_string(),
+            )
+        })
+        .collect();
+    assert!(
+        public.is_empty(),
+        "every field of `DrivableProject` must be private: private fields are what stop \
+         a caller assembling the token without passing a constructor, which is the whole \
+         reason it is a type rather than a bool. Public fields:{}",
+        render(&public)
+    );
+}
+
+#[test]
+fn every_process_spawn_site_in_src_is_on_the_allowlist() {
+    let files = source_files();
+
+    let mut observed: Vec<String> = Vec::new();
+    for file in &files {
+        let spawns = executable_lines(file)
+            .any(|(_, line)| SPAWN_MARKERS.iter().any(|marker| line.contains(marker)));
+        if spawns {
+            observed.push(file.0.clone());
+        }
+    }
+    observed.sort();
+
+    let mut allowed: Vec<String> = SPAWN_ALLOWLIST.iter().map(|path| path.to_string()).collect();
+    allowed.sort();
+
+    let unexpected: Vec<&String> = observed.iter().filter(|p| !allowed.contains(p)).collect();
+    assert!(
+        unexpected.is_empty(),
+        "a process-spawn site appeared in a file that is not on the allowlist. Confirm it \
+         takes a capability type and then add it to `SPAWN_ALLOWLIST` in this file, in the \
+         same commit (PITFALLS:521). Unexpected: {unexpected:?}"
+    );
+
+    let vanished: Vec<&String> = allowed.iter().filter(|p| !observed.contains(p)).collect();
+    assert!(
+        vanished.is_empty(),
+        "an allowlisted file no longer spawns anything, so the allowlist is now wider than \
+         the truth it describes. Remove the stale entry: {vanished:?}"
+    );
+
+    let claude = files
+        .iter()
+        .find(|(path, _)| path == "src/executor/claude.rs")
+        .expect("the agent spawn seam must exist");
+    assert!(
+        executable_lines(claude).any(|(_, line)| line.contains("project: &DrivableProject")),
+        "the agent spawn seam must still take the capability type and never a bare path — \
+         that signature is what makes the opt-in gate a compile-time property (D-16)"
+    );
+}
+
+#[test]
+fn no_executable_line_in_src_opts_into_strict_unknown_field_rejection() {
+    let files = source_files();
+    let attribute = format!("{REJECT_HEAD}{REJECT_TAIL}");
+    let hits = executable_hits(&files, &attribute);
+
+    assert!(
+        hits.is_empty(),
+        "no executable line under src/ may opt into strict unknown-field rejection. \
+         Parsing is tolerant by construction: every line reaching the journal reader came \
+         from a file an untrusted agent's output shaped, and Phase 20 is a known future \
+         emitter of new record kinds — an attribute that rejects them turns forward \
+         compatibility into a hard parse failure (D-30). Offending lines:{}",
+        render(&hits)
+    );
+}

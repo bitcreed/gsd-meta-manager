@@ -38,6 +38,12 @@ pub fn add_project(config: &mut Config, alias: &str, path: &Path) -> Result<()> 
         RegisteredProject {
             path: path.to_path_buf(),
             added: now,
+            // Written out rather than defaulted: registering a project lets the
+            // dashboard read it, and driving it is a separate deliberate act.
+            // `auto_register_from_sessions` reaches this line, so this explicit
+            // `None` is what proves discovery can never enrol a project into
+            // being driven (D-14, D-15).
+            driver_opt_in: None,
         },
     );
 
@@ -66,6 +72,8 @@ pub fn add_project_unchecked(config: &mut Config, alias: &str, path: &Path) -> R
         RegisteredProject {
             path: path.to_path_buf(),
             added: now,
+            // See `add_project`: never set by any registration path (D-14).
+            driver_opt_in: None,
         },
     );
 

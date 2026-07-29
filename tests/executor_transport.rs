@@ -16,6 +16,7 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::time::Duration;
 
+use gsd_meta_manager::error::{CapabilityError, SpawnError};
 use gsd_meta_manager::executor::claude::{interrupt_stopped_a_turn, ClaudeExecutor};
 use gsd_meta_manager::executor::stream_json::{parse_line, Envelope, StreamMessage, UserMessage};
 use gsd_meta_manager::executor::{
@@ -149,7 +150,7 @@ async fn tracer_runs_one_command_end_to_end() {
     let scratch = TempDir::new().expect("temp dir");
     std::fs::create_dir_all(scratch.path().join(".planning")).expect("scratch .planning");
 
-    let project = DrivableProject::for_testing("tracer", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("tracer", scratch.path());
     let executor = replaying(CLEAN_BASELINE, 0);
 
     let mut handle = executor
@@ -248,7 +249,7 @@ async fn tracer_runs_one_command_end_to_end() {
 
 #[tokio::test]
 async fn starting_against_a_missing_project_root_never_spawns() {
-    let project = DrivableProject::for_testing("gone", "/nonexistent/gsd-meta-manager/tracer");
+    let project = DrivableProject::for_testing_bypassing_opt_in("gone", "/nonexistent/gsd-meta-manager/tracer");
     let executor = replaying(CLEAN_BASELINE, 0);
 
     let result = executor
@@ -276,7 +277,7 @@ async fn a_permission_blocked_run_is_reported_as_permission_denied_not_success()
     // derivation that cannot see the denials lands squarely on the no-changes
     // success variant. That is the exact wrong answer being guarded against.
     let scratch = TempDir::new().expect("temp dir");
-    let project = DrivableProject::for_testing("denied", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("denied", scratch.path());
     let executor = denying();
 
     let mut handle = executor
@@ -320,7 +321,7 @@ async fn a_permission_blocked_run_is_reported_as_permission_denied_not_success()
 async fn send_writes_the_observed_ndjson_wire_shape_to_the_child_stdin() {
     let scratch = TempDir::new().expect("temp dir");
     let stdin_log = scratch.path().join("stdin.log");
-    let project = DrivableProject::for_testing("send", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("send", scratch.path());
     let executor = reacting(&stdin_log);
 
     let mut handle = executor
@@ -363,7 +364,7 @@ async fn send_writes_the_observed_ndjson_wire_shape_to_the_child_stdin() {
 async fn a_message_sent_mid_turn_is_not_buffered_by_the_driver() {
     let scratch = TempDir::new().expect("temp dir");
     let stdin_log = scratch.path().join("stdin.log");
-    let project = DrivableProject::for_testing("mid-turn", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("mid-turn", scratch.path());
     let executor = reacting(&stdin_log);
 
     let mut handle = executor
@@ -432,7 +433,7 @@ async fn a_message_sent_mid_turn_is_not_buffered_by_the_driver() {
 async fn interrupt_correlates_on_request_id_and_reports_what_remains_queued() {
     let scratch = TempDir::new().expect("temp dir");
     let stdin_log = scratch.path().join("stdin.log");
-    let project = DrivableProject::for_testing("interrupt", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("interrupt", scratch.path());
     let executor = reacting(&stdin_log);
 
     let mut handle = executor
@@ -518,4 +519,60 @@ async fn an_accepted_interrupt_is_never_a_cancellation_at_acknowledgement_time()
             "{name}: the terminal envelope is the actual confirmation the turn stopped"
         );
     }
+}
+
+// ============================================================================
+// A refused run writes zero bytes to the child's stdin (D-06, TRANS-04)
+//
+// Moved here from `src/executor/claude.rs`'s in-source test module. It spawns a
+// real child process, which is this repository's stated criterion for an
+// integration test, and it needs a `DrivableProject` — which under `src/` it
+// could only build through the opt-in escape hatch that
+// `tests/spawn_seam_guard.rs` fences out of that tree entirely (D-17).
+// ============================================================================
+
+#[tokio::test]
+async fn a_refused_run_writes_zero_bytes_to_the_child_stdin() {
+    let scratch = TempDir::new().expect("temp dir");
+    let stdin_log = scratch.path().join("stdin.log");
+
+    // One capability short of the required set, everything else healthy.
+    let executor = ClaudeExecutor::with_program(
+        FAKE_CLAUDE_ECHO,
+        vec![
+            OsString::from("interrupt_receipt_v1,msg_lifecycle_v1"),
+            OsString::from("2.1.220"),
+            OsString::from("none"),
+            stdin_log.clone().into_os_string(),
+        ],
+    );
+    let project = DrivableProject::for_testing_bypassing_opt_in("refused", scratch.path());
+
+    let err = executor
+        .start(
+            &project,
+            "/gsd-progress".to_string(),
+            ExecutionOptions::default(),
+        )
+        .await
+        .expect_err("a CLI missing a required capability must be refused up front");
+
+    assert!(
+        matches!(
+            err,
+            SpawnError::Capability(CapabilityError::MissingCapabilities { .. })
+        ),
+        "expected a capability refusal, got: {err:?}"
+    );
+
+    // The stand-in truncates its stdin log before writing its init, so the file
+    // existing proves the child ran; its length proves what we wrote.
+    let recorded = std::fs::metadata(&stdin_log)
+        .expect("the stand-in truncates the stdin log at startup, so it must exist");
+    assert_eq!(
+        recorded.len(),
+        0,
+        "a refused run must write zero bytes to the child's stdin — the refusal costs zero \
+         tokens and zero quota (D-06)"
+    );
 }

@@ -6,11 +6,13 @@
 //! Concretely:
 //!
 //! - Serde's strict unknown-field rejection attribute is never opted into
-//!   anywhere in this module tree, and its absence is grepped for as a
-//!   mechanical guard — the same discipline `stream_json.rs:6-8` records for the
-//!   wire model. The attribute is deliberately **not named in prose here**: the
-//!   guard is a grep, and spelling the name in a comment is how such a guard
-//!   comes to match itself and stop meaning anything.
+//!   anywhere under `src/`, and the guard that enforces that is
+//!   `tests/spawn_seam_guard.rs::no_executable_line_in_src_opts_into_strict_unknown_field_rejection`.
+//!   It walks every non-comment line in the tree and fails if the attribute
+//!   appears. The attribute is still deliberately **not named in prose here**,
+//!   but the reason has changed: the guard assembles the searched literal from
+//!   two halves at runtime precisely so that naming it somewhere cannot make the
+//!   guard match itself, and there is no reason to spend that tolerance here.
 //! - An unknown `kind` is carried **with its payload**, never absorbed into a
 //!   unit variant. `kind` is a plain `String` and never an enum: an
 //!   internally-tagged enum with a catch-all unit variant *discards the unknown

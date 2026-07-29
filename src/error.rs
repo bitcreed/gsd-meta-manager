@@ -256,3 +256,139 @@ impl fmt::Display for CapabilityError {
 }
 
 impl std::error::Error for CapabilityError {}
+
+/// Why a project may not be driven (D-14, D-16).
+///
+/// **Every variant here is reachable before any process is launched.** That is
+/// what makes CTRL-03's "a non-opted-in project is never spawned against" a
+/// structural property of the type system rather than a check that some future
+/// call site might skip: the only production constructor of
+/// [`DrivableProject`](crate::executor::DrivableProject) returns this error, and
+/// [`Executor::start`](crate::executor::Executor::start) accepts nothing else.
+///
+/// The refusal lives in the **driver process**, not in the TUI, so a user typing
+/// `gsd-meta-manager drive foo` by hand is refused by exactly the same code as a
+/// TUI-initiated run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OptInError {
+    /// No registry entry carries this alias. Raised by the caller that performs
+    /// the registry lookup, never by the constructor, which is handed an entry.
+    UnknownAlias {
+        /// The alias that was asked for.
+        alias: String,
+    },
+    /// The project is registered but carries no `driver_opt_in` record. A
+    /// registered project is one the dashboard may *read*; driving it is a
+    /// separate, deliberate act (D-14).
+    NotOptedIn {
+        /// The alias that is registered but not opted in.
+        alias: String,
+    },
+    /// The registered path is not an existing directory. Checked before the
+    /// process is launched, mirroring [`SpawnError::ProjectRootUnusable`]'s
+    /// reasoning: a stale registry entry must not spawn an agent against a path
+    /// that no longer exists.
+    RootUnusable {
+        /// The alias whose path failed the check.
+        alias: String,
+        /// The root that failed the check.
+        root: PathBuf,
+    },
+}
+
+impl fmt::Display for OptInError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownAlias { alias } => {
+                write!(f, "no project is registered under the alias `{alias}`")
+            }
+            Self::NotOptedIn { alias } => write!(
+                f,
+                "the project `{alias}` has not opted in to being driven; \
+                 registering a project lets the dashboard read it, driving it is a separate \
+                 deliberate opt-in"
+            ),
+            Self::RootUnusable { alias, root } => write!(
+                f,
+                "the registered path for `{alias}` is not a usable directory: {}",
+                root.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OptInError {}
+
+/// Why a `drive` invocation ended without a run.
+///
+/// Later plans in this phase widen this enum, and each addition is a variant
+/// rather than a signature change: plan 17-02 adds a lock-contention variant,
+/// plan 17-05 adds a concurrency-cap variant. It is deliberately **not** marked
+/// `#[non_exhaustive]` — this crate is the only consumer, and an attribute would
+/// buy nothing but a `_` arm at every match.
+#[derive(Debug)]
+pub enum DriveError {
+    /// Driving is not supported on this platform (D-05).
+    UnsupportedPlatform {
+        /// Which facility is missing, named concretely.
+        detail: String,
+    },
+    /// The opt-in gate refused before anything was spawned.
+    OptIn(OptInError),
+    /// The preview mode was requested but is not implemented in this plan.
+    ///
+    /// A `--dry-run` that silently performs a real run is the exact failure mode
+    /// CTRL-02 exists to prevent, so the flag refuses rather than executing.
+    /// Plan 17-04 replaces this arm with the real three-part preview (D-22).
+    DryRunUnavailable {
+        /// What the user asked for and what will provide it.
+        detail: String,
+    },
+    /// The agent process could not be started.
+    Spawn(SpawnError),
+    /// The journal could not be started, written or closed. Carries an `anyhow`
+    /// chain rendered at the boundary, because the journal's own surface is
+    /// `anyhow` by design and a driver UI needs a state, not a chain.
+    Journal {
+        /// The rendered failure.
+        detail: String,
+    },
+}
+
+impl fmt::Display for DriveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedPlatform { detail } => write!(
+                f,
+                "driving is not supported on this platform: {detail}. \
+                 This is a recorded accepted limitation in REQUIREMENTS, not a defect"
+            ),
+            Self::OptIn(err) => write!(f, "{err}"),
+            Self::DryRunUnavailable { detail } => write!(f, "{detail}"),
+            Self::Spawn(err) => write!(f, "{err}"),
+            Self::Journal { detail } => write!(f, "the run journal failed: {detail}"),
+        }
+    }
+}
+
+impl std::error::Error for DriveError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::OptIn(err) => Some(err),
+            Self::Spawn(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
+impl From<OptInError> for DriveError {
+    fn from(err: OptInError) -> Self {
+        Self::OptIn(err)
+    }
+}
+
+impl From<SpawnError> for DriveError {
+    fn from(err: SpawnError) -> Self {
+        Self::Spawn(err)
+    }
+}

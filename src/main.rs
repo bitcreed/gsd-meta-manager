@@ -6,6 +6,7 @@ use gsd_meta_manager::watcher::FileWatcher;
 use clap::Parser;
 use gsd_meta_manager::cli::{Cli, Commands};
 use gsd_meta_manager::config::{load_config, save_config, Config};
+use gsd_meta_manager::driver::{drive, DriveArgs};
 use event::EventBus;
 use gsd_meta_manager::main_loop::{
     pump, ExecEvent, PumpOutcome, EXEC_BATCH, EXEC_CHANNEL_CAPACITY,
@@ -76,6 +77,35 @@ async fn main() -> anyhow::Result<()> {
                         project.added
                     );
                 }
+            }
+        }
+        Some(Commands::Drive {
+            alias,
+            command,
+            run_id,
+            dry_run,
+            goal,
+            claude_program,
+            claude_args,
+        }) => {
+            // This arm is by construction BEFORE `tui::init()` in the `None`
+            // arm below, which is the whole of "the driver never touches
+            // ratatui" — no new mechanism, just the position in this match.
+            let config = load_config(&config_path)?;
+            let args = DriveArgs {
+                alias,
+                command,
+                run_id,
+                dry_run,
+                goal,
+                claude_program,
+                claude_args,
+            };
+            if let Err(err) = drive(args, &config).await {
+                // The `Add` arm's house shape: user-facing refusals in this
+                // binary print and exit, they do not bubble as an anyhow chain.
+                eprintln!("Error: {}", err);
+                std::process::exit(1);
             }
         }
         None => {

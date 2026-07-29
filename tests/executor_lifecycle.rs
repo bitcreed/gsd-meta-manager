@@ -160,7 +160,7 @@ async fn grandchild_pid(handle: &mut ExecutionHandle) -> u32 {
 #[tokio::test]
 async fn a_grandchild_spawned_by_the_child_is_gone_after_teardown() {
     let scratch = TempDir::new().expect("temp dir");
-    let project = DrivableProject::for_testing("spawner", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("spawner", scratch.path());
     let executor = ClaudeExecutor::with_program(FAKE_SPAWNER, Vec::new());
 
     let mut handle = executor
@@ -202,7 +202,7 @@ async fn a_grandchild_spawned_by_the_child_is_gone_after_teardown() {
 #[tokio::test]
 async fn a_torn_down_run_is_reaped_and_reports_an_exit_status() {
     let scratch = TempDir::new().expect("temp dir");
-    let project = DrivableProject::for_testing("reaped", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("reaped", scratch.path());
     let executor = slow(0, "0", "silent");
 
     let mut handle = executor
@@ -257,7 +257,7 @@ async fn a_torn_down_run_is_reaped_and_reports_an_exit_status() {
 #[tokio::test]
 async fn a_child_that_ignores_the_terminate_signal_is_still_killed_and_reaped() {
     let scratch = TempDir::new().expect("temp dir");
-    let project = DrivableProject::for_testing("deaf", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("deaf", scratch.path());
     let executor = ClaudeExecutor::with_program(FAKE_DEAF, Vec::new());
 
     let mut handle = executor
@@ -314,7 +314,7 @@ async fn a_child_that_ignores_the_terminate_signal_is_still_killed_and_reaped() 
 #[tokio::test]
 async fn an_unanswered_interrupt_is_released_by_the_run_end_drain() {
     let scratch = TempDir::new().expect("temp dir");
-    let project = DrivableProject::for_testing("drained", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("drained", scratch.path());
     // Announces itself, drains stdin in the background, and answers nothing.
     let executor = slow(0, "0", "silent");
 
@@ -358,7 +358,7 @@ async fn an_unanswered_interrupt_is_released_by_the_run_end_drain() {
 #[tokio::test]
 async fn an_unanswered_interrupt_on_a_live_child_is_released_by_the_control_response_cap() {
     let scratch = TempDir::new().expect("temp dir");
-    let project = DrivableProject::for_testing("capped-control", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("capped-control", scratch.path());
     // Twenty seconds of continuous heartbeats: neither deadline can fire and
     // the child is demonstrably alive, so the drain cannot be what releases the
     // caller either. Only the control cap is left.
@@ -413,7 +413,7 @@ async fn an_unanswered_interrupt_on_a_live_child_is_released_by_the_control_resp
 #[tokio::test]
 async fn a_child_that_goes_silent_trips_the_idle_cap_and_is_reported_as_stalled() {
     let scratch = TempDir::new().expect("temp dir");
-    let project = DrivableProject::for_testing("stalled", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("stalled", scratch.path());
     // Announces itself, then says nothing at all — the reproduced hang's shape.
     let executor = slow(0, "0", "silent");
 
@@ -448,7 +448,7 @@ async fn a_child_that_goes_silent_trips_the_idle_cap_and_is_reported_as_stalled(
 #[tokio::test]
 async fn a_child_that_keeps_emitting_is_never_killed_by_the_idle_cap() {
     let scratch = TempDir::new().expect("temp dir");
-    let project = DrivableProject::for_testing("chatty", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("chatty", scratch.path());
     // Twenty heartbeats 50ms apart: a full second of continuous output against
     // a 400ms idle cap, so the run outlives its own idle cap two and a half
     // times over while never once being silent for it.
@@ -490,7 +490,7 @@ async fn a_child_that_keeps_emitting_is_never_killed_by_the_idle_cap() {
 #[tokio::test]
 async fn a_run_that_outlives_the_wall_clock_cap_is_reported_as_timed_out() {
     let scratch = TempDir::new().expect("temp dir");
-    let project = DrivableProject::for_testing("timed-out", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("timed-out", scratch.path());
     // Chattering for ten seconds: it never goes silent, so the idle cap can
     // never fire and only the wall-clock cap can end it. That is what makes the
     // two breaches distinguishable rather than two names for one timer.
@@ -536,7 +536,7 @@ async fn a_run_that_outlives_the_wall_clock_cap_is_reported_as_timed_out() {
 #[tokio::test]
 async fn a_wall_clock_cap_still_fires_while_the_event_consumer_is_blocked() {
     let scratch = TempDir::new().expect("temp dir");
-    let project = DrivableProject::for_testing("flood-wall", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("flood-wall", scratch.path());
     let executor = flooding(50_000);
 
     // A three-second wall cap and an idle cap far out of reach: only the wall
@@ -578,7 +578,7 @@ async fn a_wall_clock_cap_still_fires_while_the_event_consumer_is_blocked() {
 #[tokio::test]
 async fn a_cancel_is_still_honoured_while_the_event_consumer_is_blocked() {
     let scratch = TempDir::new().expect("temp dir");
-    let project = DrivableProject::for_testing("flood-cancel", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("flood-cancel", scratch.path());
     let executor = flooding(50_000);
 
     // Both caps far out of reach: ONLY the cancel can end this run.
@@ -620,7 +620,7 @@ async fn a_cancel_is_still_honoured_while_the_event_consumer_is_blocked() {
 #[tokio::test]
 async fn a_descendant_holding_stdout_after_the_leader_exits_cannot_hang_the_run() {
     let scratch = TempDir::new().expect("temp dir");
-    let project = DrivableProject::for_testing("orphan", scratch.path());
+    let project = DrivableProject::for_testing_bypassing_opt_in("orphan", scratch.path());
     let executor = ClaudeExecutor::with_program(FAKE_ORPHAN, Vec::new());
 
     // BOTH caps far out of reach: neither deadline can be what ends this run,
