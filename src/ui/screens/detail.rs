@@ -4959,6 +4959,8 @@ mod tests {
             status_message: None,
             error_message: None,
             event_tx: None,
+            exec_tx: None,
+            run_states: HashMap::new(),
             watcher: None,
             last_refresh: HashMap::new(),
             detail_scroll_offset: 0,
