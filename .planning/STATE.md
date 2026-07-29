@@ -3,17 +3,17 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Autonomous Orchestration
 current_phase: 14
-current_phase_name: ui-fixes
+current_phase_name: UI Fixes
 status: executing
 stopped_at: v2.0 roadmap written — Phases 14-22 defined, traceability filled
-last_updated: "2026-07-29T07:18:14.137Z"
-last_activity: 2026-07-28
+last_updated: "2026-07-29T07:19:21.857Z"
+last_activity: 2026-07-29
 last_activity_desc: Phase 14 execution started
 progress:
   total_phases: 9
   completed_phases: 0
   total_plans: 4
-  completed_plans: 0
+  completed_plans: 3
   percent: 0
 ---
 
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 14 — ui-fixes
+**Current focus:** Phase 14 — UI Fixes
 
 ## Current Position
 
-Phase: 14 (ui-fixes) — EXECUTING
-Plan: 1 of 3
-Status: Ready to execute
-Last activity: 2026-07-28 — Phase 14 execution started
+Phase: 14 (UI Fixes) — EXECUTING
+Plan: 1 of 4
+Status: Executing Phase 14
+Last activity: 2026-07-29 — Phase 14 execution started
 
 ### Phase 14 planning notes (autonomous run — review these)
 
