@@ -253,7 +253,7 @@ phase's scope.
   - The lock must be `flock(2)`, never a PID file or in-memory flag. Opt-in must be a capability type (`DrivableProject`) constructible only from a validated opt-in record, never a bool checked at scattered call sites
 
 **Research**: skip — process-group signal handling and `flock` are standard Unix patterns, corroborated across all four research documents
-**Plans**: 1/7 plans executed
+**Plans**: 3/7 plans executed
 
 Plans:
 **Wave 1**
@@ -262,8 +262,8 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1)*
 
-- [ ] 17-02-PLAN.md — CTRL-05: `flock(2)` on a held descriptor, holder metadata a loser can read, and the contention proof
-- [ ] 17-03-PLAN.md — CTRL-03: config schema v2, a migration that cannot silently enrol, `driver_max_concurrent`, and the cross-project isolation proof
+- [x] 17-02-PLAN.md — CTRL-05: `flock(2)` on a held descriptor, holder metadata a loser can read, and the contention proof
+- [x] 17-03-PLAN.md — CTRL-03: config schema v2, a migration that cannot silently enrol, `driver_max_concurrent`, and the cross-project isolation proof
 
 **Wave 3** *(blocked on Wave 2)*
 
@@ -406,7 +406,7 @@ Plans:
 | 14. UI Fixes | 4/4 | Complete    | 2026-07-29 |
 | 15. Transport Foundation | 8/8 | Complete    | 2026-07-29 |
 | 16. Run Journal & State Substrate | 6/6 | Complete    | 2026-07-29 |
-| 17. Supervisor | 1/7 | In Progress|  |
+| 17. Supervisor | 3/7 | In Progress|  |
 | 18. Driver Tab, Live Watch & Durable Injection | 0/? | Not started | - |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 0/? | Not started | - |
 | 20. Deterministic Decision Router & Run Bounds | 0/? | Not started | - |
