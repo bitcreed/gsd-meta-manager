@@ -469,6 +469,33 @@ pub enum ExecutionEvent {
         /// `total_cost_usd`, which accumulates across turns.
         cumulative_usd: f64,
     },
+    /// The run's running total of events lost because a stalled consumer did
+    /// not take them inside the forward bound.
+    ///
+    /// Emitted **once per run**, in the terminal path, and **only** when the
+    /// total is non-zero — so a lossless run emits nothing at all and the
+    /// absence of this event is itself the signal.
+    ///
+    /// It exists because until now the count reached a `tracing::warn!` and
+    /// nothing else, which no consumer of this stream — and in particular no
+    /// journal — can read. Plan 15-08's handover states the stake plainly:
+    /// *"a run that silently lost 40 events is materially different from one
+    /// that lost none, and the count is the only signal that distinguishes
+    /// them"*. D-33 is what requires the journal to record it, and a journal
+    /// consumer reads this stream, so this is where the count has to arrive.
+    ///
+    /// It carries a count and nothing else. Widening it to carry the lost
+    /// events would defeat the point of having dropped them, and a field able
+    /// to hold a raw line is a field able to leak one (T-15-53, D-28).
+    ///
+    /// No boxing, and the sizing was **measured rather than assumed** so that
+    /// nobody boxes it reflexively: `ExecutionEvent` is 120 bytes and
+    /// `clippy::large_enum_variant` fires on a 200-byte *difference*, so an
+    /// 8-byte variant is nowhere near the threshold (16-RESEARCH §8).
+    EventsDropped {
+        /// How many events this run lost in total.
+        count: u64,
+    },
     /// The process exited.
     Exited(ExitStatus),
 }

@@ -1285,6 +1285,28 @@ async fn forward(
     }
 }
 
+/// Report the run's total dropped-event count on the stream, once, at the end.
+///
+/// The companion to [`forward`]: that function *counts* the losses, this one is
+/// the only thing that ever tells a consumer they happened. Until now the count
+/// reached a `tracing::warn!` and nothing else, and a journal reads the
+/// [`ExecutionEvent`] stream rather than the log, so the count had to arrive
+/// here for D-33 to be satisfiable at all (see plan 15-08's handover).
+///
+/// Sends nothing when `dropped` is zero. A lossless run therefore emits no
+/// report and the absence of the event is itself the signal.
+///
+/// Bounded for precisely the reason the `Exited` send beside it is: this report
+/// goes to the very channel a stalled consumer has already filled, so left
+/// unbounded it would be a new way for a run to end without `outcome_tx` ever
+/// being sent, which is the one thing that must never happen (CR-01).
+///
+/// The report is therefore **best-effort**. If the consumer is still stalled
+/// when the run ends the report is lost and only the warning in [`forward`]
+/// remains — an acceptable degradation, because a lost diagnostic is strictly
+/// better than a parked run.
+async fn report_dropped(_sender: &mpsc::Sender<ExecutionEvent>, _dropped: u64) {}
+
 /// Handle one reader item. Returns `false` when the run loop should stop.
 #[allow(clippy::too_many_arguments)]
 async fn handle_item(
@@ -1681,6 +1703,71 @@ mod tests {
             read_bounded_line(&mut reader).await.expect("read"),
             BoundedLine::Eof
         ));
+    }
+
+    // ========================================================================
+    // The dropped-event report (D-33)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn a_run_that_dropped_nothing_reports_nothing() {
+        let (events_tx, mut events_rx) = mpsc::channel(8);
+
+        report_dropped(&events_tx, 0).await;
+
+        assert!(
+            matches!(events_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "a run that lost nothing must emit no report at all — the absence \
+             of the event is the signal (D-33)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_that_dropped_events_reports_the_count_once() {
+        let (events_tx, mut events_rx) = mpsc::channel(8);
+
+        report_dropped(&events_tx, 40).await;
+
+        match events_rx
+            .try_recv()
+            .expect("a lossy run must report its count on the stream, not only to the log")
+        {
+            ExecutionEvent::EventsDropped { count } => assert_eq!(
+                count, 40,
+                "the reported count must be the run's running total"
+            ),
+            other => panic!("expected EventsDropped, got: {other:?}"),
+        }
+
+        assert!(
+            matches!(events_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "one report per run, not one per dropped event"
+        );
+    }
+
+    #[tokio::test]
+    async fn reporting_a_drop_into_a_full_channel_returns_within_the_forward_bound() {
+        // Capacity one, already full, and a receiver that is held but never
+        // read: exactly the stalled consumer whose channel the report has to
+        // squeeze into. An unbounded send here would park the run forever.
+        let (events_tx, _events_rx) = mpsc::channel(1);
+        events_tx
+            .send(ExecutionEvent::Stderr("fills the only slot".to_string()))
+            .await
+            .expect("the receiver is still held");
+
+        let started = Instant::now();
+        report_dropped(&events_tx, 7).await;
+        let elapsed = started.elapsed();
+
+        // A wall-clock assertion is warranted here and nowhere else in this
+        // module, because the property under test *is* a deadline. The bound is
+        // a generous multiple of the forward timeout so it cannot flake on a
+        // loaded machine while still failing outright on an unbounded send.
+        assert!(
+            elapsed < EVENT_FORWARD_TIMEOUT * 3,
+            "the report must not park the run; it returned only after {elapsed:?}"
+        );
     }
 
     // ========================================================================
