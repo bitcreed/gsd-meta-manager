@@ -33,8 +33,38 @@ use std::process::Stdio;
 /// `--run-id` is always present and is always supplied by the caller (D-03): the
 /// TUI owns the id so it knows what to look for afterwards, and the driver owns
 /// the record because `run.json` carries the driver's own pid and pgid.
-pub fn drive_argv(alias: &str, command: &str, run_id: &str, goal: Option<&str>) -> Vec<OsString> {
+///
+/// **`--config` is always present too, and its absence was CR-03.** The flag is
+/// `global = true` and `App` has carried `ctx.config_path` all along, but this
+/// argv dropped it — so a driver spawned from a TUI running with `--config
+/// /path/to/other.json` loaded `Config::default_path()` instead, and resolved the
+/// alias in a registry the user was not looking at. Two consequences, and the
+/// second is the one that matters:
+///
+/// * The benign one: the alias is absent from the default config, the child
+///   refuses at its own gate, and **nothing is visible** — the child's stdio is
+///   `/dev/null` while the TUI has already shown an optimistic "Driving {alias}"
+///   entry, so the run appears to start and then quietly is not there.
+/// * The one that matters: the default config happens to carry the **same alias**
+///   pointing at a different project, with an opt-in record of its own. The gate
+///   passes, and an autonomous agent with git and push rights runs in the wrong
+///   repository.
+///
+/// It is emitted **before** the subcommand, which is the form
+/// `tests/driver_kill.rs`, `driver_lock.rs`, `driver_tracer.rs` and
+/// `driver_reattach.rs` have been using against the real binary since plan 17-06.
+/// Matching it here removes the last axis on which the production argv and the
+/// tested argv differed.
+pub fn drive_argv(
+    config_path: &Path,
+    alias: &str,
+    command: &str,
+    run_id: &str,
+    goal: Option<&str>,
+) -> Vec<OsString> {
     let mut argv = vec![
+        OsString::from("--config"),
+        config_path.as_os_str().to_owned(),
         OsString::from("drive"),
         OsString::from(alias),
         OsString::from("--command"),
@@ -180,9 +210,67 @@ pub fn admit(live_count: usize, max: usize) -> Result<(), ConcurrencyRefusal> {
 mod tests {
     use super::*;
 
+    /// The config path these tests pin, as a path rather than a string so the
+    /// `OsString` conversion is the one production performs.
+    fn config_path() -> std::path::PathBuf {
+        std::path::PathBuf::from("/tmp/gsd-test/config.json")
+    }
+
+    #[test]
+    fn the_drive_argv_parses_back_into_a_drive_command_that_clap_accepts() {
+        use clap::Parser;
+
+        const RUN_ID: &str = "2026-07-29T12-00-00Z-aaaa";
+
+        let argv = drive_argv(&config_path(), "demo", "/gsd-progress", RUN_ID, None);
+
+        // **What this buys over the pinned vector below.** The pinned vector
+        // proves the flag is *present*; only parsing it back proves the
+        // **position** is one clap accepts. A global flag emitted where the
+        // parser rejects it would make every spawned driver exit non-zero — and
+        // do so **silently**, because the child's three stdio handles are null,
+        // so the error message goes nowhere and the TUI has already drawn an
+        // optimistic "Driving {alias}" entry.
+        let mut full = vec![std::ffi::OsString::from("gsd-meta-manager")];
+        full.extend(argv);
+        let cli = crate::cli::Cli::parse_from(&full);
+
+        assert_eq!(
+            cli.config.as_deref(),
+            Some(config_path().as_path()),
+            "the spawned driver must load the registry the TUI is looking at, not \
+             Config::default_path() (CR-03)"
+        );
+
+        match cli.command {
+            Some(crate::cli::Commands::Drive {
+                alias,
+                command,
+                run_id,
+                dry_run,
+                ..
+            }) => {
+                assert_eq!(alias, "demo");
+                assert_eq!(command, "/gsd-progress");
+                assert_eq!(run_id.as_deref(), Some(RUN_ID));
+                assert!(!dry_run, "the TUI spawns real runs, never previews");
+            }
+            other => panic!(
+                "the argv must parse back into the Drive command it claims to be, \
+                 got: {}",
+                if other.is_some() {
+                    "a different subcommand"
+                } else {
+                    "no subcommand at all"
+                }
+            ),
+        }
+    }
+
     #[test]
     fn the_drive_argv_carries_no_development_flag() {
         let argv = drive_argv(
+            &config_path(),
             "demo",
             "/gsd-progress",
             "2026-07-29T12-00-00Z-aaaa",
@@ -207,6 +295,8 @@ mod tests {
         assert_eq!(
             rendered,
             vec![
+                "--config",
+                "/tmp/gsd-test/config.json",
                 "drive",
                 "demo",
                 "--command",
@@ -221,14 +311,20 @@ mod tests {
 
     #[test]
     fn the_drive_argv_omits_the_goal_flag_entirely_when_there_is_no_goal() {
-        let argv = drive_argv("demo", "/gsd-progress", "2026-07-29T12-00-00Z-aaaa", None);
+        let argv = drive_argv(
+            &config_path(),
+            "demo",
+            "/gsd-progress",
+            "2026-07-29T12-00-00Z-aaaa",
+            None,
+        );
         assert!(
             !argv.iter().any(|arg| arg == "--goal"),
             "an absent goal must omit the flag, never pass an empty string — an \
              empty `--goal` would be recorded verbatim into RunRecord.goal and \
              read later as a goal the user typed"
         );
-        assert_eq!(argv.len(), 6);
+        assert_eq!(argv.len(), 8);
     }
 
     #[test]

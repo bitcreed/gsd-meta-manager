@@ -909,6 +909,12 @@ impl App {
             return;
         };
         let project_root = project.path.clone();
+        // Cloned beside `project_root` and for the same borrow-checker reason:
+        // `project` borrows `self.ctx.config`, and the `admit` call below needs
+        // `self.ctx` again. It is the config the TUI itself is using, and handing
+        // it to the child is what stops the spawned driver resolving this alias in
+        // a different registry (CR-03).
+        let config_path = self.ctx.config_path.clone();
 
         let live = self
             .ctx
@@ -923,7 +929,7 @@ impl App {
         }
 
         let run_id = crate::journal::new_run_id(chrono::Utc::now(), &uuid::Uuid::new_v4());
-        let argv = drive_argv(alias, command, &run_id, goal);
+        let argv = drive_argv(&config_path, alias, command, &run_id, goal);
 
         match spawn_detached(&project_root, &argv) {
             Ok(pid) => {
