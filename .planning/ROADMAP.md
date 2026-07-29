@@ -253,7 +253,7 @@ phase's scope.
   - The lock must be `flock(2)`, never a PID file or in-memory flag. Opt-in must be a capability type (`DrivableProject`) constructible only from a validated opt-in record, never a bool checked at scattered call sites
 
 **Research**: skip — process-group signal handling and `flock` are standard Unix patterns, corroborated across all four research documents
-**Plans**: 3/7 plans executed
+**Plans**: 4/7 plans executed
 
 Plans:
 **Wave 1**
@@ -267,7 +267,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2)*
 
-- [ ] 17-04-PLAN.md — CTRL-02: the three-section dry-run (command sequence, working-tree diffstat, locally computed push refspecs) with the reflog-equality and tripwire proofs
+- [x] 17-04-PLAN.md — CTRL-02: the three-section dry-run (command sequence, working-tree diffstat, locally computed push refspecs) with the reflog-equality and tripwire proofs
 
 **Wave 4** *(blocked on Wave 3)*
 
@@ -406,7 +406,7 @@ Plans:
 | 14. UI Fixes | 4/4 | Complete    | 2026-07-29 |
 | 15. Transport Foundation | 8/8 | Complete    | 2026-07-29 |
 | 16. Run Journal & State Substrate | 6/6 | Complete    | 2026-07-29 |
-| 17. Supervisor | 3/7 | In Progress|  |
+| 17. Supervisor | 4/7 | In Progress|  |
 | 18. Driver Tab, Live Watch & Durable Injection | 0/? | Not started | - |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 0/? | Not started | - |
 | 20. Deterministic Decision Router & Run Bounds | 0/? | Not started | - |
