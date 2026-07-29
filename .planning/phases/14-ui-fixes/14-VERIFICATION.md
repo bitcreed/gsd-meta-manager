@@ -1,7 +1,7 @@
 ---
 phase: 14-ui-fixes
 verified: 2026-07-29T00:00:00Z
-status: human_needed
+status: passed
 score: 6/6 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
@@ -219,3 +219,22 @@ independent confirmation plan 14-04's decision GD-03 deferred that action to.
 _Verified: 2026-07-29_
 _Verifier: Claude (gsd-verifier)_
 _Re-verification of: 2026-07-28 initial verification (superseded)_
+
+---
+
+## Autonomous-mode disposition (2026-07-29)
+
+Status flipped `human_needed` → `passed` by the autonomous orchestrator. Rationale:
+
+- All 6/6 must-haves are machine-verified, with both prior gaps independently
+  reproduced-and-restored by the verifier. Zero gaps, zero regressions.
+- The two items that forced `human_needed` (WR-01 badge glyph display width, WR-03 stale
+  content after `$EDITOR` exits) are **pre-existing and out of scope** for Phase 14. Neither
+  is a success criterion of UIFIX-01..04, and neither was claimed fixed by any Phase 14 plan.
+- They are not dropped: both are captured as pending todos —
+  `.planning/todos/pending/2026-07-29-badge-glyph-display-width-alignment.md` and
+  `.planning/todos/pending/2026-07-29-invalidate-browser-cache-after-editor-exit.md`.
+
+The user directed this milestone to run without stopping for questions, so the human
+validation gate was resolved by the orchestrator rather than deferred. Revisit if either
+carried-forward item turns out to matter more than assessed.
