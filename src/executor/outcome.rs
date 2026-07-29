@@ -19,6 +19,7 @@
 
 use std::path::Path;
 use std::process::ExitStatus;
+use std::time::Duration;
 
 use crate::executor::stream_json::ResultMessage;
 use crate::executor::{RunOutcome, TurnOutcome};
@@ -126,18 +127,101 @@ impl DiskDelta {
     }
 }
 
+/// The run-level turn count: the **sum** of every envelope's per-turn count.
+///
+/// That field resets on each envelope — fixture 05 reports `1` on both of its
+/// turns and the A3 sub-probe reported `1` then `2` — so reading it off the
+/// last envelope understates every steered run (D-29). An envelope that omits
+/// the field contributes nothing rather than a guessed `1`.
+pub fn run_turn_count(turns: &[TurnOutcome]) -> u64 {
+    turns
+        .iter()
+        .map(|turn| turn.num_turns.unwrap_or(0))
+        .sum()
+}
+
+/// The run-level cumulative cost: the **last** envelope's value.
+///
+/// That field accumulates across turns, so the last envelope already carries
+/// the run total and summing would double-count.
+///
+/// **This is a notional figure.** Under subscription auth it prices work that
+/// is not billed per call, so it must never be presented as what the run cost
+/// the user (D-16, T-15-23).
+pub fn run_cost_usd(turns: &[TurnOutcome]) -> Option<f64> {
+    turns.last().and_then(|turn| turn.total_cost_usd)
+}
+
 /// Derive the run-level outcome from the four corroboration sources.
 ///
 /// `turns` is every `result` envelope observed, in stream order — a run that
 /// uses `send` emits one per turn (D-29). The run-level verdict comes from the
 /// **last** of them.
 ///
-/// An **empty** `turns` means no terminal envelope was ever observed. That
-/// yields a failure naming the missing envelope and is never reported as a
-/// success, however the process exited: a stream that closed with nothing to
-/// corroborate is the one case where the exit code alone would lie.
+/// This projection cannot see `permission_denials[]`, which lives on the full
+/// envelope and not on [`TurnOutcome`]. Prefer
+/// [`derive_run_outcome_from_envelopes`] wherever the envelopes themselves are
+/// still in hand: it is the same matrix with the denials source connected.
 pub fn derive_run_outcome(
     turns: &[TurnOutcome],
+    exit: Option<ExitStatus>,
+    before: &RunSnapshot,
+    after: &RunSnapshot,
+) -> RunOutcome {
+    derive(turns, Vec::new(), exit, before, after)
+}
+
+/// Derive the run-level outcome from the **full** terminal envelopes.
+///
+/// The complete four-source derivation. D-10 names `permission_denials[]` as
+/// part of the envelope source, and that array survives only on the envelope,
+/// so this is the entry point that can report a permission refusal.
+///
+/// The envelopes' prose summaries are read by no branch of the derivation.
+pub fn derive_run_outcome_from_envelopes(
+    envelopes: &[ResultMessage],
+    exit: Option<ExitStatus>,
+    before: &RunSnapshot,
+    after: &RunSnapshot,
+) -> RunOutcome {
+    let turns: Vec<TurnOutcome> = envelopes.iter().map(TurnOutcome::from_result).collect();
+    // Denials from ANY turn, not merely the last: a refusal three turns back
+    // still explains why the run produced nothing.
+    let denials: Vec<serde_json::Value> = envelopes
+        .iter()
+        .flat_map(|envelope| envelope.permission_denials.iter().cloned())
+        .collect();
+
+    derive(&turns, denials, exit, before, after)
+}
+
+/// The derivation matrix proper (D-10, D-26, D-29, D-32).
+///
+/// Source precedence, in the order the arms are tried:
+///
+/// 1. **No terminal envelope at all** — a failure naming the missing envelope,
+///    however the process exited. A stream that closed with nothing to
+///    corroborate is the one case where the exit code alone would lie.
+/// 2. **A populated denials array** — the most actionable classification
+///    available, and the tell for an untrusted workspace silently voiding the
+///    project allow-list, which under `dontAsk` denies every write while
+///    looking like a capability failure. It outranks the envelope's own
+///    verdict, because a `success` envelope alongside denials describes a run
+///    that was blocked from doing what it was asked.
+/// 3. **The last envelope's `subtype` / `is_error` / `terminal_reason`**,
+///    matched as string slices with an explicit fallback arm that carries the
+///    observed values verbatim. This CLI shipped three new values for those
+///    fields on one version line; a typed classification would need a catch-all
+///    on each and would still discard the actual string a support report needs
+///    (D-32).
+/// 4. **The exit status**, read as a liveness and crash signal only. Where it
+///    disagrees with a success envelope the disagreement is *surfaced*, never
+///    silently resolved in either direction (D-10).
+/// 5. **The disk and git delta**, as the corroboration half: a success envelope
+///    with no signal is the distinct no-op outcome, not a success (D-11).
+fn derive(
+    turns: &[TurnOutcome],
+    denials: Vec<serde_json::Value>,
     exit: Option<ExitStatus>,
     before: &RunSnapshot,
     after: &RunSnapshot,
@@ -153,22 +237,52 @@ pub fn derive_run_outcome(
         };
     };
 
+    if !denials.is_empty() {
+        return RunOutcome::PermissionDenied { denials };
+    }
+
     let terminal_reason = last.terminal_reason.as_deref();
 
     match (last.subtype.as_str(), last.is_error, terminal_reason) {
-        ("success", false, Some("completed")) | ("success", false, None) => {
-            if after.changed_since(before) {
+        ("success", false, Some("completed") | None) => {
+            if let Some(disagreement) = describe_exit_disagreement(exit) {
+                return RunOutcome::Failed {
+                    reason: disagreement,
+                    subtype: Some(last.subtype.clone()),
+                    terminal_reason: terminal_reason.map(str::to_string),
+                    exit_code,
+                };
+            }
+
+            if DiskDelta::between(before, after).made_changes() {
                 RunOutcome::SucceededWithChanges {
                     turns: turns.to_vec(),
-                    total_cost_usd: last.total_cost_usd,
+                    total_cost_usd: run_cost_usd(turns),
                 }
             } else {
                 RunOutcome::SucceededNoChanges {
                     turns: turns.to_vec(),
-                    total_cost_usd: last.total_cost_usd,
+                    total_cost_usd: run_cost_usd(turns),
                 }
             }
         }
+        // The classic hook-hang signature: the turn aborted mid-tool-use and the
+        // process was reaped by an EXTERNAL bound. The terminal reason is what
+        // classifies this, not the exit code — the reproduced hang exited 124
+        // because `timeout` fired, and Claude never chose that status (D-10).
+        (_, _, Some("aborted_tools")) => RunOutcome::TimedOut {
+            // The cap that was breached is not knowable from the four
+            // derivation sources; the supervisor that *enforces* a deadline
+            // constructs this variant with its real cap. Zero here means
+            // "externally bounded, duration unknown to the derivation".
+            after: Duration::ZERO,
+        },
+        // An interrupt landed while the turn was streaming. This is the real
+        // confirmation of a cancellation — a `control_response` of `success`
+        // means only that the request was accepted (D-31, Pitfall D).
+        (_, _, Some("aborted_streaming")) => RunOutcome::Killed {
+            turns: turns.to_vec(),
+        },
         // Explicit fallback arm. New `subtype` and `terminal_reason` values ship
         // at patch level, so an unrecognised pair must classify as a failure
         // carrying the observed strings, never panic and never be dropped.
@@ -181,43 +295,38 @@ pub fn derive_run_outcome(
     }
 }
 
-/// Derive the run-level outcome from the **full** terminal envelopes.
+/// Describe a disagreement between a success envelope and the exit status.
 ///
-/// Implemented in the GREEN step of plan 15-05.
-pub fn derive_run_outcome_from_envelopes(
-    _envelopes: &[ResultMessage],
-    _exit: Option<ExitStatus>,
-    _before: &RunSnapshot,
-    _after: &RunSnapshot,
-) -> RunOutcome {
-    unimplemented!("15-05 GREEN")
-}
+/// `None` when there is nothing to report: either the status was never observed
+/// (a failed `wait()` leaves the liveness signal *unknown*, which is not the
+/// same as a contradiction) or the process exited cleanly.
+fn describe_exit_disagreement(exit: Option<ExitStatus>) -> Option<String> {
+    let status = exit?;
+    if status.success() {
+        return None;
+    }
 
-/// The run-level turn count.
-///
-/// Implemented in the GREEN step of plan 15-05.
-pub fn run_turn_count(_turns: &[TurnOutcome]) -> u64 {
-    unimplemented!("15-05 GREEN")
-}
+    let observed = match status.code() {
+        Some(code) => format!("code {code}"),
+        // No code on Unix means the process was terminated by a signal.
+        None => "a signal".to_string(),
+    };
 
-/// The run-level cumulative cost.
-///
-/// Implemented in the GREEN step of plan 15-05.
-pub fn run_cost_usd(_turns: &[TurnOutcome]) -> Option<f64> {
-    unimplemented!("15-05 GREEN")
+    Some(format!(
+        "the last turn reported success but the process exited with {observed} — the \
+         envelope and the exit status disagree, and a run is never reported as \
+         succeeded on the strength of one source alone"
+    ))
 }
 
 /// A human-readable classification for a non-success terminal envelope.
+///
+/// The two aborted terminal reasons are intercepted by their own arms above and
+/// never reach here.
 fn describe_failure(subtype: &str, terminal_reason: Option<&str>) -> String {
     match (subtype, terminal_reason) {
         ("error_max_budget_usd", _) => "the run stopped at its budget ceiling".to_string(),
         ("error_max_turns", _) => "the run stopped at its turn ceiling".to_string(),
-        (_, Some("aborted_tools")) => {
-            "the run aborted during tool use — the classic hook-hang signature".to_string()
-        }
-        (_, Some("aborted_streaming")) => {
-            "the run was interrupted while streaming".to_string()
-        }
         (subtype, Some(reason)) => format!("the run failed: {subtype} / {reason}"),
         (subtype, None) => format!("the run failed: {subtype}"),
     }
@@ -407,8 +516,10 @@ mod tests {
             &snapshot(),
             &snapshot(),
         );
+        // The last envelope was interrupted while streaming, so the run reads as
+        // killed — not as the success the FIRST envelope reported.
         assert!(
-            matches!(outcome, RunOutcome::Failed { .. }),
+            matches!(outcome, RunOutcome::Killed { .. }),
             "the run verdict comes from the LAST result envelope, got: {outcome:?}"
         );
     }
