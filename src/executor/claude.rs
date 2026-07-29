@@ -87,6 +87,42 @@ const EVENT_CHANNEL_CAPACITY: usize = 8192;
 /// Capacity of the stdin writer's command channel.
 const WRITER_CHANNEL_CAPACITY: usize = 64;
 
+/// The `terminal_reason` a turn carries when an interrupt actually stopped it.
+pub const ABORTED_STREAMING: &str = "aborted_streaming";
+
+/// Whether an interrupt actually stopped a turn.
+///
+/// **This is the only honest answer to "did my interrupt work?", and it is
+/// deliberately not derived from the acknowledgement.** The acknowledgement
+/// cannot answer it, for two measured reasons:
+///
+/// * [`InterruptAck::subtype`] of `success` acknowledges that the *request was
+///   accepted*, never that the thing the caller meant was cancelled. In golden
+///   transcript 07 that acceptance arrived on the wire **before the target turn
+///   had even been dequeued** — the replay echo follows it. Reporting a
+///   cancellation there would have been a claim about a turn that had not
+///   started.
+/// * [`InterruptAck::still_queued`] is the authoritative statement of what
+///   **remains queued** — the `interrupt_cancel_queued_v1` accounting surfacing
+///   — and it is empty in *both* golden interrupt transcripts. An empty array
+///   means nothing was waiting behind the interrupt; it is not evidence that
+///   anything stopped.
+///
+/// What actually confirms a turn stopped arrives **later on the stream**: the
+/// CLI flushes the partial assistant message, injects a synthetic
+/// `[Request interrupted by user]` user message, and closes the turn with
+/// `terminal_reason: "aborted_streaming"` (D-31, Pitfall D). A caller must
+/// therefore keep watching the stream after the ack rather than reporting on
+/// the ack.
+///
+/// Reporting an accepted-but-nothing-stopped-yet interrupt as a cancellation is
+/// the repudiation threat T-15-18; this function is its mitigation.
+pub fn interrupt_stopped_a_turn(turns: &[TurnOutcome]) -> bool {
+    turns
+        .iter()
+        .any(|turn| turn.terminal_reason.as_deref() == Some(ABORTED_STREAMING))
+}
+
 /// Build the spawn argv.
 ///
 /// Produced as a vector of owned OS strings with incremental pushes — never a
@@ -327,6 +363,31 @@ impl Executor for ClaudeExecutor {
         Box::pin(self.start_run(project, command, options))
     }
 
+    /// Write one NDJSON user message to the held child stdin and flush.
+    ///
+    /// **Written directly, with no driver-side turn-boundary flush buffer
+    /// (D-31).** The committed architecture pass prescribed one, on the belief
+    /// that a mid-turn message is ignored *and* lost from history. The phase
+    /// spike refutes the second half on 2.1.220: the message is **queued and
+    /// executed as its own turn**. The CLI already performs exactly the
+    /// buffering that workaround prescribed, so a driver-side duplicate would
+    /// buy nothing and would make the `still_queued` accounting harder to
+    /// reason about.
+    ///
+    /// **The replay echo is a "started processing" acknowledgement, not a
+    /// "received" acknowledgement.** The `--replay-user-messages` echo carries
+    /// `isReplay: true` and is emitted at **dequeue**, not at receipt: the
+    /// spike wrote a message ~12 seconds into a run and saw it echoed 45
+    /// milliseconds *after the previous turn's terminal envelope*, roughly 55
+    /// seconds later. Reading it as a delivery receipt is the easy mistake, and
+    /// it is exactly the distinction Phase 18's queued → delivered → acted-on
+    /// display is built on.
+    ///
+    /// The stdin handle is never closed or dropped here. It stays alive for the
+    /// whole run; dropping it is the EOF that ends the run cleanly, and EOF
+    /// means "no more input", not "stop" — the spike closed stdin 14 seconds
+    /// into a 71-second run and Claude drained its queue, finished, and exited
+    /// 0. Use [`ExecutionHandle::close_input`] for that, deliberately.
     fn send<'a>(
         &'a self,
         handle: &'a mut ExecutionHandle,
@@ -338,6 +399,24 @@ impl Executor for ClaudeExecutor {
         })
     }
 
+    /// Write an interrupt as a `control_request` and await its correlated
+    /// response.
+    ///
+    /// Only the request-and-response form is ever written. The single-field
+    /// interrupt form that community sources describe was empirically refuted
+    /// on 2.1.220 — it produces no response and has no effect — so it is never
+    /// emitted; see [`crate::executor::encode_interrupt`].
+    ///
+    /// Correlation is explicit: a oneshot is registered in the handle's
+    /// `pending_control` map under a caller-generated request id, and the
+    /// reader resolves it only on a response carrying that same id. Nothing
+    /// here assumes the next response on the wire is this request's.
+    ///
+    /// **Read the result honestly.** The returned [`InterruptAck`] carries the
+    /// acceptance subtype and the `still_queued` list read from the doubly
+    /// nested response field, and *neither* is a statement that anything was
+    /// cancelled — see [`interrupt_stopped_a_turn`], which is the check a
+    /// caller must use before telling a user their interrupt worked.
     fn interrupt<'a>(
         &'a self,
         handle: &'a mut ExecutionHandle,
