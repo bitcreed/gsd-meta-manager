@@ -35,9 +35,7 @@ struct ViewportMetrics {
 /// Uses the identical `total_lines - visible_height` formula the render path
 /// already applies for display, so the two cannot drift apart.
 fn clamp_scroll(offset: u16, total_lines: u16, visible_height: u16) -> u16 {
-    // RED stub: no bound applied yet.
-    let _ = (total_lines, visible_height);
-    offset
+    offset.min(total_lines.saturating_sub(visible_height))
 }
 
 const TAB_TITLES: [&str; 10] = [
