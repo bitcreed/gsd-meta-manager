@@ -157,7 +157,7 @@ Plans:
   - `run_tui_loop`'s single-consumer `rx.recv().await` must become a `tokio::select!` here — a prerequisite, not an incidental cleanup
 
 **Research**: yes — `/gsd-plan-phase --research-phase`. The stream-json protocol details are officially undocumented; needs a dedicated empirical spike, not just planning-time reading
-**Plans**: 1/6 plans executed
+**Plans**: 2/6 plans executed
 
 Plans:
 **Wave 1**
@@ -166,7 +166,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 15-02-PLAN.md — tracer: one GSD command end-to-end from spawn to RunOutcome, plus the tolerant NDJSON model verified against all eight fixtures
+- [x] 15-02-PLAN.md — tracer: one GSD command end-to-end from spawn to RunOutcome, plus the tolerant NDJSON model verified against all eight fixtures
 
 **Wave 3** *(blocked on Wave 2 completion — three plans run in parallel)*
 
@@ -348,7 +348,7 @@ The Driver tab and every rendered driver surface land in Phase 18.
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 14. UI Fixes | 4/4 | Complete    | 2026-07-29 |
-| 15. Transport Foundation | 1/6 | In Progress|  |
+| 15. Transport Foundation | 2/6 | In Progress|  |
 | 16. Run Journal & State Substrate | 0/? | Not started | - |
 | 17. Supervisor | 0/? | Not started | - |
 | 18. Driver Tab, Live Watch & Durable Injection | 0/? | Not started | - |
