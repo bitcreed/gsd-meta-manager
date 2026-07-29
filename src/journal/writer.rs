@@ -138,7 +138,7 @@ impl JournalWriter {
     ///
     /// A count is content-free by construction (D-28), so it is safe to carry
     /// anywhere — but it stays out of every log line's body and is emitted once
-    /// at run end by [`append_suppressed_diagnostic`].
+    /// at run end by [`Self::append_suppressed_diagnostic`].
     pub fn suppressed_content_events(&self) -> u64 {
         self.suppressed_content
     }
@@ -253,7 +253,10 @@ const OWN_GITIGNORE_SUFFIX: &str = "meta-manager/runs/.gitignore";
 /// Returns whether it wrote. Idempotent by construction, so the second run in a
 /// project does not churn the file — and so a user who has deliberately edited
 /// theirs keeps their edit.
-pub fn write_runs_gitignore(gitignore_path: &Path) -> anyhow::Result<bool> {
+///
+/// Private on purpose: [`create_run_dir`] is the only moment at which writing
+/// it is correct (D-08), so there is no second caller to serve.
+fn write_runs_gitignore(gitignore_path: &Path) -> anyhow::Result<bool> {
     if gitignore_path.exists() {
         return Ok(false);
     }
@@ -281,7 +284,8 @@ pub fn write_runs_gitignore(gitignore_path: &Path) -> anyhow::Result<bool> {
 ///
 /// The parent-exclusion diagnostic runs here for the same reason: this is the
 /// one moment at which the layout is known and nothing has been written into it
-/// yet. It never fails creation; see [`warn_if_parent_excludes`].
+/// yet. It never fails creation; the diagnostic behind it is
+/// [`parent_excludes_run_record`].
 pub fn create_run_dir(planning_dir: &Path, run_id: &str) -> anyhow::Result<RunPaths> {
     let paths = run_paths(planning_dir, run_id);
 
@@ -368,8 +372,10 @@ pub fn parent_excludes_run_record(project_root: &Path, run_json: &Path) -> bool 
 /// **This is a diagnostic only.** It must never fail run-directory creation,
 /// because the journal still works; the only thing lost is the committed
 /// record. See [`parent_excludes_run_record`] for why the check reads the
-/// reported pattern instead of the exit status.
-pub fn warn_if_parent_excludes(project_root: &Path, run_json: &Path) {
+/// reported pattern instead of the exit status — that predicate is the public
+/// half of this pair, because a `tracing::warn!` cannot be asserted on from an
+/// integration test.
+fn warn_if_parent_excludes(project_root: &Path, run_json: &Path) {
     if parent_excludes_run_record(project_root, run_json) {
         tracing::warn!(
             "{} has excluded .planning/meta-manager/ in its own .gitignore: the run record \
@@ -400,8 +406,7 @@ pub fn write_active_pointer(runs_root: &Path, run_id: &str) -> anyhow::Result<()
 /// Remove the `active` pointer if it is present.
 ///
 /// A missing pointer is the normal steady state, so its absence is not an
-/// error — this is idempotent for the same reason
-/// [`write_runs_gitignore`] is.
+/// error — this is idempotent for the same reason the ignore-file write is.
 pub fn clear_active_pointer(runs_root: &Path) -> anyhow::Result<()> {
     let active = runs_root.join("active");
     match std::fs::remove_file(&active) {
