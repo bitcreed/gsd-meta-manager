@@ -1,17 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.6.0
-milestone_name: GSD 1.8.0 Catch-up
-status: shipped
-stopped_at: Tagged v1.6.0 — GSD 1.8.0 Catch-up
-last_updated: "2026-07-22T19:51:58.046Z"
-last_activity: 2026-07-22
-last_activity_desc: "Completed quick task 260722-emn: GSD 1.8.0 catch-up; version bumped to 1.6.0 (release prep, untagged)"
+milestone: v2.0
+milestone_name: Autonomous Orchestration
+status: planning
+last_updated: "2026-07-29T04:43:58.040Z"
+last_activity: 2026-07-28
 progress:
-  total_phases: 2
+  total_phases: 0
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -25,12 +24,10 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 
 ## Current Position
 
-Phase: —
+Phase: Not started (defining requirements)
 Plan: —
-Status: v1.6.0 shipped (GSD 1.8.0 Catch-up) — no active milestone
-Last activity: 2026-07-28 - Completed quick task 260728-kfx: dedupe phases in parse_roadmap_phases (summary-checklist + Phase Details roadmaps no longer list every phase twice)
-
-Progress: [##########] 100%
+Status: Defining requirements
+Last activity: 2026-07-28 — Milestone v2.0 started
 
 ## Performance Metrics
 

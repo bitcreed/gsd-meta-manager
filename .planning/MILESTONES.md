@@ -1,5 +1,52 @@
 # Milestones
 
+## v1.6.0 GSD 1.8.0 Catch-up (Shipped: 2026-07-22)
+
+**Phases completed:** 0 phases, 1 quick task (10 plans, 5 waves) + 2 fast tasks
+
+**Key accomplishments:**
+
+- README rewritten around the value proposition, with the distinction from the new claude-orchestration backend and an explicit GSD 1.8.0 compatibility statement
+- `disk_status`: matched-summary plan counting (FIX-/GAPCLOSURE-/PLAN-REVIEW summaries excluded), superseded-plan handling, flexible phase-directory tokens, and COVERAGE / WINDOWS / deferred-items / SKELETON artifact detection
+- `roadmap_md`: `###` and project-code-prefixed headings, `<details>`-wrapped phases, strikethrough-retired and Phase 0 / 999.x sentinels excluded, and the `## Progress` table adopted as the authoritative count source
+- `config.json` schema extended with the `claude_orchestration`, `statusline`, `dynamic_routing`, `review`, `external_job`, and `capabilities` blocks, 12 workflow gates, and `graphify.graph_path`
+- Staleness derived from git commit times with an mtime fallback
+- ADR-2207 status vocabulary, `current_phase` / `current_plan` frontmatter, and `external_job_waiting` for async jobs
+- Smart-entry next-command integration; queue relocated to `.planning/meta-manager/QUEUE.md` with legacy migration (gsd-health W019 clean)
+- Workstreams data layer reading `.planning/workstreams/`
+- UI: `waves.json` in the Pipe tab, new Cfg categories, and workstream / external-job / artifact badges
+- Release hygiene: version 1.6.0, Cargo.lock refresh, `Action` enum boxed for clippy `large_enum_variant`; direct dep bumps (notify-debouncer-full 0.7, serde_yml 0.0.13); GitHub Actions release workflow publishing to crates.io on version tags
+
+---
+
+## v1.5.0 Sub-phase Artifact Detection (Shipped: 2026-05-15)
+
+**Phases completed:** 0 phases, 2 quick tasks
+
+**Key accomplishments:**
+
+- Pipeline drill-down surfaces UAT, SPEC, and EVAL-REVIEW sub-phase artifacts alongside PLAN / EXECUTE / VERIFY
+- crates.io publish metadata in Cargo.toml; README gained a `cargo install gsd-meta-manager` path
+- Adopted the semver `vX.Y.Z` tag convention from this release onward (v1.0–v1.4 used the older `vX.Y` form)
+- `RUST_LOG` honored via `EnvFilter` on the tracing subscriber
+- Canonical project documentation regenerated; Release Process section added to CLAUDE.md
+
+---
+
+## v1.4 Live Sessions & Document Browsing (Shipped: 2026-05-12)
+
+**Phases completed:** 0 phases, 4 quick tasks
+
+**Key accomplishments:**
+
+- Auto-register GSD projects discovered from running `claude` sessions (startup scan + 5s poll)
+- 10th detail tab (`0:Docs`) — drill-down markdown browser of `.planning/` rooted at the active phase, with `g`/`p` quick-jumps
+- SECURITY.md sub-phase artifact detected and rendered as a Security row in Plan sub-stages
+- Suppressed the "Updated" status when project state is unchanged, ending no-op refresh notification spam
+- Release hygiene: Cargo.toml version 0.1.0 → 1.4.0, ending the drift where v1.0–v1.3 all reported 0.1.0; `--version` wired through clap
+
+---
+
 ## v1.3 Configuration & Pipeline Visibility (Shipped: 2026-05-09)
 
 **Phases completed:** 0 phases, 10 quick tasks

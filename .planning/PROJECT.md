@@ -40,9 +40,30 @@ See the state of every GSD project at a glance and act on any of them without le
 - ✓ GitHub-ready README — landing-page README with quickstart, screenshots, and kid-friendly GSD explainer — v1.3
 - ✓ Queue execution research — design document with 2 strategies, safety requirements, LLM-agnostic — v1.2
 
+- ✓ Session auto-discovery — register GSD projects found in running `claude` sessions (startup scan + 5s poll) — v1.4
+- ✓ Docs browser tab — 10th detail tab drill-down over `.planning/` markdown, rooted at the active phase with `g`/`p` quick-jumps — v1.4
+- ✓ Refresh noise suppression — no "Updated" status when project state is unchanged — v1.4
+- ✓ Version alignment — Cargo.toml tracks the milestone tag; `--version` wired through clap — v1.4
+
+- ✓ Sub-phase artifact detection — UAT, SPEC, and EVAL-REVIEW surfaced in pipeline drill-down — v1.5
+- ✓ crates.io distribution — publish metadata, `cargo install` path, semver `vX.Y.Z` tag convention — v1.5
+
+- ✓ GSD 1.8.0 on-disk compatibility — matched-summary plan counting, roadmap heading variants and `## Progress` table, superseded plans, flexible phase-dir tokens — v1.6
+- ✓ Config schema catch-up — `claude_orchestration`, `statusline`, `dynamic_routing`, `review`, `external_job`, `capabilities` blocks plus 12 workflow gates — v1.6
+- ✓ Workstreams data layer — reads `.planning/workstreams/`, with workstream/external-job/artifact badges in the UI — v1.6
+- ✓ Queue relocation — `.planning/meta-manager/QUEUE.md` with legacy migration — v1.6
+- ✓ Git-based staleness — commit-time derived with mtime fallback — v1.6
+- ✓ CI release workflow — crates.io publish on version tags — v1.6
+
 ### Active
 
-(No active requirements — start next milestone with `/gsd:new-milestone`)
+**Milestone v2.0 — Autonomous Orchestration.** Requirements are defined in
+`.planning/REQUIREMENTS.md` and mapped to phases in `.planning/ROADMAP.md`.
+
+- Autonomous driver — LLM agent drives the GSD pipeline toward a user-stated goal
+- Live visibility and interjection — watch driver state, read the originating prompt, inject messages mid-run
+- Container support — Claude sessions in docker/podman containers with command injection
+- UI fixes — HANDOFF pause badge, DRPEV leading blank, markdown edit mode, PageDown clamp
 
 ### Out of Scope
 
@@ -53,11 +74,29 @@ See the state of every GSD project at a glance and act on any of them without le
 
 ## Current State
 
-Shipped v1.3. 13 phases + 10 quick tasks across 4 milestones. v1.3 (Configuration & Pipeline Visibility) shipped entirely via `/gsd-quick` — no formal phases — and centred on the Defaults tab (six-section layout mirroring `/gsd-settings`, `~/.gsd/defaults.json` layering with `*` marker for inherited values, `[d]` toggle, dropdown/text-input editors, `x`-to-clear), pipeline sub-stage drill-down, and tmux Tab-to-switch.
+Shipped v1.6.0. 13 phases + 20 quick tasks across 7 milestones. Milestones v1.3
+through v1.6.0 all shipped via `/gsd-quick` rather than formal phases: v1.3
+(Defaults tab, pipeline sub-stage drill-down, tmux Tab-to-switch), v1.4 (session
+auto-discovery, Docs browser tab), v1.5.0 (UAT/SPEC/EVAL-REVIEW artifact
+detection, crates.io publish), and v1.6.0 (GSD 1.8.0 on-disk format catch-up
+across state readers, config schema, and UI).
+
+## Current Milestone: v2.0 Autonomous Orchestration
+
+**Goal:** Turn the meta-manager from a dashboard that watches GSD projects into
+one that runs them — an LLM agent drives the pipeline toward a user-stated goal,
+in containers or on the host, watchable and interruptible from the TUI.
+
+**Target features:**
+
+- Autonomous driver — user states a goal once; a driver loop reads project state, picks the next GSD command, and runs it via `claude -p` until the goal is met or it parks
+- Live visibility and interjection — LLM-driven projects marked in the overview, originating goal prompt viewable, driver state streamed live, messages injectable mid-run via an attached tmux pane
+- Container support — start/stop/resume Claude sessions in containers mapped to project dirs, runtime auto-detected (docker or podman), with injection and output monitoring from the TUI
+- UI fixes — HANDOFF.md pause badge, DRPEV leading blank, markdown edit mode activation, PageDown scroll clamp
 
 ## Context
 
-- Shipped v1.2 with 7,630 LOC Rust, 120+ commits across 3 milestones
+- Shipped v1.6.0; ~7,000 LOC Rust across 7 milestones, distributed via crates.io
 - Tech stack: Rust, ratatui 0.30, crossterm 0.29, tokio, notify-debouncer-full
 - Screen trait architecture with 8 screen modules and 8-tab detail view (Archive added in v1.2)
 - Disk-based phase inference via /proc-like directory scanning
@@ -70,7 +109,14 @@ Shipped v1.3. 13 phases + 10 quick tasks across 4 milestones. v1.3 (Configuratio
 ## Constraints
 
 - **State reading**: Must not require running Claude/GSD to check status — read from files or cached state
-- **Non-intrusive**: Must not interfere with running GSD instances on active projects
+- **Opt-in driving** *(supersedes "Non-intrusive" as of v2.0)*: The tool may drive a
+  project's GSD pipeline only when that project is explicitly opted in. Projects that
+  are not opted in must never be touched — observation stays strictly read-only, exactly
+  as before. v1.x's blanket "must not interfere with running GSD instances" is
+  deliberately narrowed here, not dropped: interference is now a per-project choice the
+  user makes, and the default remains no interference.
+- **Stoppable**: Any autonomous run must be interruptible from the TUI at any point, and
+  must support a dry-run mode that reports the commands it would issue without issuing them.
 - **Portability**: Should work for any GSD user, not hardcoded to one user's setup
 
 ## Key Decisions
@@ -86,6 +132,12 @@ Shipped v1.3. 13 phases + 10 quick tasks across 4 milestones. v1.3 (Configuratio
 | Custom markdown renderer over pulldown-cmark | No new dependency, line-by-line regex sufficient for archive display | ✓ Good — tiered header styling, code blocks, bold |
 | Per-item isolation for queue execution (v1.3) | Simpler than session chaining, each item runs independently from disk state | — Pending v1.3 implementation |
 | LLM-agnostic queue execution design | GSD could use any LLM backend, not just Claude | ✓ Good — Executor trait interface designed |
+| Ship v1.3–v1.6 via `/gsd-quick` instead of formal phases | Each was a bounded, well-understood change; phase overhead wasn't earning its keep | ✓ Good — 4 milestones shipped, but PROJECT.md/MILESTONES.md drifted 3 milestones behind (backfilled at v2.0 start) |
+| v2.0 driver transport: `claude -p` drives, tmux pane watches | `-p` gives real exit codes and reliable completion signals; `tmux send-keys` is screen-scraping with no delivery confirmation. Splitting the roles keeps reliability *and* live watch/interject | — Pending v2.0 |
+| v2.0 autonomy: fully autonomous including push and PR | User's explicit choice for maximum leverage; kill switch and dry-run made hard requirements to bound the blast radius | — Pending v2.0 |
+| Container runtime auto-detected (docker or podman) | Hardcoding either one contradicts the portability constraint; probing costs little | — Pending v2.0 |
+| 999.2 injection plumbing sequenced before 999.3 driver | The driver is a decision layer built on top of injection/monitoring — building it first would mean stubbing the transport twice | — Pending v2.0 |
+| Major version bump to v2.0 | The tool's category changes from passive dashboard to active orchestrator, and it narrows a stated constraint | — Pending v2.0 |
 
 ## Evolution
 
@@ -105,4 +157,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-01 — v1.2 milestone complete*
+*Last updated: 2026-07-28 — v2.0 milestone started; v1.4/v1.5.0/v1.6.0 backfilled*
