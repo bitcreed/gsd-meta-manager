@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::config::RegisteredProject;
-use crate::driver::liveness;
+use crate::driver::liveness::{self, Liveness};
 use crate::journal::{run_paths, writer};
 
 /// What the scan concluded about one project's most recent run.
@@ -53,6 +53,16 @@ pub enum RunVerdict {
     /// The record has no `ended_at` and the pid is gone — the driver died
     /// without reaching its terminal write. **Nothing is repaired.**
     CrashedWithoutEnding,
+    /// The record has no `ended_at` and this platform cannot say whether the
+    /// driver lives — **which is emphatically not a crash report** (CR-05).
+    ///
+    /// The distinction is the whole reason this variant exists. The dashboard
+    /// renders [`CrashedWithoutEnding`](Self::CrashedWithoutEnding) as *"your run
+    /// died"*; on a platform where the `/proc` probe simply does not apply, that
+    /// sentence would be printed about every healthy run, on every scan, for as
+    /// long as the run lasted. What is true there is that nothing is known, and
+    /// this is the value that says so.
+    LivenessUnknown,
     /// The record carries an `ended_at`. The run is over.
     Ended,
 }
@@ -88,9 +98,16 @@ pub struct ObservedRun {
     pub goal: String,
     /// The GSD command the run was started with.
     pub gsd_command: String,
-    /// Whether the pid **and** cmdline double-check says this run is still
-    /// running. `false` here means [`RunVerdict::CrashedWithoutEnding`].
-    pub live: bool,
+    /// What the pid **and** cmdline double-check established about this run.
+    ///
+    /// **This was a `bool` until plan 17-08, and the `bool` was the defect**
+    /// (CR-05). Two states cannot carry three answers, so "the probe does not
+    /// apply on this platform" had to be spelled as one of the two — and it was
+    /// spelled `false`, which [`verdict`](ObservedRun::verdict) turned into
+    /// [`RunVerdict::CrashedWithoutEnding`] and the dashboard turned into *"your
+    /// run died"*. A field that cannot represent "I do not know" forces every
+    /// consumer to invent an answer.
+    pub liveness: Liveness,
 }
 
 impl ObservedRun {
@@ -99,22 +116,40 @@ impl ObservedRun {
     /// [`RunVerdict::Ended`] is never returned: an ended run yields no
     /// `ObservedRun` at all, because there is nothing left to observe.
     pub fn verdict(&self) -> RunVerdict {
-        if self.live {
-            RunVerdict::Live
-        } else {
-            RunVerdict::CrashedWithoutEnding
+        match self.liveness {
+            Liveness::Alive => RunVerdict::Live,
+            Liveness::Dead => RunVerdict::CrashedWithoutEnding,
+            Liveness::Unknown => RunVerdict::LivenessUnknown,
         }
+    }
+
+    /// Whether this run is **positively** known to be running.
+    ///
+    /// The narrow reading is deliberate and is what every caller wants: the
+    /// concurrency cap counts runs that are consuming quota, and the dashboard
+    /// marks runs that are working. An undeterminable answer is neither, and
+    /// treating it as live would leave a project permanently unstartable.
+    pub fn is_live(&self) -> bool {
+        self.liveness == Liveness::Alive
     }
 }
 
 /// The verdict for one run, as a pure function of the two inputs that decide it.
 ///
-/// Separated out so the decision is unit-testable without a process or a disk.
-fn classify(ended_at: Option<&str>, alive: bool) -> RunVerdict {
-    match (ended_at, alive) {
+/// Separated out so the decision is unit-testable without a process or a disk —
+/// and, since plan 17-08, so the [`Liveness::Unknown`] arm is testable **at
+/// all**: it is unreachable at runtime on Linux, so a pure function fed the
+/// non-Linux answer is the only way to exercise it (D-05).
+///
+/// `Some(ended_at)` wins over every liveness answer, including `Unknown`: a
+/// record that reached its terminal write is over regardless of what `/proc`
+/// can or cannot say about the pid that wrote it.
+fn classify(ended_at: Option<&str>, liveness: Liveness) -> RunVerdict {
+    match (ended_at, liveness) {
         (Some(_), _) => RunVerdict::Ended,
-        (None, true) => RunVerdict::Live,
-        (None, false) => RunVerdict::CrashedWithoutEnding,
+        (None, Liveness::Alive) => RunVerdict::Live,
+        (None, Liveness::Dead) => RunVerdict::CrashedWithoutEnding,
+        (None, Liveness::Unknown) => RunVerdict::LivenessUnknown,
     }
 }
 
@@ -144,10 +179,38 @@ struct RunFacts {
 /// treats that as **"no observable run" and never as "crashed"**. An unreadable
 /// file is not evidence of a death; reporting it as one would manufacture crash
 /// reports out of permission errors.
+///
+/// **A `pid` or `pgid` that is absent, zero, or too large to be a pid yields
+/// `None` for exactly the same reason** (plan 17-08, T-17-08-08). The previous
+/// `unwrap_or(0) as u32` did two dangerous things silently: it turned a missing
+/// or non-numeric field into `0`, and it *truncated* a `u64` — so `4294967297`
+/// became `1`, the init process. **Zero is the single most dangerous value in
+/// this codebase**: `kill(0, sig)` signals the caller's own process group, which
+/// under a TUI is the user's whole terminal session. `signal_group`'s refusal is
+/// the backstop; this is the value never reaching it in the first place. Refusing
+/// the record entirely is the posture this function already takes for an
+/// unreadable one, and a record whose pid cannot be believed is unreadable in
+/// every sense that matters here.
 fn read_run_facts(run_dir: &Path) -> Option<RunFacts> {
     let raw = std::fs::read_to_string(run_dir.join("run.json")).ok()?;
     let value = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+    run_facts_from_value(&value)
+}
 
+/// The field extraction, split out of [`read_run_facts`] so the clamp above is
+/// testable **without a disk write**.
+///
+/// The split is not cosmetic. The three records the clamp has to reject — `pid`
+/// absent, `pid` zero, `pid` past `u32::MAX` — cannot all be produced through
+/// `writer::write_run_record`, because [`crate::journal::RunRecord::pid`] is a
+/// `u32` and two of the three are not representable in one. Producing them as raw
+/// JSON would mean a file write inside this module's own test code, which
+/// `the_reconcile_module_contains_no_write_call` forbids **and should keep
+/// forbidding**: that guard cannot tell a test module from production code, and
+/// it is worth more intact than the convenience of a fixture is worth. A pure
+/// function over a `serde_json::Value` is fed exactly the bytes a tampered record
+/// would parse to, with nothing else changed.
+fn run_facts_from_value(value: &serde_json::Value) -> Option<RunFacts> {
     let string_field = |key: &str| -> String {
         value
             .get(key)
@@ -156,14 +219,24 @@ fn read_run_facts(run_dir: &Path) -> Option<RunFacts> {
             .to_string()
     };
 
+    // Non-zero and in range, or no observable run at all. `as u32` is
+    // deliberately absent: the range check is the conversion.
+    let pid_field = |key: &str| -> Option<u32> {
+        let raw = value.get(key)?.as_u64()?;
+        if raw == 0 || raw > u32::MAX as u64 {
+            return None;
+        }
+        u32::try_from(raw).ok()
+    };
+
     Some(RunFacts {
         ended_at: value
             .get("ended_at")
             .filter(|v| !v.is_null())
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        pid: value.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-        pgid: value.get("pgid").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+        pid: pid_field("pid")?,
+        pgid: pid_field("pgid")?,
         started_at: string_field("started_at"),
         goal: string_field("goal"),
         gsd_command: string_field("gsd_command"),
@@ -180,29 +253,41 @@ fn read_run_facts(run_dir: &Path) -> Option<RunFacts> {
 /// unreadable, or when the run ended cleanly — in the last case the verdict is
 /// [`RunVerdict::Ended`] and there is simply no live or crashed run to surface.
 ///
-/// A **crashed** run is returned exactly like a live one, with `live == false`.
-/// It is as worth surfacing as a live one: a run that died without an ending is
-/// the thing a user most needs to be told about on restart, and suppressing it
-/// would leave the evidence on disk and nothing on screen.
+/// A **crashed** run is returned exactly like a live one. It is as worth
+/// surfacing as a live one: a run that died without an ending is the thing a user
+/// most needs to be told about on restart, and suppressing it would leave the
+/// evidence on disk and nothing on screen. So is a run whose liveness could not
+/// be determined — for the opposite reason, that nothing is known about it.
 pub fn reconcile_one(alias: &str, project_root: &Path) -> Option<ObservedRun> {
     let planning_dir = project_root.join(".planning");
     let run_id = writer::read_active_run(&planning_dir)?;
     let paths = run_paths(&planning_dir, &run_id);
     let facts = read_run_facts(&paths.dir)?;
 
-    let alive = facts.ended_at.is_none() && liveness::is_run_alive(facts.pid, &run_id);
-    match classify(facts.ended_at.as_deref(), alive) {
+    // The short-circuit is today's and is kept: a run already known to be over
+    // needs no `/proc` read, and `classify` ignores the liveness on that arm
+    // anyway. `Dead` rather than `Unknown` for the skipped probe, so the skip
+    // cannot leak an undeterminable answer into a record that is not.
+    let liveness = if facts.ended_at.is_some() {
+        Liveness::Dead
+    } else {
+        liveness::probe(facts.pid, &run_id)
+    };
+
+    match classify(facts.ended_at.as_deref(), liveness) {
         RunVerdict::Ended => None,
-        RunVerdict::Live | RunVerdict::CrashedWithoutEnding => Some(ObservedRun {
-            alias: alias.to_string(),
-            run_id,
-            pid: facts.pid,
-            pgid: facts.pgid,
-            started_at: facts.started_at,
-            goal: facts.goal,
-            gsd_command: facts.gsd_command,
-            live: alive,
-        }),
+        RunVerdict::Live | RunVerdict::CrashedWithoutEnding | RunVerdict::LivenessUnknown => {
+            Some(ObservedRun {
+                alias: alias.to_string(),
+                run_id,
+                pid: facts.pid,
+                pgid: facts.pgid,
+                started_at: facts.started_at,
+                goal: facts.goal,
+                gsd_command: facts.gsd_command,
+                liveness,
+            })
+        }
     }
 }
 
@@ -339,7 +424,7 @@ mod tests {
             "a run that reached its terminal write has nothing left to observe"
         );
         assert_eq!(
-            classify(Some("2026-07-29T12:05:00Z"), false),
+            classify(Some("2026-07-29T12:05:00Z"), Liveness::Dead),
             RunVerdict::Ended
         );
     }
@@ -352,7 +437,7 @@ mod tests {
         let observed = reconcile_one("demo", root.path()).expect("a crashed run is still observed");
         assert_eq!(observed.run_id, RUN_ID);
         assert_eq!(observed.alias, "demo");
-        assert!(!observed.live, "a dead pid is not live");
+        assert!(!observed.is_live(), "a dead pid is not live");
         assert_eq!(observed.verdict(), RunVerdict::CrashedWithoutEnding);
         // The facts came off `run.json`, not from a default.
         assert_eq!(observed.goal, "ship the thing");
@@ -422,6 +507,97 @@ mod tests {
         let root = tempfile::TempDir::new().expect("temp dir");
         assert_eq!(reconcile_one("demo", root.path()), None);
         assert!(reconcile_all(&registry("demo", root.path())).is_empty());
+    }
+
+    #[test]
+    fn an_undeterminable_liveness_is_never_classified_as_a_crash() {
+        // All six combinations, so the table is pinned rather than sampled.
+        assert_eq!(classify(None, Liveness::Alive), RunVerdict::Live);
+        assert_eq!(
+            classify(None, Liveness::Dead),
+            RunVerdict::CrashedWithoutEnding
+        );
+        assert_eq!(
+            classify(None, Liveness::Unknown),
+            RunVerdict::LivenessUnknown,
+            "an undeterminable liveness must NOT be classified as a crash. \
+             CrashedWithoutEnding is what the dashboard renders as 'your run \
+             died', and on a platform where the /proc probe does not apply that \
+             sentence would be printed about every healthy run, on every scan, \
+             for as long as the run lasted (CR-05, D-05)"
+        );
+
+        // An ended record wins over every liveness answer, including Unknown.
+        for liveness in [Liveness::Alive, Liveness::Dead, Liveness::Unknown] {
+            assert_eq!(
+                classify(Some("2026-07-29T12:05:00Z"), liveness),
+                RunVerdict::Ended,
+                "a record that reached its terminal write is over regardless of \
+                 what /proc can say about the pid that wrote it, got {liveness:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_record_whose_pid_is_zero_or_truncated_yields_no_observable_run() {
+        // The end-to-end half: a zero pid IS representable in a `RunRecord`, so
+        // it goes in through the production writer exactly like every other
+        // fixture in this module.
+        let root = tempfile::TempDir::new().expect("temp dir");
+        fabricate_run(root.path(), RUN_ID, 0, None);
+        assert_eq!(
+            reconcile_one("demo", root.path()),
+            None,
+            "a record carrying pid 0 must yield NO observable run. Zero reaching \
+             `signal_group` means kill(0, sig), which signals the caller's own \
+             process group — under a TUI that is the user's entire terminal \
+             session (T-17-08-08)"
+        );
+
+        // The other two shapes are not representable in a `RunRecord` — `pid` is
+        // a `u32` — so they are fed to the value parser directly rather than
+        // written to disk, which would put a write verb in this module. See
+        // `run_facts_from_value`.
+        let base = serde_json::json!({
+            "run_id": RUN_ID,
+            "started_at": "2026-07-29T12:00:00Z",
+            "goal": "ship the thing",
+            "gsd_command": "/gsd-progress",
+            "pid": 4242,
+            "pgid": 4242,
+        });
+        assert!(
+            run_facts_from_value(&base).is_some(),
+            "the control arm: a well-formed record must still parse, or the three \
+             refusals below would pass by rejecting everything"
+        );
+
+        let mut absent = base.clone();
+        absent.as_object_mut().expect("object").remove("pid");
+        assert_eq!(
+            run_facts_from_value(&absent),
+            None,
+            "an absent pid must yield no facts. `unwrap_or(0)` turned exactly this \
+             into the most dangerous value in the codebase"
+        );
+
+        let mut truncated = base.clone();
+        truncated["pid"] = serde_json::json!(u32::MAX as u64 + 1);
+        assert_eq!(
+            run_facts_from_value(&truncated),
+            None,
+            "a pid past u32::MAX must yield no facts. `as u32` TRUNCATED it — \
+             4294967297 became 1, which is init"
+        );
+
+        let mut zero_group = base.clone();
+        zero_group["pgid"] = serde_json::json!(0);
+        assert_eq!(
+            run_facts_from_value(&zero_group),
+            None,
+            "the pgid is clamped exactly like the pid: it is the value a stop \
+             signals, so a zero there is the more dangerous of the two"
+        );
     }
 
     /// The halves of every write verb this module forbids itself, joined at

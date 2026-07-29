@@ -339,7 +339,11 @@ async fn a_fresh_scan_finds_the_orphaned_run_live_with_its_last_journal_step() {
     let run = &observed[0];
     assert_eq!(run.alias, ALIAS);
     assert_eq!(run.run_id, RUN_ID);
-    assert!(run.live, "the rediscovered run is live");
+    assert_eq!(
+        run.verdict(),
+        reconcile::RunVerdict::Live,
+        "the rediscovered run is live"
+    );
     assert_eq!(run.pid, pid, "the pid came off the driver's own run.json");
     assert_eq!(run.pgid, pid, "the driver leads its own group (D-04)");
     // These two came off `run.json` and could not have been guessed.
@@ -454,9 +458,15 @@ async fn a_run_killed_without_an_ending_is_reported_crashed_and_nothing_on_disk_
     let observed = reconcile::reconcile_all(&fresh.projects);
     assert_eq!(observed.len(), 1, "a crashed run is still surfaced");
     assert_eq!(observed[0].run_id, RUN_ID);
-    assert!(
-        !observed[0].live,
-        "a run whose driver is dead must be reported crashed, not live"
+    // The verdict rather than `!is_live()`, and the difference is now real: since
+    // plan 17-08 there are two non-live verdicts, and only one of them is a
+    // crash. `LivenessUnknown` would satisfy a negated `is_live()` while meaning
+    // the opposite of what this assertion is about (CR-05).
+    assert_eq!(
+        observed[0].verdict(),
+        reconcile::RunVerdict::CrashedWithoutEnding,
+        "a run whose driver is dead must be reported crashed — not live, and not \
+         merely 'not live'"
     );
 
     let after = fingerprint_tree(&fixture.planning());
