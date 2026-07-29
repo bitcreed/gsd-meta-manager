@@ -159,6 +159,10 @@ Plans:
 **Research**: yes — `/gsd-plan-phase --research-phase`. The stream-json protocol details are officially undocumented; needs a dedicated empirical spike, not just planning-time reading
 **Plans**: TBD
 
+**UI hint**: no — this phase ships no visual surface. TRANS-03 restructures the
+`run_tui_loop` event loop (input responsiveness), but adds no widget, screen, or layout.
+The Driver tab and every rendered driver surface land in Phase 18.
+
 ### Phase 16: Run Journal & State Substrate
 
 **Goal**: Every run leaves a durable, redacted, cheap-to-read record on disk that outlives the processes that wrote it

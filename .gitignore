@@ -1,2 +1,8 @@
 /.claude/worktrees/
 /target/
+
+# Phase 15 staging: raw claude stream-json transcripts captured during the
+# transport research spikes. Unredacted (they carry absolute host paths), so
+# they must never be committed. Phase 15's fixture task redacts them into
+# tests/fixtures/ and then deletes this directory.
+/.planning/phases/15-transport-foundation/transcripts-raw/
