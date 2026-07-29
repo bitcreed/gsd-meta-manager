@@ -168,6 +168,24 @@ pub struct AppContext {
     ///   join handle**. `Action` derives `Clone` and a handle is not `Clone`
     ///   (D-20).
     pub journal_cursors: HashMap<(String, String), crate::journal::reader::TailCursor>,
+    /// Per-alias observed driver run, from the reconciliation scan (D-13, D-25).
+    ///
+    /// * A **sibling map**, shaped exactly like `run_states` and
+    ///   `journal_cursors` above. Phase 17 extends that neighbourhood rather
+    ///   than recreating it.
+    /// * It must not live on `ProjectState`: that type derives `PartialEq` and
+    ///   `app.rs` uses the derived equality to suppress the "Updated: {alias}"
+    ///   status message. A driver's observed state moves every few seconds, so a
+    ///   field there would flood the status bar for an entire multi-hour run —
+    ///   defeating a deliberate v1.4 feature for the whole duration of the thing
+    ///   it is meant to report (D-25, ARCHITECTURE AP1).
+    /// * It holds ids, counts and strings — **never a file handle or a join
+    ///   handle**. `Action` derives `Clone` and a handle is not `Clone` (D-20).
+    /// * An entry is **"observed", not "reattached" and not "streaming"** (D-11).
+    ///   Once the TUI has exited, the driver's stdout pipe is gone and live
+    ///   re-streaming is physically impossible; what this map carries is a
+    ///   journal-tail handle and a pgid to signal.
+    pub observed_runs: HashMap<String, crate::driver::reconcile::ObservedRun>,
     pub watcher: Option<FileWatcher>,
     pub last_refresh: HashMap<String, std::time::Instant>,
     pub detail_scroll_offset: u16,

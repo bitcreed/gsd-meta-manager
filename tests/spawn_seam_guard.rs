@@ -43,6 +43,9 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     // probe can be pointed at a REAL live pid whose cmdline lacks the run id.
     // No agent, and nothing in the module's production surface spawns anything.
     "src/driver/liveness.rs",
+    // The detached driver spawn; it re-invokes this same binary, so the
+    // capability gate runs in the child.
+    "src/driver/spawn.rs",
     // `git check-ignore` for the run-record ignore diagnostic. No agent.
     "src/journal/writer.rs",
     // The TUI's blocking `$EDITOR` shell-out. No agent.

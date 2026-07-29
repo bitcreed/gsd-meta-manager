@@ -74,4 +74,18 @@ pub enum Action {
         records: Vec<crate::journal::reader::JournalRecord>,
         cursor: crate::journal::reader::TailCursor,
     },
+    /// One reconciliation scan completed (D-13).
+    ///
+    /// The payload is the **whole** result, not a delta, because the scan is
+    /// authoritative: a project whose run ended, or which was unregistered
+    /// between two scans, is expressed by its absence and by nothing else. The
+    /// handler replaces rather than merges for exactly that reason.
+    ///
+    /// Every field of every `ObservedRun` is plain data — ids, counts and
+    /// strings — so `Action` stays `Clone` and no file handle or join handle
+    /// leaks into a message type (D-20). Reconciliation is read-only, so there
+    /// is no handle to leak in the first place (D-12).
+    RunsReconciled {
+        runs: Vec<crate::driver::reconcile::ObservedRun>,
+    },
 }

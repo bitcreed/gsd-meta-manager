@@ -53,6 +53,8 @@ pub mod reconcile;
 pub mod lock;
 #[cfg(unix)]
 pub mod run;
+#[cfg(unix)]
+pub mod spawn;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
