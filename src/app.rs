@@ -1794,10 +1794,15 @@ mod tests {
         app.ctx
             .run_states
             .insert(OBS_ALIAS.to_string(), crate::executor::RunState::Running);
-        app.ctx.observed_runs.insert(
-            OBS_ALIAS.to_string(),
-            observed(OBS_ALIAS, "run-here", ALIVE),
-        );
+        // `DEAD`, and the choice is load-bearing since plan 17-08: the removal
+        // path now REFUSES a project whose observed run is not known to be
+        // finished (CR-06), so a live run here would make this test assert the
+        // refusal rather than the D-27 cleanup it is about. A crashed run is
+        // nothing left to abandon, so it is removable — and it still exercises
+        // the sibling-map cleanup, which is this test's actual subject.
+        app.ctx
+            .observed_runs
+            .insert(OBS_ALIAS.to_string(), observed(OBS_ALIAS, "run-here", DEAD));
 
         let mut screen = DeleteConfirmScreen::new(OBS_ALIAS.to_string());
         screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut app.ctx);
