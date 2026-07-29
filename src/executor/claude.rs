@@ -883,6 +883,12 @@ impl Coordinator {
         // signal is drained forever and the teardown never reaches step 3.
         let mut grace_deadline: Option<Instant> = None;
 
+        // Armed by the exit arm and by nothing else, and read by the loop head
+        // and by an arm that is NOT guarded on `exited`: an observed exit is
+        // what starts this clock, but it must never be what stops it (CR-02).
+        let mut drain_deadline: Option<Instant> = None;
+        let mut drain_expired = false;
+
         // Events lost because a stalled consumer did not take them inside the
         // forward bound. Counted so the loss is reportable; the count is the
         // only thing that ever reaches the log (T-15-53).
@@ -945,6 +951,11 @@ impl Coordinator {
                 stop = true;
             }
 
+            if drain_deadline.is_some_and(|deadline| now >= deadline) {
+                drain_expired = true;
+                stop = true;
+            }
+
             // A terminate observed HERE is acted on HERE. Deferring it to the
             // post-`select!` block would park it behind the very send the
             // cancel exists to interrupt.
@@ -978,6 +989,9 @@ impl Coordinator {
                 forward_deadline = forward_deadline.min(wall_deadline).min(idle_deadline);
             }
             if let Some(deadline) = grace_deadline {
+                forward_deadline = forward_deadline.min(deadline);
+            }
+            if let Some(deadline) = drain_deadline {
                 forward_deadline = forward_deadline.min(deadline);
             }
 
@@ -1015,6 +1029,12 @@ impl Coordinator {
                 status = child.wait(), if !exited => {
                     exited = true;
                     exit_status = status.ok();
+                    // The tail of already-framed lines gets this long to
+                    // arrive, and no longer. stdout EOF is the clean escape;
+                    // this is the bound for when there is not one, because a
+                    // descendant that outlived the leader is holding the write
+                    // end open (CR-02).
+                    drain_deadline = Some(Instant::now() + POST_EXIT_DRAIN_CAP);
                 }
 
                 _ = tokio::time::sleep_until(wall_deadline), if !exited => {
@@ -1039,6 +1059,20 @@ impl Coordinator {
                 _ = tokio::time::sleep_until(grace_deadline.unwrap_or(wall_deadline)),
                     if grace_deadline.is_some() && !exited =>
                 {
+                    stop = true;
+                }
+
+                // The post-exit drain has run out and stdout still has not
+                // reached EOF. Gated ONLY on the deadline being armed and
+                // emphatically NOT on `exited`: the exited flag is what arms
+                // this bound, so guarding the bound on it would switch off the
+                // one escape from the state it exists to escape (CR-02). Same
+                // fallback idiom as the grace arm — the precondition means the
+                // fallback value is never observed.
+                _ = tokio::time::sleep_until(drain_deadline.unwrap_or(wall_deadline)),
+                    if drain_deadline.is_some() =>
+                {
+                    drain_expired = true;
                     stop = true;
                 }
             }
@@ -1075,7 +1109,32 @@ impl Coordinator {
             let _ = tx.send(Err(SpawnError::InitNeverObserved));
         }
 
-        let status = if exited {
+        // **An observed exit is not a reaped group.** `ProcessGroupChild::wait`
+        // awaits the leader and CACHES its status, so a partially-polled wait
+        // future dropped by another `select!` arm winning leaves that status
+        // cached with the group never reaped — and the next `wait()` then
+        // returns `Ready` immediately. "Exited" therefore means "the leader is
+        // gone", never "nothing of this run is left running" (CR-02, T-15-52).
+        //
+        // The two exited branches are split on exactly that distinction: stdout
+        // EOF inside the drain bound proves every writer on the pipe is gone,
+        // and nothing more is owed. The bound expiring proves the opposite.
+        let status = if exited && !drain_expired {
+            // The group reached stdout EOF and is proven done. This is the path
+            // every healthy run takes, and it is deliberately unchanged.
+            exit_status
+        } else if exited {
+            // Something outlived the leader and is holding the pipe open. Run
+            // the full documented four-step teardown and DISCARD its returned
+            // status: the teardown here is for the survivors, not for the
+            // verdict — the leader's own already-observed status is the
+            // authoritative liveness signal and is what gets reported.
+            tracing::warn!(
+                "the claude leader exited but its stream stayed open for {} seconds; \
+                 tearing the process group down",
+                POST_EXIT_DRAIN_CAP.as_secs()
+            );
+            let _ = tear_down_group(&mut child).await;
             exit_status
         } else if tear_down {
             tear_down_group(&mut child).await

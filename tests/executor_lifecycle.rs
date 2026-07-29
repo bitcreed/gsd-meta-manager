@@ -35,6 +35,10 @@ const FAKE_DEAF: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/fake-claude-deaf.sh"
 );
+const FAKE_ORPHAN: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/fake-claude-orphan.sh"
+);
 
 /// The real grace between the terminate signal and the uncatchable one. The
 /// constant itself is private to the executor; this is the observable value the
@@ -590,5 +594,71 @@ async fn a_cancel_is_still_honoured_while_the_event_consumer_is_blocked() {
         elapsed < Duration::from_secs(30),
         "the cancel must take effect within the forward bound plus the teardown, not \
          whenever the flood relents. Observed: {elapsed:?}"
+    );
+}
+
+// ============================================================================
+// An observed exit is not a reaped group (D-13, D-14, CR-02)
+// ============================================================================
+
+#[tokio::test]
+async fn a_descendant_holding_stdout_after_the_leader_exits_cannot_hang_the_run() {
+    let scratch = TempDir::new().expect("temp dir");
+    let project = DrivableProject::for_testing("orphan", scratch.path());
+    let executor = ClaudeExecutor::with_program(FAKE_ORPHAN, Vec::new());
+
+    // BOTH caps far out of reach: neither deadline can be what ends this run,
+    // so only the post-exit drain bound can be.
+    let mut handle = executor
+        .start(&project, "/gsd-progress".to_string(), capped(60_000, 30_000))
+        .await
+        .expect("the orphan stand-in advertises every required capability");
+
+    let descendant = grandchild_pid(&mut handle).await;
+    assert!(
+        alive(descendant),
+        "precondition: the descendant {descendant} must be running, or the test proves \
+         nothing"
+    );
+
+    let started = Instant::now();
+    let outcome = tokio::time::timeout(Duration::from_secs(60), handle.wait_outcome())
+        .await
+        .expect(
+            "the run never reported an outcome. `reader_rx` reaches EOF only once every \
+             process holding the stdout write end is gone, so a descendant that outlives \
+             the leader keeps that pipe open forever — and with the exited flag set, every \
+             deadline guarded on it is switched off too. A run must ALWAYS end with an \
+             outcome (D-13, CR-02)",
+        );
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(
+            outcome,
+            RunOutcome::SucceededNoChanges { .. } | RunOutcome::SucceededWithChanges { .. }
+        ),
+        "the leader's own terminal envelope reported success and its exit status was \
+         observed, so the outcome still comes from the four sources — this is neither a \
+         timeout nor a kill. Got: {outcome:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(30),
+        "the post-exit drain bound must end the run on its own schedule. Observed: \
+         {elapsed:?}"
+    );
+
+    assert!(
+        gone_within(descendant, Duration::from_secs(5)).await,
+        "the descendant {descendant} outlived the run. An observed exit is not a reaped \
+         group: the wrapper caches the leader's status, so `exited` can be true while group \
+         members are still alive, and a survivor holds the user's files, ports and \
+         subscription quota invisibly and without consent (D-14, T-15-30, T-15-52)"
+    );
+
+    let events = drain(&mut handle).await;
+    assert!(
+        reported_an_exit(&events),
+        "the run must still report the leader's own exit status. Observed events: {events:?}"
     );
 }
