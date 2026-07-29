@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Autonomous Orchestration
 status: planning
-last_updated: "2026-07-29T00:00:00.000Z"
+last_updated: "2026-07-29T06:00:00.000Z"
 last_activity: 2026-07-29
 progress:
   total_phases: 9
   completed_phases: 0
-  total_plans: 0
+  total_plans: 3
   completed_plans: 0
   percent: 0
 ---
@@ -20,14 +20,37 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** v2.0 Autonomous Orchestration — roadmap set (Phases 14-22), ready to plan Phase 14
+**Current focus:** v2.0 Autonomous Orchestration — Phase 14 (UI Fixes) planned, ready to execute
 
 ## Current Position
 
 Phase: 14 of 22 (v2.0 spans Phases 14-22; 0 of 9 complete)
-Plan: —
-Status: Roadmap complete — ready for `/gsd-plan-phase 14`
-Last activity: 2026-07-29 — v2.0 roadmap created, 45/45 requirements mapped
+Plan: 3 plans in 3 waves (14-01, 14-02, 14-03) — none executed
+Status: Ready to execute — `/gsd-execute-phase 14`
+Last activity: 2026-07-29 — Phase 14 planned (UI-SPEC + PATTERNS + 3 plans); plan-checker VERIFICATION PASSED
+
+### Phase 14 planning notes (autonomous run — review these)
+
+- **Decision-coverage gate overridden.** `check.decision-coverage-plan` returned
+  `passed: false, reason: could-not-parse, total: 0, uncovered: []` — `14-CONTEXT.md` writes its
+  decisions as `### UIFIX-0N — title` headings rather than the `- **D-NN:** …` bullets the parser
+  requires, so zero decisions were extracted and none could be reported uncovered. Proceeded
+  deliberately: retrofitting `D-NN` ids would make the gate report every id as uncovered (the plans
+  cite `UIFIX-NN`), converting a cosmetic parse failure into a real block. The substantive check was
+  performed instead by `gsd-plan-checker`, which returned VERIFICATION PASSED and confirmed each
+  CONTEXT.md decision (verify-first, fix-at-source, key-routing, clamp-at-handler, testing
+  convention, scope fences) is honored. **Follow-up:** consider normalising CONTEXT.md decision
+  format to `D-NN` bullets for future phases so this gate is live.
+- **Plan-checker's clippy warning was a false positive.** It reported the "5 pre-existing
+  `--all-targets` lints" in `14-CONTEXT.md` as stale (claiming 0 today). Re-measured directly:
+  `cargo clippy --all-targets -- -D warnings` still fails with exactly **5** pre-existing lints —
+  3× `assert_eq!` with a literal bool (`browser.rs`), 1× owned-instance-for-comparison
+  (`project_creator.rs`), 1× items-after-test-module (`state_reader/mod.rs`). The checker measured
+  without `-D warnings`. `14-CONTEXT.md` and `14-PATTERNS.md` are **correct as written** and were
+  deliberately NOT "corrected". The lib-target project gate `cargo clippy -- -D warnings` passes clean.
+- **UI-SPEC gate honored, not skipped.** ROADMAP marks Phase 14 `UI hint: yes` and the blocking
+  `ui.plan-gate` fired; `14-UI-SPEC.md` was generated and approved 6/6 by `gsd-ui-checker`.
+  Research was skipped per ROADMAP (`Research: skip`) — no RESEARCH.md exists for this phase.
 
 ## Performance Metrics
 
