@@ -2,9 +2,13 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Autonomous Orchestration
-status: planning
-last_updated: "2026-07-29T06:00:00.000Z"
-last_activity: 2026-07-29
+current_phase: 14
+current_phase_name: ui-fixes
+status: executing
+stopped_at: v2.0 roadmap written — Phases 14-22 defined, traceability filled
+last_updated: "2026-07-29T06:06:08.226Z"
+last_activity: 2026-07-28
+last_activity_desc: Phase 14 execution started
 progress:
   total_phases: 9
   completed_phases: 0
@@ -20,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** v2.0 Autonomous Orchestration — Phase 14 (UI Fixes) planned, ready to execute
+**Current focus:** Phase 14 — ui-fixes
 
 ## Current Position
 
-Phase: 14 of 22 (v2.0 spans Phases 14-22; 0 of 9 complete)
-Plan: 3 plans in 3 waves (14-01, 14-02, 14-03) — none executed
-Status: Ready to execute — `/gsd-execute-phase 14`
-Last activity: 2026-07-29 — Phase 14 planned (UI-SPEC + PATTERNS + 3 plans); plan-checker VERIFICATION PASSED
+Phase: 14 (ui-fixes) — EXECUTING
+Plan: 1 of 3
+Status: Executing Phase 14
+Last activity: 2026-07-28 — Phase 14 execution started
 
 ### Phase 14 planning notes (autonomous run — review these)
 
@@ -41,6 +45,7 @@ Last activity: 2026-07-29 — Phase 14 planned (UI-SPEC + PATTERNS + 3 plans); p
   CONTEXT.md decision (verify-first, fix-at-source, key-routing, clamp-at-handler, testing
   convention, scope fences) is honored. **Follow-up:** consider normalising CONTEXT.md decision
   format to `D-NN` bullets for future phases so this gate is live.
+
 - **Plan-checker's clippy warning was a false positive.** It reported the "5 pre-existing
   `--all-targets` lints" in `14-CONTEXT.md` as stale (claiming 0 today). Re-measured directly:
   `cargo clippy --all-targets -- -D warnings` still fails with exactly **5** pre-existing lints —
@@ -48,6 +53,7 @@ Last activity: 2026-07-29 — Phase 14 planned (UI-SPEC + PATTERNS + 3 plans); p
   (`project_creator.rs`), 1× items-after-test-module (`state_reader/mod.rs`). The checker measured
   without `-D warnings`. `14-CONTEXT.md` and `14-PATTERNS.md` are **correct as written** and were
   deliberately NOT "corrected". The lib-target project gate `cargo clippy -- -D warnings` passes clean.
+
 - **UI-SPEC gate honored, not skipped.** ROADMAP marks Phase 14 `UI hint: yes` and the blocking
   `ui.plan-gate` fired; `14-UI-SPEC.md` was generated and approved 6/6 by `gsd-ui-checker`.
   Research was skipped per ROADMAP (`Research: skip`) — no RESEARCH.md exists for this phase.
@@ -100,9 +106,11 @@ Recent decisions affecting current work:
   run a multi-step GSD skill headlessly without hanging, (OQ2) mid-turn stdin injection
   semantics + `control_request{subtype:"interrupt"}`, (OQ3) does `--max-budget-usd` apply
   under subscription auth
+
 - Phase 17 must spike OQ4 (`--worktree` flag existence) before locking worktree isolation
 - Phase 22 must spike OQ5 (podman rootless uid mapping / volume permissions) with podman
   actually installed
+
 - MSRV rises 1.85 -> 1.87 in Phase 15 (process-wrap floor)
 
 ### Blockers/Concerns
@@ -110,6 +118,7 @@ Recent decisions affecting current work:
 - Tab bar overflow at 80 columns when adding 8th tab (Archive) -- resolve at Phase 12 design time
 - `--bare` is slated to become the `-p` default and is incompatible with subscription
   auth; Phase 15 ships a version gate and a regression guard against it
+
 - Phase 13's queue-execution design self-dated "valid until 2026-04-30"; re-verify GSD's
   autonomous-mode / checkpoint contract during Phase 20 research
 
