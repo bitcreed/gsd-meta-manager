@@ -2,6 +2,7 @@ pub mod add_project;
 pub mod create_project;
 pub mod delete_confirm;
 pub mod detail;
+pub mod driver_confirm;
 pub mod enqueue;
 pub mod help;
 pub mod normal;
@@ -155,7 +156,8 @@ pub struct AppContext {
     ///   production, and the count is a legitimate diagnostic in its own right
     ///   that Phase 18's driver surface may want to render.
     pub reparse_dispatches: u64,
-    /// Byte offset into each run journal, keyed by `(alias, run_id)` (D-13).
+    /// Byte offset **and last observed `seq`** into each run journal, keyed by
+    /// `(alias, run_id)` (D-13, D-28).
     ///
     /// * A **sibling map**, shaped exactly like `run_states` above and
     ///   `last_refresh` / `archive_cache` below. Phase 16 extends that
@@ -164,10 +166,21 @@ pub struct AppContext {
     ///   `app.rs` uses the derived equality to suppress the "Updated: {alias}"
     ///   status message. A journal offset moves every few seconds, so a field
     ///   there would flood the status bar for an entire multi-hour run (D-18).
-    /// * It holds offsets, run ids and counts — **never a file handle or a
-    ///   join handle**. `Action` derives `Clone` and a handle is not `Clone`
-    ///   (D-20).
-    pub journal_cursors: HashMap<(String, String), crate::journal::reader::TailCursor>,
+    /// * It holds offsets, sequence numbers, run ids and counts — **never a file
+    ///   handle or a join handle**. `Action` derives `Clone` and a handle is not
+    ///   `Clone` (D-20).
+    /// * The value carries `last_seq` beside the byte offset because a byte
+    ///   offset alone cannot detect a lost event: the gap check compared records
+    ///   only *within one batch*, so a discontinuity falling between two tail
+    ///   reads was invisible — the shape a multi-hour run produces. The stored
+    ///   seq seeds the next batch's check through
+    ///   [`seq_gaps_from`](crate::journal::reader::seq_gaps_from) (D-28).
+    /// * **The map is pruned**, on the same 20-tick block as the reconciliation
+    ///   probe: entries for unregistered aliases are dropped and at most
+    ///   [`RETAIN_RUNS`](crate::journal::RETAIN_RUNS) run ids per alias are kept.
+    ///   Before that it was inserted in exactly one place, removed in none, and
+    ///   grew for the process lifetime. See `App::prune_driver_maps` (D-27).
+    pub journal_cursors: HashMap<(String, String), crate::journal::reader::JournalCursor>,
     /// Per-alias observed driver run, from the reconciliation scan (D-13, D-25).
     ///
     /// * A **sibling map**, shaped exactly like `run_states` and
@@ -185,6 +198,11 @@ pub struct AppContext {
     ///   Once the TUI has exited, the driver's stdout pipe is gone and live
     ///   re-streaming is physically impossible; what this map carries is a
     ///   journal-tail handle and a pgid to signal.
+    /// * **Phase 17 closed having added no field to `ProjectState`** — the whole
+    ///   phase's driver state is this map, `run_states`, `journal_cursors` and
+    ///   `session_spawned_runs`, all siblings here. `git diff` over
+    ///   `src/state_reader/` across the phase is the checkable form of that
+    ///   claim, and plan 17-07 records it (D-25).
     pub observed_runs: HashMap<String, crate::driver::reconcile::ObservedRun>,
     /// The run ids **this TUI session spawned**, which decides D-07's reaping
     /// arm at stop time.

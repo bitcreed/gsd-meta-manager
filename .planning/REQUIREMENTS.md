@@ -42,11 +42,11 @@ interleave and corrupt each other.
 
 ### Run Control & Safety Envelope (CTRL)
 
-- [ ] **CTRL-01**: A user can stop any run at any time from the TUI, and stopping terminates the entire process tree including `claude`'s Bash grandchildren
-- [ ] **CTRL-02**: A user can start any run in dry-run mode, which reports the GSD commands it would issue plus the resulting diffstat and push refspecs, without executing them
-- [ ] **CTRL-03**: A project is driven only when explicitly opted in; non-opted-in projects are never spawned against, enforced at the process-spawn seam
-- [ ] **CTRL-04**: An autonomous run survives the TUI being closed, and the TUI reconciles live runs on restart
-- [ ] **CTRL-05**: Only one driver may execute against a given project at a time, enforced by an OS-level lock
+- [x] **CTRL-01**: A user can stop any run at any time from the TUI, and stopping terminates the entire process tree including `claude`'s Bash grandchildren
+- [x] **CTRL-02**: A user can start any run in dry-run mode, which reports the GSD commands it would issue plus the resulting diffstat and push refspecs, without executing them
+- [x] **CTRL-03**: A project is driven only when explicitly opted in; non-opted-in projects are never spawned against, enforced at the process-spawn seam
+- [x] **CTRL-04**: An autonomous run survives the TUI being closed, and the TUI reconciles live runs on restart
+- [x] **CTRL-05**: Only one driver may execute against a given project at a time, enforced by an OS-level lock
 - [ ] **CTRL-06**: A run halts itself when it stops making progress, repeats a command, exceeds a step cap, or exceeds a wall-clock cap
 - [ ] **CTRL-07**: A run parks rather than retrying when it hits a Claude subscription rate limit, and reports which quota window blocked it
 
@@ -133,11 +133,11 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-22.
 | TRANS-03 | Phase 15: Transport Foundation | Complete |
 | TRANS-04 | Phase 15: Transport Foundation | Complete |
 | TRANS-05 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
-| CTRL-01 | Phase 17: Supervisor | Pending |
-| CTRL-02 | Phase 17: Supervisor | Pending |
-| CTRL-03 | Phase 17: Supervisor | Pending |
-| CTRL-04 | Phase 17: Supervisor | Pending |
-| CTRL-05 | Phase 17: Supervisor | Pending |
+| CTRL-01 | Phase 17: Supervisor | Complete |
+| CTRL-02 | Phase 17: Supervisor | Complete |
+| CTRL-03 | Phase 17: Supervisor | Complete |
+| CTRL-04 | Phase 17: Supervisor | Complete |
+| CTRL-05 | Phase 17: Supervisor | Complete |
 | CTRL-06 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
 | CTRL-07 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
 | SAFE-01 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Pending |

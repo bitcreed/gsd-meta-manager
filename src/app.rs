@@ -285,15 +285,18 @@ impl App {
         };
         let tx = tx.clone();
 
+        // `.copied()` — and `JournalCursor` staying `Copy` is what keeps this
+        // line unchanged now that the value carries a `seq` as well as an offset
+        // (D-28, PATTERNS note 4).
         let key = (alias.to_string(), run_id.to_string());
-        let cursor = self.ctx.journal_cursors.get(&key).copied().unwrap_or_default();
+        let stored = self.ctx.journal_cursors.get(&key).copied().unwrap_or_default();
         let (alias_for_task, run_id_for_task) = key;
 
         let planning_dir = project_path.join(".planning");
         let journal = crate::journal::run_paths(&planning_dir, run_id).journal;
 
         tokio::task::spawn_blocking(move || {
-            let read = match crate::journal::reader::tail_lines(&journal, cursor) {
+            let read = match crate::journal::reader::tail_lines(&journal, stored.cursor) {
                 Ok(read) => read,
                 Err(e) => {
                     // The error KIND only. Neither the path nor the message
@@ -343,11 +346,22 @@ impl App {
                 );
             }
 
+            // An EMPTY batch retains the previous `last_seq` rather than
+            // resetting it. A tail that finds nothing new is the common case —
+            // the watcher fires on a directory before the first append, and a
+            // torn trailing line yields no complete record — and resetting to
+            // zero on any of those would silently disarm the boundary check for
+            // the next batch that does carry records (D-28).
+            let last_seq = records.last().map_or(stored.last_seq, |record| record.seq);
+
             let _ = tx.send(Action::DriverJournalAppended {
                 alias: alias_for_task,
                 run_id: run_id_for_task,
                 records,
-                cursor: read.cursor,
+                cursor: crate::journal::reader::JournalCursor {
+                    cursor: read.cursor,
+                    last_seq,
+                },
             });
         });
     }
@@ -468,6 +482,12 @@ impl App {
                             let _ = tx.send(Action::RunsReconciled { runs });
                         });
                     }
+
+                    // The prune rides the SAME counter, for the same reason the
+                    // reconciliation probe above does (D-27 says so explicitly).
+                    // It is pure in-memory map work — no syscall, no file read —
+                    // so it runs inline rather than on a blocking task.
+                    self.prune_driver_maps();
                 }
             }
             Action::RawKey(key_event) => {
@@ -689,23 +709,33 @@ impl App {
                 cursor,
             } => {
                 // `seq` is monotonic from 1 and exists so a tailing reader can
-                // detect gaps (D-03). A gap is reported as a COUNT and never
-                // as a parse failure, and never with a record body (D-28,
-                // D-30).
-                let gaps = records
-                    .windows(2)
-                    .filter(|pair| pair[1].seq != pair[0].seq + 1)
-                    .count();
+                // detect gaps (D-03). A gap is reported as a COUNT and never as
+                // a parse failure, and never with a record body (D-28, D-30).
+                //
+                // This calls the shared reader function rather than
+                // re-implementing its `windows(2)` filter, which is what it used
+                // to do. Two copies of a comparison are two things to keep in
+                // agreement, and they had already diverged in the way that
+                // matters: the inline copy could not be seeded, so it could only
+                // ever see a gap that fell inside one batch.
+                let key = (alias, run_id);
+                let previous_last_seq = self
+                    .ctx
+                    .journal_cursors
+                    .get(&key)
+                    .map_or(0, |stored| stored.last_seq);
+                let gaps =
+                    crate::journal::reader::seq_gaps_from(previous_last_seq, &records).len();
                 if gaps > 0 {
                     tracing::warn!(
-                        alias = %alias,
-                        run_id = %run_id,
+                        alias = %key.0,
+                        run_id = %key.1,
                         count = gaps,
                         "journal tail: sequence gaps observed",
                     );
                 }
 
-                self.ctx.journal_cursors.insert((alias, run_id), cursor);
+                self.ctx.journal_cursors.insert(key, cursor);
             }
             // The scan is authoritative, so the map is **replaced** and never
             // merged (D-12, D-13). A merge would keep a run in the map after its
@@ -734,6 +764,21 @@ impl App {
                     self.needs_redraw = true;
                 }
             }
+            // The goal is `None`: Phase 17 records a goal into `RunRecord.goal`
+            // when one is supplied on the command line and interprets nothing
+            // (Phase 21 owns goal decomposition), and there is no screen to type
+            // one into — that is Phase 18's. An empty string is deliberately not
+            // passed instead, because `drive_argv` omits the flag entirely for
+            // `None` and would otherwise record an empty goal verbatim.
+            Action::DriverStartRequested { alias, command } => {
+                #[cfg(unix)]
+                self.start_driver_run(&alias, &command, None);
+                // Off Unix there is no detached spawn to reach, so the request
+                // has nowhere to go. Both bindings are consumed explicitly
+                // rather than left to an `unused_variables` allow.
+                #[cfg(not(unix))]
+                let _ = (alias, command);
+            }
             Action::DriverStopRequested { alias } => {
                 #[cfg(unix)]
                 self.stop_driver_run(&alias);
@@ -760,6 +805,72 @@ impl App {
                     Some((format!("{alias}: {outcome}"), std::time::Instant::now()));
                 self.needs_redraw = true;
             }
+        }
+    }
+
+    /// Drop driver state the registry no longer justifies, and bound what stays
+    /// (D-27).
+    ///
+    /// **The leak this closes.** `journal_cursors` is keyed `(alias, run_id)`,
+    /// inserted in exactly one place — `Action::DriverJournalAppended` — and
+    /// removed in none, so it grew for the whole life of the process: one entry
+    /// per run of every project ever tailed, forever. `run_states` and
+    /// `observed_runs` had the same shape for an unregistered alias, because
+    /// `registry::remove_project` touches neither (it has no access to
+    /// `AppContext`; see its doc, which names both cleanup sites).
+    ///
+    /// Two passes:
+    ///
+    /// 1. **Unregistered aliases go.** A project that is no longer a key in
+    ///    `config.projects` cannot produce another journal append, another run
+    ///    state, or another observation, so every entry it owns is dead weight.
+    /// 2. **At most [`RETAIN_RUNS`](crate::journal::RETAIN_RUNS) run ids survive
+    ///    per alias**, newest kept. Aligning to that constant rather than
+    ///    picking a second number is deliberate: it is the on-disk retention
+    ///    bound, so the in-memory bound and the disk bound move together instead
+    ///    of drifting into two unrelated budgets.
+    ///
+    /// **"Newest" is a sort on the run-id string and needs no file read.** Run
+    /// ids sort lexicographically in chronological order by construction — that
+    /// is `new_run_id`'s documented load-bearing property, and the same one
+    /// on-disk pruning relies on. A reader might otherwise reach for `run.json`
+    /// timestamps, which would turn a map operation into O(runs) file reads.
+    ///
+    /// Called from the **existing** 20-tick block, never from a timer of its own
+    /// (D-13, D-27).
+    fn prune_driver_maps(&mut self) {
+        let registered = &self.ctx.config.projects;
+        self.ctx
+            .journal_cursors
+            .retain(|(alias, _), _| registered.contains_key(alias));
+        self.ctx
+            .run_states
+            .retain(|alias, _| registered.contains_key(alias));
+        self.ctx
+            .observed_runs
+            .retain(|alias, _| registered.contains_key(alias));
+
+        let mut runs_by_alias: HashMap<&str, Vec<&str>> = HashMap::new();
+        for (alias, run_id) in self.ctx.journal_cursors.keys() {
+            runs_by_alias
+                .entry(alias.as_str())
+                .or_default()
+                .push(run_id.as_str());
+        }
+
+        let mut evict: Vec<(String, String)> = Vec::new();
+        for (alias, mut run_ids) in runs_by_alias {
+            if run_ids.len() <= crate::journal::RETAIN_RUNS {
+                continue;
+            }
+            run_ids.sort_unstable();
+            let excess = run_ids.len() - crate::journal::RETAIN_RUNS;
+            for run_id in run_ids.into_iter().take(excess) {
+                evict.push((alias.to_string(), run_id.to_string()));
+            }
+        }
+        for key in evict {
+            self.ctx.journal_cursors.remove(&key);
         }
     }
 
@@ -1238,6 +1349,15 @@ mod tests {
         assert!(app.ctx.last_refresh.contains_key(OBS_ALIAS));
     }
 
+    /// A `JournalCursor` with both of its fields varied, so an assertion cannot
+    /// pass by comparing only the byte offset.
+    fn cursor_at(offset: u64, last_seq: u64) -> crate::journal::reader::JournalCursor {
+        crate::journal::reader::JournalCursor {
+            cursor: crate::journal::reader::TailCursor { offset },
+            last_seq,
+        }
+    }
+
     /// An `ObservedRun` with only the fields these assertions read varied.
     fn observed(alias: &str, run_id: &str, live: bool) -> crate::driver::reconcile::ObservedRun {
         crate::driver::reconcile::ObservedRun {
@@ -1483,36 +1603,206 @@ mod tests {
 
     #[tokio::test]
     async fn a_tail_result_advances_only_its_own_cursor() {
-        use crate::journal::reader::TailCursor;
-
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut app, _rx) = obs_app(dir.path());
 
         let mine = (OBS_ALIAS.to_string(), "run-a".to_string());
         let theirs = (OBS_ALIAS.to_string(), "run-b".to_string());
+        app.ctx.journal_cursors.insert(mine.clone(), cursor_at(10, 1));
         app.ctx
             .journal_cursors
-            .insert(mine.clone(), TailCursor { offset: 10 });
-        app.ctx
-            .journal_cursors
-            .insert(theirs.clone(), TailCursor { offset: 20 });
+            .insert(theirs.clone(), cursor_at(20, 7));
 
         app.update(Action::DriverJournalAppended {
             alias: OBS_ALIAS.to_string(),
             run_id: "run-a".to_string(),
             records: Vec::new(),
-            cursor: TailCursor { offset: 99 },
+            cursor: cursor_at(99, 4),
         });
 
         assert_eq!(
             app.ctx.journal_cursors.get(&mine),
-            Some(&TailCursor { offset: 99 }),
-            "the tail's own cursor must advance"
+            Some(&cursor_at(99, 4)),
+            "the tail's own cursor must advance, seq and all"
         );
         assert_eq!(
             app.ctx.journal_cursors.get(&theirs),
-            Some(&TailCursor { offset: 20 }),
+            Some(&cursor_at(20, 7)),
             "a sibling run's cursor must not move"
+        );
+    }
+
+    /// A run id whose lexicographic order equals its chronological order, which
+    /// is `new_run_id`'s documented property and what the retention sort relies
+    /// on. Built by hand rather than through `new_run_id` so the ordering under
+    /// test is visible in the test itself.
+    fn run_id_at(minute: u32) -> String {
+        format!("2026-07-29T12-{minute:02}-00Z-a1b2")
+    }
+
+    /// D-27, first pass: an alias the registry no longer knows about.
+    #[tokio::test]
+    async fn pruning_drops_cursors_for_an_unregistered_alias() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        // OBS_ALIAS is registered by the fixture; "gone" never was.
+        app.ctx
+            .journal_cursors
+            .insert((OBS_ALIAS.to_string(), run_id_at(1)), cursor_at(5, 1));
+        app.ctx
+            .journal_cursors
+            .insert(("gone".to_string(), run_id_at(2)), cursor_at(6, 2));
+        app.ctx
+            .run_states
+            .insert("gone".to_string(), crate::executor::RunState::Running);
+        app.ctx
+            .run_states
+            .insert(OBS_ALIAS.to_string(), crate::executor::RunState::Running);
+        app.ctx
+            .observed_runs
+            .insert("gone".to_string(), observed("gone", "run-gone", true));
+        app.ctx.observed_runs.insert(
+            OBS_ALIAS.to_string(),
+            observed(OBS_ALIAS, "run-here", true),
+        );
+
+        app.prune_driver_maps();
+
+        assert!(
+            !app.ctx
+                .journal_cursors
+                .contains_key(&("gone".to_string(), run_id_at(2))),
+            "a cursor for an unregistered alias is dead weight for the whole \
+             life of the process — nothing can ever append to it again"
+        );
+        assert!(!app.ctx.run_states.contains_key("gone"));
+        assert!(!app.ctx.observed_runs.contains_key("gone"));
+
+        // The control arm: a registered alias keeps everything, so the
+        // assertions above are not passing because the prune emptied the maps.
+        assert!(app
+            .ctx
+            .journal_cursors
+            .contains_key(&(OBS_ALIAS.to_string(), run_id_at(1))));
+        assert!(app.ctx.run_states.contains_key(OBS_ALIAS));
+        assert!(app.ctx.observed_runs.contains_key(OBS_ALIAS));
+    }
+
+    /// D-27, second pass: the per-alias retention bound.
+    ///
+    /// Asserts the count **and** which ids survived. A prune that kept the right
+    /// number of the wrong runs — the oldest — would satisfy a count-only
+    /// assertion while discarding exactly the cursors a live run needs.
+    #[tokio::test]
+    async fn pruning_retains_at_most_the_newest_runs_per_alias() {
+        use crate::journal::RETAIN_RUNS;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        let total = RETAIN_RUNS + 5;
+        for minute in 0..total {
+            app.ctx.journal_cursors.insert(
+                (OBS_ALIAS.to_string(), run_id_at(minute as u32)),
+                cursor_at(minute as u64, minute as u64),
+            );
+        }
+        assert_eq!(app.ctx.journal_cursors.len(), total);
+
+        app.prune_driver_maps();
+
+        assert_eq!(
+            app.ctx.journal_cursors.len(),
+            RETAIN_RUNS,
+            "the in-memory bound must match the on-disk one rather than being a \
+             second unrelated number"
+        );
+
+        let mut survivors: Vec<String> = app
+            .ctx
+            .journal_cursors
+            .keys()
+            .map(|(_, run_id)| run_id.clone())
+            .collect();
+        survivors.sort();
+        let expected: Vec<String> = (total - RETAIN_RUNS..total)
+            .map(|minute| run_id_at(minute as u32))
+            .collect();
+        assert_eq!(
+            survivors, expected,
+            "the NEWEST ids must survive; run ids sort lexicographically in \
+             chronological order by construction, so this is a string sort and \
+             needs no file read"
+        );
+
+        // Under the bound, nothing is evicted.
+        app.ctx.journal_cursors.clear();
+        for minute in 0..RETAIN_RUNS {
+            app.ctx.journal_cursors.insert(
+                (OBS_ALIAS.to_string(), run_id_at(minute as u32)),
+                cursor_at(0, 0),
+            );
+        }
+        app.prune_driver_maps();
+        assert_eq!(app.ctx.journal_cursors.len(), RETAIN_RUNS);
+    }
+
+    /// The interactive removal path cleans the driver maps immediately, rather
+    /// than leaving them to the periodic backstop.
+    #[tokio::test]
+    async fn removing_a_project_interactively_clears_its_driver_maps() {
+        use crate::ui::screens::delete_confirm::DeleteConfirmScreen;
+        use crate::ui::screens::Screen;
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        // `save_config` must land somewhere real, or the removal reports a save
+        // failure and returns before it reaches the cleanup block.
+        app.ctx.config_path = dir.path().join("config.json");
+
+        app.ctx
+            .journal_cursors
+            .insert((OBS_ALIAS.to_string(), run_id_at(1)), cursor_at(5, 1));
+        app.ctx
+            .journal_cursors
+            .insert((OBS_ALIAS.to_string(), run_id_at(2)), cursor_at(9, 3));
+        app.ctx
+            .run_states
+            .insert(OBS_ALIAS.to_string(), crate::executor::RunState::Running);
+        app.ctx.observed_runs.insert(
+            OBS_ALIAS.to_string(),
+            observed(OBS_ALIAS, "run-here", true),
+        );
+
+        let mut screen = DeleteConfirmScreen::new(OBS_ALIAS.to_string());
+        screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut app.ctx);
+
+        assert!(
+            !app.ctx.config.projects.contains_key(OBS_ALIAS),
+            "the removal itself must have happened, or the rest is vacuous"
+        );
+        assert!(
+            app.ctx.error_message.is_none(),
+            "unexpected failure: {:?}",
+            app.ctx.error_message
+        );
+        assert!(
+            !app.ctx.run_states.contains_key(OBS_ALIAS),
+            "run_states leaked past an interactive removal"
+        );
+        assert!(
+            !app.ctx.observed_runs.contains_key(OBS_ALIAS),
+            "observed_runs leaked past an interactive removal"
+        );
+        assert!(
+            app.ctx
+                .journal_cursors
+                .keys()
+                .all(|(alias, _)| alias != OBS_ALIAS),
+            "every cursor for the removed alias must go, not just one — the map \
+             is keyed (alias, run_id) and a project may have several"
         );
     }
 }

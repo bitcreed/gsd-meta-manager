@@ -65,14 +65,21 @@ pub enum Action {
     /// `Box` in this file, on `ProjectStateLoaded`, is there because
     /// `ProjectState` really is 360 bytes.)
     ///
-    /// Every field is plain data — `String`, `Vec`, and a cursor of `u64` —
-    /// so `Action` stays `Clone` and no file handle or join handle leaks into
-    /// a message type (D-20).
+    /// Every field is plain data — `String`, `Vec`, and a `Copy` cursor of two
+    /// `u64`s — so `Action` stays `Clone` and no file handle or join handle
+    /// leaks into a message type (D-20). The cursor gained its second `u64` in
+    /// plan 17-07 and the variant is 88 bytes rather than 80; the sizing
+    /// reasoning above is unchanged by eight bytes.
+    ///
+    /// The cursor carries the last observed `seq` alongside the byte offset
+    /// because a gap that straddles two tail reads is invisible to a check that
+    /// only compares within one batch — see
+    /// [`JournalCursor`](crate::journal::reader::JournalCursor) (D-28).
     DriverJournalAppended {
         alias: String,
         run_id: String,
         records: Vec<crate::journal::reader::JournalRecord>,
-        cursor: crate::journal::reader::TailCursor,
+        cursor: crate::journal::reader::JournalCursor,
     },
     /// One reconciliation scan completed (D-13).
     ///
@@ -87,6 +94,27 @@ pub enum Action {
     /// is no handle to leak in the first place (D-12).
     RunsReconciled {
         runs: Vec<crate::driver::reconcile::ObservedRun>,
+    },
+    /// The user asked for a run to be started on `alias` (CTRL-03, D-25).
+    ///
+    /// The sibling of [`Action::DriverStopRequested`], and it exists for the
+    /// same structural reason: the spawn seam is `App::start_driver_run`, a
+    /// `Screen` only ever receives `&mut AppContext`, and this file's existing
+    /// route from one to the other is a message. Adding the sibling rather than
+    /// a second mechanism is deliberate.
+    ///
+    /// `command` travels with the request because the seam takes it — Phase 17's
+    /// driver runs **exactly one** GSD command supplied by its caller, since the
+    /// decision router is Phase 20's. Today the only production sender fills it
+    /// from `driver_confirm::DEFAULT_DRIVE_COMMAND`; Phase 18's command picker
+    /// is what makes the field carry more than one value.
+    ///
+    /// **The opt-in gate is not here and is not in the handler.** It lives in
+    /// the driver process, at `DrivableProject::from_registry`, so a hand-typed
+    /// `gsd-meta-manager drive foo` is refused by the same code as this (D-16).
+    DriverStartRequested {
+        alias: String,
+        command: String,
     },
     /// The user asked for the live run on `alias` to be stopped (CTRL-01).
     ///
