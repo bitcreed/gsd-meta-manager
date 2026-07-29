@@ -311,16 +311,33 @@ Plans:
 **UI hint**: yes
 
 Plans:
+**Wave 1**
+
 - [ ] 18-01-PLAN.md — Tracer: end-to-end durable injection spine + path-traversal fix (D-27/WR-02)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 18-02-PLAN.md — Driver honesty: acted-on, missed, and the blocking-call boundary (D-28/WR-10)
 - [ ] 18-03-PLAN.md — Journal read surfaces: readable output projection + run listing
 - [ ] 18-04-PLAN.md — State layer: bounded ring buffer, sanitiser, needs-human predicate, Action types
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 18-05-PLAN.md — Controller: stop-disposition fix (D-29/WR-15), schedulers, the redraw seam
 - [ ] 18-06-PLAN.md — Dashboard: driven/parked badges, sort toggle, needs-human filter
 - [ ] 18-07-PLAN.md — Injection input screen and the command + goal start flow
 - [ ] 18-08-PLAN.md — Release gate for the hidden agent-override flags (D-30/WR-16)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 18-09-PLAN.md — Driver tab: 11th tab, tab-bar tiering, two panes, header, pipeline row
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
 - [ ] 18-10-PLAN.md — Live output pane, four-state injection display, after-the-fact run review
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
 - [ ] 18-11-PLAN.md — Help screen, dry-run preview, mechanical close-out
 
 ### Phase 19: GITSAFE — Git & Blast-Radius Envelope
