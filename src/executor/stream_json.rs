@@ -378,21 +378,21 @@ mod tests {
             .collect()
     }
 
-    fn results(transcript: &str) -> Vec<Box<ResultMessage>> {
+    fn results(transcript: &str) -> Vec<ResultMessage> {
         messages(transcript)
             .into_iter()
             .filter_map(|msg| match msg {
-                StreamMessage::Result(result) => Some(result),
+                StreamMessage::Result(result) => Some(*result),
                 _ => None,
             })
             .collect()
     }
 
-    fn inits(transcript: &str) -> Vec<Box<InitMessage>> {
+    fn inits(transcript: &str) -> Vec<InitMessage> {
         messages(transcript)
             .into_iter()
             .filter_map(|msg| match msg {
-                StreamMessage::System(SystemMessage::Init(init)) => Some(init),
+                StreamMessage::System(SystemMessage::Init(init)) => Some(*init),
                 _ => None,
             })
             .collect()
