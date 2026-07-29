@@ -58,7 +58,7 @@ the Meta Manager gives you the view and the controls *across* your whole portfol
 
 ## Installation
 
-Requires **Rust 1.85+**.
+Requires **Rust 1.87+**.
 
 ### From crates.io
 
@@ -183,7 +183,7 @@ terminal support.
 
 ## Requirements
 
-- **Rust 1.85+** (for building from source)
+- **Rust 1.87+** (for building from source)
 - Produces a single static binary with no runtime dependencies
 
 ### Compatibility

@@ -20,7 +20,7 @@ before proposing a specific design.
 
 ## Development Setup
 
-Prerequisites: Rust 1.85+ (stable) with `cargo` on your `PATH`.
+Prerequisites: Rust 1.87+ (stable) with `cargo` on your `PATH`.
 
 ```bash
 git clone git@github.com:bitcreed/gsd-meta-manager.git

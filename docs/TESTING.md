@@ -11,7 +11,7 @@ test runner is required. The only test-time dependency is:
 | `assert_fs` | 1 (dev-dependency in `Cargo.toml`) | Ergonomic temporary directory and filesystem fixture helpers for integration tests |
 | `tempfile` | 3 (runtime dependency, also used in tests) | `TempDir` for unit-test scratch directories |
 
-No setup is required beyond a working Rust toolchain (`1.85+ stable`, per the project's stack
+No setup is required beyond a working Rust toolchain (`1.87+ stable`, per the project's stack
 decisions). Cloning the repo and running `cargo test` is sufficient — there are no test databases,
 external services, or environment variables to configure.
 

@@ -22,7 +22,7 @@ A TUI command center for managing multiple GSD-run projects from a single interf
 ### Core Technologies
 | Technology | Version | Purpose | Why Recommended |
 |------------|---------|---------|-----------------|
-| Rust | 1.85+ (stable) | Language | Zero-cost abstractions, single-binary distribution, no GC pauses, Cargo ecosystem |
+| Rust | 1.87+ (stable) | Language | Zero-cost abstractions, single-binary distribution, no GC pauses, Cargo ecosystem |
 | ratatui | 0.30.0 | TUI rendering | The de facto standard Rust TUI library, 11.9M+ downloads, active maintenance, modular since 0.30 |
 | crossterm | 0.29.0 | Terminal backend | Cross-platform (macOS/Linux/Windows), event stream support, ratatui's recommended backend |
 | tokio | 1.50.0 | Async runtime | Standard async runtime; required for concurrent file watching + event handling without blocking the render loop |
