@@ -52,6 +52,7 @@ fn config_for(root: &Path, opted_in: bool) -> Config {
                 opted_in_at: "2026-07-29T11:59:00Z".to_string(),
                 claude_md_digest: None,
             }),
+            extra: Default::default(),
         },
     );
     config
