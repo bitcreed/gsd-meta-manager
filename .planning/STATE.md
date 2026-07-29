@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Autonomous Orchestration
-current_phase: 16
-current_phase_name: Run Journal & State Substrate
-status: executing
+current_phase: 17
+current_phase_name: Supervisor — Detach, Kill Switch, Dry-Run, Opt-In Gate
+status: planning
 stopped_at: v2.0 roadmap written — Phases 14-22 defined, traceability filled
-last_updated: "2026-07-29T14:33:52.420Z"
+last_updated: "2026-07-29T15:40:36.902Z"
 last_activity: 2026-07-29
-last_activity_desc: Phase 16 execution started
+last_activity_desc: Phase 16 complete, transitioned to Phase 17
 progress:
   total_phases: 9
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 18
-  completed_plans: 12
-  percent: 22
+  completed_plans: 18
+  percent: 33
 ---
 
 # Project State
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 
 ## Current Position
 
-Phase: 16 (Run Journal & State Substrate) — EXECUTING
-Plan: 1 of 6
-Status: Executing Phase 16
-Last activity: 2026-07-29 — Phase 16 execution started
+Phase: 17 — Supervisor — Detach, Kill Switch, Dry-Run, Opt-In Gate
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-07-29 — Phase 16 complete, transitioned to Phase 17
 
 ### Phase 15 planning notes (autonomous run — review these)
 
@@ -107,7 +107,7 @@ Last activity: 2026-07-29 — Phase 16 execution started
 
 **Velocity:**
 
-- Total plans completed: 12
+- Total plans completed: 18
 - Average duration: --
 - Total execution time: 0 hours
 
@@ -117,6 +117,7 @@ Last activity: 2026-07-29 — Phase 16 execution started
 |-------|-------|-------|----------|
 | 14 | 4 | - | - |
 | 15 | 8 | - | - |
+| 16 | 6 | - | - |
 
 **Recent Trend (from v1.1):**
 
