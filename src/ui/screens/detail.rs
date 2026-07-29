@@ -16,8 +16,29 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs};
 use ratatui::Frame;
+use std::cell::Cell;
 
 const PAGE_SCROLL_LINES: u16 = 20;
+
+/// Viewport metrics recorded by the last render pass of a markdown file view.
+///
+/// Both fields are zero before the first render, which yields a max scroll of
+/// zero — the correct pre-first-render floor, not a crash.
+#[derive(Clone, Copy, Default)]
+struct ViewportMetrics {
+    total_lines: u16,
+    visible_height: u16,
+}
+
+/// Clamp a stored scroll offset to the last-rendered viewport.
+///
+/// Uses the identical `total_lines - visible_height` formula the render path
+/// already applies for display, so the two cannot drift apart.
+fn clamp_scroll(offset: u16, total_lines: u16, visible_height: u16) -> u16 {
+    // RED stub: no bound applied yet.
+    let _ = (total_lines, visible_height);
+    offset
+}
 
 const TAB_TITLES: [&str; 10] = [
     "1:Phases",
@@ -35,6 +56,12 @@ const TAB_TITLES: [&str; 10] = [
 pub struct DetailScreen {
     pub alias: String,
     pub scroll_offset: u16,
+    /// Last-rendered viewport metrics for the Docs (Browse) file view.
+    /// Interior mutability: `Screen::render` takes `&self`, so the render pass
+    /// cannot write into the view cache (see plan 14-02 CD-01).
+    browser_viewport: Cell<ViewportMetrics>,
+    /// Last-rendered viewport metrics for the Archive file view.
+    archive_viewport: Cell<ViewportMetrics>,
 }
 
 impl DetailScreen {
@@ -42,6 +69,8 @@ impl DetailScreen {
         Self {
             alias,
             scroll_offset: 0,
+            browser_viewport: Cell::default(),
+            archive_viewport: Cell::default(),
         }
     }
 }
@@ -552,8 +581,12 @@ impl Screen for DetailScreen {
                                 }
                             }
                             ArchiveDepth::FileView { .. } => {
-                                cache.archive_scroll_offset =
-                                    cache.archive_scroll_offset.saturating_add(1);
+                                let vp = self.archive_viewport.get();
+                                cache.archive_scroll_offset = clamp_scroll(
+                                    cache.archive_scroll_offset.saturating_add(1),
+                                    vp.total_lines,
+                                    vp.visible_height,
+                                );
                             }
                         }
                         ctx.needs_redraw = true;
@@ -592,8 +625,12 @@ impl Screen for DetailScreen {
                                 }
                             }
                             BrowserDepth::View => {
-                                cache.browser_scroll_offset =
-                                    cache.browser_scroll_offset.saturating_add(1);
+                                let vp = self.browser_viewport.get();
+                                cache.browser_scroll_offset = clamp_scroll(
+                                    cache.browser_scroll_offset.saturating_add(1),
+                                    vp.total_lines,
+                                    vp.visible_height,
+                                );
                             }
                         }
                         ctx.needs_redraw = true;
@@ -777,8 +814,12 @@ impl Screen for DetailScreen {
                                 }
                             }
                             ArchiveDepth::FileView { .. } => {
-                                cache.archive_scroll_offset =
-                                    cache.archive_scroll_offset.saturating_add(PAGE_SCROLL_LINES);
+                                let vp = self.archive_viewport.get();
+                                cache.archive_scroll_offset = clamp_scroll(
+                                    cache.archive_scroll_offset.saturating_add(PAGE_SCROLL_LINES),
+                                    vp.total_lines,
+                                    vp.visible_height,
+                                );
                             }
                         }
                         ctx.needs_redraw = true;
@@ -805,9 +846,12 @@ impl Screen for DetailScreen {
                                 }
                             }
                             BrowserDepth::View => {
-                                cache.browser_scroll_offset = cache
-                                    .browser_scroll_offset
-                                    .saturating_add(PAGE_SCROLL_LINES);
+                                let vp = self.browser_viewport.get();
+                                cache.browser_scroll_offset = clamp_scroll(
+                                    cache.browser_scroll_offset.saturating_add(PAGE_SCROLL_LINES),
+                                    vp.total_lines,
+                                    vp.visible_height,
+                                );
                             }
                         }
                         ctx.needs_redraw = true;
@@ -2816,6 +2860,10 @@ impl DetailScreen {
                     let text_area = file_chunks[1];
 
                     let visible_height = text_area.height;
+                    self.archive_viewport.set(ViewportMetrics {
+                        total_lines,
+                        visible_height,
+                    });
                     let max_scroll = total_lines.saturating_sub(visible_height);
                     let scroll = cache.archive_scroll_offset.min(max_scroll);
 
@@ -2956,6 +3004,10 @@ impl DetailScreen {
                     let text_area = file_chunks[1];
 
                     let visible_height = text_area.height;
+                    self.browser_viewport.set(ViewportMetrics {
+                        total_lines,
+                        visible_height,
+                    });
                     let max_scroll = total_lines.saturating_sub(visible_height);
                     let scroll = cache.browser_scroll_offset.min(max_scroll);
 
@@ -4767,5 +4819,49 @@ mod tests {
             "  [Esc]back  [1-9]tabs  [j/k]scroll  [Enter]edit  [x] clear  [d] defaults  \
              [r]eload  [?]help"
         );
+    }
+
+    // ── UIFIX-04: stored scroll offset is clamped to the rendered viewport ──
+
+    #[test]
+    fn test_clamp_scroll_page_down_stops_at_content_end() {
+        // 100-line document in a 30-line viewport → max_scroll = 70, which
+        // leaves the last content line on screen.
+        assert_eq!(clamp_scroll(60 + PAGE_SCROLL_LINES, 100, 30), 70);
+    }
+
+    #[test]
+    fn test_clamp_scroll_repeated_page_down_is_idempotent() {
+        // Already at the end: further PageDown presses do not grow the offset.
+        assert_eq!(clamp_scroll(70 + PAGE_SCROLL_LINES, 100, 30), 70);
+        assert_eq!(clamp_scroll(clamp_scroll(90, 100, 30) + PAGE_SCROLL_LINES, 100, 30), 70);
+    }
+
+    #[test]
+    fn test_clamp_scroll_short_document_never_scrolls() {
+        // total_lines <= visible_height → max_scroll = 0, PageDown is a no-op.
+        assert_eq!(clamp_scroll(PAGE_SCROLL_LINES, 10, 30), 0);
+        assert_eq!(clamp_scroll(PAGE_SCROLL_LINES, 30, 30), 0);
+    }
+
+    #[test]
+    fn test_clamp_scroll_pre_first_render_floor() {
+        // Before the first render both metrics are zero — a safe floor.
+        assert_eq!(clamp_scroll(PAGE_SCROLL_LINES, 0, 0), 0);
+    }
+
+    #[test]
+    fn test_clamp_scroll_first_page_up_moves_viewport() {
+        // Backstop for the UI-SPEC long-document row: after repeated PageDown
+        // past the end, the *first* PageUp must move the viewport.
+        let mut offset = 0u16;
+        for _ in 0..10 {
+            offset = clamp_scroll(offset.saturating_add(PAGE_SCROLL_LINES), 100, 30);
+        }
+        assert_eq!(offset, 70);
+
+        let after_page_up = offset.saturating_sub(PAGE_SCROLL_LINES);
+        assert_eq!(after_page_up, 50);
+        assert!(after_page_up < offset);
     }
 }
