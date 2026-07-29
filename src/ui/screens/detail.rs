@@ -60,6 +60,11 @@ pub struct DetailScreen {
     browser_viewport: Cell<ViewportMetrics>,
     /// Last-rendered viewport metrics for the Archive file view.
     archive_viewport: Cell<ViewportMetrics>,
+    /// Last-rendered viewport metrics for the generic text panes — the Phases
+    /// and Roadmap tabs, the only two sub-views that reach the `_ =>` scroll
+    /// fallback. Same interior-mutability reason as the two Cells above
+    /// (plan 14-04 decision GD-01, closing code review IN-07 / CD-03).
+    generic_viewport: Cell<ViewportMetrics>,
 }
 
 impl DetailScreen {
@@ -69,6 +74,7 @@ impl DetailScreen {
             scroll_offset: 0,
             browser_viewport: Cell::default(),
             archive_viewport: Cell::default(),
+            generic_viewport: Cell::default(),
         }
     }
 }
@@ -634,7 +640,13 @@ impl Screen for DetailScreen {
                         ctx.needs_redraw = true;
                     }
                     _ => {
-                        self.scroll_offset = self.scroll_offset.saturating_add(1);
+                        // Phases and Roadmap: add the delta, then clamp.
+                        let vp = self.generic_viewport.get();
+                        self.scroll_offset = clamp_scroll(
+                            self.scroll_offset.saturating_add(1),
+                            vp.total_lines,
+                            vp.visible_height,
+                        );
                         ctx.needs_redraw = true;
                     }
                 }
@@ -735,7 +747,12 @@ impl Screen for DetailScreen {
                         ctx.needs_redraw = true;
                     }
                     _ => {
-                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                        // Phases and Roadmap: clamp FIRST, subtract second —
+                        // same load-bearing order as the file-view siblings.
+                        let vp = self.generic_viewport.get();
+                        self.scroll_offset =
+                            clamp_scroll(self.scroll_offset, vp.total_lines, vp.visible_height)
+                                .saturating_sub(1);
                         ctx.needs_redraw = true;
                     }
                 }
@@ -870,7 +887,13 @@ impl Screen for DetailScreen {
                         ctx.needs_redraw = true;
                     }
                     _ => {
-                        self.scroll_offset = self.scroll_offset.saturating_add(PAGE_SCROLL_LINES);
+                        // Phases and Roadmap: add the delta, then clamp.
+                        let vp = self.generic_viewport.get();
+                        self.scroll_offset = clamp_scroll(
+                            self.scroll_offset.saturating_add(PAGE_SCROLL_LINES),
+                            vp.total_lines,
+                            vp.visible_height,
+                        );
                         ctx.needs_redraw = true;
                     }
                 }
@@ -964,7 +987,12 @@ impl Screen for DetailScreen {
                         ctx.needs_redraw = true;
                     }
                     _ => {
-                        self.scroll_offset = self.scroll_offset.saturating_sub(PAGE_SCROLL_LINES);
+                        // Phases and Roadmap: clamp FIRST, subtract second —
+                        // same load-bearing order as the file-view siblings.
+                        let vp = self.generic_viewport.get();
+                        self.scroll_offset =
+                            clamp_scroll(self.scroll_offset, vp.total_lines, vp.visible_height)
+                                .saturating_sub(PAGE_SCROLL_LINES);
                         ctx.needs_redraw = true;
                     }
                 }
@@ -2109,6 +2137,12 @@ impl DetailScreen {
         // Clamp scroll so content can't scroll past the end
         let content_height = lines.len() as u16;
         let viewport_height = area.height.saturating_sub(2); // borders
+
+        // Record for the `_ =>` scroll handlers, which cannot see this pass.
+        self.generic_viewport.set(ViewportMetrics {
+            total_lines: content_height,
+            visible_height: viewport_height,
+        });
         let max_scroll = content_height.saturating_sub(viewport_height);
         let clamped_offset = self.scroll_offset.min(max_scroll);
 
@@ -2205,6 +2239,11 @@ impl DetailScreen {
                 3 + (state.phases.len() as u16 - 1) * phase_block_h
             };
             let viewport_h = roadmap_area.height;
+            // Record for the `_ =>` scroll handlers, which cannot see this pass.
+            self.generic_viewport.set(ViewportMetrics {
+                total_lines: total_content,
+                visible_height: viewport_h,
+            });
             let max_scroll = total_content.saturating_sub(viewport_h);
             let clamped_offset = self.scroll_offset.min(max_scroll);
 
@@ -5092,5 +5131,70 @@ mod tests {
             .browser_file_content = None;
         press(&mut screen, &mut ctx, KeyCode::PageUp);
         assert_eq!(browse_offset(&ctx), 0);
+    }
+
+    // --- CD-03 / IN-07 closure: the generic `_ =>` fallback ---------------
+    //
+    // Reached by exactly two sub-views — PhaseList and RoadmapViz. Every other
+    // sub-view has an explicit match arm. See plan 14-04 decision GD-01, which
+    // corrects CD-03's "seven non-file tabs" cost estimate.
+
+    /// A DetailScreen and AppContext parked on a tab that reaches the generic
+    /// `_ =>` scroll fallback, with recorded metrics and a stored offset.
+    fn generic_fixture(
+        total_lines: u16,
+        visible_height: u16,
+        stored_offset: u16,
+    ) -> (DetailScreen, AppContext) {
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        screen.generic_viewport.set(ViewportMetrics {
+            total_lines,
+            visible_height,
+        });
+        screen.scroll_offset = stored_offset;
+
+        let mut ctx = test_ctx();
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::PhaseList);
+
+        (screen, ctx)
+    }
+
+    #[test]
+    fn test_generic_page_up_clamps_stale_offset() {
+        // Same defect and same fix shape as the file views: max_scroll is 40,
+        // so clamp-then-subtract yields 40 - 20 = 20.
+        let (mut screen, mut ctx) = generic_fixture(100, 60, 90);
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(screen.scroll_offset, 20);
+        assert!(screen.scroll_offset < 100 - 60);
+
+        // The Roadmap tab reaches the same arm.
+        let (mut screen, mut ctx) = generic_fixture(100, 60, 90);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::RoadmapViz);
+        press(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.scroll_offset, 39);
+    }
+
+    #[test]
+    fn test_generic_page_down_clamps_at_content_end() {
+        // PageDown stops at the content end and stays there.
+        let (mut screen, mut ctx) = generic_fixture(100, 60, 30);
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(screen.scroll_offset, 40);
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(screen.scroll_offset, 40);
+
+        // Down is clamped at the same bound.
+        press(&mut screen, &mut ctx, KeyCode::Down);
+        assert_eq!(screen.scroll_offset, 40);
+
+        // A document shorter than the viewport never scrolls at all.
+        let (mut screen, mut ctx) = generic_fixture(30, 30, 0);
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(screen.scroll_offset, 0);
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(screen.scroll_offset, 0);
     }
 }
