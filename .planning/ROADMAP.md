@@ -253,7 +253,33 @@ phase's scope.
   - The lock must be `flock(2)`, never a PID file or in-memory flag. Opt-in must be a capability type (`DrivableProject`) constructible only from a validated opt-in record, never a bool checked at scattered call sites
 
 **Research**: skip — process-group signal handling and `flock` are standard Unix patterns, corroborated across all four research documents
-**Plans**: TBD
+**Plans**: 7 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 17-01-PLAN.md — Tracer: the `drive` subcommand runs one gated, journaled GSD command end-to-end; `DriverOptIn` record, `DrivableProject::from_registry`, and the mechanical spawn-seam guard
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 17-02-PLAN.md — CTRL-05: `flock(2)` on a held descriptor, holder metadata a loser can read, and the contention proof
+- [ ] 17-03-PLAN.md — CTRL-03: config schema v2, a migration that cannot silently enrol, `driver_max_concurrent`, and the cross-project isolation proof
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 17-04-PLAN.md — CTRL-02: the three-section dry-run (command sequence, working-tree diffstat, locally computed push refspecs) with the reflog-equality and tripwire proofs
+
+**Wave 4** *(blocked on Wave 3)*
+
+- [ ] 17-05-PLAN.md — CTRL-04: detached spawn with `kill_on_drop(false)`, the `/proc` pid+cmdline liveness probe, zero-write reconciliation on the existing scan points, and the concurrency cap
+
+**Wave 5** *(blocked on Wave 4)*
+
+- [ ] 17-06-PLAN.md — CTRL-01: the two-layer kill switch reusing Phase 15's group teardown, both reaping arms, and the 15-second grandchild-and-zombie proof
+
+**Wave 6** *(blocked on Wave 5)*
+
+- [ ] 17-07-PLAN.md — Three dashboard keys and one confirmation, the two Phase 16 carry-forwards (cursor pruning, cross-batch sequence gaps), and the phase gate
 
 ### Phase 18: Driver Tab, Live Watch & Durable Injection
 
