@@ -325,7 +325,10 @@ impl App {
             Action::Resize => {
                 self.needs_redraw = true;
             }
-            Action::FileChanged { project_path } => {
+            Action::FileChanged {
+                project_path,
+                changed_path: _,
+            } => {
                 // Find the alias matching this project path
                 let alias = self
                     .ctx
@@ -453,6 +456,12 @@ impl App {
                                                 .parent()
                                                 .unwrap()
                                                 .to_path_buf(),
+                                            // The `.planning` directory itself
+                                            // is what was just observed. It
+                                            // classifies as `Planning`, which
+                                            // is the re-parse this poll exists
+                                            // to trigger.
+                                            changed_path: planning_poll.clone(),
                                         });
                                         break;
                                     }
@@ -502,6 +511,11 @@ impl App {
                 cache.archive_loading = false;
                 self.needs_redraw = true;
             }
+            // Placeholder so this commit builds. The producer
+            // (`schedule_journal_tail`) and this arm's real body — the cursor
+            // advance and the sequence-gap diagnostic — land together in the
+            // next commit; nothing emits this variant yet.
+            Action::DriverJournalAppended { .. } => {}
         }
     }
 

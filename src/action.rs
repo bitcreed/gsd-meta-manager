@@ -7,8 +7,19 @@ pub enum Action {
     Tick,
     RawKey(KeyEvent),
     Resize,
+    /// A watched path under a project's `.planning/` changed.
+    ///
+    /// Both fields are needed and neither is redundant (D-09):
+    ///
+    /// * `project_path` is the directory containing `.planning/`, and is what
+    ///   the alias lookup in `app.rs` keys on.
+    /// * `changed_path` is the individual path that changed, and is the input
+    ///   to `journal::classify_change`. Without it the handler cannot tell a
+    ///   driver journal append from a `STATE.md` write, and every append pays
+    ///   for a full `parse_project_state` (OBS-06).
     FileChanged {
         project_path: std::path::PathBuf,
+        changed_path: std::path::PathBuf,
     },
     CreateProjectResult {
         alias: String,
@@ -41,5 +52,26 @@ pub enum Action {
         alias: String,
         milestone: String,
         data: crate::archive::MilestoneArchive,
+    },
+    /// One byte-offset tail of a run journal completed (D-12).
+    ///
+    /// The records travel in a `Vec` rather than by value, and that is a
+    /// deliberate sizing choice rather than a habit: a `Vec` is a fixed 24
+    /// bytes regardless of what it holds, so this variant is 24 + 24 + 24 + 8
+    /// = 80 bytes. RESEARCH §8.3 measured `Action` at 120 bytes and measured
+    /// `clippy::large_enum_variant` as firing on a 200-byte *difference*
+    /// between the largest and second-largest variants — so **nothing here
+    /// needs boxing** and nothing should be boxed reflexively. (The one
+    /// `Box` in this file, on `ProjectStateLoaded`, is there because
+    /// `ProjectState` really is 360 bytes.)
+    ///
+    /// Every field is plain data — `String`, `Vec`, and a cursor of `u64` —
+    /// so `Action` stays `Clone` and no file handle or join handle leaks into
+    /// a message type (D-20).
+    DriverJournalAppended {
+        alias: String,
+        run_id: String,
+        records: Vec<crate::journal::reader::JournalRecord>,
+        cursor: crate::journal::reader::TailCursor,
     },
 }
