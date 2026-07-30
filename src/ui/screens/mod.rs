@@ -409,6 +409,22 @@ pub struct ProjectViewCache {
     /// `inbox.jsonl` and the ids present in each journal kind, which is what
     /// makes STEER-03 hold across a restart with no extra persisted state.
     pub driver_inbox: Vec<crate::journal::inbox::InboxMessage>,
+    /// This project's runs on disk, **newest first** (OBS-05).
+    ///
+    /// Populated by `App::schedule_run_list_scan` from
+    /// [`crate::journal::list_runs`], which reads each run's small committed
+    /// `run.json` and never the journal beside it — so a project holding the
+    /// full retention history costs the same to list as one with a single run.
+    /// The order is [`crate::journal::sort_run_summaries_newest_first`]'s:
+    /// lexicographic-descending on the run id, which is chronological because
+    /// `new_run_id`'s format makes byte order time order.
+    ///
+    /// Plain data, and it lives here rather than in a sibling map on
+    /// `AppContext` for the reason the four fields above do: this struct is
+    /// `#[derive(Default)]`, so the field is additive with zero constructor
+    /// churn, while an `AppContext` field costs an edit at five construction
+    /// sites.
+    pub driver_runs: Vec<crate::journal::RunSummary>,
 }
 
 pub struct AppContext {

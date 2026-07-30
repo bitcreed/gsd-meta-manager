@@ -255,30 +255,30 @@ pub enum Action {
         id: String,
         error: Option<String>,
     },
-    /// The inbox for one alias's selected run was read off disk (STEER-02).
+    /// One alias's runs on disk, and the inbox for its selected run (OBS-05,
+    /// STEER-02).
     ///
-    /// The payload is the **whole** inbox rather than a delta, for the same
-    /// reason [`Action::RunsReconciled`] carries the whole scan: the read is
-    /// authoritative, and a message that is no longer in the file is expressed
-    /// by its absence and by nothing else.
+    /// Both payloads are **whole** rather than deltas, for the same reason
+    /// [`Action::RunsReconciled`] carries the whole scan: each read is
+    /// authoritative, and a run directory or a message that is no longer on
+    /// disk is expressed by its absence and by nothing else.
+    ///
+    /// `runs` comes from [`crate::journal::list_runs`], already sorted newest
+    /// first. Each [`RunSummary`](crate::journal::RunSummary) is read from that
+    /// run's small committed `run.json` and **never from the journal beside
+    /// it**, so listing a project holding the full retention history costs the
+    /// same as listing one with a single run.
     ///
     /// A `Vec` is a fixed 24 bytes regardless of what it holds, so this variant
-    /// is 48 bytes and needs no boxing (RESEARCH §8.3 measured
+    /// is 72 bytes and needs no boxing (RESEARCH §8.3 measured
     /// `clippy::large_enum_variant` firing on a ~200-byte *difference*). Every
     /// field is plain data, so `Action` stays `Clone` and **no file handle or
     /// join handle leaks into a message type** (D-20) — which matters
     /// especially here, because the producer is a `spawn_blocking` task that
     /// really does hold an open file (D-28) and must drop it before sending.
-    ///
-    /// **Deliberately missing: `runs: Vec<crate::journal::RunSummary>`.**
-    /// `RunSummary` is plan 18-03's deliverable, and 18-03 executed as a
-    /// wave-2 sibling of 18-04 in a separate worktree — the type did not exist
-    /// in this plan's tree, so a field naming it could not compile and every
-    /// gate in this plan would have failed on it. Plan 18-05, which owns the
-    /// handler and runs in wave 3 with both merged, adds the field and the
-    /// matching `ProjectViewCache::driver_runs`. This note is the seam.
     DriverRunsListed {
         alias: String,
+        runs: Vec<crate::journal::RunSummary>,
         inbox: Vec<crate::journal::inbox::InboxMessage>,
     },
     /// A dry-run report was built for `alias` and is ready to show (D-26).
@@ -354,6 +354,7 @@ mod tests {
 
         let listed = Action::DriverRunsListed {
             alias: "proj".to_string(),
+            runs: Vec::new(),
             inbox: Vec::new(),
         };
         assert!(matches!(listed.clone(), Action::DriverRunsListed { .. }));
