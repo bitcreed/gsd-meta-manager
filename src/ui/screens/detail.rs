@@ -45,6 +45,34 @@ pub(super) fn clamp_scroll(offset: u16, total_lines: u16, visible_height: u16) -
     offset.min(total_lines.saturating_sub(visible_height))
 }
 
+/// The largest offset the last render pass could display: the tail.
+///
+/// `u16::MAX` means *"as far down as this pane goes"*, and [`clamp_scroll`]
+/// resolves it. Written this way on purpose: spelling
+/// `total_lines - visible_height` out a second time is precisely how UIFIX-04
+/// would come back in a new place, and every caller that needs the tail — the
+/// Driver pane's renderer, its `PageDown` arm and its `G` arm — goes through
+/// this one function and therefore through the one clamp formula.
+pub(super) fn tail_offset(vp: ViewportMetrics) -> u16 {
+    clamp_scroll(u16::MAX, vp.total_lines, vp.visible_height)
+}
+
+/// The Driver output pane's scroll offset as a key press must see it.
+///
+/// **While the follow bit is set the stored offset is stale by design**: the
+/// pane renders the tail, whatever the tail currently is, so a key press has to
+/// start from the tail rather than from the number parked in the cache. Both
+/// branches resolve through [`clamp_scroll`] against the metrics the render pass
+/// recorded, so the up-direction arms below can clamp **first** and subtract
+/// second without a second formula existing anywhere (UIFIX-04, D-19).
+pub(super) fn driver_offset_now(stored: u16, following: bool, vp: ViewportMetrics) -> u16 {
+    if following {
+        tail_offset(vp)
+    } else {
+        clamp_scroll(stored, vp.total_lines, vp.visible_height)
+    }
+}
+
 /// How many tabs the detail view has, including the Driver tab at index 10.
 pub(crate) const TAB_COUNT: usize = 11;
 
@@ -297,6 +325,51 @@ impl DetailScreen {
             generic_viewport: Cell::default(),
             driver_viewport: Cell::default(),
         }
+    }
+
+    /// Move the Driver tab's run selection by `delta`, clamped to the list.
+    ///
+    /// **Selecting a different run resets the output pane** — the offset goes
+    /// back to the tail and the follow bit comes back on (D-19) — and
+    /// reschedules the run-list scan, because the inbox and the journal the scan
+    /// reads are the *selected* run's. Leaving the previous run's messages under
+    /// a new selection would attribute one run's steering history to another,
+    /// which is the same error `DriverRunTally`'s run id exists to prevent.
+    ///
+    /// Extracted rather than inlined twice because `j`/Down and `k`/Up differ
+    /// only in the sign, and two copies of a clamp are two things to keep in
+    /// agreement.
+    fn move_driver_selection(&self, ctx: &mut AppContext, delta: isize) {
+        let len = ctx
+            .view_cache
+            .get(&self.alias)
+            .map_or(0, |cache| cache.driver_runs.len());
+        let mut moved = false;
+        if len > 0 {
+            let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+            let last = len - 1;
+            let next = if delta < 0 {
+                cache.driver_selected_run.saturating_sub(delta.unsigned_abs())
+            } else {
+                cache
+                    .driver_selected_run
+                    .saturating_add(delta as usize)
+                    .min(last)
+            }
+            .min(last);
+            if next != cache.driver_selected_run {
+                cache.driver_selected_run = next;
+                cache.driver_scroll_offset = 0;
+                cache.driver_follow = true;
+                moved = true;
+            }
+        }
+        if moved {
+            if let Some(path) = ctx.config.projects.get(&self.alias).map(|p| p.path.clone()) {
+                ctx.schedule_run_list_scan(&self.alias, &path);
+            }
+        }
+        ctx.needs_redraw = true;
     }
 }
 
@@ -890,6 +963,15 @@ impl Screen for DetailScreen {
                         }
                         ctx.needs_redraw = true;
                     }
+                    // `j`/Down move the **run selection**, matching the Pipeline
+                    // tab exactly. The output pane is scrolled with
+                    // PageUp/PageDown and there is deliberately no pane-focus
+                    // mode: the pane's default is to follow its tail, so
+                    // scrolling is the exception rather than a second mode the
+                    // user has to track.
+                    DetailSubView::Driver => {
+                        self.move_driver_selection(ctx, 1);
+                    }
                     _ => {
                         // Phases and Roadmap: add the delta, then clamp.
                         let vp = self.generic_viewport.get();
@@ -996,6 +1078,10 @@ impl Screen for DetailScreen {
                             }
                         }
                         ctx.needs_redraw = true;
+                    }
+                    // The run selection again — see the `j`/Down sibling.
+                    DetailSubView::Driver => {
+                        self.move_driver_selection(ctx, -1);
                     }
                     _ => {
                         // Phases and Roadmap: clamp FIRST, subtract second —
@@ -1137,6 +1223,25 @@ impl Screen for DetailScreen {
                         }
                         ctx.needs_redraw = true;
                     }
+                    // The Driver output pane: **add the page step, THEN clamp**
+                    // — the same order as every sibling above, and it was a
+                    // shipped bug in the other direction (UIFIX-04).
+                    //
+                    // Reaching the bottom re-arms the follow bit, because
+                    // reaching the bottom *is* the request to follow (D-19).
+                    DetailSubView::Driver => {
+                        let vp = self.driver_viewport.get();
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        let from =
+                            driver_offset_now(cache.driver_scroll_offset, cache.driver_follow, vp);
+                        cache.driver_scroll_offset = clamp_scroll(
+                            from.saturating_add(PAGE_SCROLL_LINES),
+                            vp.total_lines,
+                            vp.visible_height,
+                        );
+                        cache.driver_follow = cache.driver_scroll_offset >= tail_offset(vp);
+                        ctx.needs_redraw = true;
+                    }
                     _ => {
                         // Phases and Roadmap: add the delta, then clamp.
                         let vp = self.generic_viewport.get();
@@ -1235,6 +1340,24 @@ impl Screen for DetailScreen {
                                 .saturating_sub(PAGE_SCROLL_LINES);
                             }
                         }
+                        ctx.needs_redraw = true;
+                    }
+                    // The Driver output pane: **clamp FIRST, subtract second.**
+                    // The reverse order lands a stale-high offset exactly on
+                    // `max_scroll` — the value the renderer was already
+                    // displaying — so the first press would not visibly move the
+                    // viewport (UIFIX-04 / WR-02). `driver_offset_now` performs
+                    // the clamp for both the following and the scrolled case.
+                    //
+                    // **Any upward scroll clears the follow bit**, automatically
+                    // and without a key of its own (D-19).
+                    DetailSubView::Driver => {
+                        let vp = self.driver_viewport.get();
+                        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                        cache.driver_scroll_offset =
+                            driver_offset_now(cache.driver_scroll_offset, cache.driver_follow, vp)
+                                .saturating_sub(PAGE_SCROLL_LINES);
+                        cache.driver_follow = false;
                         ctx.needs_redraw = true;
                     }
                     _ => {
@@ -1952,6 +2075,33 @@ impl Screen for DetailScreen {
                     }
                     ctx.needs_redraw = true;
                 }
+                ScreenAction::None
+            }
+            // `f`: toggle the output pane's follow bit (Driver tab only).
+            //
+            // Turning it **on** jumps to the tail, which is the only thing
+            // "follow" can mean; turning it off leaves the viewport exactly
+            // where it is, so the key never moves the text out from under the
+            // reader (D-19).
+            KeyCode::Char('f') if current_view == DetailSubView::Driver => {
+                let vp = self.driver_viewport.get();
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                if cache.driver_follow {
+                    cache.driver_scroll_offset = tail_offset(vp);
+                    cache.driver_follow = false;
+                } else {
+                    cache.driver_follow = true;
+                }
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+            // `G`: jump to the tail **and** re-enable follow (Driver tab only).
+            KeyCode::Char('G') if current_view == DetailSubView::Driver => {
+                let vp = self.driver_viewport.get();
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                cache.driver_scroll_offset = tail_offset(vp);
+                cache.driver_follow = true;
+                ctx.needs_redraw = true;
                 ScreenAction::None
             }
             KeyCode::Char('e') => {
@@ -5753,6 +5903,167 @@ mod tests {
         let (mut screen, mut ctx) = archive_fixture(100, 60, 90);
         press(&mut screen, &mut ctx, KeyCode::Char('k'));
         assert_eq!(archive_offset(&ctx), 39);
+    }
+
+    // ── The Driver output pane: the same invariant in its newest place ─────
+    //
+    // Every test below drives the real `handle_key`, following the lesson
+    // recorded above: `clamp_scroll` was always correct and the up-direction
+    // handlers simply never called it, so a test that computes the arithmetic
+    // itself cannot see the defect it is meant to guard against.
+
+    /// A DetailScreen and AppContext parked on the Driver tab, with the given
+    /// recorded output-pane metrics, stored offset and follow bit.
+    fn driver_fixture(
+        total_lines: u16,
+        visible_height: u16,
+        stored_offset: u16,
+        following: bool,
+    ) -> (DetailScreen, AppContext) {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        screen.driver_viewport.set(ViewportMetrics {
+            total_lines,
+            visible_height,
+        });
+
+        let mut ctx = test_ctx();
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Driver);
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        cache.driver_scroll_offset = stored_offset;
+        cache.driver_follow = following;
+
+        (screen, ctx)
+    }
+
+    fn driver_offset(ctx: &AppContext) -> u16 {
+        ctx.view_cache[TEST_ALIAS].driver_scroll_offset
+    }
+
+    fn driver_following(ctx: &AppContext) -> bool {
+        ctx.view_cache[TEST_ALIAS].driver_follow
+    }
+
+    fn test_run(run_id: &str) -> crate::journal::RunSummary {
+        crate::journal::RunSummary {
+            run_id: run_id.to_string(),
+            started_at: "2026-07-29T21:40:00Z".to_string(),
+            ended_at: None,
+            goal: String::new(),
+            gsd_command: "/gsd:progress".to_string(),
+            outcome: None,
+        }
+    }
+
+    #[test]
+    fn driver_page_down_from_the_tail_clamps_and_does_not_overshoot() {
+        // 100 lines in a 30-row body → max_scroll = 70.
+        let (mut screen, mut ctx) = driver_fixture(100, 30, 70, false);
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(driver_offset(&ctx), 70);
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(driver_offset(&ctx), 70, "repeated PageDown must be idempotent");
+    }
+
+    #[test]
+    fn driver_page_up_from_zero_stays_at_zero() {
+        let (mut screen, mut ctx) = driver_fixture(100, 30, 0, false);
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(driver_offset(&ctx), 0);
+
+        // And the pre-first-render floor: both metrics still zero, no underflow.
+        let (mut screen, mut ctx) = driver_fixture(0, 0, 0, false);
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(driver_offset(&ctx), 0);
+    }
+
+    #[test]
+    fn driver_page_up_clamps_first_and_lands_below_max_scroll() {
+        // The buffer grew and the body is 60 rows: max_scroll is 40 while the
+        // stored offset is still 90. Clamp-then-subtract yields 20.
+        // Subtract-then-clamp would yield exactly 40 — the value the renderer
+        // was already displaying — so the first press would not visibly move the
+        // viewport. That is UIFIX-04, in the pane this plan adds.
+        let max_scroll = 100u16 - 60;
+        let (mut screen, mut ctx) = driver_fixture(100, 60, 90, false);
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(driver_offset(&ctx), 20);
+        assert!(driver_offset(&ctx) < max_scroll);
+    }
+
+    #[test]
+    fn an_upward_scroll_clears_the_driver_follow_bit() {
+        // Following, so the stored offset is stale by design: the press has to
+        // start from the tail (70) rather than from the parked 0.
+        let (mut screen, mut ctx) = driver_fixture(100, 30, 0, true);
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(driver_offset(&ctx), 50);
+        assert!(
+            !driver_following(&ctx),
+            "any upward scroll must clear the follow bit, with no key of its own"
+        );
+    }
+
+    #[test]
+    fn page_down_reaching_the_tail_re_arms_driver_follow() {
+        let (mut screen, mut ctx) = driver_fixture(100, 30, 55, false);
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(driver_offset(&ctx), 70);
+        assert!(
+            driver_following(&ctx),
+            "reaching the bottom IS the request to follow"
+        );
+
+        // A PageDown that does NOT reach the tail leaves the bit alone.
+        let (mut screen, mut ctx) = driver_fixture(100, 30, 0, false);
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(driver_offset(&ctx), 20);
+        assert!(!driver_following(&ctx));
+    }
+
+    #[test]
+    fn f_toggles_the_driver_follow_bit() {
+        let (mut screen, mut ctx) = driver_fixture(100, 30, 10, false);
+        press(&mut screen, &mut ctx, KeyCode::Char('f'));
+        assert!(driver_following(&ctx));
+
+        // Turning it off leaves the viewport where the pane was rendering it —
+        // the tail — rather than snapping back to a stale stored number.
+        press(&mut screen, &mut ctx, KeyCode::Char('f'));
+        assert!(!driver_following(&ctx));
+        assert_eq!(driver_offset(&ctx), 70);
+    }
+
+    #[test]
+    fn g_jumps_to_the_driver_tail_and_re_enables_follow() {
+        let (mut screen, mut ctx) = driver_fixture(100, 30, 0, false);
+        press(&mut screen, &mut ctx, KeyCode::Char('G'));
+        assert_eq!(driver_offset(&ctx), 70);
+        assert!(driver_following(&ctx));
+    }
+
+    #[test]
+    fn changing_the_selected_run_resets_the_offset_and_the_follow_bit() {
+        let (mut screen, mut ctx) = driver_fixture(100, 30, 45, false);
+        {
+            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+            cache.driver_runs = vec![test_run("2026-07-29T21-40-00Z-3f2a"), test_run("2026-07-28T09-00-00Z-aa11")];
+        }
+
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 1);
+        assert_eq!(driver_offset(&ctx), 0);
+        assert!(
+            driver_following(&ctx),
+            "a different run is a different journal: the pane goes back to its tail"
+        );
+
+        // And the selection clamps at both ends of the list.
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 1);
+        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert_eq!(ctx.view_cache[TEST_ALIAS].driver_selected_run, 0);
     }
 
     #[test]

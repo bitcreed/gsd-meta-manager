@@ -37,8 +37,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use super::detail::{clamp_scroll, ViewportMetrics};
-use super::{sanitize_render_line, AppContext, ProjectViewCache};
+use super::detail::{clamp_scroll, tail_offset, ViewportMetrics};
+use super::{
+    sanitize_render_line, AppContext, DriverLineKind, DriverOutput, DriverOutputLine,
+    ProjectViewCache, DRIVER_OUTPUT_RING_LINES,
+};
 use crate::driver::reconcile::RunVerdict;
 use crate::journal::RunSummary;
 
@@ -108,6 +111,27 @@ const GLYPH_FAILED: &str = "\u{2717}";
 /// `■` — the user stopped it.
 const GLYPH_KILLED: &str = "\u{25A0}";
 
+// ── Output-pane markers (fixed `&'static str`, `\u{…}` per PATTERNS S7) ─────
+//
+// A two-cell left marker column, and the same mechanism argument as the run
+// glyphs above: no byte read off disk can be assigned to one of these, so agent
+// prose cannot reach the marker column (D-13).
+
+/// The common case — assistant, user, turn-boundary and unparseable streams —
+/// gets **no** marker, so injections and diagnostics stand out against it.
+const MARKER_OUTPUT: &str = "  ";
+/// `· ` — the agent's stderr: present, and deliberately secondary.
+const MARKER_STDERR: &str = "\u{00B7} ";
+/// `» ` — a human-injected message. The one Cyan use in this pane.
+const MARKER_INJECTION: &str = "\u{00BB} ";
+/// `! ` — a diagnostic. **Never silently swallowed**: a pane that loses lines
+/// without saying so is exactly the "looks done but isn't" failure this phase
+/// enumerates by name.
+const MARKER_DIAGNOSTIC: &str = "! ";
+/// `= ` — the terminal record, in the terminal-state colour and BOLD. The
+/// visual full stop, and it renders last.
+const MARKER_TERMINAL: &str = "= ";
+
 // ── Copy (Copywriting Contract, exact strings) ─────────────────────────────
 
 /// The goal field for a run that was started without one.
@@ -120,6 +144,37 @@ const NO_RUNS_OPTED_IN: &str = "No runs yet for";
 const NO_RUNS_OPTED_IN_NEXT: &str = "Press [s] to start one.";
 const NOT_OPTED_IN_NEXT: &str = "Press [o] on the dashboard to allow it.";
 const NO_JOURNAL_ENTRIES: &str = "No journal entries yet.";
+
+/// The right-aligned indicator while the pane is following a live tail.
+const INDICATOR_FOLLOWING: &str = "[following]";
+
+/// The right-aligned indicator for a run this session did not spawn.
+///
+/// **It does not say "live"**, because there is nothing live about it: once the
+/// TUI exits, the child's stdout pipe is gone, so reattachment is read-only and
+/// journal-based (Phase 17 D-11).
+const INDICATOR_JOURNAL_ONLY: &str = "[journal only]";
+
+/// The largest scrolled-below count rendered as a figure; past it the indicator
+/// says `+999`, because the exact number stops carrying information long before
+/// then and a widening field would move the rule under the reader's eye.
+const SCROLLED_DISPLAY_MAX: usize = 999;
+
+/// The notice the pane's first row carries once the ring has dropped lines.
+///
+/// **Not cosmetic.** The buffer is bounded, so on a long run it *will* drop the
+/// beginning of the output; a pane that silently loses lines is the named
+/// "looks done but isn't" failure. The count is monotonic over the session, so
+/// the sentence stays true after any number of wraps.
+fn ring_overflow_notice(dropped: u64) -> String {
+    format!("\u{2026} {dropped} earlier lines dropped (buffer holds {DRIVER_OUTPUT_RING_LINES})")
+}
+
+/// The notice for a record cut at the per-record line cap.
+///
+/// One pathological record could otherwise flush the whole ring, so the cap
+/// exists — and saying that it fired is the other half of it.
+const RECORD_TRUNCATED_NOTICE: &str = "    \u{2026} record truncated";
 
 /// The mandatory honest note under the one-row step timeline.
 ///
@@ -716,7 +771,9 @@ fn render_run_detail(
             ))),
             chunks[0],
         );
-        render_output_section(frame, chunks[1], ctx, alias, cache, viewport);
+        render_output_section(
+            frame, chunks[1], ctx, alias, cache, summary, verdict, viewport,
+        );
         return;
     }
 
@@ -736,7 +793,9 @@ fn render_run_detail(
 
     render_pipeline_row(frame, chunks[1], inference);
     render_steps(frame, chunks[2], summary, verdict, turns);
-    render_output_section(frame, chunks[3], ctx, alias, cache, viewport);
+    render_output_section(
+        frame, chunks[3], ctx, alias, cache, summary, verdict, viewport,
+    );
 }
 
 /// The D-R-P-E-V pipeline row — **called, never re-implemented** (D-17).
@@ -858,50 +917,218 @@ fn steps_lines(
     lines
 }
 
-/// The output pane's section rule and, for now, its content.
+/// The right-aligned state of the output pane, as a word and a colour.
 ///
-/// **Plan 18-10 owns this pane's real rendering** — the follow bit and its
-/// indicator, the four-state injection widget, the per-kind marker column, the
-/// adopted-run notice and the ring-overflow affordances. What lands here is the
-/// section rule, the empty state this plan owns, and the buffered lines as plain
-/// text, plus the viewport capture the clamp ordering depends on.
+/// Four states, and each says something the others do not:
+///
+/// * **following** — the pane is live and pinned to the tail.
+/// * **scrolled +N** — the pane is live and the user has moved off the tail; `N`
+///   is how many buffered lines sit below the viewport. It deliberately does
+///   **not** say *paused*: `paused` already means *"a non-empty HANDOFF is
+///   present"* everywhere else in this tool, and spending the word on a scroll
+///   state would make the vocabulary lie.
+/// * **journal only** — this run started before the current TUI session. Its
+///   live output is gone and what is shown came off disk.
+/// * **ended HH:MM** — the run is over and the journal has stopped growing.
+///
+/// Adopted only qualifies an ended run: while an adopted run is still going its
+/// journal *is* being tailed, so the follow bit is meaningful and the pane's
+/// first row carries the provenance instead.
+pub fn follow_indicator(
+    live: bool,
+    following: bool,
+    below: usize,
+    ended_at: Option<&str>,
+    adopted: bool,
+) -> (String, Color) {
+    if live {
+        return if following {
+            (INDICATOR_FOLLOWING.to_string(), Color::Green)
+        } else if below > SCROLLED_DISPLAY_MAX {
+            (format!("[scrolled +{SCROLLED_DISPLAY_MAX}]"), Color::Yellow)
+        } else {
+            (format!("[scrolled +{below}]"), Color::Yellow)
+        };
+    }
+    if adopted {
+        return (INDICATOR_JOURNAL_ONLY.to_string(), Color::DarkGray);
+    }
+    match ended_at {
+        Some(ended_at) => {
+            let (_, time) = local_date_time(ended_at);
+            (format!("[ended {time}]"), Color::DarkGray)
+        }
+        // A run with no terminal record and no observation. Saying `[ended]`
+        // would assert a fact nothing on disk supports.
+        None => (INDICATOR_JOURNAL_ONLY.to_string(), Color::DarkGray),
+    }
+}
+
+/// The output pane's header: a DarkGray rule with the indicator on its right.
+///
+/// The rule is the pane's own row rather than the first line of the scrolling
+/// paragraph, so the indicator does not scroll away the moment it becomes
+/// interesting. At a width too narrow for both, the dashes give way first and
+/// the indicator is what survives.
+fn output_header_line(width: u16, indicator: &str, color: Color) -> Line<'static> {
+    let head = "\u{2500}\u{2500} output ";
+    let tail_cells = indicator.chars().count() + 4; // ` ` + indicator + ` ──`
+    let pad = usize::from(width)
+        .saturating_sub(head.chars().count())
+        .saturating_sub(tail_cells);
+    Line::from(vec![
+        Span::styled(
+            format!("{head}{}", "\u{2500}".repeat(pad)),
+            label_style(),
+        ),
+        Span::raw(" "),
+        Span::styled(indicator.to_string(), Style::default().fg(color)),
+        Span::styled(" \u{2500}\u{2500}", label_style()),
+    ])
+}
+
+/// One buffered line, with its two-cell marker in its own style.
+///
+/// The four visual classes are the UI-SPEC's event-kind table. `terminal_color`
+/// is the run's terminal-state colour, which is derived from evidence and never
+/// from the agent's prose (D-13) — see [`run_state_glyph`].
+fn output_line(line: &DriverOutputLine, terminal_color: Color) -> Line<'static> {
+    let injection_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let terminal_style = Style::default()
+        .fg(terminal_color)
+        .add_modifier(Modifier::BOLD);
+    let (marker, marker_style, text_style) = match line.kind {
+        DriverLineKind::Output => (MARKER_OUTPUT, Style::default(), Style::default()),
+        DriverLineKind::Stderr => (MARKER_STDERR, label_style(), label_style()),
+        DriverLineKind::Injection => (MARKER_INJECTION, injection_style, Style::default()),
+        DriverLineKind::Diagnostic => (
+            MARKER_DIAGNOSTIC,
+            Style::default().fg(Color::Yellow),
+            Style::default().fg(Color::Yellow),
+        ),
+        DriverLineKind::Terminal => (MARKER_TERMINAL, terminal_style, terminal_style),
+    };
+    Line::from(vec![
+        Span::styled(marker, marker_style),
+        Span::styled(line.text.clone(), text_style),
+    ])
+}
+
+/// The scrolling body of the output pane, as a pure function (S6).
+///
+/// Order, and every part of it is load-bearing:
+///
+/// 1. The **ring-overflow notice**, when the buffer has dropped lines. It is
+///    first because it describes what is missing from everything below it.
+/// 2. The buffered lines, in order, each with its marker — with the terminal
+///    record held back.
+/// 3. The **record-truncation notice**, when one record was cut at the
+///    per-record cap.
+/// 4. The terminal record, which renders **last**: the visual full stop.
+///
+/// A run whose journal has no records at all renders the pinned no-entries copy
+/// and nothing else.
+fn output_body_lines(output: Option<&DriverOutput>, terminal_color: Color) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    let Some(output) = output.filter(|output| !output.is_empty()) else {
+        lines.push(Line::from(Span::styled(
+            format!("  {NO_JOURNAL_ENTRIES}"),
+            label_style(),
+        )));
+        return lines;
+    };
+
+    if output.dropped() > 0 {
+        lines.push(Line::from(Span::styled(
+            ring_overflow_notice(output.dropped()),
+            muted_style(),
+        )));
+    }
+
+    let mut terminal: Vec<Line<'static>> = Vec::new();
+    for line in output.lines() {
+        match line.kind {
+            DriverLineKind::Terminal => terminal.push(output_line(line, terminal_color)),
+            _ => lines.push(output_line(line, terminal_color)),
+        }
+    }
+
+    if output.record_truncated() {
+        lines.push(Line::from(Span::styled(
+            RECORD_TRUNCATED_NOTICE,
+            muted_style(),
+        )));
+    }
+
+    lines.extend(terminal);
+    lines
+}
+
+/// The live output pane (OBS-04, OBS-05).
+///
+/// The viewer is the Browse file viewer's shape: build the whole `Vec<Line>`,
+/// take `total_lines` from **that vector** after it is fully built, record the
+/// metrics into the shared `Cell<ViewportMetrics>` during the render pass, and
+/// render `Paragraph::new(lines).scroll((offset, 0))` with **wrapping off** —
+/// `Wrap` breaks the `total_lines` ↔ offset correspondence the clamp depends on.
+///
+/// **The follow bit is resolved here and nowhere else.** While it is set the
+/// pane shows the tail, expressed as `u16::MAX` through the one shared
+/// [`clamp_scroll`]; a second `total_lines - visible_height` written out
+/// anywhere is how UIFIX-04 would come back in a new place (D-19).
+#[allow(clippy::too_many_arguments)]
 fn render_output_section(
     frame: &mut Frame,
     area: Rect,
     ctx: &AppContext,
     alias: &str,
     cache: Option<&ProjectViewCache>,
+    summary: &RunSummary,
+    verdict: Option<RunVerdict>,
     viewport: &Cell<ViewportMetrics>,
 ) {
-    let mut lines: Vec<Line<'static>> = vec![section_rule("output", area.width)];
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    let (rule_area, body_area) = (rows[0], rows[1]);
 
-    let buffered = ctx.driver_output.get(alias);
-    match buffered.filter(|output| !output.is_empty()) {
-        None => lines.push(Line::from(Span::styled(
-            format!("  {NO_JOURNAL_ENTRIES}"),
-            label_style(),
-        ))),
-        Some(output) => {
-            for line in output.lines() {
-                lines.push(Line::from(format!("  {}", line.text)));
-            }
-        }
-    }
+    let (_, _, terminal_color) = run_state_glyph(verdict, summary.outcome.as_deref());
+    let body = output_body_lines(ctx.driver_output.get(alias), terminal_color);
 
-    // The same `Cell<ViewportMetrics>` capture the Browse and Archive viewers
-    // use, feeding the same `clamp_scroll` formula — one formula, so the key
-    // handler and the renderer cannot drift apart (UIFIX-04).
-    let total_lines = lines.len() as u16;
-    viewport.set(ViewportMetrics {
+    // `total_lines` is taken **after** the vector is fully built, so the offset
+    // always clamps against what is actually rendered.
+    let total_lines = body.len() as u16;
+    let metrics = ViewportMetrics {
         total_lines,
-        visible_height: area.height,
-    });
-    let scroll = clamp_scroll(
-        cache.map_or(0, |c| c.driver_scroll_offset),
-        total_lines,
-        area.height,
+        visible_height: body_area.height,
+    };
+    viewport.set(metrics);
+
+    let following = cache.is_some_and(|c| c.driver_follow);
+    // `u16::MAX` means "the tail, whatever it is"; the shared clamp resolves it.
+    let requested = if following {
+        u16::MAX
+    } else {
+        cache.map_or(0, |c| c.driver_scroll_offset)
+    };
+    let scroll = clamp_scroll(requested, total_lines, body_area.height);
+    let below = usize::from(tail_offset(metrics).saturating_sub(scroll));
+
+    let live = matches!(verdict, Some(RunVerdict::Live));
+    let adopted = !ctx.session_spawned_runs.contains(&summary.run_id);
+    let (indicator, color) = follow_indicator(
+        live,
+        following,
+        below,
+        summary.ended_at.as_deref(),
+        adopted,
     );
-    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
+    frame.render_widget(
+        Paragraph::new(output_header_line(rule_area.width, &indicator, color)),
+        rule_area,
+    );
+    frame.render_widget(Paragraph::new(body).scroll((scroll, 0)), body_area);
 }
 
 /// A DarkGray section rule: `── name ─────…` padded to the pane width.
@@ -1126,6 +1353,127 @@ mod tests {
         assert_eq!(shown.chars().count(), 40);
         assert!(shown.starts_with('\u{2026}'), "{shown:?}");
         assert!(shown.ends_with("3f2a"), "{shown:?}");
+    }
+
+    // ── The live output pane (OBS-04, D-19) ────────────────────────────────
+
+    #[test]
+    fn an_empty_journal_renders_the_no_entries_copy() {
+        let rendered: String = output_body_lines(None, Color::Green).iter().map(text).collect();
+        assert!(rendered.contains(NO_JOURNAL_ENTRIES), "{rendered:?}");
+
+        // A buffer that exists but holds nothing is the same situation.
+        let empty = DriverOutput::default();
+        let rendered: String = output_body_lines(Some(&empty), Color::Green)
+            .iter()
+            .map(text)
+            .collect();
+        assert!(rendered.contains(NO_JOURNAL_ENTRIES), "{rendered:?}");
+    }
+
+    #[test]
+    fn a_buffer_that_dropped_lines_states_the_count_in_its_first_row() {
+        let mut output = DriverOutput::default();
+        for n in 0..(DRIVER_OUTPUT_RING_LINES + 5) {
+            output.push_record(DriverLineKind::Output, &format!("line {n}"));
+        }
+        assert_eq!(output.dropped(), 5, "the ring dropped what it was asked to");
+
+        let lines = output_body_lines(Some(&output), Color::Green);
+        let first = text(&lines[0]);
+        assert!(
+            first.contains("5 earlier lines dropped"),
+            "the drop count must be the FIRST row: {first:?}"
+        );
+        assert!(
+            first.contains(&DRIVER_OUTPUT_RING_LINES.to_string()),
+            "the notice names the capacity so the count is readable: {first:?}"
+        );
+    }
+
+    #[test]
+    fn a_diagnostic_record_renders_as_a_diagnostic_row() {
+        let mut output = DriverOutput::default();
+        output.push_record(DriverLineKind::Output, "ordinary output");
+        output.push_record(DriverLineKind::Stderr, "a warning on stderr");
+        output.push_record(DriverLineKind::Diagnostic, "journal gap: 3 record(s) not read");
+        output.push_record(DriverLineKind::Terminal, "run ended: succeeded_with_changes");
+
+        let lines = output_body_lines(Some(&output), Color::Green);
+        let rendered: Vec<String> = lines.iter().map(text).collect();
+
+        let diagnostic = lines
+            .iter()
+            .find(|line| text(line).contains("journal gap"))
+            .unwrap_or_else(|| panic!("the diagnostic was swallowed: {rendered:#?}"));
+        assert_eq!(diagnostic.spans[0].content.as_ref(), MARKER_DIAGNOSTIC);
+        assert_eq!(diagnostic.spans[0].style.fg, Some(Color::Yellow));
+        assert_eq!(diagnostic.spans[1].style.fg, Some(Color::Yellow));
+
+        // The four visual classes are actually distinct, and the terminal record
+        // is the visual full stop.
+        assert_eq!(lines[0].spans[0].content.as_ref(), MARKER_OUTPUT);
+        assert_eq!(lines[1].spans[0].content.as_ref(), MARKER_STDERR);
+        let last = lines.last().expect("a terminal row");
+        assert_eq!(last.spans[0].content.as_ref(), MARKER_TERMINAL);
+        assert!(text(last).contains("run ended"), "{:?}", text(last));
+        assert_eq!(last.spans[0].style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn a_truncated_record_says_so_rather_than_losing_the_lines_silently() {
+        let mut output = DriverOutput::default();
+        let giant = "row\n".repeat(super::super::DRIVER_OUTPUT_RECORD_MAX_LINES + 10);
+        output.push_record(DriverLineKind::Output, &giant);
+        assert!(output.record_truncated());
+
+        let rendered: String = output_body_lines(Some(&output), Color::Green)
+            .iter()
+            .map(text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("record truncated"), "{rendered}");
+    }
+
+    /// The four indicator states, each with its own word and colour — and the
+    /// scrolled state deliberately does not spend the word `paused`, which
+    /// already means "a non-empty HANDOFF is present" everywhere else.
+    #[test]
+    fn the_follow_indicator_says_which_of_the_four_states_the_pane_is_in() {
+        let (word, color) = follow_indicator(true, true, 0, None, false);
+        assert_eq!(word, INDICATOR_FOLLOWING);
+        assert_eq!(color, Color::Green);
+
+        let (word, color) = follow_indicator(true, false, 42, None, false);
+        assert_eq!(word, "[scrolled +42]");
+        assert_eq!(color, Color::Yellow);
+        assert!(!word.contains("paused"));
+
+        // A wildly scrolled pane stops widening the field.
+        let (word, _) = follow_indicator(true, false, 100_000, None, false);
+        assert_eq!(word, "[scrolled +999]");
+
+        let (word, color) = follow_indicator(false, false, 0, Some("2026-07-29T21:52:00Z"), false);
+        assert!(word.starts_with("[ended "), "{word:?}");
+        assert_eq!(color, Color::DarkGray);
+
+        let (word, color) = follow_indicator(false, false, 0, Some("2026-07-29T21:52:00Z"), true);
+        assert_eq!(word, INDICATOR_JOURNAL_ONLY);
+        assert_eq!(color, Color::DarkGray);
+    }
+
+    /// The header rule keeps the indicator at every width the pane can reach:
+    /// the dashes are what give way, never the state word.
+    #[test]
+    fn the_output_header_keeps_its_indicator_at_every_width() {
+        for width in [20u16, 39, 60, 80, 120] {
+            let rendered = text(&output_header_line(width, INDICATOR_FOLLOWING, Color::Green));
+            assert!(
+                rendered.contains(INDICATOR_FOLLOWING),
+                "the indicator was dropped at {width} columns: {rendered:?}"
+            );
+            assert!(rendered.starts_with("\u{2500}\u{2500} output"), "{rendered:?}");
+        }
     }
 
     // ── The reused pipeline row and the one-row step timeline (D-17, D-12) ──
