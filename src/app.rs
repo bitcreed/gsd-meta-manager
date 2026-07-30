@@ -1253,7 +1253,16 @@ impl App {
                 // The buffer for this alias, created on first append. The map is
                 // pruned in `prune_driver_maps` — see the negative
                 // carry-forward the phase discharges there.
+                //
+                // **Retargeted before the first push** (CR-02). The map is keyed
+                // by alias, so without this the ring outlives the run that
+                // filled it and run B's pane paints run A's output — including
+                // A's terminal record, which renders last and in B's colour, so
+                // a live run shows a previous run's success as its own visual
+                // full stop. This is the same guard `update_driver_tally`
+                // applies to the tally, at the same point in the same handler.
                 let output = self.ctx.driver_output.entry(key.0.clone()).or_default();
+                output.retarget(&key.1);
 
                 // The gap goes in FIRST and as a line the user can see. The
                 // records that follow are the ones that arrived; the gap is what
@@ -2713,6 +2722,59 @@ mod tests {
             "the previous run's cost must not carry over"
         );
         assert_eq!(tally.turn_boundaries, 0);
+    }
+
+    /// CR-02, at the handler that fills the ring.
+    ///
+    /// `driver_output` is keyed by **alias**, so one buffer serves every run a
+    /// project ever has. Without a retarget before the first push of each batch,
+    /// run A's lines — its `run ended:` terminal record above all, which the
+    /// pane deliberately renders LAST and in the *currently selected* run's
+    /// terminal colour — appear under run B's header as run B's own visual full
+    /// stop. That is the display disagreeing with the disk in the direction that
+    /// flatters the run.
+    #[tokio::test]
+    async fn a_batch_from_a_new_run_clears_the_previous_runs_lines_from_the_ring() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        app.update(Action::DriverJournalAppended {
+            alias: OBS_ALIAS.to_string(),
+            run_id: OBS_RUN.to_string(),
+            records: vec![
+                exec_event(1, "assistant", "run A was working"),
+                journal_record(2, "run_ended", &[("outcome", "succeeded".into())]),
+            ],
+            cursor: cursor_at(120, 2),
+        });
+        assert_eq!(buffered(&app, OBS_ALIAS).len(), 2);
+
+        const NEXT: &str = "2026-07-29T22-00-00Z-beef";
+        app.update(Action::DriverJournalAppended {
+            alias: OBS_ALIAS.to_string(),
+            run_id: NEXT.to_string(),
+            records: vec![exec_event(1, "assistant", "run B is working")],
+            cursor: cursor_at(20, 1),
+        });
+
+        let lines = buffered(&app, OBS_ALIAS);
+        assert_eq!(
+            lines,
+            vec![(
+                crate::ui::screens::DriverLineKind::Output,
+                "run B is working".to_string()
+            )],
+            "run B's ring holds run B's lines and nothing else; a surviving \
+             `run ended: succeeded` would render as run B's own ending"
+        );
+        assert_eq!(
+            app.ctx
+                .driver_output
+                .get(OBS_ALIAS)
+                .map(|output| output.run_id()),
+            Some(NEXT),
+            "and the buffer says which run it now speaks for"
+        );
     }
 
     #[tokio::test]

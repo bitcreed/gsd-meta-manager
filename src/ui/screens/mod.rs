@@ -175,12 +175,57 @@ pub struct DriverOutputLine {
 /// join handle** — so cloning it copies data and nothing else (D-20).
 #[derive(Debug, Default, Clone)]
 pub struct DriverOutput {
+    /// **Which run this ring is speaking for** (CR-02).
+    ///
+    /// The map is keyed by alias alone, so without this field the buffer
+    /// outlives the run it was filled for: run A finishes, run B starts in the
+    /// same project, and B's pane paints A's assistant output, A's diagnostics
+    /// and — worst — A's `run ended: succeeded_with_changes` terminal record,
+    /// which [`crate::ui::screens::driver`] deliberately renders **last** and in
+    /// the *currently selected* run's terminal colour. A live run would display
+    /// a previous run's success as its own visual full stop, which is the
+    /// display disagreeing with the disk in the direction that flatters the run.
+    /// `DriverRunTally` and `DriverRunJournal` both carry a run id for exactly
+    /// this reason; this is the one map that needed it and did not have it.
+    ///
+    /// Empty on a freshly defaulted buffer, which is a run id nothing can equal
+    /// — so the first [`retarget`](DriverOutput::retarget) always adopts.
+    run_id: String,
     lines: VecDeque<DriverOutputLine>,
     dropped: u64,
     record_truncated: bool,
 }
 
 impl DriverOutput {
+    /// A buffer that already knows which run it speaks for.
+    ///
+    /// The scan builds one of these off disk for a *named* run; the live tail
+    /// reaches its run id through [`retarget`](DriverOutput::retarget).
+    pub fn for_run(run_id: &str) -> Self {
+        Self {
+            run_id: run_id.to_string(),
+            ..Self::default()
+        }
+    }
+
+    /// Which run this buffer's lines came from.
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    /// Point the buffer at `run_id`, **clearing it if that is a different run**.
+    ///
+    /// Called before the first push of every tail batch, mirroring what
+    /// [`crate::app::update_driver_tally`] already does for the tally. Both
+    /// overflow signals reset with the lines: `dropped` and `record_truncated`
+    /// describe *this* buffer's shortfall, and carrying run A's dropped-line
+    /// count into run B reports one run's loss as another's.
+    pub fn retarget(&mut self, run_id: &str) {
+        if self.run_id != run_id {
+            self.clear();
+            self.run_id = run_id.to_string();
+        }
+    }
     /// Sanitise one journal record's text and append it, dropping the oldest
     /// lines while over [`DRIVER_OUTPUT_RING_LINES`].
     ///
@@ -241,7 +286,13 @@ impl DriverOutput {
     }
 
     /// Drop every buffered line and reset both overflow signals.
-    pub fn clear(&mut self) {
+    ///
+    /// **Private, and reached only through [`retarget`](DriverOutput::retarget)**
+    /// (CR-02, WR-09). While this was `pub` it had zero call sites in the whole
+    /// tree, and that absence *was* the stale-output defect. A public `clear`
+    /// invites a caller that empties the ring without moving the run id, which
+    /// leaves the buffer claiming a run whose lines it no longer holds.
+    fn clear(&mut self) {
         self.lines.clear();
         self.dropped = 0;
         self.record_truncated = false;
@@ -924,7 +975,7 @@ impl AppContext {
                         (Vec::new(), crate::journal::reader::ReadDiagnostics::default())
                     });
 
-                let mut output = DriverOutput::default();
+                let mut output = DriverOutput::for_run(&run_id);
                 // A gap goes in FIRST and as a line the user can see: it is what
                 // came before the records that follow and never will.
                 if !diagnostics.gaps.is_empty() {

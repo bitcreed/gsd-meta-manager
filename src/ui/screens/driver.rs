@@ -1698,18 +1698,34 @@ fn output_body_lines(
 /// output to another — the same error the run id inside `DriverRunTally` exists
 /// to prevent — so the choice is made by run id and by nothing else, and a
 /// journal that is about a different run is not shown at all.
+///
+/// **The ring is matched on its own run id, not on `observed_runs`** (CR-02).
+/// The reconciliation map answers "which run is this session tailing", which is
+/// a different question from "which run do these lines belong to" and stops
+/// being the same answer the moment a run ends: `reconcile_one` drops an ended
+/// run from the map while its lines are still the newest thing on the surface.
+/// [`DriverOutput::run_id`] is the buffer's own account of itself and cannot go
+/// stale relative to the lines beside it.
+///
+/// **The live ring is a preference, not a short-circuit** (WR-07). An empty ring
+/// falls through to the journal rather than returning `None`, because an adopted
+/// run — or any run after a TUI restart — has an empty ring until the first
+/// watcher event fires, and short-circuiting there paints "No journal entries
+/// yet." directly under the notice saying the journal on disk is what is being
+/// shown. The scan already read that journal whole for exactly this case.
 fn output_for_run<'a>(
     ctx: &'a AppContext,
     alias: &str,
     cache: Option<&'a ProjectViewCache>,
     run_id: &str,
 ) -> Option<&'a DriverOutput> {
-    let tailed = ctx
-        .observed_runs
+    let live = ctx
+        .driver_output
         .get(alias)
-        .is_some_and(|observed| observed.run_id == run_id);
-    if tailed {
-        return ctx.driver_output.get(alias);
+        .filter(|output| output.run_id() == run_id)
+        .filter(|output| !output.is_empty());
+    if live.is_some() {
+        return live;
     }
     cache
         .and_then(|cache| cache.driver_journal.as_deref())
@@ -2119,6 +2135,112 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(rendered.contains("record truncated"), "{rendered}");
+    }
+
+    // ── The ring belongs to ONE run (CR-02, WR-07) ─────────────────────────
+
+    /// A ring holding `lines` rows already attributed to `run_id`.
+    fn ring_for(run_id: &str, lines: &[&str]) -> DriverOutput {
+        let mut output = DriverOutput::for_run(run_id);
+        for line in lines {
+            output.push_record(DriverLineKind::Output, line);
+        }
+        output
+    }
+
+    /// CR-02, at the buffer.
+    ///
+    /// The map is keyed by alias, so the ring outlives every run in a project.
+    /// Retargeting must empty it — **including both overflow counters**, because
+    /// `dropped` and `record_truncated` describe this buffer's own shortfall and
+    /// carrying run A's into run B reports one run's loss as another's.
+    #[test]
+    fn retargeting_the_ring_at_a_new_run_drops_the_previous_runs_lines_and_counters() {
+        let mut output = ring_for("run-a", &[]);
+        for n in 0..(DRIVER_OUTPUT_RING_LINES + 5) {
+            output.push_record(DriverLineKind::Output, &format!("line {n}"));
+        }
+        output.push_record(
+            DriverLineKind::Output,
+            &"row\n".repeat(super::super::DRIVER_OUTPUT_RECORD_MAX_LINES + 10),
+        );
+        output.push_record(DriverLineKind::Terminal, "run ended: succeeded_with_changes");
+        assert!(output.dropped() > 0 && output.record_truncated() && !output.is_empty());
+
+        output.retarget("run-b");
+
+        assert_eq!(output.run_id(), "run-b");
+        assert!(
+            output.is_empty(),
+            "run A's lines — its terminal record above all, which renders LAST \
+             and in run B's colour — must not survive into run B's pane"
+        );
+        assert_eq!(output.dropped(), 0, "run B has dropped nothing");
+        assert!(!output.record_truncated(), "and truncated nothing");
+
+        // Retargeting at the SAME run is not a reset: the tail arrives in
+        // batches and each batch retargets before its first push.
+        output.push_record(DriverLineKind::Output, "run B says something");
+        output.retarget("run-b");
+        assert_eq!(output.len(), 1, "an unchanged run id must not clear the ring");
+    }
+
+    /// CR-02, at the chooser.
+    ///
+    /// The ring is matched on its **own** run id and never on `observed_runs`:
+    /// the reconciliation map answers "which run is this session tailing", which
+    /// stops being the same question the moment a run ends.
+    #[test]
+    fn a_ring_filled_by_one_run_is_never_handed_to_another() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let alias = super::super::driver_confirm::tests::ALIAS;
+        let (mut ctx, _rx) = super::super::driver_confirm::tests::ctx_with_project(dir.path());
+        ctx.driver_output.insert(
+            alias.to_string(),
+            ring_for("run-a", &["run A said this"]),
+        );
+
+        assert!(
+            output_for_run(&ctx, alias, None, "run-a").is_some(),
+            "its own run still gets the ring"
+        );
+        assert!(
+            output_for_run(&ctx, alias, None, "run-b").is_none(),
+            "and the next run in the same project does not — with no journal on \
+             disk for it yet, the honest answer is nothing at all"
+        );
+    }
+
+    /// WR-07: a live run whose ring is empty falls back to the journal.
+    ///
+    /// After a TUI restart the ring for an adopted run is empty until the first
+    /// watcher event fires. Short-circuiting on `tailed` painted "No journal
+    /// entries yet." directly under the notice saying the journal on disk was
+    /// what was being shown — two lines that contradict each other, over a
+    /// journal the scan had already read whole.
+    #[test]
+    fn an_adopted_live_run_with_an_empty_ring_renders_the_journal_on_disk() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let alias = super::super::driver_confirm::tests::ALIAS;
+        let (mut ctx, _rx) = super::super::driver_confirm::tests::ctx_with_project(dir.path());
+        ctx.driver_output
+            .insert(alias.to_string(), DriverOutput::for_run("run-a"));
+
+        let mut cache = ProjectViewCache::default();
+        cache.driver_journal = Some(Box::new(super::super::DriverRunJournal {
+            run_id: "run-a".to_string(),
+            output: ring_for("run-a", &["what the journal on disk holds"]),
+            injections: Vec::new(),
+        }));
+
+        let chosen = output_for_run(&ctx, alias, Some(&cache), "run-a")
+            .expect("the journal is on disk and must be shown");
+        let rendered: String = chosen.lines().map(|line| line.text.clone()).collect();
+        assert!(
+            rendered.contains("what the journal on disk holds"),
+            "an empty live ring must fall THROUGH to the journal, not \
+             short-circuit to a no-entries placeholder: {rendered:?}"
+        );
     }
 
     /// The four indicator states, each with its own word and colour — and the
