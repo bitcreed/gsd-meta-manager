@@ -64,8 +64,8 @@ interleave and corrupt each other.
 ### Run State & Observability (OBS)
 
 - [x] **OBS-01**: Every run writes an append-only journal to disk that survives process death and is the source of truth for run state
-- [ ] **OBS-02**: The project list marks which projects are LLM-driven, and which are parked awaiting a human
-- [ ] **OBS-03**: A user can read the originating goal prompt for any driven project, to understand what it was asked to do
+- [x] **OBS-02**: The project list marks which projects are LLM-driven, and which are parked awaiting a human
+- [x] **OBS-03**: A user can read the originating goal prompt for any driven project, to understand what it was asked to do
 - [x] **OBS-04**: A user can watch a run's live output, current step, elapsed time, and step history from a TUI tab
 - [x] **OBS-05**: A user can review what a completed or failed run did, after the fact, including which commands ran and why it stopped
 - [x] **OBS-06**: Driver journal writes do not trigger full project re-parses, so a multi-hour run does not degrade TUI responsiveness
@@ -73,9 +73,9 @@ interleave and corrupt each other.
 
 ### Steering (STEER)
 
-- [ ] **STEER-01**: A user can inject a message into a running driver from the TUI
+- [x] **STEER-01**: A user can inject a message into a running driver from the TUI
 - [x] **STEER-02**: An injected message shows its delivery state — queued, delivered, and acted upon — rather than being fire-and-forget
-- [ ] **STEER-03**: Injected messages survive a TUI restart between queueing and delivery
+- [x] **STEER-03**: Injected messages survive a TUI restart between queueing and delivery
 
 ### Autonomous Driver (DRIVE)
 
@@ -149,15 +149,15 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-22.
 | SAFE-07 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
 | SAFE-08 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
 | OBS-01 | Phase 16: Run Journal & State Substrate | Complete |
-| OBS-02 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
-| OBS-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
+| OBS-02 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
+| OBS-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | OBS-04 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | OBS-05 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | OBS-06 | Phase 16: Run Journal & State Substrate | Complete |
 | OBS-07 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
-| STEER-01 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
+| STEER-01 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | STEER-02 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
-| STEER-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
+| STEER-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | DRIVE-01 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
 | DRIVE-02 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
 | DRIVE-03 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
