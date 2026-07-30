@@ -4,6 +4,7 @@ pub mod delete_confirm;
 pub mod detail;
 pub mod driver_confirm;
 pub mod driver_inject;
+pub mod driver_start;
 pub mod enqueue;
 pub mod help;
 pub mod normal;
