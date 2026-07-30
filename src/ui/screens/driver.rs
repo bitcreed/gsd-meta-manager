@@ -1985,6 +1985,12 @@ mod tests {
         assert!(opted_in[1].contains("[s]"));
         assert!(not_opted_in[0].contains("is not opted in to driving"));
         assert!(not_opted_in[1].contains("[o]"));
+        assert!(
+            !not_opted_in[1].contains("dashboard"),
+            "the line must not send the reader to another surface to press a \
+             key that works right here: an empty state whose only instruction \
+             is to go somewhere else is the dead end this change removes"
+        );
         assert_ne!(opted_in, not_opted_in);
     }
 

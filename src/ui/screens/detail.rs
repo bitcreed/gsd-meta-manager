@@ -6504,18 +6504,31 @@ mod tests {
         );
     }
 
-    /// The three keys are **tab-scoped**, so the tabs that already claim `s`,
-    /// `i` or `x` keep them. `x` on the Defaults tab clears a value and `x` on
-    /// the Queue tab deletes an entry; neither may start reaching for the
-    /// driver.
+    /// The driver action keys are **tab-scoped**, so the tabs that already
+    /// claim `s`, `i` or `x` keep them. `x` on the Defaults tab clears a value
+    /// and `x` on the Queue tab deletes an entry; neither may start reaching
+    /// for the driver.
+    ///
+    /// `o` is in this list for the opposite reason: unlike `i`/`s`/`x` it had
+    /// no collision to resolve — nothing else on any detail tab binds it — and
+    /// it is scoped anyway, so the guard is doing real work rather than dodging
+    /// a conflict. This test is what turns that guard from a comment into an
+    /// enforced property: without it, a future refactor that drops the
+    /// `if current_view == DetailSubView::Driver` clause compiles clean and
+    /// silently makes `o` a global opt-in on every detail tab.
     #[test]
-    fn the_three_driver_keys_are_scoped_to_the_driver_tab() {
+    fn the_driver_action_keys_are_scoped_to_the_driver_tab() {
         for tab in [
             DetailSubView::PhaseList,
             DetailSubView::Pipeline,
             DetailSubView::Defaults,
         ] {
-            for code in [KeyCode::Char('i'), KeyCode::Char('s'), KeyCode::Char('x')] {
+            for code in [
+                KeyCode::Char('i'),
+                KeyCode::Char('s'),
+                KeyCode::Char('x'),
+                KeyCode::Char('o'),
+            ] {
                 let (mut screen, mut ctx, _rx) = driver_action_fixture();
                 ctx.detail_sub_view_per_project
                     .insert(TEST_ALIAS.to_string(), tab.clone());
