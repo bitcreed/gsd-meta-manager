@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 18
 current_phase_name: Driver Tab, Live Watch & Durable Injection
 status: executing
-stopped_at: Completed 18-10-PLAN.md
-last_updated: "2026-07-30T03:39:34.037Z"
+stopped_at: Completed 18-11-PLAN.md — Phase 18 complete
+last_updated: "2026-07-30T04:07:00.000Z"
 last_activity: 2026-07-30
-last_activity_desc: 18-10 executed (output pane, four-state injection display, terminal-state table, Driver keys)
+last_activity_desc: 18-11 executed (scrollable help screen with two legends, dry-run preview, phase close-out) — Phase 18 complete
 progress:
   total_phases: 9
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 37
-  completed_plans: 36
-  percent: 44
+  completed_plans: 37
+  percent: 56
 ---
 
 # Project State
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 
 ## Current Position
 
-Phase: 18 (Driver Tab, Live Watch & Durable Injection) — EXECUTING
-Plan: 10 of 11 complete — next is 18-11
-Status: Ready to execute 18-11
-Last activity: 2026-07-30 — 18-10 executed (output pane, four-state injection display, terminal-state table, Driver keys)
+Phase: 18 (Driver Tab, Live Watch & Durable Injection) — COMPLETE
+Plan: 11 of 11 complete
+Status: Phase 18 done — ready to verify, then Phase 19 (git blast radius)
+Last activity: 2026-07-30 — 18-11 executed (scrollable help screen with badge + injection legends, the dry-run preview at Step B, and the phase's mechanical close-out)
 
 ### Phase 17 gap-closure notes (autonomous run — review these)
 
@@ -165,6 +165,7 @@ Last activity: 2026-07-30 — 18-10 executed (output pane, four-state injection 
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 18 P10 | 5h | 3 tasks | 6 files |
+| Phase 18 P11 | 45min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -186,6 +187,11 @@ Recent decisions affecting current work:
 - [Phase ?]: interjected { delivered: false } stays queued: the journal is recording a FAILED stdin write, and promoting it would overstate what happened (18-10)
 - [Phase ?]: terminal_state_cell matches a render-layer TerminalState with no wildcard, and TerminalState::from_outcome matches RunOutcome with no wildcard — a new upstream variant is a compile error while the table still covers the three verdict-only states (18-10)
 - [Phase ?]: driver::run::outcome_label is pub(crate) so the render vocabulary is proved against the string the driver writes, not restated in a test (18-10)
+- [Phase ?]: The help popup shares clamp_scroll/ViewportMetrics/PAGE_SCROLL_LINES with every other scrolling pane and gates its more-content indicator on a comparison, so no third copy of the max-scroll formula exists (18-11)
+- [Phase ?]: Key documentation is asserted as WHOLE ROWS, never by contains(key) — a substring check on a one-letter key is vacuous, since "next" contains "x" (18-11)
+- [Phase ?]: ProjectViewCache.driver_dry_run is a single Option where presence IS the mode; a value plus a separate active flag is two fields that can disagree (18-11)
+- [Phase ?]: Action::DriverDryRunLoaded stores under two guards — a preview must be open AND its command must match — so a stale report cannot show one command's blast radius under another's name (18-11)
+- [Phase ?]: prune_driver_maps now covers last_refresh and archive_cache too, and every_per_alias_driver_map_is_pruned destructures AppContext exhaustively, so a new alias-keyed field is a compile error until it has been classified (18-11)
 
 ### Pending Todos
 
@@ -240,6 +246,6 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-07-30T03:39:07.311Z
-Stopped at: Completed 18-10-PLAN.md
+Last session: 2026-07-30T04:07:00.000Z
+Stopped at: Completed 18-11-PLAN.md — Phase 18 complete (11 of 11 plans)
 Resume file: None

@@ -38,7 +38,7 @@ interleave and corrupt each other.
 - [x] **TRANS-02**: Run outcome is derived from the `type:"result"` envelope (`subtype`, `is_error`, `terminal_reason`, `permission_denials[]`), exit code, disk state, and git — never from the agent's prose summary
 - [x] **TRANS-03**: The TUI event loop reads input while a run is streaming output, so control keys stay responsive throughout a multi-hour run
 - [x] **TRANS-04**: The tool detects Claude CLI capabilities at runtime via `system/init` feature detection and refuses to start a run against an unsupported CLI, with a clear message
-- [ ] **TRANS-05**: A user can execute a single GSD command against an opted-in project from the TUI and watch its output stream live (no autonomy yet — the manual ship point)
+- [x] **TRANS-05**: A user can execute a single GSD command against an opted-in project from the TUI and watch its output stream live (no autonomy yet — the manual ship point)
 
 ### Run Control & Safety Envelope (CTRL)
 
@@ -69,7 +69,7 @@ interleave and corrupt each other.
 - [x] **OBS-04**: A user can watch a run's live output, current step, elapsed time, and step history from a TUI tab
 - [x] **OBS-05**: A user can review what a completed or failed run did, after the fact, including which commands ran and why it stopped
 - [x] **OBS-06**: Driver journal writes do not trigger full project re-parses, so a multi-hour run does not degrade TUI responsiveness
-- [ ] **OBS-07**: A user can sort or filter the dashboard to surface projects that need human attention
+- [x] **OBS-07**: A user can sort or filter the dashboard to surface projects that need human attention
 
 ### Steering (STEER)
 
@@ -132,7 +132,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-22.
 | TRANS-02 | Phase 15: Transport Foundation | Complete |
 | TRANS-03 | Phase 15: Transport Foundation | Complete |
 | TRANS-04 | Phase 15: Transport Foundation | Complete |
-| TRANS-05 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
+| TRANS-05 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | CTRL-01 | Phase 17: Supervisor | Complete |
 | CTRL-02 | Phase 17: Supervisor | Complete |
 | CTRL-03 | Phase 17: Supervisor | Complete |
@@ -154,7 +154,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-22.
 | OBS-04 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | OBS-05 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | OBS-06 | Phase 16: Run Journal & State Substrate | Complete |
-| OBS-07 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
+| OBS-07 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | STEER-01 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
 | STEER-02 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | STEER-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Pending |
