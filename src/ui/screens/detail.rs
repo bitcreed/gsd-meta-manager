@@ -268,6 +268,13 @@ pub struct DetailScreen {
     /// fallback. Same interior-mutability reason as the two Cells above
     /// (plan 14-04 decision GD-01, closing code review IN-07 / CD-03).
     generic_viewport: Cell<ViewportMetrics>,
+    /// Last-rendered viewport metrics for the Driver tab's live-output pane.
+    ///
+    /// A fourth `Cell` alongside the three above rather than a fourth
+    /// *mechanism*: the output pane clamps through the same [`clamp_scroll`]
+    /// formula the Browse and Archive viewers already use, which is what keeps
+    /// the UIFIX-04 fix from having to be made a second time in a new place.
+    driver_viewport: Cell<ViewportMetrics>,
 }
 
 impl DetailScreen {
@@ -288,6 +295,7 @@ impl DetailScreen {
             browser_viewport: Cell::default(),
             archive_viewport: Cell::default(),
             generic_viewport: Cell::default(),
+            driver_viewport: Cell::default(),
         }
     }
 }
@@ -2161,10 +2169,16 @@ impl Screen for DetailScreen {
             DetailSubView::Archive => self.render_archive_tab(frame, content_area, ctx),
             DetailSubView::Defaults => self.render_defaults_tab(frame, content_area, ctx),
             DetailSubView::Browse => self.render_browser_tab(frame, content_area, ctx),
-            // Task 2 of plan 18-09 creates `driver.rs` and turns this arm into a
-            // delegation. It is empty for exactly one commit so that no
-            // intermediate state of the tree fails to build.
-            DetailSubView::Driver => {}
+            // The Driver tab renders from its own module — the one sub-tab that
+            // does. `driver.rs`'s header doc records why.
+            DetailSubView::Driver => super::driver::render_driver_tab(
+                frame,
+                content_area,
+                ctx,
+                alias,
+                ctx.view_cache.get(alias),
+                &self.driver_viewport,
+            ),
         }
 
         // Render footer with tab-appropriate hints
@@ -3463,9 +3477,17 @@ impl DetailScreen {
             DetailSubView::Defaults => self.render_defaults_tab(frame, content_area, ctx),
             DetailSubView::Browse => self.render_browser_tab(frame, content_area, ctx),
             // The duplicate of the dispatch above, used by `EnqueueScreen` and
-            // `DriverInjectScreen` to paint the body behind their footers. Same
-            // arm, same one-commit reason.
-            DetailSubView::Driver => {}
+            // `DriverInjectScreen` to paint the body behind their footers. The
+            // same delegation: a Driver tab that renders on one path and not the
+            // other is the classic half-landing D-15 names.
+            DetailSubView::Driver => super::driver::render_driver_tab(
+                frame,
+                content_area,
+                ctx,
+                alias,
+                ctx.view_cache.get(alias),
+                &self.driver_viewport,
+            ),
         }
     }
 

@@ -2,6 +2,7 @@ pub mod add_project;
 pub mod create_project;
 pub mod delete_confirm;
 pub mod detail;
+pub mod driver;
 pub mod driver_confirm;
 pub mod driver_inject;
 pub mod driver_start;
@@ -427,6 +428,46 @@ pub struct ProjectViewCache {
     /// churn, while an `AppContext` field costs an edit at five construction
     /// sites.
     pub driver_runs: Vec<crate::journal::RunSummary>,
+    /// The running tally for the run whose journal is currently being tailed.
+    ///
+    /// Two facts the Driver tab's header and step timeline need are carried by
+    /// journal **records** rather than by the committed `run.json`, so neither is
+    /// reachable from [`crate::journal::RunSummary`]: the cumulative cost, which
+    /// arrives on `cost` records, and the number of turn boundaries observed,
+    /// which arrive as `exec_event` records on the `turn_completed` stream.
+    ///
+    /// It is keyed by run id **inside** the value rather than by being a map,
+    /// because only one run per project is ever tailed at a time and the id is
+    /// what makes the reader able to say "this tally is not about the run you
+    /// are looking at" — which is the honest answer for every other row in the
+    /// list. Without the id, a cost from the live run would be shown against a
+    /// historical one, which is a figure the evidence does not support.
+    pub driver_tally: Option<DriverRunTally>,
+}
+
+/// What one run's journal tail has reported so far.
+///
+/// Facts only, and each from a named record kind. Nothing here is derived from
+/// the agent's prose (D-13).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DriverRunTally {
+    /// Which run this tally is about. A tally whose id does not match the run
+    /// being rendered is not shown at all.
+    pub run_id: String,
+    /// `JournalEvent::Cost.cumulative_usd`, the most recent value seen.
+    ///
+    /// **Cumulative across the run's turns** — `total_cost_usd` accumulates
+    /// while `num_turns` and `duration_ms` reset per turn (D-12) — which is why
+    /// every rendering of it is labelled. `None` until a `cost` record arrives:
+    /// unknown is not zero.
+    pub cumulative_cost_usd: Option<f64>,
+    /// How many turn boundaries the journal has reported.
+    ///
+    /// **Turns are turns, not commands.** A steered run emits several
+    /// `system/init` and `result` pairs inside one process (Phase 15 D-29); this
+    /// counts the boundaries, and the timeline still shows one *decided* row. A
+    /// later `system/init` is informational and is never a restart.
+    pub turn_boundaries: u32,
 }
 
 pub struct AppContext {
