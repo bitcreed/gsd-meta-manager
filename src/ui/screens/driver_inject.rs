@@ -83,6 +83,18 @@ pub fn no_live_run_message(alias: &str) -> String {
     format!("No live run on \"{alias}\" — nothing to inject into.")
 }
 
+/// The refusal the caller must set when `alias` has a live run but the run the
+/// user is **looking at** is a different one (WR-01).
+///
+/// A distinct sentence rather than reusing [`no_live_run_message`], because the
+/// two conditions call for different actions and a message saying "no live run"
+/// over a run list that visibly contains one would read as a bug in the tool.
+/// It names the fix without naming a key, so it stays true if the selection
+/// bindings change.
+pub fn not_the_selected_run_message(alias: &str) -> String {
+    format!("The selected run on \"{alias}\" is not the live one — select the live run to steer it.")
+}
+
 /// A one-line free-prose input aimed at one live run.
 pub struct DriverInjectScreen {
     alias: String,

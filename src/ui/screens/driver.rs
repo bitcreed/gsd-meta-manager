@@ -2312,12 +2312,14 @@ mod tests {
         ctx.driver_output
             .insert(alias.to_string(), DriverOutput::for_run("run-a"));
 
-        let mut cache = ProjectViewCache::default();
-        cache.driver_journal = Some(Box::new(super::super::DriverRunJournal {
-            run_id: "run-a".to_string(),
-            output: ring_for("run-a", &["what the journal on disk holds"]),
-            injections: Vec::new(),
-        }));
+        let cache = ProjectViewCache {
+            driver_journal: Some(Box::new(super::super::DriverRunJournal {
+                run_id: "run-a".to_string(),
+                output: ring_for("run-a", &["what the journal on disk holds"]),
+                injections: Vec::new(),
+            })),
+            ..ProjectViewCache::default()
+        };
 
         let chosen = output_for_run(&ctx, alias, Some(&cache), "run-a")
             .expect("the journal is on disk and must be shown");
