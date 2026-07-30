@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Autonomous Orchestration
-current_phase: 18
-current_phase_name: Driver Tab, Live Watch & Durable Injection
-status: executing
-stopped_at: Completed 18-11-PLAN.md — Phase 18 complete
-last_updated: "2026-07-30T06:06:00.000Z"
-last_activity: 2026-07-30
-last_activity_desc: "quick task 260729-vmp executed — `o` on the Driver tab opens the same opt-in confirmation the dashboard's `o` opens; spawn seam untouched"
+current_phase: 19
+current_phase_name: GITSAFE — Git & Blast-Radius Envelope
+status: planning
+stopped_at: Completed quick task 260729-vmp — Phase 18 still complete (11 of 11 plans)
+last_updated: "2026-07-30T06:11:29.531Z"
+last_activity: 2026-07-29
+last_activity_desc: Phase 18 complete, transitioned to Phase 19
 progress:
   total_phases: 9
   completed_phases: 5
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 
 ## Current Position
 
-Phase: 18 (Driver Tab, Live Watch & Durable Injection) — COMPLETE
-Plan: 11 of 11 complete
-Status: Phase 18 done — ready to verify, then Phase 19 (git blast radius)
-Last activity: 2026-07-30 — 18-11 executed (scrollable help screen with badge + injection legends, the dry-run preview at Step B, and the phase's mechanical close-out)
+Phase: 19 — GITSAFE — Git & Blast-Radius Envelope
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-07-29 — Phase 18 complete, transitioned to Phase 19
 
 ### Phase 17 gap-closure notes (autonomous run — review these)
 
@@ -137,7 +137,7 @@ Last activity: 2026-07-30 — 18-11 executed (scrollable help screen with badge 
 
 **Velocity:**
 
-- Total plans completed: 26
+- Total plans completed: 37
 - Average duration: --
 - Total execution time: 0 hours
 
@@ -149,6 +149,7 @@ Last activity: 2026-07-30 — 18-11 executed (scrollable help screen with badge 
 | 15 | 8 | - | - |
 | 16 | 6 | - | - |
 | 17 | 8 | - | - |
+| 18 | 11 | - | - |
 
 **Recent Trend (from v1.1):**
 
