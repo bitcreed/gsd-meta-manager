@@ -824,27 +824,47 @@ impl App {
                 #[cfg(not(unix))]
                 let _ = alias;
             }
-            // The stop already happened; this is the report. The entry is
-            // dropped from the observed map rather than edited, because the map
-            // is a projection of the scan and a hand-edited entry would be
-            // overwritten by the next one anyway. Dropping it is what the scan
-            // itself will do five seconds later, done now so the dashboard does
-            // not show a stopped run as live in the meantime.
+            // The stop already happened; this is the report, and **the maps are
+            // mutated only when the run is actually gone** (WR-15, D-29).
+            //
+            // When the run IS gone the entry is dropped rather than edited,
+            // because `observed_runs` is a projection of the scan and a
+            // hand-edited entry would be overwritten by the next one anyway.
+            // Dropping it is what the scan itself will do five seconds later,
+            // done now so the dashboard does not show a stopped run as live in
+            // the meantime.
+            //
+            // When it may still be live, nothing is dropped. `SignalFailed`
+            // means the signal was **never delivered** and `AlreadyGone` means
+            // **nothing was signalled** — in neither case has anything
+            // established that the run ended, and dropping on either cost two
+            // distinct things:
+            //
+            // * the dashboard showed **no run** for up to five seconds, until
+            //   the next reconciliation scan put back a run that never left; and
+            // * the `session_spawned_runs` entry was gone **permanently** —
+            //   nothing ever re-inserts it, because the disk cannot say who a
+            //   driver's parent was — so a later stop took the `Adopted` reaping
+            //   arm for a run this session did spawn, waiting on a `/proc`
+            //   re-probe instead of the reaping task that actually owns the
+            //   `wait()`.
+            //
+            // **Phase 18 is what makes the contradiction visible:** the Driver
+            // tab renders a "no run" pane directly beside a status line reading
+            // *"the stop signal could not be delivered"*. The status message is
+            // still set on both arms — the user is told what happened either
+            // way; what changes is that the dashboard no longer forgets a run on
+            // the strength of a stop that stopped nothing.
             Action::DriverStopped {
                 alias,
                 run_id,
                 outcome,
                 disposition,
             } => {
-                // WR-15's fix — mutating the two maps only when `disposition`
-                // is `RunGone` — is plan 18-05's named deliverable, along with
-                // the test that reproduces the five-second "no run" window and
-                // the permanently lost `session_spawned_runs` entry. The value
-                // is carried here now so that fix is a two-line change rather
-                // than a second round of message-type surgery (D-29).
-                let _ = disposition;
-                self.ctx.observed_runs.remove(&alias);
-                self.ctx.session_spawned_runs.remove(&run_id);
+                if disposition == crate::action::StopDisposition::RunGone {
+                    self.ctx.observed_runs.remove(&alias);
+                    self.ctx.session_spawned_runs.remove(&run_id);
+                }
                 self.ctx.status_message =
                     Some((format!("{alias}: {outcome}"), std::time::Instant::now()));
                 self.needs_redraw = true;
@@ -1126,7 +1146,20 @@ impl App {
         // The same guard `schedule_journal_tail` uses: without a channel there
         // is nowhere to return the outcome, and a stop whose result cannot be
         // reported is a stop the user cannot tell happened.
+        //
+        // **It refuses visibly** (WR-11, S4). A bare `return` here left the user
+        // pressing the stop key against a live run and being told nothing at
+        // all, which reads as "the key does not work" — and the run keeps
+        // driving their repository meanwhile. The condition is not reachable in
+        // production (the channel is installed at startup and held for the
+        // process lifetime), which is exactly why the silent arm survived: it
+        // only fires in a test or after a wiring regression, and both are cases
+        // where silence costs the most.
         let Some(tx) = &self.ctx.event_tx else {
+            self.ctx.error_message = Some(format!(
+                "Could not stop the run on '{alias}': this session has no event channel."
+            ));
+            self.needs_redraw = true;
             return;
         };
         let tx = tx.clone();
@@ -1721,17 +1754,205 @@ mod tests {
         assert_eq!(alias, OBS_ALIAS);
         assert_eq!(run_id, "run-x");
         assert!(!outcome.is_empty(), "the outcome must render as something");
+        // The pid belongs to no driver, so the dispatched task took the
+        // `AlreadyGone` path — which establishes nothing about whether a run
+        // ended, and therefore reports `MayStillBeLive` (WR-15/D-29).
+        assert_eq!(disposition, crate::action::StopDisposition::MayStillBeLive);
 
-        // And the handler drops the entry rather than editing it, so the
-        // dashboard does not show a stopped run as live until the next scan.
+        // And on a report that the run really IS gone, the handler drops the
+        // entry rather than editing it, so the dashboard does not show a
+        // stopped run as live until the next scan. The disposition is supplied
+        // by hand rather than reused from the dispatch above, because that
+        // dispatch legitimately produced the other one — reusing it would make
+        // this assertion silently test nothing.
         app.update(Action::DriverStopped {
             alias: OBS_ALIAS.to_string(),
             run_id: "run-x".to_string(),
             outcome,
-            disposition,
+            disposition: crate::action::StopDisposition::RunGone,
         });
         assert!(!app.ctx.observed_runs.contains_key(OBS_ALIAS));
         assert!(!app.ctx.session_spawned_runs.contains("run-x"));
+    }
+
+    // ── WR-15 / D-29: a stop that stopped nothing must forget nothing ────
+    //
+    // One test per `StopOutcome` variant, driven through the real
+    // `StopDisposition::from` conversion rather than through a hand-picked
+    // disposition — otherwise the test would assert the handler's behaviour
+    // for a mapping the send site might not actually produce, and the two
+    // halves of the fix could drift apart silently.
+    //
+    // **The load-bearing half of each is the second assertion**, following the
+    // discipline `driver_confirm.rs:367-372` records: an implementation that
+    // set the status message and mutated the maps anyway would pass a test that
+    // only checked the message, and the user would be shown the truth beside a
+    // dashboard that had already forgotten the run.
+
+    /// One `App` holding a live observed run this session spawned, ready to
+    /// receive a stop report for it.
+    #[cfg(unix)]
+    fn app_with_a_spawned_run(
+        root: &std::path::Path,
+    ) -> (App, tokio::sync::mpsc::UnboundedReceiver<Action>) {
+        let (mut app, rx) = obs_app(root);
+        app.ctx
+            .observed_runs
+            .insert(OBS_ALIAS.to_string(), observed(OBS_ALIAS, "run-x", ALIVE));
+        app.ctx.session_spawned_runs.insert("run-x".to_string());
+        (app, rx)
+    }
+
+    /// Apply a stop report derived from `outcome` and return the two facts the
+    /// assertions below care about: whether each map kept its entry.
+    #[cfg(unix)]
+    fn report_stop(
+        app: &mut App,
+        outcome: crate::driver::kill::StopOutcome,
+    ) -> (bool, bool, Option<String>) {
+        app.update(Action::DriverStopped {
+            alias: OBS_ALIAS.to_string(),
+            run_id: "run-x".to_string(),
+            disposition: crate::action::StopDisposition::from(&outcome),
+            outcome: outcome.to_string(),
+        });
+        (
+            app.ctx.observed_runs.contains_key(OBS_ALIAS),
+            app.ctx.session_spawned_runs.contains("run-x"),
+            app.ctx.status_message.as_ref().map(|(text, _)| text.clone()),
+        )
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_run_that_exited_on_terminate_is_dropped_from_both_maps() {
+        use crate::driver::kill::StopOutcome;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = app_with_a_spawned_run(dir.path());
+
+        let (observed_kept, spawned_kept, message) =
+            report_stop(&mut app, StopOutcome::ExitedOnTerminate);
+
+        assert!(
+            !observed_kept,
+            "the driver was observed gone, so the dashboard must not keep showing \
+             its run as live until the next scan"
+        );
+        assert!(
+            !spawned_kept,
+            "a run that is gone needs no reaping arm, so its session record goes too"
+        );
+        let message = message.expect("the outcome must still reach the status line");
+        assert!(message.contains(OBS_ALIAS), "got: {message}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_run_that_exited_after_the_uncatchable_signal_is_dropped_from_both_maps() {
+        use crate::driver::kill::StopOutcome;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = app_with_a_spawned_run(dir.path());
+
+        let (observed_kept, spawned_kept, message) =
+            report_stop(&mut app, StopOutcome::ExitedAfterKill);
+
+        assert!(
+            !observed_kept,
+            "an escalated stop is still a stop that was observed to work"
+        );
+        assert!(!spawned_kept);
+        let message = message.expect("the outcome must still reach the status line");
+        assert!(
+            message.contains("orphaned"),
+            "an escalation must still tell the user its `claude` group may have \
+             been orphaned, got: {message}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stop_that_signalled_nothing_keeps_both_map_entries() {
+        use crate::driver::kill::StopOutcome;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = app_with_a_spawned_run(dir.path());
+
+        let (observed_kept, spawned_kept, message) =
+            report_stop(&mut app, StopOutcome::AlreadyGone);
+
+        // The user is told, either way. That half was never broken.
+        let message = message.expect("the outcome must reach the status line");
+        assert!(message.contains(OBS_ALIAS), "got: {message}");
+
+        // The half that was. `AlreadyGone` means NOTHING WAS SIGNALLED — the
+        // probe simply did not recognise the pid as this run's driver — so it
+        // establishes nothing about whether the run ended.
+        assert!(
+            observed_kept,
+            "WR-15: dropping the observed run here shows 'no run' for up to five \
+             seconds beside a status line saying nothing was signalled"
+        );
+        assert!(
+            spawned_kept,
+            "WR-15: this entry is never re-inserted — the disk cannot say who a \
+             driver's parent was — so dropping it makes a later stop take the \
+             `Adopted` arm for a run this session did spawn"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stop_whose_signal_was_never_delivered_keeps_both_map_entries() {
+        use crate::driver::kill::StopOutcome;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = app_with_a_spawned_run(dir.path());
+
+        let (observed_kept, spawned_kept, message) = report_stop(
+            &mut app,
+            StopOutcome::SignalFailed {
+                detail: "PermissionDenied".to_string(),
+            },
+        );
+
+        let message = message.expect("the outcome must reach the status line");
+        assert!(
+            message.contains("could not be delivered"),
+            "the user must be told the signal never landed, got: {message}"
+        );
+
+        // This is the arm the Driver tab makes impossible to miss: a "no run"
+        // pane beside a status line saying the signal could not be delivered.
+        assert!(
+            observed_kept,
+            "WR-15: the signal was never delivered, so the run is most likely \
+             still driving the user's repository"
+        );
+        assert!(spawned_kept);
+    }
+
+    /// A stop with nowhere to report its outcome refuses **visibly** (WR-11).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stop_with_no_event_channel_refuses_visibly_rather_than_silently() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = app_with_a_spawned_run(dir.path());
+        app.ctx.event_tx = None;
+
+        app.stop_driver_run(OBS_ALIAS);
+
+        let refusal = app
+            .ctx
+            .error_message
+            .as_deref()
+            .expect("a stop that cannot report its outcome must say so, not fail silently");
+        assert!(refusal.contains(OBS_ALIAS), "got: {refusal}");
+        assert!(
+            app.ctx.observed_runs.contains_key(OBS_ALIAS),
+            "a stop that never dispatched must not have disturbed the observed map"
+        );
     }
 
     #[tokio::test]
