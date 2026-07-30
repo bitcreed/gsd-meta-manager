@@ -276,10 +276,23 @@ pub enum Action {
     /// join handle leaks into a message type** (D-20) — which matters
     /// especially here, because the producer is a `spawn_blocking` task that
     /// really does hold an open file (D-28) and must drop it before sending.
+    /// `journal` is the selected run's whole journal, projected into pane lines
+    /// through the same bounded ring the live tail uses, plus its interjection
+    /// records kept **as records**. It is what makes a finished run reviewable
+    /// after the fact (OBS-05) and what makes an injected message's state a pure
+    /// function of disk across a TUI restart (STEER-03).
+    ///
+    /// It is `Box`ed for the sizing reason the whole enum is documented by: it
+    /// is the largest driver payload, and boxing keeps this variant from
+    /// becoming the `clippy::large_enum_variant` outlier the file's other
+    /// variants were sized to avoid. `None` when the selected run's directory
+    /// could not be resolved — the fallible join on an id that came off disk
+    /// (D-27).
     DriverRunsListed {
         alias: String,
         runs: Vec<crate::journal::RunSummary>,
         inbox: Vec<crate::journal::inbox::InboxMessage>,
+        journal: Option<Box<crate::ui::screens::DriverRunJournal>>,
     },
     /// A dry-run report was built for `alias` and is ready to show (D-26).
     ///
@@ -356,6 +369,7 @@ mod tests {
             alias: "proj".to_string(),
             runs: Vec::new(),
             inbox: Vec::new(),
+            journal: None,
         };
         assert!(matches!(listed.clone(), Action::DriverRunsListed { .. }));
 

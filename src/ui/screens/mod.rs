@@ -168,7 +168,12 @@ pub struct DriverOutputLine {
 /// [`push_record`](DriverOutput::push_record) and a caller able to push directly
 /// could bypass it, which is exactly the "a `Vec` that grows" failure the phase
 /// context names.
-#[derive(Debug, Default)]
+///
+/// `Clone` because one of these travels as an `Action` payload from the
+/// `spawn_blocking` scan that read a selected run's journal off disk. It holds
+/// owned strings, an enum and two counters — **never a file handle and never a
+/// join handle** — so cloning it copies data and nothing else (D-20).
+#[derive(Debug, Default, Clone)]
 pub struct DriverOutput {
     lines: VecDeque<DriverOutputLine>,
     dropped: u64,
@@ -443,6 +448,47 @@ pub struct ProjectViewCache {
     /// list. Without the id, a cost from the live run would be shown against a
     /// historical one, which is a figure the evidence does not support.
     pub driver_tally: Option<DriverRunTally>,
+    /// The **selected** run's journal, as the scan read it off disk (OBS-05).
+    ///
+    /// The live ring buffer on `AppContext` holds the run this session is
+    /// *tailing*. A user reviewing a run that finished last week is looking at a
+    /// different journal, and rendering the tailed run's buffer under it would
+    /// attribute one run's output to another — the same error the run id inside
+    /// [`DriverRunTally`] exists to prevent, which is why this value carries its
+    /// own run id too.
+    ///
+    /// It is what makes the four injection states a **pure function of disk**:
+    /// the ids in `inbox.jsonl` and the ids in each journal kind. Nothing about
+    /// a message's state is held in memory that a restart would lose, which is
+    /// what makes STEER-03 hold with no extra persistence.
+    pub driver_journal: Option<Box<DriverRunJournal>>,
+}
+
+/// One run's journal, read whole from disk for after-the-fact review.
+///
+/// Boxed at its `Action` call site because it is the largest driver payload and
+/// `clippy::large_enum_variant` fires on a ~200-byte difference between the
+/// largest and second-largest variants (RESEARCH §8.3).
+#[derive(Debug, Clone, Default)]
+pub struct DriverRunJournal {
+    /// Which run this journal is. A journal whose id does not match the run
+    /// being rendered is not shown at all.
+    pub run_id: String,
+    /// The journal's records projected into pane lines, through the same
+    /// bounded ring the live tail uses — so a 64 MB journal costs the same as a
+    /// live run's buffer and the drop count is reported the same way.
+    pub output: DriverOutput,
+    /// The `interjected` / `interjection_acted_on` / `interjection_missed`
+    /// records, kept **as records** rather than as rendered lines.
+    ///
+    /// Reconstructing a message's state by parsing a rendered string is the
+    /// screen-scraping D-01 forbids in another guise (D-08): the driver is the
+    /// only party that has parsed envelopes, and what it wrote is a correlation
+    /// id in a typed field. The renderer reads that field.
+    ///
+    /// Naturally bounded: one record per state transition of one message a
+    /// human typed.
+    pub injections: Vec<crate::journal::reader::JournalRecord>,
 }
 
 /// What one run's journal tail has reported so far.
@@ -792,9 +838,12 @@ impl AppContext {
             let runs = crate::journal::list_runs(&planning_dir);
 
             // The fallible join again, on an id that came off disk (D-27).
-            let inbox = runs
+            let paths = runs
                 .get(selected)
-                .and_then(|run| crate::journal::run_paths(&planning_dir, &run.run_id))
+                .and_then(|run| crate::journal::run_paths(&planning_dir, &run.run_id));
+
+            let inbox = paths
+                .as_ref()
                 .and_then(|paths| {
                     match crate::journal::inbox::tail(
                         &paths.inbox,
@@ -814,10 +863,58 @@ impl AppContext {
                 })
                 .unwrap_or_default();
 
+            // The selected run's journal, whole (OBS-05). This is what makes a
+            // finished run reviewable after the fact and what makes the four
+            // injection states derivable from disk after a restart. It is the
+            // third and last blocking read in this task, and it is bounded twice
+            // over: `read_all` inherits the tail's per-read cap, and the
+            // projection goes through the same ring the live buffer uses.
+            let journal = paths.as_ref().map(|paths| {
+                let run_id = runs
+                    .get(selected)
+                    .map(|run| run.run_id.clone())
+                    .unwrap_or_default();
+                let (records, diagnostics) = crate::journal::reader::read_all(&paths.journal)
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(
+                            alias = %alias_for_task,
+                            kind = ?e.kind(),
+                            "run journal read failed",
+                        );
+                        (Vec::new(), crate::journal::reader::ReadDiagnostics::default())
+                    });
+
+                let mut output = DriverOutput::default();
+                // A gap goes in FIRST and as a line the user can see: it is what
+                // came before the records that follow and never will.
+                if !diagnostics.gaps.is_empty() {
+                    output.push_record(
+                        DriverLineKind::Diagnostic,
+                        &crate::app::journal_gap_line(diagnostics.gaps.len()),
+                    );
+                }
+                let mut injections = Vec::new();
+                for record in &records {
+                    if let Some((kind, text)) = crate::app::driver_line_for_record(record) {
+                        output.push_record(kind, &text);
+                    }
+                    if driver::INJECTION_KINDS.contains(&record.kind.as_str()) {
+                        injections.push(record.clone());
+                    }
+                }
+
+                Box::new(DriverRunJournal {
+                    run_id,
+                    output,
+                    injections,
+                })
+            });
+
             let _ = tx.send(crate::action::Action::DriverRunsListed {
                 alias: alias_for_task,
                 runs,
                 inbox,
+                journal,
             });
         });
     }
