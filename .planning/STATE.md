@@ -5,15 +5,15 @@ milestone_name: Autonomous Orchestration
 current_phase: 18
 current_phase_name: Driver Tab, Live Watch & Durable Injection
 status: executing
-stopped_at: v2.0 roadmap written — Phases 14-22 defined, traceability filled
-last_updated: "2026-07-29T22:52:45.970Z"
-last_activity: 2026-07-29
-last_activity_desc: Phase 18 execution started
+stopped_at: Completed 18-10-PLAN.md
+last_updated: "2026-07-30T03:39:34.037Z"
+last_activity: 2026-07-30
+last_activity_desc: 18-10 executed (output pane, four-state injection display, terminal-state table, Driver keys)
 progress:
   total_phases: 9
   completed_phases: 4
   total_plans: 37
-  completed_plans: 26
+  completed_plans: 36
   percent: 44
 ---
 
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 ## Current Position
 
 Phase: 18 (Driver Tab, Live Watch & Durable Injection) — EXECUTING
-Plan: 1 of 11
-Status: Executing Phase 18
-Last activity: 2026-07-29 — Phase 18 execution started
+Plan: 10 of 11 complete — next is 18-11
+Status: Ready to execute 18-11
+Last activity: 2026-07-30 — 18-10 executed (output pane, four-state injection display, terminal-state table, Driver keys)
 
 ### Phase 17 gap-closure notes (autonomous run — review these)
 
@@ -160,6 +160,11 @@ Last activity: 2026-07-29 — Phase 18 execution started
 | Phase 12 P01 | 2min | 2 tasks | 5 files |
 | Phase 12 P02 | 18min | 2 tasks | 3 files |
 | Phase 13 P01 | 15min | 2 tasks | 1 files |
+**Per-Plan Metrics:**
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 18 P10 | 5h | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -177,6 +182,10 @@ Recent decisions affecting current work:
 - [Phase 12]: Abbreviated tab labels (5:Pipe, 7:Sess) to fit 8 tabs within 80 columns
 - [Phase 13]: Strategy A (per-item isolated execution) recommended for v1.3 queue execution
 - [Phase 13]: LLM-agnostic Executor trait interface for queue execution backends
+- [Phase ?]: The four injection states are a pure set intersection over inbox.jsonl and the run's journal, recomputed every frame — no cache a restart could lose (18-10)
+- [Phase ?]: interjected { delivered: false } stays queued: the journal is recording a FAILED stdin write, and promoting it would overstate what happened (18-10)
+- [Phase ?]: terminal_state_cell matches a render-layer TerminalState with no wildcard, and TerminalState::from_outcome matches RunOutcome with no wildcard — a new upstream variant is a compile error while the table still covers the three verdict-only states (18-10)
+- [Phase ?]: driver::run::outcome_label is pub(crate) so the render vocabulary is proved against the string the driver writes, not restated in a test (18-10)
 
 ### Pending Todos
 
@@ -231,6 +240,6 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-07-29T00:00:00.000Z
-Stopped at: v2.0 roadmap written — Phases 14-22 defined, traceability filled
+Last session: 2026-07-30T03:39:07.311Z
+Stopped at: Completed 18-10-PLAN.md
 Resume file: None

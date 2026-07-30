@@ -307,7 +307,7 @@ Plans:
   - Live re-streaming after a TUI restart is impossible by construction (the child's stdout pipe is gone); reattachment is journal-based and read-only
 
 **Research**: optional — skipped by decision at planning time; every external unknown (mid-turn stdin semantics, the `isReplay` dequeue ack, `result` as a turn boundary) was settled empirically by Phase 15's OQ2 spike and is carried in 15-CONTEXT D-29..D-32 and 18-CONTEXT D-02/D-07
-**Plans**: 9/11 plans executed
+**Plans**: 10/11 plans executed
 **UI hint**: yes
 
 Plans:
@@ -334,7 +334,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] 18-10-PLAN.md — Live output pane, four-state injection display, after-the-fact run review
+- [x] 18-10-PLAN.md — Live output pane, four-state injection display, after-the-fact run review
 
 **Wave 6** *(blocked on Wave 5 completion)*
 
@@ -441,7 +441,7 @@ Plans:
 | 15. Transport Foundation | 8/8 | Complete    | 2026-07-29 |
 | 16. Run Journal & State Substrate | 6/6 | Complete    | 2026-07-29 |
 | 17. Supervisor | 8/8 | Complete    | 2026-07-29 |
-| 18. Driver Tab, Live Watch & Durable Injection | 9/11 | In Progress|  |
+| 18. Driver Tab, Live Watch & Durable Injection | 10/11 | In Progress|  |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 0/? | Not started | - |
 | 20. Deterministic Decision Router & Run Bounds | 0/? | Not started | - |
 | 21. LLM Goal Layer & Prompt-Injection Hardening | 0/? | Not started | - |
