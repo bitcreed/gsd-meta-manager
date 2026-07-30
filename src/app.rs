@@ -27,12 +27,15 @@ pub enum DetailSubView {
     Browse,
     /// The Driver tab: run list, run detail, live output (D-15, OBS-04).
     ///
-    /// **Index 10, and it is deliberately not yet reachable.** This plan adds
-    /// the variant and the two arms `detail.rs` needs to compile; the tab title
-    /// vector, the `Shift+D` binding, the footer hints and the rendering are
-    /// plan 18-09's. Until those land, `TAB_TITLES` still has ten entries, so
-    /// `Right` stops at index 9 and nothing selects this — read the gap as a
-    /// staged landing rather than as a tab that is half-wired by accident.
+    /// **Index 10, and fully reachable.** `TAB_COUNT` is 11, `TAB_LABELS_FULL`
+    /// has eleven entries, `Left`/`Right` reach it, `Shift+D` jumps to it, the
+    /// footer tiers carry its hints, and both render dispatches call
+    /// [`super::ui::screens::driver::render_driver_tab`].
+    ///
+    /// This doc said the opposite until WR-04 of plan 18's review — plan 18-09
+    /// landed all five of those and the paragraph describing the staged gap was
+    /// not updated with them. It is the definitional site for the enum, so a
+    /// reader starting here was told the tab does not exist.
     Driver,
 }
 
@@ -1353,12 +1356,32 @@ impl App {
                     .as_mut()
                     .filter(|journal| journal.run_id == key.1)
                 {
+                    // **Deduped on `seq`** (WR-08). The scan reads the journal
+                    // whole from offset zero and replaces `driver_journal`,
+                    // while the tail keeps its own independent cursor in
+                    // `journal_cursors`. When a scan lands after a tail has
+                    // already consumed records, the scan's snapshot contains
+                    // them and the next tail batch re-appends everything the
+                    // scan read past — with nothing to stop it, the vector grew
+                    // with duplicates for the life of the selection. The state
+                    // derivation is idempotent under duplication, so this was
+                    // growth and clarity rather than a wrong render; but the
+                    // field's own doc claims it is "naturally bounded: one
+                    // record per state transition of one message a human typed",
+                    // and that has to stay true.
+                    //
+                    // `seq` is the key because the journal already guarantees it
+                    // is monotonic within a run, which an id does not: one id
+                    // legitimately carries several records.
+                    let known: std::collections::HashSet<u64> =
+                        journal.injections.iter().map(|record| record.seq).collect();
                     journal.injections.extend(
                         records
                             .iter()
                             .filter(|record| {
                                 crate::ui::screens::driver::INJECTION_KINDS
                                     .contains(&record.kind.as_str())
+                                    && !known.contains(&record.seq)
                             })
                             .cloned(),
                     );
@@ -3411,6 +3434,69 @@ mod tests {
             "exactly one start request. Two means the wizard was still on the \
              stack and the user paid for one confirmation twice"
         );
+    }
+
+    /// WR-08: a scan landing after a tail must not double the injection
+    /// records.
+    ///
+    /// The scan reads the journal whole from offset zero and replaces
+    /// `driver_journal`; the tail keeps its own independent cursor in
+    /// `journal_cursors`. When a scan lands after a tail has already consumed
+    /// records, the scan's snapshot contains them and the next tail batch
+    /// re-appends everything the scan read past. The state derivation is
+    /// idempotent under duplication — same id, same rank, same timestamp — so
+    /// this was growth and clarity rather than a wrong render; but the field's
+    /// own doc claims it is "naturally bounded: one record per state transition
+    /// of one message a human typed", and a vector that grows for the life of
+    /// the selection is not that.
+    #[tokio::test]
+    async fn a_scan_and_tail_overlap_does_not_duplicate_the_injection_records() {
+        use crate::ui::screens::DriverRunJournal;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        let interjected = journal_record(
+            7,
+            "interjected",
+            &[("id", "abc".into()), ("text", "steer".into()), ("delivered", true.into())],
+        );
+        let acted_on = journal_record(8, "interjection_acted_on", &[("id", "abc".into())]);
+
+        // The scan's snapshot, which already read past seq 7.
+        let cache = app.ctx.view_cache.entry(OBS_ALIAS.to_string()).or_default();
+        cache.driver_journal = Some(Box::new(DriverRunJournal {
+            run_id: OBS_RUN.to_string(),
+            output: Default::default(),
+            injections: vec![interjected.clone()],
+        }));
+
+        // The tail's own cursor is behind the scan's, so its batch repeats seq 7.
+        app.update(Action::DriverJournalAppended {
+            alias: OBS_ALIAS.to_string(),
+            run_id: OBS_RUN.to_string(),
+            records: vec![interjected, acted_on],
+            cursor: cursor_at(200, 8),
+        });
+
+        let injections = &app
+            .ctx
+            .view_cache
+            .get(OBS_ALIAS)
+            .and_then(|cache| cache.driver_journal.as_deref())
+            .expect("the journal survives the batch")
+            .injections;
+        let seqs: Vec<u64> = injections.iter().map(|record| record.seq).collect();
+        assert_eq!(
+            seqs,
+            vec![7, 8],
+            "one record per transition, deduped on the seq the journal already \
+             guarantees is monotonic"
+        );
+
+        // An id is NOT the key: one message legitimately carries several
+        // records, and deduping on it would swallow the acted-on transition.
+        assert_eq!(injections.len(), 2);
     }
 
     /// D-27's negative carry-forward, discharged for `driver_output`.
