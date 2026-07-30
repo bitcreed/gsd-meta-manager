@@ -6,9 +6,9 @@ current_phase: 18
 current_phase_name: Driver Tab, Live Watch & Durable Injection
 status: executing
 stopped_at: Completed 18-11-PLAN.md — Phase 18 complete
-last_updated: "2026-07-30T04:07:00.000Z"
+last_updated: "2026-07-30T06:06:00.000Z"
 last_activity: 2026-07-30
-last_activity_desc: 18-11 executed (scrollable help screen with two legends, dry-run preview, phase close-out) — Phase 18 complete
+last_activity_desc: "quick task 260729-vmp executed — `o` on the Driver tab opens the same opt-in confirmation the dashboard's `o` opens; spawn seam untouched"
 progress:
   total_phases: 9
   completed_phases: 5
@@ -192,6 +192,8 @@ Recent decisions affecting current work:
 - [Phase ?]: ProjectViewCache.driver_dry_run is a single Option where presence IS the mode; a value plus a separate active flag is two fields that can disagree (18-11)
 - [Phase ?]: Action::DriverDryRunLoaded stores under two guards — a preview must be open AND its command must match — so a stale report cannot show one command's blast radius under another's name (18-11)
 - [Phase ?]: prune_driver_maps now covers last_refresh and archive_cache too, and every_per_alias_driver_map_is_pruned destructures AppContext exhaustively, so a new alias-keyed field is a compile error until it has been classified (18-11)
+- [quick 260729-vmp]: A new opt-in affordance PUSHES the existing DriverConfirmScreen and never writes the registry itself — do_toggle_opt_in stays the single write path that has to agree with the spawn seam (CTRL-03)
+- [quick 260729-vmp]: `o` is tab-scoped on the detail screen DESPITE having no collision to resolve, so it cannot silently become a global detail-screen opt-in on tabs where it is undiscoverable; the scoping test is what makes the guard an enforced property rather than a comment (CTRL-03)
 
 ### Pending Todos
 
@@ -243,9 +245,10 @@ Recent decisions affecting current work:
 | 18 | Bump direct deps: notify-debouncer-full 0.7, serde_yml 0.0.13 | 2026-07-22 | 60f028d | — |
 | 19 | Add GitHub Actions release workflow: crates.io publish on version tags | 2026-07-22 | b174ecb | — |
 | 260728-kfx | Dedupe phases in parse_roadmap_phases so summary-checklist + Phase Details roadmaps do not list every phase twice | 2026-07-28 | df64162 | [260728-kfx](./quick/260728-kfx-dedupe-phases-in-parse-roadmap-phases-so/) |
+| 260729-vmp | Let the user opt a project in to driving from the Driver tab (`o` pushes the same confirmation the dashboard's `o` does; spawn seam unchanged) | 2026-07-30 | 70157bd | [260729-vmp](./quick/260729-vmp-let-the-user-opt-a-project-in-to-driving/) |
 
 ## Session Continuity
 
-Last session: 2026-07-30T04:07:00.000Z
-Stopped at: Completed 18-11-PLAN.md — Phase 18 complete (11 of 11 plans)
+Last session: 2026-07-30T06:06:00.000Z
+Stopped at: Completed quick task 260729-vmp — Phase 18 still complete (11 of 11 plans)
 Resume file: None
