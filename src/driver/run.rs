@@ -296,7 +296,13 @@ pub struct DriverRun {
 ///
 /// Kept as its own function rather than inlined so plan 17-06 reuses it for the
 /// killed path instead of inventing a second vocabulary for the same states.
-fn outcome_label(outcome: &RunOutcome) -> &'static str {
+///
+/// `pub(crate)` since plan 18-10 so the render layer's terminal-state table can
+/// be proved to read **exactly** the vocabulary this function writes. The two
+/// sides are a string protocol across a process boundary, and a test that spells
+/// the labels out a second time would agree with itself while disagreeing with
+/// disk.
+pub(crate) fn outcome_label(outcome: &RunOutcome) -> &'static str {
     match outcome {
         RunOutcome::SucceededWithChanges { .. } => "succeeded_with_changes",
         RunOutcome::SucceededNoChanges { .. } => "succeeded_no_changes",

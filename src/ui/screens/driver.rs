@@ -339,6 +339,172 @@ pub fn run_state_glyph(
     }
 }
 
+// ── The terminal-state table (OBS-05, D-13) ────────────────────────────────
+
+/// Every state a run can be in, as a **typed** value.
+///
+/// It exists so [`terminal_state_cell`] can match exhaustively with no wildcard
+/// arm, which is what makes a future state a compile error rather than a silent
+/// fallthrough to a word that happens to be wrong. Twelve of the thirteen are a
+/// [`RunVerdict`] or a [`crate::executor::RunOutcome`]; the thirteenth is the
+/// honest answer when neither is on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalState {
+    /// `RunVerdict::Live` — the record has no `ended_at` and the pid is still
+    /// this run's driver.
+    Live,
+    /// `RunVerdict::LivenessUnknown`. **Never a synonym for dead**: that
+    /// collapse was CR-05, and re-flattening the tri-state at the render layer
+    /// would print "your run died" about every healthy run on a platform where
+    /// the probe does not apply.
+    LivenessUnknown,
+    /// `RunVerdict::CrashedWithoutEnding` — no terminal record and the pid is
+    /// gone.
+    CrashedWithoutEnding,
+    /// `RunOutcome::SucceededWithChanges`.
+    Succeeded,
+    /// `RunOutcome::SucceededNoChanges`. **Its own state, not a flavour of
+    /// success**: the envelope said success while nothing moved on disk, which
+    /// is exactly the disagreement TRANS-02 exists to surface.
+    SucceededNoChanges,
+    /// `RunOutcome::Failed`.
+    Failed,
+    /// `RunOutcome::PermissionDenied`.
+    PermissionDenied,
+    /// `RunOutcome::TimedOut` — the wall-clock cap.
+    TimedOut,
+    /// `RunOutcome::Stalled` — the idle cap; the stuck detector proper.
+    Stalled,
+    /// `RunOutcome::CapabilityRefused` — no turn ever started.
+    CapabilityRefused,
+    /// `RunOutcome::SpawnFailed`.
+    SpawnFailed,
+    /// `RunOutcome::Killed` — the user stopped it.
+    Killed,
+    /// Neither an observation nor a recognised outcome label is on disk.
+    ///
+    /// **Not a crash and not a success.** Manufacturing either out of an absence
+    /// of evidence is the CR-05 defect in a new place.
+    Unrecorded,
+}
+
+impl TerminalState {
+    /// The state a derived [`crate::executor::RunOutcome`] names.
+    ///
+    /// **The match is exhaustive with no wildcard on purpose**: a new
+    /// `RunOutcome` variant must fail to compile here rather than fall through
+    /// to a word that is quietly wrong about what happened.
+    pub fn from_outcome(outcome: &crate::executor::RunOutcome) -> Self {
+        use crate::executor::RunOutcome;
+        match outcome {
+            RunOutcome::SucceededWithChanges { .. } => Self::Succeeded,
+            RunOutcome::SucceededNoChanges { .. } => Self::SucceededNoChanges,
+            RunOutcome::Failed { .. } => Self::Failed,
+            RunOutcome::PermissionDenied { .. } => Self::PermissionDenied,
+            RunOutcome::Killed { .. } => Self::Killed,
+            RunOutcome::TimedOut { .. } => Self::TimedOut,
+            RunOutcome::Stalled { .. } => Self::Stalled,
+            RunOutcome::CapabilityRefused { .. } => Self::CapabilityRefused,
+            RunOutcome::SpawnFailed { .. } => Self::SpawnFailed,
+        }
+    }
+
+    /// The state an outcome **label** names.
+    ///
+    /// The label is what `run.json` and `JournalEvent::RunEnded` actually carry,
+    /// written by `driver::run::outcome_label` from the derived outcome. A label
+    /// this build has never seen is [`Unrecorded`](Self::Unrecorded) rather than
+    /// a guess: the two vocabularies are kept in agreement by a test that maps
+    /// every `RunOutcome` through the driver's own labeller and back.
+    pub fn from_label(label: Option<&str>) -> Self {
+        match label {
+            Some("succeeded_with_changes") => Self::Succeeded,
+            Some("succeeded_no_changes") => Self::SucceededNoChanges,
+            Some("failed") => Self::Failed,
+            Some("permission_denied") => Self::PermissionDenied,
+            Some("timed_out") => Self::TimedOut,
+            Some("stalled") => Self::Stalled,
+            Some("capability_refused") => Self::CapabilityRefused,
+            Some("spawn_failed") => Self::SpawnFailed,
+            Some("killed") => Self::Killed,
+            _ => Self::Unrecorded,
+        }
+    }
+
+    /// The state the two pieces of evidence together support.
+    ///
+    /// An observation wins while there is one, because a live or crashed run has
+    /// no terminal record to read; once the run has ended the label speaks.
+    pub fn observed(verdict: Option<RunVerdict>, outcome: Option<&str>) -> Self {
+        match verdict {
+            Some(RunVerdict::Live) => Self::Live,
+            Some(RunVerdict::LivenessUnknown) => Self::LivenessUnknown,
+            Some(RunVerdict::CrashedWithoutEnding) => Self::CrashedWithoutEnding,
+            Some(RunVerdict::Ended) | None => Self::from_label(outcome),
+        }
+    }
+}
+
+/// The glyph, the run-detail word and the colour for one terminal state (D-13).
+///
+/// **The Replit rule governs every arm.** Each state arrives from evidence and
+/// from nothing else — `RunRecord.outcome`, `JournalEvent::RunEnded.outcome` or
+/// the exec exit, which is the four-source derivation Phase 15 computes from
+/// `is_error`, `terminal_reason`, the permission-denial list, the exit code and
+/// a git/disk snapshot — and **never from inspecting the agent's own prose**.
+/// The agent's words may be displayed as content in the output pane and may
+/// carry no authority here or anywhere else. The incident behind the rule: an
+/// agent deleted a production database during an explicit freeze, hid it,
+/// fabricated roughly four thousand fake users and fake test results, and
+/// falsely claimed rollback was impossible. A tool that repeats an agent's
+/// account of itself as fact makes that class of failure invisible to the human
+/// who is accountable for the repository.
+///
+/// **The match has no wildcard arm**, so a state this table has not been taught
+/// is a compile error rather than a word that is silently wrong.
+///
+/// The word carries **no interpolated value**, and that is a fact about the
+/// evidence rather than a simplification: what is on disk for a finished run is
+/// the outcome *label*, so a reason, a denial count or a cap duration is simply
+/// not there to render. Inventing one is what D-13 forbids. The return type is
+/// an owned `String` so a later source of a sanitised, `…`-truncated detail can
+/// be added without touching a caller.
+///
+/// **D-13 in one line, so it survives a reader who starts here:** every word
+/// below comes from evidence and never from the agent's prose. The incident is a
+/// production database deleted during an explicit freeze, hidden, and papered
+/// over with fabricated users and fabricated test results.
+pub fn terminal_state_cell(state: TerminalState) -> (&'static str, String, Color) {
+    let (glyph, word, color) = match state {
+        TerminalState::Live => (GLYPH_LIVE, "live", Color::Magenta),
+        TerminalState::LivenessUnknown => {
+            (GLYPH_LIVENESS_UNKNOWN, "liveness unknown", Color::Yellow)
+        }
+        TerminalState::CrashedWithoutEnding => (
+            GLYPH_FAILED,
+            "crashed without a terminal record",
+            Color::Red,
+        ),
+        TerminalState::Succeeded => (GLYPH_SUCCEEDED, "succeeded", Color::Green),
+        TerminalState::SucceededNoChanges => (
+            GLYPH_SUCCEEDED_NO_CHANGES,
+            "succeeded, no changes on disk",
+            Color::Yellow,
+        ),
+        TerminalState::Failed => (GLYPH_FAILED, "failed", Color::Red),
+        TerminalState::PermissionDenied => (GLYPH_FAILED, "permission denied", Color::Red),
+        TerminalState::TimedOut => (GLYPH_FAILED, "timed out", Color::Red),
+        TerminalState::Stalled => (GLYPH_FAILED, "stalled", Color::Red),
+        TerminalState::CapabilityRefused => (GLYPH_FAILED, "capability refused", Color::Red),
+        TerminalState::SpawnFailed => (GLYPH_FAILED, "spawn failed", Color::Red),
+        TerminalState::Killed => (GLYPH_KILLED, "killed", Color::DarkGray),
+        TerminalState::Unrecorded => {
+            (GLYPH_LIVENESS_UNKNOWN, "outcome not recorded", Color::Yellow)
+        }
+    };
+    (glyph, word.to_string(), color)
+}
+
 /// How long a run has been going, or how long it took.
 ///
 /// `+MM:SS` while it is still going and `ran MM:SS` once it has ended, both
@@ -960,7 +1126,14 @@ fn steps_lines(
     width: u16,
 ) -> Vec<Line<'static>> {
     let live = matches!(verdict, Some(RunVerdict::Live));
-    let (_, word, color) = run_state_glyph(verdict, summary.outcome.as_deref());
+    // **The run detail's word, not the run list's.** The list row is 18 cells at
+    // every width and carries the abbreviation; this row is the one place the
+    // full evidence-derived word fits, and it is what makes a finished run
+    // reviewable after the fact rather than merely glanceable (OBS-05).
+    let (_, word, color) = terminal_state_cell(TerminalState::observed(
+        verdict,
+        summary.outcome.as_deref(),
+    ));
     let (_, started) = local_date_time(&summary.started_at);
 
     let command_style = if live {
@@ -982,7 +1155,11 @@ fn steps_lines(
             ),
             Span::styled(format!("   {started}   "), label_style()),
             Span::styled(
-                if live { "running" } else { word },
+                if live {
+                    "running".to_string()
+                } else {
+                    word.clone()
+                },
                 Style::default().fg(color),
             ),
         ];
@@ -1896,6 +2073,211 @@ mod tests {
         }
     }
 
+    // ── After-the-fact review: the terminal-state table (OBS-05, D-13) ─────
+
+    /// The whole evidence-derived table, asserted as a table.
+    ///
+    /// The **exhaustiveness** half is not carried by this test — it is carried
+    /// by the two wildcard-free matches, which make a new state a compile error.
+    /// What this asserts is that no two states collapse into one cell, which a
+    /// compiler cannot see.
+    #[test]
+    fn every_terminal_state_maps_to_its_own_cell_from_evidence_alone() {
+        use std::collections::HashSet;
+
+        let all = [
+            TerminalState::Live,
+            TerminalState::LivenessUnknown,
+            TerminalState::CrashedWithoutEnding,
+            TerminalState::Succeeded,
+            TerminalState::SucceededNoChanges,
+            TerminalState::Failed,
+            TerminalState::PermissionDenied,
+            TerminalState::TimedOut,
+            TerminalState::Stalled,
+            TerminalState::CapabilityRefused,
+            TerminalState::SpawnFailed,
+            TerminalState::Killed,
+            TerminalState::Unrecorded,
+        ];
+
+        let cells: HashSet<(&str, String, Color)> =
+            all.into_iter().map(terminal_state_cell).collect();
+        assert_eq!(
+            cells.len(),
+            all.len(),
+            "two states collapsed into one cell: {cells:#?}"
+        );
+
+        // The run list's short word and this table's long one must at least
+        // agree on the glyph and the colour, or one surface says a run failed
+        // in red while the other says it succeeded in green.
+        for label in [
+            "succeeded_with_changes",
+            "succeeded_no_changes",
+            "failed",
+            "permission_denied",
+            "timed_out",
+            "stalled",
+            "capability_refused",
+            "spawn_failed",
+            "killed",
+        ] {
+            let (list_glyph, _, list_color) = run_state_glyph(None, Some(label));
+            let (glyph, word, color) =
+                terminal_state_cell(TerminalState::from_label(Some(label)));
+            assert_eq!(glyph, list_glyph, "{label}");
+            assert_eq!(color, list_color, "{label}");
+            assert!(!word.is_empty(), "{label}");
+        }
+
+        // A label this build has never seen is not guessed at.
+        assert_eq!(
+            TerminalState::from_label(Some("a_label_from_a_later_build")),
+            TerminalState::Unrecorded
+        );
+        assert_eq!(TerminalState::from_label(None), TerminalState::Unrecorded);
+    }
+
+    /// The vocabulary written by the driver and the vocabulary read by the
+    /// renderer are a **string protocol across a process boundary**. Spelling
+    /// the labels out a second time here would produce a test that agrees with
+    /// itself while disagreeing with disk, so this maps every `RunOutcome`
+    /// through the driver's own labeller.
+    #[cfg(unix)]
+    #[test]
+    fn the_render_vocabulary_is_the_one_the_driver_actually_writes() {
+        use crate::executor::RunOutcome;
+        use std::time::Duration;
+
+        let outcomes = [
+            RunOutcome::SucceededWithChanges {
+                turns: Vec::new(),
+                total_cost_usd: None,
+            },
+            RunOutcome::SucceededNoChanges {
+                turns: Vec::new(),
+                total_cost_usd: None,
+            },
+            RunOutcome::Failed {
+                reason: "the agent exited non-zero".to_string(),
+                subtype: None,
+                terminal_reason: None,
+                exit_code: Some(1),
+            },
+            RunOutcome::PermissionDenied {
+                denials: Vec::new(),
+            },
+            RunOutcome::Killed { turns: Vec::new() },
+            RunOutcome::TimedOut {
+                after: Duration::from_secs(60),
+            },
+            RunOutcome::Stalled {
+                idle_for: Duration::from_secs(60),
+            },
+            RunOutcome::CapabilityRefused {
+                missing: vec!["stream-json".to_string()],
+            },
+            RunOutcome::SpawnFailed {
+                reason: "no such file".to_string(),
+            },
+        ];
+
+        for outcome in &outcomes {
+            let label = crate::driver::run::outcome_label(outcome);
+            assert_eq!(
+                TerminalState::from_label(Some(label)),
+                TerminalState::from_outcome(outcome),
+                "the label {label:?} does not round-trip to {outcome:?}"
+            );
+            assert_ne!(
+                TerminalState::from_label(Some(label)),
+                TerminalState::Unrecorded,
+                "the renderer has never been taught the label {label:?}"
+            );
+        }
+    }
+
+    /// CR-05, at the render layer. The tri-state fix must not be re-flattened
+    /// here: on a platform where the probe does not apply, collapsing unknown
+    /// into dead would print "your run died" about every healthy run, on every
+    /// scan, for as long as the run lasted.
+    #[test]
+    fn liveness_unknown_is_not_rendered_as_dead() {
+        let unknown = terminal_state_cell(TerminalState::LivenessUnknown);
+        let crashed = terminal_state_cell(TerminalState::CrashedWithoutEnding);
+        let killed = terminal_state_cell(TerminalState::Killed);
+        let failed = terminal_state_cell(TerminalState::Failed);
+
+        assert_ne!(unknown, crashed);
+        assert_ne!(unknown, killed);
+        assert_ne!(unknown, failed);
+        assert_ne!(
+            unknown.2, crashed.2,
+            "unknown must not even share the colour of a death report"
+        );
+        assert!(!unknown.1.contains("crash"), "{:?}", unknown.1);
+        assert!(!unknown.1.contains("died"), "{:?}", unknown.1);
+
+        // And the verdict routes there rather than to a terminal outcome, even
+        // when a stale label is sitting beside it.
+        assert_eq!(
+            TerminalState::observed(Some(RunVerdict::LivenessUnknown), Some("failed")),
+            TerminalState::LivenessUnknown
+        );
+    }
+
+    /// TRANS-02's whole point: the envelope said success while nothing moved on
+    /// disk, and that disagreement is the thing this tool exists to surface. A
+    /// flavour of success would bury it.
+    #[test]
+    fn succeeded_no_changes_is_its_own_state_and_not_a_flavour_of_success() {
+        let ok = terminal_state_cell(TerminalState::Succeeded);
+        let no_changes = terminal_state_cell(TerminalState::SucceededNoChanges);
+
+        assert_ne!(ok.0, no_changes.0, "a different glyph");
+        assert_ne!(ok.1, no_changes.1, "a different word");
+        assert_ne!(ok.2, no_changes.2, "a different colour");
+        assert!(
+            no_changes.1.contains("no changes"),
+            "the word must say what did not happen: {:?}",
+            no_changes.1
+        );
+    }
+
+    /// Phase 17 D-11: once the TUI exits the child's stdout pipe is gone, so a
+    /// run this session did not spawn can only be shown from disk — and the
+    /// pane says so in its first row rather than leaving the reader to infer it.
+    #[test]
+    fn the_adopted_notice_renders_only_for_a_run_this_session_did_not_spawn() {
+        let mut output = DriverOutput::default();
+        output.push_record(DriverLineKind::Output, "ordinary output");
+
+        let adopted =
+            output_body_lines(Some(&output), &[], fixed_now(), true, Color::Green);
+        assert!(
+            text(&adopted[0]).contains(ADOPTED_RUN_NOTICE),
+            "the notice must be the FIRST row: {:?}",
+            text(&adopted[0])
+        );
+        assert!(
+            text(&adopted[0]).contains("gone"),
+            "and it must say the live output is gone, never promise it: {:?}",
+            text(&adopted[0])
+        );
+
+        let spawned_here = body(Some(&output));
+        let rendered: String = spawned_here.iter().map(text).collect();
+        assert!(
+            !rendered.contains(ADOPTED_RUN_NOTICE),
+            "a run this session spawned must not carry the notice: {rendered:?}"
+        );
+
+        // The indicator agrees with the notice rather than contradicting it.
+        let (indicator, _) = follow_indicator(false, false, 0, None, true);
+        assert_eq!(indicator, INDICATOR_JOURNAL_ONLY);
+    }
+
     // ── The four-state injection display (STEER-02, D-07, D-10) ────────────
 
     fn message(id: &str, text: &str) -> InboxMessage {
@@ -2323,7 +2705,9 @@ mod tests {
             .collect();
         assert!(!finished.contains("turn 3"), "{finished:?}");
         assert!(!finished.contains("running"), "{finished:?}");
-        assert!(finished.contains("ok"), "{finished:?}");
+        // The **run-detail** word, not the run list's abbreviation: this row is
+        // the one place the full evidence-derived word fits (Surface 8).
+        assert!(finished.contains("succeeded"), "{finished:?}");
     }
 
     /// Held-out render-buffer backstop (UI-SPEC `## UI Considerations`, the

@@ -1,3 +1,6 @@
+use super::driver_confirm::{DriverAction, DriverConfirmScreen};
+use super::driver_inject::DriverInjectScreen;
+use super::driver_start::DriverStartScreen;
 use super::enqueue::EnqueueScreen;
 use super::help::HelpScreen;
 use super::queue_delete_confirm::QueueDeleteConfirmScreen;
@@ -2103,6 +2106,65 @@ impl Screen for DetailScreen {
                 cache.driver_follow = true;
                 ctx.needs_redraw = true;
                 ScreenAction::None
+            }
+            // `i`: open the injection input — **only when there is a live run**
+            // (STEER-01, D-22).
+            //
+            // `DriverInjectScreen`'s contract is that it is constructed with the
+            // id of a run that is live *now*, so the refusal belongs here rather
+            // than inside it. The refusal sets the pinned message and
+            // **dispatches nothing**: a screen that set a message and dispatched
+            // anyway would pass a test that only checked the message, which is
+            // the shape `driver_confirm.rs:479-486` records as the load-bearing
+            // half.
+            //
+            // Liveness is `ObservedRun::is_live` — positively observed running —
+            // and never `LivenessUnknown`, because opening an input aimed at a
+            // run nothing can speak for would queue a message that may already
+            // be undeliverable.
+            KeyCode::Char('i') if current_view == DetailSubView::Driver => {
+                let live_run = ctx
+                    .observed_runs
+                    .get(&self.alias)
+                    .filter(|observed| observed.is_live())
+                    .map(|observed| observed.run_id.clone());
+                ctx.needs_redraw = true;
+                match live_run {
+                    Some(run_id) => ScreenAction::Push(Box::new(DriverInjectScreen::new(
+                        self.alias.clone(),
+                        run_id,
+                    ))),
+                    None => {
+                        ctx.status_message = Some((
+                            super::driver_inject::no_live_run_message(&self.alias),
+                            std::time::Instant::now(),
+                        ));
+                        ScreenAction::None
+                    }
+                }
+            }
+            // `s`: the start flow (Surface 5), which asks for the command and
+            // the goal before it reaches the confirmation the dashboard's `r`
+            // reaches directly.
+            KeyCode::Char('s') if current_view == DetailSubView::Driver => {
+                ctx.needs_redraw = true;
+                ScreenAction::Push(Box::new(DriverStartScreen::new(self.alias.clone())))
+            }
+            // `x`: stop, **through the existing confirmation** and never
+            // directly.
+            //
+            // Tab-scoped, and the collision is deliberate: `x` is bound on the
+            // Defaults tab (clear a value) and on the Queue tab (delete), both
+            // untouched, and per-tab reuse is the established pattern — `d` is
+            // already bound twice (D-15). Using `x` here matches the dashboard's
+            // `x` = stop run, and that verb/key consistency across the two
+            // surfaces is worth more than a unique letter.
+            KeyCode::Char('x') if current_view == DetailSubView::Driver => {
+                ctx.needs_redraw = true;
+                ScreenAction::Push(Box::new(DriverConfirmScreen::new(
+                    self.alias.clone(),
+                    DriverAction::Stop,
+                )))
             }
             KeyCode::Char('e') => {
                 // Archive FileView: open file in $EDITOR (read-only for milestones)
@@ -6121,6 +6183,160 @@ mod tests {
             .browser_file_content = None;
         press(&mut screen, &mut ctx, KeyCode::PageUp);
         assert_eq!(browse_offset(&ctx), 0);
+    }
+
+    // ── The Driver tab's three action keys (STEER-01, OBS-05) ──────────────
+    //
+    // All three are tab-scoped and all three go through the screens 18-07
+    // landed rather than doing anything themselves. The `i` pair is the one
+    // that matters most: its refusal has to be visible **and** silent on the
+    // wire, and only an assertion on the receiver can see the second half.
+
+    /// The Driver tab with a run list, an event channel and no observed run.
+    fn driver_action_fixture() -> (
+        DetailScreen,
+        AppContext,
+        tokio::sync::mpsc::UnboundedReceiver<crate::action::Action>,
+    ) {
+        let (mut screen, mut ctx) = driver_fixture(100, 30, 0, true);
+        let _ = &mut screen;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        ctx.event_tx = Some(tx);
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        cache.driver_runs = vec![test_run("2026-07-29T21-40-00Z-3f2a")];
+        (screen, ctx, rx)
+    }
+
+    /// The name of the screen a [`ScreenAction`] pushes, if it pushes one.
+    ///
+    /// `ScreenAction` has no `Debug` impl and a `Box<dyn Screen>` has nothing
+    /// else to assert on, so the name is the identity — which is what
+    /// `DetailScreen::NAME` already exists to make reliable.
+    fn pushed_screen_name(action: &ScreenAction) -> Option<String> {
+        match action {
+            ScreenAction::Push(pushed) => Some(pushed.name().to_string()),
+            _ => None,
+        }
+    }
+
+    fn observed_live_run(run_id: &str) -> crate::driver::reconcile::ObservedRun {
+        crate::driver::reconcile::ObservedRun {
+            alias: TEST_ALIAS.to_string(),
+            run_id: run_id.to_string(),
+            pid: 4321,
+            pgid: 4321,
+            started_at: "2026-07-29T21:40:00Z".to_string(),
+            goal: "ship the driver tab".to_string(),
+            gsd_command: "/gsd:execute-phase 18".to_string(),
+            liveness: crate::driver::liveness::Liveness::Alive,
+        }
+    }
+
+    /// CTRL-03 at the affordance layer, in the shape `driver_confirm.rs`
+    /// records: the **second** assertion is the load-bearing one. A binding that
+    /// set the message and opened the screen anyway would pass a test that
+    /// checked only the message, and the user would be typing into an input
+    /// aimed at a run that is not there.
+    #[test]
+    fn pressing_i_with_no_live_run_sets_a_message_and_dispatches_nothing() {
+        let (mut screen, mut ctx, mut rx) = driver_action_fixture();
+        assert!(ctx.observed_runs.is_empty(), "the fixture has no live run");
+
+        let action = screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx);
+        assert!(
+            matches!(action, ScreenAction::None),
+            "the injection screen must not open"
+        );
+
+        let message = ctx
+            .status_message
+            .as_ref()
+            .map(|(text, _)| text.clone())
+            .expect("the refusal must be visible, not silent");
+        assert_eq!(
+            message,
+            crate::ui::screens::driver_inject::no_live_run_message(TEST_ALIAS),
+            "the copy lives in one place so the screen and its opener cannot drift"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "the refusal must dispatch nothing at all"
+        );
+
+        // A run that is merely *observed* is not enough: an undeterminable
+        // liveness answer is not a live run (CR-05's narrow reading).
+        let mut unknown = observed_live_run("2026-07-29T21-40-00Z-3f2a");
+        unknown.liveness = crate::driver::liveness::Liveness::Unknown;
+        ctx.observed_runs.insert(TEST_ALIAS.to_string(), unknown);
+        ctx.status_message = None;
+        let action = screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(ctx.status_message.is_some());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn pressing_i_with_a_live_run_pushes_the_injection_screen() {
+        let (mut screen, mut ctx, _rx) = driver_action_fixture();
+        ctx.observed_runs.insert(
+            TEST_ALIAS.to_string(),
+            observed_live_run("2026-07-29T21-40-00Z-3f2a"),
+        );
+
+        let action = screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(pushed_screen_name(&action).as_deref(), Some("driver_inject"));
+        assert!(
+            ctx.status_message.is_none(),
+            "a run that IS live gets no refusal"
+        );
+    }
+
+    #[test]
+    fn pressing_s_on_the_driver_tab_pushes_the_start_flow() {
+        let (mut screen, mut ctx, _rx) = driver_action_fixture();
+        let action = screen.handle_key(KeyCode::Char('s'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(pushed_screen_name(&action).as_deref(), Some("driver_start"));
+    }
+
+    /// `x` stops **through the existing confirmation** and never directly: the
+    /// whole process tree is torn down, and that is not a thing a single
+    /// keystroke may do.
+    #[test]
+    fn pressing_x_on_the_driver_tab_pushes_the_stop_confirmation() {
+        let (mut screen, mut ctx, _rx) = driver_action_fixture();
+        let action = screen.handle_key(KeyCode::Char('x'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(pushed_screen_name(&action).as_deref(), Some("driver_confirm"));
+    }
+
+    /// The three keys are **tab-scoped**, so the tabs that already claim `s`,
+    /// `i` or `x` keep them. `x` on the Defaults tab clears a value and `x` on
+    /// the Queue tab deletes an entry; neither may start reaching for the
+    /// driver.
+    #[test]
+    fn the_three_driver_keys_are_scoped_to_the_driver_tab() {
+        for tab in [
+            DetailSubView::PhaseList,
+            DetailSubView::Pipeline,
+            DetailSubView::Defaults,
+        ] {
+            for code in [KeyCode::Char('i'), KeyCode::Char('s'), KeyCode::Char('x')] {
+                let (mut screen, mut ctx, _rx) = driver_action_fixture();
+                ctx.detail_sub_view_per_project
+                    .insert(TEST_ALIAS.to_string(), tab.clone());
+                ctx.observed_runs.insert(
+                    TEST_ALIAS.to_string(),
+                    observed_live_run("2026-07-29T21-40-00Z-3f2a"),
+                );
+                let action = screen.handle_key(code, KeyModifiers::NONE, &mut ctx);
+                let pushed = pushed_screen_name(&action);
+                assert!(
+                    !pushed
+                        .as_deref()
+                        .is_some_and(|name| name.starts_with("driver_")),
+                    "{code:?} reached {pushed:?} from {tab:?}"
+                );
+            }
+        }
     }
 
     // --- CD-03 / IN-07 closure: the generic `_ =>` fallback ---------------
