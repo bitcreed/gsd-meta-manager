@@ -79,7 +79,11 @@ impl DetailScreen {
     }
 }
 
-fn tab_index(sub_view: &DetailSubView) -> usize {
+/// `pub(crate)` so the index mapping is assertable from `app.rs`, which owns the
+/// enum: a tab whose index does not round-trip lands the user on a different tab
+/// than the one they asked for, and that is a logic-level property rather than a
+/// rendering one.
+pub(crate) fn tab_index(sub_view: &DetailSubView) -> usize {
     match sub_view {
         DetailSubView::PhaseList => 0,
         DetailSubView::RoadmapViz => 1,
@@ -91,10 +95,18 @@ fn tab_index(sub_view: &DetailSubView) -> usize {
         DetailSubView::Archive => 7,
         DetailSubView::Defaults => 8,
         DetailSubView::Browse => 9,
+        // Index 10, per D-15. `TAB_TITLES` still has ten entries, so this index
+        // selects no tab in the bar and `Right` stops at 9 — the title vector,
+        // the `Shift+D` binding and the rendering are plan 18-09's. This arm is
+        // the minimum the compiler demands, and the gap is staged rather than
+        // accidental.
+        DetailSubView::Driver => 10,
     }
 }
 
-fn sub_view_from_index(index: usize) -> DetailSubView {
+/// `pub(crate)` for the same reason as [`tab_index`]: the round trip is the
+/// property worth asserting, and it takes both halves.
+pub(crate) fn sub_view_from_index(index: usize) -> DetailSubView {
     match index {
         0 => DetailSubView::PhaseList,
         1 => DetailSubView::RoadmapViz,
@@ -106,6 +118,9 @@ fn sub_view_from_index(index: usize) -> DetailSubView {
         7 => DetailSubView::Archive,
         8 => DetailSubView::Defaults,
         9 => DetailSubView::Browse,
+        10 => DetailSubView::Driver,
+        // Unchanged fallback: an out-of-range index still lands on the first
+        // tab rather than on the newest one.
         _ => DetailSubView::PhaseList,
     }
 }
@@ -1907,6 +1922,13 @@ impl Screen for DetailScreen {
             DetailSubView::Archive => self.render_archive_tab(frame, content_area, ctx),
             DetailSubView::Defaults => self.render_defaults_tab(frame, content_area, ctx),
             DetailSubView::Browse => self.render_browser_tab(frame, content_area, ctx),
+            // Plan 18-09 renders the Driver tab. This arm exists only because
+            // the match is exhaustive, and it paints **nothing** on purpose:
+            // the variant is unreachable today (no key selects index 10 and
+            // `TAB_TITLES` still stops at 9), and a placeholder here would be a
+            // surface promising output that no producer feeds — which is the
+            // "looks done but isn't" failure this phase enumerates by name.
+            DetailSubView::Driver => {}
         }
 
         // Render footer with tab-appropriate hints
@@ -3203,6 +3225,9 @@ impl DetailScreen {
             DetailSubView::Archive => self.render_archive_tab(frame, content_area, ctx),
             DetailSubView::Defaults => self.render_defaults_tab(frame, content_area, ctx),
             DetailSubView::Browse => self.render_browser_tab(frame, content_area, ctx),
+            // The duplicate of the dispatch above, used by `EnqueueScreen` to
+            // paint the body behind its footer. Same arm, same reason (18-09).
+            DetailSubView::Driver => {}
         }
     }
 

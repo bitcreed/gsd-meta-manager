@@ -25,6 +25,15 @@ pub enum DetailSubView {
     Archive,
     Defaults,
     Browse,
+    /// The Driver tab: run list, run detail, live output (D-15, OBS-04).
+    ///
+    /// **Index 10, and it is deliberately not yet reachable.** This plan adds
+    /// the variant and the two arms `detail.rs` needs to compile; the tab title
+    /// vector, the `Shift+D` binding, the footer hints and the rendering are
+    /// plan 18-09's. Until those land, `TAB_TITLES` still has ten entries, so
+    /// `Right` stops at index 9 and nothing selects this — read the gap as a
+    /// staged landing rather than as a tab that is half-wired by accident.
+    Driver,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,6 +78,29 @@ pub fn parse_filter(input: &str) -> (String, FilterColumn) {
     } else {
         (input.to_string(), FilterColumn::All)
     }
+}
+
+/// Map a goal buffer to the `Option<&str>` `App::start_driver_run` takes, so an
+/// empty one arrives as `None` and never as `Some("")` (D-23, OBS-03).
+///
+/// **The trap is live rather than theoretical.** The start flow's goal field is
+/// optional and Step B accepts an empty buffer on `Enter`, so the common case is
+/// a user who typed nothing. `drive_argv` omits `--goal` entirely for `None`,
+/// but for `Some("")` it pushes the flag with an empty operand — and the driver
+/// then records an empty goal into `RunRecord.goal` **as though one had been
+/// given**. Those are different facts, and the display distinguishes them: no
+/// goal renders `(none given)`, while a recorded empty goal renders as a blank
+/// line that looks like a goal the reader simply cannot see.
+///
+/// Emptiness is tested on the **trimmed** text while the value returned is the
+/// **untrimmed** original. A goal of three spaces is no goal; a goal that was
+/// given is stored verbatim and never paraphrased, so nothing here rewrites what
+/// the user typed (FEATURES table stakes, D-23).
+///
+/// Pure, which is what makes the branch that matters testable without spawning a
+/// driver (S6).
+pub fn goal_or_none(goal: Option<&str>) -> Option<&str> {
+    goal.filter(|text| !text.trim().is_empty())
 }
 
 pub fn classify_status(status: &str) -> StatusCategory {
@@ -394,6 +426,269 @@ impl App {
                     cursor: read.cursor,
                     last_seq,
                 },
+            });
+        });
+    }
+
+    // ── The Driver surface's three schedulers (D-28) ──────────────────
+    //
+    // All three are `pub` for the reason `start_driver_run` and
+    // `stop_driver_run` are: they are the seams the UI layer reaches, and a
+    // `Screen` only ever receives `&mut AppContext`, so the route from a key to
+    // one of these is an `Action` this file dispatches. Two of them — the run
+    // list and the dry-run preview — have no in-file caller yet because their
+    // callers are the Driver tab's own key handling, which is a later plan's.
+    //
+    // All three follow the shipped `spawn_blocking` → `Action` shape: a
+    // `let … else` guard on `event_tx`, a cloned sender, owned data moved in.
+    // **No file I/O on the render thread** — that phrase is the searchable
+    // marker this file already uses for the boundary (S1).
+
+    /// Resolve one alias's `.planning/` directory, or refuse visibly (S4).
+    ///
+    /// The schedulers below begin with this lookup, and they all refuse the
+    /// same way: a message in `ctx.error_message` and a redraw, never a bare
+    /// `return`. Sharing it is what stops the refusals drifting into several
+    /// different wordings for one condition.
+    fn planning_dir_for(&mut self, alias: &str) -> Option<PathBuf> {
+        match self.ctx.config.projects.get(alias) {
+            Some(project) => Some(project.path.join(".planning")),
+            None => {
+                self.ctx.error_message = Some(format!("No registered project named '{alias}'"));
+                self.needs_redraw = true;
+                None
+            }
+        }
+    }
+
+    /// Schedule the durable append of one injected message (STEER-01, STEER-03).
+    ///
+    /// **The key handler never touches the filesystem, and that is the whole
+    /// shape of this function.** `journal::inbox::append` pays a `sync_data()`
+    /// — deliberately, because STEER-03's criterion is that the bytes were on
+    /// disk before any reader existed — and a `sync_data()` on the render thread
+    /// is the WR-10 failure mode whose symptom is a frozen frame rather than an
+    /// error (D-06, D-28). So the write runs on `spawn_blocking` with its result
+    /// returned as an `Action` on a cloned sender, following the idiom this file
+    /// already uses for the re-parse, for session detection and for the journal
+    /// tail. **No file I/O on the render thread.**
+    ///
+    /// `id` is the caller's, minted at queue time before any other process saw
+    /// the line, which is what makes the `queued` state addressable at all
+    /// (D-05). It is **not** re-minted here: `InboxMessage::new` would generate
+    /// a fresh one, and the message the UI is tracking would then have an id no
+    /// journal record ever references.
+    ///
+    /// The status the UI shows is set by the `DriverInjectWritten` handler and
+    /// never here — nothing may read `queued` before the write returns `Ok`.
+    pub fn schedule_inbox_append(
+        &mut self,
+        alias: &str,
+        run_id: &str,
+        id: String,
+        text: String,
+    ) {
+        let Some(planning_dir) = self.planning_dir_for(alias) else {
+            return;
+        };
+
+        // The same fallible join `schedule_journal_tail` uses, and for the same
+        // reason: the run id reaches the TUI from the driven project's own
+        // `active` file, so it is attacker-controlled for threat-modelling
+        // purposes (D-27, WR-02). Without this a traversing id would have the
+        // TUI appending an agent-authored line to an arbitrary file on the
+        // user's disk. Logged by kind only — never the path, which IS the
+        // untrusted value (S3).
+        let Some(paths) = crate::journal::run_paths(&planning_dir, run_id) else {
+            tracing::warn!(
+                alias = %alias,
+                kind = "run_id_not_a_plain_component",
+                "inbox append refused: the run id does not name a single directory component",
+            );
+            self.ctx.error_message = Some(
+                "Could not queue message: that run id does not name a single directory \
+                 component. Nothing was written — try again."
+                    .to_string(),
+            );
+            self.needs_redraw = true;
+            return;
+        };
+
+        let Some(tx) = &self.ctx.event_tx else {
+            self.ctx.error_message = Some(
+                "Could not queue message: this session has no event channel. Nothing was \
+                 written — try again."
+                    .to_string(),
+            );
+            self.needs_redraw = true;
+            return;
+        };
+        let tx = tx.clone();
+        let inbox = paths.inbox;
+        let alias_for_task = alias.to_string();
+        let run_id_for_task = run_id.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            // Built by hand rather than through `InboxMessage::new` so the
+            // caller's id survives; `cap_chars` is applied explicitly because
+            // that is the half of `new` this path still needs.
+            let message = crate::journal::inbox::InboxMessage {
+                id: id.clone(),
+                ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                text: crate::journal::inbox::cap_chars(
+                    &text,
+                    crate::journal::inbox::MAX_INBOX_TEXT_CHARS,
+                ),
+            };
+
+            // The error **kind** and nothing else. An `io::Error`'s `Display`
+            // can carry an OS path, and this path's operand is a run directory
+            // under a project the agent writes to (S3, D-28).
+            let error = crate::journal::inbox::append(&inbox, &message)
+                .err()
+                .map(|e| format!("{:?}", e.kind()));
+            if let Some(kind) = &error {
+                tracing::warn!(
+                    alias = %alias_for_task,
+                    run_id = %run_id_for_task,
+                    kind = %kind,
+                    "inbox append failed",
+                );
+            }
+
+            let _ = tx.send(Action::DriverInjectWritten {
+                alias: alias_for_task,
+                run_id: run_id_for_task,
+                id,
+                error,
+            });
+        });
+    }
+
+    /// Schedule the run-list directory scan and the selected run's inbox read
+    /// (OBS-05, STEER-02).
+    ///
+    /// Both halves are blocking filesystem work — a `read_dir` plus one small
+    /// `run.json` per run, then a byte-offset tail — and **this is one of the
+    /// phase's own new blocking paths**. Wrapping only the calls the Phase 17
+    /// review listed while leaving the new ones on the render thread is the
+    /// named half-fix (D-28), so this follows the same `spawn_blocking` →
+    /// `Action` idiom. **No file I/O on the render thread.**
+    ///
+    /// The two reads share one task rather than taking one each, because the
+    /// second depends on the first: which run's inbox to read is decided by
+    /// indexing the freshly-listed runs. Splitting them would mean either a
+    /// round trip through the event loop between them or a stale index.
+    ///
+    /// The inbox is read from offset zero every time, and that is deliberate:
+    /// the payload is the whole inbox rather than a delta, so a message removed
+    /// from the file is expressed by its absence — the same reason
+    /// [`Action::RunsReconciled`] carries the whole scan.
+    pub fn schedule_run_list_scan(&mut self, alias: &str, project_path: &Path) {
+        let Some(tx) = &self.ctx.event_tx else {
+            self.ctx.error_message =
+                Some(format!("Could not list the runs for '{alias}': no event channel."));
+            self.needs_redraw = true;
+            return;
+        };
+        let tx = tx.clone();
+        let planning_dir = project_path.join(".planning");
+        let alias_for_task = alias.to_string();
+        let selected = self
+            .ctx
+            .view_cache
+            .get(alias)
+            .map_or(0, |cache| cache.driver_selected_run);
+
+        tokio::task::spawn_blocking(move || {
+            // Already sorted newest first by `list_runs` itself; the ordering is
+            // lexicographic-descending on the run id, which is chronological
+            // because `new_run_id`'s format makes byte order time order.
+            let runs = crate::journal::list_runs(&planning_dir);
+
+            // The fallible join again, on an id that came off disk (D-27).
+            let inbox = runs
+                .get(selected)
+                .and_then(|run| crate::journal::run_paths(&planning_dir, &run.run_id))
+                .and_then(|paths| {
+                    match crate::journal::inbox::tail(
+                        &paths.inbox,
+                        crate::journal::reader::TailCursor::default(),
+                    ) {
+                        Ok(read) => Some(read.messages),
+                        Err(e) => {
+                            // Kind only (S3).
+                            tracing::warn!(
+                                alias = %alias_for_task,
+                                kind = ?e.kind(),
+                                "inbox read failed",
+                            );
+                            None
+                        }
+                    }
+                })
+                .unwrap_or_default();
+
+            let _ = tx.send(Action::DriverRunsListed {
+                alias: alias_for_task,
+                runs,
+                inbox,
+            });
+        });
+    }
+
+    /// Schedule the dry-run preview for `alias` and `command` (D-26).
+    ///
+    /// `dry_run::build_report` shells out to `git` twice, synchronously, and
+    /// **this is one of the WR-10 call sites the Phase 17 review named by
+    /// hand** — a `git` invocation on a cold repository is unbounded from the
+    /// render loop's point of view. So it runs on `spawn_blocking` and returns
+    /// through an `Action`. **No file I/O on the render thread** (D-28).
+    ///
+    /// The token comes from [`DrivableProject::from_registry`], the only
+    /// production constructor, so a project the user never opted in cannot have
+    /// a preview built for it — which is right, because the preview describes a
+    /// drive that would itself be refused. **This is not a second spawn gate**:
+    /// nothing here spawns an agent, and the gate `tests/spawn_seam_guard.rs`
+    /// pins is still the child's (D-16).
+    #[cfg(unix)]
+    pub fn schedule_dry_run_report(&mut self, alias: &str, command: &str) {
+        use crate::executor::DrivableProject;
+
+        let Some(entry) = self.ctx.config.projects.get(alias).cloned() else {
+            self.ctx.error_message = Some(format!("No registered project named '{alias}'"));
+            self.needs_redraw = true;
+            return;
+        };
+        let project = match DrivableProject::from_registry(alias, &entry) {
+            Ok(project) => project,
+            Err(refusal) => {
+                self.ctx.error_message = Some(refusal.to_string());
+                self.needs_redraw = true;
+                return;
+            }
+        };
+
+        let Some(tx) = &self.ctx.event_tx else {
+            self.ctx.error_message = Some(format!(
+                "Could not build a dry-run preview for '{alias}': no event channel."
+            ));
+            self.needs_redraw = true;
+            return;
+        };
+        let tx = tx.clone();
+        let alias_for_task = alias.to_string();
+        let command_for_task = command.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let report = crate::driver::dry_run::render(&crate::driver::dry_run::build_report(
+                &project,
+                &command_for_task,
+            ));
+            let _ = tx.send(Action::DriverDryRunLoaded {
+                alias: alias_for_task,
+                command: command_for_task,
+                report,
             });
         });
     }
@@ -802,13 +1097,21 @@ impl App {
             // distinct all the way down: `drive_argv` omits the flag entirely
             // for `None`, where an empty string would record an empty goal as
             // though one had been given.
+            //
+            // That reasoning was written when the handler passed a hard-coded
+            // `None`, because there was no screen to type a goal into — Phase
+            // 18's start flow (D-23) is what changes. The handler now passes the
+            // variant's own `goal` through, and the reasoning it replaces is not
+            // obsolete but **load-bearing**: the goal picker's Step B accepts an
+            // empty buffer, so the empty-string trap is live rather than
+            // theoretical, and [`goal_or_none`] is what keeps it shut.
             Action::DriverStartRequested {
                 alias,
                 command,
                 goal,
             } => {
                 #[cfg(unix)]
-                self.start_driver_run(&alias, &command, goal.as_deref());
+                self.start_driver_run(&alias, &command, goal_or_none(goal.as_deref()));
                 // Off Unix there is no detached spawn to reach, so the request
                 // has nowhere to go. The bindings are consumed explicitly
                 // rather than left to an `unused_variables` allow.
@@ -871,52 +1174,106 @@ impl App {
             }
             // ── The Driver surface's four messages ────────────────────
             //
-            // Their handlers are plan 18-05's named deliverable: the inbox
-            // append on `spawn_blocking` (D-06/D-28), the run-list scan, and
-            // the dry-run preview. The arms exist here because `Action` is
-            // matched exhaustively — a catch-all would let a later variant be
-            // added and silently ignored, which is the opposite of what this
-            // match's exhaustiveness is for.
+            // Four explicit arms rather than a catch-all: a `_ =>` would let a
+            // later variant be added and silently ignored, which is the
+            // opposite of what this match's exhaustiveness is for.
             //
-            // Nothing is logged from `text` or any other message body: log
-            // lines in this subsystem carry the error **kind** and counts only,
-            // never a body, because a body can carry agent output.
+            // Nothing is logged from `text`, `report` or any other message
+            // body: log lines in this subsystem carry the error **kind** and
+            // counts only, because a body can carry agent output (S3).
+
+            // The request arrives from a key handler that touched no file, and
+            // it leaves this arm still having touched none (D-22, D-28).
             Action::DriverInjectRequested {
                 alias,
                 run_id,
                 id,
                 text,
             } => {
-                tracing::debug!(
-                    %alias,
-                    %run_id,
-                    %id,
-                    chars = text.chars().count(),
-                    "injection requested before its handler landed (18-05)",
-                );
+                self.schedule_inbox_append(&alias, &run_id, id, text);
             }
+            // The durable append reported. **`queued` is set here and nowhere
+            // earlier**, because STEER-03's criterion is survival of the
+            // writing process: a buffered write that dies with the TUI
+            // satisfies the UI and fails the criterion, so nothing may claim
+            // the message is queued before the `sync_data()`-backed write
+            // returned `Ok` (D-06).
+            //
+            // On failure the error copy states that **nothing was written** —
+            // the honest thing to say, and the thing that tells the user
+            // retrying is safe rather than a way to send the same steer twice.
             Action::DriverInjectWritten {
                 alias,
                 run_id,
                 id,
                 error,
             } => {
-                tracing::debug!(
-                    %alias,
-                    %run_id,
-                    %id,
-                    failed = error.is_some(),
-                    "injection write reported before its handler landed (18-05)",
-                );
+                match error {
+                    Some(kind) => {
+                        tracing::warn!(
+                            %alias,
+                            %run_id,
+                            %id,
+                            kind = %kind,
+                            "injection append failed",
+                        );
+                        self.ctx.error_message = Some(format!(
+                            "Could not queue message: {kind}. Nothing was written — try again."
+                        ));
+                    }
+                    None => {
+                        // Deliberately promises nothing about timing. The
+                        // dequeue ack was measured at 55 seconds, so any word
+                        // implying imminence would be a lie about the protocol
+                        // (D-07).
+                        self.ctx.status_message = Some((
+                            "Queued — waiting for the driver to pick it up.".to_string(),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                }
+                self.needs_redraw = true;
             }
+            // Both payloads replace rather than merge, for the reason
+            // `RunsReconciled` does: each read is authoritative, and a run
+            // directory or a message no longer on disk is expressed by its
+            // absence and by nothing else.
             Action::DriverRunsListed { alias, runs, inbox } => {
-                tracing::debug!(
-                    %alias,
-                    runs = runs.len(),
-                    queued = inbox.len(),
-                    "run list read before its handler landed (18-05)",
-                );
+                let cache = self.ctx.view_cache.entry(alias).or_default();
+                // Clamped rather than reset: a scan that lands while the user is
+                // on a run must not move the selection off it, and a selection
+                // past the end of a shortened list must not dangle.
+                if !runs.is_empty() {
+                    cache.driver_selected_run = cache.driver_selected_run.min(runs.len() - 1);
+                }
+                cache.driver_runs = runs;
+                cache.driver_inbox = inbox;
+                self.needs_redraw = true;
             }
+            // The report was built off the render thread and arrived. **It is
+            // not stored yet, and that is a declared seam rather than an
+            // oversight.**
+            //
+            // The load-bearing half of D-26 is the *scheduling*:
+            // `build_report` shells out to `git` twice and is one of the WR-10
+            // call sites the Phase 17 review named, so it must never run on the
+            // render thread. `App::schedule_dry_run_report` above discharges
+            // that in full, and it is the half with a threat-register row
+            // (T-18-25).
+            //
+            // The half that is missing is a field to park the string in. The
+            // preview is rendered by `DriverStartScreen` at Step B (UI-SPEC
+            // Surface 5) — a screen this plan does not own and whose state
+            // shape its owner should choose, because a field guessed here would
+            // either be the wrong shape or a second copy beside the right one.
+            // **Owner: the plan that adds `driver_start.rs`**, which adds one
+            // field to the `#[derive(Default)]` `ProjectViewCache` and swaps
+            // this log for a store. D-26 also marks the whole preview
+            // CUTTABLE — it is the only item on that surface with no
+            // requirement id — so nothing downstream is blocked on it.
+            //
+            // Logged by count, never by body: the report interpolates a working
+            // tree's file names (S3).
             Action::DriverDryRunLoaded {
                 alias,
                 command,
@@ -926,7 +1283,7 @@ impl App {
                     %alias,
                     %command,
                     bytes = report.len(),
-                    "dry-run report built before its handler landed (18-05)",
+                    "dry-run report built off the render thread; no surface stores it yet",
                 );
             }
         }
@@ -1519,6 +1876,18 @@ mod tests {
         }
     }
 
+    /// A `RunSummary` with only the field these assertions read varied.
+    fn run_summary(run_id: &str) -> crate::journal::RunSummary {
+        crate::journal::RunSummary {
+            run_id: run_id.to_string(),
+            started_at: "2026-07-29T12:02:00Z".to_string(),
+            ended_at: None,
+            goal: "ship it".to_string(),
+            gsd_command: "/gsd-progress".to_string(),
+            outcome: None,
+        }
+    }
+
     /// An `ObservedRun` with only the fields these assertions read varied.
     fn observed(
         alias: &str,
@@ -1932,6 +2301,325 @@ mod tests {
              still driving the user's repository"
         );
         assert!(spawned_kept);
+    }
+
+    // ── The three schedulers, the goal, and the sub-view ─────────────────
+
+    /// A dispatch with no `event_tx` refuses visibly and sends nothing.
+    ///
+    /// **The second assertion is the load-bearing one.** A scheduler that set
+    /// the message and dispatched anyway would pass a test that only checked
+    /// `error_message`, and the write would happen regardless of what the user
+    /// was told — the `driver_confirm.rs:367-372` discipline, applied here.
+    #[tokio::test]
+    async fn an_injection_with_no_event_channel_refuses_visibly_and_writes_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = obs_app(dir.path());
+        app.ctx.event_tx = None;
+
+        app.schedule_inbox_append(
+            OBS_ALIAS,
+            OBS_RUN,
+            "3f2a".to_string(),
+            "skip the UI review".to_string(),
+        );
+
+        let refusal = app
+            .ctx
+            .error_message
+            .as_deref()
+            .expect("a queue that cannot report its result must say so, not fail silently");
+        assert!(
+            refusal.contains("Nothing was written"),
+            "the copy must state that nothing reached disk, so the user knows a \
+             retry is safe rather than a way to steer twice, got: {refusal}"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "a refused injection must dispatch NOTHING"
+        );
+
+        // And the file was never created, which is the claim the copy makes.
+        let inbox = crate::journal::run_paths(&dir.path().join(".planning"), OBS_RUN)
+            .expect("a plain run id resolves")
+            .inbox;
+        assert!(!inbox.exists(), "nothing was written must mean nothing was written");
+    }
+
+    /// A traversing run id is refused before any path is joined (T-18-27).
+    #[tokio::test]
+    async fn a_traversing_run_id_never_reaches_the_inbox_append() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = obs_app(dir.path());
+
+        app.schedule_inbox_append(
+            OBS_ALIAS,
+            "../../../../escaped",
+            "3f2a".to_string(),
+            "steer".to_string(),
+        );
+
+        assert!(
+            app.ctx.error_message.is_some(),
+            "the refusal must be visible, not a silent no-op"
+        );
+        assert!(rx.try_recv().is_err(), "nothing may be dispatched");
+
+        // The positive control: a plain id does reach the scheduler, so the
+        // assertion above is not passing because the function refuses
+        // everything.
+        app.ctx.error_message = None;
+        app.schedule_inbox_append(OBS_ALIAS, OBS_RUN, "b1".to_string(), "steer".to_string());
+        assert!(
+            app.ctx.error_message.is_none(),
+            "a plain run id must not be refused: {:?}",
+            app.ctx.error_message
+        );
+    }
+
+    /// The whole injection round trip, off the render thread (STEER-01/03).
+    #[tokio::test]
+    async fn an_injection_is_written_off_the_render_thread_and_reports_back() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = obs_app(dir.path());
+
+        let paths = crate::journal::run_paths(&dir.path().join(".planning"), OBS_RUN)
+            .expect("a plain run id resolves");
+        std::fs::create_dir_all(&paths.dir).expect("the run dir must exist for an append");
+
+        app.schedule_inbox_append(
+            OBS_ALIAS,
+            OBS_RUN,
+            "3f2a".to_string(),
+            "skip the UI review".to_string(),
+        );
+
+        let action = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the append must report back promptly, not block the loop")
+            .expect("the channel is open");
+        let Action::DriverInjectWritten {
+            alias, id, error, ..
+        } = action
+        else {
+            panic!("the append must report through DriverInjectWritten, got {action:?}");
+        };
+        assert_eq!(alias, OBS_ALIAS);
+        assert_eq!(id, "3f2a", "the caller's id must survive, not be re-minted");
+        assert!(error.is_none(), "unexpected append failure: {error:?}");
+
+        // The bytes are on disk with the caller's id, which is what makes the
+        // `queued` state addressable and STEER-03 hold across a restart.
+        let written = std::fs::read_to_string(&paths.inbox).expect("the inbox must exist");
+        assert!(written.contains("\"id\":\"3f2a\""), "got: {written}");
+        assert!(written.contains("skip the UI review"), "got: {written}");
+    }
+
+    /// A failed append sets `error_message` and **not** `status_message`.
+    ///
+    /// The load-bearing half is the second assertion: showing `queued` beside an
+    /// error is the exact failure D-06 exists to prevent — the UI satisfied, the
+    /// criterion failed.
+    #[tokio::test]
+    async fn a_failed_injection_write_never_reports_the_message_as_queued() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        app.update(Action::DriverInjectWritten {
+            alias: OBS_ALIAS.to_string(),
+            run_id: OBS_RUN.to_string(),
+            id: "3f2a".to_string(),
+            error: Some("PermissionDenied".to_string()),
+        });
+
+        let failure = app
+            .ctx
+            .error_message
+            .as_deref()
+            .expect("a failed append must be visible");
+        assert!(failure.contains("PermissionDenied"), "got: {failure}");
+        assert!(
+            failure.contains("Nothing was written"),
+            "the copy must state that nothing reached disk, got: {failure}"
+        );
+        assert!(
+            app.ctx.status_message.is_none(),
+            "a message that was never written must never be shown as queued"
+        );
+
+        // The control arm: a successful write does set the queued status, and
+        // it promises nothing about timing — the dequeue ack was measured at 55
+        // seconds, so a word implying imminence would lie about the protocol.
+        app.ctx.error_message = None;
+        app.update(Action::DriverInjectWritten {
+            alias: OBS_ALIAS.to_string(),
+            run_id: OBS_RUN.to_string(),
+            id: "3f2a".to_string(),
+            error: None,
+        });
+        let queued = app
+            .ctx
+            .status_message
+            .as_ref()
+            .map(|(text, _)| text.clone())
+            .expect("a successful write must confirm");
+        assert!(queued.contains("Queued"), "got: {queued}");
+        assert!(
+            !queued.to_lowercase().contains("sent"),
+            "the word 'sent' is forbidden for an injected message, got: {queued}"
+        );
+    }
+
+    /// `DriverRunsListed` populates the view cache and requests a redraw.
+    #[tokio::test]
+    async fn a_run_list_result_populates_the_cache_and_requests_a_redraw() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        app.needs_redraw = false;
+        app.update(Action::DriverRunsListed {
+            alias: OBS_ALIAS.to_string(),
+            runs: vec![run_summary("2026-07-29T12-02-00Z-a1b2")],
+            inbox: vec![crate::journal::inbox::InboxMessage {
+                id: "3f2a".to_string(),
+                ts: "2026-07-29T21:40:02Z".to_string(),
+                text: "steer".to_string(),
+            }],
+        });
+
+        let cache = app
+            .ctx
+            .view_cache
+            .get(OBS_ALIAS)
+            .expect("the handler must create the cache entry");
+        assert_eq!(cache.driver_runs.len(), 1);
+        assert_eq!(cache.driver_runs[0].run_id, "2026-07-29T12-02-00Z-a1b2");
+        assert_eq!(cache.driver_inbox.len(), 1);
+        assert!(
+            app.needs_redraw,
+            "a run list that changed under the pane must be painted"
+        );
+    }
+
+    /// A shortened list clamps the selection rather than leaving it dangling.
+    #[tokio::test]
+    async fn a_shorter_run_list_clamps_the_selection_instead_of_dangling() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        app.ctx
+            .view_cache
+            .entry(OBS_ALIAS.to_string())
+            .or_default()
+            .driver_selected_run = 4;
+
+        app.update(Action::DriverRunsListed {
+            alias: OBS_ALIAS.to_string(),
+            runs: vec![run_summary("2026-07-29T12-02-00Z-a1b2")],
+            inbox: Vec::new(),
+        });
+
+        assert_eq!(
+            app.ctx.view_cache[OBS_ALIAS].driver_selected_run, 0,
+            "a selection past the end of a shortened list must be clamped, or the \
+             detail pane indexes a run that is not there"
+        );
+    }
+
+    /// D-23 / OBS-03: an empty goal buffer reaches `start_driver_run` as `None`.
+    ///
+    /// Asserted at two levels, because the pure mapping alone would not prove
+    /// the consequence: the second half drives the real `drive_argv` and shows
+    /// that `None` omits the flag entirely while `Some("")` would push it with
+    /// an empty operand — which is what makes the driver record an empty goal
+    /// **as though one had been given**.
+    #[test]
+    fn an_empty_goal_buffer_reaches_start_driver_run_as_none() {
+        assert_eq!(goal_or_none(None), None);
+        assert_eq!(goal_or_none(Some("")), None, "an empty buffer is no goal");
+        assert_eq!(
+            goal_or_none(Some("   ")),
+            None,
+            "a buffer of spaces is no goal either"
+        );
+        assert_eq!(
+            goal_or_none(Some("ship the driver tab")),
+            Some("ship the driver tab"),
+            "a goal that was given is returned verbatim and never paraphrased"
+        );
+        assert_eq!(
+            goal_or_none(Some("  ship it  ")),
+            Some("  ship it  "),
+            "emptiness is tested on the trimmed text; the value returned is the \
+             untrimmed original, because the goal is stored verbatim"
+        );
+
+        #[cfg(unix)]
+        {
+            use crate::driver::spawn::drive_argv;
+            let config = std::path::Path::new("/tmp/config.json");
+
+            let empty = drive_argv(config, "proj", "/gsd-progress", "run-1", goal_or_none(Some("")));
+            assert!(
+                !empty.iter().any(|arg| arg == "--goal"),
+                "an empty goal must omit the flag entirely, got: {empty:?}"
+            );
+
+            // The control: a real goal still reaches the child.
+            let given = drive_argv(
+                config,
+                "proj",
+                "/gsd-progress",
+                "run-1",
+                goal_or_none(Some("ship it")),
+            );
+            let position = given
+                .iter()
+                .position(|arg| arg == "--goal")
+                .expect("a goal that was given must reach the child");
+            assert_eq!(given[position + 1], "ship it");
+        }
+    }
+
+    /// The `DriverStartRequested` handler threads the variant's own goal.
+    ///
+    /// The refusal is what is observed: `start_driver_run` refuses an unknown
+    /// alias before it spawns anything, so this asserts the handler reached the
+    /// seam at all rather than dropping the request — the goal's own mapping is
+    /// pinned by the test above.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_start_request_carries_its_goal_to_the_spawn_seam() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        app.update(Action::DriverStartRequested {
+            alias: "nosuchalias".to_string(),
+            command: "/gsd-progress".to_string(),
+            goal: Some("ship the driver tab".to_string()),
+        });
+
+        let refusal = app
+            .ctx
+            .error_message
+            .as_deref()
+            .expect("the request must reach `start_driver_run`, which refuses visibly");
+        assert!(refusal.contains("nosuchalias"), "got: {refusal}");
+    }
+
+    /// The Driver sub-view round-trips through both `detail.rs` mappings.
+    #[test]
+    fn the_driver_sub_view_is_index_ten_in_both_directions() {
+        use crate::ui::screens::detail::{sub_view_from_index, tab_index};
+
+        // Index 10 per D-15, and the two mappings must agree — a tab whose
+        // index does not round-trip lands on a different tab than the one the
+        // user asked for.
+        assert_eq!(tab_index(&DetailSubView::Driver), 10);
+        assert_eq!(sub_view_from_index(10), DetailSubView::Driver);
+        // The fallback is unchanged: an out-of-range index still lands on the
+        // first tab and never on the newest one.
+        assert_eq!(sub_view_from_index(11), DetailSubView::PhaseList);
     }
 
     /// A stop with nowhere to report its outcome refuses **visibly** (WR-11).
