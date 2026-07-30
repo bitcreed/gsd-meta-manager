@@ -222,7 +222,15 @@ impl Screen for DriverStartScreen {
                 let goal = if typed.is_empty() { None } else { Some(typed) };
                 self.close_dry_run_preview(ctx);
                 ctx.needs_redraw = true;
-                ScreenAction::Push(Box::new(DriverConfirmScreen::new_start(
+                // **`Replace`, not `Push`** (WR-03). The wizard has handed off
+                // and has nothing left to do; staying on the stack put the user
+                // back on Step B after they confirmed, with an empty buffer and
+                // the preview closed — a screen looking exactly as it had before
+                // they said yes. A second `Enter` there pushed a second
+                // confirmation for the same command and a second `y` started a
+                // second run of the same project, which `admit` does not refuse
+                // and whose `flock` failure is invisible.
+                ScreenAction::Replace(Box::new(DriverConfirmScreen::new_start(
                     self.alias.clone(),
                     self.command.clone(),
                     goal,
@@ -352,8 +360,9 @@ mod tests {
         ctx: &mut AppContext,
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
     ) -> (String, Option<String>) {
-        let ScreenAction::Push(mut confirm) = pushed else {
-            panic!("the goal step must push a confirmation");
+        // `Replace`, because the wizard must not survive the hand-off (WR-03).
+        let ScreenAction::Replace(mut confirm) = pushed else {
+            panic!("the goal step must REPLACE itself with a confirmation");
         };
         assert_eq!(confirm.name(), "driver_confirm");
         registry::record_opt_in(&mut ctx.config, ALIAS).expect("opt in");

@@ -1987,6 +1987,16 @@ impl App {
                 self.screen_stack.push(screen);
                 self.needs_redraw = true;
             }
+            // Pop-then-push, and the guard is the same one `Pop` carries: the
+            // root screen is never removed, so a `Replace` from it degrades to a
+            // plain `Push` rather than emptying the stack.
+            ScreenAction::Replace(screen) => {
+                if self.screen_stack.len() > 1 {
+                    self.screen_stack.pop();
+                }
+                self.screen_stack.push(screen);
+                self.needs_redraw = true;
+            }
             ScreenAction::Pop => {
                 if self.screen_stack.len() > 1 {
                     self.screen_stack.pop();
@@ -3337,6 +3347,70 @@ mod tests {
                 "nothing was written, so nothing changed on disk"
             );
         }
+    }
+
+    /// WR-03: confirming a start must not leave the wizard under the user's
+    /// fingers, because a screen they land back on is a screen they can
+    /// re-submit.
+    ///
+    /// The wizard used to `Push` the confirmation and stay on the stack, so `y`
+    /// dispatched a start and popped the user back onto Step B — with an empty
+    /// input buffer and the preview closed, looking exactly as it had before
+    /// they confirmed. `Enter` there pushed a second confirmation for the same
+    /// command and `y` started a **second run**. Nothing downstream catches it:
+    /// `admit` counts live runs across all projects rather than per project, the
+    /// child's `flock` refusal is invisible because its stdio is `/dev/null`,
+    /// and `start_driver_run` has already overwritten `observed_runs` with the
+    /// second driver's pid — so for up to five seconds `x` would signal the
+    /// wrong, already-dead pid while the real run kept going.
+    ///
+    /// Driven through `App` rather than the screen, because the property is
+    /// about the **stack** and a screen cannot see its own position on it.
+    #[tokio::test]
+    async fn confirming_a_start_pops_the_wizard_so_a_second_enter_cannot_start_a_duplicate() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        crate::registry::record_opt_in(&mut app.ctx.config, OBS_ALIAS).expect("opt in");
+        app.screen_stack.push(Box::new(
+            crate::ui::screens::driver_start::DriverStartScreen::new(OBS_ALIAS.to_string()),
+        ));
+
+        // Step A commits the default command; Step B hands off.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(
+            app.screen_stack.last().map(|s| s.name()),
+            Some("driver_confirm"),
+            "Step B hands off to the confirmation"
+        );
+        assert!(
+            !app.screen_stack.iter().any(|s| s.name() == "driver_start"),
+            "and REPLACES itself doing so — the wizard must not be waiting \
+             underneath: {:?}",
+            app.screen_stack.iter().map(|s| s.name()).collect::<Vec<_>>()
+        );
+
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(
+            app.screen_stack.last().map(|s| s.name()),
+            Some(crate::ui::screens::detail::DetailScreen::NAME),
+            "confirming lands the user back on the run detail, not on a wizard \
+             primed to repeat itself"
+        );
+
+        // The keystroke that used to start the second run.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        let starts = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter(|action| matches!(action, Action::DriverStartRequested { .. }))
+            .count();
+        assert_eq!(
+            starts, 1,
+            "exactly one start request. Two means the wizard was still on the \
+             stack and the user paid for one confirmation twice"
+        );
     }
 
     /// D-27's negative carry-forward, discharged for `driver_output`.

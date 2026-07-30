@@ -44,6 +44,27 @@ pub trait Screen {
 pub enum ScreenAction {
     None,
     Push(Box<dyn Screen>),
+    /// Pop the screen that returned this **and** push `screen` in its place, as
+    /// one transition (WR-03).
+    ///
+    /// The difference from [`Push`](ScreenAction::Push) is what happens when the
+    /// pushed screen pops: a `Push` returns the user to the screen that handed
+    /// off, and a `Replace` returns them past it. That distinction is a safety
+    /// property wherever the handed-off screen *dispatches* something, because a
+    /// screen the user lands back on is a screen they can re-submit.
+    ///
+    /// The concrete bug: `DriverStartScreen`'s Step B pushed the confirmation
+    /// and stayed on the stack, so confirming with `y` started a run and popped
+    /// the user back onto Step B — with an empty input buffer and the preview
+    /// closed, looking exactly as it had before they confirmed. A second `Enter`
+    /// pushed a second confirmation for the same command and a second `y`
+    /// started a **second run**. `admit` counts live runs across all projects
+    /// and does not stop a second run of the same project; the child's `flock`
+    /// refusal is invisible because its stdio is `/dev/null`; and
+    /// `start_driver_run` has already overwritten `observed_runs` with the
+    /// second driver's pid, so for up to five seconds `x` would signal the
+    /// wrong, already-dead pid while the real run kept going.
+    Replace(Box<dyn Screen>),
     Pop,
     Quit,
     SetStatusMessage(String),
