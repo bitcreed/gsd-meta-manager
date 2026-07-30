@@ -217,6 +217,66 @@ pub fn driver_line_for_record(
     }
 }
 
+/// Fold one batch of journal records into the Driver tab's running tally.
+///
+/// The two facts here are the ones the run header and the step timeline need
+/// that the committed `run.json` does not carry — the cumulative cost and the
+/// number of turn boundaries — so they are read from the records as they arrive
+/// rather than by re-parsing a journal at render time.
+///
+/// **The tally is reset when the run id changes**, which is what stops one run's
+/// cost being displayed against another's. Both facts are evidence: `cost`
+/// records carry `cumulative_usd`, and a turn boundary is an `exec_event` whose
+/// stream is `turn_completed`. Neither is inferred from the agent's prose (D-13).
+///
+/// Pure, so the whole fold is assertable without a terminal (S6).
+pub fn update_driver_tally(
+    cache: &mut crate::ui::screens::ProjectViewCache,
+    run_id: &str,
+    records: &[crate::journal::reader::JournalRecord],
+) {
+    use crate::ui::screens::DriverRunTally;
+
+    let tally = match cache.driver_tally.as_mut() {
+        Some(tally) if tally.run_id == run_id => tally,
+        _ => {
+            cache.driver_tally = Some(DriverRunTally {
+                run_id: run_id.to_string(),
+                ..DriverRunTally::default()
+            });
+            cache
+                .driver_tally
+                .as_mut()
+                .expect("just assigned")
+        }
+    };
+
+    for record in records {
+        match record.kind.as_str() {
+            "cost" => {
+                if let Some(usd) = record
+                    .rest
+                    .get("cumulative_usd")
+                    .and_then(|value| value.as_f64())
+                {
+                    tally.cumulative_cost_usd = Some(usd);
+                }
+            }
+            "exec_event" => {
+                let is_boundary = record
+                    .rest
+                    .get("stream")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|stream| stream == "turn_completed");
+                if is_boundary {
+                    tally.turn_boundaries = tally.turn_boundaries.saturating_add(1);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// The exact copy for an observed journal sequence gap (Copywriting Contract).
 ///
 /// A gap means records the writer emitted were never read — the pane is missing
@@ -756,57 +816,17 @@ impl App {
     /// the payload is the whole inbox rather than a delta, so a message removed
     /// from the file is expressed by its absence — the same reason
     /// [`Action::RunsReconciled`] carries the whole scan.
+    ///
+    /// **The body lives on [`AppContext`] since plan 18-09**, and this is a
+    /// delegation rather than a second implementation. The Driver tab's
+    /// `switch_to_tab` arm has to schedule the same scan on first visit, and a
+    /// `Screen` is handed an `&mut AppContext` and never an `&mut App` — so the
+    /// choice was one function reachable from both or two copies of a
+    /// `spawn_blocking` closure that would drift. `ctx.needs_redraw` is synced
+    /// into `App::needs_redraw` by the main loop, so the refusal path is
+    /// unchanged in effect.
     pub fn schedule_run_list_scan(&mut self, alias: &str, project_path: &Path) {
-        let Some(tx) = &self.ctx.event_tx else {
-            self.ctx.error_message =
-                Some(format!("Could not list the runs for '{alias}': no event channel."));
-            self.needs_redraw = true;
-            return;
-        };
-        let tx = tx.clone();
-        let planning_dir = project_path.join(".planning");
-        let alias_for_task = alias.to_string();
-        let selected = self
-            .ctx
-            .view_cache
-            .get(alias)
-            .map_or(0, |cache| cache.driver_selected_run);
-
-        tokio::task::spawn_blocking(move || {
-            // Already sorted newest first by `list_runs` itself; the ordering is
-            // lexicographic-descending on the run id, which is chronological
-            // because `new_run_id`'s format makes byte order time order.
-            let runs = crate::journal::list_runs(&planning_dir);
-
-            // The fallible join again, on an id that came off disk (D-27).
-            let inbox = runs
-                .get(selected)
-                .and_then(|run| crate::journal::run_paths(&planning_dir, &run.run_id))
-                .and_then(|paths| {
-                    match crate::journal::inbox::tail(
-                        &paths.inbox,
-                        crate::journal::reader::TailCursor::default(),
-                    ) {
-                        Ok(read) => Some(read.messages),
-                        Err(e) => {
-                            // Kind only (S3).
-                            tracing::warn!(
-                                alias = %alias_for_task,
-                                kind = ?e.kind(),
-                                "inbox read failed",
-                            );
-                            None
-                        }
-                    }
-                })
-                .unwrap_or_default();
-
-            let _ = tx.send(Action::DriverRunsListed {
-                alias: alias_for_task,
-                runs,
-                inbox,
-            });
-        });
+        self.ctx.schedule_run_list_scan(alias, project_path);
     }
 
     /// Schedule the dry-run preview for `alias` and `command` (D-26).
@@ -1292,6 +1312,17 @@ impl App {
                     }
                 }
 
+                // The two header facts that live in journal records rather than
+                // in the committed `run.json`: the cumulative cost and the turn
+                // count. `driver_line_for_record` deliberately returns `None`
+                // for `cost` because it is header data and not a pane line —
+                // this is the header reading it (D-12).
+                update_driver_tally(
+                    self.ctx.view_cache.entry(key.0.clone()).or_default(),
+                    &key.1,
+                    &records,
+                );
+
                 self.ctx.journal_cursors.insert(key, cursor);
                 // The pane can now show a frame that differs from the one on
                 // screen, which is precisely the condition that was absent
@@ -1576,6 +1607,24 @@ impl App {
         // alias holds one buffer, already bounded by its own cap.
         self.ctx
             .driver_output
+            .retain(|alias, _| registered.contains_key(alias));
+        // `view_cache` joins the pass too, and plan 18-09 is what makes that
+        // necessary rather than tidy. It is keyed by alias and was never pruned,
+        // which cost little while it held browse listings and git logs for
+        // projects the user had merely visited — but this phase moved three
+        // driver payloads into it: `driver_runs` (a `RunSummary` per run on
+        // disk), `driver_inbox` (every queued message for the selected run) and
+        // `driver_tally`. Those are exactly the per-alias driver state the
+        // phase's carry-forward is about, so leaving them in an unpruned map
+        // would satisfy the obligation for the maps it names while breaking it
+        // for the one it does not.
+        //
+        // Dropping the whole entry for an unregistered alias is correct rather
+        // than merely convenient: the project is gone, so every view state it
+        // held — driver and otherwise — describes something the user can no
+        // longer open.
+        self.ctx
+            .view_cache
             .retain(|alias, _| registered.contains_key(alias));
 
         let mut runs_by_alias: HashMap<&str, Vec<&str>> = HashMap::new();
@@ -2593,6 +2642,61 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// The header's two record-borne facts — the cumulative cost and the turn
+    /// count — are read from the tail as it arrives, and both are evidence:
+    /// `cost.cumulative_usd` and an `exec_event` on the `turn_completed` stream.
+    #[tokio::test]
+    async fn a_journal_batch_tallies_the_cumulative_cost_and_the_turn_boundaries() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        app.update(Action::DriverJournalAppended {
+            alias: OBS_ALIAS.to_string(),
+            run_id: OBS_RUN.to_string(),
+            records: vec![
+                exec_event(1, "assistant", "working"),
+                exec_event(2, "turn_completed", "turn ended: success"),
+                journal_record(3, "cost", &[("cumulative_usd", 0.42.into())]),
+                exec_event(4, "turn_completed", "turn ended: success"),
+                journal_record(5, "cost", &[("cumulative_usd", 1.83.into())]),
+            ],
+            cursor: cursor_at(120, 5),
+        });
+
+        let tally = app
+            .ctx
+            .view_cache
+            .get(OBS_ALIAS)
+            .and_then(|cache| cache.driver_tally.clone())
+            .expect("a tally after a batch");
+        assert_eq!(tally.run_id, OBS_RUN);
+        // The LAST cumulative value wins; it is a running total, not a delta.
+        assert_eq!(tally.cumulative_cost_usd, Some(1.83));
+        assert_eq!(tally.turn_boundaries, 2);
+
+        // A batch from a DIFFERENT run resets the tally rather than adding to
+        // it — one run's cost shown against another's is a figure the evidence
+        // does not support.
+        app.update(Action::DriverJournalAppended {
+            alias: OBS_ALIAS.to_string(),
+            run_id: "2026-07-29T22-00-00Z-beef".to_string(),
+            records: vec![exec_event(1, "assistant", "a different run")],
+            cursor: cursor_at(20, 1),
+        });
+        let tally = app
+            .ctx
+            .view_cache
+            .get(OBS_ALIAS)
+            .and_then(|cache| cache.driver_tally.clone())
+            .expect("a tally after the second batch");
+        assert_eq!(tally.run_id, "2026-07-29T22-00-00Z-beef");
+        assert_eq!(
+            tally.cumulative_cost_usd, None,
+            "the previous run's cost must not carry over"
+        );
+        assert_eq!(tally.turn_boundaries, 0);
+    }
+
     #[tokio::test]
     async fn a_journal_batch_reaches_the_ring_buffer_and_requests_a_redraw() {
         use crate::ui::screens::DriverLineKind;
@@ -2921,6 +3025,52 @@ mod tests {
             kept.len(),
             1,
             "the prune must not clear a live buffer's contents"
+        );
+    }
+
+    /// Plan 18-09 moved three driver payloads onto `ProjectViewCache`, so the
+    /// map that holds it joins the prune pass. Without this, `driver_runs`,
+    /// `driver_inbox` and `driver_tally` for a project the user unregistered
+    /// would sit in memory for the life of the process — the same leak
+    /// `driver_output` was added to the pass to prevent, under a third name.
+    #[tokio::test]
+    async fn pruning_drops_the_view_cache_for_an_unregistered_alias() {
+        use crate::ui::screens::DriverRunTally;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        for alias in ["gone", OBS_ALIAS] {
+            let cache = app.ctx.view_cache.entry(alias.to_string()).or_default();
+            cache.driver_selected_run = 2;
+            cache.driver_tally = Some(DriverRunTally {
+                run_id: OBS_RUN.to_string(),
+                cumulative_cost_usd: Some(1.83),
+                turn_boundaries: 3,
+            });
+        }
+
+        app.prune_driver_maps();
+
+        assert!(
+            !app.ctx.view_cache.contains_key("gone"),
+            "view state for an unregistered project describes something the user \
+             can no longer open"
+        );
+
+        // The control arm: a registered alias keeps its cache AND its contents,
+        // so the assertion above is not passing because the prune emptied the
+        // map.
+        let kept = app
+            .ctx
+            .view_cache
+            .get(OBS_ALIAS)
+            .expect("a registered alias keeps its view cache");
+        assert_eq!(kept.driver_selected_run, 2);
+        assert_eq!(
+            kept.driver_tally.as_ref().and_then(|t| t.cumulative_cost_usd),
+            Some(1.83),
+            "the prune must not clear a live cache's contents"
         );
     }
 

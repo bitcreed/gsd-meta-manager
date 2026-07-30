@@ -2,6 +2,7 @@ pub mod add_project;
 pub mod create_project;
 pub mod delete_confirm;
 pub mod detail;
+pub mod driver;
 pub mod driver_confirm;
 pub mod driver_inject;
 pub mod driver_start;
@@ -427,6 +428,46 @@ pub struct ProjectViewCache {
     /// churn, while an `AppContext` field costs an edit at five construction
     /// sites.
     pub driver_runs: Vec<crate::journal::RunSummary>,
+    /// The running tally for the run whose journal is currently being tailed.
+    ///
+    /// Two facts the Driver tab's header and step timeline need are carried by
+    /// journal **records** rather than by the committed `run.json`, so neither is
+    /// reachable from [`crate::journal::RunSummary`]: the cumulative cost, which
+    /// arrives on `cost` records, and the number of turn boundaries observed,
+    /// which arrive as `exec_event` records on the `turn_completed` stream.
+    ///
+    /// It is keyed by run id **inside** the value rather than by being a map,
+    /// because only one run per project is ever tailed at a time and the id is
+    /// what makes the reader able to say "this tally is not about the run you
+    /// are looking at" — which is the honest answer for every other row in the
+    /// list. Without the id, a cost from the live run would be shown against a
+    /// historical one, which is a figure the evidence does not support.
+    pub driver_tally: Option<DriverRunTally>,
+}
+
+/// What one run's journal tail has reported so far.
+///
+/// Facts only, and each from a named record kind. Nothing here is derived from
+/// the agent's prose (D-13).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DriverRunTally {
+    /// Which run this tally is about. A tally whose id does not match the run
+    /// being rendered is not shown at all.
+    pub run_id: String,
+    /// `JournalEvent::Cost.cumulative_usd`, the most recent value seen.
+    ///
+    /// **Cumulative across the run's turns** — `total_cost_usd` accumulates
+    /// while `num_turns` and `duration_ms` reset per turn (D-12) — which is why
+    /// every rendering of it is labelled. `None` until a `cost` record arrives:
+    /// unknown is not zero.
+    pub cumulative_cost_usd: Option<f64>,
+    /// How many turn boundaries the journal has reported.
+    ///
+    /// **Turns are turns, not commands.** A steered run emits several
+    /// `system/init` and `result` pairs inside one process (Phase 15 D-29); this
+    /// counts the boundaries, and the timeline still shows one *decided* row. A
+    /// later `system/init` is informational and is never a restart.
+    pub turn_boundaries: u32,
 }
 
 pub struct AppContext {
@@ -702,6 +743,83 @@ impl AppContext {
         self.project_states
             .get(alias)
             .is_some_and(|state| needs_human(state, self.observed_runs.get(alias), None, false))
+    }
+
+    /// Schedule the run-list directory scan and the selected run's inbox read
+    /// (OBS-05, STEER-02).
+    ///
+    /// Both halves are blocking filesystem work — a `read_dir` plus one small
+    /// `run.json` per run, then a byte-offset tail — and this follows the
+    /// `spawn_blocking` → `Action` idiom the whole phase uses. **No file I/O on
+    /// the render thread** (D-28).
+    ///
+    /// The two reads share one task rather than taking one each, because the
+    /// second depends on the first: which run's inbox to read is decided by
+    /// indexing the freshly-listed runs. Splitting them would mean either a
+    /// round trip through the event loop between them or a stale index.
+    ///
+    /// The inbox is read from offset zero every time, and that is deliberate:
+    /// the payload is the whole inbox rather than a delta, so a message removed
+    /// from the file is expressed by its absence — the same reason
+    /// `Action::RunsReconciled` carries the whole scan.
+    ///
+    /// **It lives here rather than on `App` (plan 18-09) because the Driver
+    /// tab's `switch_to_tab` arm has to call it**, and a `Screen` is handed an
+    /// `&mut AppContext` and never an `&mut App`. `App::schedule_run_list_scan`
+    /// delegates here, so there is exactly one implementation and the two call
+    /// paths cannot drift.
+    pub fn schedule_run_list_scan(&mut self, alias: &str, project_path: &std::path::Path) {
+        let Some(tx) = &self.event_tx else {
+            // Refuse visibly, never silently (S4).
+            self.error_message = Some(format!(
+                "Could not list the runs for '{alias}': no event channel."
+            ));
+            self.needs_redraw = true;
+            return;
+        };
+        let tx = tx.clone();
+        let planning_dir = project_path.join(".planning");
+        let alias_for_task = alias.to_string();
+        let selected = self
+            .view_cache
+            .get(alias)
+            .map_or(0, |cache| cache.driver_selected_run);
+
+        tokio::task::spawn_blocking(move || {
+            // Already sorted newest first by `list_runs` itself; the ordering is
+            // lexicographic-descending on the run id, which is chronological
+            // because `new_run_id`'s format makes byte order time order.
+            let runs = crate::journal::list_runs(&planning_dir);
+
+            // The fallible join again, on an id that came off disk (D-27).
+            let inbox = runs
+                .get(selected)
+                .and_then(|run| crate::journal::run_paths(&planning_dir, &run.run_id))
+                .and_then(|paths| {
+                    match crate::journal::inbox::tail(
+                        &paths.inbox,
+                        crate::journal::reader::TailCursor::default(),
+                    ) {
+                        Ok(read) => Some(read.messages),
+                        Err(e) => {
+                            // Kind only (S3).
+                            tracing::warn!(
+                                alias = %alias_for_task,
+                                kind = ?e.kind(),
+                                "inbox read failed",
+                            );
+                            None
+                        }
+                    }
+                })
+                .unwrap_or_default();
+
+            let _ = tx.send(crate::action::Action::DriverRunsListed {
+                alias: alias_for_task,
+                runs,
+                inbox,
+            });
+        });
     }
 
     /// This alias's [`attention_rank`], from the state this context holds.
