@@ -27,8 +27,24 @@
 //!    generated at queue time, so the `queued` state is addressable before any
 //!    other process has seen the line.
 //!
-//! Nothing here logs message content (D-28, T-18-03): a body could carry text a
-//! user typed, and the diagnostics this module surfaces are flags and counts.
+//! Nothing here *logs* message content (D-28, T-18-03): a body could carry text
+//! a user typed, and the diagnostics this module surfaces are flags and counts.
+//!
+//! **It does, however, WRITE message content — verbatim and unredacted — and
+//! that asymmetry with the journal is deliberate** (WR-12). The same text, when
+//! the driver journals it as `JournalEvent::Interjected`, goes through
+//! [`super::redact::RedactedLine`] like every other journal write; the copy in
+//! `inbox.jsonl` does not. The reason is functional rather than an oversight:
+//! this file's bytes are what the driver hands to `Executor::send`, so redacting
+//! them would send the agent a redacted *instruction* — a steering message with
+//! its operand replaced by a placeholder is not a safer instruction, it is a
+//! different one, and the user would never see that it changed. The journal's
+//! copy is the record that must be safe to keep and to share; this one is the
+//! payload.
+//!
+//! Both files are covered by `RUNS_GITIGNORE_BODY`'s catch-all, so neither is
+//! committed. `the_two_copies_of_one_message_are_deliberately_asymmetric` pins
+//! the divergence so that changing it is a decision rather than a drift.
 
 use std::fs::OpenOptions;
 use std::io::{self, Write};
@@ -72,8 +88,16 @@ pub struct InboxMessage {
     pub id: String,
     /// RFC3339 UTC, to second precision, stamped when the message was queued.
     pub ts: String,
-    /// The user's text, verbatim and never interpreted (Phase 21 owns any
-    /// interpretation; this phase stores what was typed).
+    /// The user's text, **verbatim, never interpreted, and deliberately not
+    /// redacted** (WR-12).
+    ///
+    /// Phase 21 owns any interpretation; this phase stores what was typed. The
+    /// journal's copy of the same text *is* redacted — see this module's header
+    /// for why the two differ — so a reader must not assume
+    /// [`super::redact`] covers this path. This is the string the driver writes
+    /// to the agent's stdin, and it is also the string the render layer shows,
+    /// which is why a secret pasted here appears on the screen of the person who
+    /// pasted it.
     pub text: String,
 }
 
@@ -175,6 +199,14 @@ pub struct InboxRead {
 /// The call is blocking filesystem work and must run behind
 /// `tokio::task::spawn_blocking` (D-28, WR-10) — the deadlock that discipline
 /// prevents is recorded as *observed* at `tests/driver_lock.rs:201-215`.
+///
+/// **No redaction is applied, and that is a decision** (WR-12). What lands here
+/// is what the driver writes to the agent's stdin, so redacting it would change
+/// the instruction rather than protect it. [`InboxMessage::text`] and this
+/// module's header carry the full reasoning; the point of restating it at the
+/// write site is that this is where a later reader would reach for
+/// [`super::redact::RedactedLine`] by analogy with [`super::writer`] and be
+/// wrong to.
 pub fn append(inbox_path: &Path, message: &InboxMessage) -> io::Result<()> {
     let line = serde_json::to_string(message).map_err(io::Error::other)?;
 
@@ -236,6 +268,57 @@ mod tests {
             ts: "2026-07-29T21:40:02Z".to_string(),
             text: text.to_string(),
         }
+    }
+
+    /// WR-12: the two copies of one message are asymmetric **on purpose**, and
+    /// this test is what makes changing that a decision rather than a drift.
+    ///
+    /// The journal's copy of an injected message goes through the redactor like
+    /// every other journal write. This file's copy does not, because this file's
+    /// bytes are what the driver hands to `Executor::send` — redacting them
+    /// would send the agent a redacted *instruction*, which is not a safer
+    /// instruction but a different one, and the user would never see that it
+    /// changed.
+    ///
+    /// Both halves are asserted. Asserting only the verbatim one would pass
+    /// against a build where the redactor had silently stopped covering the
+    /// journal, which is the failure the pairing exists to catch.
+    #[test]
+    fn the_two_copies_of_one_message_are_deliberately_asymmetric() {
+        const SECRET: &str = "use sk-ant-api03-AbCdEf012345_-XyZ for the call";
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join(INBOX_FILE);
+        append(&path, &message(SECRET)).expect("append");
+
+        let raw = std::fs::read_to_string(&path).expect("read the inbox back");
+        assert!(
+            raw.contains("sk-ant-api03-AbCdEf012345_-XyZ"),
+            "the inbox copy is VERBATIM: it is the payload the driver writes to \
+             the agent's stdin, and a redacted operand is a different \
+             instruction, not a safer one. Got: {raw:?}"
+        );
+
+        // The journal's copy of the same text, through the gate every journal
+        // write passes. This is the half that must stay redacted.
+        let event = super::super::JournalEvent::Interjected {
+            id: Some("3f2a".to_string()),
+            text: SECRET.to_string(),
+            delivered: true,
+        };
+        let journaled = super::super::redact::RedactedLine::new(
+            serde_json::to_value(&event).expect("the event serialises"),
+        );
+        let journaled = journaled.as_line();
+        assert!(
+            !journaled.contains("sk-ant-api03"),
+            "the JOURNAL copy must still be redacted — it is the record that has \
+             to be safe to keep and to share. Got: {journaled:?}"
+        );
+        assert!(
+            journaled.contains("[REDACTED:anthropic-key]"),
+            "and redacted visibly rather than dropped: {journaled:?}"
+        );
     }
 
     #[test]
