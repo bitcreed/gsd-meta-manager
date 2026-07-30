@@ -20,6 +20,7 @@ use crate::main_loop::ExecEvent;
 use crate::state_reader::backlog::BacklogItem;
 use crate::state_reader::git_ops::{GitDiffStat, GitLogEntry};
 use crate::state_reader::ProjectState;
+use crate::ui::screens::driver::TerminalState;
 use crate::watcher::FileWatcher;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
@@ -700,6 +701,22 @@ pub struct AppContext {
     ///   `src/state_reader/` across the phase is the checkable form of that
     ///   claim, and plan 17-07 records it (D-25).
     pub observed_runs: HashMap<String, crate::driver::reconcile::ObservedRun>,
+    /// The outcome label of each project's most recent **ended** run (WR-02).
+    ///
+    /// The sibling of [`observed_runs`](AppContext::observed_runs), filled by
+    /// the same reconciliation scan and pruned in the same pass. The two are
+    /// complementary rather than redundant: `observed_runs` holds runs that have
+    /// **not** ended, so the outcome of one that has cannot live there.
+    ///
+    /// Its only reader is [`needs_human_for`](AppContext::needs_human_for), and
+    /// this map is what makes D-14's finished-run arm reachable in production at
+    /// all — that method passed `None` before it existed, so `BADGE_NEEDS_HUMAN`,
+    /// `attention_rank`'s rank 0 and the `/h` filter all fired from
+    /// `state.paused` and `state.external_job_waiting` alone.
+    ///
+    /// A label rather than a `RunOutcome`, for the reason
+    /// [`crate::action::Action::RunsReconciled`] gives.
+    pub last_outcomes: HashMap<String, String>,
     /// The run ids **this TUI session spawned**, which decides D-07's reaping
     /// arm at stop time.
     ///
@@ -781,11 +798,18 @@ pub enum SortMode {
 /// * `state.paused` — a non-empty HANDOFF, the existing v1.4 signal that is
 ///   already badged elsewhere.
 /// * `state.external_job_waiting` — an external job the project is blocked on.
-/// * The last finished run's outcome being [`RunOutcome::PermissionDenied`],
-///   [`RunOutcome::Failed`], [`RunOutcome::Stalled`] or [`RunOutcome::TimedOut`]
-///   — the four the four-source derivation produces that a human must answer.
-///   [`RunOutcome::Killed`] is deliberately absent: a run the user stopped is
-///   not a run waiting on them.
+/// * The last finished run's outcome being [`TerminalState::PermissionDenied`],
+///   [`TerminalState::Failed`], [`TerminalState::Stalled`] or
+///   [`TerminalState::TimedOut`] — the four the four-source derivation produces
+///   that a human must answer. [`TerminalState::Killed`] is deliberately absent:
+///   a run the user stopped is not a run waiting on them.
+///
+///   **The parameter is a [`TerminalState`] and not a `RunOutcome`** (WR-02).
+///   What is on disk is the outcome *label* `run.json` recorded; reconstructing
+///   a typed `RunOutcome` from it would mean inventing the payload fields the
+///   label does not carry. `TerminalState::from_label` is the one mapping, and
+///   [`TerminalState::from_outcome`] agrees with it by test — so this arm reads
+///   the same four states whichever side the evidence arrives from.
 /// * `parked`, fed forward-compatibly from a `JournalEvent::Parked` record if
 ///   one is ever present.
 ///
@@ -806,11 +830,9 @@ pub enum SortMode {
 pub fn needs_human(
     state: &ProjectState,
     run: Option<&crate::driver::reconcile::ObservedRun>,
-    last_outcome: Option<&crate::executor::RunOutcome>,
+    last_outcome: Option<TerminalState>,
     parked: bool,
 ) -> bool {
-    use crate::executor::RunOutcome;
-
     if parked || state.paused || state.external_job_waiting {
         return true;
     }
@@ -820,10 +842,10 @@ pub fn needs_human(
     matches!(
         last_outcome,
         Some(
-            RunOutcome::PermissionDenied { .. }
-                | RunOutcome::Failed { .. }
-                | RunOutcome::Stalled { .. }
-                | RunOutcome::TimedOut { .. }
+            TerminalState::PermissionDenied
+                | TerminalState::Failed
+                | TerminalState::Stalled
+                | TerminalState::TimedOut
         )
     )
 }
@@ -870,16 +892,30 @@ impl AppContext {
     /// Whether `alias` is waiting on a human, from the state this context holds.
     ///
     /// The `parked` argument is `false` because nothing emits
-    /// `JournalEvent::Parked` before Phase 20 (D-14), and `last_outcome` is
-    /// `None` because the typed [`crate::executor::RunOutcome`] of a *finished*
-    /// run is not in this map — `observed_runs` holds runs that have not ended.
-    /// **That arm's producer exists on disk today** (`RunRecord.outcome`); only
-    /// the reader is a later plan's, and the caller that has a run summary in
-    /// hand passes it to [`needs_human`] directly.
+    /// `JournalEvent::Parked` before Phase 20 (D-14) — that is the one arm of
+    /// four whose producer genuinely does not exist yet.
+    ///
+    /// **The finished-run arm is wired** (WR-02). This method used to pass
+    /// `None` there, which made D-14's third evidence source unreachable in
+    /// production: `grep`ing for `Some(&outcome)` found it only inside
+    /// `#[cfg(test)]`, so `BADGE_NEEDS_HUMAN`, `attention_rank`'s rank 0 and the
+    /// `/h` filter all fired from `state.paused` and `state.external_job_waiting`
+    /// alone — the two v1.4 signals that predate the driver entirely. A project
+    /// whose run failed, was permission-denied, stalled or timed out was not
+    /// flagged, not sorted first, and did not appear under `//h`. That is the
+    /// failure 18-CONTEXT names by hand: *a badge that can never light is worse
+    /// than no badge, because it teaches the user to ignore it.*
+    ///
+    /// [`last_outcomes`](AppContext::last_outcomes) is filled by the same
+    /// reconciliation scan that fills `observed_runs`, and pruned beside it.
     pub fn needs_human_for(&self, alias: &str) -> bool {
+        let last = self
+            .last_outcomes
+            .get(alias)
+            .map(|label| TerminalState::from_label(Some(label)));
         self.project_states
             .get(alias)
-            .is_some_and(|state| needs_human(state, self.observed_runs.get(alias), None, false))
+            .is_some_and(|state| needs_human(state, self.observed_runs.get(alias), last, false))
     }
 
     /// Schedule the run-list directory scan and the selected run's inbox read
@@ -1213,6 +1249,7 @@ mod tests {
             reparse_dispatches: 0,
             journal_cursors: HashMap::new(),
             observed_runs: HashMap::new(),
+            last_outcomes: HashMap::new(),
             session_spawned_runs: std::collections::HashSet::new(),
             driver_output: HashMap::new(),
             sort_mode: SortMode::default(),
@@ -1460,7 +1497,12 @@ mod tests {
             },
         ] {
             assert!(
-                needs_human(&quiet, None, Some(&outcome), false),
+                needs_human(
+                    &quiet,
+                    None,
+                    Some(TerminalState::from_outcome(&outcome)),
+                    false
+                ),
                 "a finished run that ended {outcome:?} is a question only a human \
                  can answer"
             );
@@ -1470,7 +1512,9 @@ mod tests {
             !needs_human(
                 &quiet,
                 None,
-                Some(&RunOutcome::Killed { turns: Vec::new() }),
+                Some(TerminalState::from_outcome(&RunOutcome::Killed {
+                    turns: Vec::new()
+                })),
                 false
             ),
             "a run the user themselves stopped is not a run waiting on them"
@@ -1489,7 +1533,12 @@ mod tests {
         };
 
         assert!(
-            !needs_human(&quiet, Some(&live), Some(&stale), false),
+            !needs_human(
+                &quiet,
+                Some(&live),
+                Some(TerminalState::from_outcome(&stale)),
+                false
+            ),
             "something is actively driving, so an earlier run's failure is not a \
              summons"
         );
@@ -1499,7 +1548,12 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            needs_human(&paused, Some(&live), Some(&stale), false),
+            needs_human(
+                &paused,
+                Some(&live),
+                Some(TerminalState::from_outcome(&stale)),
+                false
+            ),
             "a HANDOFF is a fact about the project, not about a finished run, so \
              a live run must not hide it"
         );
@@ -1633,6 +1687,72 @@ mod tests {
             vec!["busy"],
             "and the filter yields it once, not twice"
         );
+    }
+
+    /// WR-02: D-14's finished-run arm reaches the badge, the sort and the
+    /// filter — all three, through the one production call site.
+    ///
+    /// The pure predicate had unit tests for this arm all along. What it did not
+    /// have was a caller: `needs_human_for` passed `None`, so the arm was
+    /// unreachable outside `#[cfg(test)]` and every one of the three surfaces
+    /// below fired from `state.paused` and `state.external_job_waiting` only. A
+    /// badge that can never light is worse than no badge, because it teaches the
+    /// user to ignore it — so this test asserts the *reachability*, which is the
+    /// half that was missing.
+    #[test]
+    fn a_project_whose_last_run_failed_is_badged_ranked_and_filterable() {
+        let mut ctx = ctx_with_aliases(&["alpha", "burnt"]);
+        ctx.last_outcomes
+            .insert("burnt".to_string(), "failed".to_string());
+
+        assert!(
+            ctx.needs_human_for("burnt"),
+            "a finished run that failed is a question only a human can answer,              and the production call site must be able to see it"
+        );
+        assert!(!ctx.needs_human_for("alpha"), "and only that project");
+        assert_eq!(ctx.attention_rank_for("burnt"), 0, "it sorts first");
+
+        ctx.sort_mode = SortMode::AttentionFirst;
+        assert_eq!(ctx.sorted_aliases(), vec!["burnt", "alpha"]);
+
+        ctx.filter_text = "/h".to_string();
+        ctx.recompute_filtered_aliases();
+        assert_eq!(
+            ctx.filtered_aliases,
+            vec!["burnt"],
+            "and //h finds it. This is the assertion that was impossible before              the outcome had a reader"
+        );
+    }
+
+    /// The other three outcome labels, and the two that must NOT summon anyone.
+    #[test]
+    fn only_the_four_named_outcomes_summon_a_human() {
+        for label in ["failed", "permission_denied", "stalled", "timed_out"] {
+            let mut ctx = ctx_with_aliases(&["proj"]);
+            ctx.last_outcomes
+                .insert("proj".to_string(), label.to_string());
+            assert!(ctx.needs_human_for("proj"), "{label} must summon a human");
+        }
+
+        for label in ["succeeded_with_changes", "succeeded_no_changes", "killed"] {
+            let mut ctx = ctx_with_aliases(&["proj"]);
+            ctx.last_outcomes
+                .insert("proj".to_string(), label.to_string());
+            assert!(
+                !ctx.needs_human_for("proj"),
+                "{label} must not: a run that succeeded needs nothing, and one \
+                 the user themselves stopped is not waiting on them"
+            );
+        }
+
+        // A live run suppresses the arm, which is what stops the badge summoning
+        // a user to a project that is busy working.
+        let mut ctx = ctx_with_aliases(&["proj"]);
+        ctx.last_outcomes
+            .insert("proj".to_string(), "failed".to_string());
+        ctx.observed_runs
+            .insert("proj".to_string(), observed("proj", Liveness::Alive));
+        assert!(!ctx.needs_human_for("proj"));
     }
 
     #[test]

@@ -323,6 +323,35 @@ pub fn reconcile_all(projects: &HashMap<String, RegisteredProject>) -> Vec<Obser
     observed
 }
 
+/// The outcome label of each project's most recent **ended** run (WR-02, D-14).
+///
+/// The companion to [`reconcile_all`], and it exists because that function
+/// cannot answer this: [`reconcile_one`] returns `None` for an ended run, so the
+/// one fact D-14's third evidence source needs is precisely the one the scan
+/// drops. Without a reader for it the needs-a-human badge could never light for
+/// a failed, permission-denied, stalled or timed-out run — and a badge that can
+/// never light is worse than no badge, because it teaches the user to ignore it.
+///
+/// A project with no ended run, or none at all, is **absent** rather than
+/// present with a placeholder: the same authoritative-by-absence rule
+/// `reconcile_all` follows.
+///
+/// **Still zero disk writes** (D-12): [`crate::journal::last_ended_outcome`]
+/// delegates to `list_runs`, which is a `read_dir` and one small read per run.
+/// Blocking work, so callers invoke it on `tokio::task::spawn_blocking` beside
+/// the probe (D-28).
+pub fn last_ended_outcomes(
+    projects: &HashMap<String, RegisteredProject>,
+) -> HashMap<String, String> {
+    projects
+        .iter()
+        .filter_map(|(alias, project)| {
+            crate::journal::last_ended_outcome(&project.path.join(".planning"))
+                .map(|outcome| (alias.clone(), outcome))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -605,6 +634,50 @@ mod tests {
             "the pgid is clamped exactly like the pid: it is the value a stop \
              signals, so a zero there is the more dangerous of the two"
         );
+    }
+
+    /// WR-02: the outcome of a run that ENDED is read off disk, which
+    /// `reconcile_all` cannot do by construction.
+    ///
+    /// The two functions are complementary rather than redundant, and this test
+    /// asserts the complement in both directions: `reconcile_all` sees nothing
+    /// (the run is over, so there is nothing to observe) while
+    /// `last_ended_outcomes` sees the outcome. Before it had a reader, D-14's
+    /// finished-run arm could never fire.
+    #[test]
+    fn a_run_that_ended_reports_its_outcome_even_though_it_is_no_longer_observed() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        fabricate_run(root.path(), RUN_ID, DEAD_PID, Some("2026-07-29T12:05:00Z"));
+        let projects = registry("demo", root.path());
+
+        assert!(
+            reconcile_all(&projects).is_empty(),
+            "the run is over, so there is nothing left to observe — which is \
+             exactly why the outcome needs a second reader"
+        );
+
+        let outcomes = last_ended_outcomes(&projects);
+        assert_eq!(
+            outcomes.get("demo").map(String::as_str),
+            Some("completed"),
+            "the label `run.json` recorded, read verbatim rather than derived"
+        );
+    }
+
+    /// A project with a live or crashed run — no `ended_at` — reports nothing.
+    ///
+    /// **Absent rather than present with a placeholder**: an outcome is a fact
+    /// about a run that finished, and manufacturing one for a run that has not
+    /// is the CR-05 defect in a new place.
+    #[test]
+    fn a_project_with_no_ended_run_reports_no_outcome() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        fabricate_run(root.path(), RUN_ID, DEAD_PID, None);
+        assert!(last_ended_outcomes(&registry("demo", root.path())).is_empty());
+
+        // And one that was never driven at all.
+        let empty = tempfile::TempDir::new().expect("temp dir");
+        assert!(last_ended_outcomes(&registry("demo", empty.path())).is_empty());
     }
 
     /// The halves of every write verb this module forbids itself, joined at

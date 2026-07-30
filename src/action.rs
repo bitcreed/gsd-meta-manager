@@ -137,6 +137,26 @@ pub enum Action {
     /// is no handle to leak in the first place (D-12).
     RunsReconciled {
         runs: Vec<crate::driver::reconcile::ObservedRun>,
+        /// The outcome label of each project's most recent **ended** run, keyed
+        /// by alias (WR-02, D-14).
+        ///
+        /// `reconcile_all` deliberately returns nothing for an ended run —
+        /// there is nothing left to *observe* — and this is the fact that gets
+        /// dropped with it. D-14 names "a finished run whose outcome is
+        /// `PermissionDenied` / `Failed` / `Stalled` / `TimedOut`" as one of the
+        /// four sources of the needs-a-human badge, and with no reader for it
+        /// that arm could never fire in production. A badge that can never light
+        /// is worse than no badge, because it teaches the user to ignore it.
+        ///
+        /// A **label**, not a `RunOutcome`: what is on disk is the string
+        /// `run.json` recorded, and reconstructing a typed variant from it would
+        /// require inventing the payload fields the label does not carry. The
+        /// render layer's `TerminalState::from_label` is the one mapping.
+        ///
+        /// An alias whose newest run has not ended, or which has never been
+        /// driven, is simply absent — the same authoritative-by-absence rule
+        /// `runs` follows.
+        last_outcomes: std::collections::HashMap<String, String>,
     },
     /// The user asked for a run to be started on `alias` (CTRL-03, D-25).
     ///

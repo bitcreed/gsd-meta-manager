@@ -191,6 +191,12 @@ async fn main() -> anyhow::Result<()> {
                     .into_iter()
                     .map(|run| (run.alias.clone(), run))
                     .collect();
+            // Its sibling, read at the same moment and for the same reason
+            // (WR-02): D-14's finished-run arm has to be answerable on the very
+            // first frame, or a project whose last run failed shows no badge
+            // until the first 20-tick scan lands five seconds later.
+            app.ctx.last_outcomes =
+                gsd_meta_manager::driver::reconcile::last_ended_outcomes(&app.ctx.config.projects);
 
             event_bus.spawn_crossterm_reader();
             // Keep the 250ms tick. It drives the 20-tick session poll and the

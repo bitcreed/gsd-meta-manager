@@ -396,6 +396,34 @@ pub fn list_runs(planning_dir: &Path) -> Vec<RunSummary> {
     runs
 }
 
+/// The outcome label of the most recent run on disk that **ended** (WR-02).
+///
+/// D-14 names a finished run whose outcome is `permission_denied`, `failed`,
+/// `stalled` or `timed_out` as one of four evidence sources for the
+/// needs-a-human badge, and the reconciliation scan cannot supply it:
+/// `reconcile_one` returns `None` for an ended run, because there is nothing
+/// left to *observe*. So the fact has to be read from the run list, where it has
+/// been on disk all along as `RunRecord.outcome`.
+///
+/// **Newest ended, not newest.** A live or crashed run has no outcome to report,
+/// and skipping past it to the newest run that does is what makes the answer a
+/// fact rather than an absence. `needs_human` independently suppresses this arm
+/// while a run is live, so the two rules cannot disagree in the direction that
+/// summons a user to a project that is busy.
+///
+/// **Blocking filesystem work**, exactly like [`list_runs`] which it delegates
+/// to — one `read_dir` and one small read per run, bounded by [`RETAIN_RUNS`] —
+/// and every caller is required to invoke it on `tokio::task::spawn_blocking`
+/// (D-28). It goes through `list_runs` rather than reaching for the newest
+/// directory itself so there is exactly one traversal-refusal path (D-27,
+/// WR-02) and one sort order.
+pub fn last_ended_outcome(planning_dir: &Path) -> Option<String> {
+    list_runs(planning_dir)
+        .into_iter()
+        .find(|run| run.ended_at.is_some())
+        .and_then(|run| run.outcome)
+}
+
 /// One run's summary, or `None` for an id, a record or a document this cannot
 /// safely read.
 ///

@@ -430,6 +430,7 @@ impl App {
             reparse_dispatches: 0,
             journal_cursors: HashMap::new(),
             observed_runs: HashMap::new(),
+            last_outcomes: HashMap::new(),
             session_spawned_runs: std::collections::HashSet::new(),
             driver_output: HashMap::new(),
             sort_mode: crate::ui::screens::SortMode::default(),
@@ -995,7 +996,19 @@ impl App {
                         let projects = self.ctx.config.projects.clone();
                         tokio::task::spawn_blocking(move || {
                             let runs = crate::driver::reconcile::reconcile_all(&projects);
-                            let _ = tx.send(Action::RunsReconciled { runs });
+                            // Read in the SAME blocking task as the probe above,
+                            // not in one of its own (WR-02). Both answers
+                            // describe the same instant and both are `read_dir`
+                            // plus small reads, so a second task would double
+                            // the scheduling for no extra freshness — the same
+                            // reasoning that forbids a second timer.
+                            let last_outcomes = crate::driver::reconcile::last_ended_outcomes(
+                                &projects,
+                            );
+                            let _ = tx.send(Action::RunsReconciled {
+                                runs,
+                                last_outcomes,
+                            });
                         });
                     }
 
@@ -1362,11 +1375,22 @@ impl App {
             // project was unregistered, or after it ended — the absence of an
             // entry is how the scan says both of those things, and a merge
             // discards exactly that information.
-            Action::RunsReconciled { runs } => {
+            Action::RunsReconciled {
+                runs,
+                last_outcomes,
+            } => {
                 let observed: HashMap<String, crate::driver::reconcile::ObservedRun> = runs
                     .into_iter()
                     .map(|run| (run.alias.clone(), run))
                     .collect();
+
+                // Replaced wholesale for the reason `observed_runs` is: the scan
+                // is authoritative, and a project whose newest run is no longer
+                // an ended one says so by its absence.
+                if self.ctx.last_outcomes != last_outcomes {
+                    self.ctx.last_outcomes = last_outcomes;
+                    self.needs_redraw = true;
+                }
 
                 // Equality-guarded redraw, following this file's existing
                 // discipline: a scan lands every ~5s for the whole life of the
@@ -1654,6 +1678,12 @@ impl App {
             .retain(|alias, _| registered.contains_key(alias));
         self.ctx
             .observed_runs
+            .retain(|alias, _| registered.contains_key(alias));
+        // Its sibling joins the pass, and for the same reason (WR-02): keyed by
+        // alias, filled by every scan, and otherwise growing for the life of the
+        // process one entry per project ever driven and then unregistered.
+        self.ctx
+            .last_outcomes
             .retain(|alias, _| registered.contains_key(alias));
         // The ring buffer joins the pass, and this line is the phase's only
         // remaining Phase 16 carry-forward — a negative one. `driver_output` is
@@ -2182,6 +2212,18 @@ mod tests {
         (app, rx)
     }
 
+    /// A scan that observed `runs` and found no ended run anywhere.
+    ///
+    /// The `last_outcomes` half is exercised by its own tests below; every
+    /// assertion about `observed_runs` wants it empty, and spelling that out at
+    /// seven call sites would say nothing seven times.
+    fn reconciled(runs: Vec<crate::driver::reconcile::ObservedRun>) -> Action {
+        Action::RunsReconciled {
+            runs,
+            last_outcomes: HashMap::new(),
+        }
+    }
+
     fn journal_change(root: &std::path::Path) -> Action {
         Action::FileChanged {
             project_path: root.to_path_buf(),
@@ -2309,9 +2351,7 @@ mod tests {
             .observed_runs
             .insert("gone".to_string(), observed("gone", "run-old", ALIVE));
 
-        app.update(Action::RunsReconciled {
-            runs: vec![observed(OBS_ALIAS, "run-new", ALIVE)],
-        });
+        app.update(reconciled(vec![observed(OBS_ALIAS, "run-new", ALIVE)]));
 
         assert_eq!(
             app.ctx.observed_runs.len(),
@@ -2323,7 +2363,7 @@ mod tests {
 
         // An empty scan clears the map outright, which is how "every run ended"
         // is expressed.
-        app.update(Action::RunsReconciled { runs: Vec::new() });
+        app.update(reconciled(Vec::new()));
         assert!(app.ctx.observed_runs.is_empty());
     }
 
@@ -2332,26 +2372,20 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut app, _rx) = obs_app(dir.path());
 
-        app.update(Action::RunsReconciled {
-            runs: vec![observed(OBS_ALIAS, "run-a", ALIVE)],
-        });
+        app.update(reconciled(vec![observed(OBS_ALIAS, "run-a", ALIVE)]));
 
         // The scan lands every ~5s for the whole life of the process. Without
         // the equality guard this would repaint twelve times a minute forever
         // with nothing on screen changed.
         app.needs_redraw = false;
-        app.update(Action::RunsReconciled {
-            runs: vec![observed(OBS_ALIAS, "run-a", ALIVE)],
-        });
+        app.update(reconciled(vec![observed(OBS_ALIAS, "run-a", ALIVE)]));
         assert!(
             !app.needs_redraw,
             "an identical scan result must not request a redraw"
         );
 
         // The control arm: a real change still does.
-        app.update(Action::RunsReconciled {
-            runs: vec![observed(OBS_ALIAS, "run-a", DEAD)],
-        });
+        app.update(reconciled(vec![observed(OBS_ALIAS, "run-a", DEAD)]));
         assert!(
             app.needs_redraw,
             "a run going from live to crashed must request a redraw, or the guard \
@@ -2458,9 +2492,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut app, _rx) = obs_app(dir.path());
 
-        app.update(Action::RunsReconciled {
-            runs: vec![observed(OBS_ALIAS, "run-adopted", ALIVE)],
-        });
+        app.update(reconciled(vec![observed(OBS_ALIAS, "run-adopted", ALIVE)]));
 
         assert!(
             app.ctx.observed_runs.contains_key(OBS_ALIAS),
@@ -3990,6 +4022,9 @@ mod tests {
                 observed(alias, OBS_RUN, crate::driver::liveness::Liveness::Dead),
             );
             app.ctx
+                .last_outcomes
+                .insert(alias.to_string(), "failed".to_string());
+            app.ctx
                 .driver_output
                 .entry(alias.to_string())
                 .or_default()
@@ -4026,6 +4061,7 @@ mod tests {
             journal_cursors,
             run_states,
             observed_runs,
+            last_outcomes,
             driver_output,
             view_cache,
             last_refresh,
@@ -4071,6 +4107,7 @@ mod tests {
         );
         assert!(!run_states.contains_key(GONE), "run_states leaked");
         assert!(!observed_runs.contains_key(GONE), "observed_runs leaked");
+        assert!(!last_outcomes.contains_key(GONE), "last_outcomes leaked");
         assert!(!driver_output.contains_key(GONE), "driver_output leaked");
         assert!(!view_cache.contains_key(GONE), "view_cache leaked");
         assert!(!last_refresh.contains_key(GONE), "last_refresh leaked");
@@ -4082,6 +4119,7 @@ mod tests {
         assert!(journal_cursors.keys().any(|(alias, _)| alias == OBS_ALIAS));
         assert!(run_states.contains_key(OBS_ALIAS));
         assert!(observed_runs.contains_key(OBS_ALIAS));
+        assert!(last_outcomes.contains_key(OBS_ALIAS));
         assert!(driver_output.contains_key(OBS_ALIAS));
         assert!(last_refresh.contains_key(OBS_ALIAS));
         assert!(archive_cache.contains_key(OBS_ALIAS));
