@@ -307,7 +307,7 @@ Plans:
   - Live re-streaming after a TUI restart is impossible by construction (the child's stdout pipe is gone); reattachment is journal-based and read-only
 
 **Research**: optional — skipped by decision at planning time; every external unknown (mid-turn stdin semantics, the `isReplay` dequeue ack, `result` as a turn boundary) was settled empirically by Phase 15's OQ2 spike and is carried in 15-CONTEXT D-29..D-32 and 18-CONTEXT D-02/D-07
-**Plans**: 1/11 plans executed
+**Plans**: 8/11 plans executed
 **UI hint**: yes
 
 Plans:
@@ -317,16 +317,16 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 18-02-PLAN.md — Driver honesty: acted-on, missed, and the blocking-call boundary (D-28/WR-10)
-- [ ] 18-03-PLAN.md — Journal read surfaces: readable output projection + run listing
-- [ ] 18-04-PLAN.md — State layer: bounded ring buffer, sanitiser, needs-human predicate, Action types
+- [x] 18-02-PLAN.md — Driver honesty: acted-on, missed, and the blocking-call boundary (D-28/WR-10)
+- [x] 18-03-PLAN.md — Journal read surfaces: readable output projection + run listing
+- [x] 18-04-PLAN.md — State layer: bounded ring buffer, sanitiser, needs-human predicate, Action types
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 18-05-PLAN.md — Controller: stop-disposition fix (D-29/WR-15), schedulers, the redraw seam
-- [ ] 18-06-PLAN.md — Dashboard: driven/parked badges, sort toggle, needs-human filter
-- [ ] 18-07-PLAN.md — Injection input screen and the command + goal start flow
-- [ ] 18-08-PLAN.md — Release gate for the hidden agent-override flags (D-30/WR-16)
+- [x] 18-05-PLAN.md — Controller: stop-disposition fix (D-29/WR-15), schedulers, the redraw seam
+- [x] 18-06-PLAN.md — Dashboard: driven/parked badges, sort toggle, needs-human filter
+- [x] 18-07-PLAN.md — Injection input screen and the command + goal start flow
+- [x] 18-08-PLAN.md — Release gate for the hidden agent-override flags (D-30/WR-16)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -441,7 +441,7 @@ Plans:
 | 15. Transport Foundation | 8/8 | Complete    | 2026-07-29 |
 | 16. Run Journal & State Substrate | 6/6 | Complete    | 2026-07-29 |
 | 17. Supervisor | 8/8 | Complete    | 2026-07-29 |
-| 18. Driver Tab, Live Watch & Durable Injection | 1/11 | In Progress|  |
+| 18. Driver Tab, Live Watch & Durable Injection | 8/11 | In Progress|  |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 0/? | Not started | - |
 | 20. Deterministic Decision Router & Run Bounds | 0/? | Not started | - |
 | 21. LLM Goal Layer & Prompt-Injection Hardening | 0/? | Not started | - |
