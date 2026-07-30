@@ -1,34 +1,37 @@
 {
   "version": "1.0",
-  "timestamp": "2026-03-31T23:41:16.351Z",
-  "phase": "12",
-  "phase_name": "Milestone Archive Browser",
-  "phase_dir": ".planning/phases/12-milestone-archive-browser",
-  "plan": 3,
-  "task": 2,
-  "total_tasks": 2,
+  "timestamp": "2026-07-30T17:57:36.590Z",
+  "phase": "19",
+  "phase_name": "GITSAFE — Git & Blast-Radius Envelope",
+  "phase_dir": ".planning/phases/19-gitsafe-git-blast-radius-envelope",
+  "plan": 0,
+  "task": 0,
+  "total_tasks": 0,
   "status": "paused",
   "completed_tasks": [
-    {"id": 1, "name": "Build and run smoke test", "status": "done", "commit": "n/a (verification only)"}
+    {"id": 1, "name": "Phase 18 (Driver Tab, Live Watch & Durable Injection) — 11 of 11 plans, accepted", "status": "done", "commit": "740e62f"},
+    {"id": 2, "name": "Quick task 260729-vmp — opt a project in to driving from the Driver tab", "status": "done", "commit": "70157bd"},
+    {"id": 3, "name": "Phase 19 context gathering — 19-CONTEXT.md (665 lines, autonomous mode, research skipped)", "status": "done", "commit": "823a4a3"},
+    {"id": 4, "name": "Push master to origin (295 commits)", "status": "done", "commit": "823a4a3"}
   ],
   "remaining_tasks": [
-    {"id": 2, "name": "Visual verification of Archive tab", "status": "deferred", "progress": "User chose to defer visual UAT"}
+    {"id": 5, "name": "Plan Phase 19 — /gsd-plan-phase with --skip-ui, no research pass", "status": "not_started"},
+    {"id": 6, "name": "Execute Phase 19 plans", "status": "not_started"},
+    {"id": 7, "name": "Verify + accept Phase 19", "status": "not_started"}
   ],
   "blockers": [],
+  "async_jobs": [],
   "human_actions_pending": [
-    {"action": "Visual UAT of Archive tab (4 items: tab visibility, drill-down, styled markdown, caching)", "context": "Verifier returned human_needed — 4/4 automated checks passed but visual rendering needs manual confirmation", "blocking": false}
+    {"action": "WR-05 — Driver tab layout defect at medium terminal heights", "context": "Carried forward from Phase 18 UAT; captured at .planning/todos/pending/2026-07-29-driver-tab-layout-at-medium-terminal-heights.md. Not scheduled into a phase yet.", "blocking": false},
+    {"action": "Remaining Phase 18 UAT items", "context": "Phase 18 was accepted on code-level evidence 14/14; the user completed UAT only partially (ea0f54b).", "blocking": false}
   ],
   "decisions": [
-    {"decision": "Phase 10: Thorough cleanup with Claude's discretion on all dead_code items", "rationale": "User wanted comprehensive cleanup, not minimal", "phase": "10"},
-    {"decision": "Phase 11: Pause badge in Cyan, after status column, pause wins over session indicator", "rationale": "User accepted all recommended grey area answers", "phase": "11"},
-    {"decision": "Phase 12: Sequential drill-down with breadcrumb, custom markdown parser (no pulldown-cmark), async via spawn_blocking", "rationale": "User accepted all recommended grey area answers across 3 areas", "phase": "12"},
-    {"decision": "Phase 12 visual UAT deferred", "rationale": "User chose to continue without validation to keep autonomous flow moving", "phase": "12"}
+    {"decision": "Phase 19 runs in autonomous mode — no questions at any gate; best well-reasoned choice, proceed, record it", "rationale": "Explicit user direction recorded in 19-CONTEXT.md header", "phase": "19"},
+    {"decision": "Phase 19 skips research", "rationale": "ROADMAP marks it 'Research: skip'; branch-protection and pre-push-hook patterns are established practice, and the CLI-capability facts were verified directly against the installed claude binary during context gathering", "phase": "19"},
+    {"decision": "Phase 19 uses --skip-ui", "rationale": "Ships no visual surface — a policy module, two git hook stubs, a PreToolUse guard, an env envelope and a secret scanner. The repo-wide ui-plan-gate returns frontend:true for any ratatui project and would fire on the codebase, not this phase's scope (same reasoning Phase 16 recorded)", "phase": "19"},
+    {"decision": "Guardrails must be MECHANICAL, never prompt text", "rationale": "The governing lesson of the phase — PITFALLS:42-75 (Replit incident: a freeze that lived only in the prompt was ignored, then covered up) and IssueTrojanBench's 66.5% figure", "phase": "19"}
   ],
-  "uncommitted_files": [
-    ".planning/phases/10-tech-debt-cleanup/10-VERIFICATION.md",
-    ".planning/phases/11-paused-project-detection/11-VERIFICATION.md",
-    ".planning/phases/12-milestone-archive-browser/12-VERIFICATION.md"
-  ],
-  "next_action": "Resume /gsd:autonomous: complete Phase 12 (mark complete, update ROADMAP/STATE/PROJECT.md), then execute Phase 13 (Queue Execution Research), then lifecycle (audit → complete → cleanup)",
-  "context_notes": "Running /gsd:autonomous for v1.2 milestone. Phases 10-11 fully complete and verified. Phase 12 code complete (3/3 plans executed), verification returned human_needed (4/4 automated passed, 4 visual UAT items deferred). Phase 13 (Queue Execution Research) not yet started. After Phase 13 completes, milestone lifecycle runs (audit → complete-milestone → cleanup)."
+  "uncommitted_files": [],
+  "next_action": "Run /gsd-plan-phase for Phase 19 (research already declared skip; pass --skip-ui). Do NOT pass --research-phase.",
+  "context_notes": "Clean pause point, not mid-task. Working tree is clean and master is fully pushed to origin (823a4a3). Phase 18 is complete and accepted; quick task 260729-vmp shipped. Phase 19 has its CONTEXT.md written and is 'Ready for planning' — no plans exist in the phase directory yet. Milestone v2.0 (Autonomous Orchestration) sits at 5 of 9 phases, 37 of 37 plans complete. The only thing between here and planning is invoking the planner."
 }
