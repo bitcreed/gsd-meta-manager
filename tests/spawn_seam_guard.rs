@@ -103,6 +103,89 @@ fn calls_marker(line: &str, marker: &str) -> bool {
     false
 }
 
+/// The agent-override fields WR-16 named, by the shape of their declaration.
+///
+/// Matched as `name:` rather than as a bare identifier on purpose. A bare
+/// identifier also matches every *use* — `args.claude_program`, the shorthand
+/// `claude_program,` in a pattern — and each of those sits an arbitrary distance
+/// below the `#[cfg]` that governs it, so covering them would mean widening the
+/// lookback window until it stopped proving anything. The declarations and the
+/// struct-literal initialisers are the sites where the attribute is either
+/// present or the field exists in release; those are what this audits.
+const AGENT_OVERRIDE_FIELDS: &[&str] = &["claude_program:", "claude_args:"];
+
+/// The file whose declaration is the released binary's actual attack surface.
+///
+/// Named separately so the audit can refuse to pass when it finds no declaration
+/// there at all — a rename that emptied the check would otherwise look exactly
+/// like a clean run.
+const OVERRIDE_PARSER_HOME: &str = "src/cli.rs";
+
+/// How many lines above a declaration the gate may sit.
+///
+/// Three, because `src/cli.rs` spells the field as doc / `#[cfg]` / `#[arg]` /
+/// declaration and a bare struct field spells it as `#[cfg]` / declaration. The
+/// window is deliberately small: a gate far enough above to need a bigger one is
+/// a gate whose scope a reader cannot see, which is the failure this whole file
+/// exists to make impossible.
+const GATE_LOOKBACK: usize = 3;
+
+/// The cfg predicate that makes a declaration debug-only.
+const DEBUG_ONLY_CFG: &str = "debug_assertions";
+
+/// Whether `line` is a declaration or initialiser of an agent-override field.
+fn is_override_declaration(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let trimmed = trimmed.strip_prefix("pub ").unwrap_or(trimmed);
+    AGENT_OVERRIDE_FIELDS
+        .iter()
+        .any(|field| trimmed.starts_with(field))
+}
+
+/// Whether `line` is an attribute that restricts what follows it to debug builds.
+///
+/// Whitespace is stripped before matching, so `rustfmt` cannot break the audit by
+/// reflowing an attribute. `all(debug_assertions, …)` passes because a *narrower*
+/// gate is still debug-only; `any(debug_assertions, …)` and
+/// `not(debug_assertions)` are rejected because both are ways of widening the
+/// gate back to the release build, which is precisely the refactor this test is
+/// here to catch.
+fn is_debug_only_gate(line: &str) -> bool {
+    let dense: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+    dense.starts_with("#[cfg(")
+        && dense.contains(DEBUG_ONLY_CFG)
+        && !dense.contains("any(")
+        && !dense.contains("not(")
+}
+
+/// The 1-based line numbers of every override-field declaration in `lines`, and
+/// of the subset of them that no debug-only gate governs.
+///
+/// One pass returning both, so the audit can distinguish "no violations" from
+/// "nothing was examined" — the two outcomes an assertion on emptiness alone
+/// cannot tell apart.
+fn override_declarations(lines: &[String]) -> (Vec<usize>, Vec<usize>) {
+    let mut found = Vec::new();
+    let mut ungated = Vec::new();
+
+    for (index, line) in lines.iter().enumerate() {
+        if line.trim_start().starts_with("//") || !is_override_declaration(line) {
+            continue;
+        }
+        found.push(index + 1);
+
+        let window_start = index.saturating_sub(GATE_LOOKBACK);
+        let gated = lines[window_start..index]
+            .iter()
+            .any(|above| is_debug_only_gate(above));
+        if !gated {
+            ungated.push(index + 1);
+        }
+    }
+
+    (found, ungated)
+}
+
 /// Serde's strict unknown-field rejection attribute, assembled at **runtime**
 /// from two halves.
 ///
@@ -379,6 +462,148 @@ fn a_signal_to_a_process_group_is_not_mistaken_for_a_spawn() {
         "    let mut cmd = std::process::Command::new(program);",
         "Command::new("
     ));
+}
+
+#[test]
+fn the_agent_program_override_fields_are_debug_only() {
+    // **Why a `#[cfg]` needs a guard at all**, which is the same argument the
+    // header of this file makes about comments. An attribute is enforced by the
+    // compiler only for as long as it is there. A refactor that lifts it to a
+    // wider predicate, or drops it while moving a field, compiles cleanly, ships
+    // cleanly, and is indistinguishable from never having added it — because the
+    // property it protects is invisible in every build a developer runs. Debug
+    // is where these fields are supposed to work.
+    //
+    // What is at stake if this test fails: a release build of this binary
+    // accepts a flag that makes the "driver" exec an arbitrary program with an
+    // opted-in project as its working directory, and journals the result as an
+    // ordinary GSD run (D-30, WR-16).
+    let files = source_files();
+
+    let mut found_total = 0usize;
+    let mut found_in_parser = 0usize;
+    let mut offenders: Vec<(String, usize, String)> = Vec::new();
+
+    for file in &files {
+        let lines: Vec<String> = file.1.iter().map(|(_, line)| line.clone()).collect();
+        let (found, ungated) = override_declarations(&lines);
+
+        found_total += found.len();
+        if file.0 == OVERRIDE_PARSER_HOME {
+            found_in_parser += found.len();
+        }
+
+        for number in ungated {
+            offenders.push((file.0.clone(), number, lines[number - 1].trim().to_string()));
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "an agent-override field is declared without a debug-only gate. A release build \
+         of this binary would then accept a flag letting any caller exec an arbitrary \
+         program inside an opted-in project root, with the journal recording it as a \
+         normal GSD run (D-30, WR-16). The attribute belongs within {GATE_LOOKBACK} lines \
+         above the declaration. Ungated:{}",
+        render(&offenders)
+    );
+
+    // Non-vacuity, in the register `source_files` already uses: an audit that
+    // examined nothing passes for the wrong reason. A rename of these fields must
+    // fail here loudly and be re-pointed deliberately, not pass silently.
+    assert!(
+        found_in_parser >= AGENT_OVERRIDE_FIELDS.len(),
+        "the audit found {found_in_parser} agent-override declarations in \
+         {OVERRIDE_PARSER_HOME} and expected at least {}, so it is checking less than it \
+         thinks. If the fields were renamed, re-point `AGENT_OVERRIDE_FIELDS`; if they \
+         were removed outright, delete this test in the same commit",
+        AGENT_OVERRIDE_FIELDS.len()
+    );
+    assert!(
+        found_total >= found_in_parser,
+        "counting is broken, which would make every assertion above meaningless"
+    );
+}
+
+#[test]
+fn an_override_field_declared_without_the_debug_gate_is_reported() {
+    // The control arm, and it is not optional: `the_agent_program_override_fields_are_debug_only`
+    // asserts an emptiness, and a matcher that recognised no declaration at all
+    // would satisfy it forever while auditing nothing. These snippets are
+    // synthetic rather than read from the tree, so the arm keeps proving the
+    // matcher works even once — especially once — the tree is correct.
+    let ungated: Vec<String> = [
+        "    /// Test and development only: the program to spawn instead of `claude`",
+        "    #[arg(long, hide = true)]",
+        "    claude_program: Option<PathBuf>,",
+    ]
+    .iter()
+    .map(|line| line.to_string())
+    .collect();
+    let (found, violations) = override_declarations(&ungated);
+    assert_eq!(found.len(), 1, "the declaration itself must be recognised");
+    assert_eq!(
+        violations,
+        vec![3],
+        "a declaration with no debug-only gate above it must be reported, or this \
+         audit is a no-op that passes"
+    );
+
+    // And the same snippet with the gate restored must be clean, so the matcher
+    // is not simply reporting everything.
+    let gated: Vec<String> = [
+        "    /// Test and development only: the program to spawn instead of `claude`",
+        "    #[cfg(debug_assertions)]",
+        "    #[arg(long, hide = true)]",
+        "    claude_program: Option<PathBuf>,",
+    ]
+    .iter()
+    .map(|line| line.to_string())
+    .collect();
+    let (found, violations) = override_declarations(&gated);
+    assert_eq!(found.len(), 1);
+    assert!(
+        violations.is_empty(),
+        "a properly gated declaration must not be reported: {violations:?}"
+    );
+
+    // The gate predicate itself. `all(...)` narrows and is still debug-only;
+    // `any(...)` and `not(...)` are the two shapes that quietly hand the field
+    // back to the release build, which is the refactor this test exists to catch.
+    for accepted in [
+        "#[cfg(debug_assertions)]",
+        "  #[ cfg ( debug_assertions ) ]",
+        "#[cfg(all(debug_assertions, unix))]",
+    ] {
+        assert!(
+            is_debug_only_gate(accepted),
+            "this restricts the declaration to debug builds: {accepted}"
+        );
+    }
+    for rejected in [
+        "#[cfg(any(debug_assertions, feature = \"dev-tools\"))]",
+        "#[cfg(not(debug_assertions))]",
+        "#[cfg(test)]",
+        "#[arg(long, hide = true)]",
+        "    claude_program: Option<PathBuf>,",
+    ] {
+        assert!(
+            !is_debug_only_gate(rejected),
+            "this does not restrict the declaration to debug builds: {rejected}"
+        );
+    }
+
+    // A use is not a declaration. Widening the matcher to catch these would mean
+    // widening the lookback window past the point where it proves anything.
+    for use_site in [
+        "    let executor = match &args.claude_program {",
+        "            claude_program,",
+    ] {
+        assert!(
+            !is_override_declaration(use_site),
+            "a use site is out of this audit's scope by design: {use_site}"
+        );
+    }
 }
 
 #[test]
