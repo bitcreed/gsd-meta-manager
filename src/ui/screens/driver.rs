@@ -165,32 +165,32 @@ pub const INJECTION_KINDS: [&str; 3] = [
 ];
 
 /// `○` — durably on disk in `inbox.jsonl`; **nothing has read it**.
-const GLYPH_QUEUED: &str = "\u{25CB}";
+pub(super) const GLYPH_QUEUED: &str = "\u{25CB}";
 /// `◐` — written to the agent's stdin without error. Half-filled, because half
 /// of what matters has happened: the write landed and the agent has not yet
 /// picked it up.
-const GLYPH_DELIVERED: &str = "\u{25D0}";
+pub(super) const GLYPH_DELIVERED: &str = "\u{25D0}";
 /// `●` — the agent **dequeued** it and is running it as its own turn. Full,
 /// because this is as far as the protocol can see. The same codepoint the run
 /// glyphs use for "succeeded": both mean *this reached its end*, and the two
 /// live in different columns of different widgets, so no row shows both.
-const GLYPH_ACTED_ON: &str = "\u{25CF}";
+pub(super) const GLYPH_ACTED_ON: &str = "\u{25CF}";
 /// `✗` — appended after the agent's input was closed. Undeliverable, named,
 /// and **never retried**.
-const GLYPH_MISSED: &str = "\u{2717}";
+pub(super) const GLYPH_MISSED: &str = "\u{2717}";
 
 /// The exact label for a message durably queued and unread.
-const LABEL_QUEUED: &str = "queued";
+pub(super) const LABEL_QUEUED: &str = "queued";
 /// The exact label for a write to the agent's stdin that returned without
 /// error. **This word belongs to the stdin write and to nothing else.**
-const LABEL_DELIVERED: &str = "delivered";
+pub(super) const LABEL_DELIVERED: &str = "delivered";
 /// The exact label for the dequeue echo. Deliberately not "received", "read" or
 /// "acknowledged": the echo says the agent *started processing*, roughly a
 /// minute after the write, and every one of those three words would claim an
 /// earlier and stronger observation than the protocol supports.
-const LABEL_ACTED_ON: &str = "acted-on";
+pub(super) const LABEL_ACTED_ON: &str = "acted-on";
 /// The exact label for the honest fourth state (D-10).
-const LABEL_MISSED: &str = "missed";
+pub(super) const LABEL_MISSED: &str = "missed";
 
 /// Why a missed message is missed, in one line.
 ///

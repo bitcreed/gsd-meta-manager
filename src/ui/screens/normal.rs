@@ -74,24 +74,24 @@ fn prev_status(threshold: DiskStatus) -> DiskStatus {
 /// Shape-distinct from every other badge at a glance. `▲` (up triangle) was
 /// rejected: it is the session `▶` rotated, and two glyphs that differ only by
 /// rotation fail the at-a-glance test that is this badge's whole purpose.
-const BADGE_DRIVEN: &str = "\u{25C6} ";
+pub(super) const BADGE_DRIVEN: &str = "\u{25C6} ";
 
 /// Rank 2 — this project is waiting on a human. `⚑` BLACK FLAG.
 ///
 /// A flag is the conventional "planted here, come look" mark and shares no
 /// outline with the diamond, the two pause bars, the hourglass or the triangle.
-const BADGE_NEEDS_HUMAN: &str = "\u{2691} ";
+pub(super) const BADGE_NEEDS_HUMAN: &str = "\u{2691} ";
 
 /// Rank 3 — a non-empty HANDOFF. `⏸` DOUBLE VERTICAL BAR. Shipped in v1.4.
-const BADGE_PAUSED: &str = "\u{23F8} ";
+pub(super) const BADGE_PAUSED: &str = "\u{23F8} ";
 
 /// Rank 4 — blocked on an external/async job, not stuck. `⏳` HOURGLASS.
 /// Shipped in GSD 1.8.0.
-const BADGE_EXTERNAL_JOB: &str = "\u{23F3} ";
+pub(super) const BADGE_EXTERNAL_JOB: &str = "\u{23F3} ";
 
 /// Rank 5 — an active Claude session in this project's directory. `▶`.
 /// Shipped in v1.0.
-const BADGE_SESSION: &str = "\u{25b6} ";
+pub(super) const BADGE_SESSION: &str = "\u{25b6} ";
 
 /// The single badge a dashboard alias cell leads with.
 ///
@@ -502,7 +502,7 @@ impl Screen for NormalScreen {
             }
             KeyCode::Char('?') => {
                 ctx.needs_redraw = true;
-                ScreenAction::Push(Box::new(HelpScreen))
+                ScreenAction::Push(Box::new(HelpScreen::new()))
             }
             KeyCode::Tab => {
                 let alias = match ctx.selected_alias() {

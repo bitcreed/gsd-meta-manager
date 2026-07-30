@@ -21,7 +21,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tab
 use ratatui::Frame;
 use std::cell::Cell;
 
-const PAGE_SCROLL_LINES: u16 = 20;
+pub(super) const PAGE_SCROLL_LINES: u16 = 20;
 
 /// Viewport metrics recorded by the last render pass of a markdown file view.
 ///
@@ -2324,7 +2324,7 @@ impl Screen for DetailScreen {
             }
             KeyCode::Char('?') => {
                 ctx.needs_redraw = true;
-                ScreenAction::Push(Box::new(HelpScreen))
+                ScreenAction::Push(Box::new(HelpScreen::new()))
             }
             _ => ScreenAction::None,
         }
