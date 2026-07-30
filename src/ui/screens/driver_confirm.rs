@@ -1,22 +1,34 @@
-//! **The only driver surface Phase 17 ships** (D-25, D-26).
+//! **The one driver confirmation** — Phase 17's only driver surface, now the
+//! last step of Phase 18's start flow (D-25, D-26, D-23).
 //!
-//! Read the minimalism as a fence, not as an oversight. Everything a driver
-//! *looks* like belongs to **Phase 18**, and the ROADMAP says so twice: the
-//! Driver tab, the live output stream, the ring-buffered output, the dashboard
-//! driver badges, the three-state injection UI, and the rich opt-in disclosure
-//! flow that lists every file entering the prompt and makes the user type the
-//! project name. D-26 is explicit that a bare toggle with a clear confirmation
-//! is sufficient *here* and must not block on a richer flow that has no screen
-//! to live in yet.
+//! Phase 17 shipped this as a deliberate fence rather than an oversight:
+//! everything a driver *looks* like belonged to **Phase 18**. That map is kept
+//! accurate here rather than left to go stale, so the entries below are the
+//! ones that are still someone else's:
 //!
-//! What Phase 17 needs is only enough surface for a human to reach the phase's
-//! own success criteria: start a run, stop a live one, toggle the opt-in. That
-//! is three keys on the dashboard and this one confirmation, modelled file for
+//! | Still future work | Owner |
+//! |---|---|
+//! | The Driver tab and its live, ring-buffered output stream | 18-09 |
+//! | The dashboard driver badges | 18-06 |
+//! | The four-state injection **display** | 18-09 |
+//! | The rich opt-in disclosure flow that lists every file entering the prompt and makes the user type the project name | a later milestone (D-26) |
+//!
+//! **Discharged by plan 18-07, which is why this file changed:** the command
+//! picker and the goal field. [`DEFAULT_DRIVE_COMMAND`] is no longer the only
+//! command a run can be started with — it is the default *selection* offered by
+//! [`super::driver_start::DriverStartScreen`], and this confirmation names the
+//! command the user actually chose. The injection **input** is
+//! [`super::driver_inject`].
+//!
+//! What Phase 17 needed was only enough surface for a human to reach its own
+//! success criteria: start a run, stop a live one, toggle the opt-in. That is
+//! three keys on the dashboard and this one confirmation, modelled file for
 //! file on [`super::delete_confirm`] — the same `[y/n]` one-line footer, the
 //! same `Color::Red` for a destructive direction, the same free functions doing
 //! the work and reporting through `ctx.error_message` / `ctx.status_message`,
 //! and the same `ScreenAction::Pop` on both arms. No new widget, no new tab, no
-//! second screen.
+//! second screen. Phase 18 adds one row above the prompt and changes no part of
+//! that shape.
 //!
 //! Driver state is read from the **sibling maps on `AppContext`** — never from
 //! `ProjectState`, whose derived `PartialEq` drives the v1.4 unchanged-state
@@ -34,15 +46,19 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-/// The single GSD command a Phase 17 start issues.
+/// The GSD command a start is **pre-selected** with.
 ///
-/// **Hardcoded on purpose, and the hardcoding is a scope fence rather than a
-/// stub.** There is no command picker because the picker is **Phase 18's**, and
-/// there is no computed sequence because the D-R-P-E-V decision router is
-/// **Phase 20's** (D-22 says the honest "sequence" for this phase is the single
-/// `--command` argument, and the driver's own dry-run output says so too). A
-/// read-only progress command is the right default for the one command a user
-/// can reach from a keypress before either of those phases exists.
+/// **No longer the only value a run can carry.** The command picker landed in
+/// plan 18-07 ([`super::driver_start::DriverStartScreen`], Step A), and this
+/// constant is now what an empty command field commits — the default
+/// *selection*, exactly as D-23 specifies. A read-only progress command is the
+/// right thing to default to: it is the one command that is safe to start
+/// without reading the field.
+///
+/// There is still no computed **sequence**, because the D-R-P-E-V decision
+/// router is **Phase 20's**; a Phase 18 run executes exactly one GSD command per
+/// `drive` invocation, so the picker chooses one command and the driver's own
+/// dry-run output says the same.
 pub const DEFAULT_DRIVE_COMMAND: &str = "/gsd-progress";
 
 /// Which of the three driver actions this confirmation is for.
@@ -57,14 +73,59 @@ pub enum DriverAction {
 }
 
 /// One confirmation screen serving all three driver actions.
+///
+/// `command` and `goal` are meaningful only for [`DriverAction::Start`], and
+/// they live on the screen rather than inside the enum variant on purpose: the
+/// enum stays `Copy` and keeps working as a plain discriminator in
+/// [`prompt_text`] and [`prompt_color`], and the dashboard's existing `r`
+/// binding keeps compiling against the two-argument [`Self::new`].
+///
+/// **One field feeds both the prompt and the dispatch** (T-18-41). The command
+/// rendered in the confirmation and the command sent in
+/// [`Action::DriverStartRequested`] are the *same* `String`, so a confirmation
+/// that named one command while starting another is not expressible here.
 pub struct DriverConfirmScreen {
     alias: String,
     action: DriverAction,
+    /// The command a `Start` will run. [`DEFAULT_DRIVE_COMMAND`] unless the
+    /// start flow chose otherwise.
+    command: String,
+    /// The human's goal, **verbatim**, or `None` when none was given.
+    ///
+    /// Never `Some("")`: the empty string is a different and worse thing than
+    /// no goal — `drive_argv` omits the flag entirely for `None`, and an empty
+    /// goal would be recorded verbatim in `RunRecord.goal` and rendered as if
+    /// the user had said something. [`super::driver_start`] is what enforces
+    /// that mapping.
+    goal: Option<String>,
 }
 
 impl DriverConfirmScreen {
+    /// A confirmation with the default command selection and no goal.
+    ///
+    /// This is the dashboard's `r` / `x` / `o` path. For a `Start` that came
+    /// through the command picker, use [`Self::new_start`].
     pub fn new(alias: String, action: DriverAction) -> Self {
-        Self { alias, action }
+        Self {
+            alias,
+            action,
+            command: DEFAULT_DRIVE_COMMAND.to_string(),
+            goal: None,
+        }
+    }
+
+    /// A `Start` confirmation for the command and goal the user chose.
+    ///
+    /// `goal` is stored and dispatched **verbatim, never paraphrased** — goal
+    /// decomposition and prompt-injection hardening are Phase 21's, and this
+    /// phase interprets nothing. Only the *rendering* is sanitised.
+    pub fn new_start(alias: String, command: String, goal: Option<String>) -> Self {
+        Self {
+            alias,
+            action: DriverAction::Start,
+            command,
+            goal,
+        }
     }
 }
 
@@ -79,12 +140,23 @@ impl DriverConfirmScreen {
 /// not claim to stop a live one, because the code does not stop one — and a
 /// safety claim the implementation does not back is worse than no claim at all
 /// (T-17-48).
-fn prompt_text(alias: &str, action: DriverAction, opted_in: bool) -> String {
+///
+/// `command` is the one the run will actually be started with, **not**
+/// [`DEFAULT_DRIVE_COMMAND`] — the last thing a user sees before an autonomous
+/// agent starts on their repo has to name the real thing. It is sanitised
+/// before it is interpolated: the picker's suggestion list can come from a
+/// `gsd-tools smart-entry` subprocess, so a command string is not necessarily
+/// something the user typed, and an escape sequence reaching a rendered prompt
+/// can repaint the screen or forge a line (T-18-38).
+fn prompt_text(alias: &str, action: DriverAction, opted_in: bool, command: &str) -> String {
     match action {
-        DriverAction::Start => format!(
-            "Drive \"{alias}\"? An autonomous agent will run {DEFAULT_DRIVE_COMMAND} in that \
-             project with full autonomy, including git operations. [y/n]"
-        ),
+        DriverAction::Start => {
+            let command = super::sanitize_render_line(command);
+            format!(
+                "Drive \"{alias}\" with {command}? An autonomous agent will run it in that \
+                 project with full autonomy, including git operations. [y/n]"
+            )
+        }
         DriverAction::Stop => format!(
             "Stop the run on \"{alias}\"? The whole process tree is terminated, including the \
              agent's own grandchildren. [y/n]"
@@ -98,6 +170,21 @@ fn prompt_text(alias: &str, action: DriverAction, opted_in: bool) -> String {
              agent is started against it. [y/n]"
         ),
     }
+}
+
+/// The `Goal: {goal}` row that precedes a `Start` prompt when a goal was given.
+///
+/// `None` when there is none — the row is **absent** rather than empty, because
+/// an empty `Goal:` label reads as a goal the user failed to give rather than as
+/// a goal they chose not to give (the "(none given)" copy belongs to the run
+/// detail, not to a confirmation).
+///
+/// Sanitised, single line, ellipsis-truncated: [`super::sanitize_render_line`]
+/// strips `ESC` unconditionally, replaces every other C0 control and `DEL`, and
+/// caps by `char`. Without it a goal is a straight path from free text to a
+/// rendered terminal line (T-18-38).
+fn goal_row(goal: Option<&str>) -> Option<String> {
+    goal.map(|g| format!("Goal: {}", super::sanitize_render_line(g)))
 }
 
 /// `Color::Red` for the two directions that take something away — stopping a
@@ -122,7 +209,9 @@ impl Screen for DriverConfirmScreen {
         match code {
             KeyCode::Char('y') => {
                 match self.action {
-                    DriverAction::Start => do_start_run(ctx, &self.alias),
+                    DriverAction::Start => {
+                        do_start_run(ctx, &self.alias, &self.command, self.goal.as_deref())
+                    }
                     DriverAction::Stop => do_stop_run(ctx, &self.alias),
                     DriverAction::ToggleOptIn => do_toggle_opt_in(ctx, &self.alias),
                 }
@@ -137,8 +226,16 @@ impl Screen for DriverConfirmScreen {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        // The goal, when there is one, takes a row of its own above the prompt.
+        // A `Start` with no goal — and every `Stop` and every toggle — renders
+        // the same single-row footer this screen has always had.
+        let is_start = matches!(self.action, DriverAction::Start);
+        let goal = goal_row(self.goal.as_deref().filter(|_| is_start));
+        let goal_rows = u16::from(goal.is_some());
+
         let chunks = ratatui::layout::Layout::vertical([
             ratatui::layout::Constraint::Min(0),
+            ratatui::layout::Constraint::Length(goal_rows),
             ratatui::layout::Constraint::Length(1),
         ])
         .split(area);
@@ -149,16 +246,21 @@ impl Screen for DriverConfirmScreen {
             .title(" GSD Manager ");
         frame.render_widget(block, chunks[0]);
 
+        if let Some(goal) = goal {
+            let line = Line::from(Span::styled(goal, Style::default().fg(Color::DarkGray)));
+            frame.render_widget(Paragraph::new(line), chunks[1]);
+        }
+
         // The opt-in state comes from the registry, which is the same read the
         // toggle itself performs — so the prompt cannot describe a direction
         // other than the one `y` will take.
         let opted_in = registry::is_opted_in(&ctx.config, &self.alias);
-        let prompt = prompt_text(&self.alias, self.action, opted_in);
+        let prompt = prompt_text(&self.alias, self.action, opted_in, &self.command);
         let line = Line::from(Span::styled(
             prompt,
             Style::default().fg(prompt_color(self.action, opted_in)),
         ));
-        frame.render_widget(Paragraph::new(line), chunks[1]);
+        frame.render_widget(Paragraph::new(line), chunks[2]);
     }
 
     fn name(&self) -> &str {
@@ -188,7 +290,7 @@ impl Screen for DriverConfirmScreen {
 /// receives `&mut AppContext`. That is the route plan 17-06 already built for
 /// [`Action::DriverStopRequested`], and this adds its sibling rather than a
 /// second mechanism.
-fn do_start_run(ctx: &mut AppContext, alias: &str) {
+fn do_start_run(ctx: &mut AppContext, alias: &str, command: &str, goal: Option<&str>) {
     if !registry::is_opted_in(&ctx.config, alias) {
         ctx.error_message = Some(format!(
             "\"{alias}\" has not opted in to being driven — press `o` on the dashboard to opt it in"
@@ -201,12 +303,14 @@ fn do_start_run(ctx: &mut AppContext, alias: &str) {
         ctx,
         Action::DriverStartRequested {
             alias: alias.to_string(),
-            command: DEFAULT_DRIVE_COMMAND.to_string(),
-            // `None` until plan 18-07 gives the user a screen to type a goal
-            // into. It is deliberately not a fabricated placeholder: OBS-03
+            // The command the prompt just named, not the constant. Verbatim:
+            // this is an argv value, and the sanitising in `prompt_text` is a
+            // rendering concern that must not reach what gets executed.
+            command: command.to_string(),
+            // Verbatim or absent — never a fabricated placeholder. OBS-03
             // renders an absent goal as `(none given)`, and inventing a summary
             // here is exactly what D-13 forbids.
-            goal: None,
+            goal: goal.map(str::to_string),
         },
         alias,
     );
@@ -423,8 +527,8 @@ pub(crate) mod tests {
         assert_eq!(command, DEFAULT_DRIVE_COMMAND);
         assert_eq!(
             goal, None,
-            "this screen has no goal field yet (18-07 adds one), and an absent \
-             goal must travel as absent rather than as an invented summary"
+            "the dashboard's `r` path gives no goal, and an absent goal must \
+             travel as absent rather than as an invented summary"
         );
     }
 
@@ -471,7 +575,7 @@ pub(crate) mod tests {
         ];
 
         for (action, opted_in) in cases {
-            let prompt = prompt_text(ALIAS, action, opted_in);
+            let prompt = prompt_text(ALIAS, action, opted_in, DEFAULT_DRIVE_COMMAND);
             assert!(
                 prompt.contains(ALIAS),
                 "{action:?}/{opted_in} must name the alias, got: {prompt}"
@@ -493,7 +597,7 @@ pub(crate) mod tests {
 
         // The withdraw prompt says NEW, because disabling does not stop a live
         // run and the code does not pretend it does (T-17-48).
-        let withdraw = prompt_text(ALIAS, DriverAction::ToggleOptIn, true);
+        let withdraw = prompt_text(ALIAS, DriverAction::ToggleOptIn, true, DEFAULT_DRIVE_COMMAND);
         assert!(
             withdraw.contains("NEW"),
             "the withdraw prompt must not claim to stop a live run, got: {withdraw}"
@@ -542,5 +646,102 @@ pub(crate) mod tests {
         // no live run (T-17-48), so a run started before a withdrawal must
         // still be stoppable afterwards.
         assert!(!registry::is_opted_in(&ctx.config, ALIAS));
+    }
+
+    const CHOSEN: &str = "/gsd:execute-phase 18";
+
+    /// The last thing a user sees before an autonomous agent starts on their
+    /// repo has to name the exact command (T-18-41).
+    #[test]
+    fn the_start_prompt_names_the_chosen_command_and_not_the_default() {
+        let prompt = prompt_text(ALIAS, DriverAction::Start, true, CHOSEN);
+        assert!(prompt.contains(CHOSEN), "got: {prompt}");
+        assert!(
+            !prompt.contains(DEFAULT_DRIVE_COMMAND),
+            "the constant is a default selection, not the prompt's content — a \
+             confirmation naming a command other than the one that will run is \
+             worse than no confirmation. Got: {prompt}"
+        );
+        assert!(prompt.contains(ALIAS) && prompt.ends_with("[y/n]"), "got: {prompt}");
+
+        // And the default path still says the default, so the assertion above
+        // is not passing because the prompt named nothing at all.
+        let defaulted = prompt_text(ALIAS, DriverAction::Start, true, DEFAULT_DRIVE_COMMAND);
+        assert!(defaulted.contains(DEFAULT_DRIVE_COMMAND), "got: {defaulted}");
+    }
+
+    #[test]
+    fn the_goal_row_renders_only_when_a_goal_was_given() {
+        assert_eq!(goal_row(None), None, "an absent goal takes no row at all");
+        assert_eq!(
+            goal_row(Some("ship the driver tab")).as_deref(),
+            Some("Goal: ship the driver tab"),
+            "the goal is shown verbatim — this phase paraphrases nothing"
+        );
+    }
+
+    /// T-18-38: a goal is free text on a straight path to a rendered terminal
+    /// line, and the picker's commands can come from a subprocess.
+    #[test]
+    fn an_escape_bearing_goal_and_command_are_sanitised_before_they_reach_the_prompt() {
+        let nasty = "finish\u{1b}[2Jthe\u{1b}]0;pwned\u{7}phase";
+
+        let row = goal_row(Some(nasty)).expect("a goal was given");
+        assert!(
+            !row.contains('\u{1b}'),
+            "no ESC may survive into a rendered row, got: {row:?}"
+        );
+        assert!(
+            row.contains("finish") && row.contains("phase"),
+            "the prose itself must still be shown — a sanitiser that passes by \
+             deleting everything is not a sanitiser. Got: {row:?}"
+        );
+
+        let prompt = prompt_text(ALIAS, DriverAction::Start, true, nasty);
+        assert!(
+            !prompt.contains('\u{1b}'),
+            "the command is interpolated into the prompt too, got: {prompt:?}"
+        );
+    }
+
+    /// The prompt and the dispatched action must agree, and the goal must reach
+    /// `run.json` byte-identically, including multi-byte input (OBS-03).
+    #[test]
+    fn a_start_from_the_picker_dispatches_the_chosen_command_and_the_verbatim_goal() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, mut rx) = ctx_with_project(dir.path());
+        registry::record_opt_in(&mut ctx.config, ALIAS).expect("opt in");
+
+        let typed = "livrer l'onglet 🚀 — 日本語";
+        let mut screen = DriverConfirmScreen::new_start(
+            ALIAS.to_string(),
+            CHOSEN.to_string(),
+            Some(typed.to_string()),
+        );
+        let action = screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop));
+
+        let sent = rx.try_recv().expect("an opted-in start must dispatch");
+        let Action::DriverStartRequested {
+            alias,
+            command,
+            goal,
+        } = sent
+        else {
+            panic!("expected DriverStartRequested, got {sent:?}");
+        };
+        assert_eq!(alias, ALIAS);
+        assert_eq!(
+            command, CHOSEN,
+            "the dispatched command must be the one the prompt named — and \
+             verbatim, because it is an argv value and the sanitising is a \
+             rendering concern"
+        );
+        assert_eq!(
+            goal.as_deref().map(str::as_bytes),
+            Some(typed.as_bytes()),
+            "the goal reaches RunRecord.goal exactly as typed; interpretation is \
+             Phase 21's and this phase interprets nothing"
+        );
     }
 }
