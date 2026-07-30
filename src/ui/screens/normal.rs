@@ -52,29 +52,209 @@ fn prev_status(threshold: DiskStatus) -> DiskStatus {
     }
 }
 
+// ── Dashboard badge glyphs (Phase 18 UI-SPEC `## Surface 6`, D-24) ─────────
+//
+// Every glyph is a fixed `&'static str` written as a `\u{…}` escape rather than
+// a raw glyph in source (PATTERNS S7). Both properties are load-bearing:
+//
+// * `&'static str` is the *mechanism* enforcing "a badge is never derived from
+//   file content". A HANDOFF body, an agent's prose summary, or any other byte
+//   read off disk cannot be assigned to one of these, so it cannot reach a
+//   dashboard row through the badge (D-13, D-24, T-18-32).
+// * The escape form keeps the source readable in editors and diffs that render
+//   these codepoints ambiguously, and makes the intended codepoint checkable by
+//   eye against the UI-SPEC table.
+//
+// Each is one glyph plus one space — two terminal cells — and every glyph is
+// East-Asian-Width Ambiguous (narrow), matching the shipped `\u{25b6}`. That is
+// what keeps the Alias column aligned at all three dashboard width tiers.
+
+/// Rank 1 — an agent is driving this repo *right now*. `◆` FILLED DIAMOND.
+///
+/// Shape-distinct from every other badge at a glance. `▲` (up triangle) was
+/// rejected: it is the session `▶` rotated, and two glyphs that differ only by
+/// rotation fail the at-a-glance test that is this badge's whole purpose.
+const BADGE_DRIVEN: &str = "\u{25C6} ";
+
+/// Rank 2 — this project is waiting on a human. `⚑` BLACK FLAG.
+///
+/// A flag is the conventional "planted here, come look" mark and shares no
+/// outline with the diamond, the two pause bars, the hourglass or the triangle.
+const BADGE_NEEDS_HUMAN: &str = "\u{2691} ";
+
+/// Rank 3 — a non-empty HANDOFF. `⏸` DOUBLE VERTICAL BAR. Shipped in v1.4.
+const BADGE_PAUSED: &str = "\u{23F8} ";
+
+/// Rank 4 — blocked on an external/async job, not stuck. `⏳` HOURGLASS.
+/// Shipped in GSD 1.8.0.
+const BADGE_EXTERNAL_JOB: &str = "\u{23F3} ";
+
+/// Rank 5 — an active Claude session in this project's directory. `▶`.
+/// Shipped in v1.0.
+const BADGE_SESSION: &str = "\u{25b6} ";
+
+/// The single badge a dashboard alias cell leads with.
+///
+/// The glyph field is `&'static str` **by design, not by convenience** — see the
+/// constants above. Widening it to `String` would silently remove the guarantee
+/// that no file content can reach a dashboard row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AliasBadge {
+    pub glyph: &'static str,
+    pub color: Color,
+    pub modifier: Modifier,
+}
+
+/// The five independent facts that select a badge, named rather than positional.
+///
+/// A five-`bool` parameter list is a five-way ordering hazard at every call site
+/// and in every test; a `Default`-able struct makes each fact self-labelling and
+/// lets a test state one condition and mean it.
+#[derive(Debug, Clone, Copy, Default)]
+struct BadgeInputs {
+    /// A run exists for this alias **and** `ObservedRun::is_live()` says its pid
+    /// and cmdline both still check out. `Liveness` is tri-state and
+    /// `Liveness::Unknown` is never a synonym for dead (CR-05) — `is_live()`
+    /// owns that distinction, and this flag is its answer, not a re-derivation.
+    driven_and_live: bool,
+    /// 18-04's `needs_human` predicate over evidence that exists today (D-14).
+    needs_human: bool,
+    /// `ProjectState::paused` — a non-empty HANDOFF.
+    is_paused: bool,
+    /// `ProjectState::external_job_waiting`.
+    external_job_waiting: bool,
+    /// An active Claude session whose working dir is this project.
+    has_session: bool,
+}
+
 /// Select the single leading badge for a dashboard alias cell.
 ///
-/// Badge priority (Phase 14 UI-SPEC, `### Badge Priority Rule`):
-/// pause > external-job-waiting > active session. At most one badge ever
-/// renders, so the alias column stays aligned. The glyph is always a fixed
-/// `&'static str` — never text derived from a HANDOFF file, so no handoff
-/// body can leak onto the dashboard row.
-fn alias_badge(
-    is_paused: bool,
-    external_job_waiting: bool,
-    has_session: bool,
-) -> Option<(&'static str, Color)> {
-    if is_paused {
-        // Pause badge takes priority over all other indicators
-        Some(("\u{23F8} ", Color::Cyan))
+/// **Badge priority, highest first** (Phase 18 UI-SPEC `## Surface 6`, D-24;
+/// extends the Phase 14 `### Badge Priority Rule`):
+///
+/// 1. driven **and** live — `BADGE_DRIVEN`, Magenta + BOLD
+/// 2. needs a human — `BADGE_NEEDS_HUMAN`, Red + BOLD
+/// 3. paused — `BADGE_PAUSED`, Cyan
+/// 4. external job waiting — `BADGE_EXTERNAL_JOB`, Yellow
+/// 5. active Claude session — `BADGE_SESSION`, Green
+/// 6. none of the above — no badge; the alias renders flush
+///
+/// **Driven-and-live outranks everything, and the reason is the whole point of
+/// the rank:** the user must never be unsure whether something is driving their
+/// repo. Ranks 3–5 keep their v1.0/v1.4/1.8.0 order beneath the two new ones.
+///
+/// **At most one badge ever renders**, and the single `Option` return is the
+/// *mechanism* that enforces it, not a stylistic choice — badges never stack, so
+/// the Alias column stays aligned at all three width tiers. Every glyph is a
+/// fixed `&'static str`, which is the mechanism enforcing that no HANDOFF body
+/// or agent prose can leak onto a dashboard row (D-13, D-24).
+///
+/// **No meaning is carried by colour alone.** Every badge is a glyph whose shape
+/// differs from every other badge's shape, so the five ranks remain
+/// distinguishable in a monochrome terminal or to a colour-blind reader. The two
+/// new badges are additionally the only ones carrying `BOLD`, which lifts them
+/// above the three shipped badges without needing a second cell. Magenta for
+/// rank 1 because Cyan, Yellow and Green are taken by ranks 3–5, Red by rank 2,
+/// DarkGray means inert and Blue means directory — Magenta is this codebase's
+/// "this is not one of the ordinary states" colour, which an autonomous agent
+/// driving the user's repo precisely is.
+///
+/// **Rank 3 is reachable but production-superseded, and that is intentional.**
+/// `needs_human` (rank 2) counts `state.paused` among its four sources (D-14),
+/// so a paused project on the live dashboard renders the red flag rather than
+/// the cyan pause bars — the stronger "waiting on you" signal, which is what
+/// OBS-02 asks for. The rank-3 arm stays because this function is pure over its
+/// inputs: a caller passing a narrower predicate still gets the shipped v1.4
+/// badge, and deleting the arm would make that impossible without noticing.
+fn alias_badge(inputs: BadgeInputs) -> Option<AliasBadge> {
+    let BadgeInputs {
+        driven_and_live,
+        needs_human,
+        is_paused,
+        external_job_waiting,
+        has_session,
+    } = inputs;
+
+    let bold = Modifier::BOLD;
+    let plain = Modifier::empty();
+
+    if driven_and_live {
+        // An agent is driving this repo right now; nothing outranks that.
+        Some(AliasBadge {
+            glyph: BADGE_DRIVEN,
+            color: Color::Magenta,
+            modifier: bold,
+        })
+    } else if needs_human {
+        // Waiting on the user, per 18-04's evidence predicate (D-14).
+        Some(AliasBadge {
+            glyph: BADGE_NEEDS_HUMAN,
+            color: Color::Red,
+            modifier: bold,
+        })
+    } else if is_paused {
+        // Pause badge takes priority over the two lower indicators.
+        Some(AliasBadge {
+            glyph: BADGE_PAUSED,
+            color: Color::Cyan,
+            modifier: plain,
+        })
     } else if external_job_waiting {
-        // Hourglass: waiting on an async job, not stuck
-        Some(("\u{23F3} ", Color::Yellow))
+        // Hourglass: waiting on an async job, not stuck.
+        Some(AliasBadge {
+            glyph: BADGE_EXTERNAL_JOB,
+            color: Color::Yellow,
+            modifier: plain,
+        })
     } else if has_session {
-        Some(("\u{25b6} ", Color::Green))
+        Some(AliasBadge {
+            glyph: BADGE_SESSION,
+            color: Color::Green,
+            modifier: plain,
+        })
     } else {
         None
     }
+}
+
+/// The badge for one dashboard row, gathered from the context the row renders
+/// from.
+///
+/// Separated from [`alias_badge`] so the production wiring — *which* state feeds
+/// *which* input — is exercised by tests rather than living inline in a closure
+/// inside `render_main`, where the only way to reach it is to render a frame.
+///
+/// Every input is a typed flag or a typed predicate. **No string read from disk
+/// is inspected here**, so nothing an agent writes can decide what a badge says
+/// (D-13). An unregistered alias, an alias with no parsed state, and an alias
+/// that has never been driven all fall through to `None` without panicking.
+fn row_badge(ctx: &AppContext, alias: &str) -> Option<AliasBadge> {
+    let state = ctx.project_states.get(alias);
+
+    // Tri-state `Liveness` is resolved by `is_live()`, never re-derived here.
+    let driven_and_live = ctx
+        .observed_runs
+        .get(alias)
+        .is_some_and(|run| run.is_live());
+
+    let has_session = ctx
+        .config
+        .projects
+        .get(alias)
+        .map(|proj| {
+            ctx.active_sessions
+                .iter()
+                .any(|s| s.working_dir == proj.path)
+        })
+        .unwrap_or(false);
+
+    alias_badge(BadgeInputs {
+        driven_and_live,
+        needs_human: ctx.needs_human_for(alias),
+        is_paused: state.map(|s| s.paused).unwrap_or(false),
+        external_job_waiting: state.map(|s| s.external_job_waiting).unwrap_or(false),
+        has_session,
+    })
 }
 
 /// Render the compact D-R-P-E-V pipeline for unfocused dashboard rows.
@@ -509,39 +689,18 @@ impl NormalScreen {
                         }
                     };
 
-                    // Check if project has an active Claude session
-                    let has_session = ctx
-                        .config
-                        .projects
-                        .get(alias)
-                        .map(|proj| {
-                            ctx.active_sessions
-                                .iter()
-                                .any(|s| s.working_dir == proj.path)
-                        })
-                        .unwrap_or(false);
-
-                    // Check if project is paused (from HANDOFF file detection)
-                    let is_paused = ctx
-                        .project_states
-                        .get(alias)
-                        .map(|s| s.paused)
-                        .unwrap_or(false);
-
-                    // Legitimately blocked on an external/async job (GSD 1.8.0).
-                    let external_job_waiting = state
-                        .map(|s| s.external_job_waiting)
-                        .unwrap_or(false);
-
-                    // Badge priority: pause > external-job-waiting > session.
-                    let alias_cell: Line =
-                        match alias_badge(is_paused, external_job_waiting, has_session) {
-                            Some((glyph, color)) => Line::from(vec![
-                                Span::styled(glyph, Style::default().fg(color)),
-                                Span::raw(alias.clone()),
-                            ]),
-                            None => Line::from(alias.clone()),
-                        };
+                    // Badge priority (D-24): driven-and-live > needs-human >
+                    // pause > external-job-waiting > session. At most one.
+                    let alias_cell: Line = match row_badge(ctx, alias) {
+                        Some(badge) => Line::from(vec![
+                            Span::styled(
+                                badge.glyph,
+                                Style::default().fg(badge.color).add_modifier(badge.modifier),
+                            ),
+                            Span::raw(alias.clone()),
+                        ]),
+                        None => Line::from(alias.clone()),
+                    };
 
                     let cells: Vec<Line> = if terminal_width >= 80 {
                         vec![
@@ -716,13 +875,141 @@ fn move_selection_up(ctx: &mut AppContext) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state_reader::parse_project_state;
+    use crate::driver::liveness::Liveness;
+    use crate::driver::reconcile::ObservedRun;
+    use crate::state_reader::{parse_project_state, ProjectState};
+    use std::collections::HashMap;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
-    const PAUSE_BADGE: (&str, Color) = ("\u{23F8} ", Color::Cyan);
-    const ASYNC_BADGE: (&str, Color) = ("\u{23F3} ", Color::Yellow);
-    const SESSION_BADGE: (&str, Color) = ("\u{25b6} ", Color::Green);
+    /// The five badges, as `(glyph, color, modifier)` expectations.
+    ///
+    /// Spelled out here rather than reusing the production constants for the
+    /// glyph *and* the colour together: an assertion built entirely from the
+    /// thing it is checking cannot fail, and the badge table is exactly the
+    /// place a silent swap (two ranks trading colours) would go unnoticed.
+    const DRIVEN_BADGE: AliasBadge = AliasBadge {
+        glyph: "\u{25C6} ",
+        color: Color::Magenta,
+        modifier: Modifier::BOLD,
+    };
+    const NEEDS_HUMAN_BADGE: AliasBadge = AliasBadge {
+        glyph: "\u{2691} ",
+        color: Color::Red,
+        modifier: Modifier::BOLD,
+    };
+    const PAUSE_BADGE: AliasBadge = AliasBadge {
+        glyph: "\u{23F8} ",
+        color: Color::Cyan,
+        modifier: Modifier::empty(),
+    };
+    const ASYNC_BADGE: AliasBadge = AliasBadge {
+        glyph: "\u{23F3} ",
+        color: Color::Yellow,
+        modifier: Modifier::empty(),
+    };
+    const SESSION_BADGE: AliasBadge = AliasBadge {
+        glyph: "\u{25b6} ",
+        color: Color::Green,
+        modifier: Modifier::empty(),
+    };
+
+    /// Every badge, highest rank first — the order [`alias_badge`] documents.
+    const ALL_BADGES: [AliasBadge; 5] = [
+        DRIVEN_BADGE,
+        NEEDS_HUMAN_BADGE,
+        PAUSE_BADGE,
+        ASYNC_BADGE,
+        SESSION_BADGE,
+    ];
+
+    /// An `AppContext` with `aliases` registered, default state, nothing driven.
+    ///
+    /// The sixth full-field `AppContext` construction in the tree. It lives here
+    /// rather than being borrowed from `screens::tests` because that module is a
+    /// sibling of this one, not an ancestor, so its private fixture is
+    /// unreachable — and because the behaviour under test (badges, the `s`
+    /// toggle, the dashboard's filter wiring) is this screen's.
+    fn ctx_with_aliases(aliases: &[&str]) -> AppContext {
+        use crate::change_tracker::ChangeTracker;
+        use crate::config::{Config, RegisteredProject};
+        use ratatui::widgets::TableState;
+
+        let mut config = Config::new();
+        for alias in aliases {
+            config.projects.insert(
+                (*alias).to_string(),
+                RegisteredProject {
+                    path: PathBuf::from("/nonexistent").join(alias),
+                    added: "2026-07-29".to_string(),
+                    driver_opt_in: None,
+                    extra: Default::default(),
+                },
+            );
+        }
+
+        let mut ctx = AppContext {
+            config,
+            config_path: PathBuf::from("/nonexistent/config.json"),
+            project_states: aliases
+                .iter()
+                .map(|a| ((*a).to_string(), ProjectState::default()))
+                .collect(),
+            table_state: TableState::default(),
+            filtered_aliases: Vec::new(),
+            filter_text: String::new(),
+            change_tracker: ChangeTracker::new(),
+            detail_sub_view_per_project: HashMap::new(),
+            view_cache: HashMap::new(),
+            status_message: None,
+            error_message: None,
+            event_tx: None,
+            exec_tx: None,
+            run_states: HashMap::new(),
+            reparse_dispatches: 0,
+            journal_cursors: HashMap::new(),
+            observed_runs: HashMap::new(),
+            session_spawned_runs: std::collections::HashSet::new(),
+            driver_output: HashMap::new(),
+            sort_mode: crate::ui::screens::SortMode::default(),
+            watcher: None,
+            last_refresh: HashMap::new(),
+            detail_scroll_offset: 0,
+            suggestion_index: 0,
+            input_buffer: String::new(),
+            needs_redraw: false,
+            active_sessions: Vec::new(),
+            archive_cache: HashMap::new(),
+        };
+        ctx.recompute_filtered_aliases();
+        ctx
+    }
+
+    /// Mark `alias` as being driven right now by a live run.
+    fn drive(ctx: &mut AppContext, alias: &str) {
+        ctx.observed_runs.insert(
+            alias.to_string(),
+            ObservedRun {
+                alias: alias.to_string(),
+                run_id: format!("2026-07-29T12-00-00Z-{alias}"),
+                pid: 4242,
+                pgid: 4242,
+                started_at: "2026-07-29T12:00:00Z".to_string(),
+                goal: "ship it".to_string(),
+                gsd_command: "/gsd-execute-phase".to_string(),
+                liveness: Liveness::Alive,
+            },
+        );
+    }
+
+    /// Mark `alias` as paused — one of `needs_human`'s four evidence sources.
+    fn pause(ctx: &mut AppContext, alias: &str) {
+        ctx.project_states
+            .get_mut(alias)
+            .expect("the fixture registered this alias")
+            .paused = true;
+    }
 
     /// Build a temp project with a `.planning/` dir holding the given files.
     /// Returns the TempDir (keep it alive) — mirrors the `make_planning`
@@ -757,8 +1044,29 @@ mod tests {
             Some("Resume with /gsd-execute-phase 14")
         );
 
-        // The same flag the dashboard row reads selects the cyan pause badge.
-        assert_eq!(alias_badge(state.paused, false, false), Some(PAUSE_BADGE));
+        // The same flag the dashboard row reads selects the cyan pause badge
+        // whenever the caller's needs-human answer is `false`.
+        assert_eq!(
+            alias_badge(BadgeInputs {
+                is_paused: state.paused,
+                ..Default::default()
+            }),
+            Some(PAUSE_BADGE)
+        );
+
+        // On the live dashboard the needs-human predicate counts `paused` among
+        // its four sources (D-14), so the same project renders the *rank 2* red
+        // flag — the stronger "waiting on you" signal OBS-02 asks for. Asserted
+        // here so the supersession is a stated behaviour, not a surprise.
+        assert!(crate::ui::screens::needs_human(&state, None, None, false));
+        assert_eq!(
+            alias_badge(BadgeInputs {
+                needs_human: true,
+                is_paused: state.paused,
+                ..Default::default()
+            }),
+            Some(NEEDS_HUMAN_BADGE)
+        );
     }
 
     // --- UIFIX-01: badge priority (flag -> badge) -------------------------
@@ -766,44 +1074,297 @@ mod tests {
     #[test]
     fn test_pause_badge_wins_over_session() {
         // UI-SPEC UIFIX-01 row 5: pause replaces the session glyph.
-        assert_eq!(alias_badge(true, false, true), Some(PAUSE_BADGE));
+        assert_eq!(
+            alias_badge(BadgeInputs {
+                is_paused: true,
+                has_session: true,
+                ..Default::default()
+            }),
+            Some(PAUSE_BADGE)
+        );
     }
 
     #[test]
     fn test_pause_badge_wins_over_async_job() {
         // UI-SPEC UIFIX-01 row 6: pause replaces the hourglass...
-        assert_eq!(alias_badge(true, true, false), Some(PAUSE_BADGE));
+        assert_eq!(
+            alias_badge(BadgeInputs {
+                is_paused: true,
+                external_job_waiting: true,
+                ..Default::default()
+            }),
+            Some(PAUSE_BADGE)
+        );
         // ...and still wins when every lower-priority indicator is also set.
-        assert_eq!(alias_badge(true, true, true), Some(PAUSE_BADGE));
+        assert_eq!(
+            alias_badge(BadgeInputs {
+                is_paused: true,
+                external_job_waiting: true,
+                has_session: true,
+                ..Default::default()
+            }),
+            Some(PAUSE_BADGE)
+        );
     }
 
     #[test]
     fn test_async_job_badge_when_not_paused() {
         // UI-SPEC UIFIX-01 row 7: hourglass outranks the session glyph.
-        assert_eq!(alias_badge(false, true, true), Some(ASYNC_BADGE));
-        assert_eq!(alias_badge(false, false, true), Some(SESSION_BADGE));
+        assert_eq!(
+            alias_badge(BadgeInputs {
+                external_job_waiting: true,
+                has_session: true,
+                ..Default::default()
+            }),
+            Some(ASYNC_BADGE)
+        );
+        assert_eq!(
+            alias_badge(BadgeInputs {
+                has_session: true,
+                ..Default::default()
+            }),
+            Some(SESSION_BADGE)
+        );
     }
 
     #[test]
     fn test_no_badge_when_nothing_active() {
         // UI-SPEC UIFIX-01 row 4/9: the alias renders flush.
-        assert!(alias_badge(false, false, false).is_none());
+        assert!(alias_badge(BadgeInputs::default()).is_none());
+    }
+
+    // --- OBS-02 / D-24: the five-rank badge table ------------------------
+
+    #[test]
+    fn each_badge_rank_selects_its_own_glyph_in_isolation() {
+        // One condition at a time, so nothing about the priority chain can make
+        // a rank pass for the wrong reason.
+        let cases: [(BadgeInputs, AliasBadge); 5] = [
+            (
+                BadgeInputs {
+                    driven_and_live: true,
+                    ..Default::default()
+                },
+                DRIVEN_BADGE,
+            ),
+            (
+                BadgeInputs {
+                    needs_human: true,
+                    ..Default::default()
+                },
+                NEEDS_HUMAN_BADGE,
+            ),
+            (
+                BadgeInputs {
+                    is_paused: true,
+                    ..Default::default()
+                },
+                PAUSE_BADGE,
+            ),
+            (
+                BadgeInputs {
+                    external_job_waiting: true,
+                    ..Default::default()
+                },
+                ASYNC_BADGE,
+            ),
+            (
+                BadgeInputs {
+                    has_session: true,
+                    ..Default::default()
+                },
+                SESSION_BADGE,
+            ),
+        ];
+
+        for (inputs, expected) in cases {
+            assert_eq!(
+                alias_badge(inputs),
+                Some(expected),
+                "rank mis-selected for {inputs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_driven_badge_outranks_every_other_condition() {
+        // D-24's top rank exists because the user must never be unsure whether
+        // something is driving their repo. Every lower condition set at once
+        // must still yield exactly the driven badge.
+        assert_eq!(
+            alias_badge(BadgeInputs {
+                driven_and_live: true,
+                is_paused: true,
+                ..Default::default()
+            }),
+            Some(DRIVEN_BADGE),
+            "ranks 1 and 3 together must yield rank 1"
+        );
+        assert_eq!(
+            alias_badge(BadgeInputs {
+                driven_and_live: true,
+                needs_human: true,
+                is_paused: true,
+                external_job_waiting: true,
+                has_session: true,
+            }),
+            Some(DRIVEN_BADGE),
+            "every condition at once must still yield rank 1"
+        );
+    }
+
+    #[test]
+    fn the_needs_human_badge_outranks_an_active_session() {
+        // Ranks 2 and 5 together yield rank 2 only: a project waiting on the
+        // user must not be reported as merely "has a session open".
+        assert_eq!(
+            alias_badge(BadgeInputs {
+                needs_human: true,
+                has_session: true,
+                ..Default::default()
+            }),
+            Some(NEEDS_HUMAN_BADGE)
+        );
+        assert_eq!(
+            alias_badge(BadgeInputs {
+                needs_human: true,
+                external_job_waiting: true,
+                has_session: true,
+                ..Default::default()
+            }),
+            Some(NEEDS_HUMAN_BADGE)
+        );
     }
 
     #[test]
     fn test_badge_is_never_two_glyphs() {
         // Zero-one-many: every Some badge is exactly one glyph plus one space,
-        // so two glyphs can never appear in the alias cell.
-        for (paused, async_job, session) in [
-            (true, false, false),
-            (true, true, true),
-            (false, true, false),
-            (false, false, true),
-        ] {
-            let (glyph, _) = alias_badge(paused, async_job, session).expect("expected a badge");
-            assert_eq!(glyph.chars().count(), 2);
-            assert!(glyph.ends_with(' '));
+        // so two glyphs can never appear in the alias cell, and every alias cell
+        // that carries a badge is indented by the same two cells regardless of
+        // which rank won.
+        for badge in ALL_BADGES {
+            assert_eq!(badge.glyph.chars().count(), 2, "{badge:?}");
+            assert!(badge.glyph.ends_with(' '), "{badge:?}");
         }
+
+        // The same property through the production selector, over the full
+        // 2^5 input space: no combination can produce a wider cell.
+        for bits in 0u8..32 {
+            let inputs = BadgeInputs {
+                driven_and_live: bits & 1 != 0,
+                needs_human: bits & 2 != 0,
+                is_paused: bits & 4 != 0,
+                external_job_waiting: bits & 8 != 0,
+                has_session: bits & 16 != 0,
+            };
+            if let Some(badge) = alias_badge(inputs) {
+                assert_eq!(badge.glyph.chars().count(), 2, "{inputs:?}");
+                assert!(
+                    ALL_BADGES.contains(&badge),
+                    "{inputs:?} produced a badge outside the documented table"
+                );
+            } else {
+                assert_eq!(bits, 0, "only the all-false input may yield no badge");
+            }
+        }
+    }
+
+    #[test]
+    fn every_badge_shape_is_distinct_so_no_meaning_rides_on_colour_alone() {
+        // A monochrome terminal, or a colour-blind reader, must still be able to
+        // tell the five ranks apart (UI-SPEC `## Colour`).
+        let mut glyphs: Vec<&str> = ALL_BADGES.iter().map(|b| b.glyph).collect();
+        glyphs.sort_unstable();
+        let distinct = glyphs.len();
+        glyphs.dedup();
+        assert_eq!(glyphs.len(), distinct, "two badges share a glyph");
+
+        let mut colors: Vec<String> = ALL_BADGES.iter().map(|b| format!("{:?}", b.color)).collect();
+        colors.sort_unstable();
+        let distinct_colors = colors.len();
+        colors.dedup();
+        assert_eq!(colors.len(), distinct_colors, "two badges share a colour");
+
+        // Only the two new badges carry BOLD, which is what lifts them above the
+        // three shipped badges without needing a second cell.
+        assert!(DRIVEN_BADGE.modifier.contains(Modifier::BOLD));
+        assert!(NEEDS_HUMAN_BADGE.modifier.contains(Modifier::BOLD));
+        for badge in [PAUSE_BADGE, ASYNC_BADGE, SESSION_BADGE] {
+            assert!(
+                !badge.modifier.contains(Modifier::BOLD),
+                "{badge:?} must not compete with the two new ranks"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_registry_and_a_never_driven_project_both_yield_no_badge() {
+        // Zero-one-many at the wiring layer, through the real `row_badge`.
+        let empty = ctx_with_aliases(&[]);
+        assert!(empty.filtered_aliases.is_empty());
+        assert!(
+            row_badge(&empty, "absent").is_none(),
+            "an alias that is not registered at all must not panic or badge"
+        );
+
+        let never_driven = ctx_with_aliases(&["alpha"]);
+        assert!(
+            !never_driven.observed_runs.contains_key("alpha"),
+            "the fixture must genuinely have no observed run"
+        );
+        assert!(
+            row_badge(&never_driven, "alpha").is_none(),
+            "a registered project that has never been driven renders flush"
+        );
+    }
+
+    #[test]
+    fn the_driven_badge_is_wired_to_liveness_not_to_the_mere_presence_of_a_run() {
+        // T-18-33: a badge claiming an agent is driving the repo when the run is
+        // gone is the spoofing failure this rank exists to avoid. `is_live()`
+        // owns the tri-state; `Liveness::Unknown` is never a synonym for dead.
+        let mut ctx = ctx_with_aliases(&["alpha"]);
+        drive(&mut ctx, "alpha");
+        assert_eq!(row_badge(&ctx, "alpha"), Some(DRIVEN_BADGE));
+
+        for (liveness, expected) in [(Liveness::Dead, None), (Liveness::Unknown, None)] {
+            ctx.observed_runs
+                .get_mut("alpha")
+                .expect("driven above")
+                .liveness = liveness;
+            assert_eq!(
+                row_badge(&ctx, "alpha"),
+                expected,
+                "{liveness:?} must not light the driven badge"
+            );
+        }
+    }
+
+    #[test]
+    fn computing_badges_never_reorders_rows() {
+        // Two projects with identical driven/parked state keep their relative
+        // order: badge computation is a per-row read, not a sort.
+        let mut ctx = ctx_with_aliases(&["alpha", "bravo", "charlie"]);
+        drive(&mut ctx, "alpha");
+        drive(&mut ctx, "bravo");
+        pause(&mut ctx, "charlie");
+
+        let before = ctx.filtered_aliases.clone();
+        let badges: Vec<Option<AliasBadge>> = ctx
+            .filtered_aliases
+            .iter()
+            .map(|alias| row_badge(&ctx, alias))
+            .collect();
+
+        assert_eq!(ctx.filtered_aliases, before, "row order must not move");
+        assert_eq!(
+            badges,
+            vec![
+                Some(DRIVEN_BADGE),
+                Some(DRIVEN_BADGE),
+                Some(NEEDS_HUMAN_BADGE)
+            ]
+        );
     }
 
     // --- UIFIX-02: D-R-P-E-V has no leading blank -------------------------
@@ -1083,6 +1644,56 @@ mod tests {
             "pipeline starts at {} but plain status starts at {}",
             pipeline_at, plain_at
         );
+    }
+
+    #[test]
+    fn a_badged_row_and_an_unbadged_row_keep_every_later_column_aligned() {
+        // D-24's reason for the "at most one badge" rule, asserted where it is
+        // observable: whatever badge a row wins, the alias cell consumes the
+        // same allocation and every column after it starts at the same buffer
+        // column as an unbadged row's. Badge stacking is what would break this.
+        let mut badged = pipeline_row();
+        badged[0] = Line::from(vec![
+            Span::styled(BADGE_DRIVEN, Style::default().fg(Color::Magenta)),
+            Span::raw("proj"),
+        ]);
+        let mut flagged = pipeline_row();
+        flagged[0] = Line::from(vec![
+            Span::styled(BADGE_NEEDS_HUMAN, Style::default().fg(Color::Red)),
+            Span::raw("proj"),
+        ]);
+
+        let rows = render_dashboard_rows(80, vec![pipeline_row(), badged, flagged]);
+
+        // Column offsets, not byte offsets: a badged row is no longer pure
+        // ASCII, and `\u{25C6}` is three bytes wide but one cell wide. Every
+        // badge glyph is East-Asian-Width narrow, so one buffer cell is one
+        // char and a char count *is* the column.
+        fn column_of(row: &str, needle: &str) -> usize {
+            let byte = row
+                .find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} missing from rendered row {row:?}"));
+            row[..byte].chars().count()
+        }
+
+        let phase_at: Vec<usize> = rows
+            .iter()
+            .map(|row| column_of(row, "14 ui-fixes"))
+            .collect();
+        assert_eq!(
+            phase_at[0], phase_at[1],
+            "a driven-badged row shifted the Phase column"
+        );
+        assert_eq!(
+            phase_at[0], phase_at[2],
+            "a needs-human-badged row shifted the Phase column"
+        );
+
+        // And the badge occupies exactly the two leading cells of the alias
+        // cell, so the alias text itself is indented identically by either rank.
+        let alias_at: Vec<usize> = rows.iter().map(|row| column_of(row, "proj")).collect();
+        assert_eq!(alias_at[1], alias_at[0] + 2);
+        assert_eq!(alias_at[2], alias_at[0] + 2);
     }
 
     #[test]
