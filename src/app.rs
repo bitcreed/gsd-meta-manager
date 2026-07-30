@@ -909,9 +909,10 @@ impl App {
                     "injection write reported before its handler landed (18-05)",
                 );
             }
-            Action::DriverRunsListed { alias, inbox } => {
+            Action::DriverRunsListed { alias, runs, inbox } => {
                 tracing::debug!(
                     %alias,
+                    runs = runs.len(),
                     queued = inbox.len(),
                     "run list read before its handler landed (18-05)",
                 );
