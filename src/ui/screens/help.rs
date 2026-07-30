@@ -223,6 +223,13 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("i", "Inject a message into the live run"),
         row("s", "Start a run: command, then optional goal"),
         row("x", "Stop the live run (asks first)"),
+        // Both surfaces bind `o` for the same action and the help lists both,
+        // which is what makes the consistency visible instead of coincidental.
+        // The two descriptions must not be byte-identical, or the whole-row
+        // assertion below cannot tell which section it matched — the dashboard
+        // row at the top is disambiguated by its trailing parenthetical, and
+        // this one's wording differs throughout.
+        row("o", "Toggle driver opt-in for this project"),
         Line::from(""),
         heading("Filter Syntax"),
         Line::from(""),
@@ -423,6 +430,7 @@ mod tests {
             ("i", "Inject a message into the live run"),
             ("s", "Start a run: command, then optional goal"),
             ("x", "Stop the live run (asks first)"),
+            ("o", "Toggle driver opt-in for this project"),
         ] {
             let expected = row(key, description).spans[0].content.to_string();
             assert!(
