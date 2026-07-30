@@ -75,8 +75,22 @@ pub enum Commands {
         #[arg(long)]
         dry_run: bool,
         // Interpreting a goal is Phase 21's; this phase only records it.
+        //
+        // `allow_hyphen_values` because this phase turned the goal into a
+        // free-text field a human types (WR-04). Without it, clap in the CHILD
+        // reports "a value is required for '--goal <GOAL>' but none was
+        // supplied" for anything beginning with `-` and exits non-zero — and the
+        // child's stdio is `/dev/null`, so nothing is visible: the TUI has
+        // already shown "Driving {alias} — run {id}" and inserted an optimistic
+        // `ObservedRun { liveness: Alive }`, which disappears at the next scan
+        // with no error anywhere. `-- do not touch main` and `-v2 migration
+        // notes` are entirely plausible free text.
+        //
+        // Safe here in a way it would not be on `--command`: the goal is the
+        // LAST operand the argv builder emits, so there is no following flag for
+        // a hyphen-led value to swallow.
         /// Free-text goal recorded into the run record, never interpreted
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         goal: Option<String>,
         /// Test and development only: the program to spawn instead of `claude`
         ///

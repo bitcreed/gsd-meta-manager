@@ -87,6 +87,22 @@ const GOAL_PROMPT: &str = "  Goal (optional)> ";
 /// that makes a user stop using a flow.
 const GOAL_HINT: &str = "   [Enter] start  [Esc] back";
 
+/// The refusal for a command that is not a slash command (WR-04).
+///
+/// **A refusal at the field, not a rewrite of what the user typed.** Silently
+/// prefixing a `/` would run a command they did not ask for; running it anyway
+/// would put a hyphen-led operand on the child's argv, where clap reports *"a
+/// value is required for '--command <COMMAND>' but none was supplied"* and exits
+/// non-zero into `/dev/null` — after the TUI has already said "Driving {alias}"
+/// and inserted an optimistic `ObservedRun { liveness: Alive }` that vanishes at
+/// the next scan with no error anywhere.
+///
+/// The rule is stated positively rather than as "must not start with `-`",
+/// because a GSD command is a slash command and every suggestion this field
+/// offers already is one.
+pub const NOT_A_SLASH_COMMAND: &str =
+    "A GSD command starts with `/`, e.g. `/gsd-progress`. Edit the command, or press [Esc].";
+
 /// The two-field wizard that precedes a driver run's confirmation.
 pub struct DriverStartScreen {
     alias: String,
@@ -191,12 +207,31 @@ impl Screen for DriverStartScreen {
                 // Enter on an empty buffer accepts the default rather than
                 // doing nothing — see the module doc on the asymmetry with the
                 // injection screen.
-                self.command = if ctx.input_buffer.is_empty() {
+                let committed = if ctx.input_buffer.is_empty() {
                     DEFAULT_DRIVE_COMMAND.to_string()
                 } else {
-                    // `take` leaves the shared buffer empty for the goal field.
-                    std::mem::take(&mut ctx.input_buffer)
+                    ctx.input_buffer.clone()
                 };
+
+                // **The argv guard, at the field where it can still be fixed**
+                // (WR-04). This phase turned an argv operand into a free-text
+                // input, and a value beginning with `-` reaches the child's clap
+                // as an option rather than an operand: the driver exits non-zero
+                // into `/dev/null` while the TUI shows a run that never started.
+                // Refusing here keeps the buffer and the cursor where they are,
+                // so the user edits rather than retypes.
+                if !committed.starts_with('/') {
+                    ctx.status_message =
+                        Some((NOT_A_SLASH_COMMAND.to_string(), std::time::Instant::now()));
+                    ctx.needs_redraw = true;
+                    return ScreenAction::None;
+                }
+
+                // `take` leaves the shared buffer empty for the goal field, and
+                // happens only now that the value is accepted — a refusal above
+                // must not eat what the user typed.
+                ctx.input_buffer.clear();
+                self.command = committed;
                 ctx.suggestion_index = 0;
                 self.step = StartStep::Goal;
                 // Step B is where the preview lives: the user is one keystroke
@@ -465,6 +500,102 @@ mod tests {
         );
         assert_eq!(s.command(), "/gsd:plan-phase 19");
         assert!(rx.try_recv().is_err(), "going back must dispatch nothing");
+    }
+
+    /// WR-04, at the field: a hyphen-led command never reaches the child argv.
+    ///
+    /// This phase turned an argv operand into a free-text input. `--command`
+    /// carries no `allow_hyphen_values`, so clap in the CHILD reports "a value
+    /// is required for '--command <COMMAND>' but none was supplied" and exits
+    /// non-zero — into `/dev/null`, after the TUI has already shown "Driving
+    /// {alias}" and inserted an optimistic live `ObservedRun` that vanishes at
+    /// the next scan with no error anywhere. A refusal at the field is the only
+    /// place the user can still act on it.
+    #[test]
+    fn a_command_that_is_not_a_slash_command_is_refused_at_the_field() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        let mut screen = DriverStartScreen::new(ALIAS.to_string());
+
+        for typed in ["-v2 migration", "--dry-run", "gsd-progress"] {
+            ctx.input_buffer = typed.to_string();
+            ctx.status_message = None;
+            let action = press(&mut screen, &mut ctx, KeyCode::Enter);
+
+            assert!(
+                matches!(action, ScreenAction::None),
+                "{typed:?} must not advance"
+            );
+            assert_eq!(
+                screen.step(),
+                StartStep::Command,
+                "{typed:?} must leave the user on the field they can fix"
+            );
+            assert_eq!(
+                ctx.input_buffer, typed,
+                "and must NOT eat what they typed — a refusal that clears the \
+                 buffer costs them the edit"
+            );
+            assert_eq!(
+                ctx.status_message.as_ref().map(|(text, _)| text.as_str()),
+                Some(NOT_A_SLASH_COMMAND),
+                "the refusal must be visible rather than a silent no-op"
+            );
+            assert!(
+                screen.command().is_empty(),
+                "and nothing is committed: {:?}",
+                screen.command()
+            );
+        }
+
+        // The control arm: a real slash command still advances, so the guard is
+        // not simply refusing everything.
+        ctx.input_buffer = "/gsd-progress".to_string();
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(screen.step(), StartStep::Goal);
+        assert_eq!(screen.command(), "/gsd-progress");
+        assert!(ctx.input_buffer.is_empty(), "the goal field starts empty");
+    }
+
+    /// WR-04's other half: a hyphen-led GOAL is legitimate free text and must
+    /// survive the child's parser.
+    ///
+    /// `-- do not touch main` and `-v2 migration notes` are entirely plausible
+    /// things to type into a field labelled "why". The goal is the last operand
+    /// the argv builder emits, so terminating option parsing for it swallows no
+    /// following flag.
+    #[test]
+    fn a_hyphen_led_goal_reaches_the_child_parser_as_a_goal() {
+        use clap::Parser;
+
+        const HYPHENATED: &str = "-- do not touch main";
+
+        let argv = crate::driver::spawn::drive_argv(
+            std::path::Path::new("/tmp/gsd-test/config.json"),
+            "demo",
+            "/gsd-progress",
+            "2026-07-29T12-00-00Z-aaaa",
+            Some(HYPHENATED),
+        );
+        let mut full = vec![std::ffi::OsString::from("gsd-meta-manager")];
+        full.extend(argv);
+
+        let cli = crate::cli::Cli::try_parse_from(&full).unwrap_or_else(|e| {
+            panic!(
+                "a hyphen-led goal must parse rather than exiting the child \
+                 non-zero into /dev/null: {e}"
+            )
+        });
+        match cli.command {
+            Some(crate::cli::Commands::Drive { command, goal, .. }) => {
+                assert_eq!(goal.as_deref(), Some(HYPHENATED), "verbatim");
+                assert_eq!(
+                    command, "/gsd-progress",
+                    "and the goal must not have swallowed the command"
+                );
+            }
+            _ => panic!("the argv must still parse back into a Drive command"),
+        }
     }
 
     #[test]
