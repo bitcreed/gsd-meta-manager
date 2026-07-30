@@ -121,6 +121,15 @@ const NO_RUNS_OPTED_IN_NEXT: &str = "Press [s] to start one.";
 const NOT_OPTED_IN_NEXT: &str = "Press [o] on the dashboard to allow it.";
 const NO_JOURNAL_ENTRIES: &str = "No journal entries yet.";
 
+/// The mandatory honest note under the one-row step timeline.
+///
+/// **Required, not decorative.** In this phase a run executes exactly one GSD
+/// command plus whatever turns the human's own interjections add, so the
+/// timeline has one decided row — and a one-row timeline with no explanation
+/// implies a computed sequence of steps that does not exist yet. Phase 20's
+/// router is what makes the row count mean something.
+const STEPS_HONEST_NOTE: &str = "This version runs one command per run.";
+
 /// The label that makes the cost figure readable rather than misleading.
 ///
 /// **Mandatory** (D-12): `total_cost_usd` accumulates across the turns of one
@@ -293,9 +302,10 @@ fn run_list_title(summary: &RunSummary, index: usize, total: usize) -> String {
 
 /// Split the tab area into the run list and the run detail.
 ///
-/// `Constraint::Min(DRIVER_DETAIL_MIN_CELLS)` rather than
-/// `Constraint::Percentage(60)` — the discipline that keeps the reused D-R-P-E-V
-/// line from losing its trailing `[V]`. Below
+/// The detail pane takes `Constraint::Min(DRIVER_DETAIL_MIN_CELLS)` and **never
+/// a bare percentage complement of the list's 40%** — the discipline that keeps
+/// the reused D-R-P-E-V line from losing its trailing `[V]`. A percentage-only
+/// constraint on that pane is the CR-01 / UIFIX-02 defect, verbatim. Below
 /// [`DRIVER_TWO_PANE_MIN_CELLS`] the list is dropped entirely and `None` is
 /// returned for it; the selection still moves, only its *rendering* is given up.
 fn driver_panes(area: Rect) -> (Option<Rect>, Rect) {
@@ -657,20 +667,39 @@ fn render_run_detail(
             .map(|paths| paths.dir.display().to_string())
     });
 
+    let inference = ctx
+        .project_states
+        .get(alias)
+        .and_then(|state| state.current_phase_status.as_ref());
+
     let goal_row_count = goal_rows(&summary.goal, area.width);
     let header_rows = goal_row_count + 3;
+    // The section rule, the one decided row this phase has (D-12), and the
+    // mandatory honest note.
+    let step_rows = 3;
 
-    // Task 3 of plan 18-09 inserts the pipeline row and the step timeline
-    // between the header and the output pane; the tiers below are the same
-    // shape with those two sections added.
     let chunks: Vec<Rect> = if area.height >= 14 {
-        Layout::vertical([Constraint::Length(header_rows), Constraint::Min(3)])
-            .split(area)
-            .to_vec()
+        Layout::vertical([
+            Constraint::Length(header_rows),
+            Constraint::Length(2),
+            Constraint::Length(step_rows),
+            Constraint::Min(3),
+        ])
+        .split(area)
+        .to_vec()
     } else if area.height >= 8 {
-        Layout::vertical([Constraint::Length(2), Constraint::Min(3)])
-            .split(area)
-            .to_vec()
+        // Every section is still present, at one row each. **No section is ever
+        // allocated zero rows** — a section that cannot fit is dropped by the
+        // tier, never squeezed to nothing, because an empty section rule reads
+        // as a section that failed to load.
+        Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(3),
+        ])
+        .split(area)
+        .to_vec()
     } else {
         Layout::vertical([Constraint::Length(1), Constraint::Min(1)])
             .split(area)
@@ -705,8 +734,128 @@ fn render_run_detail(
         chunks[0],
     );
 
-    let _ = turns;
-    render_output_section(frame, chunks[1], ctx, alias, cache, viewport);
+    render_pipeline_row(frame, chunks[1], inference);
+    render_steps(frame, chunks[2], summary, verdict, turns);
+    render_output_section(frame, chunks[3], ctx, alias, cache, viewport);
+}
+
+/// The D-R-P-E-V pipeline row — **called, never re-implemented** (D-17).
+///
+/// [`super::detail::derive_all_stage_statuses`] and
+/// [`super::detail::build_pipeline_line`] are free functions over
+/// `&DiskInference`, invoked here exactly as `render_pipeline_tab` invokes them,
+/// with their existing two-cell indent, their existing per-stage colours and
+/// their existing `[--]` rendering for a skipped stage. Nothing about the widget
+/// is modified, wrapped, restyled or duplicated: **a second progress display is
+/// a named anti-feature** and D-17 makes reuse mandatory.
+///
+/// `ARCHITECTURE` M5 proposes lifting those functions out of `detail.rs` into
+/// `state_reader/`. That is **explicitly declined for this phase**, and the
+/// decline is recorded at the call site so a later reader knows it was
+/// considered rather than missed: the driver process does not render, Phase 20's
+/// `decide()` is the first genuine second consumer, and moving 130 lines now
+/// would churn the largest file in the repository to buy nothing.
+///
+/// The inference is the project's **current phase**'s, which is what makes this
+/// row answer the question a driven repository raises — how far through the
+/// pipeline is the thing the agent is working on.
+fn render_pipeline_row(
+    frame: &mut Frame,
+    area: Rect,
+    inference: Option<&crate::state_reader::disk_status::DiskInference>,
+) {
+    let mut lines: Vec<Line<'static>> = vec![Line::from("")];
+    match inference {
+        Some(inf) => {
+            let statuses = super::detail::derive_all_stage_statuses(inf);
+            lines.push(super::detail::build_pipeline_line(inf, &statuses));
+        }
+        None => lines.push(Line::from(Span::styled("  No disk data", label_style()))),
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// The step timeline: **exactly one decided row in this phase**, plus the note
+/// that says so.
+///
+/// **Turns are turns, not commands** (D-12, Phase 15 D-29). A steered run emits
+/// several `system/init` and `result` pairs inside one process; the timeline
+/// shows the one command that was *decided* and the counter shows the turns. A
+/// later `system/init` is informational and is never rendered as a restart. The
+/// section carries N rows structurally so Phase 20's router needs no re-layout,
+/// while this phase supplies one — and says so, because a one-row timeline with
+/// no explanation implies a computed sequence that does not exist.
+///
+/// **The state word comes from evidence only, never from the agent's prose**
+/// (D-13). [`run_state_glyph`] reads `RunVerdict` — the record's `ended_at` plus
+/// a pid/cmdline liveness probe — and `RunRecord.outcome`, the rendered form of
+/// the four-source derivation Phase 15 computes from `is_error`,
+/// `terminal_reason`, the permission-denial list, the exit code and a git/disk
+/// snapshot. **No string comparison against what the agent said about itself
+/// decides what this row says.** The agent's own account may appear as content
+/// in the output pane below and carries no authority here.
+fn render_steps(
+    frame: &mut Frame,
+    area: Rect,
+    summary: &RunSummary,
+    verdict: Option<RunVerdict>,
+    turns: Option<u32>,
+) {
+    frame.render_widget(
+        Paragraph::new(steps_lines(summary, verdict, turns, area.width)),
+        area,
+    );
+}
+
+/// The step section's lines, as a pure function so the whole thing is assertable
+/// without a terminal (S6).
+fn steps_lines(
+    summary: &RunSummary,
+    verdict: Option<RunVerdict>,
+    turns: Option<u32>,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let live = matches!(verdict, Some(RunVerdict::Live));
+    let (_, word, color) = run_state_glyph(verdict, summary.outcome.as_deref());
+    let (_, started) = local_date_time(&summary.started_at);
+
+    let command_style = if live {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+
+    let mut lines: Vec<Line<'static>> = vec![section_rule("steps", width)];
+
+    // N rows structurally, one row supplied — Phase 20's router adds the rest
+    // without re-laying-out this section.
+    let decided: [&RunSummary; 1] = [summary];
+    for step in decided {
+        let mut spans = vec![
+            Span::styled(
+                format!("  {}", sanitize_render_line(&step.gsd_command)),
+                command_style,
+            ),
+            Span::styled(format!("   {started}   "), label_style()),
+            Span::styled(
+                if live { "running" } else { word },
+                Style::default().fg(color),
+            ),
+        ];
+        if live {
+            if let Some(turns) = turns {
+                spans.push(Span::styled(format!("   turn {turns}"), label_style()));
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+
+    lines.push(Line::from(Span::styled(
+        format!("  {STEPS_HONEST_NOTE}"),
+        muted_style(),
+    )));
+
+    lines
 }
 
 /// The output pane's section rule and, for now, its content.
@@ -977,5 +1126,201 @@ mod tests {
         assert_eq!(shown.chars().count(), 40);
         assert!(shown.starts_with('\u{2026}'), "{shown:?}");
         assert!(shown.ends_with("3f2a"), "{shown:?}");
+    }
+
+    // ── The reused pipeline row and the one-row step timeline (D-17, D-12) ──
+
+    fn mid_pipeline_inference() -> crate::state_reader::disk_status::DiskInference {
+        use crate::state_reader::disk_status::{DiskInference, DiskStatus};
+        DiskInference {
+            status: DiskStatus::Partial,
+            plan_count: 3,
+            summary_count: 2,
+            has_plans: true,
+            has_summaries: true,
+            has_context: true,
+            has_research: true,
+            ..DiskInference::default()
+        }
+    }
+
+    /// D-17: the Driver tab **calls** the D-R-P-E-V widget rather than growing a
+    /// second progress display. The strongest available statement of that is
+    /// that the two produce the identical line for the same inference — a
+    /// reimplementation, however faithful at the moment it was written, would
+    /// drift the first time either side changed.
+    #[test]
+    fn the_driver_tab_pipeline_line_matches_the_pipeline_tabs() {
+        let inf = mid_pipeline_inference();
+
+        // What `render_pipeline_tab` builds, at its own call site's shape.
+        let statuses = super::super::detail::derive_all_stage_statuses(&inf);
+        let pipeline_tab_line = super::super::detail::build_pipeline_line(&inf, &statuses);
+
+        // What the Driver tab renders: the second line of the pipeline row,
+        // under its one blank spacer.
+        let mut driver_lines: Vec<Line<'static>> = vec![Line::from("")];
+        let driver_statuses = super::super::detail::derive_all_stage_statuses(&inf);
+        driver_lines.push(super::super::detail::build_pipeline_line(
+            &inf,
+            &driver_statuses,
+        ));
+
+        assert_eq!(text(&driver_lines[1]), text(&pipeline_tab_line));
+        assert_eq!(
+            driver_lines[1].spans.len(),
+            pipeline_tab_line.spans.len(),
+            "the same spans, so the same per-stage colours"
+        );
+        for (a, b) in driver_lines[1]
+            .spans
+            .iter()
+            .zip(pipeline_tab_line.spans.iter())
+        {
+            assert_eq!(a.style, b.style, "a stage was restyled: {:?}", a.content);
+        }
+    }
+
+    #[test]
+    fn the_steps_section_has_exactly_one_command_row_and_always_carries_the_note() {
+        for (verdict, outcome) in [
+            (Some(RunVerdict::Live), None),
+            (None, Some("succeeded_with_changes")),
+            (None, Some("failed")),
+            (Some(RunVerdict::CrashedWithoutEnding), None),
+        ] {
+            let run = summary("2026-07-29T21-40-00Z-3f2a", outcome);
+            let lines = steps_lines(&run, verdict, Some(3), 60);
+            assert_eq!(
+                lines.len(),
+                3,
+                "the section rule, ONE decided row and the note: {:?}",
+                lines.iter().map(text).collect::<Vec<_>>()
+            );
+            let command_rows = lines
+                .iter()
+                .filter(|line| text(line).contains("/gsd:execute-phase 18"))
+                .count();
+            assert_eq!(command_rows, 1, "one decided command row in this phase");
+            assert!(
+                text(&lines[2]).contains(STEPS_HONEST_NOTE),
+                "the honest note is mandatory whenever the section renders: {:?}",
+                text(&lines[2])
+            );
+        }
+    }
+
+    /// The turn counter is a live-run affordance: a finished run's turn count is
+    /// history that belongs to nothing on this row, and showing it beside a
+    /// terminal state word would read as "still going".
+    #[test]
+    fn the_turn_counter_appears_only_while_the_run_is_live() {
+        let run = summary("2026-07-29T21-40-00Z-3f2a", None);
+        let live: String = steps_lines(&run, Some(RunVerdict::Live), Some(3), 60)
+            .iter()
+            .map(text)
+            .collect();
+        assert!(live.contains("turn 3"), "{live:?}");
+        assert!(live.contains("running"), "{live:?}");
+
+        let ended = summary("2026-07-29T21-40-00Z-3f2a", Some("succeeded_with_changes"));
+        let finished: String = steps_lines(&ended, Some(RunVerdict::Ended), Some(3), 60)
+            .iter()
+            .map(text)
+            .collect();
+        assert!(!finished.contains("turn 3"), "{finished:?}");
+        assert!(!finished.contains("running"), "{finished:?}");
+        assert!(finished.contains("ok"), "{finished:?}");
+    }
+
+    /// Held-out render-buffer backstop (UI-SPEC `## UI Considerations`, the
+    /// D-R-P-E-V overflow row). **A real buffer assertion, not a width
+    /// calculation**, because this is the CR-01 / UIFIX-02 clip in a new
+    /// location and the original defect was invisible to every calculation the
+    /// code had: the trailing `[V]` fell off the right edge of a
+    /// percentage-sized pane while every number involved looked right.
+    #[test]
+    fn the_pipeline_line_keeps_its_verify_stage_at_sixty_eighty_and_one_hundred_twenty_columns() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // The `pub(crate)` fixture the three driver screens already share,
+        // rather than a sixth full-field `AppContext` construction.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let alias = super::super::driver_confirm::tests::ALIAS;
+
+        for width in [60u16, 80, 120] {
+            let (mut ctx, _rx) =
+                super::super::driver_confirm::tests::ctx_with_project(dir.path());
+            ctx.project_states.insert(
+                alias.to_string(),
+                crate::state_reader::ProjectState {
+                    current_phase_status: Some(mid_pipeline_inference()),
+                    ..crate::state_reader::ProjectState::default()
+                },
+            );
+            let cache = ctx.view_cache.entry(alias.to_string()).or_default();
+            cache.driver_runs = vec![summary("2026-07-29T21-40-00Z-3f2a", None)];
+
+            let viewport = Cell::default();
+            let mut terminal =
+                Terminal::new(TestBackend::new(width, 30)).expect("TestBackend terminal");
+            terminal
+                .draw(|frame| {
+                    let area = frame.area();
+                    render_driver_tab(
+                        frame,
+                        area,
+                        &ctx,
+                        alias,
+                        ctx.view_cache.get(alias),
+                        &viewport,
+                    );
+                })
+                .expect("draw the driver tab");
+
+            let buffer = terminal.backend().buffer().clone();
+            let scraped: Vec<String> = (0..30)
+                .map(|y| {
+                    (0..width)
+                        .map(|x| {
+                            buffer
+                                .cell((x, y))
+                                .map(|cell| cell.symbol())
+                                .unwrap_or(" ")
+                                .to_string()
+                        })
+                        .collect::<String>()
+                })
+                .collect();
+
+            let pipeline_row = scraped
+                .iter()
+                .find(|row| row.contains("[D]"))
+                .unwrap_or_else(|| {
+                    panic!("no pipeline row rendered at {width} columns: {scraped:#?}")
+                });
+
+            assert!(
+                pipeline_row.contains("[E 2/3]"),
+                "the execute stage lost its plan fraction at {width} columns: \
+                 {pipeline_row:?}"
+            );
+            assert!(
+                pipeline_row.contains("[V]"),
+                "the trailing verify stage was clipped at {width} columns — this is \
+                 CR-01 / UIFIX-02 in a new place: {pipeline_row:?}"
+            );
+            // The note is asserted by prefix rather than whole. At exactly 60
+            // columns the detail pane is `DRIVER_DETAIL_MIN_CELLS` (39) wide and
+            // the note plus its two-cell indent is 40, so its final period is
+            // clipped — the sentence stays legible and the floor protects the
+            // element it was derived from, which is the pipeline line above.
+            let note_prefix = &STEPS_HONEST_NOTE[..30];
+            assert!(
+                scraped.iter().any(|row| row.contains(note_prefix)),
+                "the honest note is missing at {width} columns: {scraped:#?}"
+            );
+        }
     }
 }

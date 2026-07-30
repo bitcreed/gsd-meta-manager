@@ -3680,8 +3680,15 @@ impl DetailScreen {
 
 // --- Pipeline stage status logic ---
 
+/// `pub(super)` since plan 18-09 because it appears in
+/// [`derive_all_stage_statuses`]'s and [`build_pipeline_line`]'s signatures and
+/// the Driver tab calls both. A **visibility widen, not a move**: `ARCHITECTURE`
+/// M5's proposal to lift this logic into `state_reader/` is declined for this
+/// phase — the driver process does not render, Phase 20's `decide()` is the
+/// first genuine second consumer, and moving 130 lines across modules now would
+/// churn the largest file in the repository to buy nothing (D-17).
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum StageStatus {
+pub(super) enum StageStatus {
     Complete,
     Current,
     Skipped,
@@ -3693,7 +3700,11 @@ const STAGE_LABELS: [&str; 5] = ["D", "R", "P", "E", "V"];
 const STAGE_NAMES: [&str; 5] = ["Discuss", "Research", "Plan", "Execute", "Verify"];
 
 /// Determine the status of each of the 5 pipeline stages from DiskInference.
-fn derive_all_stage_statuses(inf: &DiskInference) -> [StageStatus; 5] {
+///
+/// `pub(super)` for [`StageStatus`]'s reason: the Driver tab reuses this widget
+/// rather than growing a second progress display, which D-17 makes mandatory and
+/// FEATURES.md names as an anti-feature.
+pub(super) fn derive_all_stage_statuses(inf: &DiskInference) -> [StageStatus; 5] {
     // Whether each stage's artifact is present
     let present = [
         inf.has_context,       // D: Discuss
@@ -3753,7 +3764,16 @@ fn stage_color(status: StageStatus) -> Color {
 }
 
 /// Build the horizontal pipeline line: [D]---[R]---[P]---[E 2/3]---[V]
-fn build_pipeline_line(inf: &DiskInference, statuses: &[StageStatus; 5]) -> Line<'static> {
+///
+/// `pub(super)` for [`StageStatus`]'s reason. The Driver tab calls this
+/// **unmodified**: same two-cell indent, same [`stage_color`] per stage, same
+/// `[--]` for a skipped one. Nothing about the widget is wrapped, restyled or
+/// duplicated there, and `the_driver_tab_pipeline_line_matches_the_pipeline_tabs`
+/// asserts the two produce the identical line for the same inference.
+pub(super) fn build_pipeline_line(
+    inf: &DiskInference,
+    statuses: &[StageStatus; 5],
+) -> Line<'static> {
     let mut spans: Vec<Span> = Vec::new();
     spans.push(Span::raw("  "));
 
