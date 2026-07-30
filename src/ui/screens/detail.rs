@@ -6389,6 +6389,94 @@ mod tests {
         assert_eq!(pushed_screen_name(&action).as_deref(), Some("driver_confirm"));
     }
 
+    /// The Driver tab with a **registered** project carrying no opt-in record.
+    ///
+    /// It deliberately does not reuse [`driver_action_fixture`]. That fixture's
+    /// `test_ctx()` registers no project at all and points `config_path` at a
+    /// *relative* path, so a real toggle would fail `UnknownAlias` — and if it
+    /// somehow did not, it would write a config file into the repository
+    /// working directory. `ctx_with_project` registers `ALIAS` — the same
+    /// string as [`TEST_ALIAS`], which is what lets it drive a `DetailScreen` —
+    /// with `driver_opt_in: None` and a `config_path` inside a tempdir, which
+    /// is exactly the starting state a real opt-in needs.
+    ///
+    /// The receiver is returned so the sender in `ctx.event_tx` stays live for
+    /// the duration of the test.
+    fn driver_optin_fixture(
+        root: &std::path::Path,
+    ) -> (
+        DetailScreen,
+        AppContext,
+        tokio::sync::mpsc::UnboundedReceiver<crate::action::Action>,
+    ) {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let (mut ctx, rx) = super::super::driver_confirm::tests::ctx_with_project(root);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Driver);
+        (screen, ctx, rx)
+    }
+
+    /// CTRL-03 end to end: the affordance moved, the gate did not.
+    ///
+    /// The pair that carries the proof is the **first** and **last**
+    /// assertions — the seam refusing, then the seam accepting — with nothing
+    /// between them but the keypress and the confirmation. `name()` cannot do
+    /// this on its own: `DriverConfirmScreen` returns `"driver_confirm"` for
+    /// every `DriverAction`, so a name assertion cannot tell a `Stop` from a
+    /// `ToggleOptIn`. The effect has to be observed.
+    #[test]
+    fn opting_in_from_the_driver_tab_flips_the_spawn_seam() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut screen, mut ctx, _rx) = driver_optin_fixture(dir.path());
+
+        assert!(
+            matches!(
+                crate::executor::DrivableProject::from_registry(
+                    TEST_ALIAS,
+                    &ctx.config.projects[TEST_ALIAS],
+                ),
+                Err(crate::error::OptInError::NotOptedIn { .. })
+            ),
+            "the fixture must start REFUSED by the spawn seam, or the rest of \
+             this test proves nothing"
+        );
+
+        let action = screen.handle_key(KeyCode::Char('o'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(pushed_screen_name(&action).as_deref(), Some("driver_confirm"));
+
+        assert!(
+            !crate::registry::is_opted_in(&ctx.config, TEST_ALIAS),
+            "the keypress alone must change nothing: opening the tab and \
+             reaching for the key is not consent, the confirmation is. A \
+             binding that opted in and *then* asked would satisfy every other \
+             assertion in this test."
+        );
+
+        let ScreenAction::Push(mut confirm) = action else {
+            panic!("the `o` arm must push")
+        };
+        confirm.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+
+        let saved = crate::config::load_config(&ctx.config_path)
+            .expect("the confirmation must have written config.json");
+        assert!(
+            saved.projects[TEST_ALIAS].driver_opt_in.is_some(),
+            "an opt-in that never reached disk is invisible to the driver, \
+             which is a different process reading config.json"
+        );
+
+        assert!(
+            crate::executor::DrivableProject::from_registry(
+                TEST_ALIAS,
+                &saved.projects[TEST_ALIAS],
+            )
+            .is_ok(),
+            "read off the RELOADED entry, so this is about the bytes on disk \
+             and not about in-memory state; the registered path is the tempdir \
+             root, a real directory, so `RootUnusable` cannot fire and mask it"
+        );
+    }
+
     /// The three keys are **tab-scoped**, so the tabs that already claim `s`,
     /// `i` or `x` keep them. `x` on the Defaults tab clears a value and `x` on
     /// the Queue tab deletes an entry; neither may start reaching for the
