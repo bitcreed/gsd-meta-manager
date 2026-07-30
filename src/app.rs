@@ -1317,11 +1317,34 @@ impl App {
                 // count. `driver_line_for_record` deliberately returns `None`
                 // for `cost` because it is header data and not a pane line —
                 // this is the header reading it (D-12).
-                update_driver_tally(
-                    self.ctx.view_cache.entry(key.0.clone()).or_default(),
-                    &key.1,
-                    &records,
-                );
+                let cache = self.ctx.view_cache.entry(key.0.clone()).or_default();
+                update_driver_tally(cache, &key.1, &records);
+
+                // An injected message's state is a set intersection over disk
+                // records, and the newest of those records arrive here. They are
+                // kept **as records** rather than as rendered lines because the
+                // correlation id lives in a typed field, and reconstructing a
+                // protocol state by parsing a rendered string is the
+                // screen-scraping D-01 forbids in another guise (D-08).
+                //
+                // Guarded by run id for the reason the tally is: appending the
+                // tailed run's transitions to a journal the user is reviewing
+                // from last week would report one run's steering as another's.
+                if let Some(journal) = cache
+                    .driver_journal
+                    .as_mut()
+                    .filter(|journal| journal.run_id == key.1)
+                {
+                    journal.injections.extend(
+                        records
+                            .iter()
+                            .filter(|record| {
+                                crate::ui::screens::driver::INJECTION_KINDS
+                                    .contains(&record.kind.as_str())
+                            })
+                            .cloned(),
+                    );
+                }
 
                 self.ctx.journal_cursors.insert(key, cursor);
                 // The pane can now show a frame that differs from the one on
@@ -1503,7 +1526,12 @@ impl App {
             // `RunsReconciled` does: each read is authoritative, and a run
             // directory or a message no longer on disk is expressed by its
             // absence and by nothing else.
-            Action::DriverRunsListed { alias, runs, inbox } => {
+            Action::DriverRunsListed {
+                alias,
+                runs,
+                inbox,
+                journal,
+            } => {
                 let cache = self.ctx.view_cache.entry(alias).or_default();
                 // Clamped rather than reset: a scan that lands while the user is
                 // on a run must not move the selection off it, and a selection
@@ -1513,6 +1541,9 @@ impl App {
                 }
                 cache.driver_runs = runs;
                 cache.driver_inbox = inbox;
+                // The journal carries its own run id, so the renderer can refuse
+                // to show it under a run it is not about.
+                cache.driver_journal = journal;
                 self.needs_redraw = true;
             }
             // The report was built off the render thread and arrived. **It is
@@ -3256,6 +3287,7 @@ mod tests {
                 ts: "2026-07-29T21:40:02Z".to_string(),
                 text: "steer".to_string(),
             }],
+            journal: None,
         });
 
         let cache = app
@@ -3288,6 +3320,7 @@ mod tests {
             alias: OBS_ALIAS.to_string(),
             runs: vec![run_summary("2026-07-29T12-02-00Z-a1b2")],
             inbox: Vec::new(),
+            journal: None,
         });
 
         assert_eq!(

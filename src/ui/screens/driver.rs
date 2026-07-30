@@ -27,6 +27,24 @@
 //! results, and falsely claimed rollback was impossible. A tool that repeats an
 //! agent's account of itself as fact makes that class of failure invisible to
 //! the human who is accountable for the repository.
+//!
+//! **The injection vocabulary is a safety property, not a style choice**
+//! (D-07, D-10). An injected message has exactly four states and each has one
+//! authoritative observer: `queued` is durably in `inbox.jsonl` with nothing
+//! having read it; `delivered` means the write to the agent's stdin returned
+//! without error; `acted-on` means the agent **dequeued** it and is running it
+//! as its own turn; `missed` means it was appended after the agent's input was
+//! closed and can never be delivered.
+//!
+//! The word for the stdin write is *delivered* and nothing else. The word for
+//! the dequeue echo is *acted-on*. **The word "sent" is forbidden here, and so
+//! are "received", "read" and "acknowledged"** — the echo arrives at DEQUEUE,
+//! measured roughly fifty-five seconds after the write, so every one of those
+//! words would promise an observation the protocol cannot make. The filling
+//! shape `○ → ◐ → ●` is the whole design: it reads correctly across a
+//! minute-long gap. **There is no spinner, no animation and no implied
+//! imminence anywhere on this surface**, and a spinner idiom here would be
+//! actively dishonest rather than merely decorative.
 
 use std::cell::Cell;
 
@@ -131,6 +149,52 @@ const MARKER_DIAGNOSTIC: &str = "! ";
 /// `= ` — the terminal record, in the terminal-state colour and BOLD. The
 /// visual full stop, and it renders last.
 const MARKER_TERMINAL: &str = "= ";
+
+// ── Injection state: glyphs, labels and the kinds that carry them ──────────
+
+/// The three journal kinds that carry an injected message's state (D-07, D-09).
+///
+/// Named here, beside the derivation that reads them, and referenced by the
+/// scan that collects them — so the set of kinds that matter exists once.
+pub const INJECTION_KINDS: [&str; 3] = [
+    "interjected",
+    "interjection_acted_on",
+    "interjection_missed",
+];
+
+/// `○` — durably on disk in `inbox.jsonl`; **nothing has read it**.
+const GLYPH_QUEUED: &str = "\u{25CB}";
+/// `◐` — written to the agent's stdin without error. Half-filled, because half
+/// of what matters has happened: the write landed and the agent has not yet
+/// picked it up.
+const GLYPH_DELIVERED: &str = "\u{25D0}";
+/// `●` — the agent **dequeued** it and is running it as its own turn. Full,
+/// because this is as far as the protocol can see. The same codepoint the run
+/// glyphs use for "succeeded": both mean *this reached its end*, and the two
+/// live in different columns of different widgets, so no row shows both.
+const GLYPH_ACTED_ON: &str = "\u{25CF}";
+/// `✗` — appended after the agent's input was closed. Undeliverable, named,
+/// and **never retried**.
+const GLYPH_MISSED: &str = "\u{2717}";
+
+/// The exact label for a message durably queued and unread.
+const LABEL_QUEUED: &str = "queued";
+/// The exact label for a write to the agent's stdin that returned without
+/// error. **This word belongs to the stdin write and to nothing else.**
+const LABEL_DELIVERED: &str = "delivered";
+/// The exact label for the dequeue echo. Deliberately not "received", "read" or
+/// "acknowledged": the echo says the agent *started processing*, roughly a
+/// minute after the write, and every one of those three words would claim an
+/// earlier and stronger observation than the protocol supports.
+const LABEL_ACTED_ON: &str = "acted-on";
+/// The exact label for the honest fourth state (D-10).
+const LABEL_MISSED: &str = "missed";
+
+/// Why a missed message is missed, in one line.
+///
+/// **Leaving it in `queued` forever would be the undelivered-injection failure
+/// dressed up as a spinner.** It is named instead.
+const MISSED_GLOSS: &str = "(the run closed its input before this was delivered)";
 
 // ── Copy (Copywriting Contract, exact strings) ─────────────────────────────
 
