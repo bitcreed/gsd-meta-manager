@@ -42,7 +42,14 @@ findings:
   warning: 12
   info: 0
   total: 16
-status: issues_found
+status: resolved
+resolution:
+  fixed: 15
+  deferred: 1
+  fixed_at: 2026-07-29
+  gate: "cargo build + cargo test (772 passed, 0 failed) + cargo clippy -- -D warnings clean; cargo clippy --all-targets still exactly 5 pre-existing lints (browser.rs x3, project_creator.rs x1, state_reader/mod.rs x1)"
+  deferred_findings:
+    - WR-05
 ---
 
 # Phase 18: Code Review Report
@@ -137,6 +144,64 @@ only call site), one mis-targeted key (`i` injects into the *observed* run, not
 the *selected* one), a duplicate-start hazard in the new wizard, and two newly
 reachable argv holes created by this phase's free-text command and goal fields.
 
+## Resolution
+
+**Fixed: 15 of 16. Deferred with rationale: 1 (WR-05).** Every fix carries a
+regression test that fails before it and passes after; the four BLOCKERs and
+WR-03, WR-04, WR-06 and WR-08 were each verified red against the pre-fix code
+before the fix was committed.
+
+| Finding | Status | Commit | Note |
+|---|---|---|---|
+| CR-01 | fixed | `51e198e` | `delivered_since_boundary` carries the poll arm's count to the boundary arm. The existing test was strengthened to assert the SECOND injection, which is what made the defect visible; `fake-claude-paced.sh` now paces two turns so "after a boundary" is an observed fact rather than a 20ms race. |
+| CR-02 | fixed | `b20eafe` | `DriverOutput` carries a `run_id` and `retarget`s (clearing) on change; `clear` is private and reachable only through it. `output_for_run` matches the ring on its own run id, not on `observed_runs`. |
+| CR-03 | fixed | `e81405d` | A failed `Executor::send` now writes `interjection_missed { reason: MISSED_SEND_FAILED }`, and the render layer treats `interjected { delivered: false }` as positive evidence of a failed write. **Not** fixed by promoting to `delivered`. `InjectionState::Missed` carries a `MissedReason` so the state and its gloss travel together; still four states, one glyph and one label for `missed`. |
+| CR-04 | fixed | `853feae` | Rescan scheduled from the existing 20-tick block (gated on the Driver tab being on screen), from `DriverInjectWritten`'s success arm, and from `start_driver_run`'s spawn success (ungated — the confirmation is still on top). The gate is `driver_tab_is_on_top` and deliberately does **not** require a live run. Also resolves WR-09. |
+| WR-01 | fixed | `5d3c0d3` | `i` opens only when the selected run is the live one, with a distinct refusal for each of the two conditions. |
+| WR-02 | fixed | `82fb612` | `journal::last_ended_outcome` + `reconcile::last_ended_outcomes` feed `AppContext::last_outcomes`, read in the same `spawn_blocking` task as the probe and pruned beside `observed_runs`. `needs_human` takes a `TerminalState` rather than a `RunOutcome`. |
+| WR-03 | fixed | `64fedcb` | New `ScreenAction::Replace`; Step B replaces itself with the confirmation. |
+| WR-04 | fixed | `e5aee43` | `--goal` gains `allow_hyphen_values`; `--command` gains a must-start-with-`/` refusal at the field. The split is deliberate — `allow_hyphen_values` on `--command` would let it swallow the following flag. |
+| **WR-05** | **deferred** | — | See "Deferred: WR-05" below. |
+| WR-06 | fixed | `75caaff` | The control replacement widened to `0x7F..=0x9F`, so `U+009B` (CSI), `U+009D` (OSC) and `U+0090` (DCS) cannot survive. |
+| WR-07 | fixed | `b20eafe` | Fixed with CR-02 because it is the same function's contract: the live ring is a preference, not a short-circuit, so an empty ring falls through to the journal on disk. |
+| WR-08 | fixed | `45187fc` | Deduped on `seq` (monotonic per run), not on the id — one id legitimately carries several records. |
+| WR-09 | fixed | `853feae`, `b20eafe` | Both `App` wrappers deleted; `DriverOutput::clear` wired into `retarget` and made private. |
+| WR-10 | fixed | `45187fc` | The enum doc now says what is true. |
+| WR-11 | fixed | `af192a6` | Parameter dropped; the intent is a doc comment. |
+| WR-12 | fixed | `5591abe` | Asymmetry documented at three sites and pinned by a test asserting **both** halves. Not redacted: the inbox copy is the payload the driver writes to the agent's stdin, so redacting it would change the instruction rather than protect it. |
+
+### Deferred: WR-05 (the medium height tier)
+
+**Carried forward, not fixed.** The finding is correct — `render_pipeline_row`
+emits a leading blank line before the D-R-P-E-V row, `steps_lines` emits the
+`── steps ──` rule before the command row, and at the `8 <= area.height < 14`
+tier each section gets one row, so the pane paints an empty line and a bare rule.
+The header budget has the same shape.
+
+It is deferred because the fix is a **layout judgement across three height
+tiers**, not a local correction:
+
+* Which element gives way at one row is a design decision the UI-SPEC's
+  height-tier tables own. The review offers one answer (drop the spacer, budget
+  the header as `goal_row_count.min(1) + 1`); choosing between that and raising
+  the tier's floor needs the spec's own priority ordering, which this pass does
+  not have in hand.
+* The named success criterion at risk is the **elapsed-time counter** surviving a
+  two-row goal. Verifying that it does — and that the result is legible rather
+  than merely present — is a human UAT question at real terminal heights, not
+  something a buffer-scraping test settles on its own.
+* No render test exercises `render_run_detail`'s height tiers at all, so the fix
+  needs new test scaffolding (a scrape at heights 8, 13 and 14) that is worth
+  building once, against the spec, rather than twice.
+
+Nothing about it is a correctness or safety risk: no fact is misreported, no
+state is overstated, and no evidence is destroyed. The failure mode is a section
+that renders empty where it should render one row.
+
+**Carry-forward obligation:** add the height-tier render tests and the
+producer-ordering fix as part of the next UI pass on the Driver tab, with the
+UI-SPEC height tables in hand and a human check at heights 8, 13 and 14.
+
 ## Structural Findings (fallow)
 
 No `<structural_findings>` block was supplied with this review.
@@ -149,6 +214,8 @@ No `<structural_findings>` block was supplied with this review.
 
 **File:** `src/driver/run.rs:1240-1281` (the turn-boundary arm), `src/driver/run.rs:1305-1315` (the poll arm)
 **Severity:** BLOCKER
+
+**Status:** FIXED in `51e198e`.
 
 **Issue:** Two arms deliver inbox messages, and only one of them is allowed to
 keep stdin open.
@@ -240,6 +307,8 @@ next refactor and nothing fails.
 **File:** `src/app.rs:1256`, `src/ui/screens/mod.rs:243-248`, `src/ui/screens/driver.rs:1660-1690`, `src/ui/screens/driver.rs:1701-1718`
 **Severity:** BLOCKER
 
+**Status:** FIXED in `b20eafe` (with WR-07).
+
 **Issue:** `ctx.driver_output` is keyed by **alias only** and the buffer carries
 no run id:
 
@@ -321,6 +390,8 @@ ids and asserts the first run's lines are gone.
 **File:** `src/driver/run.rs:696-740`, `src/ui/screens/driver.rs:1445-1460`
 **Severity:** BLOCKER
 
+**Status:** FIXED in `e81405d`.
+
 **Issue:** `deliver_pending_inbox` journals `Interjected { delivered: false }`
 when `Executor::send` returns `Err`, and then does nothing further:
 
@@ -391,6 +462,8 @@ send-failure reason to the render layer's gloss table and a unit test over
 **File:** `src/ui/screens/detail.rs:639-643`, `src/ui/screens/detail.rs:345-376`, `src/app.rs:923-985`, `src/app.rs:1452-1483`
 **Severity:** BLOCKER
 
+**Status:** FIXED in `853feae` (with WR-09).
+
 **Issue:** `AppContext::schedule_run_list_scan` has exactly two call sites —
 `switch_to_tab`'s `DetailSubView::Driver` arm and `move_driver_selection`.
 Nothing schedules it from `Action::Tick`, from `Action::FileChanged`, from
@@ -458,6 +531,8 @@ computes) rather than running it for every project.
 **File:** `src/ui/screens/detail.rs:2125-2144`
 **Severity:** WARNING
 
+**Status:** FIXED in `5d3c0d3`.
+
 **Issue:** The `i` binding reads the run id out of `ctx.observed_runs`:
 
 ```rust
@@ -493,6 +568,8 @@ let live_run = ctx.observed_runs.get(&self.alias)
 
 **File:** `src/ui/screens/mod.rs:755-778`, `src/ui/screens/mod.rs:828-832`
 **Severity:** WARNING
+
+**Status:** FIXED in `82fb612`.
 
 **Issue:** D-14 names four evidence sources for "waiting on a human", one of
 which is *"a finished run whose outcome is `PermissionDenied` / `Failed` /
@@ -541,6 +618,8 @@ badge and survives `//h`. Without that test the arm goes quiet again.
 **File:** `src/ui/screens/driver_start.rs:218-230`, `src/ui/screens/driver_confirm.rs:210-219`, `src/app.rs:1745-1765`
 **Severity:** WARNING
 
+**Status:** FIXED in `64fedcb`.
+
 **Issue:** Step B pushes the confirmation and stays on the stack:
 
 ```rust
@@ -582,6 +661,8 @@ Step B and asserts exactly one `DriverStartRequested` on the channel.
 
 **File:** `src/ui/screens/driver_confirm.rs:303-312`, `src/driver/spawn.rs:57-79`, `src/cli.rs:54-55,79-80`
 **Severity:** WARNING
+
+**Status:** FIXED in `e5aee43`.
 
 **Issue:** This phase turned two argv operands into free-text fields. Both are
 passed verbatim:
@@ -627,6 +708,8 @@ which pins the exact argv.
 
 **File:** `src/ui/screens/driver.rs:1076-1102`, `src/ui/screens/driver.rs:1161-1175`, `src/ui/screens/driver.rs:1211-1234`
 **Severity:** WARNING
+
+**Status:** DEFERRED — see "Deferred: WR-05" in the Resolution section above.
 
 **Issue:** For `8 <= area.height < 14` the layout gives the pipeline section and
 the steps section one row each:
@@ -680,6 +763,8 @@ present at every tier that claims to show them.
 **File:** `src/ui/screens/mod.rs:279-320`
 **Severity:** WARNING
 
+**Status:** FIXED in `75caaff`.
+
 **Issue:** The gate is documented as *"the single append-time gate"* every
 untrusted string from disk passes through, and its stated highest-value rule is
 stripping the escape introducer. The filter is:
@@ -716,6 +801,8 @@ and extend the existing sanitiser test corpus with `"\u{9b}31m"` and
 
 **File:** `src/ui/screens/driver.rs:1701-1718`, `src/ui/screens/driver.rs:1637-1651`
 **Severity:** WARNING
+
+**Status:** FIXED in `b20eafe` (with CR-02 — same function).
 
 **Issue:** `output_for_run` prefers the live ring unconditionally when the
 selected run is the observed one:
@@ -762,6 +849,8 @@ instead of off `observed_runs`.)
 **File:** `src/app.rs:1292-1306`
 **Severity:** WARNING
 
+**Status:** FIXED in `45187fc`.
+
 **Issue:** The `DriverJournalAppended` handler extends the scanned journal's
 injection list:
 
@@ -801,6 +890,8 @@ journal.injections.extend(
 **File:** `src/app.rs:828-830`, `src/app.rs:842-845`, `src/ui/screens/mod.rs:243-248`
 **Severity:** WARNING
 
+**Status:** FIXED in `853feae` (wrappers) and `b20eafe` (`clear`).
+
 **Issue:** `App::schedule_run_list_scan` and `App::schedule_dry_run_report` are
 one-line delegations to the `AppContext` methods, and neither has a caller
 anywhere in `src/` or `tests/` — every real call goes to
@@ -819,6 +910,8 @@ seam is wanted), and wire `clear` into the retargeting described in CR-02.
 
 **File:** `src/app.rs:30-36`
 **Severity:** WARNING
+
+**Status:** FIXED in `45187fc`.
 
 **Issue:**
 
@@ -846,6 +939,8 @@ from both dispatch arms.
 
 **File:** `src/ui/screens/driver.rs:762-831`
 **Severity:** WARNING
+
+**Status:** FIXED in `af192a6`.
 
 **Issue:** The parameter is threaded through the call chain and then defused:
 
@@ -877,6 +972,8 @@ fn render_run_header(summary: &RunSummary, cost_usd: Option<f64>, …)
 **File:** `src/journal/inbox.rs:178-191`, `src/journal/mod.rs:642-656`
 **Severity:** WARNING
 
+**Status:** FIXED in `5591abe`.
+
 **Issue:** `inbox::append` serialises `InboxMessage` and writes it directly; no
 `redact::redact` is applied. The same text, when journaled as
 `JournalEvent::Interjected`, goes through the redactor like every other journal
@@ -903,3 +1000,5 @@ assume the redactor covers this path.
 _Reviewed: 2026-07-30T04:25:17Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
+_Resolved: 2026-07-29 — 15 fixed, 1 deferred (WR-05). Gate green: 772 tests, 0 failed;_
+_`cargo clippy -- -D warnings` clean; `--all-targets` still exactly 5 pre-existing lints._
