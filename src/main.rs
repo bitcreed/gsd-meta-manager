@@ -79,13 +79,21 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        // The two `#[cfg(debug_assertions)]` fields below are D-30/WR-16: the
+        // agent-override flags have no parser entry in a release build, so this
+        // arm must not name them there either. The attribute rides the pattern
+        // field and the struct-expression field rather than forking this arm in
+        // two — one arm that goes out of sync with the other is exactly the bug
+        // a cfg is supposed to prevent.
         Some(Commands::Drive {
             alias,
             command,
             run_id,
             dry_run,
             goal,
+            #[cfg(debug_assertions)]
             claude_program,
+            #[cfg(debug_assertions)]
             claude_args,
         }) => {
             // This arm is by construction BEFORE `tui::init()` in the `None`
@@ -98,7 +106,9 @@ async fn main() -> anyhow::Result<()> {
                 run_id,
                 dry_run,
                 goal,
+                #[cfg(debug_assertions)]
                 claude_program,
+                #[cfg(debug_assertions)]
                 claude_args,
             };
             if let Err(err) = drive(args, &config).await {

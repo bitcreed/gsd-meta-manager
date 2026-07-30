@@ -72,7 +72,11 @@ pub mod run;
 #[cfg(unix)]
 pub mod spawn;
 
+// Both are named only by the debug-only override fields below, so the imports
+// carry the same gate those fields do (D-30).
+#[cfg(debug_assertions)]
 use std::ffi::OsString;
+#[cfg(debug_assertions)]
 use std::path::PathBuf;
 
 use crate::config::{Config, RegisteredProject};
@@ -111,8 +115,20 @@ pub struct DriveArgs {
     /// Free text recorded into `RunRecord.goal` and never interpreted.
     pub goal: Option<String>,
     /// Test and development only: the program to spawn instead of `claude`.
+    ///
+    /// **Debug builds only (D-30, WR-16).** `src/cli.rs` carries the full
+    /// reasoning and the accepted consequence; the gate is repeated here rather
+    /// than stopping at the parser because a field that survives into the
+    /// release binary keeps `ClaudeExecutor::with_program` reachable from
+    /// anything that can build a `DriveArgs`, and "the only caller today is the
+    /// CLI" is a fact about today, not a property of the type.
+    #[cfg(debug_assertions)]
     pub claude_program: Option<PathBuf>,
     /// Test and development only: leading arguments for `claude_program`.
+    ///
+    /// Debug builds only, for the same reason and by the same decision as
+    /// [`claude_program`](Self::claude_program).
+    #[cfg(debug_assertions)]
     pub claude_args: Vec<OsString>,
 }
 
@@ -313,7 +329,9 @@ mod tests {
             run_id: None,
             dry_run: false,
             goal: None,
+            #[cfg(debug_assertions)]
             claude_program: None,
+            #[cfg(debug_assertions)]
             claude_args: Vec::new(),
         }
     }

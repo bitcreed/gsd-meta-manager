@@ -37,6 +37,27 @@ use crate::journal::{self, JournalEvent, JournalRun, RunRecord};
 /// record is the only thing that says a terminate signal is what arrived.
 const TERMINATE_DIAGNOSTIC_CODE: &str = "terminate_signal_shutdown";
 
+/// The program this driver execs unless a debug build was told otherwise.
+///
+/// A named constant because a release build has exactly one answer here and the
+/// override that produced the other one is gone from the parser (D-30).
+const DEFAULT_AGENT_PROGRAM: &str = "claude";
+
+/// The diagnostic code that marks a run driven by a stand-in rather than by the
+/// agent (D-30, WR-16).
+///
+/// **The second half of D-30, and it exists because the first half cannot cover
+/// a debug build.** `--claude-program` has no parser entry in release, so there
+/// is nothing to mark there; in a debug build the flag must keep working, since
+/// the nine `tests/fixtures/fake-claude*.sh` stand-ins are how every driver
+/// integration test runs without a subscription. Without this record such a run
+/// writes `run_started`, `exec_started`, `run_ended` and an outcome — a
+/// transcript indistinguishable from a real agent's. A short stable identifier
+/// rather than a sentence, for the same reason as
+/// [`TERMINATE_DIAGNOSTIC_CODE`]: it is what a later reader greps for.
+#[cfg(debug_assertions)]
+const AGENT_PROGRAM_OVERRIDDEN: &str = "agent_program_overridden";
+
 /// How long the agent's group is given between the terminate signal and the
 /// uncatchable one **when the stop arrives during startup**.
 ///
@@ -763,6 +784,98 @@ fn journal_as_missed(journal: &mut JournalRun, messages: Vec<InboxMessage>) -> u
     count
 }
 
+/// The program this run will exec.
+///
+/// Two bodies behind one name (D-30, WR-16). In a debug build the override is
+/// honoured; in release the field does not exist, so the answer is a constant
+/// and there is no branch a caller could reach. Written as a pair of `#[cfg]`
+/// functions rather than as an `if cfg!(…)` because `cfg!` compiles **both**
+/// arms — the released binary would still contain the code path that execs an
+/// arbitrary program, merely with nothing able to select it, and "unreachable
+/// today" is a fact about today.
+#[cfg(debug_assertions)]
+fn agent_program(args: &DriveArgs) -> PathBuf {
+    args.claude_program
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_AGENT_PROGRAM))
+}
+
+#[cfg(not(debug_assertions))]
+fn agent_program(_args: &DriveArgs) -> PathBuf {
+    PathBuf::from(DEFAULT_AGENT_PROGRAM)
+}
+
+/// The leading arguments placed before the executor's own generated argv.
+///
+/// Debug builds only, for the same reason as [`agent_program`]: they are the
+/// payload half of one override, and a release build has none.
+#[cfg(debug_assertions)]
+fn agent_leading_args(args: &DriveArgs) -> Vec<String> {
+    args.claude_args
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
+}
+
+#[cfg(not(debug_assertions))]
+fn agent_leading_args(_args: &DriveArgs) -> Vec<String> {
+    Vec::new()
+}
+
+/// The one line of `detail` that accompanies [`AGENT_PROGRAM_OVERRIDDEN`].
+///
+/// **The file name only — never the full path, and never the arguments.** The
+/// path would disclose where a developer's tree lives, and the arguments are
+/// caller-supplied free text that can carry a token or a transcript path; the
+/// journal is written into the *driven* project's `.planning/`, which is a
+/// directory a user may well commit. Naming the stand-in is the whole job: a
+/// reader needs to know this run was not the agent, not to be able to reproduce
+/// it. This is the same error-kind-only discipline every driver log line in this
+/// module already follows (T-18-45).
+///
+/// A path ending in `..` or `/` has no file name; it degrades to a fixed word
+/// rather than falling back to the full path, because the fallback is the thing
+/// being avoided.
+#[cfg(debug_assertions)]
+fn agent_override_detail(program: &Path) -> String {
+    let name = program
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "an unnamed program".to_string());
+    format!(
+        "this run execs the stand-in `{name}` instead of the agent, so it is not a real agent run"
+    )
+}
+
+/// Mark an overridden run on disk, **before** the run's first exec record.
+///
+/// Position is the point (D-30). A reader scanning `journal.jsonl` top to bottom
+/// meets the marker before `exec_started` — before anything it could otherwise
+/// be mistaken for. A record written at the end would be a footnote on a
+/// transcript that already read as a real run.
+///
+/// A failed write is warned about and swallowed, exactly as the terminate
+/// diagnostic's is: a journal that cannot take this record must still be given
+/// the chance to take the run's terminal one, which is the more important of the
+/// two.
+#[cfg(debug_assertions)]
+fn journal_agent_program_override(journal: &mut JournalRun, args: &DriveArgs) {
+    let Some(program) = args.claude_program.as_ref() else {
+        return;
+    };
+
+    if let Err(err) = journal.record(&JournalEvent::Diagnostic {
+        code: AGENT_PROGRAM_OVERRIDDEN.to_string(),
+        detail: agent_override_detail(program),
+    }) {
+        // The error KIND only, never a message body (T-17-05).
+        tracing::warn!(
+            kind = ?err.kind(),
+            "could not journal the agent-program override diagnostic",
+        );
+    }
+}
+
 /// Run one GSD command to completion and leave a complete run directory.
 ///
 /// In order, and the order is the decision:
@@ -873,16 +986,8 @@ pub async fn execute_run(
     // driver's effective command line. That is enough for what the digest
     // promises: comparing two runs for "same command line". It authenticates
     // nothing (see `journal::argv_digest`).
-    let program = args
-        .claude_program
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("claude"));
-    let mut argv = vec![program.display().to_string()];
-    argv.extend(
-        args.claude_args
-            .iter()
-            .map(|arg| arg.to_string_lossy().into_owned()),
-    );
+    let mut argv = vec![agent_program(args).display().to_string()];
+    argv.extend(agent_leading_args(args));
     argv.push(args.command.clone());
     let argv_digest = journal::argv_digest(&argv);
 
@@ -950,6 +1055,13 @@ pub async fn execute_run(
         })?;
     let mut run = DriverRun { journal, lock };
 
+    // D-30's second half, and its position is the whole of it: the journal is
+    // open and nothing has been exec'd yet, so a run driven by a stand-in is
+    // labelled on disk *before* the first record that could be mistaken for a
+    // real agent's. Release builds have no override to mark.
+    #[cfg(debug_assertions)]
+    journal_agent_program_override(&mut run.journal, args);
+
     // The agent's process group, published the instant the child exists rather
     // than only on the `ExecutionHandle` (CR-01). A stop that lands while `start`
     // is still awaiting the capability gate never receives a handle, so without
@@ -968,12 +1080,21 @@ pub async fn execute_run(
 
     // The only branch on the hidden development flags, and it lives here rather
     // than in `main` so the fixture never touches the production dispatch.
+    //
+    // **In a release build there is no branch at all** — the fields do not
+    // exist, so `ClaudeExecutor::with_program` has no call site outside the
+    // debug-only arm below (D-30, WR-16).
+    #[cfg(debug_assertions)]
     let executor = match &args.claude_program {
         Some(program) => ClaudeExecutor::with_program(program, args.claude_args.clone()),
         None => ClaudeExecutor::new(),
-    }
-    .observing_spawn(pgid_tx)
-    .observing_replay_echoes(echo_tx);
+    };
+    #[cfg(not(debug_assertions))]
+    let executor = ClaudeExecutor::new();
+
+    let executor = executor
+        .observing_spawn(pgid_tx)
+        .observing_replay_echoes(echo_tx);
 
     // `biased`, terminate arm FIRST — the same discipline as the drain loop
     // below, for a sharper reason. There the cost of losing the race is a
@@ -1267,7 +1388,9 @@ mod tests {
             run_id: Some("2026-07-29T12-00-00Z-aaaa".to_string()),
             dry_run: false,
             goal: None,
+            #[cfg(debug_assertions)]
             claude_program: None,
+            #[cfg(debug_assertions)]
             claude_args: Vec::new(),
         }
     }
@@ -1491,6 +1614,40 @@ mod tests {
             .iter()
             .map(|(id, text)| (id.to_string(), text.to_string()))
             .collect()
+    }
+
+    /// The override marker names the stand-in and discloses nothing else
+    /// (D-30, T-18-45).
+    ///
+    /// The journal is written into the **driven** project's `.planning/`, which
+    /// is a directory a user may commit, so a full path would publish where a
+    /// developer's tree lives. The arguments are worse — they are caller-supplied
+    /// free text that in this repo's own fixtures already carries transcript
+    /// paths — and they are not in the detail at all, which is why this test
+    /// asserts on their absence rather than on their shape.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_override_marker_names_the_stand_in_and_leaks_neither_its_path_nor_its_arguments() {
+        let detail = agent_override_detail(Path::new("/home/someone/secret-tree/fake-claude.sh"));
+
+        assert!(
+            detail.contains("fake-claude.sh"),
+            "the marker must name the stand-in, or it says only that something was \
+             overridden and not what: {detail}"
+        );
+        assert!(
+            !detail.contains("secret-tree") && !detail.contains('/'),
+            "no path component may reach the journal — the file name is the whole \
+             of what a reader needs: {detail}"
+        );
+
+        // A path with no file name degrades to a fixed word rather than to the
+        // full path, because the full path is the thing being avoided.
+        let unnamed = agent_override_detail(Path::new("/tmp/.."));
+        assert!(
+            !unnamed.contains("/tmp"),
+            "a path with no file name must not fall back to the path itself: {unnamed}"
+        );
     }
 
     #[test]
