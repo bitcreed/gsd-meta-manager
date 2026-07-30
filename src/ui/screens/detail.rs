@@ -68,6 +68,16 @@ pub struct DetailScreen {
 }
 
 impl DetailScreen {
+    /// This screen's [`Screen::name`], as a constant.
+    ///
+    /// `app.rs`'s elapsed-time redraw gate has to ask "is a detail view on top
+    /// of the stack?", and the stack holds `Box<dyn Screen>` — so the only
+    /// answer available is the name. Naming it here rather than repeating the
+    /// literal there is what keeps the two in agreement: `name()` returns this
+    /// constant, so a rename cannot leave the gate comparing against a string
+    /// no screen answers to, which would silently disable the redraw (D-21).
+    pub const NAME: &'static str = "detail";
+
     pub fn new(alias: String) -> Self {
         Self {
             alias,
@@ -1937,7 +1947,7 @@ impl Screen for DetailScreen {
     }
 
     fn name(&self) -> &str {
-        "detail"
+        Self::NAME
     }
 }
 

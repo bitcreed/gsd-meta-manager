@@ -103,6 +103,156 @@ pub fn goal_or_none(goal: Option<&str>) -> Option<&str> {
     goal.filter(|text| !text.trim().is_empty())
 }
 
+/// Project one journal record into a live-output line, or `None` if it belongs
+/// somewhere other than the output pane (D-20, OBS-04).
+///
+/// The five classes are the UI-SPEC's event-kind rendering table, and the
+/// mapping is on `record.kind` — a plain `String`, because the reader
+/// deliberately does not go through the typed `JournalEvent`, so a kind this
+/// build has never seen still arrives with its payload intact (D-30).
+///
+/// **What is deliberately not buffered, and why that is not "losing lines".**
+/// `run_started`, `exec_started` and `cost` return `None`: they are the run
+/// header's data — the goal, the command, the started time, the cumulative cost
+/// — and they are rendered there rather than in the scrolling pane. Putting them
+/// in both would make the pane's first rows a duplicate of the header above it.
+/// The reserved kinds (`observed`, `decided`, `parked`) return `None` too, for a
+/// different reason: nothing emits them before Phase 20, and their surface is
+/// that phase's step timeline rather than this buffer.
+///
+/// **Every kind that can carry a diagnostic IS buffered**, because a pane that
+/// silently loses a `journal_truncated` or an `events_dropped` is exactly the
+/// "looks done but isn't" failure this phase enumerates by name.
+///
+/// **The text is composed, never `Debug`-rendered**, and it is not sanitised
+/// here: `DriverOutput::push_record` is the one append-time gate every string
+/// from disk passes through, and stripping twice would be two places to keep in
+/// agreement.
+///
+/// Pure, which is what makes the whole table assertable without a terminal (S6).
+pub fn driver_line_for_record(
+    record: &crate::journal::reader::JournalRecord,
+) -> Option<(crate::ui::screens::DriverLineKind, String)> {
+    use crate::ui::screens::DriverLineKind;
+
+    let text = |key: &str| -> String {
+        record
+            .rest
+            .get(key)
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let number = |key: &str| -> u64 {
+        record
+            .rest
+            .get(key)
+            .and_then(|value| value.as_u64())
+            .unwrap_or_default()
+    };
+
+    match record.kind.as_str() {
+        "exec_event" => {
+            // `stderr` is present but secondary; every other stream — assistant,
+            // user, turn_completed, unknown, unparseable — is the common case
+            // and gets no marker, so injections and diagnostics stand out.
+            let kind = if text("stream") == "stderr" {
+                DriverLineKind::Stderr
+            } else {
+                DriverLineKind::Output
+            };
+            Some((kind, text("text")))
+        }
+        // The human's own words, echoed back into the stream they were steering.
+        "interjected" => Some((DriverLineKind::Injection, text("text"))),
+        // These two carry an id rather than the text — the driver correlates,
+        // the TUI does not (D-08) — so the line names the transition and the
+        // renderer pairs it with the message body it already holds.
+        "interjection_acted_on" => Some((
+            DriverLineKind::Injection,
+            format!("interjection acted on: {}", text("id")),
+        )),
+        "interjection_missed" => Some((
+            DriverLineKind::Injection,
+            format!(
+                "interjection missed: {} ({})",
+                text("id"),
+                text("reason")
+            ),
+        )),
+        "diagnostic" => Some((
+            DriverLineKind::Diagnostic,
+            format!("{}: {}", text("code"), text("detail")),
+        )),
+        "events_dropped" => Some((
+            DriverLineKind::Diagnostic,
+            format!("{} stream events were dropped", number("count")),
+        )),
+        "journal_truncated" => Some((
+            DriverLineKind::Diagnostic,
+            format!(
+                "journal truncated at {} bytes (cap {})",
+                number("bytes_written"),
+                number("cap")
+            ),
+        )),
+        // The visual full stop. `RunEnded.outcome` is the four-source
+        // derivation's answer and never the agent's prose (D-13).
+        "run_ended" => Some((
+            DriverLineKind::Terminal,
+            format!("run ended: {}", text("outcome")),
+        )),
+        "exec_finished" => {
+            let exit = record
+                .rest
+                .get("exit")
+                .and_then(|value| value.as_i64())
+                .map_or_else(|| "no exit status".to_string(), |code| format!("exit {code}"));
+            Some((
+                DriverLineKind::Terminal,
+                format!("agent finished: {exit} after {}s", number("duration_s")),
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// The exact copy for an observed journal sequence gap (Copywriting Contract).
+///
+/// A gap means records the writer emitted were never read — the pane is missing
+/// lines and cannot recover them. **Surfacing it is the point.** Before this it
+/// reached a `tracing::warn!` and nothing else, i.e. a log file the user of a
+/// TUI never opens, while the pane presented itself as complete.
+pub fn journal_gap_line(gaps: usize) -> String {
+    format!("journal gap: {gaps} record(s) not read")
+}
+
+/// Whether this tick should repaint for the elapsed-time counter (D-21).
+///
+/// **All three conditions are required, and the gate is the whole point.**
+/// Elapsed time is `now − started_at`, so it changes every tick forever; an
+/// unconditional per-tick redraw would make an idle fleet dashboard burn CPU for
+/// the life of the process, which is the exact opposite of this tool's pitch.
+/// The counter is only *visible* when a detail view is on top, its active
+/// sub-view is the Driver tab, and the selected project actually has a live run
+/// — a finished run's elapsed figure is frozen and needs no frame at all.
+///
+/// **No second timer.** This rides the existing 250 ms `Action::Tick`, which
+/// `App::update`'s 20-tick block forbids duplicating in as many words: two
+/// timers at slightly different phases would make "how stale can the dashboard
+/// be?" a question with two answers.
+///
+/// Pure, so the truth table is assertable without a terminal (S6).
+pub fn driver_elapsed_redraw_wanted(
+    top_screen_name: &str,
+    sub_view: Option<&DetailSubView>,
+    run: Option<&crate::driver::reconcile::ObservedRun>,
+) -> bool {
+    top_screen_name == crate::ui::screens::detail::DetailScreen::NAME
+        && matches!(sub_view, Some(DetailSubView::Driver))
+        && run.is_some_and(|run| run.is_live())
+}
+
 pub fn classify_status(status: &str) -> StatusCategory {
     // ADR-2207 status vocabulary takes precedence over the generic keyword
     // matching below. Milestone-terminal statuses are truly Complete; the
@@ -444,6 +594,28 @@ impl App {
     // **No file I/O on the render thread** — that phrase is the searchable
     // marker this file already uses for the boundary (S1).
 
+    /// Gather the three facts [`driver_elapsed_redraw_wanted`] decides on.
+    ///
+    /// The alias comes from `ctx.selected_alias()` rather than from the screen,
+    /// because the stack holds `Box<dyn Screen>` and cannot hand back a
+    /// `DetailScreen`'s field. That is not a workaround: `DetailScreen::new` is
+    /// constructed from exactly this value at `normal.rs:279`, and nothing moves
+    /// the dashboard's selection while a detail view is on top of the stack, so
+    /// the two are the same alias by construction.
+    fn driver_elapsed_redraw_due(&self) -> bool {
+        let Some(top) = self.screen_stack.last() else {
+            return false;
+        };
+        let Some(alias) = self.ctx.selected_alias() else {
+            return false;
+        };
+        driver_elapsed_redraw_wanted(
+            top.name(),
+            self.ctx.detail_sub_view_per_project.get(&alias),
+            self.ctx.observed_runs.get(&alias),
+        )
+    }
+
     /// Resolve one alias's `.planning/` directory, or refuse visibly (S4).
     ///
     /// The schedulers below begin with this lookup, and they all refuse the
@@ -778,6 +950,21 @@ impl App {
                     }
                 }
 
+                // The elapsed-time counter (D-21). It rides THIS tick and gets
+                // no interval of its own, for the same reason the reconciliation
+                // probe below does not — see the comment on that block, which
+                // forbids a second timer in as many words.
+                //
+                // **Gated, and the gate is not an optimisation.** Elapsed time
+                // is `now − started_at`, so it differs every tick forever; an
+                // unconditional redraw here would repaint an idle fleet
+                // dashboard four times a second for the life of the process.
+                // The predicate is a pure function so its truth table is
+                // assertable without a terminal.
+                if self.driver_elapsed_redraw_due() {
+                    self.needs_redraw = true;
+                }
+
                 // Poll for Claude sessions every 20 ticks (~5s at 250ms interval)
                 self.session_poll_counter += 1;
                 if self.session_poll_counter >= 20 {
@@ -1017,18 +1204,40 @@ impl App {
                 cache.archive_loading = false;
                 self.needs_redraw = true;
             }
-            // One tail read landed. This handler touches its own cursor entry
-            // and nothing else — modelled on `apply_exec_event`, which
-            // likewise records what it deliberately does *not* do.
+            // One tail read landed. **This is the seam Phase 16 left open, and
+            // this handler is what closes it** (D-20).
             //
-            // It does NOT set `needs_redraw`. This phase ships no surface that
-            // renders journal content (D-36), so a redraw here would schedule
-            // a frame that cannot differ from the one already on screen. Read
-            // the omission as a choice, not as a bug — Phase 18 is what adds
-            // the surface and the flag together.
+            // Until now it stored its cursor, counted `seq` gaps into a
+            // `tracing::warn!`, and dropped `records` on the floor — deliberately,
+            // because there was no surface to render them onto and a redraw would
+            // have scheduled a frame that could not differ from the one on
+            // screen. The comment here said so, and named Phase 18 as what adds
+            // the surface and the flag together. It does, so that comment is
+            // gone rather than left standing above code it no longer describes.
             //
-            // It also does NOT touch `ProjectState` (D-18) or `last_refresh`
-            // (D-14).
+            // What it does now:
+            //
+            // * projects each record into a `DriverLineKind` and pushes it into
+            //   the alias's bounded ring buffer, where `push_record` sanitises
+            //   it and enforces the cap;
+            // * turns an observed sequence gap into a **visible** diagnostic
+            //   line as well as a log line, because a pane that silently loses
+            //   records is the named "looks done but isn't" failure; and
+            // * sets `needs_redraw`, because the frame genuinely can differ now.
+            //
+            // What it still deliberately does **not** do, and the omissions are
+            // as load-bearing as they were before:
+            //
+            // * It does not touch `ProjectState` (D-18). That type derives
+            //   `PartialEq` and `app.rs` uses the derived equality to suppress
+            //   "Updated: {alias}" status spam; live output arrives every few
+            //   seconds, so a field there would flood the status bar for an
+            //   entire multi-hour run.
+            // * It does not touch `last_refresh` (D-14). Sharing the 500 ms
+            //   dedup map would let a journal append suppress a genuine
+            //   `STATE.md` re-parse, trading a performance bug for a correctness
+            //   one.
+            // * It does not schedule a re-parse (OBS-06).
             Action::DriverJournalAppended {
                 alias,
                 run_id,
@@ -1062,7 +1271,32 @@ impl App {
                     );
                 }
 
+                // The buffer for this alias, created on first append. The map is
+                // pruned in `prune_driver_maps` — see the negative
+                // carry-forward the phase discharges there.
+                let output = self.ctx.driver_output.entry(key.0.clone()).or_default();
+
+                // The gap goes in FIRST and as a line the user can see. The
+                // records that follow are the ones that arrived; the gap is what
+                // came before them and never will, so it belongs above them.
+                if gaps > 0 {
+                    output.push_record(
+                        crate::ui::screens::DriverLineKind::Diagnostic,
+                        &journal_gap_line(gaps),
+                    );
+                }
+
+                for record in &records {
+                    if let Some((line_kind, text)) = driver_line_for_record(record) {
+                        output.push_record(line_kind, &text);
+                    }
+                }
+
                 self.ctx.journal_cursors.insert(key, cursor);
+                // The pane can now show a frame that differs from the one on
+                // screen, which is precisely the condition that was absent
+                // before (D-20).
+                self.needs_redraw = true;
             }
             // The scan is authoritative, so the map is **replaced** and never
             // merged (D-12, D-13). A merge would keep a run in the map after its
@@ -1329,6 +1563,19 @@ impl App {
             .retain(|alias, _| registered.contains_key(alias));
         self.ctx
             .observed_runs
+            .retain(|alias, _| registered.contains_key(alias));
+        // The ring buffer joins the pass, and this line is the phase's only
+        // remaining Phase 16 carry-forward — a negative one. `driver_output` is
+        // keyed by alias and inserted on every journal append; without this it
+        // would grow for the life of the process, holding up to
+        // `DRIVER_OUTPUT_RING_LINES` lines for every project ever driven and
+        // then unregistered. That is the Phase 16 leak reintroduced under a new
+        // name, which is exactly what the carry-forward exists to prevent.
+        //
+        // No per-run second pass, because the map has no run dimension: one
+        // alias holds one buffer, already bounded by its own cap.
+        self.ctx
+            .driver_output
             .retain(|alias, _| registered.contains_key(alias));
 
         let mut runs_by_alias: HashMap<&str, Vec<&str>> = HashMap::new();
@@ -2301,6 +2548,380 @@ mod tests {
              still driving the user's repository"
         );
         assert!(spawned_kept);
+    }
+
+    // ── D-20: the seam, the gap diagnostic, the tick gate, the prune ─────
+
+    /// One journal record of `kind`, carrying `fields` as its payload.
+    fn journal_record(
+        seq: u64,
+        kind: &str,
+        fields: &[(&str, serde_json::Value)],
+    ) -> crate::journal::reader::JournalRecord {
+        let mut rest = serde_json::Map::new();
+        for (key, value) in fields {
+            rest.insert((*key).to_string(), value.clone());
+        }
+        crate::journal::reader::JournalRecord {
+            ts: "2026-07-29T12:00:00Z".to_string(),
+            seq,
+            kind: kind.to_string(),
+            rest,
+        }
+    }
+
+    /// An `exec_event` on `stream` carrying `text`.
+    fn exec_event(seq: u64, stream: &str, text: &str) -> crate::journal::reader::JournalRecord {
+        journal_record(
+            seq,
+            "exec_event",
+            &[("stream", stream.into()), ("text", text.into())],
+        )
+    }
+
+    /// Every buffered line for `alias`, as `(kind, text)` pairs.
+    fn buffered(app: &App, alias: &str) -> Vec<(crate::ui::screens::DriverLineKind, String)> {
+        app.ctx
+            .driver_output
+            .get(alias)
+            .map(|output| {
+                output
+                    .lines()
+                    .map(|line| (line.kind, line.text.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn a_journal_batch_reaches_the_ring_buffer_and_requests_a_redraw() {
+        use crate::ui::screens::DriverLineKind;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        app.needs_redraw = false;
+        app.update(Action::DriverJournalAppended {
+            alias: OBS_ALIAS.to_string(),
+            run_id: OBS_RUN.to_string(),
+            records: vec![
+                exec_event(1, "assistant", "reading src/driver/run.rs"),
+                exec_event(2, "stderr", "a warning from the tool"),
+                journal_record(3, "run_ended", &[("outcome", "succeeded".into())]),
+            ],
+            cursor: cursor_at(120, 3),
+        });
+
+        let lines = buffered(&app, OBS_ALIAS);
+        assert_eq!(
+            lines.len(),
+            3,
+            "every record with an output-pane class must be buffered, got: {lines:?}"
+        );
+        assert_eq!(
+            lines[0],
+            (
+                DriverLineKind::Output,
+                "reading src/driver/run.rs".to_string()
+            )
+        );
+        assert_eq!(lines[1].0, DriverLineKind::Stderr, "stderr is its own class");
+        assert_eq!(
+            lines[2].0,
+            DriverLineKind::Terminal,
+            "the ending is the visual full stop"
+        );
+        assert!(
+            lines[2].1.contains("succeeded"),
+            "the terminal line carries the derived outcome, got: {}",
+            lines[2].1
+        );
+
+        assert!(
+            app.needs_redraw,
+            "D-20: the handler that adds the surface adds the flag with it — \
+             without this the Driver tab renders a frame that can never change"
+        );
+
+        // And the omissions the rewritten comment claims are still real.
+        assert!(
+            app.ctx.last_refresh.is_empty(),
+            "the driver route must still not touch the 500ms dedup map (D-14)"
+        );
+        assert_eq!(
+            app.ctx.reparse_dispatches, 0,
+            "a journal append must still schedule no full re-parse (OBS-06)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sequence_gap_becomes_a_line_the_user_can_see() {
+        use crate::ui::screens::DriverLineKind;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        // Seed a cursor at seq 4, then deliver a batch starting at 9. Five
+        // records the writer emitted were never read, and the pane cannot
+        // recover them — so it has to say so.
+        let key = (OBS_ALIAS.to_string(), OBS_RUN.to_string());
+        app.ctx.journal_cursors.insert(key, cursor_at(10, 4));
+
+        app.update(Action::DriverJournalAppended {
+            alias: OBS_ALIAS.to_string(),
+            run_id: OBS_RUN.to_string(),
+            records: vec![exec_event(9, "assistant", "still working")],
+            cursor: cursor_at(80, 9),
+        });
+
+        let lines = buffered(&app, OBS_ALIAS);
+        assert_eq!(lines.len(), 2, "the gap line plus the record: {lines:?}");
+        assert_eq!(
+            lines[0].0,
+            DriverLineKind::Diagnostic,
+            "a gap is a diagnostic, never silently swallowed"
+        );
+        assert!(
+            lines[0].1.contains("journal gap") && lines[0].1.contains('1'),
+            "the diagnostic must name the count, got: {}",
+            lines[0].1
+        );
+        assert_eq!(
+            lines[1].0,
+            DriverLineKind::Output,
+            "the gap goes ABOVE the records that did arrive, because it is what \
+             came before them"
+        );
+
+        // The control arm: a contiguous batch adds no diagnostic, so the
+        // assertion above is not passing because every batch gets one.
+        app.update(Action::DriverJournalAppended {
+            alias: OBS_ALIAS.to_string(),
+            run_id: OBS_RUN.to_string(),
+            records: vec![exec_event(10, "assistant", "carrying on")],
+            cursor: cursor_at(120, 10),
+        });
+        let lines = buffered(&app, OBS_ALIAS);
+        assert_eq!(lines.len(), 3, "no second gap line: {lines:?}");
+    }
+
+    /// The record → line projection, across every class the pane renders.
+    #[test]
+    fn every_diagnostic_bearing_record_kind_reaches_the_pane() {
+        use crate::ui::screens::DriverLineKind;
+
+        let cases: Vec<(crate::journal::reader::JournalRecord, DriverLineKind, &str)> = vec![
+            (
+                journal_record(1, "events_dropped", &[("count", 40.into())]),
+                DriverLineKind::Diagnostic,
+                "40 stream events were dropped",
+            ),
+            (
+                journal_record(
+                    2,
+                    "journal_truncated",
+                    &[("bytes_written", 1024.into()), ("cap", 2048.into())],
+                ),
+                DriverLineKind::Diagnostic,
+                "2048",
+            ),
+            (
+                journal_record(
+                    3,
+                    "diagnostic",
+                    &[("code", "seq_gap".into()), ("detail", "one record".into())],
+                ),
+                DriverLineKind::Diagnostic,
+                "seq_gap",
+            ),
+            (
+                journal_record(
+                    4,
+                    "interjected",
+                    &[("id", "3f2a".into()), ("text", "skip the UI review".into())],
+                ),
+                DriverLineKind::Injection,
+                "skip the UI review",
+            ),
+            (
+                journal_record(5, "interjection_acted_on", &[("id", "3f2a".into())]),
+                DriverLineKind::Injection,
+                "3f2a",
+            ),
+            (
+                journal_record(
+                    6,
+                    "interjection_missed",
+                    &[("id", "3f2a".into()), ("reason", "stdin closed".into())],
+                ),
+                DriverLineKind::Injection,
+                "stdin closed",
+            ),
+            (
+                journal_record(7, "exec_finished", &[("exit", 0.into()), ("duration_s", 12.into())]),
+                DriverLineKind::Terminal,
+                "exit 0",
+            ),
+        ];
+
+        for (record, expected_kind, expected_substring) in cases {
+            let (kind, text) = driver_line_for_record(&record)
+                .unwrap_or_else(|| panic!("`{}` must reach the pane", record.kind));
+            assert_eq!(kind, expected_kind, "wrong class for `{}`", record.kind);
+            assert!(
+                text.contains(expected_substring),
+                "`{}` rendered as {text:?}, which does not name {expected_substring:?}",
+                record.kind
+            );
+            assert!(
+                !text.contains('{'),
+                "`{}` must compose a real string, never a Debug rendering: {text:?}",
+                record.kind
+            );
+        }
+
+        // The header's own data is deliberately NOT buffered — it renders above
+        // the pane, and duplicating it would make the first rows a copy of the
+        // header. This is not "losing lines"; the assertions above are what
+        // guarantee that every diagnostic-bearing kind does arrive.
+        for kind in ["run_started", "exec_started", "cost", "parked"] {
+            assert!(
+                driver_line_for_record(&journal_record(1, kind, &[])).is_none(),
+                "`{kind}` belongs to the header or to a later phase's timeline"
+            );
+        }
+    }
+
+    /// D-21's truth table: three conditions, and all three are required.
+    #[test]
+    fn the_elapsed_redraw_gate_is_true_for_exactly_one_combination() {
+        use crate::ui::screens::detail::DetailScreen;
+
+        let live = observed(OBS_ALIAS, "run-x", ALIVE);
+        let dead = observed(OBS_ALIAS, "run-x", DEAD);
+
+        // The one combination that repaints.
+        assert!(
+            driver_elapsed_redraw_wanted(
+                DetailScreen::NAME,
+                Some(&DetailSubView::Driver),
+                Some(&live)
+            ),
+            "a live run on the Driver tab is the case the counter exists for"
+        );
+
+        // The dashboard. This is the one that matters most: an idle fleet
+        // dashboard repainting four times a second forever is the exact
+        // opposite of this tool's pitch.
+        assert!(
+            !driver_elapsed_redraw_wanted("normal", Some(&DetailSubView::Driver), Some(&live)),
+            "the counter is not on screen from the dashboard"
+        );
+
+        // A detail view on another tab. The counter is not rendered there
+        // either.
+        assert!(
+            !driver_elapsed_redraw_wanted(
+                DetailScreen::NAME,
+                Some(&DetailSubView::Pipeline),
+                Some(&live)
+            ),
+            "no other tab shows an elapsed counter"
+        );
+
+        // The Driver tab with nothing running. A finished run's elapsed figure
+        // is frozen, so a frame would be identical to the one already up.
+        assert!(
+            !driver_elapsed_redraw_wanted(
+                DetailScreen::NAME,
+                Some(&DetailSubView::Driver),
+                Some(&dead)
+            ),
+            "a run that is not live has a frozen elapsed figure"
+        );
+        assert!(
+            !driver_elapsed_redraw_wanted(DetailScreen::NAME, Some(&DetailSubView::Driver), None),
+            "a project with no observed run at all has nothing to count"
+        );
+    }
+
+    /// The gate wired through a real `Action::Tick`, not just the predicate.
+    #[tokio::test]
+    async fn a_tick_repaints_only_when_the_driver_tab_is_watching_a_live_run() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.ctx.recompute_filtered_aliases();
+        app.ctx.table_state.select(Some(0));
+        app.ctx
+            .observed_runs
+            .insert(OBS_ALIAS.to_string(), observed(OBS_ALIAS, "run-x", ALIVE));
+
+        // The dashboard is on top and no tab is selected: an idle tick.
+        app.needs_redraw = false;
+        app.update(Action::Tick);
+        assert!(
+            !app.needs_redraw,
+            "an idle tick must not repaint — this is the CPU burn D-21 names"
+        );
+
+        // Now a detail view on the Driver tab, over the same live run.
+        app.screen_stack.push(Box::new(
+            crate::ui::screens::detail::DetailScreen::new(OBS_ALIAS.to_string()),
+        ));
+        app.ctx
+            .detail_sub_view_per_project
+            .insert(OBS_ALIAS.to_string(), DetailSubView::Driver);
+
+        app.needs_redraw = false;
+        app.update(Action::Tick);
+        assert!(
+            app.needs_redraw,
+            "the elapsed counter must advance where it can actually be seen"
+        );
+    }
+
+    /// D-27's negative carry-forward, discharged for `driver_output`.
+    #[tokio::test]
+    async fn pruning_drops_the_output_buffer_for_an_unregistered_alias() {
+        use crate::ui::screens::DriverLineKind;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        // OBS_ALIAS is registered by the fixture; "gone" never was.
+        app.ctx
+            .driver_output
+            .entry("gone".to_string())
+            .or_default()
+            .push_record(DriverLineKind::Output, "output from a project that left");
+        app.ctx
+            .driver_output
+            .entry(OBS_ALIAS.to_string())
+            .or_default()
+            .push_record(DriverLineKind::Output, "output from a project that stayed");
+
+        app.prune_driver_maps();
+
+        assert!(
+            !app.ctx.driver_output.contains_key("gone"),
+            "a buffer for an unregistered alias holds up to the full ring cap and \
+             nothing can ever append to it again — leaving it reintroduces the \
+             Phase 16 leak under a new name"
+        );
+
+        // The control arm: a registered alias keeps its buffer AND its
+        // contents, so the assertion above is not passing because the prune
+        // emptied the map.
+        let kept = app
+            .ctx
+            .driver_output
+            .get(OBS_ALIAS)
+            .expect("a registered alias keeps its buffer");
+        assert_eq!(
+            kept.len(),
+            1,
+            "the prune must not clear a live buffer's contents"
+        );
     }
 
     // ── The three schedulers, the goal, and the sub-view ─────────────────
