@@ -308,9 +308,27 @@ pub fn driver_elapsed_redraw_wanted(
     sub_view: Option<&DetailSubView>,
     run: Option<&crate::driver::reconcile::ObservedRun>,
 ) -> bool {
+    driver_tab_is_on_top(top_screen_name, sub_view) && run.is_some_and(|run| run.is_live())
+}
+
+/// Whether the Driver tab is the surface the user is actually looking at.
+///
+/// Shared with [`driver_elapsed_redraw_wanted`] rather than written twice: the
+/// two questions ("should the elapsed counter repaint" and "should the run list
+/// be rescanned") have the same visibility half and differ only in whether they
+/// also require a live run.
+///
+/// **The rescan must NOT require a live run** (CR-04), and that difference is
+/// the whole reason this is its own function. `reconcile_one` returns `None` for
+/// an ended run, so the alias drops out of `observed_runs` the moment the run
+/// finishes — which is precisely the moment the run list's glyph, the outcome
+/// and the journal snapshot all become stale and most need re-reading. A rescan
+/// gated on liveness would stop firing exactly when it started mattering.
+///
+/// Pure, so its truth table is assertable without a terminal.
+pub fn driver_tab_is_on_top(top_screen_name: &str, sub_view: Option<&DetailSubView>) -> bool {
     top_screen_name == crate::ui::screens::detail::DetailScreen::NAME
         && matches!(sub_view, Some(DetailSubView::Driver))
-        && run.is_some_and(|run| run.is_live())
 }
 
 pub fn classify_status(status: &str) -> StatusCategory {
@@ -676,6 +694,49 @@ impl App {
         )
     }
 
+    /// Rescan the selected project's run list, inbox and journal **if the
+    /// Driver tab is the surface on screen** (CR-04).
+    ///
+    /// `schedule_run_list_scan` used to be reachable from exactly two places —
+    /// `switch_to_tab`'s Driver arm and `move_driver_selection` — so
+    /// `driver_runs`, `driver_inbox` and `driver_journal` were frozen at the
+    /// instant the tab was entered and nothing thawed them. A watcher event
+    /// under `runs/<id>/` classifies as `ChangeKind::DriverJournal` and routes
+    /// to `schedule_journal_tail`, which reads `journal.jsonl` and nothing else.
+    /// Three ordinary-use failures followed:
+    ///
+    /// 1. **A run started from the tab was invisible.** The wizard hands off
+    ///    without re-entering the tab, so `driver_runs` was still empty and the
+    ///    pane painted *"No runs yet … Press [s] to start one"* over a live run
+    ///    whose ring buffer was filling behind it.
+    /// 2. **The `queued` state never rendered.** `derive_injection_states`
+    ///    iterates `cache.driver_inbox`; a message queued through `i` was not in
+    ///    it until a rescan, so the four-state widget did not render at all.
+    /// 3. **A run that ended while you watched lost its output.** The alias
+    ///    drops out of `observed_runs`, the pane switches to
+    ///    `cache.driver_journal` — the snapshot taken on tab entry — and every
+    ///    line since then vanished, at the exact moment an after-the-fact review
+    ///    is wanted.
+    ///
+    /// **Gated on visibility, and deliberately so.** The scan is three blocking
+    /// reads; running it for every registered project on every tick would pay a
+    /// fleet-sized cost for one pane's freshness.
+    fn rescan_driver_tab_if_open(&mut self) {
+        let Some(top) = self.screen_stack.last() else {
+            return;
+        };
+        let Some(alias) = self.ctx.selected_alias() else {
+            return;
+        };
+        if !driver_tab_is_on_top(top.name(), self.ctx.detail_sub_view_per_project.get(&alias)) {
+            return;
+        }
+        let Some(path) = self.ctx.config.projects.get(&alias).map(|p| p.path.clone()) else {
+            return;
+        };
+        self.ctx.schedule_run_list_scan(&alias, &path);
+    }
+
     /// Resolve one alias's `.planning/` directory, or refuse visibly (S4).
     ///
     /// The schedulers below begin with this lookup, and they all refuse the
@@ -797,52 +858,14 @@ impl App {
         });
     }
 
-    /// Schedule the run-list directory scan and the selected run's inbox read
-    /// (OBS-05, STEER-02).
-    ///
-    /// Both halves are blocking filesystem work — a `read_dir` plus one small
-    /// `run.json` per run, then a byte-offset tail — and **this is one of the
-    /// phase's own new blocking paths**. Wrapping only the calls the Phase 17
-    /// review listed while leaving the new ones on the render thread is the
-    /// named half-fix (D-28), so this follows the same `spawn_blocking` →
-    /// `Action` idiom. **No file I/O on the render thread.**
-    ///
-    /// The two reads share one task rather than taking one each, because the
-    /// second depends on the first: which run's inbox to read is decided by
-    /// indexing the freshly-listed runs. Splitting them would mean either a
-    /// round trip through the event loop between them or a stale index.
-    ///
-    /// The inbox is read from offset zero every time, and that is deliberate:
-    /// the payload is the whole inbox rather than a delta, so a message removed
-    /// from the file is expressed by its absence — the same reason
-    /// [`Action::RunsReconciled`] carries the whole scan.
-    ///
-    /// **The body lives on [`AppContext`] since plan 18-09**, and this is a
-    /// delegation rather than a second implementation. The Driver tab's
-    /// `switch_to_tab` arm has to schedule the same scan on first visit, and a
-    /// `Screen` is handed an `&mut AppContext` and never an `&mut App` — so the
-    /// choice was one function reachable from both or two copies of a
-    /// `spawn_blocking` closure that would drift. `ctx.needs_redraw` is synced
-    /// into `App::needs_redraw` by the main loop, so the refusal path is
-    /// unchanged in effect.
-    pub fn schedule_run_list_scan(&mut self, alias: &str, project_path: &Path) {
-        self.ctx.schedule_run_list_scan(alias, project_path);
-    }
-
-    /// Schedule the dry-run preview for `alias` and `command` (D-26).
-    ///
-    /// **The body lives on [`AppContext`] since plan 18-11**, and this is a
-    /// delegation rather than a second implementation, for the reason
-    /// [`Self::schedule_run_list_scan`] is one: `DriverStartScreen` has to
-    /// schedule the same build at Step B, and a `Screen` is handed an
-    /// `&mut AppContext` and never an `&mut App` — so the choice was one
-    /// function reachable from both or two copies of a `spawn_blocking` closure
-    /// that would drift. `ctx.needs_redraw` is synced into `App::needs_redraw`
-    /// by the main loop, so the refusal paths are unchanged in effect.
-    #[cfg(unix)]
-    pub fn schedule_dry_run_report(&mut self, alias: &str, command: &str) {
-        self.ctx.schedule_dry_run_report(alias, command);
-    }
+    // The two one-line `App::schedule_run_list_scan` / `App::schedule_dry_run_report`
+    // wrappers that stood here are gone (WR-09). Both delegated to the identically
+    // named `AppContext` methods and neither had a caller anywhere in `src/` or
+    // `tests/`: every real call goes to `ctx.schedule_*` directly, because a
+    // `Screen` is handed an `&mut AppContext` and never an `&mut App`. They were
+    // `pub`, so no `dead_code` warning fired and the duplication was invisible to
+    // the compiler. `App`'s own callers — the tick rescan, the injection handler
+    // and `start_driver_run` — go through `self.ctx` for the same reason.
 
     /// Load project states for all registered projects.
     /// Uses spawn_blocking for async-safe file I/O when event_tx is available,
@@ -975,6 +998,20 @@ impl App {
                             let _ = tx.send(Action::RunsReconciled { runs });
                         });
                     }
+
+                    // The Driver tab's run list, inbox and journal ride the SAME
+                    // counter, for the same reason everything above does — and
+                    // the comment at the head of this block forbidding a second
+                    // timer governs this too (CR-04). Without it the tab is
+                    // frozen at the moment it was entered: a run started from it
+                    // stays invisible, a queued injection never reaches the
+                    // four-state widget, and a run that ends while you watch
+                    // swaps its live output for a stale snapshot.
+                    //
+                    // Gated on the tab being on screen, because unlike the probe
+                    // above this is three blocking reads for ONE project rather
+                    // than a `/proc` glance across the fleet.
+                    self.rescan_driver_tab_if_open();
 
                     // The prune rides the SAME counter, for the same reason the
                     // reconciliation probe above does (D-27 says so explicitly).
@@ -1486,6 +1523,19 @@ impl App {
                             "Queued — waiting for the driver to pick it up.".to_string(),
                             std::time::Instant::now(),
                         ));
+                        // **The `queued` state is not observable until the inbox
+                        // is re-read** (CR-04). `derive_injection_states`
+                        // iterates `cache.driver_inbox`, which the run-list scan
+                        // fills; without this the status line above was the only
+                        // trace of the message until the driver's `interjected`
+                        // record arrived through the journal tail — at which
+                        // point the pane showed the message with no state label
+                        // at all, because `entries` was still empty. STEER-02's
+                        // entire deliverable did not render.
+                        //
+                        // On the success arm only: a failed append wrote
+                        // nothing, so there is nothing new to read.
+                        self.rescan_driver_tab_if_open();
                     }
                 }
                 self.needs_redraw = true;
@@ -1772,6 +1822,24 @@ impl App {
                         liveness: crate::driver::liveness::Liveness::Alive,
                     },
                 );
+
+                // **The new run must reach the run list without a tab
+                // round-trip** (CR-04). The wizard hands off and pops; it does
+                // not re-enter the Driver tab, so nothing else would schedule
+                // this and `render_driver_tab` would take its `runs.is_empty()`
+                // early return — painting "No runs yet … Press [s] to start
+                // one" over a run that is live and whose ring buffer is filling
+                // behind it. That is the first thing a new user does with the
+                // tab.
+                //
+                // **Ungated**, unlike the tick's rescan: the confirmation screen
+                // is still on top of the stack at this moment, so a visibility
+                // gate would refuse the one scan the user explicitly asked for.
+                // The child may not have created its run directory yet — this is
+                // a spawn, microseconds old — in which case the scan reads what
+                // is there and the tick's rescan picks the run up within the
+                // same five seconds the reconciliation probe already runs on.
+                self.ctx.schedule_run_list_scan(alias, &project_root);
             }
             Err(e) => {
                 // A spawn failure is synchronous and leaves genuinely nothing on
@@ -3062,6 +3130,181 @@ mod tests {
             app.needs_redraw,
             "the elapsed counter must advance where it can actually be seen"
         );
+    }
+
+    // ── The Driver tab must not freeze while it is open (CR-04) ────────────
+
+    /// An app whose Driver tab for `OBS_ALIAS` is the surface on screen.
+    fn app_on_the_driver_tab(
+        root: &std::path::Path,
+    ) -> (App, tokio::sync::mpsc::UnboundedReceiver<Action>) {
+        let (mut app, rx) = obs_app(root);
+        app.ctx.recompute_filtered_aliases();
+        app.ctx.table_state.select(Some(0));
+        app.screen_stack.push(Box::new(
+            crate::ui::screens::detail::DetailScreen::new(OBS_ALIAS.to_string()),
+        ));
+        app.ctx
+            .detail_sub_view_per_project
+            .insert(OBS_ALIAS.to_string(), DetailSubView::Driver);
+        (app, rx)
+    }
+
+    /// Drain `rx` and report whether the run-list scan reported back.
+    ///
+    /// The scan runs on `spawn_blocking` and answers with
+    /// `Action::DriverRunsListed`, so its arrival on the channel is the only
+    /// observation that says the scan actually happened — as opposed to a
+    /// counter this file incremented itself.
+    async fn scan_reported(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>) -> bool {
+        for _ in 0..200 {
+            while let Ok(action) = rx.try_recv() {
+                if matches!(action, Action::DriverRunsListed { .. }) {
+                    return true;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    /// The rescan gate is **visibility, not liveness**, and the difference is
+    /// the whole finding.
+    ///
+    /// `reconcile_one` returns `None` for an ended run, so the alias drops out
+    /// of `observed_runs` the instant the run finishes — which is exactly when
+    /// the run list's glyph, its outcome and the journal snapshot go stale and
+    /// most need re-reading. Gating the rescan on `driver_elapsed_redraw_wanted`
+    /// would stop it firing at the moment it started mattering.
+    #[test]
+    fn the_rescan_gate_is_visibility_and_deliberately_not_liveness() {
+        use crate::ui::screens::detail::DetailScreen;
+
+        assert!(driver_tab_is_on_top(
+            DetailScreen::NAME,
+            Some(&DetailSubView::Driver)
+        ));
+        assert!(!driver_tab_is_on_top(
+            "normal",
+            Some(&DetailSubView::Driver)
+        ));
+        assert!(!driver_tab_is_on_top(
+            DetailScreen::NAME,
+            Some(&DetailSubView::Pipeline)
+        ));
+        assert!(!driver_tab_is_on_top(DetailScreen::NAME, None));
+
+        // And a run that has ENDED still satisfies it, where the elapsed-redraw
+        // gate does not.
+        let dead = observed(OBS_ALIAS, "run-x", crate::driver::liveness::Liveness::Dead);
+        assert!(!driver_elapsed_redraw_wanted(
+            DetailScreen::NAME,
+            Some(&DetailSubView::Driver),
+            Some(&dead)
+        ));
+        assert!(driver_tab_is_on_top(
+            DetailScreen::NAME,
+            Some(&DetailSubView::Driver)
+        ));
+    }
+
+    /// CR-04's first failure: the tab froze at the moment it was entered.
+    ///
+    /// `schedule_run_list_scan` had exactly two call sites — tab entry and
+    /// selection move — so `driver_runs`, `driver_inbox` and `driver_journal`
+    /// never changed while the user watched. A run that ended lost its output to
+    /// a stale snapshot; a run that started stayed invisible.
+    #[tokio::test]
+    async fn the_driver_tab_rescans_on_the_existing_twenty_tick_block() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+
+        // The 20-tick block, and no second timer: nothing fires before it.
+        for _ in 0..19 {
+            app.update(Action::Tick);
+        }
+        while let Ok(action) = rx.try_recv() {
+            assert!(
+                !matches!(action, Action::DriverRunsListed { .. }),
+                "the rescan must ride the EXISTING counter — a scan before the \
+                 twentieth tick means it got a timer of its own"
+            );
+        }
+
+        app.update(Action::Tick);
+        assert!(
+            scan_reported(&mut rx).await,
+            "the twentieth tick must rescan the run list, inbox and journal \
+             while the Driver tab is open"
+        );
+    }
+
+    /// The gate really refuses: a dashboard with no Driver tab open pays nothing
+    /// for it. The scan is three blocking reads, so an ungated rescan would cost
+    /// the whole fleet for one pane's freshness.
+    #[tokio::test]
+    async fn a_tick_with_no_driver_tab_open_schedules_no_scan() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = obs_app(dir.path());
+        app.ctx.recompute_filtered_aliases();
+        app.ctx.table_state.select(Some(0));
+
+        for _ in 0..40 {
+            app.update(Action::Tick);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        while let Ok(action) = rx.try_recv() {
+            assert!(
+                !matches!(action, Action::DriverRunsListed { .. }),
+                "the dashboard is on top; nothing is looking at a run list"
+            );
+        }
+    }
+
+    /// CR-04's second failure: STEER-02's whole deliverable did not render.
+    ///
+    /// `derive_injection_states` iterates `cache.driver_inbox`, which only the
+    /// run-list scan fills. Without a rescan on the append's success arm the
+    /// message existed on disk and nowhere on screen — the four-state widget did
+    /// not render at all until the driver's own `interjected` record arrived
+    /// through the journal tail, at which point the pane showed the message with
+    /// no state label beside it.
+    #[tokio::test]
+    async fn a_successful_injection_rescans_so_the_queued_state_can_render() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+
+        app.update(Action::DriverInjectWritten {
+            alias: OBS_ALIAS.to_string(),
+            run_id: OBS_RUN.to_string(),
+            id: "abc".to_string(),
+            error: None,
+        });
+        assert!(
+            scan_reported(&mut rx).await,
+            "a queued message is not observable until the inbox is re-read"
+        );
+    }
+
+    /// A failed append wrote nothing, so there is nothing new to read.
+    #[tokio::test]
+    async fn a_failed_injection_schedules_no_scan() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+
+        app.update(Action::DriverInjectWritten {
+            alias: OBS_ALIAS.to_string(),
+            run_id: OBS_RUN.to_string(),
+            id: "abc".to_string(),
+            error: Some("PermissionDenied".to_string()),
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        while let Ok(action) = rx.try_recv() {
+            assert!(
+                !matches!(action, Action::DriverRunsListed { .. }),
+                "nothing was written, so nothing changed on disk"
+            );
+        }
     }
 
     /// D-27's negative carry-forward, discharged for `driver_output`.
