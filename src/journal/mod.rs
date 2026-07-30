@@ -131,6 +131,35 @@ pub const RETAIN_RUNS: usize = 10;
 /// a one-line change.
 pub const MAX_TAIL_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Why an injected message can never be delivered: the agent's stdin was
+/// already closed when the message reached the driver (D-10).
+///
+/// One of the two values [`JournalEvent::InterjectionMissed::reason`] may take,
+/// and **fixed sentences rather than ones composed at the call site** — the
+/// render layer selects a pinned gloss by matching on the exact string, so a
+/// composed reason would land in the unrecognised branch and lose the
+/// explanation the user needs.
+///
+/// They live here, beside the event that carries them, rather than in
+/// [`crate::driver::run`] which writes them: that module is `#[cfg(unix)]` and
+/// the render layer that must recognise them is not.
+pub const MISSED_AFTER_CLOSE: &str =
+    "the agent's stdin was already closed when this message reached the driver";
+
+/// Why an injected message can never be delivered: the write to the agent's
+/// stdin **failed** (D-10, CR-03).
+///
+/// The other terminal reason, and the one the four-state display was missing.
+/// A message whose `Executor::send` returned `Err` was journaled
+/// `interjected { delivered: false }` and nothing further; the cursor had
+/// already moved past it, so it could never be re-read, never retried, and
+/// never swept as missed. The render layer left it in `queued` — *"durably on
+/// disk; nothing has read it yet"* — which is false twice over: the driver did
+/// read it, and the write did fail. That is PITFALLS' undelivered-injection
+/// failure inside the code written to prevent it.
+pub const MISSED_SEND_FAILED: &str =
+    "the write to the agent's stdin failed, so this message never reached it";
+
 /// The six paths that make up one run's on-disk footprint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunPaths {

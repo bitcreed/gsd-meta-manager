@@ -192,11 +192,28 @@ pub(super) const LABEL_ACTED_ON: &str = "acted-on";
 /// The exact label for the honest fourth state (D-10).
 pub(super) const LABEL_MISSED: &str = "missed";
 
-/// Why a missed message is missed, in one line.
+/// Why a missed message is missed, in one line: it arrived after the close.
 ///
 /// **Leaving it in `queued` forever would be the undelivered-injection failure
 /// dressed up as a spinner.** It is named instead.
 const MISSED_GLOSS: &str = "(the run closed its input before this was delivered)";
+
+/// Why a missed message is missed, in one line: the write itself failed (CR-03).
+///
+/// The second reason, and the one that had no gloss because it had no state.
+/// It says what happened and, by saying "never reached", refuses to imply the
+/// agent might still pick the message up.
+const MISSED_GLOSS_SEND_FAILED: &str = "(the write to the agent failed; it never reached the run)";
+
+/// Why a missed message is missed when the journal names a reason this build
+/// does not recognise.
+///
+/// A journal written by a newer build can carry a reason string this one has no
+/// gloss for. The honest answer is to say the message is undeliverable and that
+/// the recorded reason is not one this build knows — **never** to fall back to
+/// one of the two glosses above, which would attribute a cause the evidence
+/// does not support.
+const MISSED_GLOSS_UNRECOGNISED: &str = "(undeliverable; the journal gives a reason this build does not recognise)";
 
 // ── Copy (Copywriting Contract, exact strings) ─────────────────────────────
 
@@ -1358,9 +1375,54 @@ pub enum InjectionState {
     Delivered,
     /// The agent dequeued it and is running it as its own turn.
     ActedOn,
-    /// Appended after the agent's input was closed. Undeliverable, and never
-    /// retried (D-10).
-    Missed,
+    /// Undeliverable, and never retried (D-10). The payload is **why**, which
+    /// selects the pinned gloss on the message's third row.
+    Missed(MissedReason),
+}
+
+/// Why a message is undeliverable, as a value rather than as a string to parse.
+///
+/// The state and its explanation travel together for the same reason the glyph,
+/// the label and the colour do in [`InjectionState::cell`]: a reader must never
+/// have to pair two independently-derived facts to learn one thing. There are
+/// exactly two reasons a driver can record, and a third for a journal that names
+/// a reason this build does not know — which is a case the render layer answers
+/// honestly rather than by guessing one of the other two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissedReason {
+    /// The message reached the driver after the agent's stdin was closed. Stdin
+    /// cannot be reopened, so there was nowhere to write it.
+    AfterClose,
+    /// The write to the agent's stdin returned an error — the writer task was
+    /// gone, or the agent was no longer running. The driver **did** read the
+    /// message; the write is what failed (CR-03).
+    SendFailed,
+    /// The journal named a reason this build has no gloss for.
+    Unrecognised,
+}
+
+impl MissedReason {
+    /// The reason a journal record's `reason` field names.
+    ///
+    /// Matching on the exact pinned string, never on a substring: the two
+    /// reasons are constants in [`crate::journal`] precisely so this is an
+    /// equality test rather than prose parsing (D-01's rule in another guise).
+    fn from_reason(reason: &str) -> Self {
+        match reason {
+            crate::journal::MISSED_AFTER_CLOSE => Self::AfterClose,
+            crate::journal::MISSED_SEND_FAILED => Self::SendFailed,
+            _ => Self::Unrecognised,
+        }
+    }
+
+    /// The pinned one-line gloss for this reason.
+    pub fn gloss(self) -> &'static str {
+        match self {
+            Self::AfterClose => MISSED_GLOSS,
+            Self::SendFailed => MISSED_GLOSS_SEND_FAILED,
+            Self::Unrecognised => MISSED_GLOSS_UNRECOGNISED,
+        }
+    }
 }
 
 impl InjectionState {
@@ -1375,7 +1437,7 @@ impl InjectionState {
         match self {
             Self::Queued => 0,
             Self::Delivered => 1,
-            Self::Missed => 2,
+            Self::Missed(_) => 2,
             Self::ActedOn => 3,
         }
     }
@@ -1387,7 +1449,11 @@ impl InjectionState {
             Self::Queued => (GLYPH_QUEUED, LABEL_QUEUED, Color::DarkGray),
             Self::Delivered => (GLYPH_DELIVERED, LABEL_DELIVERED, Color::Yellow),
             Self::ActedOn => (GLYPH_ACTED_ON, LABEL_ACTED_ON, Color::Green),
-            Self::Missed => (GLYPH_MISSED, LABEL_MISSED, Color::Red),
+            // One glyph and one word for both reasons: the *state* is the same
+            // — undeliverable, terminal, never retried — and only the
+            // explanation on the row below differs. A second label would be a
+            // fifth state in the four-state vocabulary.
+            Self::Missed(_) => (GLYPH_MISSED, LABEL_MISSED, Color::Red),
         }
     }
 }
@@ -1410,13 +1476,26 @@ pub type InjectionEntry = (InboxMessage, InjectionState, Option<DateTime<Utc>>);
 /// `interjection_missed` record is [`InjectionState::Missed`]. Later states win
 /// over earlier ones ([`InjectionState::rank`]).
 ///
-/// **The one qualification is a refusal to overstate.** `interjected` carries a
-/// `delivered` flag which is exactly *"did `Executor::send` return `Ok`"*
-/// (`driver/run.rs:678`), and the driver writes the record either way — so a
-/// record with `delivered: false` is the journal saying the write **failed**.
-/// Promoting it to `delivered` would assert a state the evidence contradicts,
-/// which is the one thing this surface must never do; the message stays
-/// `queued`, which is what it still is.
+/// **The one qualification is a refusal to overstate — in BOTH directions**
+/// (CR-03). `interjected` carries a `delivered` flag which is exactly *"did
+/// `Executor::send` return `Ok`"*, and the driver writes the record either way —
+/// so a record with `delivered: false` is the journal saying the write
+/// **failed**. Promoting it to `delivered` would assert a state the evidence
+/// contradicts, which is the one thing this surface must never do. But leaving
+/// it in `queued` — glossed *"durably on disk; nothing has read it yet"* — is
+/// the same error pointing the other way, and it is the worse of the two: the
+/// driver **did** read the message, the write **did** fail, and the cursor has
+/// already moved past it so nothing will ever read it again. A user shown
+/// "waiting to be picked up" about a message that will never be picked up is
+/// PITFALLS' undelivered-injection failure exactly. `delivered: false` is
+/// therefore positive evidence of a failed write and resolves to
+/// [`InjectionState::Missed`] with [`MissedReason::SendFailed`].
+///
+/// The driver writes a matching `interjection_missed { reason }` record for the
+/// same id, so this is normally the second of two independent witnesses. It is
+/// kept as its own rule rather than delegated to that record because the
+/// driver's own journal write can fail — it warns and continues — and a message
+/// must not fall back into `queued` when it does.
 ///
 /// **Nothing is held in memory that a restart would lose.** That is precisely
 /// what makes STEER-03 hold across a TUI restart with no extra persistence: the
@@ -1449,13 +1528,20 @@ pub fn derive_injection_states(
                             .get("delivered")
                             .and_then(|value| value.as_bool())
                             .unwrap_or(false);
-                        if !written {
-                            continue;
+                        if written {
+                            InjectionState::Delivered
+                        } else {
+                            InjectionState::Missed(MissedReason::SendFailed)
                         }
-                        InjectionState::Delivered
                     }
                     "interjection_acted_on" => InjectionState::ActedOn,
-                    "interjection_missed" => InjectionState::Missed,
+                    "interjection_missed" => InjectionState::Missed(MissedReason::from_reason(
+                        record
+                            .rest
+                            .get("reason")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default(),
+                    )),
                     _ => continue,
                 };
                 if observed.rank() >= state.rank() {
@@ -1545,9 +1631,9 @@ pub fn injection_rows(entry: &InjectionEntry, now: DateTime<Utc>) -> Vec<Line<'s
             sanitize_render_line(&message.text)
         ))),
     ];
-    if *state == InjectionState::Missed {
+    if let InjectionState::Missed(reason) = state {
         rows.push(Line::from(Span::styled(
-            format!("{INJECTION_INDENT}{MISSED_GLOSS}"),
+            format!("{INJECTION_INDENT}{}", reason.gloss()),
             muted_style(),
         )));
     }
@@ -2525,10 +2611,20 @@ mod tests {
         record("interjection_acted_on", serde_json::json!({ "id": id }))
     }
 
+    /// The after-close terminal record, carrying the **pinned** reason string.
+    ///
+    /// Deliberately the constant and not a paraphrase: the render layer selects
+    /// its gloss by exact match, so a hand-written reason here would assert the
+    /// unrecognised branch while claiming to assert the after-close one.
     fn missed(id: &str) -> JournalRecord {
+        missed_with(id, crate::journal::MISSED_AFTER_CLOSE)
+    }
+
+    /// The same, for a named `reason`.
+    fn missed_with(id: &str, reason: &str) -> JournalRecord {
         record(
             "interjection_missed",
-            serde_json::json!({ "id": id, "reason": "the run closed its input" }),
+            serde_json::json!({ "id": id, "reason": reason }),
         )
     }
 
@@ -2556,7 +2652,7 @@ mod tests {
         );
         assert_eq!(
             state_of(&inbox, &[missed("aaa")]),
-            vec![InjectionState::Missed]
+            vec![InjectionState::Missed(MissedReason::AfterClose)]
         );
 
         // A record about a DIFFERENT message moves nothing: the correlation is
@@ -2565,14 +2661,93 @@ mod tests {
             state_of(&inbox, &[interjected("bbb", true), acted_on("bbb")]),
             vec![InjectionState::Queued]
         );
+    }
 
-        // `delivered: false` is the journal saying the write FAILED. Promoting
-        // it would assert a state the evidence contradicts, which is the one
-        // thing this surface must never do.
+    /// CR-03: `interjected { delivered: false }` must never leave a message in
+    /// `queued`, and must never be promoted to `delivered` either.
+    ///
+    /// Both errors are the display disagreeing with the disk; they differ only
+    /// in direction. `delivered: false` is the journal saying the write FAILED,
+    /// which is positive evidence and not an absence of it — the driver read the
+    /// message, the write failed, and the inbox cursor has already moved past it
+    /// so nothing will ever read it again. Rendering `○ queued` — glossed
+    /// *"durably on disk; nothing has read it yet"* — is false twice over and is
+    /// PITFALLS' undelivered-injection failure in the code written to prevent it.
+    #[test]
+    fn a_failed_stdin_write_is_missed_and_never_queued_or_delivered() {
+        let inbox = vec![message("aaa", "skip the UI review")];
+
+        let states = state_of(&inbox, &[interjected("aaa", false)]);
         assert_eq!(
-            state_of(&inbox, &[interjected("aaa", false)]),
-            vec![InjectionState::Queued],
-            "a failed stdin write must not render as delivered"
+            states,
+            vec![InjectionState::Missed(MissedReason::SendFailed)],
+            "a failed stdin write is terminal, and its reason is the write"
+        );
+        assert_ne!(
+            states[0],
+            InjectionState::Queued,
+            "`queued` says nothing has read it; the driver HAS read it"
+        );
+        assert_ne!(
+            states[0],
+            InjectionState::Delivered,
+            "and `delivered` says the write returned Ok, which it did not"
+        );
+
+        // The driver writes a matching terminal record for the same id. The two
+        // witnesses must agree rather than fight over the rank.
+        assert_eq!(
+            state_of(
+                &inbox,
+                &[
+                    interjected("aaa", false),
+                    missed_with("aaa", crate::journal::MISSED_SEND_FAILED),
+                ]
+            ),
+            vec![InjectionState::Missed(MissedReason::SendFailed)],
+        );
+
+        // The gloss names the write, not the close: a user told "the run closed
+        // its input" about a run that is still live and still listening would
+        // draw exactly the wrong conclusion.
+        let rendered: String = injection_rows(
+            &derive_injection_states(&inbox, &[interjected("aaa", false)])[0],
+            fixed_now(),
+        )
+        .iter()
+        .map(text)
+        .collect::<Vec<_>>()
+        .join("\n");
+        assert!(rendered.contains(MISSED_GLOSS_SEND_FAILED), "{rendered}");
+        assert!(!rendered.contains(MISSED_GLOSS), "{rendered}");
+        assert!(!rendered.contains(LABEL_QUEUED), "{rendered}");
+    }
+
+    /// A reason string this build has no gloss for is answered honestly rather
+    /// than by borrowing one of the two it knows.
+    #[test]
+    fn an_unrecognised_missed_reason_gets_its_own_gloss_and_still_reads_missed() {
+        let inbox = vec![message("aaa", "skip the UI review")];
+        let records = [missed_with("aaa", "some future reason")];
+
+        assert_eq!(
+            state_of(&inbox, &records),
+            vec![InjectionState::Missed(MissedReason::Unrecognised)]
+        );
+
+        let rendered: String = injection_rows(
+            &derive_injection_states(&inbox, &records)[0],
+            fixed_now(),
+        )
+        .iter()
+        .map(text)
+        .collect::<Vec<_>>()
+        .join("\n");
+        assert!(rendered.contains(LABEL_MISSED), "{rendered}");
+        assert!(rendered.contains(MISSED_GLOSS_UNRECOGNISED), "{rendered}");
+        assert!(
+            !rendered.contains(MISSED_GLOSS) && !rendered.contains(MISSED_GLOSS_SEND_FAILED),
+            "an unknown reason must not be attributed to a known cause: {rendered}"
         );
     }
 
@@ -2609,7 +2784,7 @@ mod tests {
         let inbox = vec![message("aaa", "skip the UI review")];
         assert_eq!(
             state_of(&inbox, &[missed("aaa")]),
-            vec![InjectionState::Missed]
+            vec![InjectionState::Missed(MissedReason::AfterClose)]
         );
 
         let rendered: String = injection_rows(
@@ -2733,6 +2908,10 @@ mod tests {
             vec![interjected("aaa", true)],
             vec![interjected("aaa", true), acted_on("aaa")],
             vec![missed("aaa")],
+            // Every missed reason, so a gloss added with a new reason cannot
+            // slip past the rule.
+            vec![interjected("aaa", false)],
+            vec![missed_with("aaa", "a reason this build does not know")],
         ] {
             for entry in derive_injection_states(&inbox, &records) {
                 rendered.extend(injection_rows(&entry, fixed_now()).iter().map(text));
@@ -2744,12 +2923,22 @@ mod tests {
                 InjectionState::Queued,
                 InjectionState::Delivered,
                 InjectionState::ActedOn,
-                InjectionState::Missed,
+                InjectionState::Missed(MissedReason::AfterClose),
+                InjectionState::Missed(MissedReason::SendFailed),
+                InjectionState::Missed(MissedReason::Unrecognised),
             ]
             .into_iter()
             .map(|state| state.cell().1.to_string()),
         );
-        rendered.push(MISSED_GLOSS.to_string());
+        rendered.extend(
+            [
+                MissedReason::AfterClose,
+                MissedReason::SendFailed,
+                MissedReason::Unrecognised,
+            ]
+            .into_iter()
+            .map(|reason| reason.gloss().to_string()),
+        );
 
         for line in &rendered {
             // Tokenised rather than substring-matched, so `already` and

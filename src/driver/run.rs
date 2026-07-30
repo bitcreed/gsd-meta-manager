@@ -111,12 +111,14 @@ const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// `main_loop.rs:41-49` idiom.
 const INBOX_POLL_INTERVAL: Duration = Duration::from_millis(750);
 
-/// The reason recorded on every message the run could not deliver (D-10).
+/// The two reasons recorded on a message the run could not deliver (D-10).
 ///
-/// A fixed sentence rather than one composed at the call site, so the four-state
-/// display renders one string and a later reader greps for one thing.
-const MISSED_AFTER_CLOSE: &str =
-    "the agent's stdin was already closed when this message reached the driver";
+/// Fixed sentences rather than ones composed at the call site, so the four-state
+/// display renders one string per reason and a later reader greps for one thing.
+/// They are defined in [`crate::journal`] beside the event that carries them,
+/// because this module is `#[cfg(unix)]` and the render layer that has to
+/// recognise them is not.
+use crate::journal::{MISSED_AFTER_CLOSE, MISSED_SEND_FAILED};
 
 /// The wire name of the marker that makes a `user` envelope a **replay echo**.
 ///
@@ -728,11 +730,28 @@ async fn deliver_pending_inbox(
         };
 
         if let Err(err) = journal.record(&JournalEvent::Interjected {
-            id: Some(message.id),
+            id: Some(message.id.clone()),
             text: message.text,
             delivered,
         }) {
             tracing::warn!(kind = ?err.kind(), "journal write failed");
+        }
+
+        // **A failed write is terminal HERE, where the fact is known** (CR-03,
+        // D-10). The message was consumed from the tail, so `cursor` has already
+        // moved past it: it can never be read again, never retried, and never
+        // reaches `sweep_inbox_as_missed`, which only sees messages the cursor
+        // has not passed. Without this record `interjected { delivered: false }`
+        // is the last word ever written about it, and the four-state display
+        // left it in `queued` — *"durably on disk; nothing has read it yet"* —
+        // forever, which is false twice over. That is exactly the undelivered
+        // injection D-10 exists to abolish, in the code written to abolish it.
+        //
+        // It is **not** a retry and never becomes one: stdin cannot be
+        // reopened, and a `WriterGone` or `NotRunning` send error means there is
+        // nothing left to write to.
+        if !delivered {
+            journal_one_as_missed(journal, &message.id, MISSED_SEND_FAILED);
         }
     }
 
@@ -763,14 +782,11 @@ async fn sweep_inbox_as_missed(
     journal_as_missed(journal, read_inbox(inbox_path, cursor).await)
 }
 
-/// Write the terminal `missed` record for each of `messages`. **The only
-/// emission site.**
+/// Write the terminal `missed` record for each of `messages`, all of them for
+/// the same reason: they arrived after the close.
 ///
 /// One message, one record, no retry. Each message arrives here exactly once
-/// because the cursor has already advanced past it, which is what makes
-/// `interjection_missed` and `interjected` mutually exclusive for one id: a
-/// message the drain loop delivered was consumed by [`deliver_pending_inbox`]
-/// and can never be read a second time.
+/// because the cursor has already advanced past it.
 ///
 /// The `reason` is [`MISSED_AFTER_CLOSE`], a fixed machine-readable string; the
 /// human-readable gloss belongs to the render layer, which must not have to
@@ -779,15 +795,41 @@ fn journal_as_missed(journal: &mut JournalRun, messages: Vec<InboxMessage>) -> u
     let count = messages.len();
 
     for message in messages {
-        if let Err(err) = journal.record(&JournalEvent::InterjectionMissed {
-            id: message.id,
-            reason: MISSED_AFTER_CLOSE.to_string(),
-        }) {
-            tracing::warn!(kind = ?err.kind(), "journal write failed");
-        }
+        journal_one_as_missed(journal, &message.id, MISSED_AFTER_CLOSE);
     }
 
     count
+}
+
+/// Write the terminal `missed` record for one id. **The only emission site.**
+///
+/// Two callers with two reasons — [`journal_as_missed`] for a message that
+/// arrived after the close, and [`deliver_pending_inbox`] for one whose stdin
+/// write failed — and the record's shape is decided here so the two cannot
+/// drift. Both reasons are terminal and neither is ever retried.
+///
+/// **`interjected` and `interjection_missed` are no longer mutually exclusive
+/// for one id, and that is deliberate** (CR-03). A failed write produces both:
+/// the `interjected { delivered: false }` record is the honest account of the
+/// attempt — the driver read the message and tried — and the `missed` record is
+/// the honest account of its fate. Suppressing the first would hide that the
+/// driver ever saw the message; omitting the second is what left it rendering
+/// `queued` forever. They remain mutually exclusive for the *after-close* path,
+/// where the message was never read from the tail at all.
+///
+/// A journal write failure here is a warning and nothing more, following every
+/// other `journal.record` call in this file: an unwritable journal costs the
+/// user their record of the message, and ending the run over it would cost them
+/// the run as well. The render layer's own refusal to leave a
+/// `delivered: false` record in `queued` is the second, independent guard for
+/// exactly this case.
+fn journal_one_as_missed(journal: &mut JournalRun, id: &str, reason: &str) {
+    if let Err(err) = journal.record(&JournalEvent::InterjectionMissed {
+        id: id.to_string(),
+        reason: reason.to_string(),
+    }) {
+        tracing::warn!(kind = ?err.kind(), "journal write failed");
+    }
 }
 
 /// The program this run will exec.
@@ -1619,6 +1661,140 @@ mod tests {
                 .any(|record| record.kind == "interjection_missed"
                     && record.rest["id"] == first.id),
             "a message already past the cursor must never be re-reported as missed"
+        );
+    }
+
+    /// A handle whose agent is **not running**, so every `Executor::send`
+    /// returns `SendError::NotRunning`.
+    ///
+    /// Built field by field rather than by spawning something and killing it:
+    /// the failure under test is the *write returning `Err`*, and reproducing it
+    /// through a real child would be a race between the kill and the write. This
+    /// reaches the same branch of `ExecutionHandle::write_line` deterministically
+    /// and spawns nothing at all.
+    fn dead_handle() -> ExecutionHandle {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        let (stdin_tx, _stdin_rx) = tokio::sync::mpsc::channel(1);
+        let (_events_tx, events_rx) = tokio::sync::mpsc::channel(1);
+
+        ExecutionHandle {
+            id: crate::executor::ExecutionId(uuid::Uuid::nil()),
+            session_id: "s".to_string(),
+            events: events_rx,
+            capabilities: Vec::new(),
+            pgid: 0,
+            claude_code_version: String::new(),
+            pending_control: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            control_response_cap: Duration::from_secs(1),
+            stdin_tx,
+            // The one field the test is about.
+            running: Arc::new(AtomicBool::new(false)),
+            cancel_tx: None,
+            outcome_rx: None,
+            outcome: None,
+            next_control_seq: 0,
+        }
+    }
+
+    /// CR-03: a message whose stdin write FAILED must reach a terminal state on
+    /// disk, at the driver, where the fact is known.
+    ///
+    /// This is the pitfall D-10 exists to abolish, in the code written to
+    /// abolish it. The message is consumed from the tail, so `inbox_cursor` has
+    /// already moved past it: it can never be read again, never retried, and
+    /// never reaches `sweep_inbox_as_missed`, which only sees messages the
+    /// cursor has not passed. Before this fix `interjected { delivered: false }`
+    /// was the last word ever written about it and the four-state display left
+    /// it in `queued` — *"durably on disk; nothing has read it yet"* — forever,
+    /// which is false twice over.
+    ///
+    /// Both records are asserted, and the pairing is the point: the
+    /// `interjected` record is the honest account of the **attempt**, the
+    /// `missed` record the honest account of its **fate**, and the delivery
+    /// count must not include it — counting a failed write would park the run
+    /// waiting for a turn that is never coming.
+    #[tokio::test]
+    async fn a_message_whose_stdin_write_failed_is_journaled_missed_rather_than_left_queued() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let planning = dir.path().join(".planning");
+
+        let record = make_run_record(
+            "2026-07-29T12-00-00Z-aaaa".to_string(),
+            &args(),
+            &entry(),
+            &ExecutionOptions::default(),
+            journal::argv_digest(&["claude".to_string()]),
+            4242,
+        );
+        let mut journal = JournalRun::start(&planning, record).expect("start the run");
+        let inbox_path = journal.paths().inbox.clone();
+
+        let message = InboxMessage::new("steer this run");
+        inbox::append(&inbox_path, &message).expect("append");
+
+        let executor = ClaudeExecutor::new();
+        let mut handle = dead_handle();
+        let mut cursor = TailCursor::default();
+        let mut pending = PendingAcks::default();
+
+        let delivered = deliver_pending_inbox(
+            &executor,
+            &mut handle,
+            &mut journal,
+            &inbox_path,
+            &mut cursor,
+            &mut pending,
+        )
+        .await;
+        assert_eq!(
+            delivered, 0,
+            "a write that returned Err delivered nothing, and counting it would \
+             park the run waiting for a turn that is never coming"
+        );
+        journal.finish("succeeded_no_changes").expect("finish");
+
+        let (records, _) =
+            crate::journal::reader::read_all(&journal.paths().journal).expect("read");
+        let for_id = |kind: &str| -> Vec<&crate::journal::reader::JournalRecord> {
+            records
+                .iter()
+                .filter(|record| record.kind == kind && record.rest["id"] == message.id)
+                .collect()
+        };
+
+        let interjected = for_id("interjected");
+        assert_eq!(interjected.len(), 1, "the attempt is recorded");
+        assert_eq!(
+            interjected[0].rest["delivered"], false,
+            "and recorded as what it was: a write that did not return Ok"
+        );
+
+        let missed = for_id("interjection_missed");
+        assert_eq!(
+            missed.len(),
+            1,
+            "the message must reach a TERMINAL state on disk. Without this \
+             record the cursor has moved past it, nothing will ever read it \
+             again, and the four-state widget renders `queued` forever"
+        );
+        assert_eq!(
+            missed[0].rest["reason"], MISSED_SEND_FAILED,
+            "and the reason must name the WRITE. Reusing the after-close reason \
+             would tell a user the run had stopped listening when it may still \
+             be live"
+        );
+        assert!(
+            interjected[0].seq < missed[0].seq,
+            "the fate follows the attempt"
+        );
+
+        // The cursor really has moved past it, which is what makes the record
+        // above the only chance this message ever had.
+        assert!(
+            read_inbox(&inbox_path, &mut cursor).await.is_empty(),
+            "a consumed message is gone from the tail — there is no second look"
         );
     }
 

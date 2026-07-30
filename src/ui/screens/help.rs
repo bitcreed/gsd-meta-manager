@@ -108,7 +108,13 @@ const INJECTION_LEGEND: [(&str, &str, &str); 4] = [
     (
         GLYPH_MISSED,
         LABEL_MISSED,
-        "the run closed its input before this was",
+        // **Not "the run closed its input"** (CR-03). That is one of two
+        // reasons a message can be undeliverable; the other is a stdin write
+        // that failed while the run was still live. Naming only the first here
+        // would contradict the gloss the pane prints on the message's own third
+        // row, and would tell a user the run had stopped listening when it may
+        // still be running.
+        "undeliverable and never retried; the row under",
     ),
 ];
 
@@ -117,8 +123,12 @@ const INJECTION_LEGEND: [(&str, &str, &str); 4] = [
 /// Indexed in lockstep with [`INJECTION_LEGEND`]; a test joins the two and
 /// asserts the resulting sentences, so a row split differently still passes and
 /// a row whose gloss changes meaning does not.
-const INJECTION_LEGEND_CONT: [&str; 4] =
-    ["", "before the agent picks it up", "own turn", "delivered"];
+const INJECTION_LEGEND_CONT: [&str; 4] = [
+    "",
+    "before the agent picks it up",
+    "own turn",
+    "the message says why",
+];
 
 pub struct HelpScreen {
     /// How far the popup is scrolled, in rendered lines.
@@ -491,6 +501,17 @@ mod tests {
             flow.contains("the agent dequeued it and is running it as its own turn"),
             "`acted-on` must say DEQUEUED, which is the only observation the \
              protocol actually makes:\n{flow}"
+        );
+        assert!(
+            flow.contains("undeliverable and never retried; the row under the message says why"),
+            "`missed` must not pin itself to ONE cause (CR-03): a failed stdin \
+             write on a run that is still live is missed too, and the pane \
+             prints a different gloss for it:\n{flow}"
+        );
+        assert!(
+            !flow.contains("the run closed its input"),
+            "and the legend must not name the after-close cause as if it were \
+             the only one:\n{flow}"
         );
     }
 
