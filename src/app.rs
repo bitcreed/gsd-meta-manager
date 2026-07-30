@@ -831,58 +831,17 @@ impl App {
 
     /// Schedule the dry-run preview for `alias` and `command` (D-26).
     ///
-    /// `dry_run::build_report` shells out to `git` twice, synchronously, and
-    /// **this is one of the WR-10 call sites the Phase 17 review named by
-    /// hand** — a `git` invocation on a cold repository is unbounded from the
-    /// render loop's point of view. So it runs on `spawn_blocking` and returns
-    /// through an `Action`. **No file I/O on the render thread** (D-28).
-    ///
-    /// The token comes from [`DrivableProject::from_registry`], the only
-    /// production constructor, so a project the user never opted in cannot have
-    /// a preview built for it — which is right, because the preview describes a
-    /// drive that would itself be refused. **This is not a second spawn gate**:
-    /// nothing here spawns an agent, and the gate `tests/spawn_seam_guard.rs`
-    /// pins is still the child's (D-16).
+    /// **The body lives on [`AppContext`] since plan 18-11**, and this is a
+    /// delegation rather than a second implementation, for the reason
+    /// [`Self::schedule_run_list_scan`] is one: `DriverStartScreen` has to
+    /// schedule the same build at Step B, and a `Screen` is handed an
+    /// `&mut AppContext` and never an `&mut App` — so the choice was one
+    /// function reachable from both or two copies of a `spawn_blocking` closure
+    /// that would drift. `ctx.needs_redraw` is synced into `App::needs_redraw`
+    /// by the main loop, so the refusal paths are unchanged in effect.
     #[cfg(unix)]
     pub fn schedule_dry_run_report(&mut self, alias: &str, command: &str) {
-        use crate::executor::DrivableProject;
-
-        let Some(entry) = self.ctx.config.projects.get(alias).cloned() else {
-            self.ctx.error_message = Some(format!("No registered project named '{alias}'"));
-            self.needs_redraw = true;
-            return;
-        };
-        let project = match DrivableProject::from_registry(alias, &entry) {
-            Ok(project) => project,
-            Err(refusal) => {
-                self.ctx.error_message = Some(refusal.to_string());
-                self.needs_redraw = true;
-                return;
-            }
-        };
-
-        let Some(tx) = &self.ctx.event_tx else {
-            self.ctx.error_message = Some(format!(
-                "Could not build a dry-run preview for '{alias}': no event channel."
-            ));
-            self.needs_redraw = true;
-            return;
-        };
-        let tx = tx.clone();
-        let alias_for_task = alias.to_string();
-        let command_for_task = command.to_string();
-
-        tokio::task::spawn_blocking(move || {
-            let report = crate::driver::dry_run::render(&crate::driver::dry_run::build_report(
-                &project,
-                &command_for_task,
-            ));
-            let _ = tx.send(Action::DriverDryRunLoaded {
-                alias: alias_for_task,
-                command: command_for_task,
-                report,
-            });
-        });
+        self.ctx.schedule_dry_run_report(alias, command);
     }
 
     /// Load project states for all registered projects.
@@ -1546,27 +1505,28 @@ impl App {
                 cache.driver_journal = journal;
                 self.needs_redraw = true;
             }
-            // The report was built off the render thread and arrived. **It is
-            // not stored yet, and that is a declared seam rather than an
-            // oversight.**
+            // The report was built off the render thread and arrived (D-26).
             //
             // The load-bearing half of D-26 is the *scheduling*:
             // `build_report` shells out to `git` twice and is one of the WR-10
             // call sites the Phase 17 review named, so it must never run on the
-            // render thread. `App::schedule_dry_run_report` above discharges
+            // render thread. `AppContext::schedule_dry_run_report` discharges
             // that in full, and it is the half with a threat-register row
-            // (T-18-25).
+            // (T-18-25, T-18-62).
             //
-            // The half that is missing is a field to park the string in. The
-            // preview is rendered by `DriverStartScreen` at Step B (UI-SPEC
-            // Surface 5) — a screen this plan does not own and whose state
-            // shape its owner should choose, because a field guessed here would
-            // either be the wrong shape or a second copy beside the right one.
-            // **Owner: the plan that adds `driver_start.rs`**, which adds one
-            // field to the `#[derive(Default)]` `ProjectViewCache` and swaps
-            // this log for a store. D-26 also marks the whole preview
-            // CUTTABLE — it is the only item on that surface with no
-            // requirement id — so nothing downstream is blocked on it.
+            // This arm is the other half, landed by plan 18-11: the string is
+            // parked in `ProjectViewCache::driver_dry_run`, which the start
+            // screen created when it reached Step B.
+            //
+            // **Guarded twice, and neither guard is belt-and-braces.** A report
+            // is stored only when a preview is actually open — a report that
+            // arrives after the user pressed Esc has nowhere to go, and
+            // recreating the preview for it would repaint a pane the user has
+            // left — and only when the command it was built for is still the
+            // command the preview is about. Without the second guard, a user who
+            // went back to Step A and retyped would see the previous command's
+            // blast radius under the new command's name, which is the display
+            // disagreeing with the disk in the direction that flatters the run.
             //
             // Logged by count, never by body: the report interpolates a working
             // tree's file names (S3).
@@ -1579,8 +1539,18 @@ impl App {
                     %alias,
                     %command,
                     bytes = report.len(),
-                    "dry-run report built off the render thread; no surface stores it yet",
+                    "dry-run report built off the render thread",
                 );
+                if let Some(preview) = self
+                    .ctx
+                    .view_cache
+                    .get_mut(&alias)
+                    .and_then(|cache| cache.driver_dry_run.as_mut())
+                    .filter(|preview| preview.command == command)
+                {
+                    preview.report = Some(report);
+                    self.needs_redraw = true;
+                }
             }
         }
     }
@@ -1656,6 +1626,23 @@ impl App {
         // longer open.
         self.ctx
             .view_cache
+            .retain(|alias, _| registered.contains_key(alias));
+        // The last two alias-keyed maps on `AppContext`, added by plan 18-11 so
+        // that "every per-alias map is pruned" is literally true rather than
+        // true of the driver maps and quietly false of two neighbours.
+        //
+        // Neither predates this pass by accident: `last_refresh` holds one
+        // `Instant` per alias ever watched and `archive_cache` holds a whole
+        // parsed milestone archive per alias ever browsed, and neither has a
+        // removal site. They are small and slow-growing rather than harmless —
+        // "small leak" is how the Phase 16 leak was described before it was
+        // measured. Both are caches, so dropping an entry costs at most one
+        // re-derivation for a project that no longer exists.
+        self.ctx
+            .last_refresh
+            .retain(|alias, _| registered.contains_key(alias));
+        self.ctx
+            .archive_cache
             .retain(|alias, _| registered.contains_key(alias));
 
         let mut runs_by_alias: HashMap<&str, Vec<&str>> = HashMap::new();
@@ -3656,5 +3643,221 @@ mod tests {
             "every cursor for the removed alias must go, not just one — the map \
              is keyed (alias, run_id) and a project may have several"
         );
+    }
+
+    // ── The phase's negative carry-forward, discharged mechanically ────────
+
+    /// Every per-alias and per-run map on `AppContext` is covered by
+    /// `prune_driver_maps` (D-27, the Phase 16 carry-forward).
+    ///
+    /// **This is the durable form of a promise that was previously kept by
+    /// remembering.** The sibling tests above each prove one map is pruned; this
+    /// one proves the *set* is complete, and the exhaustive destructuring below
+    /// is what makes it stay complete: adding a field to `AppContext` fails to
+    /// compile here until someone has looked at this list and decided whether
+    /// the new field is alias-keyed. A new map that is not pruned reintroduces
+    /// the Phase 16 leak under a new name, which is precisely what the
+    /// carry-forward exists to prevent.
+    #[tokio::test]
+    async fn every_per_alias_driver_map_is_pruned() {
+        use crate::executor::RunState;
+        use crate::journal::reader::JournalCursor;
+        use crate::ui::screens::{DriverLineKind, DryRunPreview};
+
+        const GONE: &str = "gone";
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        // Populate every alias-keyed map for BOTH a registered alias and an
+        // alias the registry has never heard of, so each assertion below has a
+        // control arm and none of them can pass by emptying the map.
+        for alias in [GONE, OBS_ALIAS] {
+            app.ctx.journal_cursors.insert(
+                (alias.to_string(), OBS_RUN.to_string()),
+                JournalCursor::default(),
+            );
+            app.ctx
+                .run_states
+                .insert(alias.to_string(), RunState::Running);
+            app.ctx.observed_runs.insert(
+                alias.to_string(),
+                observed(alias, OBS_RUN, crate::driver::liveness::Liveness::Dead),
+            );
+            app.ctx
+                .driver_output
+                .entry(alias.to_string())
+                .or_default()
+                .push_record(DriverLineKind::Output, "a line");
+            let cache = app.ctx.view_cache.entry(alias.to_string()).or_default();
+            cache.driver_selected_run = 1;
+            // The field plan 18-11 added. It is inside `view_cache`, so it
+            // inherits that map's prune rather than needing its own — and this
+            // test is where that inheritance is checked rather than assumed.
+            cache.driver_dry_run = Some(DryRunPreview {
+                command: "/gsd:progress".to_string(),
+                report: None,
+            });
+            app.ctx
+                .last_refresh
+                .insert(alias.to_string(), std::time::Instant::now());
+            app.ctx.archive_cache.insert(
+                alias.to_string(),
+                crate::archive::MilestoneArchive {
+                    version: "v1.0".to_string(),
+                    top_level_files: Vec::new(),
+                    phases: Vec::new(),
+                },
+            );
+        }
+
+        app.prune_driver_maps();
+
+        // ── The enumeration. Destructured exhaustively so a new `AppContext`
+        // field is a compile error here until it has been classified.
+        let crate::ui::screens::AppContext {
+            // Alias-keyed or (alias, run_id)-keyed: every one of these must be
+            // pruned, and each is asserted below.
+            journal_cursors,
+            run_states,
+            observed_runs,
+            driver_output,
+            view_cache,
+            last_refresh,
+            archive_cache,
+
+            // Alias-keyed but deliberately NOT pruned, with the reason on the
+            // field: `project_states` is the registry's own mirror and is
+            // rebuilt wholesale by `load_project_states`;
+            // `detail_sub_view_per_project` holds one enum per alias and is
+            // rewritten on every tab switch.
+            project_states: _,
+            detail_sub_view_per_project: _,
+
+            // Not alias-keyed at all. `session_spawned_runs` is a set of run
+            // ids that grows by one per run this session starts, with
+            // `driver_max_concurrent` defaulting to one; the rest are scalars,
+            // handles and single values.
+            session_spawned_runs: _,
+            config: _,
+            config_path: _,
+            table_state: _,
+            filtered_aliases: _,
+            filter_text: _,
+            change_tracker: _,
+            status_message: _,
+            error_message: _,
+            event_tx: _,
+            exec_tx: _,
+            reparse_dispatches: _,
+            sort_mode: _,
+            watcher: _,
+            detail_scroll_offset: _,
+            suggestion_index: _,
+            input_buffer: _,
+            needs_redraw: _,
+            active_sessions: _,
+        } = &app.ctx;
+
+        assert!(
+            journal_cursors.keys().all(|(alias, _)| alias != GONE),
+            "journal_cursors is keyed (alias, run_id) and must lose every entry \
+             for an unregistered alias"
+        );
+        assert!(!run_states.contains_key(GONE), "run_states leaked");
+        assert!(!observed_runs.contains_key(GONE), "observed_runs leaked");
+        assert!(!driver_output.contains_key(GONE), "driver_output leaked");
+        assert!(!view_cache.contains_key(GONE), "view_cache leaked");
+        assert!(!last_refresh.contains_key(GONE), "last_refresh leaked");
+        assert!(!archive_cache.contains_key(GONE), "archive_cache leaked");
+
+        // The control arm for all seven at once: the registered alias kept
+        // everything, so none of the assertions above passed because the prune
+        // cleared the map.
+        assert!(journal_cursors.keys().any(|(alias, _)| alias == OBS_ALIAS));
+        assert!(run_states.contains_key(OBS_ALIAS));
+        assert!(observed_runs.contains_key(OBS_ALIAS));
+        assert!(driver_output.contains_key(OBS_ALIAS));
+        assert!(last_refresh.contains_key(OBS_ALIAS));
+        assert!(archive_cache.contains_key(OBS_ALIAS));
+        let kept = view_cache
+            .get(OBS_ALIAS)
+            .expect("a registered alias keeps its view cache");
+        assert_eq!(kept.driver_selected_run, 1);
+        assert!(
+            kept.driver_dry_run.is_some(),
+            "and keeps the preview it had open"
+        );
+    }
+
+    /// A dry-run report is parked only under the preview it was built for
+    /// (D-26).
+    #[tokio::test]
+    async fn a_dry_run_report_is_stored_only_under_the_preview_it_was_built_for() {
+        use crate::ui::screens::DryRunPreview;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        // Nothing open: a report that arrives after the user pressed Esc has
+        // nowhere to go, and recreating the preview for it would repaint a pane
+        // the user has left.
+        app.update(Action::DriverDryRunLoaded {
+            alias: OBS_ALIAS.to_string(),
+            command: "/gsd:progress".to_string(),
+            report: "orphaned".to_string(),
+        });
+        assert!(
+            app.ctx
+                .view_cache
+                .get(OBS_ALIAS)
+                .and_then(|cache| cache.driver_dry_run.as_ref())
+                .is_none(),
+            "a report with no open preview must not create one"
+        );
+
+        app.ctx
+            .view_cache
+            .entry(OBS_ALIAS.to_string())
+            .or_default()
+            .driver_dry_run = Some(DryRunPreview {
+            command: "/gsd:progress".to_string(),
+            report: None,
+        });
+
+        // Stale: built for a command the user has since retyped. Storing it
+        // would show one command's blast radius under another command's name —
+        // the display disagreeing with the disk in the direction that flatters
+        // the run.
+        app.needs_redraw = false;
+        app.update(Action::DriverDryRunLoaded {
+            alias: OBS_ALIAS.to_string(),
+            command: "/gsd:execute-phase 99".to_string(),
+            report: "the wrong report".to_string(),
+        });
+        assert_eq!(
+            app.ctx.view_cache[OBS_ALIAS]
+                .driver_dry_run
+                .as_ref()
+                .and_then(|p| p.report.as_deref()),
+            None,
+            "a report for a different command must be discarded"
+        );
+        assert!(!app.needs_redraw, "and must not repaint the frame");
+
+        // Matching: stored, and the pane is repainted.
+        app.update(Action::DriverDryRunLoaded {
+            alias: OBS_ALIAS.to_string(),
+            command: "/gsd:progress".to_string(),
+            report: "== Push refspecs this state would produce ==".to_string(),
+        });
+        assert_eq!(
+            app.ctx.view_cache[OBS_ALIAS]
+                .driver_dry_run
+                .as_ref()
+                .and_then(|p| p.report.as_deref()),
+            Some("== Push refspecs this state would produce =="),
+        );
+        assert!(app.needs_redraw);
     }
 }

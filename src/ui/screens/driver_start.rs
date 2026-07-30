@@ -36,6 +36,24 @@
 //! read-only progress command), and there is no sensible default for what a
 //! human wants to say to a running agent.
 //!
+//! ## Step B also shows the blast radius (D-26)
+//!
+//! While Step B is active the body's run-detail pane renders the dry-run report
+//! for the committed command **in place of** the run detail: the GSD command
+//! sequence, the working tree a commit would capture, and the push refspecs the
+//! current state would produce. Zero new keys and zero new modes — it is
+//! literally "before a start is confirmed", on the pane the user is already
+//! looking at.
+//!
+//! The build goes through [`AppContext::schedule_dry_run_report`] and therefore
+//! through `spawn_blocking`: it is two synchronous `git` shell-outs and one of
+//! the named WR-10 call sites (D-28). **This screen surfaces the report; it does
+//! not police it** — push allowlists, tool denial, pre-push hooks, secret
+//! scanning and worktree isolation are Phase 19's.
+//!
+//! The preview is the phase's **designated cut**: the only surface item with no
+//! requirement id. See [`super::driver::render_dry_run_preview`] for the rule.
+//!
 //! ## What this screen is not
 //!
 //! It picks **one** command. A Phase 18 run executes exactly one GSD command per
@@ -43,7 +61,7 @@
 //! so nothing here may imply a sequence.
 
 use super::driver_confirm::{DriverConfirmScreen, DEFAULT_DRIVE_COMMAND};
-use super::{AppContext, Screen, ScreenAction};
+use super::{AppContext, DryRunPreview, Screen, ScreenAction};
 use crate::state_reader::queue_md;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -117,6 +135,43 @@ impl DriverStartScreen {
         ctx.input_buffer = suggestions[ctx.suggestion_index].clone();
         ctx.needs_redraw = true;
     }
+
+    /// Open the dry-run preview for the committed command and dispatch its
+    /// build (D-26, the phase's designated cut).
+    ///
+    /// The preview goes in **loading** first and the build is scheduled second,
+    /// which is the ordering that makes the loading state reachable rather than
+    /// theoretical: `schedule_dry_run_report` returns immediately, so a pane
+    /// that only learned about the preview when the report arrived would never
+    /// render the idiom it is supposed to render.
+    ///
+    /// **It never reaches the blocking report builder in `driver::dry_run`.**
+    /// That builder shells out to `git` twice and is one of the named WR-10 call
+    /// sites, so it runs on `spawn_blocking` behind
+    /// [`AppContext::schedule_dry_run_report`] and returns through
+    /// `Action::DriverDryRunLoaded`. Reaching it from here would freeze the
+    /// frame rather than raise an error, which is the failure mode with no
+    /// symptom worth the name (D-28, T-18-62).
+    fn open_dry_run_preview(&self, ctx: &mut AppContext) {
+        let command = self.command.clone();
+        let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+        cache.driver_dry_run = Some(DryRunPreview {
+            command: command.clone(),
+            report: None,
+        });
+        ctx.schedule_dry_run_report(&self.alias, &command);
+    }
+
+    /// Close the preview, restoring the normal run detail.
+    ///
+    /// Called on **every** exit from Step B — back, forward and cancel — because
+    /// the preview describes a start that is about to happen, and a preview left
+    /// on screen after the flow has moved on describes one that already did.
+    fn close_dry_run_preview(&self, ctx: &mut AppContext) {
+        if let Some(cache) = ctx.view_cache.get_mut(&self.alias) {
+            cache.driver_dry_run = None;
+        }
+    }
 }
 
 impl Screen for DriverStartScreen {
@@ -144,12 +199,17 @@ impl Screen for DriverStartScreen {
                 };
                 ctx.suggestion_index = 0;
                 self.step = StartStep::Goal;
+                // Step B is where the preview lives: the user is one keystroke
+                // from handing their repository to an autonomous agent, so this
+                // is where "what would it touch" belongs.
+                self.open_dry_run_preview(ctx);
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
             (StartStep::Command, KeyCode::Esc) => {
                 ctx.input_buffer.clear();
                 ctx.suggestion_index = 0;
+                self.close_dry_run_preview(ctx);
                 ctx.needs_redraw = true;
                 ScreenAction::Pop
             }
@@ -160,6 +220,7 @@ impl Screen for DriverStartScreen {
                 // nothing to refuse here.
                 let typed = std::mem::take(&mut ctx.input_buffer);
                 let goal = if typed.is_empty() { None } else { Some(typed) };
+                self.close_dry_run_preview(ctx);
                 ctx.needs_redraw = true;
                 ScreenAction::Push(Box::new(DriverConfirmScreen::new_start(
                     self.alias.clone(),
@@ -172,6 +233,7 @@ impl Screen for DriverStartScreen {
                 // buffer so the user sees and can edit what they already typed.
                 ctx.input_buffer = self.command.clone();
                 self.step = StartStep::Command;
+                self.close_dry_run_preview(ctx);
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
@@ -485,6 +547,170 @@ mod tests {
         assert!(
             COMMAND_HINT.contains("[Tab] suggestions") && COMMAND_HINT.contains("[Esc] cancel"),
             "got: {COMMAND_HINT}"
+        );
+    }
+
+    // ── The dry-run preview at Step B (D-26, the designated cut) ───────────
+
+    /// The preview parked in the view cache for `ALIAS`, if any.
+    fn preview(ctx: &AppContext) -> Option<&DryRunPreview> {
+        ctx.view_cache
+            .get(ALIAS)
+            .and_then(|cache| cache.driver_dry_run.as_ref())
+    }
+
+    /// An opted-in project, so `DrivableProject::from_registry` yields a token
+    /// and the build is actually scheduled.
+    ///
+    /// Without the opt-in the constructor refuses and the scheduling path
+    /// returns early — which is correct behaviour, and would also make every
+    /// assertion below pass for the wrong reason.
+    fn opted_in(ctx: &mut AppContext) {
+        registry::record_opt_in(&mut ctx.config, ALIAS).expect("opt in");
+    }
+
+    #[tokio::test]
+    async fn reaching_step_b_opens_a_loading_preview_for_the_committed_command() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        opted_in(&mut ctx);
+        let mut s = DriverStartScreen::new(ALIAS.to_string());
+
+        assert!(
+            preview(&ctx).is_none(),
+            "Step A shows the ordinary run detail"
+        );
+
+        type_str(&mut s, &mut ctx, "/gsd:execute-phase 18");
+        press(&mut s, &mut ctx, KeyCode::Enter);
+
+        let opened = preview(&ctx).expect("Step B opens the preview");
+        assert_eq!(
+            opened.command, "/gsd:execute-phase 18",
+            "the preview is about the command that was actually committed"
+        );
+        assert_eq!(
+            opened.report, None,
+            "the preview goes in LOADING and the build is scheduled second — \
+             the other order makes the loading idiom unreachable, because \
+             `schedule_dry_run_report` returns immediately"
+        );
+        assert!(
+            ctx.error_message.is_none(),
+            "an opted-in project must schedule cleanly, got {:?}",
+            ctx.error_message
+        );
+    }
+
+    #[tokio::test]
+    async fn keys_pressed_while_the_report_is_loading_are_inert_and_nothing_panics() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, mut rx) = ctx_with_project(dir.path());
+        opted_in(&mut ctx);
+        let mut s = DriverStartScreen::new(ALIAS.to_string());
+
+        press(&mut s, &mut ctx, KeyCode::Enter);
+        assert_eq!(s.step(), StartStep::Goal);
+
+        // The preview owns no key, so every one of these belongs to the goal
+        // field or to nothing at all. None may resolve, cancel or rebuild it.
+        for code in [
+            KeyCode::PageDown,
+            KeyCode::PageUp,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Tab,
+            KeyCode::Left,
+            KeyCode::Home,
+            KeyCode::F(5),
+        ] {
+            let action = press(&mut s, &mut ctx, code);
+            assert!(
+                matches!(action, ScreenAction::None),
+                "{code:?} must not move the flow while the preview is loading"
+            );
+        }
+
+        let still = preview(&ctx).expect("the preview survives inert keys");
+        assert_eq!(still.report, None, "no key resolves the report");
+        assert_eq!(s.step(), StartStep::Goal);
+        assert!(
+            rx.try_recv().is_err(),
+            "and nothing was started by looking at a preview"
+        );
+    }
+
+    #[tokio::test]
+    async fn leaving_step_b_in_any_direction_restores_the_normal_run_detail() {
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        // Backwards: Esc returns to Step A.
+        {
+            let (mut ctx, _rx) = ctx_with_project(dir.path());
+            opted_in(&mut ctx);
+            let mut s = DriverStartScreen::new(ALIAS.to_string());
+            type_str(&mut s, &mut ctx, "/gsd:plan-phase 19");
+            press(&mut s, &mut ctx, KeyCode::Enter);
+            assert!(preview(&ctx).is_some());
+
+            press(&mut s, &mut ctx, KeyCode::Esc);
+            assert_eq!(s.step(), StartStep::Command);
+            assert!(
+                preview(&ctx).is_none(),
+                "a preview left up after the flow moved on describes a start \
+                 that already happened"
+            );
+        }
+
+        // Forwards: Enter pushes the confirmation.
+        {
+            let (mut ctx, _rx) = ctx_with_project(dir.path());
+            opted_in(&mut ctx);
+            let mut s = DriverStartScreen::new(ALIAS.to_string());
+            type_str(&mut s, &mut ctx, "/gsd:plan-phase 19");
+            press(&mut s, &mut ctx, KeyCode::Enter);
+            press(&mut s, &mut ctx, KeyCode::Enter);
+            assert!(preview(&ctx).is_none());
+        }
+
+        // Sideways: Esc at Step A pops the whole flow.
+        {
+            let (mut ctx, _rx) = ctx_with_project(dir.path());
+            opted_in(&mut ctx);
+            let mut s = DriverStartScreen::new(ALIAS.to_string());
+            press(&mut s, &mut ctx, KeyCode::Enter);
+            press(&mut s, &mut ctx, KeyCode::Esc);
+            let action = press(&mut s, &mut ctx, KeyCode::Esc);
+            assert!(matches!(action, ScreenAction::Pop));
+            assert!(preview(&ctx).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_project_that_never_opted_in_is_refused_visibly_and_shows_no_preview() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, mut rx) = ctx_with_project(dir.path());
+        // Deliberately NOT opted in: the preview describes a drive that would
+        // itself be refused, so building one would be a lie about what happens
+        // next.
+        let mut s = DriverStartScreen::new(ALIAS.to_string());
+        type_str(&mut s, &mut ctx, "/gsd:progress");
+        press(&mut s, &mut ctx, KeyCode::Enter);
+
+        assert!(
+            ctx.error_message.is_some(),
+            "the refusal is visible, never silent (S4)"
+        );
+        assert_eq!(
+            preview(&ctx).and_then(|p| p.report.clone()),
+            None,
+            "and no report ever arrives to fill it"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "**and nothing was spawned.** This is not a second spawn gate — the \
+             gate `tests/spawn_seam_guard.rs` pins is still the child's (D-16) — \
+             but a preview must not become a side door either"
         );
     }
 }

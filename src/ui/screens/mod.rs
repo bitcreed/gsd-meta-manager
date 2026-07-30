@@ -462,6 +462,46 @@ pub struct ProjectViewCache {
     /// a message's state is held in memory that a restart would lose, which is
     /// what makes STEER-03 hold with no extra persistence.
     pub driver_journal: Option<Box<DriverRunJournal>>,
+    /// The dry-run preview for the command being started, while and only while
+    /// the start flow is at Step B (D-26).
+    ///
+    /// **Presence is the mode.** `Some` means "the start screen is asking for a
+    /// goal and the body's run-detail pane is showing what the run would touch";
+    /// `None` means the pane shows the normal run detail. There is no separate
+    /// active flag, because two fields that must agree are two fields that can
+    /// disagree.
+    ///
+    /// It is the field `app.rs`'s `Action::DriverDryRunLoaded` handler was
+    /// waiting for: plan 18-05 landed the scheduling — the load-bearing half,
+    /// since `build_report` shells out to `git` twice — and deliberately left
+    /// the store to the plan that owns this screen's state shape.
+    ///
+    /// It lives here rather than in a sibling map on `AppContext` for the reason
+    /// the driver fields above do: this struct is `#[derive(Default)]`, so the
+    /// field is additive with zero constructor churn, and `view_cache` is
+    /// already pruned by `App::prune_driver_maps`, so it inherits that.
+    pub driver_dry_run: Option<DryRunPreview>,
+}
+
+/// One dry-run preview, in the two states the pane can render it in (D-26).
+///
+/// The report is the **already-rendered** text from `dry_run::render`, not the
+/// structured report: the pane shows it verbatim and the three section headers
+/// are a pinned contract, so re-deriving the layout here would create a second
+/// answer that drifts from the CLI's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DryRunPreview {
+    /// The command the preview is about. The `Action` carries it back so a
+    /// report built for a command the user has since retyped is discarded
+    /// instead of being shown under the new one.
+    pub command: String,
+    /// `None` until the `spawn_blocking` build returns — the loading state.
+    ///
+    /// Unknown is not "nothing would happen": the pane renders the shipped
+    /// `Loading...` idiom rather than an empty report, because an empty preview
+    /// of a run that is about to touch the user's repository is the single most
+    /// dangerous thing this surface could imply.
+    pub report: Option<String>,
 }
 
 /// One run's journal, read whole from disk for after-the-fact review.
@@ -915,6 +955,70 @@ impl AppContext {
                 runs,
                 inbox,
                 journal,
+            });
+        });
+    }
+
+    /// Schedule the dry-run preview for `alias` and `command` (D-26, D-28).
+    ///
+    /// **`dry_run::build_report` shells out to `git` twice, synchronously, and
+    /// this is one of the WR-10 call sites the Phase 17 review named by hand** —
+    /// a `git` invocation on a cold repository is unbounded from the render
+    /// loop's point of view. So it runs on `spawn_blocking` and returns through
+    /// [`crate::action::Action::DriverDryRunLoaded`]. Calling the builder inline
+    /// from a screen is the failure mode whose symptom is a frozen frame rather
+    /// than an error, which is why no screen may reach `build_report` directly.
+    ///
+    /// The token comes from [`crate::executor::DrivableProject::from_registry`],
+    /// the only production constructor, so a project the user never opted in
+    /// cannot have a preview built for it — which is right, because the preview
+    /// would describe a drive that is itself refused. **This is not a second
+    /// spawn gate**: nothing here spawns an agent, and the gate
+    /// `tests/spawn_seam_guard.rs` pins is still the child's (D-16).
+    ///
+    /// **It lives here rather than on `App` for the reason
+    /// [`Self::schedule_run_list_scan`] does**: `DriverStartScreen` has to call
+    /// it, and a `Screen` is handed an `&mut AppContext` and never an
+    /// `&mut App`. `App::schedule_dry_run_report` delegates here, so there is
+    /// exactly one implementation and the two call paths cannot drift.
+    pub fn schedule_dry_run_report(&mut self, alias: &str, command: &str) {
+        use crate::executor::DrivableProject;
+
+        let Some(entry) = self.config.projects.get(alias).cloned() else {
+            self.error_message = Some(format!("No registered project named '{alias}'"));
+            self.needs_redraw = true;
+            return;
+        };
+        let project = match DrivableProject::from_registry(alias, &entry) {
+            Ok(project) => project,
+            Err(refusal) => {
+                self.error_message = Some(refusal.to_string());
+                self.needs_redraw = true;
+                return;
+            }
+        };
+
+        let Some(tx) = &self.event_tx else {
+            // Refuse visibly, never silently (S4).
+            self.error_message = Some(format!(
+                "Could not build a dry-run preview for '{alias}': no event channel."
+            ));
+            self.needs_redraw = true;
+            return;
+        };
+        let tx = tx.clone();
+        let alias_for_task = alias.to_string();
+        let command_for_task = command.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let report = crate::driver::dry_run::render(&crate::driver::dry_run::build_report(
+                &project,
+                &command_for_task,
+            ));
+            let _ = tx.send(crate::action::Action::DriverDryRunLoaded {
+                alias: alias_for_task,
+                command: command_for_task,
+                report,
             });
         });
     }

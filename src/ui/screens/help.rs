@@ -117,12 +117,8 @@ const INJECTION_LEGEND: [(&str, &str, &str); 4] = [
 /// Indexed in lockstep with [`INJECTION_LEGEND`]; a test joins the two and
 /// asserts the resulting sentences, so a row split differently still passes and
 /// a row whose gloss changes meaning does not.
-const INJECTION_LEGEND_CONT: [&str; 4] = [
-    "",
-    "before the agent picks it up",
-    "own turn",
-    "delivered",
-];
+const INJECTION_LEGEND_CONT: [&str; 4] =
+    ["", "before the agent picks it up", "own turn", "delivered"];
 
 pub struct HelpScreen {
     /// How far the popup is scrolled, in rendered lines.

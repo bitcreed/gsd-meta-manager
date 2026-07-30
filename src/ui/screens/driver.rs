@@ -58,7 +58,7 @@ use ratatui::Frame;
 use super::detail::{clamp_scroll, tail_offset, ViewportMetrics};
 use super::{
     sanitize_render_line, AppContext, DriverLineKind, DriverOutput, DriverOutputLine,
-    ProjectViewCache, DRIVER_OUTPUT_RING_LINES,
+    DryRunPreview, ProjectViewCache, DRIVER_OUTPUT_RING_LINES,
 };
 use crate::driver::reconcile::RunVerdict;
 use crate::journal::inbox::InboxMessage;
@@ -286,6 +286,13 @@ const COST_CUMULATIVE: &str = "cumulative";
 /// the figure is genuinely unknown — and saying so is the only honest option. A
 /// zero here would be a number the mechanism cannot back.
 const COST_NOT_REPORTED: &str = "not yet reported";
+
+/// The shipped async-load idiom, reused verbatim (Phase 12, UI-SPEC `## Colour`).
+///
+/// A second wording for "we are waiting on a blocking read" would be a second
+/// thing for the reader to learn, and this surface has no spinner and no
+/// animation to distinguish it with.
+pub(super) const DRY_RUN_LOADING: &str = "Loading...";
 
 // ── Styles ─────────────────────────────────────────────────────────────────
 
@@ -870,12 +877,22 @@ pub(super) fn render_driver_tab(
     // The "no state / no data" early return, in the shape `render_pipeline_tab`
     // established: one bordered block, one message, nothing else painted.
     if runs.is_empty() {
+        let block = Block::default().borders(Borders::ALL).title(" Driver ");
+        // A project with no runs at all is the *most* likely place to be
+        // starting one, so the preview has to survive this branch. Showing "no
+        // runs yet" over the top of a start the user is one keystroke from
+        // confirming would hide the blast radius exactly when it is newest.
+        if let Some(preview) = cache.and_then(|c| c.driver_dry_run.as_ref()) {
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            render_dry_run_preview(frame, inner, preview);
+            return;
+        }
         let opted_in = ctx
             .config
             .projects
             .get(alias)
             .is_some_and(|project| project.driver_opt_in.is_some());
-        let block = Block::default().borders(Borders::ALL).title(" Driver ");
         let message = Paragraph::new(no_runs_lines(alias, opted_in)).block(block);
         frame.render_widget(message, area);
         return;
@@ -931,16 +948,88 @@ pub(super) fn render_driver_tab(
     let inner = detail_block.inner(detail_area);
     frame.render_widget(detail_block, detail_area);
 
-    render_run_detail(
-        frame,
-        inner,
-        ctx,
-        alias,
-        cache,
-        summary,
-        verdict_for(summary),
-        viewport,
-    );
+    // The dry-run preview replaces the run detail while the start flow is at
+    // Step B, and replaces nothing else (D-26). See `render_dry_run_preview`.
+    match cache.and_then(|c| c.driver_dry_run.as_ref()) {
+        Some(preview) => render_dry_run_preview(frame, inner, preview),
+        None => render_run_detail(
+            frame,
+            inner,
+            ctx,
+            alias,
+            cache,
+            summary,
+            verdict_for(summary),
+            viewport,
+        ),
+    }
+}
+
+/// Render the dry-run preview in place of the run detail (D-26).
+///
+/// **What this is.** While `DriverStartScreen` is on the stack at Step B, the
+/// body's run-detail pane shows what the run about to be confirmed would touch:
+/// the GSD command sequence, the working tree a commit would capture, and the
+/// push refspecs the current state would produce. Zero new keys and zero new
+/// modes — it is the pane the user is already looking at, and it is literally
+/// "before a start is confirmed". This is the only place in v2.0 where a user
+/// sees blast radius **before** an autonomous agent with push rights starts.
+///
+/// **The cut rule (D-26).** This is the phase's *designated cut*: it is the only
+/// surface item in Phase 18 with no requirement id, and if it ever competes for
+/// space it is the first thing to drop. If it is dropped, the body simply shows
+/// the normal run detail again and **nothing else changes** — the one call site
+/// above is a `match` arm, and the preview owns no key, no mode and no state
+/// outside `ProjectViewCache::driver_dry_run`.
+///
+/// **The fence (Phase 19).** Phase 18 *surfaces* the report and does not police
+/// it. Push allowlists, `--disallowedTools`, pre-push hooks, secret scanning and
+/// worktree isolation are **Phase 19's**, and nothing here may imply that seeing
+/// a refspec prevents pushing to it.
+///
+/// **Untrusted input.** The report interpolates paths and branch names read from
+/// the project, so every row goes through the shared
+/// [`sanitize_render_line`] before rendering — otherwise a branch named with an
+/// escape sequence could repaint the screen or forge a status line (T-18-61).
+/// Nothing on this pane is derived from an agent's prose (D-13).
+///
+/// **Loading.** Until the `spawn_blocking` build returns, the pane shows the
+/// shipped [`DRY_RUN_LOADING`] idiom in DarkGray. Keys stay inert and nothing
+/// panics; there is no spinner, because there is no honest thing for one to say.
+///
+/// ---
+///
+/// **D-26 in one paragraph, kept adjacent to the signature so it survives a
+/// skim:** this preview is the phase's *designated cut* — the only surface item
+/// with no requirement id. Drop it and the body shows the normal run detail,
+/// with nothing else changing. And the **Phase 19 fence**: Phase 18 surfaces
+/// this report, it does not police it — push allowlists, tool denial, pre-push
+/// hooks, secret scanning and worktree isolation all belong to Phase 19.
+pub(super) fn render_dry_run_preview(frame: &mut Frame, area: Rect, preview: &DryRunPreview) {
+    let mut lines: Vec<Line<'static>> = match preview.report.as_deref() {
+        // Unknown is not "nothing would happen".
+        None => vec![Line::from(Span::styled(DRY_RUN_LOADING, muted_style()))],
+        Some(report) => report
+            .lines()
+            .map(|raw| Line::from(sanitize_render_line(raw)))
+            .collect(),
+    };
+
+    // The report is longer than a short pane, and a pane that silently drops the
+    // refspec section is precisely the PITFALLS:69 failure this preview exists
+    // to prevent — so say so, with the same indicator and the same predicate the
+    // help popup uses rather than a second copy of either.
+    let total = lines.len() as u16;
+    if super::help::more_below(0, total, area.height) && area.height > 0 {
+        let last = area.height as usize - 1;
+        lines.truncate(last);
+        lines.push(Line::from(Span::styled(
+            super::help::MORE_INDICATOR,
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 /// The vertical layout of the run-detail pane, in three height tiers.
@@ -2799,5 +2888,226 @@ mod tests {
                 "the honest note is missing at {width} columns: {scraped:#?}"
             );
         }
+    }
+
+    // ── The dry-run preview (D-26, the designated cut) ─────────────────────
+
+    /// Paint `preview` into a `width` x `height` frame and scrape it back.
+    ///
+    /// A real buffer rather than an inspection of the `Vec<Line>`, because the
+    /// property under test on the sanitiser row is *what reaches the terminal*.
+    fn scrape_preview(preview: &DryRunPreview, width: u16, height: u16) -> Vec<String> {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_dry_run_preview(frame, area, preview);
+            })
+            .expect("draw the dry-run preview");
+
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| {
+                        buffer
+                            .cell((x, y))
+                            .map(|cell| cell.symbol())
+                            .unwrap_or(" ")
+                            .to_string()
+                    })
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn loaded(report: &str) -> DryRunPreview {
+        DryRunPreview {
+            command: "/gsd:progress".to_string(),
+            report: Some(report.to_string()),
+        }
+    }
+
+    #[test]
+    fn the_preview_pane_renders_the_loading_idiom_before_the_report_resolves() {
+        let pending = DryRunPreview {
+            command: "/gsd:progress".to_string(),
+            report: None,
+        };
+        // The whole point of the loading state is that it is reachable: the
+        // build is scheduled, returns immediately, and the report arrives a
+        // couple of `git` invocations later.
+        let scraped = scrape_preview(&pending, 60, 12);
+        assert!(
+            scraped.iter().any(|row| row.contains(DRY_RUN_LOADING)),
+            "an unresolved preview must show the shipped loading idiom, not an \
+             empty report — an empty preview of a run about to touch the user's \
+             repository is the most dangerous thing this pane could imply: \
+             {scraped:#?}"
+        );
+    }
+
+    #[test]
+    fn a_loaded_report_renders_its_three_pinned_section_headers() {
+        use crate::driver::dry_run::{
+            render, DryRunReport, SECTION_COMMANDS, SECTION_DIFFSTAT, SECTION_REFSPECS,
+        };
+        use crate::state_reader::git_ops::{PushPreview, WorkingTreeStat};
+
+        let report = render(&DryRunReport {
+            commands: vec!["/gsd:execute-phase 18".to_string()],
+            diffstat: WorkingTreeStat {
+                stat_lines: vec![" src/lib.rs | 2 +-".to_string()],
+                untracked: Vec::new(),
+            },
+            push: PushPreview {
+                remote: Some("origin".to_string()),
+                url: Some("https://example.invalid/demo.git".to_string()),
+                refspecs: vec!["refs/heads/main:refs/heads/main".to_string()],
+                note: None,
+            },
+        });
+        // Tall enough that the more-indicator does not eat a header row.
+        let scraped = scrape_preview(&loaded(&report), 100, 40).join("\n");
+
+        for section in [SECTION_COMMANDS, SECTION_DIFFSTAT, SECTION_REFSPECS] {
+            // The first line of each pinned header. The refspec section is the
+            // one PITFALLS:69 names as THE warning sign when it goes missing.
+            let headline = section.lines().next().expect("a non-empty header");
+            assert!(
+                scraped.contains(headline),
+                "the preview dropped the pinned section {headline:?}:\n{scraped}"
+            );
+        }
+        assert!(
+            scraped.contains("/gsd:execute-phase 18"),
+            "the command itself must appear:\n{scraped}"
+        );
+        assert!(
+            scraped.contains("refs/heads/main:refs/heads/main"),
+            "the refspec list is the blast radius; a preview without it tells \
+             the user nothing:\n{scraped}"
+        );
+    }
+
+    #[test]
+    fn a_report_carrying_an_escape_sequence_is_sanitised_before_rendering() {
+        // A branch name or a path is project-controlled, and an OSC sequence in
+        // one would otherwise repaint the screen, forge a status line or set the
+        // window title (T-18-61).
+        let hostile = "== Push refspecs this state would produce ==\n  \
+             refs/heads/\u{1b}]0;pwned\u{7}evil:refs/heads/evil\n";
+        let scraped = scrape_preview(&loaded(hostile), 80, 10).join("");
+
+        assert!(
+            !scraped.contains('\u{1b}'),
+            "ESC must be stripped unconditionally — the single highest-value \
+             rule in the untrusted-input section: {scraped:?}"
+        );
+        assert!(
+            !scraped.contains('\u{7}'),
+            "no C0 control may reach the terminal: {scraped:?}"
+        );
+        assert!(
+            scraped.contains('\u{00B7}'),
+            "the stripped control must be replaced by the middle dot rather \
+             than silently deleted: {scraped:?}"
+        );
+        assert!(
+            scraped.contains("evil:refs/heads/evil"),
+            "sanitising must not eat the content the user needs to read: \
+             {scraped:?}"
+        );
+    }
+
+    #[test]
+    fn a_report_taller_than_the_pane_says_so_rather_than_clipping_silently() {
+        let long = (0..40)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let scraped = scrape_preview(&loaded(&long), 40, 8);
+        let last = scraped.last().expect("eight rows were painted");
+        assert!(
+            last.contains(super::super::help::MORE_INDICATOR),
+            "a pane that silently drops the refspec section is the PITFALLS:69 \
+             failure this preview exists to prevent: {scraped:#?}"
+        );
+    }
+
+    #[test]
+    fn the_preview_replaces_the_run_detail_and_restores_it_when_it_is_cleared() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let alias = super::super::driver_confirm::tests::ALIAS;
+        let (mut ctx, _rx) = super::super::driver_confirm::tests::ctx_with_project(dir.path());
+        ctx.view_cache
+            .entry(alias.to_string())
+            .or_default()
+            .driver_runs = vec![summary("2026-07-29T21-40-00Z-3f2a", None)];
+
+        let scrape = |ctx: &AppContext| -> String {
+            let viewport = Cell::default();
+            let mut terminal =
+                Terminal::new(TestBackend::new(100, 30)).expect("TestBackend terminal");
+            terminal
+                .draw(|frame| {
+                    let area = frame.area();
+                    render_driver_tab(frame, area, ctx, alias, ctx.view_cache.get(alias), &viewport);
+                })
+                .expect("draw the driver tab");
+            let buffer = terminal.backend().buffer().clone();
+            (0..30)
+                .map(|y| {
+                    (0..100)
+                        .map(|x| {
+                            buffer
+                                .cell((x, y))
+                                .map(|cell| cell.symbol())
+                                .unwrap_or(" ")
+                                .to_string()
+                        })
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let before = scrape(&ctx);
+        assert!(
+            !before.contains(DRY_RUN_LOADING),
+            "with no preview open the pane is the ordinary run detail:\n{before}"
+        );
+
+        ctx.view_cache
+            .entry(alias.to_string())
+            .or_default()
+            .driver_dry_run = Some(DryRunPreview {
+            command: "/gsd:progress".to_string(),
+            report: None,
+        });
+        let during = scrape(&ctx);
+        assert!(
+            during.contains(DRY_RUN_LOADING),
+            "the preview replaces the run detail while Step B is open:\n{during}"
+        );
+
+        // The cut rule, exercised: clear the one field and the body is the
+        // normal run detail again, with nothing else changed.
+        ctx.view_cache
+            .entry(alias.to_string())
+            .or_default()
+            .driver_dry_run = None;
+        assert_eq!(
+            scrape(&ctx),
+            before,
+            "leaving Step B must restore the normal run detail exactly"
+        );
     }
 }
