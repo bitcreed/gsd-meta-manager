@@ -4,7 +4,7 @@ use super::delete_confirm::DeleteConfirmScreen;
 use super::detail::DetailScreen;
 use super::driver_confirm::{DriverAction, DriverConfirmScreen};
 use super::help::HelpScreen;
-use super::{AppContext, Screen, ScreenAction};
+use super::{AppContext, Screen, ScreenAction, SortMode};
 use crate::app::{classify_status, format_phase_display, StatusCategory};
 use crate::state_reader::disk_status::DiskStatus;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -452,6 +452,37 @@ impl Screen for NormalScreen {
                     ScreenAction::None
                 }
             }
+            // ── The dashboard sort toggle (D-25, OBS-07) ──────────────────
+            //
+            // One key, one indicator, no new screen. `s` is free on this
+            // screen: the match above claims `q`, `j`, `k`, `a`, `c`, `d`,
+            // `r`, `x`, `o`, `/`, `?`, `Tab`, `Enter`, `Up` and `Down`, and
+            // the search sub-mode is entered by `/` and handled separately.
+            //
+            // **Alphabetical stays the default and that is load-bearing.** A
+            // dashboard whose row order changes under the cursor while a run
+            // progresses is a usability regression a demo will not catch, so
+            // the alternative ordering is opt-in, announced in the status
+            // message, and shown in the summary row for as long as it is on.
+            //
+            // The recompute is what applies the new order, and it is also what
+            // re-pins the selection to the previously selected **alias** — so
+            // toggling the sort does not move the cursor to a different
+            // project (`AppContext::pin_selection_to_alias`, 18-04).
+            KeyCode::Char('s') => {
+                ctx.sort_mode = match ctx.sort_mode {
+                    SortMode::Alphabetical => SortMode::AttentionFirst,
+                    SortMode::AttentionFirst => SortMode::Alphabetical,
+                };
+                ctx.recompute_filtered_aliases();
+                let msg = match ctx.sort_mode {
+                    SortMode::AttentionFirst => "Sort: attention first",
+                    SortMode::Alphabetical => "Sort: alphabetical",
+                };
+                ctx.status_message = Some((msg.to_string(), std::time::Instant::now()));
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
             KeyCode::Enter => {
                 if let Some(alias) = ctx.selected_alias() {
                     ctx.detail_scroll_offset = 0;
@@ -755,7 +786,29 @@ impl NormalScreen {
     }
 }
 
-fn render_normal_footer(frame: &mut Frame, area: Rect, ctx: &AppContext) {
+/// The summary-row label for the non-default sort mode.
+///
+/// There is deliberately no constant for the default mode: it renders nothing.
+const SORT_INDICATOR: &str = "sort: attention";
+
+/// Build the dashboard summary row — the left half of the footer.
+///
+/// Split out of [`render_normal_footer`] so the sort indicator is assertable on
+/// the spans themselves rather than only through a rendered buffer, where a
+/// missing indicator and a clipped one look identical.
+///
+/// **Nothing here is derived from an agent's prose (D-13).** Every count comes
+/// from `classify_status` over `ProjectState`, and the sort indicator is a fixed
+/// literal selected by a typed enum. No `ResultMessage.result`, no HANDOFF body
+/// and no journal text may ever reach this row: a summary the user reads as a
+/// fleet-wide fact must be telemetry, not testimony.
+///
+/// **The indicator renders only in the non-default sort mode, and the silence in
+/// the default mode is deliberate.** A permanent `sort: alphabetical` label
+/// would be noise on every dashboard forever to communicate the state the user
+/// already assumes; what needs saying is that the order is *not* the one they
+/// assume (UI-SPEC Surface 7, mitigation 2). Do not add an `else` branch here.
+fn summary_spans(ctx: &AppContext) -> Vec<Span<'static>> {
     let all_count = ctx.config.projects.len();
     let mut active = 0u32;
     let mut blocked = 0u32;
@@ -797,6 +850,18 @@ fn render_normal_footer(frame: &mut Frame, area: Rect, ctx: &AppContext) {
             Style::default().fg(Color::Cyan),
         ));
     }
+    if ctx.sort_mode == SortMode::AttentionFirst {
+        left_spans.push(Span::styled(
+            SORT_INDICATOR,
+            Style::default().fg(Color::Cyan),
+        ));
+    }
+
+    left_spans
+}
+
+fn render_normal_footer(frame: &mut Frame, area: Rect, ctx: &AppContext) {
+    let left_spans = summary_spans(ctx);
 
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let right_spans = vec![
@@ -1009,6 +1074,37 @@ mod tests {
             .get_mut(alias)
             .expect("the fixture registered this alias")
             .paused = true;
+    }
+
+    /// Drive the real key handler, exactly as the event loop does.
+    ///
+    /// The `detail.rs:5041` idiom, and the lesson that produced it applies here
+    /// too: a test that calls the toggle helper directly cannot catch a key that
+    /// was never bound, and a test that hand-computes the filtered set cannot
+    /// catch a handler that forgot to recompute it.
+    fn press(screen: &mut NormalScreen, ctx: &mut AppContext, code: KeyCode) {
+        screen.handle_key(code, KeyModifiers::NONE, ctx);
+    }
+
+    /// Type `text` into the dashboard's search prompt, from a standing start.
+    ///
+    /// **The leading `/` is the prompt, not part of the filter.** `handle_key`
+    /// clears `filter_text` on `/` and never stores it, so the UI-SPEC's `//h`
+    /// is stored as `"/h"` and `/x/h` as `"x/h"` — which is what makes the
+    /// all-rows form fall out of the `/term/x` grammar with no special case
+    /// (18-04 deviation 6). Typing through this helper is the only way to assert
+    /// that rather than assume it.
+    fn search(screen: &mut NormalScreen, ctx: &mut AppContext, text: &str) {
+        press(screen, ctx, KeyCode::Char('/'));
+        for c in text.chars() {
+            press(screen, ctx, KeyCode::Char(c));
+        }
+        press(screen, ctx, KeyCode::Enter);
+    }
+
+    /// The plain text of a span vector, concatenated.
+    fn spans_text(spans: &[Span<'_>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
     /// Build a temp project with a `.planning/` dir holding the given files.
@@ -1709,5 +1805,214 @@ mod tests {
                 lines[0]
             );
         }
+    }
+
+    // --- OBS-07 / D-25: the sort toggle, its indicator, and the filter ----
+
+    #[test]
+    fn s_toggles_the_sort_mode_and_confirms_with_the_pinned_copy() {
+        let mut screen = NormalScreen::new();
+        let mut ctx = ctx_with_aliases(&["alpha", "bravo"]);
+
+        assert_eq!(
+            ctx.sort_mode,
+            SortMode::Alphabetical,
+            "alphabetical must stay the default: a dashboard whose row order \
+             changes under the cursor mid-run is the regression D-25 names"
+        );
+
+        press(&mut screen, &mut ctx, KeyCode::Char('s'));
+        assert_eq!(ctx.sort_mode, SortMode::AttentionFirst);
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Sort: attention first"),
+            "the non-default mode must be announced, not silently entered"
+        );
+        assert!(ctx.needs_redraw);
+
+        press(&mut screen, &mut ctx, KeyCode::Char('s'));
+        assert_eq!(ctx.sort_mode, SortMode::Alphabetical);
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Sort: alphabetical")
+        );
+    }
+
+    #[test]
+    fn the_sort_indicator_renders_only_in_the_non_default_mode() {
+        // Asserted on the built spans rather than a rendered buffer: a missing
+        // indicator and one clipped off the end of the row look identical once
+        // painted.
+        let mut screen = NormalScreen::new();
+        let mut ctx = ctx_with_aliases(&["alpha"]);
+
+        let quiet = summary_spans(&ctx);
+        assert!(
+            !spans_text(&quiet).contains("sort"),
+            "the default mode must render nothing — a permanent \
+             `sort: alphabetical` label is noise: {:?}",
+            spans_text(&quiet)
+        );
+
+        press(&mut screen, &mut ctx, KeyCode::Char('s'));
+        let loud = summary_spans(&ctx);
+        let indicator = loud
+            .iter()
+            .find(|s| s.content.contains("sort:"))
+            .expect("the non-default mode must be visible in the summary row");
+        assert_eq!(indicator.content.as_ref(), "sort: attention");
+        assert_eq!(indicator.style.fg, Some(Color::Cyan));
+        assert!(
+            !spans_text(&loud).contains("alphabetical"),
+            "there is no label for the default mode anywhere"
+        );
+
+        // ...and toggling back removes it again.
+        press(&mut screen, &mut ctx, KeyCode::Char('s'));
+        assert!(!spans_text(&summary_spans(&ctx)).contains("sort"));
+    }
+
+    #[test]
+    fn a_needs_human_filter_with_a_term_narrows_to_the_matching_needs_human_rows() {
+        // `/x/h` — the term still applies across every column, so this is
+        // "matches x AND needs a human".
+        let mut screen = NormalScreen::new();
+        let mut ctx = ctx_with_aliases(&["alpha", "xenon", "xylo"]);
+        pause(&mut ctx, "alpha");
+        pause(&mut ctx, "xenon");
+
+        search(&mut screen, &mut ctx, "x/h");
+
+        assert_eq!(ctx.filter_text, "x/h", "the prompt's `/` is not stored");
+        assert_eq!(
+            ctx.filtered_aliases,
+            vec!["xenon".to_string()],
+            "alpha needs a human but does not match the term; xylo matches the \
+             term but needs nobody"
+        );
+    }
+
+    #[test]
+    fn a_bare_needs_human_filter_yields_every_needs_human_project() {
+        // `//h` — the all-rows form, which falls out of the existing `/term/x`
+        // grammar with no special case because an empty term matches everything.
+        let mut screen = NormalScreen::new();
+        let mut ctx = ctx_with_aliases(&["alpha", "xenon", "xylo"]);
+        pause(&mut ctx, "alpha");
+        pause(&mut ctx, "xenon");
+
+        search(&mut screen, &mut ctx, "/h");
+
+        assert_eq!(ctx.filter_text, "/h");
+        assert_eq!(
+            ctx.filtered_aliases,
+            vec!["alpha".to_string(), "xenon".to_string()],
+            "every needs-human project, still in alphabetical order"
+        );
+    }
+
+    #[test]
+    fn a_needs_human_filter_matching_nothing_leaves_an_empty_list_and_no_panic() {
+        // Zero-one-many: the empty result is the one a fleet spends most of its
+        // time in — nobody is waiting on the user — so it must be the calm case.
+        let mut screen = NormalScreen::new();
+        let mut ctx = ctx_with_aliases(&["alpha", "bravo"]);
+
+        search(&mut screen, &mut ctx, "/h");
+
+        assert!(ctx.filtered_aliases.is_empty());
+        assert_eq!(
+            ctx.table_state.selected(),
+            None,
+            "an empty list selects nothing rather than a dangling index"
+        );
+        assert_eq!(ctx.selected_alias(), None);
+
+        // Every key that acts on a selection must be a no-op here.
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Down,
+            KeyCode::Up,
+            KeyCode::Enter,
+            KeyCode::Char('s'),
+        ] {
+            press(&mut screen, &mut ctx, code);
+            assert_eq!(ctx.selected_alias(), None, "{code:?} invented a selection");
+        }
+    }
+
+    #[test]
+    fn a_project_that_is_both_driven_and_needs_human_appears_exactly_once() {
+        // The two new badge conditions are independent, so a project can hold
+        // both. It is still one row, under either form of the filter.
+        let mut screen = NormalScreen::new();
+        let mut ctx = ctx_with_aliases(&["other", "solo"]);
+        drive(&mut ctx, "solo");
+        pause(&mut ctx, "solo");
+        assert_eq!(
+            row_badge(&ctx, "solo"),
+            Some(DRIVEN_BADGE),
+            "both conditions hold, and exactly one badge renders"
+        );
+
+        search(&mut screen, &mut ctx, "/h");
+        assert_eq!(ctx.filtered_aliases, vec!["solo".to_string()]);
+
+        press(&mut screen, &mut ctx, KeyCode::Esc);
+        search(&mut screen, &mut ctx, "s/h");
+        assert_eq!(ctx.filtered_aliases, vec!["solo".to_string()]);
+    }
+
+    #[test]
+    fn an_attention_sort_keeps_the_cursor_on_the_same_alias_when_a_run_finishes() {
+        // The mitigation that makes `AttentionFirst` safe rather than actively
+        // dangerous (D-25). Without it, a run finishing re-ranks its project,
+        // the row moves, and the next keystroke acts on a project the user
+        // never chose. The logic lives in `screens/mod.rs`, but the failure the
+        // user experiences is a dashboard failure, so it is asserted here.
+        let mut screen = NormalScreen::new();
+        let mut ctx = ctx_with_aliases(&["alpha", "mid", "zebra"]);
+        drive(&mut ctx, "zebra");
+
+        press(&mut screen, &mut ctx, KeyCode::Char('s'));
+        assert_eq!(
+            ctx.filtered_aliases,
+            vec![
+                "zebra".to_string(),
+                "alpha".to_string(),
+                "mid".to_string()
+            ],
+            "the driven project sorts first, the rest stay alphabetical"
+        );
+
+        // Put the cursor on the driven project.
+        press(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(ctx.selected_alias().as_deref(), Some("zebra"));
+        assert_eq!(ctx.table_state.selected(), Some(0));
+
+        // The run finishes and the rows are recomputed.
+        ctx.observed_runs.remove("zebra");
+        ctx.recompute_filtered_aliases();
+
+        assert_eq!(
+            ctx.filtered_aliases,
+            vec![
+                "alpha".to_string(),
+                "mid".to_string(),
+                "zebra".to_string()
+            ],
+            "the re-rank really did move the row"
+        );
+        assert_eq!(
+            ctx.selected_alias().as_deref(),
+            Some("zebra"),
+            "the cursor is pinned to the alias, not to the index"
+        );
+        assert_eq!(
+            ctx.table_state.selected(),
+            Some(2),
+            "index 0 would now be `alpha` — a project the user never chose"
+        );
     }
 }
