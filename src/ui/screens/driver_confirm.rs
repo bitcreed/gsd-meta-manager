@@ -237,7 +237,7 @@ fn do_stop_run(ctx: &mut AppContext, alias: &str) {
 /// The same guard `App::stop_driver_run` and `App::schedule_journal_tail` use:
 /// without a channel there is no way to reach the seam, and an action the user
 /// asked for that quietly went nowhere is indistinguishable from a hang.
-fn dispatch(ctx: &mut AppContext, action: Action, alias: &str) {
+pub(super) fn dispatch(ctx: &mut AppContext, action: Action, alias: &str) {
     match &ctx.event_tx {
         Some(tx) => {
             let _ = tx.send(action);
@@ -303,17 +303,23 @@ fn do_toggle_opt_in(ctx: &mut AppContext, alias: &str) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::{Config, RegisteredProject};
     use std::path::Path;
     use tokio::sync::mpsc::UnboundedReceiver;
 
-    const ALIAS: &str = "proj";
+    pub(crate) const ALIAS: &str = "proj";
 
     /// An `AppContext` with one registered project, a live event channel, and a
     /// config path inside `root` so `save_config` is a real write.
-    fn ctx_with_project(root: &Path) -> (AppContext, UnboundedReceiver<Action>) {
+    ///
+    /// `pub(crate)` so the sibling driver screens — `driver_inject` and
+    /// `driver_start` — assert against the **same** `Action` receiver rather
+    /// than each standing up a fifth and sixth full-field `AppContext` fixture.
+    /// Every field of `AppContext` is named here, so this is one of the sites
+    /// that breaks on any addition to it; concentrating that cost is the point.
+    pub(crate) fn ctx_with_project(root: &Path) -> (AppContext, UnboundedReceiver<Action>) {
         use crate::change_tracker::ChangeTracker;
         use ratatui::widgets::TableState;
         use std::collections::HashMap;

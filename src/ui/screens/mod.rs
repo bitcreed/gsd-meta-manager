@@ -3,6 +3,7 @@ pub mod create_project;
 pub mod delete_confirm;
 pub mod detail;
 pub mod driver_confirm;
+pub mod driver_inject;
 pub mod enqueue;
 pub mod help;
 pub mod normal;
