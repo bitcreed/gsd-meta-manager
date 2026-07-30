@@ -1608,6 +1608,24 @@ impl App {
         self.ctx
             .driver_output
             .retain(|alias, _| registered.contains_key(alias));
+        // `view_cache` joins the pass too, and plan 18-09 is what makes that
+        // necessary rather than tidy. It is keyed by alias and was never pruned,
+        // which cost little while it held browse listings and git logs for
+        // projects the user had merely visited — but this phase moved three
+        // driver payloads into it: `driver_runs` (a `RunSummary` per run on
+        // disk), `driver_inbox` (every queued message for the selected run) and
+        // `driver_tally`. Those are exactly the per-alias driver state the
+        // phase's carry-forward is about, so leaving them in an unpruned map
+        // would satisfy the obligation for the maps it names while breaking it
+        // for the one it does not.
+        //
+        // Dropping the whole entry for an unregistered alias is correct rather
+        // than merely convenient: the project is gone, so every view state it
+        // held — driver and otherwise — describes something the user can no
+        // longer open.
+        self.ctx
+            .view_cache
+            .retain(|alias, _| registered.contains_key(alias));
 
         let mut runs_by_alias: HashMap<&str, Vec<&str>> = HashMap::new();
         for (alias, run_id) in self.ctx.journal_cursors.keys() {
@@ -3007,6 +3025,52 @@ mod tests {
             kept.len(),
             1,
             "the prune must not clear a live buffer's contents"
+        );
+    }
+
+    /// Plan 18-09 moved three driver payloads onto `ProjectViewCache`, so the
+    /// map that holds it joins the prune pass. Without this, `driver_runs`,
+    /// `driver_inbox` and `driver_tally` for a project the user unregistered
+    /// would sit in memory for the life of the process — the same leak
+    /// `driver_output` was added to the pass to prevent, under a third name.
+    #[tokio::test]
+    async fn pruning_drops_the_view_cache_for_an_unregistered_alias() {
+        use crate::ui::screens::DriverRunTally;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+
+        for alias in ["gone", OBS_ALIAS] {
+            let cache = app.ctx.view_cache.entry(alias.to_string()).or_default();
+            cache.driver_selected_run = 2;
+            cache.driver_tally = Some(DriverRunTally {
+                run_id: OBS_RUN.to_string(),
+                cumulative_cost_usd: Some(1.83),
+                turn_boundaries: 3,
+            });
+        }
+
+        app.prune_driver_maps();
+
+        assert!(
+            !app.ctx.view_cache.contains_key("gone"),
+            "view state for an unregistered project describes something the user \
+             can no longer open"
+        );
+
+        // The control arm: a registered alias keeps its cache AND its contents,
+        // so the assertion above is not passing because the prune emptied the
+        // map.
+        let kept = app
+            .ctx
+            .view_cache
+            .get(OBS_ALIAS)
+            .expect("a registered alias keeps its view cache");
+        assert_eq!(kept.driver_selected_run, 2);
+        assert_eq!(
+            kept.driver_tally.as_ref().and_then(|t| t.cumulative_cost_usd),
+            Some(1.83),
+            "the prune must not clear a live cache's contents"
         );
     }
 
