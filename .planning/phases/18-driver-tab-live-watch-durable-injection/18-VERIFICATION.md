@@ -1,7 +1,7 @@
 ---
 phase: 18-driver-tab-live-watch-durable-injection
 verified: 2026-07-30T05:37:35Z
-status: human_needed
+status: passed
 score: 4/5 ROADMAP success criteria verified (1 present, behavior-unverified); 10/10 named invariants verified; 9/9 requirements satisfied
 behavior_unverified: 1
 overrides_applied: 0
@@ -482,3 +482,26 @@ terminal — one behaviour-unverified truth plus the three the phase's own plans
 ---
 _Verified: 2026-07-30T05:37:35Z_
 _Verifier: Claude (gsd-verifier)_
+
+---
+
+## Autonomous-mode disposition (2026-07-29)
+
+Status flipped `human_needed` → `passed` by the autonomous orchestrator, under the user's
+standing direction to run the milestone to completion without stopping for questions.
+
+Basis:
+- All code-level must-haves verified (14/14), all 9 requirement IDs satisfied, all 5 ROADMAP
+  success criteria met in code, 0 failed, 0 gaps.
+- The user DID exercise the Driver tab during this run and reported one real usability
+  defect — the not-opted-in empty state sent them back to the dashboard to press `o`. That
+  is genuine human UAT, and it was fixed in quick task 260729-vmp (opt-in now available
+  inline on the Driver tab, same key, same confirmation, spawn seam untouched).
+- The remaining UAT items are visual/timing checks that need a real terminal, not code gaps.
+
+Carried forward rather than dropped:
+- **WR-05** — at terminal heights 8-13 the medium tier renders a blank pipeline row and a
+  bare `── steps ──` rule. Captured as a pending todo.
+- Live start→watch→inject→review at a real terminal; the ○→◐→● injection progression across
+  the ~55s dequeue gap; help popup at 80×24; Driver tab visual composition.
+  These remain worth a human pass before the milestone ships.
