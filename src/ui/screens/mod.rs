@@ -336,8 +336,20 @@ impl DriverOutput {
 ///    cursor, or set the window title. Stripping the introducer is what makes
 ///    the rest of a sequence inert text.
 /// 2. `\t` expands to [`TAB_WIDTH`] spaces.
-/// 3. Every other C0 control character (`0x00`–`0x1F`) and `DEL` (`0x7F`) is
-///    replaced with [`CONTROL_REPLACEMENT`] — present, visible, and harmless.
+/// 3. Every other C0 control character (`0x00`–`0x1F`), `DEL` (`0x7F`) **and the
+///    whole C1 block (`0x80`–`0x9F`)** is replaced with
+///    [`CONTROL_REPLACEMENT`] — present, visible, and harmless.
+///
+///    **C1 is not an afterthought and rule 1 does not cover it** (WR-06).
+///    `U+009B` is the single-character CSI, `U+009D` is OSC and `U+0090` is DCS:
+///    each is a one-codepoint equivalent of an `ESC`-led introducer, so stripping
+///    `ESC` alone leaves the same capability reachable by another spelling.
+///    ratatui writes each grapheme's bytes straight to the terminal, so these
+///    arrive as `0xC2 0x9B` and terminals that honour 8-bit controls decoded from
+///    UTF-8 (xterm without `allowC1Printable`, among others) treat what follows
+///    as a control sequence — reinstating exactly the repaint-the-screen and
+///    forge-a-status-line capability rule 1 exists to remove, from agent prose,
+///    from a branch name in the dry-run report, or from a `Diagnostic.detail`.
 /// 4. The result is truncated by **`char`** count to
 ///    [`DRIVER_OUTPUT_LINE_CELLS`] and suffixed with [`ELLIPSIS`]. Byte slicing
 ///    panics on a multibyte boundary, so the truncation is a `char` operation
@@ -373,7 +385,7 @@ pub fn sanitize_render_line(raw: &str) -> String {
         }
         let fitted = if ch == '\t' {
             (0..TAB_WIDTH).all(|_| push(&mut out, &mut n, ' '))
-        } else if (ch as u32) < 0x20 || ch == '\u{7f}' {
+        } else if (ch as u32) < 0x20 || ('\u{7f}'..='\u{9f}').contains(&ch) {
             push(&mut out, &mut n, CONTROL_REPLACEMENT)
         } else {
             push(&mut out, &mut n, ch)
@@ -1437,6 +1449,49 @@ mod tests {
             raw.chars().count(),
             "replacement is one-for-one, so nothing is silently dropped"
         );
+    }
+
+    /// WR-06: the C1 block is a second spelling of the same capability.
+    ///
+    /// `U+009B` is the single-character CSI, `U+009D` is OSC and `U+0090` is
+    /// DCS. Each is a one-codepoint equivalent of an `ESC`-led introducer, so a
+    /// filter that strips `ESC` and passes C1 leaves the repaint-the-screen and
+    /// forge-a-status-line capability reachable by another route. ratatui writes
+    /// each grapheme's bytes straight to the terminal, so these arrive as
+    /// `0xC2 0x9B` and terminals that honour 8-bit controls decoded from UTF-8
+    /// act on what follows.
+    #[test]
+    fn every_c1_control_becomes_the_replacement_glyph() {
+        let raw: String = (0x80u32..=0x9f)
+            .map(|c| char::from_u32(c).expect("C1 is a valid scalar range"))
+            .collect();
+
+        let out = sanitize_render_line(&raw);
+        assert!(
+            out.chars().all(|c| c == CONTROL_REPLACEMENT),
+            "every C1 control renders as the replacement glyph. Got: {out:?}"
+        );
+        assert_eq!(out.chars().count(), raw.chars().count());
+
+        // The two sequences an attacker would actually write, whole.
+        for hostile in ["\u{9b}31m", "\u{9d}0;title\u{9c}", "\u{90}payload\u{9c}"] {
+            let out = sanitize_render_line(hostile);
+            assert!(
+                !out.chars().any(|c| ('\u{80}'..='\u{9f}').contains(&c)),
+                "no C1 introducer may survive: {hostile:?} -> {out:?}"
+            );
+            let mut buf = DriverOutput::default();
+            buf.push_record(DriverLineKind::Output, hostile);
+            assert!(
+                buf.lines()
+                    .all(|l| !l.text.chars().any(|c| ('\u{80}'..='\u{9f}').contains(&c))),
+                "nor through the append path: {hostile:?}"
+            );
+        }
+
+        // The control arm: printable non-ASCII above the C1 block is untouched,
+        // so the widened range did not become a mojibake filter.
+        assert_eq!(sanitize_render_line("caf\u{e9} \u{4e2d}\u{6587} \u{1f680}"), "caf\u{e9} \u{4e2d}\u{6587} \u{1f680}");
     }
 
     #[test]
