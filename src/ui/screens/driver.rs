@@ -776,9 +776,16 @@ fn goal_rows(goal: &str, inner_width: u16) -> u16 {
 /// run record; the cost comes from a `cost` journal record's `cumulative_usd`.
 /// The agent's `ResultMessage.result` may be displayed as content in the output
 /// pane below and has no authority over any word in this header.
+///
+/// **This header renders no status word of its own, and takes no verdict**
+/// (WR-11). The state word belongs to the run list and to the step timeline;
+/// saying it three times would invite three renderings of one fact. That
+/// intention used to be spelled as a `verdict` parameter whose only statement
+/// was `let _ = verdict;`, which is a parameter the next edit will silently
+/// mis-wire — the compiler cannot tell a future change that forgot to use it
+/// from one that deliberately did not. The intent is a sentence, so it is one.
 fn render_run_header(
     summary: &RunSummary,
-    verdict: Option<RunVerdict>,
     cost_usd: Option<f64>,
     run_dir: Option<&str>,
     inner_width: u16,
@@ -840,11 +847,6 @@ fn render_run_header(
         )));
     }
 
-    // `verdict` is threaded through so a future reader sees that the header has
-    // the evidence in hand and deliberately renders no status word of its own —
-    // the state word belongs to the run list and the step timeline, and saying
-    // it three times would invite three renderings of one fact.
-    let _ = verdict;
     lines
 }
 
@@ -1134,14 +1136,7 @@ fn render_run_detail(
         return;
     }
 
-    let header = render_run_header(
-        summary,
-        verdict,
-        cost_usd,
-        run_dir.as_deref(),
-        area.width,
-        now,
-    );
+    let header = render_run_header(summary, cost_usd, run_dir.as_deref(), area.width, now);
     let header_budget = usize::from(chunks[0].height);
     frame.render_widget(
         Paragraph::new(header.into_iter().take(header_budget).collect::<Vec<_>>()),
@@ -2107,7 +2102,7 @@ mod tests {
         let now = parse_rfc3339("2026-07-29T21:44:12Z").expect("fixture parses");
         let run = summary("2026-07-29T21-40-00Z-3f2a", None);
 
-        let known: String = render_run_header(&run, None, Some(1.83), None, 80, now)
+        let known: String = render_run_header(&run, Some(1.83), None, 80, now)
             .iter()
             .map(text)
             .collect::<Vec<_>>()
@@ -2115,7 +2110,7 @@ mod tests {
         assert!(known.contains("$1.83"), "{known}");
         assert!(known.contains(COST_CUMULATIVE), "{known}");
 
-        let unknown: String = render_run_header(&run, None, None, None, 80, now)
+        let unknown: String = render_run_header(&run, None, None, 80, now)
             .iter()
             .map(text)
             .collect::<Vec<_>>()
