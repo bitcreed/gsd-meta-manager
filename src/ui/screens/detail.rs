@@ -2196,6 +2196,33 @@ impl Screen for DetailScreen {
                     DriverAction::Stop,
                 )))
             }
+            // `o`: opt in, **through the same confirmation the dashboard's `o`
+            // opens** and never by writing the registry from here.
+            //
+            // `o` is already what the dashboard binds for exactly this action
+            // (`normal.rs:444-454`), so the verb/key mapping stays consistent
+            // across the two surfaces — the same argument the `x` comment above
+            // makes for reusing `x`.
+            //
+            // Unlike `i`/`s`/`x` there was no collision to resolve: a grep for
+            // `Char('o')` and `Char('O')` across this file found zero existing
+            // bindings on any detail tab. The `current_view` guard is present
+            // **despite** that, so the key stays scoped to the tab that
+            // explains it rather than silently becoming a global
+            // detail-screen opt-in on tabs where it is undiscoverable and
+            // unannounced.
+            //
+            // `DriverConfirmScreen`'s `do_toggle_opt_in` stays the ONE opt-in
+            // write path (CTRL-03). A second one here would be a second thing
+            // that has to stay in agreement with the spawn seam in
+            // `executor::DrivableProject::from_registry`.
+            KeyCode::Char('o') if current_view == DetailSubView::Driver => {
+                ctx.needs_redraw = true;
+                ScreenAction::Push(Box::new(DriverConfirmScreen::new(
+                    self.alias.clone(),
+                    DriverAction::ToggleOptIn,
+                )))
+            }
             KeyCode::Char('e') => {
                 // Archive FileView: open file in $EDITOR (read-only for milestones)
                 if current_view == DetailSubView::Archive {
