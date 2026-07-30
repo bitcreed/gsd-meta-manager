@@ -1,4 +1,7 @@
 use clap::{Parser, Subcommand};
+// Only the debug-only `claude_args` field names it, so the import carries the
+// same gate the field does; an ungated one would be an unused import in release.
+#[cfg(debug_assertions)]
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -86,13 +89,50 @@ pub enum Commands {
         /// `src/executor/claude.rs:333-352` already scrubs `CLAUDE*` for —
         /// whereas a flag must be passed on purpose by a caller whose argv
         /// builder is itself unit-tested.
+        ///
+        /// **`hide = true` removes a flag from `--help`, not from the parser,
+        /// and that is why the `#[cfg(debug_assertions)]` below is the part
+        /// that matters (D-30, WR-16).** Without it, any caller of the
+        /// *released* binary can make the "driver" exec an arbitrary program
+        /// with an opted-in project as its cwd, and the journal records the
+        /// result as an ordinary run. The env-var reasoning above is correct
+        /// and unchanged; it argues against an env var, and it never argued for
+        /// shipping the flag. The spawn seam is guarded against *emitting*
+        /// these flags — nothing guards against a human or a script passing
+        /// them, so the parser entry itself is what has to go.
+        ///
+        /// **The consequence, decided rather than discovered: `cargo test
+        /// --release` no longer builds the integration tests that pass these
+        /// flags, and that is the trade this project chose.** The gate is
+        /// `cargo build && cargo test && cargo clippy -- -D warnings` and it
+        /// does not run release tests; the nine `tests/fixtures/fake-claude*.sh`
+        /// stand-ins are debug-only test infrastructure by nature; and shipping
+        /// a flag shaped like remote code execution in the released binary to
+        /// keep a release-mode test path is the wrong trade. Nobody should
+        /// "fix" this by widening the cfg —
+        /// `tests/spawn_seam_guard.rs::the_agent_program_override_fields_are_debug_only`
+        /// fails if anybody does, because a `#[cfg]` a later refactor quietly
+        /// widens is indistinguishable from never having added it.
+        ///
+        /// A debug build keeps the flag, so the cfg alone would leave one gap:
+        /// there, a stand-in run still reads as a real one on disk. That gap is
+        /// closed by the other half of D-30 — `src/driver/run.rs` journals
+        /// `Diagnostic { code: "agent_program_overridden" }` before the run's
+        /// first exec record whenever this flag is used.
+        #[cfg(debug_assertions)]
         #[arg(long, hide = true)]
         claude_program: Option<PathBuf>,
         /// Test and development only: leading arguments for `--claude-program`
         ///
         /// Repeatable. Placed before the executor's own generated argv, which is
         /// how the checked-in shell stand-ins receive their transcript and exit
-        /// code. Hidden for the same inheritance reason as `--claude-program`.
+        /// code. Hidden for the same inheritance reason as `--claude-program`,
+        /// and absent from a release build's parser for the same D-30 reason:
+        /// it is the payload half of the same override, so leaving it parseable
+        /// while gating its program would be a gate with a hole in it. The
+        /// accepted `cargo test --release` consequence recorded above covers
+        /// both fields; it is one decision, not two.
+        #[cfg(debug_assertions)]
         #[arg(long, hide = true)]
         claude_args: Vec<OsString>,
     },
