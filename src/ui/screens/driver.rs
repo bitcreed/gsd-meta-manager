@@ -225,7 +225,16 @@ const GOAL_NONE_GIVEN: &str = "(none given)";
 
 const NO_RUNS_OPTED_IN: &str = "No runs yet for";
 const NO_RUNS_OPTED_IN_NEXT: &str = "Press [s] to start one.";
-const NOT_OPTED_IN_NEXT: &str = "Press [o] on the dashboard to allow it.";
+
+/// The next step for a project that has not been given permission to be driven.
+///
+/// It names no other surface, because `o` is now bound on **this** tab
+/// (`detail.rs`, the `Char('o') if current_view == DetailSubView::Driver` arm)
+/// and opens the same confirmation the dashboard's `o` opens. The sentence
+/// points at where the reader is already standing; sending them back to the
+/// dashboard to press a key that works right here was a navigation round-trip
+/// that existed for no reason.
+const NOT_OPTED_IN_NEXT: &str = "Press [o] to allow it.";
 const NO_JOURNAL_ENTRIES: &str = "No journal entries yet.";
 
 /// The right-aligned indicator while the pane is following a live tail.
