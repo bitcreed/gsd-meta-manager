@@ -704,6 +704,83 @@ impl AppContext {
             .is_some_and(|state| needs_human(state, self.observed_runs.get(alias), None, false))
     }
 
+    /// Schedule the run-list directory scan and the selected run's inbox read
+    /// (OBS-05, STEER-02).
+    ///
+    /// Both halves are blocking filesystem work — a `read_dir` plus one small
+    /// `run.json` per run, then a byte-offset tail — and this follows the
+    /// `spawn_blocking` → `Action` idiom the whole phase uses. **No file I/O on
+    /// the render thread** (D-28).
+    ///
+    /// The two reads share one task rather than taking one each, because the
+    /// second depends on the first: which run's inbox to read is decided by
+    /// indexing the freshly-listed runs. Splitting them would mean either a
+    /// round trip through the event loop between them or a stale index.
+    ///
+    /// The inbox is read from offset zero every time, and that is deliberate:
+    /// the payload is the whole inbox rather than a delta, so a message removed
+    /// from the file is expressed by its absence — the same reason
+    /// `Action::RunsReconciled` carries the whole scan.
+    ///
+    /// **It lives here rather than on `App` (plan 18-09) because the Driver
+    /// tab's `switch_to_tab` arm has to call it**, and a `Screen` is handed an
+    /// `&mut AppContext` and never an `&mut App`. `App::schedule_run_list_scan`
+    /// delegates here, so there is exactly one implementation and the two call
+    /// paths cannot drift.
+    pub fn schedule_run_list_scan(&mut self, alias: &str, project_path: &std::path::Path) {
+        let Some(tx) = &self.event_tx else {
+            // Refuse visibly, never silently (S4).
+            self.error_message = Some(format!(
+                "Could not list the runs for '{alias}': no event channel."
+            ));
+            self.needs_redraw = true;
+            return;
+        };
+        let tx = tx.clone();
+        let planning_dir = project_path.join(".planning");
+        let alias_for_task = alias.to_string();
+        let selected = self
+            .view_cache
+            .get(alias)
+            .map_or(0, |cache| cache.driver_selected_run);
+
+        tokio::task::spawn_blocking(move || {
+            // Already sorted newest first by `list_runs` itself; the ordering is
+            // lexicographic-descending on the run id, which is chronological
+            // because `new_run_id`'s format makes byte order time order.
+            let runs = crate::journal::list_runs(&planning_dir);
+
+            // The fallible join again, on an id that came off disk (D-27).
+            let inbox = runs
+                .get(selected)
+                .and_then(|run| crate::journal::run_paths(&planning_dir, &run.run_id))
+                .and_then(|paths| {
+                    match crate::journal::inbox::tail(
+                        &paths.inbox,
+                        crate::journal::reader::TailCursor::default(),
+                    ) {
+                        Ok(read) => Some(read.messages),
+                        Err(e) => {
+                            // Kind only (S3).
+                            tracing::warn!(
+                                alias = %alias_for_task,
+                                kind = ?e.kind(),
+                                "inbox read failed",
+                            );
+                            None
+                        }
+                    }
+                })
+                .unwrap_or_default();
+
+            let _ = tx.send(crate::action::Action::DriverRunsListed {
+                alias: alias_for_task,
+                runs,
+                inbox,
+            });
+        });
+    }
+
     /// This alias's [`attention_rank`], from the state this context holds.
     fn attention_rank_for(&self, alias: &str) -> u8 {
         let driven_and_live = self

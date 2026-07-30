@@ -24,21 +24,34 @@ const PAGE_SCROLL_LINES: u16 = 20;
 ///
 /// Both fields are zero before the first render, which yields a max scroll of
 /// zero — the correct pre-first-render floor, not a crash.
+///
+/// `pub(super)` since plan 18-09 so `driver.rs` — a sibling module rather than a
+/// second mechanism — records its output pane's metrics through **this** type
+/// and clamps through [`clamp_scroll`]. One clamp formula, shared; three copies
+/// of it is how the UIFIX-04 defect would return in a new place.
 #[derive(Clone, Copy, Default)]
-struct ViewportMetrics {
-    total_lines: u16,
-    visible_height: u16,
+pub(super) struct ViewportMetrics {
+    pub(super) total_lines: u16,
+    pub(super) visible_height: u16,
 }
 
 /// Clamp a stored scroll offset to the last-rendered viewport.
 ///
 /// Uses the identical `total_lines - visible_height` formula the render path
 /// already applies for display, so the two cannot drift apart.
-fn clamp_scroll(offset: u16, total_lines: u16, visible_height: u16) -> u16 {
+///
+/// `pub(super)` for the reason given on [`ViewportMetrics`].
+pub(super) fn clamp_scroll(offset: u16, total_lines: u16, visible_height: u16) -> u16 {
     offset.min(total_lines.saturating_sub(visible_height))
 }
 
-const TAB_TITLES: [&str; 10] = [
+/// How many tabs the detail view has, including the Driver tab at index 10.
+pub(crate) const TAB_COUNT: usize = 11;
+
+/// Full tab labels, one per index. The Driver entry omits its live-marker cell,
+/// which [`tab_titles`] always appends as a span of its own (see
+/// [`DRIVER_LIVE_MARKER`]).
+const TAB_LABELS_FULL: [&str; TAB_COUNT] = [
     "1:Phases",
     "2:Roadmap",
     "3:Backlog",
@@ -49,7 +62,197 @@ const TAB_TITLES: [&str; 10] = [
     "8:Arch",
     "9:Cfg",
     "0:Docs",
+    "D:Drive",
 ];
+
+/// Compact tab labels, same order. The digit is the real handle in every case,
+/// so a two-letter mnemonic loses nothing that matters; the pairs are mutually
+/// unambiguous.
+const TAB_LABELS_COMPACT: [&str; TAB_COUNT] = [
+    "1:Ph", "2:Rd", "3:Bk", "4:Gt", "5:Pp", "6:Qu", "7:Ss", "8:Ar", "9:Cf", "0:Dc", "D:Dr",
+];
+
+/// The Driver tab's index. Named because five sites compare against it.
+pub(crate) const DRIVER_TAB_INDEX: usize = 10;
+
+/// Rendered width of the full label set, in terminal cells.
+///
+/// **Derived from the render, not chosen:** `Tabs` draws `1 pad + label + 1 pad`
+/// per tab and a one-cell `"|"` divider between adjacent tabs, so the bar costs
+/// `Σ(len + 2) + (n − 1)`. For [`TAB_LABELS_FULL`] plus the Driver tab's
+/// always-present marker cell that is `75 + 1 + 22 + 10 = 107`.
+///
+/// The number matters because **the ten shipped tabs already occupied 96 cells**:
+/// at an 80-column terminal `9:Cfg` and `0:Docs` were silently dropped off the
+/// right edge, which is the "tab bar overflow at 80 columns" defect carried in
+/// `STATE.md` since Phase 12. Appending an 11th tab at the end without tiering
+/// would have made the Driver tab the one that never renders, at every common
+/// width.
+pub(crate) const TAB_BAR_FULL_CELLS: u16 = 107;
+
+/// Rendered width of the compact label set, by the same arithmetic:
+/// `45 + 1 + 22 + 10 = 77`.
+pub(crate) const TAB_BAR_COMPACT_CELLS: u16 = 77;
+
+/// The Driver label's reserved final cell while a run is live: `◆`.
+///
+/// A fixed `&'static str` written as a `\u{…}` escape, per the house rule that no
+/// raw glyph appears in source (`normal.rs:55-70`). Magenta is the phase's
+/// driven-and-live colour.
+const DRIVER_LIVE_MARKER: &str = "\u{25C6}";
+
+/// The Driver label's reserved final cell while nothing is driving: one space.
+///
+/// **The cell is always present**, so the bar's width never changes when a run
+/// starts or ends — no tab shifts sideways under the user's eye mid-run. Inside
+/// a project's detail view the dashboard is not visible, and the user must never
+/// be unsure whether something is driving their repo.
+const DRIVER_IDLE_MARKER: &str = " ";
+
+/// Left overflow marker: `‹`. DarkGray, one cell.
+const TAB_OVERFLOW_LEFT: &str = "\u{2039}";
+
+/// Right overflow marker: `›`. DarkGray, one cell.
+const TAB_OVERFLOW_RIGHT: &str = "\u{203A}";
+
+/// The cells one `Tabs` entry costs: the label plus its two pads.
+fn tab_entry_cells(label_cells: usize) -> usize {
+    label_cells + 2
+}
+
+/// Build the tab-bar titles for `width`, and the select index into them.
+///
+/// **A tab bar that silently drops the active tab is a defect, not a tier.** That
+/// sentence is the whole specification of this function; the three tiers below
+/// exist to honour it, and the windowed tier exists because at 40 columns no
+/// eleven-tab bar can be shown whole.
+///
+/// | Tier | Condition | Labels |
+/// |---|---|---|
+/// | Full | `width >= `[`TAB_BAR_FULL_CELLS`] | [`TAB_LABELS_FULL`] |
+/// | Compact | `width >= `[`TAB_BAR_COMPACT_CELLS`] | [`TAB_LABELS_COMPACT`] |
+/// | Windowed | below that | a contiguous run of compact labels **containing `active`**, with `‹`/`›` markers on whichever side is truncated |
+///
+/// Returning the labels *and* the adjusted select index from one function is what
+/// makes the tiering assertable without a terminal — the same reason
+/// [`footer_spans`] is split out of [`build_footer`]. Both tab-bar render sites
+/// call this; before plan 18-09 the bar was constructed twice, verbatim, and a
+/// tier applied to only one of them would have left the Driver tab visible on one
+/// path and invisible on the other.
+///
+/// `driver_live` drives only the Driver label's reserved marker cell, which is
+/// present either way (see [`DRIVER_IDLE_MARKER`]).
+pub(crate) fn tab_titles(
+    width: u16,
+    active: usize,
+    driver_live: bool,
+) -> (Vec<Line<'static>>, usize) {
+    let active = active.min(TAB_COUNT - 1);
+
+    if width >= TAB_BAR_FULL_CELLS {
+        return (
+            (0..TAB_COUNT)
+                .map(|i| tab_label_line(&TAB_LABELS_FULL, i, driver_live))
+                .collect(),
+            active,
+        );
+    }
+    if width >= TAB_BAR_COMPACT_CELLS {
+        return (
+            (0..TAB_COUNT)
+                .map(|i| tab_label_line(&TAB_LABELS_COMPACT, i, driver_live))
+                .collect(),
+            active,
+        );
+    }
+
+    windowed_tab_titles(width, active, driver_live)
+}
+
+/// One tab's `Line`. The Driver entry gets its marker cell as a second span so
+/// the label's width is identical live and idle.
+fn tab_label_line(labels: &[&'static str; TAB_COUNT], index: usize, driver_live: bool) -> Line<'static> {
+    if index == DRIVER_TAB_INDEX {
+        let marker = if driver_live {
+            Span::styled(DRIVER_LIVE_MARKER, Style::default().fg(Color::Magenta))
+        } else {
+            Span::raw(DRIVER_IDLE_MARKER)
+        };
+        Line::from(vec![Span::raw(labels[index]), marker])
+    } else {
+        Line::from(labels[index])
+    }
+}
+
+/// The width in cells of one compact label, marker cell included.
+fn compact_label_cells(index: usize) -> usize {
+    TAB_LABELS_COMPACT[index].chars().count() + usize::from(index == DRIVER_TAB_INDEX)
+}
+
+/// The windowed tier: the widest contiguous run of compact labels that contains
+/// `active` and fits, with overflow markers on whichever side was truncated.
+///
+/// The window is grown outward from the active tab — right first, then left — so
+/// the active label is the one thing that is never given up. If even the active
+/// label alone overflows the bar it is still rendered: a clipped label the user
+/// can see beats a correct one they cannot.
+fn windowed_tab_titles(width: u16, active: usize, driver_live: bool) -> (Vec<Line<'static>>, usize) {
+    let cost = |start: usize, end: usize| -> usize {
+        let mut entries: Vec<usize> = (start..end).map(compact_label_cells).collect();
+        if start > 0 {
+            entries.insert(0, 1);
+        }
+        if end < TAB_COUNT {
+            entries.push(1);
+        }
+        let cells: usize = entries.iter().copied().map(tab_entry_cells).sum();
+        cells + entries.len().saturating_sub(1)
+    };
+
+    let budget = usize::from(width);
+    let mut start = active;
+    let mut end = active + 1;
+    loop {
+        let mut grew = false;
+        if end < TAB_COUNT && cost(start, end + 1) <= budget {
+            end += 1;
+            grew = true;
+        }
+        if start > 0 && cost(start - 1, end) <= budget {
+            start -= 1;
+            grew = true;
+        }
+        if !grew {
+            break;
+        }
+    }
+
+    let marker_style = Style::default().fg(Color::DarkGray);
+    let mut titles: Vec<Line<'static>> = Vec::new();
+    if start > 0 {
+        titles.push(Line::from(Span::styled(TAB_OVERFLOW_LEFT, marker_style)));
+    }
+    let select = titles.len() + (active - start);
+    for i in start..end {
+        titles.push(tab_label_line(&TAB_LABELS_COMPACT, i, driver_live));
+    }
+    if end < TAB_COUNT {
+        titles.push(Line::from(Span::styled(TAB_OVERFLOW_RIGHT, marker_style)));
+    }
+
+    (titles, select)
+}
+
+/// Whether the selected project has a run this scan positively knows is running.
+///
+/// `Liveness` is a tri-state and [`crate::driver::reconcile::ObservedRun::is_live`]
+/// owns the distinction; `Liveness::Unknown` is **never** a synonym for dead
+/// (CR-05) and is resolved there, never re-derived here.
+fn driver_live_for(ctx: &AppContext, alias: &str) -> bool {
+    ctx.observed_runs
+        .get(alias)
+        .is_some_and(|run| run.is_live())
+}
 
 pub struct DetailScreen {
     pub alias: String,
@@ -105,12 +308,9 @@ pub(crate) fn tab_index(sub_view: &DetailSubView) -> usize {
         DetailSubView::Archive => 7,
         DetailSubView::Defaults => 8,
         DetailSubView::Browse => 9,
-        // Index 10, per D-15. `TAB_TITLES` still has ten entries, so this index
-        // selects no tab in the bar and `Right` stops at 9 — the title vector,
-        // the `Shift+D` binding and the rendering are plan 18-09's. This arm is
-        // the minimum the compiler demands, and the gap is staged rather than
-        // accidental.
-        DetailSubView::Driver => 10,
+        // Index 10, per D-15 — the 11th tab, reachable by `Left`/`Right`, by
+        // `Shift+D`, and rendered by `tab_titles` at every width.
+        DetailSubView::Driver => DRIVER_TAB_INDEX,
     }
 }
 
@@ -337,6 +537,24 @@ fn switch_to_tab(
                 cache.browser_scroll_offset = 0;
                 cache.browser_depth = crate::browser::BrowserDepth::List;
             }
+        }
+    }
+
+    // Load this project's run list for the Driver tab, off the render thread.
+    //
+    // Modelled on the git arm above — the file's async-load shape — but through
+    // `AppContext::schedule_run_list_scan` rather than a second inline closure,
+    // because the scan is `read_dir` plus one `run.json` per run plus the
+    // selected run's inbox tail and there must be exactly one copy of it (D-28).
+    //
+    // Unconditional on each visit rather than "only when empty": unlike the
+    // backlog or the git log, this list changes while the user is looking away —
+    // a run they started from the dashboard finishes, a new one begins — and a
+    // cached-once run list would show a stale set of runs indefinitely. The scan
+    // is bounded by the retention cap and runs on `spawn_blocking`.
+    if new_view == DetailSubView::Driver {
+        if let Some(path) = ctx.config.projects.get(alias).map(|p| p.path.clone()) {
+            ctx.schedule_run_list_scan(alias, &path);
         }
     }
 
@@ -1034,6 +1252,14 @@ impl Screen for DetailScreen {
             KeyCode::Char('8') => switch_to_tab(&self.alias, 7, &mut self.scroll_offset, ctx),
             KeyCode::Char('9') => switch_to_tab(&self.alias, 8, &mut self.scroll_offset, ctx),
             KeyCode::Char('0') => switch_to_tab(&self.alias, 9, &mut self.scroll_offset, ctx),
+            // The 11th tab (D-15). All ten digits are taken, uppercase is
+            // entirely unclaimed in the detail view, and `KeyCode::Char('D')`
+            // arrives without needing the `_modifiers` parameter this handler
+            // ignores — so `Shift+D` costs no new plumbing and collides with
+            // nothing.
+            KeyCode::Char('D') => {
+                switch_to_tab(&self.alias, DRIVER_TAB_INDEX, &mut self.scroll_offset, ctx)
+            }
             // Tab switching via arrow keys
             KeyCode::Left => {
                 if current_idx > 0 {
@@ -1043,7 +1269,7 @@ impl Screen for DetailScreen {
                 }
             }
             KeyCode::Right => {
-                if current_idx < TAB_TITLES.len() - 1 {
+                if current_idx < TAB_COUNT - 1 {
                     switch_to_tab(&self.alias, current_idx + 1, &mut self.scroll_offset, ctx)
                 } else {
                     ScreenAction::None
@@ -1905,10 +2131,13 @@ impl Screen for DetailScreen {
         let content_area = chunks[1];
         let footer_area = chunks[2];
 
-        // Render tab bar
-        let titles: Vec<Line> = TAB_TITLES.iter().map(|t| Line::from(*t)).collect();
+        // Render tab bar. Both this site and its duplicate in
+        // `render_main_only` take their titles from `tab_titles`; a tier applied
+        // to only one of them would leave the Driver tab visible on one render
+        // path and invisible on the other.
+        let (titles, select) = tab_titles(tab_area.width, tab_idx, driver_live_for(ctx, alias));
         let tabs_widget = Tabs::new(titles)
-            .select(tab_idx)
+            .select(select)
             .highlight_style(
                 Style::default()
                     .add_modifier(Modifier::BOLD)
@@ -1932,17 +2161,14 @@ impl Screen for DetailScreen {
             DetailSubView::Archive => self.render_archive_tab(frame, content_area, ctx),
             DetailSubView::Defaults => self.render_defaults_tab(frame, content_area, ctx),
             DetailSubView::Browse => self.render_browser_tab(frame, content_area, ctx),
-            // Plan 18-09 renders the Driver tab. This arm exists only because
-            // the match is exhaustive, and it paints **nothing** on purpose:
-            // the variant is unreachable today (no key selects index 10 and
-            // `TAB_TITLES` still stops at 9), and a placeholder here would be a
-            // surface promising output that no producer feeds — which is the
-            // "looks done but isn't" failure this phase enumerates by name.
+            // Task 2 of plan 18-09 creates `driver.rs` and turns this arm into a
+            // delegation. It is empty for exactly one commit so that no
+            // intermediate state of the tree fails to build.
             DetailSubView::Driver => {}
         }
 
         // Render footer with tab-appropriate hints
-        let footer = build_footer(&sub_view);
+        let footer = build_footer(&sub_view, footer_area.width);
         frame.render_widget(footer, footer_area);
     }
 
@@ -3208,10 +3434,11 @@ impl DetailScreen {
         let tab_area = chunks[0];
         let content_area = chunks[1];
 
-        // Render tab bar
-        let titles: Vec<Line> = TAB_TITLES.iter().map(|t| Line::from(*t)).collect();
+        // Render tab bar — the duplicate of the site in `render`, and the reason
+        // `tab_titles` exists as one function rather than two constructions.
+        let (titles, select) = tab_titles(tab_area.width, tab_idx, driver_live_for(ctx, alias));
         let tabs_widget = Tabs::new(titles)
-            .select(tab_idx)
+            .select(select)
             .highlight_style(
                 Style::default()
                     .add_modifier(Modifier::BOLD)
@@ -3235,8 +3462,9 @@ impl DetailScreen {
             DetailSubView::Archive => self.render_archive_tab(frame, content_area, ctx),
             DetailSubView::Defaults => self.render_defaults_tab(frame, content_area, ctx),
             DetailSubView::Browse => self.render_browser_tab(frame, content_area, ctx),
-            // The duplicate of the dispatch above, used by `EnqueueScreen` to
-            // paint the body behind its footer. Same arm, same reason (18-09).
+            // The duplicate of the dispatch above, used by `EnqueueScreen` and
+            // `DriverInjectScreen` to paint the body behind their footers. Same
+            // arm, same one-commit reason.
             DetailSubView::Driver => {}
         }
     }
@@ -3800,17 +4028,84 @@ fn browse_edit_target(cache: &super::ProjectViewCache) -> Result<std::path::Path
     Ok(candidate)
 }
 
+/// Width at or above which the Driver footer shows every hint.
+///
+/// **101, not the UI-SPEC's 100.** The spec's own table gives the full form's
+/// measured width as 101 cells and its condition as `width >= 100`, which are
+/// inconsistent by one: at exactly 100 columns the trailing `p` of `[?]help`
+/// falls off the right edge. That is the `STATUS_COLUMN_MIN_CELLS` bug in
+/// miniature — a threshold that does not match the render — so the threshold is
+/// the measured width, and `each_driver_footer_form_fits_the_width_that_selects_it`
+/// keeps the two equal.
+const DRIVER_FOOTER_FULL_CELLS: u16 = 101;
+
+/// Width at or above which the Driver footer shows the medium form (69 cells).
+const DRIVER_FOOTER_MEDIUM_CELLS: u16 = 70;
+
+/// The Driver tab's footer hints, in three measured width forms.
+///
+/// The hints are ordered by how often they are needed, so truncation drops the
+/// least useful first: the tab-switching and paging hints go before the four
+/// verbs that only this tab offers. Measured against the shipped
+/// `Span::styled("[k]", BOLD)` + `Span::raw("ey-word  ")` convention: 101 cells
+/// full, 69 medium, 48 short.
+fn driver_footer_spans(width: u16) -> Vec<Span<'static>> {
+    let b = Style::default().add_modifier(Modifier::BOLD);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+
+    if width >= DRIVER_FOOTER_MEDIUM_CELLS {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled("[Esc]", b));
+        spans.push(Span::raw("back  "));
+    } else {
+        spans.push(Span::raw("  "));
+    }
+    if width >= DRIVER_FOOTER_FULL_CELLS {
+        spans.push(Span::styled("[1-0/D]", b));
+        spans.push(Span::raw("tabs  "));
+    }
+    spans.push(Span::styled("[j/k]", b));
+    spans.push(Span::raw("runs  "));
+    if width >= DRIVER_FOOTER_FULL_CELLS {
+        spans.push(Span::styled("[PgUp/PgDn]", b));
+        spans.push(Span::raw("output  "));
+    }
+    if width >= DRIVER_FOOTER_MEDIUM_CELLS {
+        spans.push(Span::styled("[f]", b));
+        spans.push(Span::raw("ollow  "));
+    }
+    spans.push(Span::styled("[i]", b));
+    spans.push(Span::raw("nject  "));
+    spans.push(Span::styled("[s]", b));
+    spans.push(Span::raw("tart  "));
+    spans.push(Span::styled("[x]", b));
+    spans.push(Span::raw("stop  "));
+    spans.push(Span::styled("[?]", b));
+    spans.push(Span::raw("help"));
+
+    spans
+}
+
 /// Build the footer key-hint spans for a tab.
 ///
 /// Split out of `build_footer` so the hint set is assertable: `Paragraph`
 /// exposes no public text accessor, but a `Vec<Span>` concatenates cleanly.
-fn footer_spans(sub_view: &DetailSubView) -> Vec<Span<'static>> {
+///
+/// `width` is the footer row's width. Only the Driver tab tiers on it today; the
+/// other ten keep their single shipped form, with the shared prefix's tabs hint
+/// changed once, for every tab, so `Shift+D` is discoverable from anywhere in
+/// the detail view.
+fn footer_spans(sub_view: &DetailSubView, width: u16) -> Vec<Span<'static>> {
+    if matches!(sub_view, DetailSubView::Driver) {
+        return driver_footer_spans(width);
+    }
+
     let b = Style::default().add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::raw("  "),
         Span::styled("[Esc]", b),
         Span::raw("back  "),
-        Span::styled("[1-9]", b),
+        Span::styled("[1-0/D]", b),
         Span::raw("tabs  "),
         Span::styled("[j/k]", b),
         Span::raw("scroll  "),
@@ -3890,8 +4185,8 @@ fn footer_spans(sub_view: &DetailSubView) -> Vec<Span<'static>> {
 }
 
 /// Build the footer line with tab-appropriate key hints.
-fn build_footer(sub_view: &DetailSubView) -> Paragraph<'static> {
-    Paragraph::new(Line::from(footer_spans(sub_view)))
+fn build_footer(sub_view: &DetailSubView, width: u16) -> Paragraph<'static> {
+    Paragraph::new(Line::from(footer_spans(sub_view, width)))
 }
 
 // --- Defaults tab helpers ---
@@ -4886,8 +5181,14 @@ mod tests {
         assert_eq!(browse_edit_target(&cache), Err(NO_FILE_MSG));
     }
 
+    /// The footer's hint set as one string, at a width where every tab except
+    /// the Driver tab renders its single shipped form.
     fn footer_text(sub_view: &DetailSubView) -> String {
-        footer_spans(sub_view)
+        footer_text_at(sub_view, 120)
+    }
+
+    fn footer_text_at(sub_view: &DetailSubView, width: u16) -> String {
+        footer_spans(sub_view, width)
             .iter()
             .map(|s| s.content.as_ref())
             .collect()
@@ -4910,12 +5211,305 @@ mod tests {
     fn test_other_footers_unchanged_by_browse_edit_hint() {
         assert_eq!(
             footer_text(&DetailSubView::Backlog),
-            "  [Esc]back  [1-9]tabs  [j/k]scroll  [Enter]xpand  [e]nqueue  [?]help"
+            "  [Esc]back  [1-0/D]tabs  [j/k]scroll  [Enter]xpand  [e]nqueue  [?]help"
         );
         assert_eq!(
             footer_text(&DetailSubView::Defaults),
-            "  [Esc]back  [1-9]tabs  [j/k]scroll  [Enter]edit  [x] clear  [d] defaults  \
+            "  [Esc]back  [1-0/D]tabs  [j/k]scroll  [Enter]edit  [x] clear  [d] defaults  \
              [r]eload  [?]help"
+        );
+    }
+
+    // ── Plan 18-09: the 11th tab, at all six sites ────────────────────────
+
+    /// The shared prefix's tabs hint changes **once, for every tab**, so
+    /// `Shift+D` is discoverable from anywhere in the detail view — not only
+    /// from the tab it opens, which the user has no reason to be on.
+    #[test]
+    fn the_tabs_hint_names_shift_d_on_every_tab() {
+        for sub_view in [
+            DetailSubView::PhaseList,
+            DetailSubView::RoadmapViz,
+            DetailSubView::Backlog,
+            DetailSubView::GitHistory,
+            DetailSubView::Pipeline,
+            DetailSubView::Queue,
+            DetailSubView::Sessions,
+            DetailSubView::Archive,
+            DetailSubView::Defaults,
+            DetailSubView::Browse,
+        ] {
+            let text = footer_text(&sub_view);
+            assert!(
+                text.contains("[1-0/D]tabs"),
+                "{sub_view:?} footer must advertise the Driver tab: {text}"
+            );
+            assert!(
+                !text.contains("[1-9]tabs"),
+                "{sub_view:?} still shows the pre-18-09 digits-only hint: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_driver_footer_has_three_measured_width_forms() {
+        assert_eq!(
+            footer_text_at(&DetailSubView::Driver, 120),
+            "  [Esc]back  [1-0/D]tabs  [j/k]runs  [PgUp/PgDn]output  [f]ollow  [i]nject  \
+             [s]tart  [x]stop  [?]help"
+        );
+        assert_eq!(
+            footer_text_at(&DetailSubView::Driver, 80),
+            "  [Esc]back  [j/k]runs  [f]ollow  [i]nject  [s]tart  [x]stop  [?]help"
+        );
+        assert_eq!(
+            footer_text_at(&DetailSubView::Driver, 50),
+            "  [j/k]runs  [i]nject  [s]tart  [x]stop  [?]help"
+        );
+    }
+
+    /// Each form must fit the narrowest width that selects it — the whole point
+    /// of tiering is that the last hint is not clipped off the right edge.
+    ///
+    /// The short form (48 cells) is the floor the UI-SPEC defines: below 48
+    /// columns there is no further tier, because the remaining five hints are
+    /// the tab's whole vocabulary and dropping one would leave a key with no
+    /// discoverable name at all. A terminal that narrow clips the `[?]help`
+    /// hint, which is the least-bad outcome available and is not a defect this
+    /// function can fix.
+    #[test]
+    fn each_driver_footer_form_fits_the_width_that_selects_it() {
+        for width in [DRIVER_FOOTER_FULL_CELLS, DRIVER_FOOTER_MEDIUM_CELLS, 48] {
+            let text = footer_text_at(&DetailSubView::Driver, width);
+            assert!(
+                text.chars().count() <= usize::from(width),
+                "the driver footer at width {width} is {} cells: {text}",
+                text.chars().count()
+            );
+        }
+    }
+
+    /// The tab index and the sub-view must agree in both directions, for all
+    /// eleven tabs: a tab whose index does not round-trip lands the user on a
+    /// different tab than the one they asked for.
+    #[test]
+    fn every_tab_index_round_trips_through_its_sub_view() {
+        for index in 0..TAB_COUNT {
+            let view = sub_view_from_index(index);
+            assert_eq!(
+                tab_index(&view),
+                index,
+                "index {index} mapped to {view:?}, which maps back to {}",
+                tab_index(&view)
+            );
+        }
+        assert_eq!(sub_view_from_index(DRIVER_TAB_INDEX), DetailSubView::Driver);
+        assert_eq!(tab_index(&DetailSubView::Driver), DRIVER_TAB_INDEX);
+        // The out-of-range fallback still lands on the first tab, not the newest.
+        assert_eq!(sub_view_from_index(TAB_COUNT), DetailSubView::PhaseList);
+    }
+
+    /// The rendered width of one `Line`, in cells.
+    fn line_cells(line: &Line<'static>) -> usize {
+        line.spans.iter().map(|s| s.content.chars().count()).sum()
+    }
+
+    /// The width `Tabs` needs for a whole title vector: each entry costs its
+    /// label plus two pads, plus a one-cell divider between adjacent entries.
+    fn bar_cells(titles: &[Line<'static>]) -> usize {
+        titles.iter().map(|t| line_cells(t) + 2).sum::<usize>() + titles.len().saturating_sub(1)
+    }
+
+    #[test]
+    fn the_full_tier_renders_eleven_labels_at_its_measured_width() {
+        let (titles, select) = tab_titles(TAB_BAR_FULL_CELLS, DRIVER_TAB_INDEX, false);
+        assert_eq!(titles.len(), TAB_COUNT);
+        assert_eq!(select, DRIVER_TAB_INDEX);
+        assert_eq!(bar_cells(&titles), usize::from(TAB_BAR_FULL_CELLS));
+    }
+
+    #[test]
+    fn the_compact_tier_renders_eleven_labels_at_its_measured_width() {
+        let (titles, select) = tab_titles(TAB_BAR_COMPACT_CELLS, 4, false);
+        assert_eq!(titles.len(), TAB_COUNT);
+        assert_eq!(select, 4);
+        assert_eq!(bar_cells(&titles), usize::from(TAB_BAR_COMPACT_CELLS));
+        // One cell below the full width is already the compact tier.
+        let (titles, _) = tab_titles(TAB_BAR_FULL_CELLS - 1, 4, false);
+        assert_eq!(bar_cells(&titles), usize::from(TAB_BAR_COMPACT_CELLS));
+    }
+
+    /// Below the compact width the bar is windowed — and the window always
+    /// contains the active tab, with the returned select index pointing at it.
+    /// **A tab bar that silently drops the active tab is a defect, not a tier.**
+    #[test]
+    fn the_windowed_tier_always_contains_the_active_tab() {
+        for active in [0usize, 5, DRIVER_TAB_INDEX] {
+            for width in [20u16, 30, 40, 60, 76] {
+                let (titles, select) = tab_titles(width, active, false);
+                assert!(
+                    select < titles.len(),
+                    "select {select} is out of range for {} titles at width {width}",
+                    titles.len()
+                );
+                let expected = TAB_LABELS_COMPACT[active];
+                let selected_text: String = titles[select]
+                    .spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect();
+                assert!(
+                    selected_text.starts_with(expected),
+                    "at width {width} with tab {active} active the selected title was \
+                     {selected_text:?}, not {expected:?}"
+                );
+            }
+        }
+    }
+
+    /// The window fits the bar, and truncation is announced on whichever side
+    /// was cut rather than being silent.
+    #[test]
+    fn the_windowed_tier_fits_and_marks_the_side_it_truncated() {
+        let (titles, _) = tab_titles(40, DRIVER_TAB_INDEX, false);
+        assert!(bar_cells(&titles) <= 40, "windowed bar overflows 40 columns");
+        let first: String = titles[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(
+            first, TAB_OVERFLOW_LEFT,
+            "tabs were truncated on the left with no marker"
+        );
+
+        let (titles, _) = tab_titles(40, 0, false);
+        assert!(bar_cells(&titles) <= 40);
+        let last: String = titles[titles.len() - 1]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(
+            last, TAB_OVERFLOW_RIGHT,
+            "tabs were truncated on the right with no marker"
+        );
+        // Nothing is truncated on the left when the window starts at 0.
+        let first: String = titles[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_ne!(first, TAB_OVERFLOW_LEFT);
+    }
+
+    /// The live marker occupies a reserved cell that is **always** present, so
+    /// starting or stopping a run never shifts the bar sideways.
+    #[test]
+    fn the_driver_label_is_the_same_width_live_and_idle() {
+        for width in [TAB_BAR_FULL_CELLS, TAB_BAR_COMPACT_CELLS, 40] {
+            let (live, _) = tab_titles(width, DRIVER_TAB_INDEX, true);
+            let (idle, _) = tab_titles(width, DRIVER_TAB_INDEX, false);
+            assert_eq!(
+                bar_cells(&live),
+                bar_cells(&idle),
+                "the bar changed width when a run started, at width {width}"
+            );
+        }
+
+        let (live, select) = tab_titles(TAB_BAR_FULL_CELLS, DRIVER_TAB_INDEX, true);
+        let text: String = live[select]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(text, format!("D:Drive{DRIVER_LIVE_MARKER}"));
+
+        let (idle, select) = tab_titles(TAB_BAR_FULL_CELLS, DRIVER_TAB_INDEX, false);
+        let text: String = idle[select]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(text, "D:Drive ");
+    }
+
+    /// Held-out render-buffer backstop (UI-SPEC `## UI Considerations`,
+    /// overflow row). Not a width calculation: the detail screen is rendered
+    /// into a `TestBackend` and the resulting cells are scraped, because the
+    /// defect this guards — the tenth and eleventh tabs falling off the right
+    /// edge at 80 columns — was invisible to every calculation the code had.
+    #[test]
+    fn the_active_tab_label_is_always_present_in_the_rendered_bar() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        for width in [40u16, 60, 80, 120] {
+            for (active, full, compact) in [
+                (0usize, "1:Phases", "1:Ph"),
+                (DRIVER_TAB_INDEX, "D:Drive", "D:Dr"),
+            ] {
+                let mut ctx = test_ctx();
+                let screen = DetailScreen::new("meta-mgr".to_string());
+                ctx.detail_sub_view_per_project
+                    .insert("meta-mgr".to_string(), sub_view_from_index(active));
+
+                let mut terminal = Terminal::new(TestBackend::new(width, 24))
+                    .expect("TestBackend terminal");
+                terminal
+                    .draw(|frame| screen.render(frame, frame.area(), &ctx))
+                    .expect("draw the detail screen");
+
+                let buffer = terminal.backend().buffer().clone();
+                // Row 0 carries the block title; the tab bar is row 1.
+                let bar: String = (0..width)
+                    .map(|x| {
+                        buffer
+                            .cell((x, 1))
+                            .map(|cell| cell.symbol())
+                            .unwrap_or(" ")
+                            .to_string()
+                    })
+                    .collect();
+
+                assert!(
+                    bar.contains(full) || bar.contains(compact),
+                    "at {width} columns the active tab ({full}) is absent from the \
+                     rendered bar: {bar:?}"
+                );
+
+                if width < TAB_BAR_COMPACT_CELLS {
+                    assert!(
+                        bar.contains(TAB_OVERFLOW_LEFT) || bar.contains(TAB_OVERFLOW_RIGHT),
+                        "at {width} columns the bar is truncated with no overflow \
+                         marker: {bar:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `Shift+D` reaches the Driver tab from an arbitrary other tab, and
+    /// `Right` can now walk all the way to index 10 rather than stopping at 9.
+    #[test]
+    fn shift_d_and_right_both_reach_the_driver_tab() {
+        let mut ctx = test_ctx();
+        let mut screen = DetailScreen::new("meta-mgr".to_string());
+        ctx.detail_sub_view_per_project
+            .insert("meta-mgr".to_string(), DetailSubView::Pipeline);
+
+        screen.handle_key(KeyCode::Char('D'), KeyModifiers::SHIFT, &mut ctx);
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get("meta-mgr"),
+            Some(&DetailSubView::Driver)
+        );
+
+        // Walk right from the last pre-18-09 tab into the new one.
+        ctx.detail_sub_view_per_project
+            .insert("meta-mgr".to_string(), DetailSubView::Browse);
+        screen.handle_key(KeyCode::Right, KeyModifiers::NONE, &mut ctx);
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get("meta-mgr"),
+            Some(&DetailSubView::Driver)
+        );
+
+        // …and Right at the last tab is still a no-op rather than a wrap.
+        screen.handle_key(KeyCode::Right, KeyModifiers::NONE, &mut ctx);
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get("meta-mgr"),
+            Some(&DetailSubView::Driver)
         );
     }
 

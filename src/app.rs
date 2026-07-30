@@ -756,57 +756,17 @@ impl App {
     /// the payload is the whole inbox rather than a delta, so a message removed
     /// from the file is expressed by its absence — the same reason
     /// [`Action::RunsReconciled`] carries the whole scan.
+    ///
+    /// **The body lives on [`AppContext`] since plan 18-09**, and this is a
+    /// delegation rather than a second implementation. The Driver tab's
+    /// `switch_to_tab` arm has to schedule the same scan on first visit, and a
+    /// `Screen` is handed an `&mut AppContext` and never an `&mut App` — so the
+    /// choice was one function reachable from both or two copies of a
+    /// `spawn_blocking` closure that would drift. `ctx.needs_redraw` is synced
+    /// into `App::needs_redraw` by the main loop, so the refusal path is
+    /// unchanged in effect.
     pub fn schedule_run_list_scan(&mut self, alias: &str, project_path: &Path) {
-        let Some(tx) = &self.ctx.event_tx else {
-            self.ctx.error_message =
-                Some(format!("Could not list the runs for '{alias}': no event channel."));
-            self.needs_redraw = true;
-            return;
-        };
-        let tx = tx.clone();
-        let planning_dir = project_path.join(".planning");
-        let alias_for_task = alias.to_string();
-        let selected = self
-            .ctx
-            .view_cache
-            .get(alias)
-            .map_or(0, |cache| cache.driver_selected_run);
-
-        tokio::task::spawn_blocking(move || {
-            // Already sorted newest first by `list_runs` itself; the ordering is
-            // lexicographic-descending on the run id, which is chronological
-            // because `new_run_id`'s format makes byte order time order.
-            let runs = crate::journal::list_runs(&planning_dir);
-
-            // The fallible join again, on an id that came off disk (D-27).
-            let inbox = runs
-                .get(selected)
-                .and_then(|run| crate::journal::run_paths(&planning_dir, &run.run_id))
-                .and_then(|paths| {
-                    match crate::journal::inbox::tail(
-                        &paths.inbox,
-                        crate::journal::reader::TailCursor::default(),
-                    ) {
-                        Ok(read) => Some(read.messages),
-                        Err(e) => {
-                            // Kind only (S3).
-                            tracing::warn!(
-                                alias = %alias_for_task,
-                                kind = ?e.kind(),
-                                "inbox read failed",
-                            );
-                            None
-                        }
-                    }
-                })
-                .unwrap_or_default();
-
-            let _ = tx.send(Action::DriverRunsListed {
-                alias: alias_for_task,
-                runs,
-                inbox,
-            });
-        });
+        self.ctx.schedule_run_list_scan(alias, project_path);
     }
 
     /// Schedule the dry-run preview for `alias` and `command` (D-26).
