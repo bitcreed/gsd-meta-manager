@@ -1168,6 +1168,25 @@ pub async fn execute_run(
     // state the acted-on transition is derived from (D-08).
     let mut pending_acks = PendingAcks::default();
 
+    // How many messages have been written to stdin since the last turn boundary,
+    // **counting the ones the poll arm wrote** (CR-01).
+    //
+    // Two arms deliver, and only one of them decides whether stdin survives. The
+    // boundary arm's question is *"is another turn coming?"*, and the answer is
+    // yes if **either** arm wrote something since the last boundary — a message
+    // the poll arm delivered mid-turn is queued inside the CLI and will run as
+    // its own turn, exactly like one delivered at the boundary itself. Without
+    // this counter the poll arm's delivery was invisible to the boundary arm
+    // (`deliver_pending_inbox` has already advanced `inbox_cursor` past it), so
+    // the boundary drain read an empty inbox, concluded `delivered == 0` and
+    // closed stdin while a human-steered turn was queued and about to run. Since
+    // `INBOX_POLL_INTERVAL` is 750 ms and a turn is minutes, the poll arm wins
+    // that race for essentially every message a user types — so the run could be
+    // steered exactly **once** and every later message was journaled `missed`.
+    // Step 3 of the four-step rule below says the opposite, and this counter is
+    // what makes it true.
+    let mut delivered_since_boundary = 0usize;
+
     // Whether the echo channel can still produce. It cannot close while the run
     // is live — `executor` owns the sender and outlives this loop — so this flag
     // exists purely so a future refactor that *does* drop it early cannot turn a
@@ -1203,7 +1222,8 @@ pub async fn execute_run(
     // 1. Do **not** close stdin after spawn.
     // 2. On each `ExecutionEvent::TurnCompleted` — a `result`, which closes a
     //    TURN and not the run (Phase 15 D-29) — drain the inbox one final time.
-    // 3. If a message was delivered, the agent runs it as a new turn and the
+    // 3. If a message was delivered **by either arm since the last boundary**
+    //    (`delivered_since_boundary`), the agent runs it as a new turn and the
     //    loop repeats from step 2. This supports N human-steered turns for free.
     // 4. If nothing was delivered, `close_input()`. EOF is "no more input", not
     //    "stop": the CLI drains what is queued, finishes, and **exits 0**.
@@ -1238,15 +1258,20 @@ pub async fn execute_run(
                         }
 
                         if turn_boundary && stdin_open {
-                            let delivered = deliver_pending_inbox(
-                                &executor,
-                                &mut handle,
-                                &mut run.journal,
-                                &inbox_path,
-                                &mut inbox_cursor,
-                                &mut pending_acks,
-                            )
-                            .await;
+                            let delivered = delivered_since_boundary
+                                + deliver_pending_inbox(
+                                    &executor,
+                                    &mut handle,
+                                    &mut run.journal,
+                                    &inbox_path,
+                                    &mut inbox_cursor,
+                                    &mut pending_acks,
+                                )
+                                .await;
+                            // Reset unconditionally: whatever this boundary
+                            // decided, the next one asks about the turn that is
+                            // starting now and not about the one that just ended.
+                            delivered_since_boundary = 0;
 
                             if delivered == 0 {
                                 // Raced the same way and for the same reason as
@@ -1304,7 +1329,10 @@ pub async fn execute_run(
 
             _ = inbox_poll.tick() => {
                 if stdin_open {
-                    deliver_pending_inbox(
+                    // The count is CARRIED, never dropped (CR-01). A message
+                    // written here is a turn the CLI has queued, and the
+                    // boundary arm has no other way to learn that.
+                    delivered_since_boundary += deliver_pending_inbox(
                         &executor,
                         &mut handle,
                         &mut run.journal,

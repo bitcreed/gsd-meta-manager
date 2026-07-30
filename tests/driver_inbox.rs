@@ -225,6 +225,19 @@ fn delivered_ids_now(journal: &Path) -> Vec<String> {
     ids_of_kind(&records, "interjected")
 }
 
+/// The ids the agent has **dequeued** so far, read mid-run.
+///
+/// Tolerant in the same way and for the same reason as [`delivered_ids_now`].
+/// This is the transition a test synchronises on when it needs to stand *past* a
+/// turn boundary: the echo is emitted at dequeue, so a message's `acted_on`
+/// record cannot exist before the boundary that started its turn.
+fn acted_on_ids_now(journal: &Path) -> Vec<String> {
+    let Ok((records, _)) = reader::read_all(journal) else {
+        return Vec::new();
+    };
+    ids_of_kind(&records, "interjection_acted_on")
+}
+
 /// The `interjected` / `interjection_acted_on` / `interjection_missed` ids a
 /// journal carries, in the order the driver wrote them.
 fn ids_of_kind(records: &[JournalRecord], kind: &str) -> Vec<String> {
@@ -517,15 +530,36 @@ async fn two_identical_messages_are_acked_in_delivery_order() {
 // so "after the close" is an observed fact and not an elapsed duration.
 // ============================================================================
 
-/// The window the final pre-close drain exists to win (D-10, D-11).
+/// The window the final pre-close drain exists to win, **twice** (D-10, D-11,
+/// CR-01).
 ///
 /// A human's last keystroke and the turn boundary are in a genuine race, and the
 /// design resolves it in the user's favour: stdin is closed only after a drain
 /// that found nothing. This asserts the property from the other side — a message
 /// appended while the run is live reaches the agent and is never recorded as
 /// missed.
+///
+/// **It asserts the SECOND message as well, and that half is the regression
+/// guard.** Steering is only steering if it can be done more than once. Two arms
+/// deliver from the inbox — the 750ms poll and the turn-boundary drain — and
+/// because the poll fires every 750ms while a turn lasts minutes, the poll arm
+/// wins for essentially every message a real user types. A driver that discards
+/// the poll arm's delivery count sees an empty inbox at the next boundary,
+/// concludes nothing was delivered, and closes stdin **while the injected turn is
+/// queued in the CLI and about to run**. Every message after that is `missed`.
+/// This test's earlier form executed precisely that sequence and asserted only
+/// the first message, so the defect sat inside its own fixture unseen; the second
+/// injection is what makes it visible.
+///
+/// The second message is appended after `interjection_acted_on` for the first —
+/// the agent's own dequeue echo, which cannot arrive before turn one's boundary
+/// has been crossed. So "after a boundary" is an observed fact here, never an
+/// elapsed duration, and the paced stand-in holds turn two open for the poll to
+/// find the message inside.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_message_appended_before_the_final_drain_is_still_delivered() {
+    const SECOND: &str = "and now run the tests";
+
     let fixture = Fixture::new();
     let paths = writer::create_run_dir(&fixture.planning(), RUN_ID).expect("create the run dir");
     let stdin_log = fixture.root().join("stdin.log");
@@ -550,8 +584,27 @@ async fn a_message_appended_before_the_final_drain_is_still_delivered() {
          asserting the missed path by accident"
     );
 
-    let message = InboxMessage::new(INJECTED);
-    inbox::append(&paths.inbox, &message).expect("append while the run is live");
+    let first = InboxMessage::new(INJECTED);
+    inbox::append(&paths.inbox, &first).expect("append while the run is live");
+
+    // The dequeue echo for the first message. It is emitted as turn two starts,
+    // so observing it proves turn ONE's boundary is behind us — which is exactly
+    // the point at which a driver that dropped the poll arm's delivery count has
+    // already closed stdin.
+    wait_until("the agent to dequeue the first injected message", || {
+        acted_on_ids_now(&paths.journal).contains(&first.id)
+    })
+    .await;
+    assert!(
+        !eof_marker.exists(),
+        "a run that can be steered more than once must still have stdin open \
+         one turn boundary after its first injection — the agent has just \
+         dequeued a human-steered turn, which is the least plausible moment to \
+         stop listening"
+    );
+
+    let second = InboxMessage::new(SECOND);
+    inbox::append(&paths.inbox, &second).expect("append after the first turn boundary");
 
     run.await
         .expect("the run task did not panic")
@@ -560,17 +613,24 @@ async fn a_message_appended_before_the_final_drain_is_still_delivered() {
     let records = journal_records(&paths.journal);
     assert_eq!(
         ids_of_kind(&records, "interjected"),
-        vec![message.id.clone()],
-        "a message appended before the close is delivered"
+        vec![first.id.clone(), second.id.clone()],
+        "BOTH messages are delivered, in order. A run that can be steered \
+         exactly once produces only the first here and journals the second \
+         `missed`"
     );
     assert!(
         of_kind(&records, "interjection_missed").is_empty(),
-        "and is never ALSO reported missed: the two records are mutually \
+        "and neither is ALSO reported missed: the two records are mutually \
          exclusive for one id"
     );
+    let written = stdin_lines(&stdin_log);
     assert!(
-        stdin_lines(&stdin_log).contains(&send_wire_shape(INJECTED)),
-        "it reached the agent's stdin in the pinned wire shape"
+        written.contains(&send_wire_shape(INJECTED)),
+        "the first reached the agent's stdin in the pinned wire shape"
+    );
+    assert!(
+        written.contains(&send_wire_shape(SECOND)),
+        "and so did the second"
     );
 }
 

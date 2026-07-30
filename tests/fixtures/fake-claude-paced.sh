@@ -8,12 +8,23 @@
 # The alternative was a sleep in the test, which would prove the same property on
 # a fast machine and flake on a loaded one.
 #
-#   1. **The pre-close window.** The FIRST turn's `result` is delayed, which
-#      delays the first turn boundary and therefore the first `close_input()`.
-#      That is the window in which a message appended while the run is live must
-#      still be delivered (D-10, D-11). Only the first turn is paced; every later
-#      one answers immediately, so the delay is paid once per run rather than per
-#      message.
+#   1. **The pre-close window.** The first `PACED_TURNS` turns' `result` is
+#      delayed, which delays those turn boundaries and therefore the
+#      `close_input()` that follows one of them. That is the window in which a
+#      message appended while the run is live must still be delivered (D-10,
+#      D-11). Every turn past `PACED_TURNS` answers immediately, so the delay is
+#      paid a bounded number of times per run rather than once per message.
+#
+#      **Why two paced turns and not one** (CR-01). The first paced turn is the
+#      *command's* turn, so a message injected during it is delivered before any
+#      boundary has been crossed — which a driver that can be steered exactly
+#      once passes just as well as one that can be steered N times. Proving the
+#      second steering needs a window on the far side of a boundary, and turn two
+#      is the first injected message's own turn. Pacing it is what lets a test
+#      append a SECOND message at a moment when the broken driver has already
+#      closed stdin and the correct one has not. Without it that window is the
+#      ~20ms between turn two's echo and its `result`, which is a race, not a
+#      boundary.
 #
 #   2. **The post-close window.** At stdin EOF the stand-in creates
 #      `<stdin-log>.eof` and then lingers before exiting. The marker is what lets
@@ -48,8 +59,13 @@ STDIN_LOG="${4?usage: fake-claude-paced.sh <capabilities-csv> <version> <api-key
 # stdin EOF. Both are generous by orders of magnitude against the driver's
 # 750ms inbox poll, because the cost of being wrong differs by direction: too
 # short flakes, too long only makes the suite slower.
-FIRST_TURN_PACE=2
+TURN_PACE=2
 EOF_LINGER=2
+
+# How many turns are held open. See window 1 in the header: two, because the
+# property that needs a window is "a message injected AFTER a turn boundary is
+# still delivered", and turn one ends at the first boundary.
+PACED_TURNS=2
 
 EOF_MARKER="${STDIN_LOG}.eof"
 
@@ -97,10 +113,12 @@ while IFS= read -r line; do
         sleep 0.02
         printf '%s,"session_id":"s","isReplay":true,"uuid":"echo-%s"}\n' \
             "$(printf '%s' "$line" | sed 's/}$//')" "$seq"
-        # Window 1: the first turn only. Held AFTER the echo so the echo's own
-        # correlation is not delayed with it.
-        if [ "$turns" -eq 1 ]; then
-            sleep "$FIRST_TURN_PACE"
+        # Window 1: the first `PACED_TURNS` turns. Held AFTER the echo so the
+        # echo's own correlation is not delayed with it — which is what lets a
+        # test synchronise on `interjection_acted_on` and still have the whole
+        # window ahead of it.
+        if [ "$turns" -le "$PACED_TURNS" ]; then
+            sleep "$TURN_PACE"
         fi
         printf '{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","session_id":"s","num_turns":1,"total_cost_usd":0.0%s,"result":"turn %s done","uuid":"result-%s"}\n' \
             "$seq" "$seq" "$seq"
