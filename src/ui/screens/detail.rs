@@ -2122,18 +2122,48 @@ impl Screen for DetailScreen {
             // and never `LivenessUnknown`, because opening an input aimed at a
             // run nothing can speak for would queue a message that may already
             // be undeliverable.
+            //
+            // **The target is the SELECTED run, not merely the observed one**
+            // (WR-01). `j`/`k` move the selection freely across the whole run
+            // history while `observed_runs` holds only the run this session is
+            // tailing, so reading the id out of that map alone aimed the input
+            // at today's live run while the user was looking at last week's.
+            // Worse, `cache.driver_inbox` is the **selected** run's inbox, so
+            // the queued message did not appear anywhere on the surface they
+            // were looking at. Requiring the two to agree is what keeps the
+            // target and the pane the same run.
             KeyCode::Char('i') if current_view == DetailSubView::Driver => {
-                let live_run = ctx
+                let selected_run_id = ctx.view_cache.get(&self.alias).and_then(|cache| {
+                    cache
+                        .driver_runs
+                        .get(cache.driver_selected_run)
+                        .map(|run| run.run_id.clone())
+                });
+                let live_run_id = ctx
                     .observed_runs
                     .get(&self.alias)
                     .filter(|observed| observed.is_live())
                     .map(|observed| observed.run_id.clone());
                 ctx.needs_redraw = true;
-                match live_run {
-                    Some(run_id) => ScreenAction::Push(Box::new(DriverInjectScreen::new(
-                        self.alias.clone(),
-                        run_id,
-                    ))),
+                match live_run_id {
+                    // The one case that opens the input: a live run, and it is
+                    // the one on screen.
+                    Some(run_id) if Some(&run_id) == selected_run_id.as_ref() => {
+                        ScreenAction::Push(Box::new(DriverInjectScreen::new(
+                            self.alias.clone(),
+                            run_id,
+                        )))
+                    }
+                    // A live run exists, but not the one being reviewed. Saying
+                    // "no live run" here would contradict a run list that
+                    // visibly contains one.
+                    Some(_) => {
+                        ctx.status_message = Some((
+                            super::driver_inject::not_the_selected_run_message(&self.alias),
+                            std::time::Instant::now(),
+                        ));
+                        ScreenAction::None
+                    }
                     None => {
                         ctx.status_message = Some((
                             super::driver_inject::no_live_run_message(&self.alias),
@@ -6289,6 +6319,56 @@ mod tests {
             ctx.status_message.is_none(),
             "a run that IS live gets no refusal"
         );
+    }
+
+    /// WR-01: the target of `i` is the run the user is **looking at**.
+    ///
+    /// `j`/`k` move the selection freely across the whole run history while
+    /// `observed_runs` holds only the run this session is tailing. Reading the
+    /// id out of that map alone aimed the input at today's live run while the
+    /// user was reviewing last week's — and because `cache.driver_inbox` is the
+    /// **selected** run's inbox, the queued message then appeared nowhere on the
+    /// surface they were looking at. Two facts silently disagreeing, with the
+    /// user's own steering intent as the payload.
+    #[test]
+    fn pressing_i_while_reviewing_a_different_run_refuses_and_says_which_condition() {
+        const LIVE: &str = "2026-07-29T21-40-00Z-3f2a";
+        const OLD: &str = "2026-07-20T09-00-00Z-beef";
+
+        let (mut screen, mut ctx, mut rx) = driver_action_fixture();
+        ctx.observed_runs
+            .insert(TEST_ALIAS.to_string(), observed_live_run(LIVE));
+        // The pane is showing an older run — the state `j` leaves behind.
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        cache.driver_runs = vec![test_run(OLD), test_run(LIVE)];
+        cache.driver_selected_run = 0;
+
+        let action = screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx);
+        assert!(
+            matches!(action, ScreenAction::None),
+            "the input must not open aimed at a run the pane is not showing"
+        );
+        let message = ctx
+            .status_message
+            .as_ref()
+            .map(|(text, _)| text.clone())
+            .expect("the refusal must be visible, not silent");
+        assert_eq!(
+            message,
+            crate::ui::screens::driver_inject::not_the_selected_run_message(TEST_ALIAS),
+            "and it must name THIS condition: a live run exists, so saying \
+             \"no live run\" over a run list that visibly contains one would \
+             read as a bug in the tool"
+        );
+        assert!(rx.try_recv().is_err(), "the refusal dispatches nothing");
+
+        // Selecting the live run is what makes `i` work again.
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        cache.driver_selected_run = 1;
+        ctx.status_message = None;
+        let action = screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(pushed_screen_name(&action).as_deref(), Some("driver_inject"));
+        assert!(ctx.status_message.is_none());
     }
 
     #[test]
