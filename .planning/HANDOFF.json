@@ -1,37 +1,44 @@
 {
   "version": "1.0",
-  "timestamp": "2026-07-30T17:57:36.590Z",
+  "timestamp": "2026-08-18T18:39:51.806Z",
   "phase": "19",
-  "phase_name": "GITSAFE — Git & Blast-Radius Envelope",
+  "phase_name": "gitsafe-git-blast-radius-envelope",
   "phase_dir": ".planning/phases/19-gitsafe-git-blast-radius-envelope",
-  "plan": 0,
+  "plan": 4,
   "task": 0,
-  "total_tasks": 0,
+  "total_tasks": 8,
   "status": "paused",
   "completed_tasks": [
-    {"id": 1, "name": "Phase 18 (Driver Tab, Live Watch & Durable Injection) — 11 of 11 plans, accepted", "status": "done", "commit": "740e62f"},
-    {"id": 2, "name": "Quick task 260729-vmp — opt a project in to driving from the Driver tab", "status": "done", "commit": "70157bd"},
-    {"id": 3, "name": "Phase 19 context gathering — 19-CONTEXT.md (665 lines, autonomous mode, research skipped)", "status": "done", "commit": "823a4a3"},
-    {"id": 4, "name": "Push master to origin (295 commits)", "status": "done", "commit": "823a4a3"}
+    {"id": 1, "name": "19-01 GITSAFE tracer — namespace-scoped push refusal end to end", "status": "done", "commit": "31cf824"},
+    {"id": 2, "name": "19-02 classify_git pure policy fn + envelope config surface", "status": "done", "commit": "d7b015c"},
+    {"id": 3, "name": "19-03 pre-push secret scan + git add -A worktree-sweep refusal", "status": "done", "commit": "fb6b70b"}
   ],
   "remaining_tasks": [
-    {"id": 5, "name": "Plan Phase 19 — /gsd-plan-phase with --skip-ui, no research pass", "status": "not_started"},
-    {"id": 6, "name": "Execute Phase 19 plans", "status": "not_started"},
-    {"id": 7, "name": "Verify + accept Phase 19", "status": "not_started"}
+    {"id": 4, "name": "19-04 ambient git identity unreachable + scoped askpass (SAFE-05)", "status": "not_started"},
+    {"id": 5, "name": "19-05 PR cap ledger + PreToolUse guard (SAFE-06)", "status": "not_started"},
+    {"id": 6, "name": "19-06 remote-protection probe + pinned honesty statement", "status": "not_started"},
+    {"id": 7, "name": "19-07 wire envelope into spawn seam, Parked emission", "status": "not_started"},
+    {"id": 8, "name": "19-08 async-blocking guard + project gate and traceability", "status": "not_started"}
   ],
-  "blockers": [],
+  "blockers": [
+    {
+      "description": "Post-merge test gate FAILS after wave 3 merge: tests/driver_reattach.rs fails only when its three tests run concurrently, and the failure count varies between runs (1 failure, then 2). Each test passes in isolation. Failing names observed: a_fresh_scan_finds_the_orphaned_run_live_with_its_last_journal_step, a_run_killed_without_an_ending_is_reported_crashed_and_nothing_on_disk_is_repaired. Assertion seen: 'a live run must have written at least its run_started record' (tests/driver_reattach.rs:365).",
+      "type": "technical",
+      "workaround": "None applied. Diagnosis was in progress when power was lost; the comparison run against the wave-2 base (1f0ae75) had not completed. Do NOT mark 19-03 complete or advance to wave 4 until this is resolved."
+    }
+  ],
   "async_jobs": [],
-  "human_actions_pending": [
-    {"action": "WR-05 — Driver tab layout defect at medium terminal heights", "context": "Carried forward from Phase 18 UAT; captured at .planning/todos/pending/2026-07-29-driver-tab-layout-at-medium-terminal-heights.md. Not scheduled into a phase yet.", "blocking": false},
-    {"action": "Remaining Phase 18 UAT items", "context": "Phase 18 was accepted on code-level evidence 14/14; the user completed UAT only partially (ea0f54b).", "blocking": false}
-  ],
+  "human_actions_pending": [],
   "decisions": [
-    {"decision": "Phase 19 runs in autonomous mode — no questions at any gate; best well-reasoned choice, proceed, record it", "rationale": "Explicit user direction recorded in 19-CONTEXT.md header", "phase": "19"},
-    {"decision": "Phase 19 skips research", "rationale": "ROADMAP marks it 'Research: skip'; branch-protection and pre-push-hook patterns are established practice, and the CLI-capability facts were verified directly against the installed claude binary during context gathering", "phase": "19"},
-    {"decision": "Phase 19 uses --skip-ui", "rationale": "Ships no visual surface — a policy module, two git hook stubs, a PreToolUse guard, an env envelope and a secret scanner. The repo-wide ui-plan-gate returns frontend:true for any ratatui project and would fire on the codebase, not this phase's scope (same reasoning Phase 16 recorded)", "phase": "19"},
-    {"decision": "Guardrails must be MECHANICAL, never prompt text", "rationale": "The governing lesson of the phase — PITFALLS:42-75 (Replit incident: a freeze that lived only in the prompt was ignored, then covered up) and IssueTrojanBench's 66.5% figure", "phase": "19"}
+    {"decision": "Executor for 19-02 committed the RED step rather than reverting it (1df3db7 ships classify_git stubbed to Allow with 13 failing tests; they pass at 05f2696)", "rationale": "A committed RED step is a permanent, re-runnable proof that each refusal is load-bearing — stronger than the hand-executed mutation check 19-01 performed and undid", "phase": "19"},
+    {"decision": "envelope_root() honours GSD_MM_ENVELOPE_ROOT before dirs::data_local_dir()", "rationale": "Without it cargo test writes into the real ~/.local/share, and current_exe() under cargo test is the test binary — the refusal test would have passed vacuously. Fail-closed; recorded in .planning/WINDOWS.md", "phase": "19"},
+    {"decision": "D-21 worktree isolation declined; the git add -A sweep hazard closed mechanically instead (pre-commit refusal + pre-push backstop + write_exclude_block)", "rationale": "'We declined isolation' is not an answer to the sweep hazard; three mechanisms are", "phase": "19"},
+    {"decision": "REQUIREMENTS.md left untouched by 19-01/02/03", "rationale": "SAFE-01/02/03 are declared by several plans; the shared-ID gate holds each checkbox until the last declaring plan produces a SUMMARY", "phase": "19"}
   ],
-  "uncommitted_files": [],
-  "next_action": "Run /gsd-plan-phase for Phase 19 (research already declared skip; pass --skip-ui). Do NOT pass --research-phase.",
-  "context_notes": "Clean pause point, not mid-task. Working tree is clean and master is fully pushed to origin (823a4a3). Phase 18 is complete and accepted; quick task 260729-vmp shipped. Phase 19 has its CONTEXT.md written and is 'Ready for planning' — no plans exist in the phase directory yet. Milestone v2.0 (Autonomous Orchestration) sits at 5 of 9 phases, 37 of 37 plans complete. The only thing between here and planning is invoking the planner."
+  "uncommitted_files": [
+    ".planning/config.json (workflow._auto_chain_active flipped false -> true by the --auto run)",
+    ".gsd/dispatch-isolation-sentinel.json (untracked; run-scoped isolation sentinel)"
+  ],
+  "next_action": "Resolve the tests/driver_reattach.rs concurrency failure before dispatching wave 4. Establish whether it pre-dates wave 3 by running `cargo test --test driver_reattach` against 1f0ae75 in a throwaway worktree; then fix or quarantine, re-run the full suite, commit the wave-3 tracking update, and dispatch plan 19-04.",
+  "context_notes": "Mid-execution of /gsd-execute-phase 19 --auto. Waves are strictly serial (8 waves, 1 plan each, each depending on all prior). Isolation is harness-worktree; each wave gets a fresh /tmp manifest, the executor's worktree is recorded via worktree.record-agent then merged with worktree.cleanup-wave, followed by a post-merge build+test gate and a roadmap.update-plan-progress tracking commit. Waves 1-3 completed that full cycle EXCEPT wave 3's tracking commit, which was never made because the post-merge test gate failed. Test counts across the phase: 773 baseline -> 801 (19-01) -> 825 (19-02) -> 856 claimed by 19-03's executor in its own worktree, but the merged tree does not reproduce 856 clean. clippy --all-targets has held at exactly 5 pre-existing lints throughout. A stray diagnostic worktree at /tmp/gsd-diag-w2 was pruned during resume."
 }
