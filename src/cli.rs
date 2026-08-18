@@ -224,6 +224,21 @@ pub enum EnvelopeAction {
         #[arg(default_value = "", allow_hyphen_values = true)]
         prompt: String,
     },
+    // Not a git hook: the agent CLI invokes this through the `PreToolUse` hook
+    // registration in the generated settings file (D-06 layer 2). It reads one
+    // JSON request on stdin and writes one decision to stdout.
+    //
+    // It carries only the alias, and everything else it needs comes from the
+    // request or from the environment the driver built — because this process is
+    // spawned once per tool call, on the agent's critical path. Every argument
+    // that would have to be *resolved* here is latency paid on every tool call,
+    // and `src/executor/mod.rs:225-239` records what that bill looks like when
+    // it is not paid attention to.
+    /// Internal: classify one tool call before it runs
+    Guard {
+        /// Registry alias whose envelope policy applies to this tool call
+        alias: String,
+    },
     /// Scan a worktree for credential shapes and exit non-zero on any finding
     ///
     /// Not a hook: this is the same scan the `pre-push` hook runs, reachable on

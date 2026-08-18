@@ -206,6 +206,30 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+            EnvelopeAction::Guard { alias } => {
+                // Before `tui::init()` for the same reason the hook arms are:
+                // this process's stdout carries the permission decision the
+                // agent CLI reads, and a terminal put into raw mode on the way
+                // past would corrupt the very answer that does the blocking.
+                let stdin = std::io::stdin();
+                match gsd_meta_manager::envelope::hooks::guard(&alias, stdin.lock()) {
+                    // The exit code is the second carrier (2 blocks); the JSON
+                    // on stdout is the first. Neither depends on the other.
+                    Ok(code) => std::process::exit(code),
+                    Err(err) => {
+                        // Fail-closed and redacted: a guard that cannot do its
+                        // job denies, and its diagnostic passes through the
+                        // already-shipped redaction path rather than a forked
+                        // one — the request it could not judge is a command
+                        // line, which is a thing that can carry a token.
+                        eprintln!(
+                            "Error: {}",
+                            gsd_meta_manager::journal::redact::redact(&err.to_string())
+                        );
+                        std::process::exit(2);
+                    }
+                }
+            }
             EnvelopeAction::Scan { alias, root } => {
                 if !gsd_meta_manager::journal::is_plain_path_component(&alias) {
                     eprintln!(

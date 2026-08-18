@@ -86,6 +86,7 @@
 
 pub mod cred;
 pub mod hooks;
+pub mod ledger;
 pub mod policy;
 pub mod scan;
 
