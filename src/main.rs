@@ -4,7 +4,7 @@ mod tui;
 use gsd_meta_manager::app::App;
 use gsd_meta_manager::watcher::FileWatcher;
 use clap::Parser;
-use gsd_meta_manager::cli::{Cli, Commands};
+use gsd_meta_manager::cli::{Cli, Commands, EnvelopeAction};
 use gsd_meta_manager::config::{load_config, save_config, Config};
 use gsd_meta_manager::driver::{drive, DriveArgs};
 use event::EventBus;
@@ -118,6 +118,33 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
+        // Like the `Drive` arm above, this one is BEFORE `tui::init()` by
+        // construction — and here the position is doing more work than there. A
+        // git hook's stdout and stderr belong to the pushing git process; a
+        // terminal put into raw mode by ratatui on the way past would corrupt
+        // the very output that carries the refusal.
+        Some(Commands::Envelope { action }) => match action {
+            EnvelopeAction::PrePush { alias, hook_path } => {
+                let stdin = std::io::stdin();
+                match gsd_meta_manager::envelope::hooks::pre_push(
+                    &alias,
+                    stdin.lock(),
+                    &hook_path,
+                ) {
+                    // The exit code IS the control (D-25): git blocks the push
+                    // on any non-zero exit, and nothing downstream has to parse
+                    // a message to learn that it was blocked.
+                    Ok(code) => std::process::exit(code),
+                    Err(err) => {
+                        // The `Add` arm's house shape, and fail-closed: a hook
+                        // that could not do its job must not let the push
+                        // through.
+                        eprintln!("Error: {}", err);
+                        std::process::exit(1);
+                    }
+                }
+            }
+        },
         None => {
             // TUI mode
             let mut terminal = tui::init();

@@ -285,7 +285,7 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
     let Some(run_id) = args.run_id.as_deref() else {
         return Err(DriveError::RunIdRequired);
     };
-    if !journal::is_plain_run_id(run_id) {
+    if !journal::is_plain_path_component(run_id) {
         return Err(DriveError::RunIdInvalid {
             run_id: run_id.to_string(),
         });
