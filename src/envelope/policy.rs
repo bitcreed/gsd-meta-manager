@@ -254,25 +254,493 @@ pub struct GitContext {
 /// Config keys are compared case-insensitively, because git accepts
 /// `core.hookspath` and a case-sensitive check would be a one-keystroke bypass.
 pub fn classify_git(argv: &[&str], ctx: &GitContext) -> GitVerdict {
-    let _ = (argv, ctx);
+    let mut index = 0;
+
+    // Rule 4: the leading options apply to whatever verb follows, so they are
+    // judged before the verb is even known.
+    while index < argv.len() {
+        let token = argv[index];
+        if !token.starts_with('-') || token == "-" {
+            break;
+        }
+        if token == "--" {
+            index += 1;
+            break;
+        }
+        let (assignment, consumed) = leading_git_option(argv, index);
+        if let Some(assignment) = assignment {
+            if is_hooks_path_key(config_key_of(assignment)) {
+                return refuse(
+                    ParkReason::HookBypassBlocked,
+                    format!(
+                        "`git -c {assignment}` sets core.hooksPath at command-line precedence, \
+                         which is the one form that outranks the envelope's own env-injected \
+                         setting (D-09)"
+                    ),
+                );
+            }
+        }
+        index += consumed;
+    }
+
+    let Some(verb) = argv.get(index) else {
+        // `git` with no subcommand prints usage. There is nothing to refuse.
+        return GitVerdict::Allow;
+    };
+    let rest = &argv[index + 1..];
+
+    match *verb {
+        "push" => classify_push(rest, ctx),
+        "config" => classify_config(rest),
+        "stash" => refuse(
+            ParkReason::ForcePushBlocked,
+            "`git stash` removes the human's uncommitted work from the tree, where \
+             `git fsck --lost-found` is the only recovery"
+                .to_string(),
+        ),
+        "update-ref" | "filter-branch" | "filter-repo" => refuse(
+            ParkReason::ForcePushBlocked,
+            format!("`git {verb}` rewrites history or moves a ref out from under it"),
+        ),
+        "reflog" => classify_reflog(rest),
+        "symbolic-ref" => classify_symbolic_ref(rest),
+        // A denylist: an unlisted verb is allowed. See this function's doc for
+        // why, and for what covers the gap.
+        _ => GitVerdict::Allow,
+    }
+}
+
+/// Build a refusal. A free function so every producer reads the same and the
+/// `detail` is always a sentence rather than a repeated `format!` shape.
+fn refuse(reason: ParkReason, detail: String) -> GitVerdict {
+    GitVerdict::Refuse { reason, detail }
+}
+
+/// Leading `git` options that consume a **separate** following token.
+///
+/// `--exec-path` is deliberately absent: without `=` it prints a path and runs
+/// nothing, so treating the next token as its value would swallow the verb and
+/// hand the classifier an argv with no command in it.
+const GIT_GLOBAL_VALUE_OPTS: &[&str] = &[
+    "-C",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--super-prefix",
+];
+
+/// One leading option: its config assignment if it carries one, and how many
+/// tokens it occupies.
+fn leading_git_option<'a>(argv: &[&'a str], index: usize) -> (Option<&'a str>, usize) {
+    let token = argv[index];
+
+    if token == "-c" || token == "--config-env" {
+        return (argv.get(index + 1).copied(), 2);
+    }
+    if let Some(rest) = token.strip_prefix("--config-env=") {
+        return (Some(rest), 1);
+    }
+    // git's short-option parser accepts `-ckey=value` with no space.
+    if let Some(rest) = token.strip_prefix("-c") {
+        if !rest.is_empty() && !token.starts_with("--") {
+            return (Some(rest), 1);
+        }
+    }
+    if GIT_GLOBAL_VALUE_OPTS.contains(&token) {
+        return (None, 2);
+    }
+    (None, 1)
+}
+
+/// The key half of a `KEY=VALUE` assignment.
+///
+/// A bare `KEY` is returned whole: `git -c core.hooksPath` with no value sets
+/// the key to boolean true, which is still a write of that key.
+fn config_key_of(assignment: &str) -> &str {
+    assignment
+        .split_once('=')
+        .map(|(key, _)| key)
+        .unwrap_or(assignment)
+}
+
+/// Whether a config key names `core.hooksPath`, at any casing git accepts.
+fn is_hooks_path_key(key: &str) -> bool {
+    key.eq_ignore_ascii_case("core.hookspath")
+}
+
+/// Long push options that take a value, so their value is never read as a
+/// refspec.
+const PUSH_VALUE_OPTS: &[&str] = &["repo", "push-option", "receive-pack", "exec"];
+
+/// D-08's denied push flags, and the reason each parks under.
+fn denied_push_flag(name: &str) -> Option<(ParkReason, &'static str)> {
+    match name {
+        "force" => Some((ParkReason::ForcePushBlocked, "--force")),
+        "force-with-lease" => Some((ParkReason::ForcePushBlocked, "--force-with-lease")),
+        "force-if-includes" => Some((ParkReason::ForcePushBlocked, "--force-if-includes")),
+        "mirror" => Some((ParkReason::ForcePushBlocked, "--mirror")),
+        "delete" => Some((ParkReason::ForcePushBlocked, "--delete")),
+        "no-verify" => Some((ParkReason::HookBypassBlocked, "--no-verify")),
+        _ => None,
+    }
+}
+
+fn classify_push(rest: &[&str], ctx: &GitContext) -> GitVerdict {
+    let mut operands: Vec<&str> = Vec::new();
+    let mut index = 0;
+    let mut end_of_options = false;
+
+    while index < rest.len() {
+        let token = rest[index];
+
+        if end_of_options || !token.starts_with('-') || token == "-" {
+            operands.push(token);
+            index += 1;
+            continue;
+        }
+        if token == "--" {
+            end_of_options = true;
+            index += 1;
+            continue;
+        }
+
+        if let Some(long) = token.strip_prefix("--") {
+            // Rule 2: `--opt=value` and `--opt value` are the same option.
+            let (name, has_inline_value) = match long.split_once('=') {
+                Some((name, _)) => (name, true),
+                None => (long, false),
+            };
+            if let Some((reason, spelling)) = denied_push_flag(name) {
+                return refuse(reason, denied_push_detail(reason, spelling));
+            }
+            if PUSH_VALUE_OPTS.contains(&name) && !has_inline_value {
+                index += 1;
+            }
+            index += 1;
+            continue;
+        }
+
+        // Rule 3: unbundle short flags, so the `-f` inside `-fu` is found.
+        let mut chars = token[1..].chars();
+        while let Some(flag) = chars.next() {
+            match flag {
+                'f' => {
+                    return refuse(
+                        ParkReason::ForcePushBlocked,
+                        denied_push_detail(ParkReason::ForcePushBlocked, "-f"),
+                    )
+                }
+                'd' => {
+                    return refuse(
+                        ParkReason::ForcePushBlocked,
+                        denied_push_detail(ParkReason::ForcePushBlocked, "-d"),
+                    )
+                }
+                // `-o` takes a value: the rest of the bundle, or the next token.
+                'o' => {
+                    if chars.as_str().is_empty() {
+                        index += 1;
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+
+    // git's own operand order: the first is the repository, the rest are
+    // refspecs. A push with no refspec resolves through local config instead.
+    let refspecs = operands.get(1..).unwrap_or_default();
+
+    if refspecs.is_empty() {
+        if ctx.resolved_push_dests.is_empty() {
+            return refuse(
+                ParkReason::PushOutsideNamespace,
+                "this push carries no refspec and no destination could be resolved from local \
+                 git config (see `PushPreview.note` for git's own account of why); an \
+                 unresolvable destination is refused, never allowed"
+                    .to_string(),
+            );
+        }
+        for dest in &ctx.resolved_push_dests {
+            if let PushVerdict::Refuse { reason, ref_name } = classify_push_ref(dest, &ctx.namespace)
+            {
+                return refuse(
+                    ParkReason::PushOutsideNamespace,
+                    format!(
+                        "this push carries no refspec, and its resolved destination \
+                         `{ref_name}` is outside `{}` ({reason})",
+                        ctx.namespace
+                    ),
+                );
+            }
+        }
+        return GitVerdict::Allow;
+    }
+
+    for spec in refspecs {
+        if spec.starts_with('+') {
+            return refuse(
+                ParkReason::ForcePushBlocked,
+                format!(
+                    "the refspec `{spec}` is `+`-prefixed, which is a force push spelled as a \
+                     refspec rather than as a flag"
+                ),
+            );
+        }
+        let (src, dst) = match spec.split_once(':') {
+            Some((src, dst)) => (src, dst),
+            // A lone ref names the same ref at both ends.
+            None => (*spec, *spec),
+        };
+        if src.is_empty() || dst.is_empty() {
+            return refuse(
+                ParkReason::ForcePushBlocked,
+                format!(
+                    "the refspec `{spec}` has an empty half, which is how a push deletes a \
+                     remote ref without naming `--delete`"
+                ),
+            );
+        }
+        let qualified = qualify_destination(dst);
+        if let PushVerdict::Refuse { reason, ref_name } =
+            classify_push_ref(&qualified, &ctx.namespace)
+        {
+            return refuse(
+                ParkReason::PushOutsideNamespace,
+                format!(
+                    "the refspec `{spec}` resolves to `{ref_name}`, which is outside `{}` \
+                     ({reason})",
+                    ctx.namespace
+                ),
+            );
+        }
+    }
+
     GitVerdict::Allow
+}
+
+/// One sentence per denied push flag, naming the consequence rather than the
+/// rule.
+fn denied_push_detail(reason: ParkReason, spelling: &str) -> String {
+    match reason {
+        ParkReason::HookBypassBlocked => format!(
+            "`git push {spelling}` makes the pre-push hook unreachable, which is the layer that \
+             observes what git actually does"
+        ),
+        _ => format!(
+            "`git push {spelling}` can overwrite or remove a remote ref, which is the blast \
+             radius SAFE-02 exists to bound"
+        ),
+    }
+}
+
+/// A destination ref as git would resolve it.
+///
+/// An unqualified name is a branch. Leaving it unqualified would make
+/// `git push origin main` an unrecognised destination and therefore silently
+/// allowed, which is the failure this function exists to prevent.
+fn qualify_destination(dst: &str) -> String {
+    if dst.starts_with("refs/") {
+        dst.to_string()
+    } else {
+        format!("{REFS_HEADS}{dst}")
+    }
+}
+
+/// `git config` flags that take a **separate** value, whose value must not be
+/// mistaken for the key.
+const CONFIG_VALUE_OPTS: &[&str] = &[
+    "--file", "-f", "--blob", "--type", "-t", "--default", "--comment",
+];
+
+/// Flags whose presence makes the invocation a read.
+const CONFIG_READ_OPTS: &[&str] = &[
+    "--get",
+    "--get-all",
+    "--get-regexp",
+    "--get-urlmatch",
+    "--get-color",
+    "--get-colorbool",
+    "--list",
+    "-l",
+];
+
+/// Flags whose presence makes the invocation a write.
+const CONFIG_WRITE_OPTS: &[&str] = &[
+    "--add",
+    "--replace-all",
+    "--unset",
+    "--unset-all",
+    "--rename-section",
+    "--remove-section",
+    "--edit",
+    "-e",
+];
+
+/// git 2.46's subcommand spellings, which reach the same config file.
+const CONFIG_WRITE_SUBCOMMANDS: &[&str] = &[
+    "set",
+    "unset",
+    "add",
+    "replace-all",
+    "unset-all",
+    "rename-section",
+    "remove-section",
+    "edit",
+];
+const CONFIG_READ_SUBCOMMANDS: &[&str] = &["get", "list"];
+
+fn classify_config(rest: &[&str]) -> GitVerdict {
+    let mut operands: Vec<&str> = Vec::new();
+    let mut is_read = false;
+    let mut is_write = false;
+    let mut whole_file_write = false;
+    let mut index = 0;
+
+    while index < rest.len() {
+        let token = rest[index];
+        if !token.starts_with('-') || token == "-" {
+            operands.push(token);
+            index += 1;
+            continue;
+        }
+        if token == "--" {
+            operands.extend_from_slice(&rest[index + 1..]);
+            break;
+        }
+        let name = token.split_once('=').map(|(n, _)| n).unwrap_or(token);
+        if CONFIG_READ_OPTS.contains(&name) {
+            is_read = true;
+        }
+        if CONFIG_WRITE_OPTS.contains(&name) {
+            is_write = true;
+            if name == "--edit" || name == "-e" {
+                whole_file_write = true;
+            }
+        }
+        if CONFIG_VALUE_OPTS.contains(&name) && !token.contains('=') {
+            index += 1;
+        }
+        index += 1;
+    }
+
+    // The subcommand form puts the verb where the key would otherwise be.
+    let mut key_operands = operands.as_slice();
+    if let Some(first) = operands.first() {
+        if CONFIG_WRITE_SUBCOMMANDS.contains(first) {
+            is_write = true;
+            if *first == "edit" {
+                whole_file_write = true;
+            }
+            key_operands = &operands[1..];
+        } else if CONFIG_READ_SUBCOMMANDS.contains(first) {
+            is_read = true;
+            key_operands = &operands[1..];
+        }
+    }
+
+    // The classic form: `git config <key> <value>` is a write, `git config
+    // <key>` alone prints the value and is a read.
+    if !is_read && !is_write && key_operands.len() >= 2 {
+        is_write = true;
+    }
+
+    if whole_file_write {
+        return refuse(
+            ParkReason::HookBypassBlocked,
+            "`git config --edit` opens the whole config file for writing, so it can set \
+             core.hooksPath without ever naming it"
+                .to_string(),
+        );
+    }
+
+    if is_write && !is_read {
+        if let Some(key) = key_operands.first() {
+            if is_hooks_path_key(key) {
+                return refuse(
+                    ParkReason::HookBypassBlocked,
+                    format!(
+                        "writing `{key}` moves the hook directory the envelope installed into, \
+                         which disarms the only layer that observes what git actually does"
+                    ),
+                );
+            }
+        }
+    }
+
+    GitVerdict::Allow
+}
+
+fn classify_reflog(rest: &[&str]) -> GitVerdict {
+    let subcommand = rest.iter().find(|token| !token.starts_with('-'));
+    match subcommand {
+        Some(&sub @ ("delete" | "expire" | "drop")) => refuse(
+            ParkReason::ForcePushBlocked,
+            format!(
+                "`git reflog {sub}` destroys the reflog, which is the recovery path for every \
+                 other destructive git operation"
+            ),
+        ),
+        // `git reflog` and `git reflog show` are reads.
+        _ => GitVerdict::Allow,
+    }
+}
+
+fn classify_symbolic_ref(rest: &[&str]) -> GitVerdict {
+    let mut operands = 0;
+    let mut deleting = false;
+    for token in rest {
+        if token.starts_with('-') && *token != "-" {
+            if *token == "-d" || *token == "--delete" {
+                deleting = true;
+            }
+            continue;
+        }
+        operands += 1;
+    }
+
+    // Two operands is `symbolic-ref <name> <ref>`, which writes. One is a read.
+    if deleting || operands >= 2 {
+        refuse(
+            ParkReason::ForcePushBlocked,
+            "`git symbolic-ref` with a value repoints HEAD, which changes what every \
+             subsequent commit and push means"
+                .to_string(),
+        )
+    } else {
+        GitVerdict::Allow
+    }
 }
 
 /// Resolve the implicit push destinations for a repository — the **one** impure
 /// function in this module.
 ///
 /// It calls [`crate::state_reader::git_ops::push_refspecs`], which already
-/// resolves `branch.<b>.remote`, `remote.pushDefault`, `remote.<r>.push` and
-/// `push.default` with no network and no credential. **Do not re-derive any of
-/// those here.** A second implementation of that resolution is a second thing
-/// that can drift from the preview the user was shown, and the whole value of
-/// the dry-run preview is that it describes the push the envelope will judge.
+/// resolves every config key involved — its own doc enumerates them in order —
+/// with no network and no credential. **The key names are deliberately not
+/// repeated here.** A second copy of that list is a second thing to keep in
+/// step, and a second implementation of the resolution would be a second thing
+/// that can drift from the preview the user was shown; the whole value of the
+/// dry-run preview is that it describes the push the envelope will judge.
 ///
 /// An unresolvable destination yields an empty `resolved_push_dests`, which
 /// [`classify_git`] treats as a refusal. Unknown is never allowed.
 pub fn resolve_push_context(project_root: &Path, namespace: &str) -> GitContext {
-    let _ = (project_root, namespace);
-    GitContext::default()
+    let preview = crate::state_reader::git_ops::push_refspecs(project_root);
+
+    let resolved_push_dests = preview
+        .refspecs
+        .iter()
+        .filter_map(|refspec| refspec.split_once(':').map(|(_, dst)| dst.trim().to_string()))
+        .filter(|dst| !dst.is_empty())
+        .collect();
+
+    GitContext {
+        namespace: namespace.to_string(),
+        resolved_push_dests,
+    }
 }
 
 /// The `--disallowedTools` patterns for the driven child (D-06 layer 1).
@@ -282,8 +750,30 @@ pub fn resolve_push_context(project_root: &Path, namespace: &str) -> GitContext 
 /// fail validation. It is **not** a substitute for [`classify_git`] — this list
 /// is matched by the agent runtime against a command line, while the classifier
 /// is applied to parsed argv by the `PreToolUse` guard.
+///
+/// The `Write`/`Edit` entries are not decoration either: the driven
+/// repository's project-tier `.claude/settings.json` **is** loaded by the child
+/// (`--setting-sources project`) and **is** agent-writable, so the envelope
+/// denies writing it rather than trusting it. A control whose carrier the agent
+/// can edit is not a control.
 pub fn disallowed_tools() -> Vec<String> {
-    Vec::new()
+    let mut patterns: Vec<String> = [
+        "git push",
+        "git stash",
+        "git config",
+        "git update-ref",
+        "git reflog",
+        "git filter-branch",
+        "git filter-repo",
+        "git symbolic-ref",
+    ]
+    .iter()
+    .map(|verb| format!("Bash({verb}:*)"))
+    .collect();
+
+    patterns.push("Write(.claude/**)".to_string());
+    patterns.push("Edit(.claude/**)".to_string());
+    patterns
 }
 
 #[cfg(test)]
