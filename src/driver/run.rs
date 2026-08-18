@@ -443,11 +443,22 @@ pub(crate) const PARKED_LABEL_PREFIX: &str = "parked:";
 /// `async fn`'s path (D-28, WR-10), so both call sites move it into
 /// `spawn_blocking` alongside the value it needs.
 pub(crate) fn terminal_label(outcome: &RunOutcome, journal: &Path) -> String {
-    // RED STEP (plan 19-07 Task 4): the journal is not consulted yet, so a run
-    // whose journal carries a park still reports the plain outcome. GREEN reads
-    // it and prefixes it with `PARKED_LABEL_PREFIX`.
-    let _ = (journal, PARKED_LABEL_PREFIX);
-    outcome_label(outcome).to_string()
+    let Ok((records, _diagnostics)) = journal::reader::read_all(journal) else {
+        // A journal that cannot be read is a park that was not observed.
+        // Claiming one would be inventing evidence in the file this phase
+        // exists to make trustworthy.
+        return outcome_label(outcome).to_string();
+    };
+
+    match records
+        .iter()
+        .rev()
+        .find(|record| record.kind == "parked")
+        .and_then(|record| record.rest["reason"].as_str())
+    {
+        Some(reason) => format!("{PARKED_LABEL_PREFIX}{reason}"),
+        None => outcome_label(outcome).to_string(),
+    }
 }
 
 /// Build the immutable half of `run.json`.
@@ -620,16 +631,32 @@ async fn shutdown_on_terminate(
     }
 
     // **No blocking read inside an `async fn`** (D-28, WR-10). `terminal_label`
-    // reads the whole journal, and the journal path plus the outcome are both
-    // cheap to move, so the read goes into a blocking task and only the
-    // resulting `String` comes back. A join failure falls back to the plain
-    // outcome label: the terminal record must be written either way, and a run
-    // that ends with no record at all is the one failure OBS-01 cannot tolerate.
+    // reads the whole journal, so the read goes into a blocking task and only
+    // the resulting `String` comes back.
+    //
+    // The inline re-run on a join failure is `driver::drive`'s dry-run arm's own
+    // answer to the same question, and this repository's established one: it
+    // keeps the terminal record honest on a path no healthy run reaches, at the
+    // cost of a blocking call in a process that is already ending anyway. The
+    // record must be written either way — a run that ends with no record at all
+    // is the one failure OBS-01 cannot tolerate.
     let journal_path = journal.paths().journal.clone();
-    let fallback = outcome_label(&outcome).to_string();
-    let label = tokio::task::spawn_blocking(move || terminal_label(&outcome, &journal_path))
-        .await
-        .unwrap_or(fallback);
+    let task_outcome = outcome.clone();
+    let task_path = journal_path.clone();
+    let label = match tokio::task::spawn_blocking(move || {
+        terminal_label(&task_outcome, &task_path)
+    })
+    .await
+    {
+        Ok(label) => label,
+        Err(err) => {
+            tracing::warn!(
+                panicked = err.is_panic(),
+                "the terminal-label task did not run to completion",
+            );
+            terminal_label(&outcome, &journal_path)
+        }
+    };
 
     if let Err(err) = journal.finish(&label) {
         tracing::warn!(
@@ -1644,13 +1671,26 @@ pub async fn execute_run(
 
     let outcome = handle.wait_outcome().await;
 
-    // Same blocking hand-off and the same fallback as `shutdown_on_terminate`'s:
-    // one end-of-run journal read, moved off the async path (D-28, WR-10).
+    // Same blocking hand-off and the same inline fallback as
+    // `shutdown_on_terminate`'s: one end-of-run journal read, moved off the
+    // async path (D-28, WR-10).
     let journal_path = run.journal.paths().journal.clone();
-    let fallback = outcome_label(&outcome).to_string();
-    let label = tokio::task::spawn_blocking(move || terminal_label(&outcome, &journal_path))
-        .await
-        .unwrap_or(fallback);
+    let task_outcome = outcome.clone();
+    let task_path = journal_path.clone();
+    let label = match tokio::task::spawn_blocking(move || {
+        terminal_label(&task_outcome, &task_path)
+    })
+    .await
+    {
+        Ok(label) => label,
+        Err(err) => {
+            tracing::warn!(
+                panicked = err.is_panic(),
+                "the terminal-label task did not run to completion",
+            );
+            terminal_label(&outcome, &journal_path)
+        }
+    };
 
     run.journal.finish(&label).map_err(|err| DriveError::Journal {
         detail: format!("{err:#}"),

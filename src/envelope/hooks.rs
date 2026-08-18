@@ -23,7 +23,32 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context};
 use tempfile::NamedTempFile;
 
-use super::policy::{self, PushVerdict};
+use super::policy::{self, ParkReason, PushVerdict};
+
+/// What every park this module records says would unpark the run.
+///
+/// One word, and the same word for all of them, because Phase 19 owns
+/// *producing* the reason and Phase 20 owns what happens next (D-24). A field
+/// that tried to prescribe the recovery would have to be edited every time the
+/// recovery changed, and then it is no longer a stable identifier.
+const NEEDS_HUMAN: &str = "human";
+
+/// Record a refusal in the active run's journal, **after** the verdict is
+/// decided and **before** the process exits non-zero.
+///
+/// **The order is the decision.** Decide the verdict, write the refusal to
+/// stderr, park, then exit non-zero — and the exit code does not depend on what
+/// this returned. A refusal that could not be recorded is still a refusal;
+/// making the exit conditional on the recording would let an agent that unset
+/// [`super::cred::PROJECT_ROOT_ENV`] turn a park failure into a permitted
+/// operation, which is exactly the inversion D-25 forbids.
+///
+/// [`super::park`] writes its own second stderr line for any outcome other than
+/// `Appended`, so silence is impossible here without deleting a line inside
+/// `park` itself.
+fn park_refusal(reason: ParkReason, detail: &str) {
+    let _ = super::park(reason, NEEDS_HUMAN, detail);
+}
 
 /// The hook filenames git looks for, and the subdirectory it looks in.
 pub const PRE_PUSH_HOOK: &str = "pre-push";
@@ -262,7 +287,16 @@ pub fn pre_push(
     invoked_from: &Path,
     repo_root: &Path,
 ) -> anyhow::Result<i32> {
-    assert_provenance(alias, invoked_from)?;
+    // A provenance mismatch is an envelope assertion that failed, and it is a
+    // refusal like any other — so it parks like any other. Without this, the one
+    // refusal that fires when the hook itself has been relocated would be the
+    // one refusal leaving no trace, which is T-19-56 exactly.
+    assert_provenance(alias, invoked_from).inspect_err(|_| {
+        park_refusal(
+            ParkReason::EnvelopeAssertionFailed,
+            "a pre-push hook was invoked from a path the envelope does not sanction",
+        );
+    })?;
 
     let lines = read_ref_lines(stdin)?;
     let mut refused = classify_refs(alias, &lines);
@@ -276,6 +310,14 @@ pub fn pre_push(
             "gsd-meta-manager envelope: REFUSED push — the worktree carries \
              credential-shaped content (reason: {})",
             policy::REASON_SECRET_DETECTED,
+        );
+        // The detail names neither the file nor the match: it reaches a journal,
+        // and a detail that quoted the finding back would carry the credential
+        // into the record (SAFE-04). The scan report above already names the
+        // file, the line and the rule, on stderr, where a human is reading.
+        park_refusal(
+            ParkReason::SecretDetected,
+            "the worktree carries credential-shaped content",
         );
         refused += 1;
     }
@@ -298,13 +340,24 @@ pub fn pre_push(
 /// tell that apart from a failed read; the safe reading of the ambiguity is the
 /// one that blocks, and an empty commit is not a thing a driven run needs.
 pub fn pre_commit(alias: &str, invoked_from: &Path, repo_root: &Path) -> anyhow::Result<i32> {
-    assert_provenance(alias, invoked_from)?;
+    // Same reason as [`pre_push`]'s: a refusal that leaves no trace is the one
+    // failure a later reader cannot audit (T-19-56).
+    assert_provenance(alias, invoked_from).inspect_err(|_| {
+        park_refusal(
+            ParkReason::EnvelopeAssertionFailed,
+            "a pre-commit hook was invoked from a path the envelope does not sanction",
+        );
+    })?;
 
     let staged = crate::state_reader::git_ops::git_read_raw(
         repo_root,
         &["diff", "--cached", "--name-only", "-z"],
     )
     .ok_or_else(|| {
+        park_refusal(
+            ParkReason::EnvelopeAssertionFailed,
+            "the staged path list could not be read, so the commit was refused",
+        );
         anyhow!(
             "could not read the staged path list, so this commit cannot be judged; \
              refusing rather than allowing (reason: {})",
@@ -344,6 +397,9 @@ fn refuse_paths(repo_root: &Path, paths: &[PathBuf], operation: &str) -> usize {
             path.display(),
             reason.as_str(),
         );
+        // `reason` is the verdict `policy::forbidden_repo_path` already reached,
+        // carried through rather than re-derived from the path a second time.
+        park_refusal(reason, &format!("a refused {operation} path"));
         refused += 1;
     }
     refused
@@ -587,6 +643,10 @@ fn classify_refs(alias: &str, lines: &[String]) -> usize {
                 fields.len(),
                 policy::REASON_ENVELOPE_ASSERTION_FAILED,
             );
+            park_refusal(
+                ParkReason::EnvelopeAssertionFailed,
+                "a pre-push ref line could not be read",
+            );
             refused += 1;
             continue;
         }
@@ -597,6 +657,16 @@ fn classify_refs(alias: &str, lines: &[String]) -> usize {
                 eprintln!(
                     "gsd-meta-manager envelope: REFUSED push to {ref_name} \
                      (reason: {reason}); a driven run may push only inside {namespace}",
+                );
+                // `PushVerdict::Refuse` carries only `REASON_PUSH_OUTSIDE_NAMESPACE`
+                // — this branch has exactly one reason and the debug assertion
+                // below is what keeps that true if the verdict ever grows a
+                // second. Deriving the park reason a second way is how a journal
+                // starts disagreeing with the refusal that produced it.
+                debug_assert_eq!(reason, policy::REASON_PUSH_OUTSIDE_NAMESPACE);
+                park_refusal(
+                    ParkReason::PushOutsideNamespace,
+                    "a push destination outside the reserved namespace",
                 );
                 refused += 1;
             }
@@ -688,6 +758,13 @@ pub struct GuardRequest {
 /// the ordinary permission flow exactly where it was.
 pub fn guard(alias: &str, stdin: impl std::io::Read) -> anyhow::Result<i32> {
     let root = super::envelope_root().ok_or_else(|| {
+        // The guard's own refusal-before-a-verdict. It parks for the same reason
+        // every other refusal does: an unrecorded refusal is one a later reader
+        // cannot tell from a tool call that was never made (T-19-56).
+        park_refusal(
+            ParkReason::EnvelopeAssertionFailed,
+            "the guard could not resolve an envelope root, so it refused the tool call",
+        );
         anyhow!(
             "no application data directory is resolvable, so no pull-request ledger can \
              be consulted and the guard refuses rather than permitting unbounded"
@@ -723,7 +800,7 @@ pub fn guard_in(
 ) -> anyhow::Result<i32> {
     let request = match read_guard_request(stdin) {
         Ok(request) => request,
-        Err(reason) => return deny(out, err, &reason),
+        Err(reason) => return deny(out, err, ParkReason::EnvelopeAssertionFailed, &reason),
     };
 
     // Only a shell tool carries a command to classify. Anything else is layer
@@ -741,6 +818,7 @@ pub fn guard_in(
         return deny(
             out,
             err,
+            ParkReason::EnvelopeAssertionFailed,
             "this Bash request carries no readable `command`, so nothing about it can be \
              classified; an unjudgeable command is refused rather than permitted",
         );
@@ -750,6 +828,7 @@ pub fn guard_in(
         return deny(
             out,
             err,
+            ParkReason::EnvelopeAssertionFailed,
             "the command's words cannot be recovered — an unterminated quote or a trailing \
              line continuation — so it cannot be classified and is refused",
         );
@@ -769,7 +848,10 @@ pub fn guard_in(
         &policy,
         &mut push_ctx,
     ) {
-        Ok(Some(reason)) => deny(out, err, &reason),
+        // The park reason travels WITH the refusal the classifier reached, so
+        // the journal cannot disagree with the message about which boundary was
+        // crossed.
+        Ok(Some((park, reason))) => deny(out, err, park, &reason),
         Ok(None) => Ok(0),
         // An error reaching a verdict is not a verdict. The ledger could not be
         // written, or the window could not be computed — either way the attempt
@@ -777,6 +859,7 @@ pub fn guard_in(
         Err(error) => deny(
             out,
             err,
+            ParkReason::EnvelopeAssertionFailed,
             &format!(
                 "the envelope could not reach a verdict for this command, so it is refused \
                  (reason: {}): {}",
@@ -787,7 +870,13 @@ pub fn guard_in(
     }
 }
 
-/// Classify every simple command in `segments`, returning the first refusal.
+/// Classify every simple command in `segments`, returning the first refusal as
+/// its **park reason and its message together**.
+///
+/// The pair rather than the message alone (D-24): the caller has to park under
+/// the reason this function decided, and a caller that inferred one from the
+/// message would be deriving the same fact a second way — which is how a journal
+/// comes to disagree with the refusal it records.
 ///
 /// `depth` bounds the `sh -c` recursion at [`MAX_SHELL_RECURSION`].
 #[allow(clippy::too_many_arguments)]
@@ -799,7 +888,7 @@ fn classify_segments(
     project_root: Option<&Path>,
     envelope: &policy::EnvelopePolicy,
     push_ctx: &mut Option<policy::GitContext>,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<Option<(ParkReason, String)>> {
     for segment in segments {
         let Some(program_token) = segment.first() else {
             continue;
@@ -811,18 +900,24 @@ fn classify_segments(
         // cannot see. `layer 2 raises the cost of an accident`; it does not
         // pretend to evaluate a shell.
         if program_token.expansion {
-            return Ok(Some(format!(
-                "this command's program is assembled by shell expansion, so what it will \
-                 run is not knowable before it runs; refused rather than guessed at \
-                 (reason: {})",
-                policy::REASON_ENVELOPE_ASSERTION_FAILED
+            return Ok(Some((
+                ParkReason::EnvelopeAssertionFailed,
+                format!(
+                    "this command's program is assembled by shell expansion, so what it will \
+                     run is not knowable before it runs; refused rather than guessed at \
+                     (reason: {})",
+                    policy::REASON_ENVELOPE_ASSERTION_FAILED
+                ),
             )));
         }
         if program == "eval" {
-            return Ok(Some(format!(
-                "`eval` builds a command at run time, so no classifier can see what it \
-                 will run; refused (reason: {})",
-                policy::REASON_ENVELOPE_ASSERTION_FAILED
+            return Ok(Some((
+                ParkReason::EnvelopeAssertionFailed,
+                format!(
+                    "`eval` builds a command at run time, so no classifier can see what it \
+                     will run; refused (reason: {})",
+                    policy::REASON_ENVELOPE_ASSERTION_FAILED
+                ),
             )));
         }
 
@@ -831,18 +926,22 @@ fn classify_segments(
         if NESTED_SHELLS.contains(&program) {
             if let Some(payload) = shell_c_payload(&words) {
                 if depth >= MAX_SHELL_RECURSION {
-                    return Ok(Some(format!(
-                        "this command nests shells more deeply than the guard follows, so \
-                         its innermost command cannot be classified; refused (reason: {})",
-                        policy::REASON_ENVELOPE_ASSERTION_FAILED
+                    return Ok(Some((
+                        ParkReason::EnvelopeAssertionFailed,
+                        format!(
+                            "this command nests shells more deeply than the guard follows, so \
+                             its innermost command cannot be classified; refused (reason: {})",
+                            policy::REASON_ENVELOPE_ASSERTION_FAILED
+                        ),
                     )));
                 }
                 let Some(inner) = policy::split_segments(payload) else {
-                    return Ok(Some(
+                    return Ok(Some((
+                        ParkReason::EnvelopeAssertionFailed,
                         "the nested shell payload's words cannot be recovered, so it cannot \
                          be classified and is refused"
                             .to_string(),
-                    ));
+                    )));
                 };
                 if let Some(refusal) = classify_segments(
                     &inner,
@@ -873,9 +972,13 @@ fn classify_segments(
             });
             if let policy::GitVerdict::Refuse { reason, detail } = policy::classify_git(&rest, &ctx)
             {
-                return Ok(Some(format!(
-                    "gsd-meta-manager envelope: REFUSED (reason: {}) — {detail}",
-                    reason.as_str()
+                // The classifier's own reason, carried out whole.
+                return Ok(Some((
+                    reason,
+                    format!(
+                        "gsd-meta-manager envelope: REFUSED (reason: {}) — {detail}",
+                        reason.as_str()
+                    ),
                 )));
             }
             continue;
@@ -890,9 +993,12 @@ fn classify_segments(
             };
             let verdict = super::ledger::record_and_check_in(root, alias, &entry, envelope)?;
             if let Some(detail) = verdict.refusal_detail() {
-                return Ok(Some(format!(
-                    "gsd-meta-manager envelope: REFUSED (reason: {}) — {detail}",
-                    policy::REASON_PR_CAP_EXCEEDED
+                return Ok(Some((
+                    ParkReason::PrCapExceeded,
+                    format!(
+                        "gsd-meta-manager envelope: REFUSED (reason: {}) — {detail}",
+                        policy::REASON_PR_CAP_EXCEEDED
+                    ),
                 )));
             }
         }
@@ -976,7 +1082,12 @@ fn read_guard_request(stdin: impl std::io::Read) -> Result<GuardRequest, String>
 /// the protocol's shape ever drifts under us. A control with one carrier is a
 /// control that a schema change silently disarms — the same argument D-07 makes
 /// about the settings file, applied to the guard's own answer.
-fn deny(out: &mut impl Write, err: &mut impl Write, reason: &str) -> anyhow::Result<i32> {
+fn deny(
+    out: &mut impl Write,
+    err: &mut impl Write,
+    park: ParkReason,
+    reason: &str,
+) -> anyhow::Result<i32> {
     let decision = serde_json::json!({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -986,6 +1097,18 @@ fn deny(out: &mut impl Write, err: &mut impl Write, reason: &str) -> anyhow::Res
     });
     writeln!(out, "{decision}").context("failed to write the guard's decision")?;
     writeln!(err, "{reason}").context("failed to mirror the guard's refusal")?;
+
+    // **Third, and after the verdict is already settled.** The two carriers
+    // above are the control; this is the evidence (D-24, D-25). The exit code
+    // below does not depend on what it returns, which is the property that
+    // stops an agent from turning a suppressed park into a permitted command.
+    //
+    // The detail names the reason and nothing else. `reason` above is the
+    // guard's message and can quote a token out of the command line it refused;
+    // that belongs on this process's stderr, where the user is, and not in a
+    // journal (SAFE-04).
+    park_refusal(park, "a tool call the envelope refused");
+
     // Exit code 2 is the hook protocol's blocking error, and it is the carrier
     // that does not depend on the JSON being understood.
     Ok(2)

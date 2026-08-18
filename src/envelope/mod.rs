@@ -262,14 +262,37 @@ impl ParkOutcome {
 /// [`ParkOutcome::Unresolvable`] rather than a panic — the `active` file lives
 /// inside the driven project, so **the agent controls it**.
 pub fn park_at(project_root: &Path, reason: policy::ParkReason, needs: &str) -> ParkOutcome {
-    // RED STEP (plan 19-07 Task 4). The API above is real and the callers below
-    // are real; only the DECISION — whether a refusal actually reaches the run
-    // journal — is stubbed to "nothing was recorded", so the rows that assert an
-    // on-disk park fail here and pass at GREEN. The rows that pass against this
-    // stub (no-locator, no-active-run) are the ones that MUST pass against it,
-    // or they would be proving nothing.
-    let _ = (project_root, reason, needs);
-    ParkOutcome::NoActiveRun
+    let planning = project_root.join(".planning");
+
+    // The ONE run resolver. `read_active_run` validates the pointer before it
+    // answers, so a traversing `active` file — which the agent can write —
+    // becomes `None` here rather than a path this function would join.
+    let Some(run_id) = crate::journal::writer::read_active_run(&planning) else {
+        return ParkOutcome::NoActiveRun;
+    };
+
+    let Some(paths) = crate::journal::run_paths(&planning, &run_id) else {
+        // The refusal's shape, never the refused value: it is agent-controlled
+        // and this string reaches a terminal (D-28).
+        return ParkOutcome::Unresolvable(format!(
+            "the active pointer names {} bytes that are not a single plain path \
+             component",
+            run_id.len()
+        ));
+    };
+
+    let mut writer = match crate::journal::writer::JournalWriter::open(&paths.journal) {
+        Ok(writer) => writer,
+        Err(err) => return ParkOutcome::Failed(crate::journal::redact::redact(&err.to_string())),
+    };
+
+    match writer.append(&crate::journal::JournalEvent::Parked {
+        reason: reason.as_str().to_string(),
+        needs: needs.to_string(),
+    }) {
+        Ok(seq) => ParkOutcome::Appended { seq },
+        Err(err) => ParkOutcome::Failed(crate::journal::redact::redact(&err.to_string())),
+    }
 }
 
 /// [`park_at`] against the project the envelope environment names, for the
