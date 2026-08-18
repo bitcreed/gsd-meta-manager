@@ -361,7 +361,7 @@ Plans:
   - `git stash` must be forbidden in the driver's allowlist outright
 
 **Research**: skip — branch-protection and pre-push-hook patterns are well-established practice (GitHub Copilot's `copilot/`-prefix model is a direct precedent)
-**Plans**: 6/8 plans executed
+**Plans**: 7/8 plans executed
 
 Plans:
 **Wave 1**
@@ -390,7 +390,7 @@ Plans:
 
 **Wave 7** *(blocked on Wave 6)*
 
-- [ ] 19-07-PLAN.md — Wiring: `--disallowedTools`/`--settings` on argv, the envelope environment in the one spawn closure, envelope establishment at the single options site, the positioned refusal, and `Parked`'s first emission
+- [x] 19-07-PLAN.md — Wiring: `--disallowedTools`/`--settings` on argv, the envelope environment in the one spawn closure, envelope establishment at the single options site, the positioned refusal, and `Parked`'s first emission
 
 **Wave 8** *(blocked on Wave 7)*
 
@@ -481,7 +481,7 @@ phase's scope — the same reasoning Phases 15 and 16 recorded.
 | 16. Run Journal & State Substrate | 6/6 | Complete    | 2026-07-29 |
 | 17. Supervisor | 8/8 | Complete    | 2026-07-29 |
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
-| 19. GITSAFE — Git & Blast-Radius Envelope | 6/8 | In Progress|  |
+| 19. GITSAFE — Git & Blast-Radius Envelope | 7/8 | In Progress|  |
 | 20. Deterministic Decision Router & Run Bounds | 0/? | Not started | - |
 | 21. LLM Goal Layer & Prompt-Injection Hardening | 0/? | Not started | - |
 | 22. Container Execution Target | 0/? | Not started | - |
