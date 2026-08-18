@@ -915,7 +915,7 @@ fn shell_c_payload<'a>(words: &[&'a str]) -> Option<&'a str> {
 /// invocation would silently reset the per-run cap on every tool call, which is
 /// the one failure mode a per-run cap cannot survive.
 fn current_run_id() -> String {
-    std::env::var("GSD_MM_RUN_ID").unwrap_or_else(|_| "unattributed-run".to_string())
+    std::env::var(super::cred::RUN_ID_ENV).unwrap_or_else(|_| "unattributed-run".to_string())
 }
 
 /// This alias's envelope settings, defaults applied.

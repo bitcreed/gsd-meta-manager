@@ -59,6 +59,23 @@ const ASKPASS_USERNAME: &str = "x-access-token";
 /// D-25).
 pub const PROJECT_ROOT_ENV: &str = "GSD_MM_ENVELOPE_PROJECT_ROOT";
 
+/// The run id carried into the `PreToolUse` guard, for the per-run PR cap
+/// (SAFE-06, D-19).
+///
+/// **Named here rather than spelled at its two ends**, next to
+/// [`PROJECT_ROOT_ENV`] and for the same reason: the guard is a fresh process
+/// per tool call and has no other way to know which run it belongs to, so the
+/// writer (the driver's spawn closure) and the reader
+/// ([`super::hooks::guard`]) must agree on a string neither of them can see the
+/// other type. If they disagree, every tool call reports a different run and the
+/// per-run cap is silently unenforced — a control that is off with nothing
+/// indicating it, which is the failure mode this whole phase is written against.
+///
+/// It is **not** set by [`build_env`]: that function is given an alias and a
+/// project root, not a run, and inventing a run id inside it would be a second
+/// place run ids come from. Wiring it is the driver's job.
+pub const RUN_ID_ENV: &str = "GSD_MM_RUN_ID";
+
 /// The filename of the envelope-generated git config, inside the alias's
 /// envelope directory.
 const GITCONFIG_FILE: &str = "gitconfig";
