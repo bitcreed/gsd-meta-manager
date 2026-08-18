@@ -41,6 +41,20 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context};
 use tempfile::NamedTempFile;
 
+use crate::config::CredentialSource;
+use crate::journal::redact::redact;
+
+/// The filename of the generated askpass responder, inside the alias's envelope
+/// directory. D-17 names this path.
+const ASKPASS_FILE: &str = "askpass";
+
+/// What the responder answers a `Username for …` prompt with.
+///
+/// A token-authenticated HTTPS push ignores the username, so there is no reason
+/// for the secret to appear twice. A non-secret placeholder that says what it is
+/// keeps the token to exactly one prompt.
+const ASKPASS_USERNAME: &str = "x-access-token";
+
 /// The run-journal locator carried into every hook and guard re-entry (D-24,
 /// D-25).
 pub const PROJECT_ROOT_ENV: &str = "GSD_MM_ENVELOPE_PROJECT_ROOT";
@@ -291,7 +305,9 @@ pub fn build_env(alias: &str, project_root: &Path) -> anyhow::Result<EnvelopeEnv
              to fall back to a directory that could sit inside a repository"
         )
     })?;
-    build_env_in(&root, alias, project_root)
+    let binary = std::env::current_exe()
+        .context("cannot resolve this binary's own path, so no askpass responder can name it")?;
+    build_env_in(&root, alias, project_root, &binary)
 }
 
 /// [`build_env`] against an explicit envelope root.
@@ -302,7 +318,12 @@ pub fn build_env(alias: &str, project_root: &Path) -> anyhow::Result<EnvelopeEnv
 /// [`crate::state_reader::git_ops::git_read_raw`], which already carries the
 /// `--no-optional-locks` and failure-as-data properties a read that must not
 /// mutate the repository it is reading needs.
-pub fn build_env_in(root: &Path, alias: &str, project_root: &Path) -> anyhow::Result<EnvelopeEnv> {
+pub fn build_env_in(
+    root: &Path,
+    alias: &str,
+    project_root: &Path,
+    binary: &Path,
+) -> anyhow::Result<EnvelopeEnv> {
     let dir = super::envelope_dir_in(root, alias).ok_or_else(|| {
         anyhow!("refusing to build an environment for alias {alias:?}: not a plain path component")
     })?;
@@ -328,6 +349,14 @@ pub fn build_env_in(root: &Path, alias: &str, project_root: &Path) -> anyhow::Re
         anyhow!("alias {alias:?} sanctions no hooks directory, so no hook can be delivered")
     })?;
 
+    // The host is resolved ONCE, here, from the remote the project has at run
+    // start — and then baked into the generated responder. Re-deriving it inside
+    // the responder would read a value the agent can change, which is precisely
+    // the attack D-17 names: an agent that adds a second remote would move the
+    // host the responder answers for, and be handed the token for it.
+    let remote_host = configured_remote_host(&project_root).unwrap_or_default();
+    let askpass = write_askpass_stub_in(root, alias, binary, &remote_host)?;
+
     let mut entries: Vec<EnvelopeVar> = vec![
         // Removed, not emptied. An ambient agent socket is the shortest path
         // from a driven run to the user's own keys, and an empty value would
@@ -350,9 +379,22 @@ pub fn build_env_in(root: &Path, alias: &str, project_root: &Path) -> anyhow::Re
             OsString::from("GIT_CONFIG_SYSTEM"),
             Some(gitconfig.into_os_string()),
         ),
+        // The ONLY channel a token reaches git through (D-17). The responder
+        // writes the secret to its stdout and nowhere else — never an argv
+        // element, which is world-readable through the process table; never URL
+        // userinfo, which lands in `.git/config` and in the `git remote -v`
+        // output this project journals; and never a file under the envelope
+        // directory, which would be a secret at rest with no protection posture.
+        (
+            OsString::from("GIT_ASKPASS"),
+            Some(askpass.into_os_string()),
+        ),
         // A detached driver's stdio is null (Phase 17 D-01), so an
         // authentication prompt is not a prompt — it is a hang the idle cap
-        // eventually kills hours later.
+        // eventually kills hours later. Set alongside GIT_ASKPASS on purpose: a
+        // responder that refuses makes git fall back to the terminal, and this
+        // is what turns that fallback into an immediate, legible failure instead
+        // of a block on a null stdio.
         (
             OsString::from("GIT_TERMINAL_PROMPT"),
             Some(OsString::from("0")),
@@ -395,6 +437,306 @@ pub fn build_env_in(root: &Path, alias: &str, project_root: &Path) -> anyhow::Re
     Ok(EnvelopeEnv(entries))
 }
 
+/// Write `<envelope_dir>/askpass` for `alias`, returning its path (D-17).
+///
+/// A generated stub rather than a multi-word `GIT_ASKPASS` string, for the same
+/// reason the hooks are stubs: `GIT_ASKPASS` is a **program**, and a value with
+/// spaces in it depends on git deciding to route it through a shell. The stub is
+/// the same three-line `exec` shape [`super::hooks`] generates, carries no
+/// policy, and — the part that matters here — **carries no secret**. It names
+/// the alias and the host; the token is resolved inside the binary at the moment
+/// git asks, and goes to stdout.
+///
+/// **The limit, stated rather than discovered.** An agent inside the driven run
+/// can execute this responder itself and read the token off its stdout. That is
+/// not a hole this design can close: any credential a driven run can push with
+/// is a credential the run can read. What D-17 buys is that the token is not
+/// *at rest* anywhere, is not visible in the process table, and does not land in
+/// `.git/config` — so it does not leak to everything that reads those. The
+/// answer to the agent that wants it is the credential's own scope and D-27's
+/// server-side branch protection, not a cleverer envelope.
+pub fn write_askpass_stub_in(
+    root: &Path,
+    alias: &str,
+    binary: &Path,
+    host: &str,
+) -> anyhow::Result<PathBuf> {
+    let dir = super::envelope_dir_in(root, alias).ok_or_else(|| {
+        anyhow!("refusing to generate an askpass responder for alias {alias:?}: not a plain path component")
+    })?;
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create {}", dir.display()))?;
+
+    let path = dir.join(ASKPASS_FILE);
+    let body = format!(
+        "#!/bin/sh\n\
+         # gsd-meta-manager envelope askpass. The secret lives in the binary's\n\
+         # stdout and nowhere in this file (D-17).\n\
+         exec {} envelope askpass {} --host {} -- \"$1\"\n",
+        super::hooks::sh_quote(&binary.to_string_lossy()),
+        super::hooks::sh_quote(alias),
+        super::hooks::sh_quote(host),
+    );
+
+    let mut tmp = NamedTempFile::new_in(&dir)
+        .with_context(|| format!("failed to create a temp file in {}", dir.display()))?;
+    tmp.write_all(body.as_bytes())
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("failed to make {} executable", path.display()))?;
+    }
+    tmp.persist(&path)
+        .with_context(|| format!("failed to persist the askpass responder to {}", path.display()))?;
+    Ok(path)
+}
+
+/// The host of the project's configured `origin` remote, or `None`.
+fn configured_remote_host(project_root: &Path) -> Option<String> {
+    let url = crate::state_reader::git_ops::git_read_raw(
+        project_root,
+        &["config", "--get", "remote.origin.url"],
+    )?;
+    url_host(url.trim())
+}
+
+/// The host component of a git remote URL, lowercased.
+///
+/// Covers the three shapes git accepts and one it does not need a credential
+/// for: `scheme://[user@]host[:port]/path`, the scp-like `[user@]host:path`, and
+/// `file://` / a bare local path — which yield `None`, because a local
+/// repository is reached without authenticating to anybody.
+fn url_host(url: &str) -> Option<String> {
+    if url.is_empty() {
+        return None;
+    }
+    let after_scheme = match url.find("://") {
+        Some(index) => {
+            let scheme = url[..index].to_ascii_lowercase();
+            if scheme == "file" {
+                return None;
+            }
+            &url[index + 3..]
+        }
+        None => {
+            // scp-like, or a bare path. A bare path has no `:` before the first
+            // `/`, which is exactly how git tells the two apart.
+            let colon = url.find(':')?;
+            if url[..colon].contains('/') {
+                return None;
+            }
+            &url[..colon]
+        }
+    };
+
+    // Authority ends at the first `/`; userinfo ends at the last `@` inside it.
+    let authority = after_scheme.split('/').next().unwrap_or_default();
+    let host_port = match authority.rfind('@') {
+        Some(index) => &authority[index + 1..],
+        None => authority,
+    };
+    // A port, but not an IPv6 literal's own colons.
+    let host = if host_port.starts_with('[') {
+        host_port
+            .split(']')
+            .next()
+            .map(|h| h.trim_start_matches('['))
+            .unwrap_or(host_port)
+    } else {
+        host_port.split(':').next().unwrap_or(host_port)
+    };
+
+    if host.is_empty() {
+        return None;
+    }
+    Some(host.to_ascii_lowercase())
+}
+
+/// Resolve the configured credential to a token, or report it unavailable
+/// (D-18).
+///
+/// `Ok(None)` for an unset variable, an empty value, a command that could not be
+/// run and a command that exited non-zero. All four are *unavailability*, which
+/// is a legible operational state, not a bug — reporting them as errors would
+/// make an unconfigured project look broken.
+///
+/// **There is deliberately no third branch that consults the user's ambient
+/// credential**, and its absence is the requirement rather than an omission.
+/// SAFE-05 says a driven run must not inherit the user's credentials, so
+/// "unconfigured" silently meaning "the user's credentials" is the exact failure
+/// the requirement names. A run with no configured credential can still read,
+/// commit and be driven; it cannot push, and it says so up front rather than at
+/// minute 90.
+pub fn resolve_credential(source: &CredentialSource) -> anyhow::Result<Option<String>> {
+    let raw = match source {
+        CredentialSource::Env { var } => match std::env::var(var) {
+            Ok(value) => value,
+            // A variable that is unset or holds non-UTF-8 is a credential that
+            // is not there. Neither is an error.
+            Err(_) => return Ok(None),
+        },
+        CredentialSource::Command { argv } => {
+            let Some((program, args)) = argv.split_first() else {
+                return Ok(None);
+            };
+            // argv, never a shell string — the property `CredentialSource`
+            // records at the type. With no shell in the path, a value carrying a
+            // `;` cannot become a second command.
+            let output = match std::process::Command::new(program).args(args).output() {
+                Ok(output) => output,
+                Err(_) => return Ok(None),
+            };
+            if !output.status.success() {
+                return Ok(None);
+            }
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        }
+    };
+
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+/// What the responder should say, as a value.
+///
+/// `Ok` is the single line that goes to **stdout**; `Err` is the reason that
+/// goes to stderr with a non-zero exit. Splitting the decision out of the I/O is
+/// what makes "the credential is emitted for this host and not that one" a unit
+/// test rather than a process.
+fn askpass_reply(
+    prompt: &str,
+    configured_remote_host: &str,
+    credential: Option<&str>,
+) -> Result<String, String> {
+    let Some(asked) = prompt_host(prompt) else {
+        return Err(format!(
+            "envelope askpass: cannot determine which host {:?} is authenticating to, \
+             so no credential is emitted",
+            redact(prompt)
+        ));
+    };
+
+    // The host check runs BEFORE the credential is resolved, so a prompt for a
+    // remote the envelope does not know never even triggers a lookup. An agent
+    // that adds a second remote gets an authentication failure here, not a
+    // token (D-17).
+    if configured_remote_host.is_empty() || !asked.eq_ignore_ascii_case(configured_remote_host) {
+        return Err(format!(
+            "envelope askpass: refusing to answer for host {asked:?}; this run's \
+             configured remote is {configured_remote_host:?}"
+        ));
+    }
+
+    let Some(credential) = credential else {
+        return Err(format!(
+            "envelope askpass: {} — no credential is configured for this run, so it \
+             cannot push. Configure `credential` on the project's driver opt-in; there \
+             is deliberately no fallback to your own git credentials (D-18).",
+            crate::envelope::policy::REASON_CREDENTIAL_UNAVAILABLE
+        ));
+    };
+
+    if prompt.trim_start().to_ascii_lowercase().starts_with("username") {
+        return Ok(ASKPASS_USERNAME.to_string());
+    }
+    Ok(credential.to_string())
+}
+
+/// The host git names in an askpass prompt.
+///
+/// git's prompts are `Username for 'https://host/path': ` and `Password for
+/// 'https://user@host': `, so the URL is the first single-quoted run.
+fn prompt_host(prompt: &str) -> Option<String> {
+    let start = prompt.find('\'')? + 1;
+    let rest = &prompt[start..];
+    let end = rest.find('\'')?;
+    url_host(&rest[..end])
+}
+
+/// The responder git re-enters this binary as (D-17).
+///
+/// Emits the credential on `out` for the configured host and nothing at all for
+/// any other, returning the process exit code. The secret reaches **only** this
+/// writer: no log, no `tracing`, no file, no stderr.
+pub fn askpass_into<W: Write>(
+    out: &mut W,
+    prompt: &str,
+    configured_remote_host: &str,
+    credential: Option<&str>,
+) -> anyhow::Result<i32> {
+    match askpass_reply(prompt, configured_remote_host, credential) {
+        Ok(line) => {
+            // `writeln!` and then nothing: git reads one line from the
+            // responder's stdout and that is the entire transport.
+            writeln!(out, "{line}").context("failed to write the credential to stdout")?;
+            Ok(0)
+        }
+        Err(reason) => {
+            // Through the already-shipped redaction path, never a forked one
+            // (SAFE-04, D-12). The reason carries a host and a prompt, and a
+            // prompt is attacker-influenceable text.
+            eprintln!("{}", redact(&reason));
+            Ok(1)
+        }
+    }
+}
+
+/// [`askpass_into`] against the registry at the default path.
+pub fn askpass(alias: &str, prompt: &str, configured_remote_host: &str) -> anyhow::Result<i32> {
+    askpass_with_config(
+        &crate::config::Config::default_path(),
+        alias,
+        prompt,
+        configured_remote_host,
+    )
+}
+
+/// [`askpass`] against an explicit registry path.
+///
+/// The generated stub does not pass `--config`, so in the shipped hook path this
+/// resolves to the default registry either way. It takes the path anyway because
+/// `main.rs` already has one in scope, and a responder that read a *different*
+/// registry than the run was configured from would find no credential and fail
+/// closed — the safe direction, but silently, which is the direction this
+/// project does not ship things in.
+pub fn askpass_with_config(
+    config_path: &Path,
+    alias: &str,
+    prompt: &str,
+    configured_remote_host: &str,
+) -> anyhow::Result<i32> {
+    if !crate::journal::is_plain_path_component(alias) {
+        return Err(anyhow!(
+            "alias {alias:?} is not a plain path component, so no envelope sanctions \
+             a credential for it"
+        ));
+    }
+    let config = crate::config::load_config(config_path)?;
+    let source = config
+        .projects
+        .get(alias)
+        .and_then(|project| project.driver_opt_in.as_ref())
+        .and_then(|opt_in| opt_in.credential.clone());
+
+    let credential = match source.as_ref() {
+        Some(source) => resolve_credential(source)?,
+        None => None,
+    };
+
+    askpass_into(
+        &mut std::io::stdout(),
+        prompt,
+        configured_remote_host,
+        credential.as_deref(),
+    )
+}
+
 /// The user's resolved `user.name` and `user.email`, or the `.invalid`
 /// fallbacks.
 ///
@@ -425,6 +767,14 @@ mod tests {
     use tempfile::TempDir;
 
     const ALIAS: &str = "demo";
+
+    /// A stand-in for the envelope binary. Nothing in this module execs it —
+    /// [`build_env_in`] only writes its path into the generated responder — so a
+    /// path is all these tests need, and naming a real binary would invite one of
+    /// them to start running it.
+    const FAKE_BIN: &str = "/nonexistent/gsd-meta-manager";
+
+    const HOST: &str = "git.example.com";
 
     /// An envelope root and a project root, both inside one temp directory.
     fn roots() -> (TempDir, PathBuf, PathBuf) {
@@ -467,7 +817,8 @@ mod tests {
     #[test]
     fn the_ambient_ssh_agent_is_removed_rather_than_overwritten() {
         let (_tmp, root, project) = roots();
-        let env = build_env_in(&root, ALIAS, &project).expect("a plain alias builds an env");
+        let env = build_env_in(&root, ALIAS, &project, Path::new(FAKE_BIN))
+            .expect("a plain alias builds an env");
 
         for key in ["SSH_AUTH_SOCK", "SSH_AGENT_PID"] {
             assert!(
@@ -485,7 +836,8 @@ mod tests {
     #[test]
     fn the_ssh_command_offers_no_identity_no_agent_and_no_prompt() {
         let (_tmp, root, project) = roots();
-        let env = build_env_in(&root, ALIAS, &project).expect("a plain alias builds an env");
+        let env = build_env_in(&root, ALIAS, &project, Path::new(FAKE_BIN))
+            .expect("a plain alias builds an env");
 
         let command = env
             .value("GIT_SSH_COMMAND")
@@ -508,7 +860,8 @@ mod tests {
     #[test]
     fn the_config_and_gh_directories_point_inside_this_aliass_envelope() {
         let (_tmp, root, project) = roots();
-        let env = build_env_in(&root, ALIAS, &project).expect("a plain alias builds an env");
+        let env = build_env_in(&root, ALIAS, &project, Path::new(FAKE_BIN))
+            .expect("a plain alias builds an env");
         let dir = super::super::envelope_dir_in(&root, ALIAS).expect("a plain alias");
 
         for key in ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GH_CONFIG_DIR"] {
@@ -526,7 +879,8 @@ mod tests {
     #[test]
     fn terminal_prompts_are_disabled_because_a_detached_run_has_no_terminal() {
         let (_tmp, root, project) = roots();
-        let env = build_env_in(&root, ALIAS, &project).expect("a plain alias builds an env");
+        let env = build_env_in(&root, ALIAS, &project, Path::new(FAKE_BIN))
+            .expect("a plain alias builds an env");
         assert_eq!(
             env.value("GIT_TERMINAL_PROMPT"),
             Some(OsStr::new("0")),
@@ -538,7 +892,8 @@ mod tests {
     #[test]
     fn the_injected_config_count_equals_the_number_of_keys_present() {
         let (_tmp, root, project) = roots();
-        let env = build_env_in(&root, ALIAS, &project).expect("a plain alias builds an env");
+        let env = build_env_in(&root, ALIAS, &project, Path::new(FAKE_BIN))
+            .expect("a plain alias builds an env");
 
         let count: usize = env
             .value("GIT_CONFIG_COUNT")
@@ -561,7 +916,8 @@ mod tests {
     #[test]
     fn the_run_journal_locator_carries_the_canonicalized_project_root() {
         let (_tmp, root, project) = roots();
-        let env = build_env_in(&root, ALIAS, &project).expect("a plain alias builds an env");
+        let env = build_env_in(&root, ALIAS, &project, Path::new(FAKE_BIN))
+            .expect("a plain alias builds an env");
 
         let canonical = std::fs::canonicalize(&project).expect("the project root canonicalizes");
         assert_eq!(
@@ -606,12 +962,255 @@ mod tests {
         let (_tmp, root, project) = roots();
         for hostile in ["", ".", "..", "../escaped", "a/b", "/etc/passwd"] {
             assert!(
-                build_env_in(&root, hostile, &project).is_err(),
+                build_env_in(&root, hostile, &project, Path::new(FAKE_BIN)).is_err(),
                 "{hostile:?} must not reach the point where an environment is built"
             );
             assert!(
                 write_gitconfig_in(&root, hostile, "n", "e").is_err(),
                 "{hostile:?} must not reach the point where a config is written"
+            );
+            assert!(
+                write_askpass_stub_in(&root, hostile, Path::new(FAKE_BIN), HOST).is_err(),
+                "{hostile:?} must not reach the point where a responder is written"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The credential (D-17, D-18)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_askpass_pointer_is_set_and_no_url_userinfo_is_ever_constructed() {
+        let (_tmp, root, project) = roots();
+        let env = build_env_in(&root, ALIAS, &project, Path::new(FAKE_BIN))
+            .expect("a plain alias builds an env");
+        let dir = super::super::envelope_dir_in(&root, ALIAS).expect("a plain alias");
+
+        let askpass = env.value("GIT_ASKPASS").expect("GIT_ASKPASS must be set");
+        assert!(
+            Path::new(askpass).starts_with(&dir),
+            "GIT_ASKPASS points at {askpass:?}, outside {}",
+            dir.display()
+        );
+        assert!(
+            Path::new(askpass).is_file(),
+            "GIT_ASKPASS names a file git will exec, so it has to exist"
+        );
+    }
+
+    #[test]
+    fn an_unset_variable_and_a_failing_command_are_unavailability_not_an_error() {
+        // A variable this process could not plausibly have. Reading rather than
+        // setting keeps this test free of the process-global env mutation that
+        // makes a parallel suite flaky.
+        let absent = CredentialSource::Env {
+            var: "GSD_MM_NO_SUCH_CREDENTIAL_VARIABLE_19_04".to_string(),
+        };
+        assert_eq!(
+            resolve_credential(&absent).expect("an unset variable is not an error"),
+            None
+        );
+
+        let failing = CredentialSource::Command {
+            argv: vec!["false".to_string()],
+        };
+        assert_eq!(
+            resolve_credential(&failing).expect("a non-zero exit is not an error"),
+            None
+        );
+
+        let missing = CredentialSource::Command {
+            argv: vec!["/nonexistent/credential-helper-19-04".to_string()],
+        };
+        assert_eq!(
+            resolve_credential(&missing).expect("an unrunnable command is not an error"),
+            None
+        );
+
+        let empty = CredentialSource::Command { argv: Vec::new() };
+        assert_eq!(resolve_credential(&empty).expect("an empty argv is not an error"), None);
+    }
+
+    #[test]
+    fn a_command_credential_is_read_from_stdout_and_trimmed() {
+        let source = CredentialSource::Command {
+            argv: vec!["printf".to_string(), "  ghp_secret\n".to_string()],
+        };
+        assert_eq!(
+            resolve_credential(&source).expect("printf runs"),
+            Some("ghp_secret".to_string()),
+        );
+
+        // Whitespace-only stdout is a credential that is not there.
+        let blank = CredentialSource::Command {
+            argv: vec!["printf".to_string(), "   \n".to_string()],
+        };
+        assert_eq!(resolve_credential(&blank).expect("printf runs"), None);
+    }
+
+    #[test]
+    fn the_credential_reaches_stdout_for_the_configured_host_and_nothing_else_does() {
+        let mut out = Vec::new();
+        let code = askpass_into(
+            &mut out,
+            &format!("Password for 'https://x@{HOST}': "),
+            HOST,
+            Some("ghp_secret"),
+        )
+        .expect("the responder writes");
+
+        assert_eq!(code, 0, "the configured host must be answered");
+        assert_eq!(String::from_utf8_lossy(&out), "ghp_secret\n");
+    }
+
+    #[test]
+    fn a_second_remote_gets_an_authentication_failure_rather_than_the_token() {
+        // The whole point of scoping: an agent that adds a remote of its own and
+        // pushes to it must not be handed the user's token by the responder.
+        for hostile in [
+            "https://evil.example.net/repo.git",
+            "https://x@evil.example.net/repo.git",
+            "ssh://git@evil.example.net:22/repo.git",
+        ] {
+            let mut out = Vec::new();
+            let code = askpass_into(
+                &mut out,
+                &format!("Password for '{hostile}': "),
+                HOST,
+                Some("ghp_secret"),
+            )
+            .expect("the responder writes");
+
+            assert_eq!(code, 1, "{hostile} must not be answered");
+            assert!(
+                out.is_empty(),
+                "{hostile} received {:?} on stdout",
+                String::from_utf8_lossy(&out)
+            );
+        }
+    }
+
+    #[test]
+    fn an_unparseable_prompt_and_an_unconfigured_host_are_both_refusals() {
+        for (prompt, host) in [
+            ("Password: ", HOST),
+            ("", HOST),
+            // No configured remote at all: the empty host answers nothing,
+            // rather than matching an empty host in a prompt.
+            (&format!("Password for 'https://{HOST}': ") as &str, ""),
+        ] {
+            let mut out = Vec::new();
+            let code =
+                askpass_into(&mut out, prompt, host, Some("ghp_secret")).expect("the responder writes");
+            assert_eq!(code, 1, "{prompt:?} against host {host:?} must be refused");
+            assert!(out.is_empty(), "{prompt:?} produced output");
+        }
+    }
+
+    #[test]
+    fn an_unconfigured_credential_fails_closed_with_a_named_reason() {
+        let mut out = Vec::new();
+        let code = askpass_into(&mut out, &format!("Password for 'https://{HOST}': "), HOST, None)
+            .expect("the responder writes");
+
+        assert_eq!(code, 1, "no credential must not mean the user's credential");
+        assert!(
+            out.is_empty(),
+            "an unconfigured run emitted {:?}",
+            String::from_utf8_lossy(&out)
+        );
+
+        // The reason is the D-24 identifier, so a later reader parses a constant
+        // rather than prose.
+        let reason = askpass_reply(&format!("Password for 'https://{HOST}': "), HOST, None)
+            .expect_err("no credential is a refusal");
+        assert!(
+            reason.contains(crate::envelope::policy::REASON_CREDENTIAL_UNAVAILABLE),
+            "the refusal must name credential_unavailable: {reason}"
+        );
+    }
+
+    #[test]
+    fn a_username_prompt_is_answered_without_spending_the_secret_twice() {
+        let mut out = Vec::new();
+        let code = askpass_into(
+            &mut out,
+            &format!("Username for 'https://{HOST}': "),
+            HOST,
+            Some("ghp_secret"),
+        )
+        .expect("the responder writes");
+
+        assert_eq!(code, 0);
+        assert_eq!(String::from_utf8_lossy(&out), format!("{ASKPASS_USERNAME}\n"));
+    }
+
+    #[test]
+    fn no_file_under_the_envelope_directory_holds_the_credential() {
+        // A behavior assertion over the directory contents, not a source grep:
+        // the claim is that nothing this run wrote is a secret at rest, and only
+        // reading what was written can settle that (D-17).
+        const SECRET: &str = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+        let (_tmp, root, project) = roots();
+        build_env_in(&root, ALIAS, &project, Path::new(FAKE_BIN)).expect("an env is built");
+
+        let mut out = Vec::new();
+        askpass_into(
+            &mut out,
+            &format!("Password for 'https://{HOST}': "),
+            HOST,
+            Some(SECRET),
+        )
+        .expect("the responder writes");
+        assert!(
+            String::from_utf8_lossy(&out).contains(SECRET),
+            "the fixture must actually have emitted the secret, or the walk below \
+             proves nothing"
+        );
+
+        let dir = super::super::envelope_dir_in(&root, ALIAS).expect("a plain alias");
+        let mut seen = 0usize;
+        let mut stack = vec![dir.clone()];
+        while let Some(next) = stack.pop() {
+            for entry in std::fs::read_dir(&next).expect("the envelope directory is readable") {
+                let entry = entry.expect("a readable entry");
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                seen += 1;
+                let bytes = std::fs::read(&path).expect("a readable file");
+                assert!(
+                    !String::from_utf8_lossy(&bytes).contains(SECRET),
+                    "{} holds the credential; a secret at rest under the envelope \
+                     has no protection posture (D-17)",
+                    path.display()
+                );
+            }
+        }
+        assert!(seen > 0, "the walk saw no files, so it asserted nothing");
+    }
+
+    #[test]
+    fn a_remote_url_yields_the_host_it_authenticates_to_and_a_local_one_yields_none() {
+        for (url, expected) in [
+            ("https://github.com/owner/repo.git", Some("github.com")),
+            ("https://user@github.com/owner/repo.git", Some("github.com")),
+            ("https://GitHub.com:443/owner/repo.git", Some("github.com")),
+            ("ssh://git@git.example.com:2222/o/r.git", Some("git.example.com")),
+            ("git@github.com:owner/repo.git", Some("github.com")),
+            ("http://[::1]:8080/repo.git", Some("::1")),
+            // Local: nobody to authenticate to, so nothing to answer for.
+            ("file:///tmp/remote.git", None),
+            ("/tmp/remote.git", None),
+            ("", None),
+        ] {
+            assert_eq!(
+                url_host(url).as_deref(),
+                expected,
+                "url_host({url:?}) disagreed"
             );
         }
     }

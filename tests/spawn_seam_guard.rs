@@ -51,6 +51,10 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     // The detached driver spawn; it re-invokes this same binary, so the
     // capability gate runs in the child.
     "src/driver/spawn.rs",
+    // The configured credential command (`gh auth token`, `pass show …`), run
+    // as argv with no shell so a value carrying a `;` cannot become a second
+    // command. It reads a secret to stdout and never to a file. No agent.
+    "src/envelope/cred.rs",
     // `gitleaks` when a binary happens to be on PATH, as an ADDITIVE second
     // opinion on the built-in credential rules (D-11). Its absence is never a
     // reason to allow, and its output is discarded rather than reproduced. No

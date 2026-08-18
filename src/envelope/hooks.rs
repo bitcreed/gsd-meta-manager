@@ -149,7 +149,12 @@ fn stub_body(binary: &Path, alias: &str, hook: &str) -> String {
 }
 
 /// POSIX single-quote `value` so no character in it can reach the shell.
-fn sh_quote(value: &str) -> String {
+///
+/// `pub(super)` because [`super::cred::write_askpass_stub_in`] generates a stub
+/// of the same shape and must quote it the same way. A second copy of this
+/// three-line function would be a second place for the `'\''` escaping to be got
+/// subtly wrong, in generated files that run on every push.
+pub(super) fn sh_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
