@@ -805,11 +805,30 @@ pub enum JournalEvent {
     },
     /// The run stopped short and needs a human.
     ///
-    /// **Schema only in this phase — Phase 20 emits it** (D-36).
+    /// **Phase 19 is its first emitter** (D-24). The comment that stood here
+    /// said "Schema only in this phase — Phase 20 emits it", and that stopped
+    /// being true the moment the safety envelope started refusing operations:
+    /// every envelope refusal parks the run, so the reason has to land somewhere
+    /// a later reader can find it. Correcting the comment is part of the same
+    /// change as the first emission, because a doc that describes the *previous*
+    /// build is worse than no doc — it is read as current.
+    ///
+    /// **Phase 19 owns producing the reason; Phase 20 owns what happens to a
+    /// parked run.** No resume, retry or backoff logic belongs beside this
+    /// variant: a reason that also decided the recovery would have to be edited
+    /// every time the recovery changed, and then the identifier is no longer
+    /// stable.
     Parked {
         /// Why the run parked.
+        ///
+        /// A short stable identifier, in the same convention
+        /// [`JournalEvent::Diagnostic`]'s `code` field documents. The taxonomy
+        /// is [`crate::envelope::policy::ParkReason`] and this string is always
+        /// its `as_str()` — **one list rather than two**, so a reader who greps
+        /// for `force_push_blocked` finds the producer and the record together.
         reason: String,
-        /// What would unpark it.
+        /// What would unpark it, in the same register as [`Self::reason`]: a
+        /// short phrase naming the actor, not a sentence of advice.
         needs: String,
     },
 }
@@ -912,23 +931,29 @@ pub const EMITTED_KINDS: &[&str] = &[
     "journal_truncated",
     "diagnostic",
     "run_ended",
+    // Phase 19's, moved out of RESERVED_KINDS in the same edit that gave it its
+    // first emitter — every safety-envelope refusal parks the run (D-24).
+    "parked",
 ];
 
 /// The `kind` values that exist in the schema but that **this phase never
 /// writes** (D-36).
 ///
-/// `observed`, `decided` and `parked` are Phase 20's — the D-R-P-E-V router
-/// that does not exist yet. They are modelled now so that phase adds no schema
-/// migration, and the reader tolerates them regardless (D-30): a build that has
-/// never heard of a kind still carries its payload.
+/// `observed` and `decided` are Phase 20's — the D-R-P-E-V router that does not
+/// exist yet. They are modelled now so that phase adds no schema migration, and
+/// the reader tolerates them regardless (D-30): a build that has never heard of
+/// a kind still carries its payload.
 ///
 /// **`interjected` left this list in Phase 18** and moved into
 /// [`EMITTED_KINDS`], along with the two transitions the TUI→driver channel
-/// needs. The two lists are complements and
+/// needs. **`parked` left it in Phase 19** for the same reason and by the same
+/// route: the safety envelope refuses operations, and D-24 requires every
+/// refusal to park the run, so the kind acquired a producer. The two lists are
+/// complements and
 /// `every_reserved_kind_is_declared_and_none_is_emitted_by_this_phase` is what
 /// proves it, so a kind that is emitted while still declared reserved fails the
 /// suite rather than shipping.
-pub const RESERVED_KINDS: &[&str] = &["observed", "decided", "parked"];
+pub const RESERVED_KINDS: &[&str] = &["observed", "decided"];
 
 /// The one type a driver holds for the duration of a run (D-06, D-36).
 ///
@@ -1892,6 +1917,13 @@ mod tests {
                 id: "3f2a".to_string(),
                 reason: "the agent's stdin was already closed".to_string(),
             },
+            // Phase 19's. `parked` moved out of RESERVED_KINDS in the same edit
+            // that added it here, exactly as `interjected` did above; D-24 gave
+            // it its first emitter (every envelope refusal parks the run).
+            JournalEvent::Parked {
+                reason: "force_push_blocked".to_string(),
+                needs: "human".to_string(),
+            },
         ] {
             let kind = kind_of(&event);
             assert!(EMITTED_KINDS.contains(&kind.as_str()), "{kind} undeclared");
@@ -1910,10 +1942,6 @@ mod tests {
                 by: "policy".to_string(),
                 command: "/gsd:execute-phase 14".to_string(),
                 rationale: "next".to_string(),
-            },
-            JournalEvent::Parked {
-                reason: "verification_gaps_found".to_string(),
-                needs: "human".to_string(),
             },
         ]
         .iter()
