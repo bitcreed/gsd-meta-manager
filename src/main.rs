@@ -126,10 +126,21 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Envelope { action }) => match action {
             EnvelopeAction::PrePush { alias, hook_path } => {
                 let stdin = std::io::stdin();
+                // git runs a hook with the working directory at the top of the
+                // worktree, which is what makes the scan's root and the path
+                // checks' root the same root without a flag to get wrong.
+                let repo_root = match std::env::current_dir() {
+                    Ok(dir) => dir,
+                    Err(err) => {
+                        eprintln!("Error: cannot resolve the repository root: {err}");
+                        std::process::exit(1);
+                    }
+                };
                 match gsd_meta_manager::envelope::hooks::pre_push(
                     &alias,
                     stdin.lock(),
                     &hook_path,
+                    &repo_root,
                 ) {
                     // The exit code IS the control (D-25): git blocks the push
                     // on any non-zero exit, and nothing downstream has to parse
@@ -138,6 +149,29 @@ async fn main() -> anyhow::Result<()> {
                     Err(err) => {
                         // The `Add` arm's house shape, and fail-closed: a hook
                         // that could not do its job must not let the push
+                        // through.
+                        eprintln!("Error: {}", err);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            EnvelopeAction::PreCommit { alias, hook_path } => {
+                let repo_root = match std::env::current_dir() {
+                    Ok(dir) => dir,
+                    Err(err) => {
+                        eprintln!("Error: cannot resolve the repository root: {err}");
+                        std::process::exit(1);
+                    }
+                };
+                match gsd_meta_manager::envelope::hooks::pre_commit(
+                    &alias,
+                    &hook_path,
+                    &repo_root,
+                ) {
+                    Ok(code) => std::process::exit(code),
+                    Err(err) => {
+                        // Fail-closed, exactly as the push hook does: a hook
+                        // that could not do its job must not let the commit
                         // through.
                         eprintln!("Error: {}", err);
                         std::process::exit(1);

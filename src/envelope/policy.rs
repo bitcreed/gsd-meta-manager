@@ -851,6 +851,75 @@ impl EnvelopePolicy {
     }
 }
 
+/// The worktree-relocation directory a driven agent's `git add -A` sweeps up.
+///
+/// Named here rather than in a hook, because two enforcement points read it and
+/// the whole reason [`forbidden_repo_path`] exists is that they must not be able
+/// to disagree.
+pub const WORKTREES_DIR: &str = ".claude/worktrees";
+
+/// The planning directory the run journal lives under.
+const PLANNING_DIR: &str = ".planning";
+
+/// Every repository-relative prefix a driven commit may never carry (D-22).
+///
+/// The runs path is **derived** from [`crate::journal::RUNS_SUBDIR`], never
+/// re-spelled as a literal. A second spelling of a path is a second thing to
+/// keep in step, and the day they drift is the day this refusal stops covering
+/// the directory it was written for.
+pub fn forbidden_repo_prefixes() -> &'static [String] {
+    static PREFIXES: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+        vec![
+            WORKTREES_DIR.to_string(),
+            format!("{PLANNING_DIR}/{}", crate::journal::RUNS_SUBDIR),
+        ]
+    });
+    &PREFIXES
+}
+
+/// Whether a repository-relative path is one a driven commit may never carry.
+///
+/// **One predicate, two enforcement points** (D-22). The `pre-commit` hook asks
+/// it about staged paths and the `pre-push` hook asks it about the paths the
+/// commits being pushed touch. A second copy of these rules — one per hook —
+/// would be two things to keep in step, and the drift would be invisible until
+/// a swept worktree reached a remote.
+///
+/// `contains_nested_git` is supplied by the caller rather than probed here, for
+/// the same reason [`GitContext`] is passed into [`classify_git`]: it is a fact
+/// about a filesystem, and a predicate that went and looked could only be tested
+/// against a real repository. The caller answers "does any ancestor directory of
+/// this path itself contain a `.git` entry" — a nested repository or a linked
+/// worktree, either of which is a whole second repository being swept into this
+/// one's history.
+///
+/// The reason is [`ParkReason::ForcePushBlocked`], which is D-24's
+/// destructive-git family rather than a fresh eighth member of a closed
+/// taxonomy — the same mapping [`classify_git`] already uses for `stash` and
+/// `update-ref`, and stated here so a reader meeting `force_push_blocked` on a
+/// swept worktree is not misled.
+pub fn forbidden_repo_path(rel: &Path, contains_nested_git: bool) -> Option<ParkReason> {
+    if contains_nested_git {
+        return Some(ParkReason::ForcePushBlocked);
+    }
+
+    // Normalised to forward slashes and stripped of a leading `./`, because git
+    // reports paths that way and a caller on Windows would not.
+    let text = rel.to_string_lossy().replace('\\', "/");
+    let text = text.trim_start_matches("./").trim_start_matches('/');
+    if text.is_empty() {
+        return None;
+    }
+
+    for prefix in forbidden_repo_prefixes() {
+        if text == prefix.as_str() || text.starts_with(&format!("{prefix}/")) {
+            return Some(ParkReason::ForcePushBlocked);
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1359,5 +1428,66 @@ mod tests {
             classify_push_ref("refs/heads/gsd-auto/demox", &namespace),
             PushVerdict::Refuse { .. }
         ));
+    }
+
+    #[test]
+    fn the_swept_worktree_and_runs_paths_are_refused() {
+        for swept in [
+            ".claude/worktrees",
+            ".claude/worktrees/agent-abc/src/main.rs",
+            ".planning/meta-manager/runs",
+            ".planning/meta-manager/runs/20260818-x/journal.ndjson",
+            "./.claude/worktrees/agent-abc/x",
+        ] {
+            assert_eq!(
+                forbidden_repo_path(Path::new(swept), false),
+                Some(ParkReason::ForcePushBlocked),
+                "{swept:?} is exactly the sweep D-22 closes"
+            );
+        }
+    }
+
+    #[test]
+    fn a_nested_repository_is_refused_on_the_callers_report_alone() {
+        assert_eq!(
+            forbidden_repo_path(Path::new("vendor/thing/src/lib.rs"), true),
+            Some(ParkReason::ForcePushBlocked),
+            "a whole second repository swept into this one's history"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_path_and_a_near_miss_prefix_are_allowed() {
+        // The paired allow, without which the predicate could refuse everything
+        // and still pass every refusal row above.
+        for ordinary in [
+            "src/main.rs",
+            ".planning/STATE.md",
+            ".planning/meta-manager/inbox.ndjson",
+            ".claude/settings.json",
+            // One character past the boundary, the shape a prefix check gets
+            // wrong when it forgets the separator.
+            ".claude/worktreesX/file",
+            ".planning/meta-manager/runsX/file",
+        ] {
+            assert_eq!(
+                forbidden_repo_path(Path::new(ordinary), false),
+                None,
+                "{ordinary:?} must not be refused, or the hook is a wall"
+            );
+        }
+    }
+
+    #[test]
+    fn the_runs_prefix_is_derived_from_the_journals_own_constant() {
+        // The point of deriving rather than re-spelling: this assertion follows
+        // RUNS_SUBDIR wherever it goes.
+        assert!(
+            forbidden_repo_prefixes()
+                .iter()
+                .any(|prefix| prefix.ends_with(crate::journal::RUNS_SUBDIR)),
+            "{:?}",
+            forbidden_repo_prefixes()
+        );
     }
 }

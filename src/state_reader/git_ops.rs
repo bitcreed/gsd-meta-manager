@@ -186,7 +186,15 @@ pub fn is_dirty(project_root: &Path) -> Option<bool> {
 ///
 /// `None` on a non-zero exit, an unreadable repository, or a missing git.
 /// Never panics.
-fn git_read_raw(project_root: &Path, args: &[&str]) -> Option<String> {
+///
+/// `pub(crate)` rather than private because [`crate::envelope::hooks`] reads the
+/// staged and pushed path lists and must do it with **this** shape — the
+/// `--no-optional-locks` flag and the failure-as-data return are the two
+/// properties that keep a read from mutating the repository it is judging.
+/// A second copy of this three-line function in the envelope would be a second
+/// place for one of those properties to go missing, and it would not be the
+/// spawn-seam allowlist entry that noticed.
+pub(crate) fn git_read_raw(project_root: &Path, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new("git")
         .arg("--no-optional-locks")
         .arg("-C")
