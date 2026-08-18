@@ -51,6 +51,10 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     // The detached driver spawn; it re-invokes this same binary, so the
     // capability gate runs in the child.
     "src/driver/spawn.rs",
+    // The read-only remote-protection probe: the external GitHub client, asked
+    // three questions and never told anything. Bounded by its own budget and run
+    // once at run start, never on the guard's per-tool-call path. No agent.
+    "src/envelope/advisory.rs",
     // The configured credential command (`gh auth token`, `pass show …`), run
     // as argv with no shell so a value carrying a `;` cannot become a second
     // command. It reads a secret to stdout and never to a file. No agent.
