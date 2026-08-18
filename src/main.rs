@@ -178,6 +178,34 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+            EnvelopeAction::Askpass {
+                alias,
+                host,
+                prompt,
+            } => {
+                // The credential goes to stdout and the refusal goes to stderr,
+                // both inside the handler — nothing is printed here, because a
+                // second print site is a second place a secret could be echoed.
+                match gsd_meta_manager::envelope::cred::askpass_with_config(
+                    &config_path,
+                    &alias,
+                    &prompt,
+                    &host,
+                ) {
+                    Ok(code) => std::process::exit(code),
+                    Err(err) => {
+                        // Fail-closed, and redacted: an askpass that cannot do
+                        // its job emits no credential, and its diagnostic passes
+                        // through the already-shipped redaction path rather than
+                        // a forked one.
+                        eprintln!(
+                            "Error: {}",
+                            gsd_meta_manager::journal::redact::redact(&err.to_string())
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            }
             EnvelopeAction::Scan { alias, root } => {
                 if !gsd_meta_manager::journal::is_plain_path_component(&alias) {
                     eprintln!(

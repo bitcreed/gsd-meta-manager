@@ -17,107 +17,20 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-use gsd_meta_manager::envelope::{
-    cred, envelope_dir, envelope_dir_in, hooks, ENVELOPE_ROOT_ENV,
-};
+use gsd_meta_manager::envelope::{cred, envelope_dir, envelope_dir_in, hooks, ENVELOPE_ROOT_ENV};
 use tempfile::TempDir;
 
-/// The binary under test, resolved by cargo for this integration target.
-///
-/// **Not `std::env::current_exe()`.** Under `cargo test` that is this test
-/// binary, which has no `envelope` subcommand — a stub generated from it would
-/// exit non-zero for a reason that has nothing to do with the policy, and the
-/// refusal assertion would pass vacuously.
-const BIN: &str = env!("CARGO_BIN_EXE_gsd-meta-manager");
+// The `file://` bare-remote harness lives in `tests/common/` since plan 19-04,
+// so this file and `tests/envelope_credential.rs` drive the same fixture rather
+// than two copies of it.
+mod common;
+use common::{fixture, remote_refs, Fixture, BIN};
 
 /// A ref inside the reserved namespace, and one squarely outside it.
 const OUTSIDE_REF: &str = "refs/heads/main";
-
-// ---------------------------------------------------------------------------
-// Fixture
-// ---------------------------------------------------------------------------
-
-struct Fixture {
-    /// Held for its Drop; every path below lives inside it.
-    _tmp: TempDir,
-    /// The work repository a push is issued from.
-    work: PathBuf,
-    /// The bare repository standing in for the remote.
-    bare: PathBuf,
-    /// The envelope root, outside both repositories (D-02).
-    envelope_root: PathBuf,
-    /// The directory `core.hooksPath` is pointed at.
-    hooks_dir: PathBuf,
-    alias: String,
-}
-
-impl Fixture {
-    fn inside_ref(&self) -> String {
-        format!("refs/heads/gsd-auto/{}/tracer", self.alias)
-    }
-}
-
-fn git(dir: &Path, args: &[&str]) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .ok()
-        .map(|out| out.status.success())
-        .unwrap_or(false)
-}
-
-/// A work repository with one commit, a `file://` bare remote, and an installed
-/// envelope — or `None` when the sandbox forbids `git init`, so the tests skip
-/// gracefully rather than failing for a reason that is not about the code.
-fn fixture(alias: &str) -> Option<Fixture> {
-    let tmp = TempDir::new().ok()?;
-    let bare = tmp.path().join("remote.git");
-    let work = tmp.path().join("work");
-    let envelope_root = tmp.path().join("envelope");
-    std::fs::create_dir_all(&bare).ok()?;
-    std::fs::create_dir_all(&work).ok()?;
-
-    if !git(&bare, &["init", "--bare", "--quiet"]) {
-        return None;
-    }
-    if !git(&work, &["init", "--quiet"]) {
-        return None;
-    }
-    // Repo-scoped identity, so the test neither depends on nor disturbs a
-    // developer's global git configuration.
-    git(&work, &["config", "user.email", "test@example.com"]);
-    git(&work, &["config", "user.name", "Test User"]);
-    git(&work, &["config", "commit.gpgsign", "false"]);
-
-    std::fs::write(work.join("tracked.txt"), "one\n").ok()?;
-    if !git(&work, &["add", "tracked.txt"]) {
-        return None;
-    }
-    if !git(&work, &["commit", "-m", "initial commit", "--quiet"]) {
-        return None;
-    }
-    let url = format!("file://{}", bare.display());
-    if !git(&work, &["remote", "add", "origin", &url]) {
-        return None;
-    }
-
-    let hooks_dir = hooks::install_in(&envelope_root, alias, Path::new(BIN))
-        .expect("installing a hook stub for a plain alias succeeds");
-
-    Some(Fixture {
-        _tmp: tmp,
-        work,
-        bare,
-        envelope_root,
-        hooks_dir,
-        alias: alias.to_string(),
-    })
-}
 
 /// `git push` under the envelope's environment, and nothing else changed.
 fn push_under_envelope(fx: &Fixture, refspec: &str) -> Output {
@@ -130,17 +43,6 @@ fn push_under_envelope(fx: &Fixture, refspec: &str) -> Output {
     }
     cmd.env(ENVELOPE_ROOT_ENV, &fx.envelope_root);
     cmd.output().expect("git push is runnable")
-}
-
-/// The remote's refs, read from the bare repository itself.
-fn remote_refs(fx: &Fixture) -> String {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(&fx.bare)
-        .args(["for-each-ref", "--format=%(refname)"])
-        .output()
-        .expect("git for-each-ref is runnable");
-    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 /// `.git/config` bytes plus the `.git/hooks` listing, digest and all.

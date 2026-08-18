@@ -200,6 +200,30 @@ pub enum EnvelopeAction {
         #[arg(long)]
         hook_path: PathBuf,
     },
+    // Not a hook either: git invokes this through `GIT_ASKPASS`, via the stub
+    // the envelope generates at `<envelope>/<alias>/askpass` (D-17).
+    //
+    // `--host` is carried rather than resolved here, and that is the security
+    // property of this variant rather than a convenience. The envelope resolves
+    // the configured remote's host ONCE, at run start, and bakes it into the
+    // generated stub. A responder that re-derived the host from the repository
+    // would be reading a value the driven agent can change — so an agent that
+    // adds a second remote would move the host the responder answers for, and be
+    // handed the token for it. That is exactly the attack D-17 names.
+    /// Internal: answer git's credential prompt for the configured remote only
+    Askpass {
+        /// Registry alias whose configured credential applies to this prompt
+        alias: String,
+        /// Host of the remote this run was configured against
+        #[arg(long)]
+        host: String,
+        // git passes exactly one argument, its human-readable prompt, and the
+        // stub places it after `--` so a prompt beginning with `-` cannot be
+        // read as a flag.
+        /// The prompt git supplied, naming the host it is authenticating to
+        #[arg(default_value = "", allow_hyphen_values = true)]
+        prompt: String,
+    },
     /// Scan a worktree for credential shapes and exit non-zero on any finding
     ///
     /// Not a hook: this is the same scan the `pre-push` hook runs, reachable on
