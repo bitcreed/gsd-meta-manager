@@ -16,8 +16,9 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use gsd_meta_manager::envelope::{cred, hooks, ENVELOPE_ROOT_ENV};
 use tempfile::TempDir;
@@ -259,6 +260,67 @@ fn neither_push_writes_into_the_driven_repository_config_or_hooks() {
         !fx.hooks_dir.starts_with(&fx.work),
         "an envelope artifact inside the driven repository can be swept into a \
          commit by `git add -A` (D-02)"
+    );
+}
+
+/// Run a hook stub directly, feeding it one ref line, and report its output.
+fn run_stub(fx: &Fixture, stub: &Path, ref_line: &str) -> Output {
+    let mut child = Command::new(stub)
+        .env(ENVELOPE_ROOT_ENV, &fx.envelope_root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the generated stub is executable");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin was piped")
+        .write_all(ref_line.as_bytes())
+        .expect("the stub reads its stdin");
+    child.wait_with_output().expect("the stub terminates")
+}
+
+#[test]
+fn a_relocated_copy_of_the_stub_refuses_instead_of_acting() {
+    let Some(fx) = fixture("provenance") else {
+        return;
+    };
+
+    // A ref INSIDE the namespace, so a refusal below cannot be the policy
+    // talking. Whatever refuses the copy has to be the provenance check.
+    let allowed_line = format!(
+        "refs/heads/x 1111111111111111111111111111111111111111 {} 2222222222222222222222222222222222222222\n",
+        fx.inside_ref()
+    );
+
+    let sanctioned = fx.hooks_dir.join("pre-push");
+    let control = run_stub(&fx, &sanctioned, &allowed_line);
+    assert!(
+        control.status.success(),
+        "the sanctioned hook must ALLOW this ref, or the relocation assertion \
+         below proves nothing; stderr was:\n{}",
+        String::from_utf8_lossy(&control.stderr)
+    );
+
+    let elsewhere = fx.envelope_root.parent().unwrap().join("relocated-hooks");
+    std::fs::create_dir_all(&elsewhere).expect("a directory outside the envelope");
+    let copy = elsewhere.join("pre-push");
+    std::fs::copy(&sanctioned, &copy).expect("the stub is copyable, which is the hazard");
+
+    let out = run_stub(&fx, &copy, &allowed_line);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !out.status.success(),
+        "a copy of the hook relocated to {} became the sanctioned one (D-10); \
+         stderr was:\n{stderr}",
+        elsewhere.display()
+    );
+    assert!(
+        stderr.contains("provenance"),
+        "the refusal must name the provenance failure, so a human does not read \
+         it as a policy verdict; stderr was:\n{stderr}"
     );
 }
 

@@ -183,5 +183,13 @@ pub enum EnvelopeAction {
     PrePush {
         /// Registry alias whose reserved push namespace applies to this push
         alias: String,
+        // The generated stub passes `"$0"` here, never a path baked in at
+        // generation time (D-10). A baked path travels with a copy of the file,
+        // so a relocated stub would hand back the original's path and certify
+        // itself; `$0` is the path the shell was actually invoked as, which a
+        // copy cannot forge by being copied.
+        /// Path this hook was invoked from, checked against the envelope's own
+        #[arg(long)]
+        hook_path: PathBuf,
     },
 }

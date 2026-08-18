@@ -89,11 +89,17 @@ pub fn install_in(root: &Path, alias: &str, binary: &Path) -> anyhow::Result<Pat
 /// in double quotes. An alias is a *plain path component*, which is a weaker
 /// constraint than "shell-safe" — `is_plain_run_id` accepts a quote character —
 /// and a generated script is not a place to discover that difference.
+///
+/// `--hook-path "$0"` is the one value that is deliberately **not** baked in.
+/// A path recorded at generation time travels with a copy of the file, so a
+/// relocated stub would hand [`assert_provenance`] the original's path and
+/// certify itself. `$0` is the path the shell was actually invoked as, which is
+/// the only value a copy cannot forge by being copied.
 fn stub_body(binary: &Path, alias: &str) -> String {
     format!(
         "#!/bin/sh\n\
          # gsd-meta-manager envelope hook. Policy lives in the binary below (D-04).\n\
-         exec {} envelope pre-push {}\n",
+         exec {} envelope pre-push {} --hook-path \"$0\"\n",
         sh_quote(&binary.to_string_lossy()),
         sh_quote(alias),
     )
@@ -104,7 +110,92 @@ fn sh_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
-/// The `pre-push` hook body: read git's ref lines, return the exit code.
+/// Refuse unless this hook is the sanctioned one, running the binary it names.
+///
+/// Two facts, and the hook refuses if either fails (D-10):
+///
+/// 1. **The binary the stub was generated with still exists on disk.** On Linux
+///    a running-but-deleted executable reports its path as `… (deleted)`, so a
+///    binary replaced or removed under a live envelope is detectable here rather
+///    than at the next exec.
+/// 2. **The file this process was invoked from is the one inside *this alias's*
+///    envelope hooks directory.** A copy of the hook relocated to some other
+///    `hooksPath` must not silently become the sanctioned one.
+///
+/// Both sides are canonicalised before comparison, so a symlinked data directory
+/// — `~/.local/share` pointed elsewhere is ordinary — does not read as a
+/// relocation. Canonicalisation is safe *here* in a way it is not in
+/// [`crate::journal::is_plain_run_id`]: this compares two paths that must both
+/// already exist, rather than deciding whether a path that does not exist yet is
+/// allowed to be created.
+pub fn assert_provenance(alias: &str, invoked_from: &Path) -> anyhow::Result<()> {
+    let root = super::envelope_root().ok_or_else(|| {
+        anyhow!("no application data directory is resolvable, so no hook can be sanctioned")
+    })?;
+    assert_provenance_in(&root, alias, invoked_from)
+}
+
+/// [`assert_provenance`] against an explicit envelope root.
+pub fn assert_provenance_in(root: &Path, alias: &str, invoked_from: &Path) -> anyhow::Result<()> {
+    let binary = std::env::current_exe()
+        .context("cannot resolve this binary's own path, so its provenance is unknown")?;
+    if !binary.exists() {
+        return Err(anyhow!(
+            "the envelope binary at {} no longer exists on disk; refusing to act \
+             as a hook for a build that has been removed or replaced",
+            binary.display()
+        ));
+    }
+
+    let sanctioned = super::envelope_dir_in(root, alias)
+        .map(|dir| dir.join(HOOKS_SUBDIR).join(PRE_PUSH_HOOK))
+        .ok_or_else(|| {
+            anyhow!("alias {alias:?} is not a plain path component, so it sanctions no hook")
+        })?;
+
+    let sanctioned_real = sanctioned.canonicalize().with_context(|| {
+        format!(
+            "no sanctioned hook exists at {}, so nothing can be certified against it",
+            sanctioned.display()
+        )
+    })?;
+    let invoked_real = invoked_from.canonicalize().with_context(|| {
+        format!("cannot resolve the hook this process ran from ({})", invoked_from.display())
+    })?;
+
+    if invoked_real != sanctioned_real {
+        return Err(anyhow!(
+            "hook provenance failed: this process ran from {} but the sanctioned \
+             hook for alias {alias:?} is {}; a relocated copy does not inherit the \
+             envelope's authority",
+            invoked_real.display(),
+            sanctioned_real.display()
+        ));
+    }
+
+    Ok(())
+}
+
+/// The `pre-push` hook body: assert provenance, then classify.
+///
+/// The order is the mechanism. Classification runs only for a hook that has
+/// proved it is the sanctioned one, so a relocated copy cannot decide anything —
+/// not even to allow.
+pub fn pre_push(
+    alias: &str,
+    stdin: impl BufRead,
+    invoked_from: &Path,
+) -> anyhow::Result<i32> {
+    assert_provenance(alias, invoked_from)?;
+    classify_refs(alias, stdin)
+}
+
+/// Read git's ref lines and return the exit code, with no provenance check.
+///
+/// Separate from [`pre_push`] so the classification can be unit-tested against
+/// hostile stdin without installing a hook on disk first. Nothing outside this
+/// module may call it: a caller that skipped [`assert_provenance`] would be
+/// re-opening exactly the seam D-10 closes.
 ///
 /// git supplies `<local-ref> <local-sha> <remote-ref> <remote-sha>` on stdin,
 /// **regardless of how git was invoked** — from a nested shell, from a Makefile,
@@ -122,7 +213,7 @@ fn sh_quote(value: &str) -> String {
 /// The return value is the process exit code, and the exit code **is** the
 /// control (D-25) — not the message, which is only there so a human reading a
 /// failed push knows what happened.
-pub fn pre_push(alias: &str, stdin: impl BufRead) -> anyhow::Result<i32> {
+fn classify_refs(alias: &str, stdin: impl BufRead) -> anyhow::Result<i32> {
     let namespace = policy::default_namespace(alias);
     let mut refused = 0usize;
 
@@ -174,7 +265,9 @@ mod tests {
         let body = stub_body(Path::new(BIN), "demo");
         assert_eq!(body.lines().count(), 3, "the stub must stay a stub:\n{body}");
         assert!(body.starts_with("#!/bin/sh\n"));
-        assert!(body.ends_with("exec '/opt/gsd-meta-manager' envelope pre-push 'demo'\n"));
+        assert!(body.ends_with(
+            "exec '/opt/gsd-meta-manager' envelope pre-push 'demo' --hook-path \"$0\"\n"
+        ));
     }
 
     #[test]
@@ -189,34 +282,34 @@ mod tests {
     #[test]
     fn a_push_inside_the_namespace_exits_zero() {
         let stdin = "refs/heads/x abc refs/heads/gsd-auto/demo/x def\n";
-        assert_eq!(pre_push("demo", stdin.as_bytes()).unwrap(), 0);
+        assert_eq!(classify_refs("demo", stdin.as_bytes()).unwrap(), 0);
     }
 
     #[test]
     fn a_push_outside_the_namespace_exits_non_zero() {
         let stdin = "refs/heads/x abc refs/heads/main def\n";
-        assert_ne!(pre_push("demo", stdin.as_bytes()).unwrap(), 0);
+        assert_ne!(classify_refs("demo", stdin.as_bytes()).unwrap(), 0);
     }
 
     #[test]
     fn one_refused_ref_in_a_batch_refuses_the_whole_push() {
         let stdin = "refs/heads/a 1 refs/heads/gsd-auto/demo/a 2\n\
                      refs/heads/b 3 refs/heads/main 4\n";
-        assert_ne!(pre_push("demo", stdin.as_bytes()).unwrap(), 0);
+        assert_ne!(classify_refs("demo", stdin.as_bytes()).unwrap(), 0);
     }
 
     #[test]
     fn a_deletion_is_classified_by_its_destination_ref() {
         let deleting_main =
             "(delete) 0000000000000000000000000000000000000000 refs/heads/main 5\n";
-        assert_ne!(pre_push("demo", deleting_main.as_bytes()).unwrap(), 0);
+        assert_ne!(classify_refs("demo", deleting_main.as_bytes()).unwrap(), 0);
     }
 
     #[test]
     fn an_unreadable_ref_line_is_refused_rather_than_skipped() {
-        assert_ne!(pre_push("demo", "garbage\n".as_bytes()).unwrap(), 0);
+        assert_ne!(classify_refs("demo", "garbage\n".as_bytes()).unwrap(), 0);
         assert_ne!(
-            pre_push("demo", "one two three\n".as_bytes()).unwrap(),
+            classify_refs("demo", "one two three\n".as_bytes()).unwrap(),
             0,
             "a three-field line has no destination ref and must not be allowed"
         );
@@ -224,7 +317,7 @@ mod tests {
 
     #[test]
     fn a_blank_line_is_nothing_rather_than_something_unreadable() {
-        assert_eq!(pre_push("demo", "\n\n".as_bytes()).unwrap(), 0);
+        assert_eq!(classify_refs("demo", "\n\n".as_bytes()).unwrap(), 0);
     }
 
     #[test]
@@ -240,5 +333,52 @@ mod tests {
             0,
             "a refused alias must leave the envelope root untouched"
         );
+    }
+
+    #[test]
+    fn the_installed_hook_certifies_itself() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let hooks_dir = install_in(tmp.path(), "demo", Path::new(BIN)).unwrap();
+        assert_provenance_in(tmp.path(), "demo", &hooks_dir.join(PRE_PUSH_HOOK))
+            .expect("the hook inside its own envelope directory is the sanctioned one");
+    }
+
+    #[test]
+    fn a_copy_of_the_hook_outside_the_envelope_certifies_nothing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let hooks_dir = install_in(tmp.path(), "demo", Path::new(BIN)).unwrap();
+
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let copy = elsewhere.join(PRE_PUSH_HOOK);
+        std::fs::copy(hooks_dir.join(PRE_PUSH_HOOK), &copy).unwrap();
+
+        let err = assert_provenance_in(tmp.path(), "demo", &copy).unwrap_err();
+        assert!(
+            err.to_string().contains("provenance"),
+            "the refusal must name provenance, not look like a policy verdict: {err}"
+        );
+    }
+
+    #[test]
+    fn a_hook_for_an_alias_with_no_installed_envelope_certifies_nothing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let hooks_dir = install_in(tmp.path(), "demo", Path::new(BIN)).unwrap();
+        // Same file, asked to certify itself as some OTHER alias's hook: the
+        // shape an agent reaches for when it wants one envelope's authority to
+        // cover a project the user never opted in.
+        let err =
+            assert_provenance_in(tmp.path(), "other", &hooks_dir.join(PRE_PUSH_HOOK)).unwrap_err();
+        assert!(
+            err.to_string().contains("sanctioned hook"),
+            "the refusal must say no sanctioned hook exists for that alias: {err}"
+        );
+    }
+
+    #[test]
+    fn a_hostile_alias_sanctions_no_hook_at_all() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let err = assert_provenance_in(tmp.path(), "../escaped", Path::new("/bin/sh")).unwrap_err();
+        assert!(err.to_string().contains("plain path component"), "{err}");
     }
 }

@@ -27,6 +27,54 @@
 //! reason 1 outright, so an unresolvable data-local directory yields `None` and
 //! every caller refuses rather than guessing.
 //!
+//! ## The three layers, and what each one is blind to (D-06)
+//!
+//! Enforcement is three **independent** layers. The "does NOT see" sentence
+//! under each is the load-bearing half: a future change that removes a layer has
+//! to delete a sentence that says what it was for, which is harder to do by
+//! accident than deleting a call.
+//!
+//! 1. **The `--disallowedTools` argv denylist.** Cheapest, fires before the tool
+//!    runs, and cannot be silently dropped, because it is argv rather than a
+//!    file that could fail validation.
+//!    This layer does NOT see any command that never reaches the tool boundary —
+//!    anything issued from a nested shell, a Makefile, or a script the agent
+//!    wrote and then ran through a single permitted invocation.
+//! 2. **The `PreToolUse` deny hook.** It splits the Bash command into argv and
+//!    applies the policy functions, rather than prefix-matching a string, so
+//!    `git  push   --force` and `git push -f` are the same verdict.
+//!    This layer does NOT see a command whose argv the shell-quoting split
+//!    cannot recover: a reassembled variable (`g=push; git $g --force`), `eval`,
+//!    a base64-decoded string, or a script the agent writes and then runs. It
+//!    raises the cost of an accident to near-certain detection; it does not stop
+//!    deliberate evasion.
+//! 3. **The `pre-push` git hook** ([`hooks::pre_push`]). It reads the actual
+//!    `<local-ref> <local-sha> <remote-ref> <remote-sha>` lines git supplies on
+//!    stdin, regardless of how git was invoked. This is the only layer that
+//!    observes ground truth.
+//!    This layer does NOT see anything at all if the child's process tree has
+//!    had the injected git configuration removed — an agent that unsets
+//!    `GIT_CONFIG_COUNT` in a subshell is past it.
+//!
+//! Layers 1 and 2 exist to make layer 3's known bypasses (`--no-verify`,
+//! `core.hooksPath`) unreachable through the tool boundary. Layer 3 exists
+//! because layers 1 and 2 only see commands that go through the `Bash` tool.
+//! Neither direction is redundant.
+//!
+//! ## What this module will not grow
+//!
+//! Three things are out of scope permanently, not merely unimplemented:
+//!
+//! - **No server-side protection is ever applied.** Applying a ruleset needs
+//!   `Administration` scope, which the run credential withholds by design. The
+//!   remote's protection state is *probed and reported*, never mutated.
+//! - **No secret is ever rotated or purged.** The envelope blocks; recovery
+//!   after a leak is a documented human procedure. A module that could purge
+//!   history is a module that could destroy it.
+//! - **No `.claude/settings.json` inside the driven repository is ever trusted
+//!   as a carrier of policy.** That file is agent-writable, and a control whose
+//!   carrier the agent can edit is not a control.
+//!
 //! ## The honest limit
 //!
 //! Nothing in this module is a guarantee. It is a client-side control: an agent

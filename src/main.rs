@@ -124,9 +124,13 @@ async fn main() -> anyhow::Result<()> {
         // terminal put into raw mode by ratatui on the way past would corrupt
         // the very output that carries the refusal.
         Some(Commands::Envelope { action }) => match action {
-            EnvelopeAction::PrePush { alias } => {
+            EnvelopeAction::PrePush { alias, hook_path } => {
                 let stdin = std::io::stdin();
-                match gsd_meta_manager::envelope::hooks::pre_push(&alias, stdin.lock()) {
+                match gsd_meta_manager::envelope::hooks::pre_push(
+                    &alias,
+                    stdin.lock(),
+                    &hook_path,
+                ) {
                     // The exit code IS the control (D-25): git blocks the push
                     // on any non-zero exit, and nothing downstream has to parse
                     // a message to learn that it was blocked.
