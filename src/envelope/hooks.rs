@@ -991,6 +991,258 @@ fn deny(out: &mut impl Write, err: &mut impl Write, reason: &str) -> anyhow::Res
     Ok(2)
 }
 
+// ---------------------------------------------------------------------------
+// The settings file that delivers the guard (D-07)
+// ---------------------------------------------------------------------------
+
+/// The generated settings file's name inside the alias's envelope directory.
+const SETTINGS_FILE: &str = "settings.json";
+
+/// The `PreToolUse` guard's registered timeout, in seconds.
+///
+/// **Five seconds, and the number has a reason rather than a shrug.** The guard
+/// does no network I/O, reads one append-only file in one pass, and consults the
+/// repository for exactly one command shape; on any machine that can run the
+/// agent at all its work is milliseconds. Five seconds is therefore not a budget
+/// it is expected to use — it is the ceiling past which something has gone wrong
+/// (a filesystem hang, a `git` that will not return) and the run is better off
+/// losing the guard than losing the agent.
+///
+/// The alternative — no `timeout` key at all — is exactly the configuration that
+/// produced the **reproduced** 180-240 second hang recorded at
+/// `src/executor/mod.rs:225-239`, where the user's own global `PreToolUse` hooks
+/// ran unbounded on the agent's critical path. `<specifics>` names re-creating
+/// that the single biggest self-inflicted-wound risk of this phase, so the value
+/// is asserted by a test rather than trusted to stay in the literal.
+pub const GUARD_TIMEOUT_SECS: u64 = 5;
+
+/// The tool the guard is registered against.
+const GUARD_MATCHER: &str = "Bash";
+
+/// The whole generated settings file, as a value.
+///
+/// **Typed, never templated** (D-07). Every byte of this file is produced by
+/// `serde_json` from this struct tree. There is no `format!`, no string
+/// concatenation and no template file anywhere in its generation, because a
+/// templated settings file is a settings file with a hand-made syntax error
+/// waiting in it — and the agent CLI, in print mode, **silently ignores a
+/// settings file that fails validation, with no error dialog**. A syntax error
+/// here does not announce itself; it disarms the layer without a word.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EnvelopeSettings {
+    /// The tool denylist, layer 1's list carried a second time.
+    pub permissions: SettingsPermissions,
+    /// The hook registrations, layer 2's delivery.
+    pub hooks: SettingsHooks,
+}
+
+/// The `permissions` object.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SettingsPermissions {
+    /// Patterns the child may not run. Always [`policy::disallowed_tools`], so
+    /// the file and the argv flag cannot drift apart.
+    pub deny: Vec<String>,
+}
+
+/// The `hooks` object.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SettingsHooks {
+    /// The event this envelope registers for. Renamed rather than spelled in
+    /// snake_case, because the consumer's key is `PreToolUse` and a serde
+    /// attribute is checkable where a hand-typed key is not.
+    #[serde(rename = "PreToolUse")]
+    pub pre_tool_use: Vec<HookMatcher>,
+}
+
+/// One matcher and the hooks it fires.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HookMatcher {
+    /// The tool name pattern this entry applies to.
+    pub matcher: String,
+    /// The commands to run, in order.
+    pub hooks: Vec<HookCommand>,
+}
+
+/// One registered command, with its timeout.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HookCommand {
+    /// Always `command`; `type` is a Rust keyword, hence the rename.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// The shell command line the CLI runs.
+    pub command: String,
+    /// Seconds. **Never absent** — see [`GUARD_TIMEOUT_SECS`].
+    pub timeout: u64,
+}
+
+/// The settings value for one alias.
+///
+/// ## Every control here has a second carrier (D-07)
+///
+/// The rule this file is generated under is that it must **never be the sole
+/// carrier of any control**, because the consumer ignores an invalid settings
+/// file silently. Per control, its second carrier:
+///
+/// | Control in this file | Second carrier |
+/// |---|---|
+/// | `permissions.deny` on `Bash(git push:*)` and the rest of D-08's verbs | the same list on argv as `--disallowedTools` — [`policy::disallowed_tools`] is the single source both read |
+/// | `permissions.deny` on `Write`/`Edit` of `.claude/**` | the same list on argv, again from [`policy::disallowed_tools`] |
+/// | the push boundary the guard enforces | the `pre-push` git hook ([`pre_push`]), which sees the refs git actually pushes regardless of how git was invoked |
+/// | the swept-worktree boundary | the `pre-commit` git hook ([`pre_commit`]), plus `pre-push` as its backstop |
+/// | the file's own delivery | [`settings_json`] renders the identical value for `--settings` to take **inline on argv**, where a file cannot go missing or be corrupted on disk |
+///
+/// **One control genuinely has no git-hook counterpart, and saying so is the
+/// point of this table rather than a hole in it: the pull-request cap.** No git
+/// hook observes `gh pr create`, because it is not a git operation. If this file
+/// were ignored, the cap would degrade to unenforced while every push boundary
+/// stayed standing — which is the "degrade, never disarm" outcome D-07 requires,
+/// but it is a degradation and it is recorded here rather than papered over.
+/// The mitigations that remain for it are the argv delivery above and the
+/// round-trip check in [`write_settings_in`].
+pub fn settings_value(binary: &Path, alias: &str) -> EnvelopeSettings {
+    EnvelopeSettings {
+        permissions: SettingsPermissions {
+            deny: policy::disallowed_tools(),
+        },
+        hooks: SettingsHooks {
+            pre_tool_use: vec![HookMatcher {
+                matcher: GUARD_MATCHER.to_string(),
+                hooks: vec![HookCommand {
+                    kind: "command".to_string(),
+                    command: guard_command(binary, alias),
+                    timeout: GUARD_TIMEOUT_SECS,
+                }],
+            }],
+        },
+    }
+}
+
+/// The one string in the settings file that is composed rather than serialised.
+///
+/// A command line is a string by nature; the distinction D-07 draws is that the
+/// **JSON** is never assembled from text, and it is not. Both interpolated
+/// values are POSIX-quoted by [`sh_quote`] — the same helper the hook stubs use,
+/// for the same reason: an alias is a plain path component, which is a weaker
+/// constraint than shell-safe.
+fn guard_command(binary: &Path, alias: &str) -> String {
+    format!(
+        "{} envelope guard {}",
+        sh_quote(&binary.to_string_lossy()),
+        sh_quote(alias)
+    )
+}
+
+/// The settings value as the JSON text `--settings` accepts inline.
+///
+/// The argv-carried half of the delivery. A file can be missing, relocated or
+/// truncated on disk; an argv element cannot, which is the same property D-06
+/// gives layer 1 over layer 2.
+pub fn settings_json(binary: &Path, alias: &str) -> anyhow::Result<String> {
+    serde_json::to_string(&settings_value(binary, alias))
+        .context("failed to render the envelope settings as JSON")
+}
+
+/// Generate `<envelope>/<alias>/settings.json`, verified by reading it back.
+///
+/// See [`write_settings_in`] for the three mitigations this rests on.
+pub fn write_settings(alias: &str) -> anyhow::Result<PathBuf> {
+    let binary = std::env::current_exe()
+        .context("cannot resolve this binary's own path, so no settings file can name it")?;
+    let root = super::envelope_root().ok_or_else(no_data_directory)?;
+    write_settings_in(&root, alias, &binary)
+}
+
+/// [`write_settings`] against an explicit envelope root and binary path.
+///
+/// **The write is followed immediately by a read-back and a comparison, and a
+/// mismatch refuses the run** rather than warning. That ordering is the whole
+/// mitigation: the agent CLI silently ignores a settings file that fails
+/// validation in print mode, so a file that is wrong on disk produces a run with
+/// no `PreToolUse` layer and no indication that anything happened. The only
+/// moment this process can still tell the difference is right here, before the
+/// child is spawned — a warning logged now would be read after the run that
+/// needed it.
+pub fn write_settings_in(root: &Path, alias: &str, binary: &Path) -> anyhow::Result<PathBuf> {
+    let dir = super::envelope_dir_in(root, alias).ok_or_else(|| hostile_alias(alias))?;
+    std::fs::create_dir_all(&dir).context("failed to create the alias's envelope directory")?;
+
+    let settings = settings_value(binary, alias);
+    let path = dir.join(SETTINGS_FILE);
+    persist_settings(&path, &settings)?;
+    verify_settings(&path, &settings)?;
+
+    Ok(path)
+}
+
+/// The error for an envelope root that cannot be resolved.
+fn no_data_directory() -> anyhow::Error {
+    anyhow!(
+        "no application data directory is resolvable, and the envelope refuses to write \
+         its settings into a directory that could sit inside a repository"
+    )
+}
+
+/// The error for an alias that is not a plain path component.
+fn hostile_alias(alias: &str) -> anyhow::Error {
+    anyhow!("alias {alias:?} is not a plain path component, so it sanctions no settings file")
+}
+
+/// Serialise and persist atomically, the `config.rs:234-249` idiom.
+fn persist_settings(path: &Path, settings: &EnvelopeSettings) -> anyhow::Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow!("the settings path has no parent directory"))?;
+    let rendered = serde_json::to_vec_pretty(settings)
+        .context("failed to render the envelope settings as JSON")?;
+
+    let mut tmp = NamedTempFile::new_in(dir)
+        .with_context(|| format!("failed to create a temp file in {}", dir.display()))?;
+    tmp.write_all(&rendered)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    tmp.persist(path)
+        .with_context(|| format!("failed to persist {}", path.display()))?;
+    Ok(())
+}
+
+/// Read the file back, deserialise it into the same struct tree, and compare.
+///
+/// **Any mismatch is an error, never a warning.** Public so the same check can
+/// be re-run against a file that has been on disk since it was written — which
+/// is what a test corrupting one byte exercises, and what a caller that wants to
+/// re-assert the envelope before a second spawn would use.
+pub fn verify_settings(path: &Path, expected: &EnvelopeSettings) -> anyhow::Result<()> {
+    let text = std::fs::read_to_string(path).with_context(|| {
+        format!(
+            "the envelope settings at {} could not be read back, so it cannot be shown to \
+             be the file that was written; refusing the run",
+            path.display()
+        )
+    })?;
+
+    let actual: EnvelopeSettings = serde_json::from_str(&text).map_err(|error| {
+        anyhow!(
+            "the envelope settings at {} did not deserialise into the value that was \
+             written ({error}). The agent CLI would ignore this file SILENTLY, leaving a \
+             run with no PreToolUse layer and nothing to indicate it; refusing the run \
+             instead (reason: {})",
+            path.display(),
+            policy::REASON_ENVELOPE_ASSERTION_FAILED
+        )
+    })?;
+
+    if &actual != expected {
+        return Err(anyhow!(
+            "the envelope settings at {} do not match the value that was written. The \
+             agent CLI would ignore a malformed file SILENTLY; refusing the run instead \
+             (reason: {})",
+            path.display(),
+            policy::REASON_ENVELOPE_ASSERTION_FAILED
+        ));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
