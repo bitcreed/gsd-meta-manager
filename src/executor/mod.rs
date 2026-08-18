@@ -756,6 +756,10 @@ mod tests {
             driver_opt_in: opted_in.then(|| crate::config::DriverOptIn {
                 opted_in_at: "2026-07-29T00:00:00Z".to_string(),
                 claude_md_digest: None,
+                branch_namespace: None,
+                credential: None,
+                pr_cap_per_24h: None,
+                pr_cap_per_run: None,
             }),
             extra: Default::default(),
         }

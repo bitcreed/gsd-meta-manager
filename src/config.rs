@@ -89,6 +89,78 @@ pub struct DriverOptIn {
     /// Recorded now, acted on by **nothing** in this phase. Phase 21 re-confirms
     /// the opt-in on drift.
     pub claude_md_digest: Option<String>,
+    /// The push namespace this project's driven runs are confined to, or
+    /// `None` for the default `refs/heads/gsd-auto/<alias>/` (D-30).
+    ///
+    /// **Never trusted raw.** `envelope::policy::validate_namespace` refuses
+    /// every shape that would disable the control — a bare `refs/heads/`, a
+    /// single segment, `main`/`master`/`HEAD` — and
+    /// `envelope::policy::EnvelopePolicy::resolve` degrades an invalid value to
+    /// the default rather than widening the boundary. An absent value and a
+    /// rejected value therefore mean the same thing, which is the safe thing.
+    #[serde(default)]
+    pub branch_namespace: Option<String>,
+    /// Where this project's driven runs get their git credential (D-18).
+    ///
+    /// `None` — the default — means **no credential**, which means every push
+    /// fails closed with a legible reason. See [`CredentialSource`] for why
+    /// there is deliberately no ambient fallback.
+    #[serde(default)]
+    pub credential: Option<CredentialSource>,
+    /// How many pull requests a driven run of this project may open in a
+    /// rolling 24 hours, or `None` for
+    /// `envelope::policy::DEFAULT_PR_CAP_PER_24H`.
+    ///
+    /// `Option<u32>` rather than a `#[serde(default = "…")] u32` on purpose:
+    /// every envelope default is decided in exactly one function (D-30), and a
+    /// serde default here would be a second place a cap is chosen.
+    #[serde(default)]
+    pub pr_cap_per_24h: Option<u32>,
+    /// How many pull requests a single driven run may open, or `None` for
+    /// `envelope::policy::DEFAULT_PR_CAP_PER_RUN`. Same `Option` argument as
+    /// [`DriverOptIn::pr_cap_per_24h`].
+    #[serde(default)]
+    pub pr_cap_per_run: Option<u32>,
+}
+
+/// Where a driven run's git credential comes from (D-18).
+///
+/// Exactly two variants, and **the absent third one is the decision**: there is
+/// deliberately no literal-token variant. `config.json` lives in the registry
+/// next to project paths, is written with ordinary file permissions, and is the
+/// kind of file that gets synced, backed up and pasted into a bug report. It has
+/// no protection posture at all, so it is not a secret store and this type will
+/// not pretend otherwise by offering a field that invites one.
+///
+/// **The default is no credential, and no credential means every push fails
+/// closed with a legible reason.** There is no ambient fallback, and that
+/// absence is the requirement rather than an omission: SAFE-05 says a driven run
+/// must not inherit the user's credentials, and "unconfigured" silently meaning
+/// "the user's credentials" is the exact failure it names. A project with no
+/// configured credential can still be driven, can read and can commit; it cannot
+/// push, and it says so up front rather than at minute 90.
+///
+/// Tagged (`{"source": "env", …}`) so the JSON is self-describing — a registry
+/// file two binary versions may share should not need a schema to be read.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum CredentialSource {
+    /// Read the token from a named environment variable of the TUI's own
+    /// process.
+    Env {
+        /// The variable **name**. The value is never stored here, and never
+        /// written anywhere by this build.
+        var: String,
+    },
+    /// Run a command and read the token from its stdout — `gh auth token`,
+    /// `pass show …`, `op read …`.
+    Command {
+        /// argv, **never a shell string**. The same rule
+        /// `executor::claude::build_argv` records for the agent spawn: with no
+        /// shell in the path, a value containing a flag-shaped token or a `;`
+        /// cannot become a second command.
+        argv: Vec<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -303,6 +375,38 @@ mod tests {
   }
 }"#;
 
+    /// A real pre-Phase-19 `config.json`, byte for byte: schema version 2, one
+    /// opted-in project, and a `driver_opt_in` record carrying exactly the two
+    /// fields Phase 17 wrote.
+    ///
+    /// **Deliberately a literal, never a serialised `Config`** — the same
+    /// distinction [`PRE_PHASE_17_CONFIG`] records. Serialising a `Config` and
+    /// reading it back tests the round-trip, which would pass even if every new
+    /// field had been made mandatory; only a literal written the way the old
+    /// binary wrote it tests the *migration*, which is what decides whether a
+    /// user who upgrades wakes up inside a namespace or a cap they never chose.
+    const PRE_PHASE_19_CONFIG: &str = r#"{
+  "version": 2,
+  "projects": {
+    "alpha": {
+      "path": "/home/testuser/projects/alpha",
+      "added": "2026-01-04T09:15:00+00:00",
+      "driver_opt_in": {
+        "opted_in_at": "2026-07-29T11:59:00Z",
+        "claude_md_digest": "fnv1a:0123456789abcdef"
+      }
+    }
+  },
+  "preferences": {
+    "hooks": {
+      "pre_create": null,
+      "post_create": null
+    },
+    "gsd_integration": true,
+    "driver_max_concurrent": 1
+  }
+}"#;
+
     fn write_config(dir: &Path, body: &str) -> PathBuf {
         let path = dir.join("config.json");
         std::fs::write(&path, body).expect("the fixture config is writable");
@@ -346,6 +450,80 @@ mod tests {
         let beta = &config.projects["beta"];
         assert_eq!(beta.path, PathBuf::from("/home/testuser/projects/beta"));
         assert_eq!(beta.added, "2026-02-17T22:41:03+00:00");
+    }
+
+    #[test]
+    fn a_pre_phase_19_config_loads_with_every_envelope_field_absent() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_config(dir.path(), PRE_PHASE_19_CONFIG);
+
+        let config = load_config(&path).expect("a version 2 config must still parse");
+
+        assert_eq!(
+            config.version, CONFIG_SCHEMA_VERSION,
+            "adding `#[serde(default)]` fields is not a schema change; version 2 still means \
+             exactly the one thing its doc says it means"
+        );
+
+        let opt_in = config.projects["alpha"]
+            .driver_opt_in
+            .as_ref()
+            .expect("the recorded opt-in survives the load unchanged");
+        assert_eq!(opt_in.opted_in_at, "2026-07-29T11:59:00Z");
+        assert_eq!(
+            opt_in.claude_md_digest.as_deref(),
+            Some("fnv1a:0123456789abcdef")
+        );
+
+        // The load-bearing assertion: reading an old config must never
+        // silently enrol a project into a namespace or a cap it did not choose.
+        assert!(
+            opt_in.branch_namespace.is_none(),
+            "an old config must not acquire a push namespace by being read — the envelope's \
+             own default applies, resolved in one place (D-30)"
+        );
+        assert!(
+            opt_in.credential.is_none(),
+            "an old config must not acquire a credential source by being read; no credential \
+             is the default, and it fails closed rather than reaching for the user's own \
+             (SAFE-05, D-18)"
+        );
+        assert!(
+            opt_in.pr_cap_per_24h.is_none(),
+            "an old config must not acquire a PR cap by being read"
+        );
+        assert!(opt_in.pr_cap_per_run.is_none());
+    }
+
+    #[test]
+    fn a_credential_source_round_trips_through_self_describing_json() {
+        let env: CredentialSource =
+            serde_json::from_str(r#"{"source":"env","var":"GSD_MM_GIT_TOKEN"}"#)
+                .expect("the env form parses");
+        assert_eq!(
+            env,
+            CredentialSource::Env {
+                var: "GSD_MM_GIT_TOKEN".to_string()
+            }
+        );
+
+        let command: CredentialSource =
+            serde_json::from_str(r#"{"source":"command","argv":["gh","auth","token"]}"#)
+                .expect("the command form parses");
+        assert_eq!(
+            command,
+            CredentialSource::Command {
+                argv: vec!["gh".to_string(), "auth".to_string(), "token".to_string()],
+            },
+            "the command is argv, never a shell string — a shell in this path would make a \
+             credential lookup into an arbitrary-command seam"
+        );
+
+        let rendered = serde_json::to_string(&command).expect("serialises");
+        assert!(
+            rendered.contains(r#""source":"command""#),
+            "the tag is what makes the registry file readable without a schema, got {rendered}"
+        );
     }
 
     #[test]

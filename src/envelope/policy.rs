@@ -12,6 +12,7 @@
 //! answer the one question argv cannot ("where would a bare `git push` go?"),
 //! and it is the only function here that touches the world.
 
+use crate::config::{CredentialSource, DriverOptIn};
 use std::path::Path;
 
 /// The reserved push namespace root (D-05).
@@ -776,9 +777,172 @@ pub fn disallowed_tools() -> Vec<String> {
     patterns
 }
 
+/// The default rolling-24h PR cap: **3**.
+///
+/// **Arbitrary, and recorded as arbitrary rather than presented as derived.**
+/// PITFALLS suggests it explicitly as a starting number, not as a measurement.
+/// A named constant with the reason beside it is what stops a later reader from
+/// reverse-engineering a justification that never existed.
+pub const DEFAULT_PR_CAP_PER_24H: u32 = 3;
+
+/// The default per-run PR cap: **1**. Arbitrary in the same way as
+/// [`DEFAULT_PR_CAP_PER_24H`], and for the same recorded reason.
+pub const DEFAULT_PR_CAP_PER_RUN: u32 = 1;
+
+/// Every envelope setting for one alias, with every default already decided.
+///
+/// **`Default` is deliberately NOT derived**, following the lesson
+/// `config.rs:109-117` records for `Preferences::driver_max_concurrent`: a
+/// derived `Default` would make each cap `u32::default()`, which is `0`, which
+/// here means *"no PR may ever be opened"* — a total denial of service wearing
+/// the costume of a default. The constants above are the defaults, and
+/// [`EnvelopePolicy::resolve`] is the only place they are applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvelopePolicy {
+    /// The validated namespace every push from this alias must sit under.
+    pub namespace: String,
+    /// PRs allowed in a rolling 24 hours.
+    pub pr_cap_per_24h: u32,
+    /// PRs allowed in a single run.
+    pub pr_cap_per_run: u32,
+    /// Where the run's credential comes from, or `None` for **no credential**,
+    /// which is the default and means every push fails closed (D-18).
+    pub credential: Option<CredentialSource>,
+}
+
+impl EnvelopePolicy {
+    /// Resolve one project's envelope settings — **the only place an envelope
+    /// default is decided** (D-30).
+    ///
+    /// That is the whole point of the function existing: with four
+    /// `Option` fields and three consumers, a default applied at the point of
+    /// use is a default applied differently at each point of use, and the first
+    /// symptom is a run confined to a namespace the preview did not show.
+    ///
+    /// **An invalid configured namespace degrades to the safe default and
+    /// warns; it never widens the control.** A user who types `refs/heads/` has
+    /// written something that would allow every branch, and honouring it would
+    /// be disabling the boundary by typo. Falling back is the only direction to
+    /// be wrong in, and the warning is what keeps the fallback from being
+    /// silent.
+    pub fn resolve(alias: &str, opt_in: &DriverOptIn) -> EnvelopePolicy {
+        let namespace = match opt_in.branch_namespace.as_deref() {
+            Some(configured) => match validate_namespace(configured) {
+                Some(valid) => valid,
+                None => {
+                    tracing::warn!(
+                        alias,
+                        configured,
+                        "the configured branch namespace fails the shape rules that keep it a \
+                         boundary, so the default applies instead",
+                    );
+                    default_namespace(alias)
+                }
+            },
+            None => default_namespace(alias),
+        };
+
+        EnvelopePolicy {
+            namespace,
+            pr_cap_per_24h: opt_in.pr_cap_per_24h.unwrap_or(DEFAULT_PR_CAP_PER_24H),
+            pr_cap_per_run: opt_in.pr_cap_per_run.unwrap_or(DEFAULT_PR_CAP_PER_RUN),
+            credential: opt_in.credential.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `DriverOptIn` with every envelope field absent — the shape a
+    /// pre-Phase-19 config deserialises to.
+    fn bare_opt_in() -> DriverOptIn {
+        DriverOptIn {
+            opted_in_at: "2026-08-18T00:00:00Z".to_string(),
+            claude_md_digest: None,
+            branch_namespace: None,
+            credential: None,
+            pr_cap_per_24h: None,
+            pr_cap_per_run: None,
+        }
+    }
+
+    #[test]
+    fn an_unconfigured_project_resolves_to_the_default_namespace_and_the_default_caps() {
+        let policy = EnvelopePolicy::resolve("demo", &bare_opt_in());
+
+        assert_eq!(policy.namespace, "refs/heads/gsd-auto/demo/");
+        assert_eq!(
+            policy.pr_cap_per_24h, DEFAULT_PR_CAP_PER_24H,
+            "a derived `Default` would make this 0, which means no PR may ever be opened \
+             (config.rs:109-117's lesson, applied to a cap)"
+        );
+        assert_eq!(policy.pr_cap_per_run, DEFAULT_PR_CAP_PER_RUN);
+        assert!(
+            policy.credential.is_none(),
+            "no credential is the default, and it must never resolve to the user's ambient \
+             one — SAFE-05 names that substitution as the failure"
+        );
+    }
+
+    #[test]
+    fn pr_caps_default_to_three_and_one_from_an_absent_key_and_from_an_explicit_none() {
+        // The two arms `driver_max_concurrent_defaults_to_one_from_default_and_from_empty_json`
+        // established: the struct path and the JSON path can disagree, and only
+        // exercising both catches it.
+        let from_none = EnvelopePolicy::resolve("demo", &bare_opt_in());
+        assert_eq!(from_none.pr_cap_per_24h, 3);
+        assert_eq!(from_none.pr_cap_per_run, 1);
+
+        let from_json: DriverOptIn = serde_json::from_str(
+            r#"{"opted_in_at":"2026-08-18T00:00:00Z","claude_md_digest":null}"#,
+        )
+        .expect("a pre-Phase-19 opt-in record must still deserialise");
+        let from_absent_key = EnvelopePolicy::resolve("demo", &from_json);
+        assert_eq!(
+            from_absent_key.pr_cap_per_24h, 3,
+            "an absent key and an explicit `None` must resolve identically, or an old config \
+             silently gets a different cap from a new one"
+        );
+        assert_eq!(from_absent_key.pr_cap_per_run, 1);
+    }
+
+    #[test]
+    fn an_invalid_configured_namespace_falls_back_to_the_default_rather_than_widening() {
+        for hostile in [
+            "refs/heads/",
+            "refs/heads/main/",
+            "refs/heads/x/",
+            "gsd-auto/demo/",
+            "refs/heads/gsd-auto/demo",
+        ] {
+            let opt_in = DriverOptIn {
+                branch_namespace: Some(hostile.to_string()),
+                ..bare_opt_in()
+            };
+            assert_eq!(
+                EnvelopePolicy::resolve("demo", &opt_in).namespace,
+                "refs/heads/gsd-auto/demo/",
+                "a configured namespace that fails the shape rules must degrade to the \
+                 default; honouring {hostile:?} would disable the boundary by typo"
+            );
+        }
+    }
+
+    #[test]
+    fn a_valid_configured_namespace_is_honoured_verbatim() {
+        let opt_in = DriverOptIn {
+            branch_namespace: Some("refs/heads/bots/nightly/".to_string()),
+            ..bare_opt_in()
+        };
+        assert_eq!(
+            EnvelopePolicy::resolve("demo", &opt_in).namespace,
+            "refs/heads/bots/nightly/",
+            "a namespace that passes the shape rules applies exactly as written — the \
+             validator deliberately does not normalise"
+        );
+    }
 
     /// The context every argv-shape test runs against: the default namespace
     /// for `demo`, and one resolved destination inside it, so a bare `push`
