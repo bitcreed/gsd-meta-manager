@@ -3293,6 +3293,7 @@ mod tests {
                 refspecs: vec!["refs/heads/main:refs/heads/main".to_string()],
                 note: None,
             },
+            protection: crate::envelope::advisory::not_probed(),
         });
         // Tall enough that the more-indicator does not eat a header row.
         let scraped = scrape_preview(&loaded(&report), 100, 40).join("\n");

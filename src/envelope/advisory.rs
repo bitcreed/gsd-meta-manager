@@ -153,6 +153,78 @@ pub fn not_probed() -> ProtectionState {
     )
 }
 
+/// The envelope's honesty statement (**pinned contract** — see the rule below).
+///
+/// **This constant is a contract, not decoration.** It gets the same treatment
+/// `src/driver/dry_run.rs`'s three section constants carry, and for the same
+/// reason their doc records: text that only *happens* to say something true is
+/// text a later refactor tidies into something softer without anybody
+/// noticing.
+///
+/// `tests/envelope_advisory.rs::the_honesty_statement_carries_each_of_its_three_required_parts`
+/// pins it. That test matches a distinctive phrase from **each** of the three
+/// parts below rather than the whole paragraph, so a rewording is allowed and a
+/// *dropped part* is a build failure. Changing this text is a user-visible
+/// output change: it is rendered into the dry-run preview and, through
+/// [`envelope_notice`], into the run journal.
+///
+/// The three parts, in this order and for this reason:
+///
+/// 1. **What IS mechanically guaranteed.** Claimed narrowly, because a claim
+///    wider than the mechanism is the thing that gets trusted and should not
+///    be.
+/// 2. **What is NOT.** Stated without hedging. Every clause here is one this
+///    codebase's own module docs already record — [`super`]'s three-layer
+///    contract names what each layer cannot see, [`super::cred`] states that an
+///    agent inside the run can execute the askpass responder and read the token,
+///    and `hooks::settings_value` records the one control with no git-hook
+///    second carrier. This paragraph agrees with them rather than restating them
+///    more comfortably.
+/// 3. **Therefore: enable server-side branch protection.** The phase's
+///    conclusion, stated as a recommendation rather than as a footnote, because
+///    it is the only boundary here that does not depend on the agent's
+///    cooperation.
+///
+/// **Do not soften part 2.** An overstated safety claim is worse than a stated
+/// limitation, because it gets trusted — and the incident this phase is built on
+/// had two failures, of which the second was reporting success over a deletion
+/// the agent had performed.
+pub const SECTION_ENVELOPE: &str = "== What this envelope guarantees, and what it does not ==\n\
+    Mechanically guaranteed: this run cannot reach your ambient git credentials\n\
+    or your SSH agent — the agent socket is removed rather than emptied, and\n\
+    git's global and system configuration are redirected into a generated file\n\
+    that names no credential helper. A push that reaches git through the driven\n\
+    process tree passes the pre-push hook, which judges the refs git itself\n\
+    hands it rather than the command line it was asked about. The pull-request\n\
+    cap is enforced from an append-only ledger this repository does not contain,\n\
+    so the run cannot reset its own limit by deleting a file it can see.\n\
+    \n\
+    Not guaranteed: client-side hooks, tool denies and env-injected git\n\
+    configuration are all defeatable by an agent that can spawn an unsupervised\n\
+    shell and chooses to. Each layer is documented with what it cannot see, an\n\
+    agent that unsets GIT_CONFIG_COUNT in a subshell is past the last of them,\n\
+    an agent that runs the askpass responder itself reads the token, and a\n\
+    settings file the agent's own CLI silently ignores leaves the pull-request\n\
+    cap unenforced, because no git hook observes a pull request. The only\n\
+    boundaries that do not depend on the agent's cooperation are the remote's\n\
+    own ruleset and the scope of the credential this run was given.\n\
+    \n\
+    Therefore: enable server-side branch protection on this repository. It is\n\
+    the one control here an agent cannot talk its way past, and it is this\n\
+    envelope's conclusion rather than its footnote.";
+
+/// The whole envelope section — the statement plus the state of the one
+/// boundary it says you should rely on.
+///
+/// **One producer, two consumers.** The dry-run preview renders this, and the
+/// run journal records it at run start. Two renderings assembled separately
+/// would be two things that can drift, and the drift would be the worst kind
+/// available here: a preview and a journal disagreeing about what was claimed
+/// (T-19-42). A test asserts the preview carries exactly this text.
+pub fn envelope_notice(state: &ProtectionState) -> String {
+    format!("{SECTION_ENVELOPE}\n{}", protection_line(state))
+}
+
 /// The marker every state except `protected` is rendered with.
 ///
 /// A word rather than a symbol: this text goes to a plain stdout preview and

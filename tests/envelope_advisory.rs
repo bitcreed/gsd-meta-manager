@@ -172,6 +172,124 @@ fn an_unprotected_state_renders_with_the_warning_marker() {
 }
 
 #[test]
+fn the_honesty_statement_carries_each_of_its_three_required_parts() {
+    // One distinctive phrase per part, rather than the whole paragraph: a
+    // rewording is allowed, a DROPPED part is a build failure. Softening the
+    // second part is the specific failure this test exists to catch, because an
+    // overstated safety claim is worse than a stated limitation — it gets
+    // trusted.
+    let guaranteed = [
+        "cannot reach your ambient git credentials",
+        "passes the pre-push hook",
+        "append-only ledger this repository does not contain",
+    ];
+    // Each phrase is deliberately short enough to sit on one wrapped line of the
+    // constant, so re-wrapping the paragraph does not fail this test while
+    // deleting a clause does.
+    let not_guaranteed = [
+        "defeatable by an agent that can spawn an unsupervised",
+        "do not depend on the agent's cooperation",
+        "own ruleset and the scope of the credential",
+    ];
+    let therefore = ["enable server-side branch protection"];
+
+    for phrase in guaranteed.iter().chain(&not_guaranteed).chain(&therefore) {
+        assert!(
+            advisory::SECTION_ENVELOPE.contains(phrase),
+            "the honesty statement no longer says {phrase:?}. D-27 requires all \
+             three parts — what IS guaranteed, what is NOT, and the server-side \
+             recommendation — and a dropped clause is exactly what this pin \
+             exists to catch:\n{}",
+            advisory::SECTION_ENVELOPE
+        );
+    }
+
+    // And in that order: the recommendation is the conclusion of the two
+    // paragraphs above it, not a footnote floating anywhere in the text.
+    let first = advisory::SECTION_ENVELOPE
+        .find(guaranteed[0])
+        .expect("part 1 appears");
+    let second = advisory::SECTION_ENVELOPE
+        .find(not_guaranteed[0])
+        .expect("part 2 appears");
+    let third = advisory::SECTION_ENVELOPE
+        .find(therefore[0])
+        .expect("part 3 appears");
+    assert!(
+        first < second && second < third,
+        "the three parts have a fixed order; got offsets {first}, {second}, {third}"
+    );
+}
+
+#[test]
+fn the_journal_notice_and_the_rendered_preview_carry_the_same_claim_text() {
+    use gsd_meta_manager::driver::dry_run;
+    use gsd_meta_manager::state_reader::git_ops::{PushPreview, WorkingTreeStat};
+
+    for state in [
+        ProtectionState::Protected,
+        ProtectionState::Unprotected,
+        advisory::not_probed(),
+    ] {
+        let notice = advisory::envelope_notice(&state);
+        let rendered = dry_run::render(&dry_run::DryRunReport {
+            commands: vec!["/gsd:progress".to_string()],
+            diffstat: WorkingTreeStat::default(),
+            push: PushPreview::default(),
+            protection: state.clone(),
+        });
+
+        assert!(
+            rendered.contains(&notice),
+            "the preview and the run journal must carry the SAME claim, produced \
+             once — two assemblies are two things that can drift, and a preview \
+             and a journal disagreeing about what was claimed is the worst drift \
+             available here (T-19-42).\nState: {state:?}\nNotice:\n{notice}\n\
+             Rendered:\n{rendered}"
+        );
+    }
+}
+
+#[test]
+fn the_preview_warns_for_an_unprotected_remote_and_shows_the_reason_for_an_unknown_one() {
+    use gsd_meta_manager::driver::dry_run;
+    use gsd_meta_manager::state_reader::git_ops::{PushPreview, WorkingTreeStat};
+
+    let render_with = |state: ProtectionState| {
+        dry_run::render(&dry_run::DryRunReport {
+            commands: vec!["/gsd:progress".to_string()],
+            diffstat: WorkingTreeStat::default(),
+            push: PushPreview::default(),
+            protection: state,
+        })
+    };
+
+    let unprotected = render_with(ProtectionState::Unprotected);
+    assert!(
+        unprotected.contains(PROTECTION_WARNING),
+        "an unprotected remote is warned about in the preview; got:\n{unprotected}"
+    );
+
+    let unknown_state = advisory::not_probed();
+    let reason = unknown_state
+        .reason()
+        .expect("an unknown carries a reason")
+        .to_string();
+    let unknown = render_with(unknown_state);
+    assert!(
+        unknown.contains(PROTECTION_WARNING) && unknown.contains(&reason),
+        "an unknown state is warned about AND carries its reason into the \
+         preview; got:\n{unknown}"
+    );
+
+    // The invariant, asserted where a user actually reads it.
+    assert!(
+        !unknown.contains(&protection_line(&ProtectionState::Protected)),
+        "an unknown must never render the protected line; got:\n{unknown}"
+    );
+}
+
+#[test]
 fn the_module_has_no_write_path_at_all() {
     let source = std::fs::read_to_string(PathBuf::from(ADVISORY_SRC))
         .expect("the advisory module is readable");

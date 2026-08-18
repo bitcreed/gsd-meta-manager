@@ -1,4 +1,4 @@
-//! The three-section preview a `drive --dry-run` prints, and nothing else.
+//! The four-section preview a `drive --dry-run` prints, and nothing else.
 //!
 //! This is the only place in v2.0 where a user sees blast radius **before** an
 //! autonomous agent with push rights starts. PITFALLS:63 is blunt about the
@@ -23,6 +23,18 @@
 //!    `git push --dry-run`: it contacts the network, needs credentials, and
 //!    makes the preview non-deterministic and untestable in CI.
 //!
+//! D-26 and D-27 add a fourth, and it is the section that keeps the other three
+//! honest:
+//!
+//! 4. **What the envelope guarantees and what it does not**, plus the remote's
+//!    own protection state. The statement is
+//!    [`crate::envelope::advisory::SECTION_ENVELOPE`], pinned by its own test.
+//!    The protection state is **not probed here** — a dry run contacts no
+//!    network, which section 3 says in this same output — so a preview reports
+//!    `unknown` **with that as the reason**. Reporting anything more comfortable
+//!    would be the overstated safety claim D-27 exists to refuse; a caller that
+//!    has probed hands the real state to [`DryRunReport::with_protection`].
+//!
 //! **D-24: this is a CLI mode, not a UI mode.** The rendered string goes to
 //! stdout as human-readable text — never to the journal and never to the TUI. A
 //! detached driver's stdio is null (D-01), so a dry-run is by definition a
@@ -39,8 +51,20 @@
 //! and is testable on every platform; only the *running* of an agent is
 //! Unix-only.
 
+use crate::envelope::advisory::{self, ProtectionState};
 use crate::executor::DrivableProject;
 use crate::state_reader::git_ops::{self, PushPreview, WorkingTreeStat};
+
+/// The envelope section's header and honesty statement (**pinned contract** —
+/// see [`SECTION_REFSPECS`]).
+///
+/// Re-exported rather than referenced through its own module so the four
+/// constants that make up the preview's output contract are visible in one
+/// place. It is defined in [`crate::envelope::advisory`] because the run journal
+/// renders the same text at run start, and a constant owned by the dry-run
+/// module would imply the preview owns the claim. It does not — it is one of two
+/// consumers.
+pub use crate::envelope::advisory::SECTION_ENVELOPE;
 
 /// The commands header (**pinned contract** — see [`SECTION_REFSPECS`]).
 pub const SECTION_COMMANDS: &str = "== GSD commands this run would issue ==\n\
@@ -53,13 +77,16 @@ pub const SECTION_DIFFSTAT: &str = "== Working tree a commit would capture ==\n\
     inherit and could sweep into a `git add -A && git commit`. It is not the\n\
     diff of the command — that cannot be known without running it.";
 
-/// The refspecs header, and the pinned-contract rule for all three.
+/// The refspecs header, and the pinned-contract rule for all four.
 ///
-/// **These three constants are a contract, not decoration.**
-/// `tests/driver_dry_run.rs::the_dry_run_output_names_the_command_the_diffstat_and_the_refspecs`
-/// asserts all three appear, in this order, so a section cannot silently
-/// disappear the way PITFALLS:69 warns about. Changing their text is a
-/// user-visible output change and breaks anyone scripting against the preview.
+/// **These four constants are a contract, not decoration.**
+/// `dry_run::tests::the_rendered_report_carries_all_three_section_headers_in_order`
+/// asserts all four appear, in this order, by comparing byte offsets — so a
+/// section cannot silently disappear the way PITFALLS:69 warns about, and there
+/// is exactly **one** place that pins the order rather than two that can
+/// disagree. (`tests/driver_dry_run.rs` additionally pins the first three
+/// against a real repository.) Changing their text is a user-visible output
+/// change and breaks anyone scripting against the preview.
 pub const SECTION_REFSPECS: &str = "== Push refspecs this state would produce ==\n\
     Computed locally from git config (branch.<b>.remote, remote.pushDefault,\n\
     remote.<r>.push, push.default). No network was contacted, no credential was\n\
@@ -71,9 +98,9 @@ const BANNER: &str = "DRY RUN — nothing below was executed. No agent was spawn
 
 /// Everything a preview reports, gathered before anything is rendered.
 ///
-/// Three fields for D-22's three outputs, and the shape is deliberately flat:
-/// building the report and rendering it are separate so a test can assert on the
-/// rendered string without capturing stdout.
+/// Three fields for D-22's three outputs plus D-26's protection state, and the
+/// shape is deliberately flat: building the report and rendering it are separate
+/// so a test can assert on the rendered string without capturing stdout.
 #[derive(Debug, Clone)]
 pub struct DryRunReport {
     /// The GSD commands the run would issue, in order.
@@ -86,9 +113,29 @@ pub struct DryRunReport {
     pub diffstat: WorkingTreeStat,
     /// What a push from the current state would send.
     pub push: PushPreview,
+    /// What the remote itself enforces (D-26).
+    ///
+    /// `Unknown` with a reason for a plain preview — see the module doc for why
+    /// a dry run does not probe. A caller that has probed supplies the real
+    /// state through [`DryRunReport::with_protection`].
+    pub protection: ProtectionState,
 }
 
-/// Gather the three sections for `project` and `command`.
+impl DryRunReport {
+    /// This report, carrying a protection state somebody actually probed.
+    ///
+    /// A separate step rather than an argument to [`build_report`], because the
+    /// probe and the preview have different costs and different callers: the
+    /// preview is three local git reads, and the probe is a bounded network
+    /// query that belongs at run start. Wiring them together would put a network
+    /// call behind a command whose own output promises none.
+    pub fn with_protection(mut self, protection: ProtectionState) -> Self {
+        self.protection = protection;
+        self
+    }
+}
+
+/// Gather the report for `project` and `command`.
 ///
 /// Read-only throughout: the two git helpers it calls shell out with
 /// `--no-optional-locks` and touch nothing (D-23). Synchronous, because the
@@ -99,6 +146,10 @@ pub fn build_report(project: &DrivableProject, command: &str) -> DryRunReport {
         commands: vec![command.to_string()],
         diffstat: git_ops::working_tree_stat(project.root()),
         push: git_ops::push_refspecs(project.root()),
+        // Not probed, and the rendered section says so with the reason. The
+        // alternative — omitting the state, or defaulting it to something
+        // reassuring — is exactly the failure D-26 names.
+        protection: advisory::not_probed(),
     }
 }
 
@@ -129,7 +180,9 @@ pub fn render(report: &DryRunReport) -> String {
     // 2. The working-tree diffstat.
     lines.push(SECTION_DIFFSTAT.to_string());
     if report.diffstat.stat_lines.is_empty() && report.diffstat.untracked.is_empty() {
-        lines.push("  Clean working tree — a commit from this state would capture nothing.".to_string());
+        lines.push(
+            "  Clean working tree — a commit from this state would capture nothing.".to_string(),
+        );
     } else {
         if report.diffstat.stat_lines.is_empty() {
             lines.push("  No tracked file is modified.".to_string());
@@ -163,9 +216,7 @@ pub fn render(report: &DryRunReport) -> String {
     if report.push.refspecs.is_empty() {
         match &report.push.note {
             Some(note) => lines.push(format!("  {note}")),
-            None => lines.push(
-                "  No push would occur from this state.".to_string(),
-            ),
+            None => lines.push("  No push would occur from this state.".to_string()),
         }
     } else {
         for refspec in &report.push.refspecs {
@@ -175,6 +226,13 @@ pub fn render(report: &DryRunReport) -> String {
             lines.push(format!("  Note: {note}"));
         }
     }
+    lines.push(String::new());
+
+    // 4. What the envelope does and does not guarantee, and what the remote
+    //    itself enforces. Rendered through `envelope_notice` rather than
+    //    assembled here, so the preview and the run journal cannot come to
+    //    disagree about what was claimed (T-19-42).
+    lines.push(advisory::envelope_notice(&report.protection));
 
     let mut rendered = lines.join("\n");
     rendered.push('\n');
@@ -199,9 +257,15 @@ mod tests {
                 refspecs: vec!["refs/heads/main:refs/heads/main".to_string()],
                 note: None,
             },
+            protection: advisory::not_probed(),
         }
     }
 
+    // The name is unchanged on purpose although this now covers four sections:
+    // extending the assertion that exists, rather than adding a second one
+    // beside it, is what keeps exactly ONE place pinning the order. Two ordering
+    // tests are two things that can disagree, and the one that gets updated is
+    // not necessarily the one somebody reads.
     #[test]
     fn the_rendered_report_carries_all_three_section_headers_in_order() {
         let rendered = render(&report());
@@ -212,13 +276,19 @@ mod tests {
         let diffstat = rendered
             .find(SECTION_DIFFSTAT)
             .expect("the diffstat section must appear");
-        let refspecs = rendered
-            .find(SECTION_REFSPECS)
-            .expect("the refspec section must appear — PITFALLS:69 names its absence as THE warning sign");
+        let refspecs = rendered.find(SECTION_REFSPECS).expect(
+            "the refspec section must appear — PITFALLS:69 names its absence as THE warning sign",
+        );
+        let envelope = rendered.find(SECTION_ENVELOPE).expect(
+            "the envelope section must appear — a preview that shows blast radius \
+             without saying what is NOT guaranteed is the overstated safety claim \
+             D-27 exists to refuse",
+        );
 
         assert!(
-            commands < diffstat && diffstat < refspecs,
-            "the three sections have a fixed order; got offsets {commands}, {diffstat}, {refspecs}"
+            commands < diffstat && diffstat < refspecs && refspecs < envelope,
+            "the four sections have a fixed order; got offsets {commands}, \
+             {diffstat}, {refspecs}, {envelope}"
         );
     }
 
@@ -249,12 +319,44 @@ mod tests {
             commands: vec!["/gsd:progress".to_string()],
             diffstat: WorkingTreeStat::default(),
             push: PushPreview::default(),
+            protection: advisory::not_probed(),
         };
         let rendered = render(&empty);
 
         assert!(rendered.contains("Clean working tree"));
         assert!(rendered.contains("No push would occur"));
         assert!(rendered.contains(SECTION_REFSPECS));
+        assert!(rendered.contains(SECTION_ENVELOPE));
+    }
+
+    #[test]
+    fn a_preview_reports_the_protection_state_as_unknown_with_its_reason_rather_than_omitting_it() {
+        let rendered = render(&report());
+
+        assert!(
+            rendered.contains("Remote protection: unknown"),
+            "a preview that did not probe says so; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("a dry run contacts no network"),
+            "and says WHY, because a bare `unknown` reads as an oversight rather \
+             than as a constraint; got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_probed_state_replaces_the_not_probed_one_without_touching_the_other_sections() {
+        let probed = report().with_protection(ProtectionState::Unprotected);
+        let rendered = render(&probed);
+
+        assert!(
+            rendered.contains("Remote protection: unprotected"),
+            "a caller that probed gets its own state rendered; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(SECTION_COMMANDS) && rendered.contains(SECTION_REFSPECS),
+            "and the other three sections are untouched; got:\n{rendered}"
+        );
     }
 
     #[test]
