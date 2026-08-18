@@ -157,6 +157,26 @@ static RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&alt).expect("redaction alternation must compile")
 });
 
+/// The `Credential`-tagged subset of [`PARTS`], compiled once (D-12).
+///
+/// **Stubbed to the full table.** This is the RED half of the class split: the
+/// signature and both consumers exist, so the failing assertions below are real
+/// failures of behaviour rather than a build error, and the history stays
+/// buildable. The GREEN commit tags [`PARTS`] and narrows this to the credential
+/// rules.
+pub fn credential_alternation() -> &'static Regex {
+    &RE
+}
+
+/// The rule names the credential alternation can report, in table order.
+///
+/// **Stubbed to every rule.** See [`credential_alternation`].
+pub fn credential_rule_names() -> &'static [&'static str] {
+    static NAMES: LazyLock<Vec<&'static str>> =
+        LazyLock::new(|| PARTS.iter().map(|(name, _, _)| *name).collect());
+    &NAMES
+}
+
 /// The host-specific layer: this process's actual home path, both encodings.
 ///
 /// The generic rules catch *any* user's home in a recognisable shape. This layer
@@ -702,6 +722,109 @@ mod tests {
             "the dash form must map to the generic literal: {out}"
         );
         assert_eq!(redact(&out), out, "and be a fixed point");
+    }
+
+    /// Every credential shape the scanner is required to catch (D-11, D-12), as
+    /// `(rule name, a string containing that shape)`.
+    ///
+    /// The rule name is asserted alongside the match, because a scanner that
+    /// reports the wrong rule sends a human to the wrong line of the wrong file.
+    const CREDENTIAL_SHAPES: &[(&str, &str)] = &[
+        (
+            "pem",
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34\n-----END RSA PRIVATE KEY-----",
+        ),
+        ("authz", "authorization: Basic dXNlcjpwYXNzd29yZA=="),
+        ("env", "GITHUB_TOKEN=ghp_zzzzzzzzzzzzzzzzzzzzzzzzzz"),
+        ("bearer", "hdr was Bearer abc123def456ghi789 ok"),
+        ("skant", "key sk-ant-api03-AbCdEf012345_-XyZ end"),
+        ("sk", "OPENAI sk-proj-abcdefghijklmnopqrstuvwxyz012345 end"),
+        (
+            "ghpat",
+            "github_pat_11ABCDEFG0abcdefghijklmnop_qrstuvwxyz01234",
+        ),
+        ("gh", "token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 end"),
+        ("aws", "AWS AKIAIOSFODNN7EXAMPLE here"),
+        ("slack", "xoxb-1234567890-abcdefghijkl"),
+        (
+            "jwt",
+            "tok eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U end",
+        ),
+        ("uinfo", "clone https://andy:hunter2@github.com/org/repo.git"),
+    ];
+
+    /// The rule name the credential alternation reports for `input`, if any.
+    fn credential_rule_for(input: &str) -> Option<&'static str> {
+        let caps = credential_alternation().captures(input)?;
+        credential_rule_names()
+            .iter()
+            .find(|name| caps.name(name).is_some())
+            .copied()
+    }
+
+    #[test]
+    fn the_credential_alternation_matches_every_credential_shape() {
+        for (rule, input) in CREDENTIAL_SHAPES {
+            assert_eq!(
+                credential_rule_for(input),
+                Some(*rule),
+                "the credential alternation must match {rule} in {input:?}"
+            );
+        }
+
+        // The table is a floor, not a sample, and it is the whole scanner: a
+        // rule silently dropped from the `Credential` class is a secret that
+        // stops blocking a push, with no other symptom.
+        assert_eq!(
+            credential_rule_names().len(),
+            CREDENTIAL_SHAPES.len(),
+            "every Credential-tagged rule needs a shape row here, and vice versa: {:?}",
+            credential_rule_names()
+        );
+    }
+
+    #[test]
+    fn the_credential_alternation_ignores_a_home_directory_path_in_both_spellings() {
+        // D-12's whole reason. A source file containing a home-directory string
+        // is not a secret; a scanner that blocked every push over one would be
+        // switched off within a day, and a control that gets switched off is
+        // worse than one that was never claimed.
+        for benign in [
+            "/home/andy/projects/x",
+            "-home-andy-projects-x",
+            "cwd is /Users/andy/Code/thing",
+            "sess -tmp-claude-1000--home-andy-projects-x/memory/",
+            "scratch /tmp/claude-1000/work",
+        ] {
+            assert_eq!(
+                credential_rule_for(benign),
+                None,
+                "the credential alternation must not fire on the path-hygiene \
+                 string {benign:?} — that is the redactor's job, not the scanner's"
+            );
+        }
+    }
+
+    #[test]
+    fn both_classes_still_reach_redact_so_the_corpus_output_is_unchanged() {
+        // The class split must not narrow REDACTION (D-12). The corpus test
+        // above pins every row's exact output and is deliberately unedited;
+        // this asserts the property directly, by name, for the two classes.
+        assert_eq!(
+            redact("cwd is /home/blk/projects/x"),
+            "cwd is /home/[REDACTED:user]/projects/x",
+            "a PathHygiene rule must still redact"
+        );
+        assert_eq!(
+            redact("key sk-ant-api03-AbCdEf012345_-XyZ end"),
+            "key [REDACTED:anthropic-key] end",
+            "a Credential rule must still redact"
+        );
+        assert!(
+            PARTS.len() > credential_rule_names().len(),
+            "redact consumes strictly more rules than the scanner does, or the \
+             two consumers are the same consumer"
+        );
     }
 
     #[test]
