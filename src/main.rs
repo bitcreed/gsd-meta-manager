@@ -126,10 +126,21 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Envelope { action }) => match action {
             EnvelopeAction::PrePush { alias, hook_path } => {
                 let stdin = std::io::stdin();
+                // git runs a hook with the working directory at the top of the
+                // worktree, which is what makes the scan's root and the path
+                // checks' root the same root without a flag to get wrong.
+                let repo_root = match std::env::current_dir() {
+                    Ok(dir) => dir,
+                    Err(err) => {
+                        eprintln!("Error: cannot resolve the repository root: {err}");
+                        std::process::exit(1);
+                    }
+                };
                 match gsd_meta_manager::envelope::hooks::pre_push(
                     &alias,
                     stdin.lock(),
                     &hook_path,
+                    &repo_root,
                 ) {
                     // The exit code IS the control (D-25): git blocks the push
                     // on any non-zero exit, and nothing downstream has to parse
@@ -143,6 +154,50 @@ async fn main() -> anyhow::Result<()> {
                         std::process::exit(1);
                     }
                 }
+            }
+            EnvelopeAction::PreCommit { alias, hook_path } => {
+                let repo_root = match std::env::current_dir() {
+                    Ok(dir) => dir,
+                    Err(err) => {
+                        eprintln!("Error: cannot resolve the repository root: {err}");
+                        std::process::exit(1);
+                    }
+                };
+                match gsd_meta_manager::envelope::hooks::pre_commit(
+                    &alias,
+                    &hook_path,
+                    &repo_root,
+                ) {
+                    Ok(code) => std::process::exit(code),
+                    Err(err) => {
+                        // Fail-closed, exactly as the push hook does: a hook
+                        // that could not do its job must not let the commit
+                        // through.
+                        eprintln!("Error: {}", err);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            EnvelopeAction::Scan { alias, root } => {
+                if !gsd_meta_manager::journal::is_plain_path_component(&alias) {
+                    eprintln!(
+                        "Error: alias {alias:?} is not a plain path component, so no \
+                         envelope sanctions a scan for it"
+                    );
+                    std::process::exit(1);
+                }
+                let report = gsd_meta_manager::envelope::scan::scan_with_external(
+                    &root,
+                    gsd_meta_manager::envelope::scan::ScanLimits::default(),
+                );
+                // Stdout, because this entry point is read by a human. The
+                // report is safe to print by construction: it carries file,
+                // line and rule, and has nowhere to hold a matched secret.
+                println!("alias={alias} root={}", root.display());
+                print!("{}", report.render());
+                // The exit code IS the control (D-25), here as much as in the
+                // hook: a finding exits non-zero.
+                std::process::exit(if report.is_clean() { 0 } else { 1 });
             }
         },
         None => {

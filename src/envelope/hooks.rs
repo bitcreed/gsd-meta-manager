@@ -25,9 +25,27 @@ use tempfile::NamedTempFile;
 
 use super::policy::{self, PushVerdict};
 
-/// The hook filename git looks for, and the subdirectory it looks in.
+/// The hook filenames git looks for, and the subdirectory it looks in.
 pub const PRE_PUSH_HOOK: &str = "pre-push";
+pub const PRE_COMMIT_HOOK: &str = "pre-commit";
 const HOOKS_SUBDIR: &str = "hooks";
+
+/// Every hook this envelope generates, and therefore every filename
+/// [`assert_provenance_in`] will certify.
+///
+/// A closed list rather than "whatever file git happened to run": a stub named
+/// something this envelope never generated has no sanctioned counterpart to be
+/// compared against, and must be refused before the comparison is attempted.
+const SANCTIONED_HOOKS: &[&str] = &[PRE_PUSH_HOOK, PRE_COMMIT_HOOK];
+
+/// The marker delimiters of the envelope's `.git/info/exclude` block (D-23).
+pub const EXCLUDE_BLOCK_START: &str = "# >>> gsd-meta-manager envelope >>>";
+pub const EXCLUDE_BLOCK_END: &str = "# <<< gsd-meta-manager envelope <<<";
+
+/// An all-zero object id: git's way of saying "there is nothing on that side".
+fn is_zero_sha(sha: &str) -> bool {
+    !sha.is_empty() && sha.chars().all(|c| c == '0')
+}
 
 /// Install the `pre-push` stub for `alias`, returning the hooks **directory**.
 ///
@@ -59,12 +77,24 @@ pub fn install_in(root: &Path, alias: &str, binary: &Path) -> anyhow::Result<Pat
     std::fs::create_dir_all(&hooks_dir)
         .with_context(|| format!("failed to create {}", hooks_dir.display()))?;
 
+    // Both hooks, from one loop and one stub shape. `pre-commit` is not an
+    // optional extra: it is the layer that sees a sweep BEFORE it becomes a
+    // commit, and `pre-push` is its backstop for the commit that skipped it.
+    for hook in SANCTIONED_HOOKS {
+        write_stub(&hooks_dir, binary, alias, hook)?;
+    }
+
+    Ok(hooks_dir)
+}
+
+/// One stub, written atomically and made executable.
+fn write_stub(hooks_dir: &Path, binary: &Path, alias: &str, hook: &str) -> anyhow::Result<()> {
     // The `config.rs:234-249` atomic-write idiom: a temp file in the *target*
     // directory, then `persist`. A half-written hook is a hook git would exec.
-    let mut tmp = NamedTempFile::new_in(&hooks_dir)
+    let mut tmp = NamedTempFile::new_in(hooks_dir)
         .with_context(|| format!("failed to create a temp file in {}", hooks_dir.display()))?;
-    tmp.write_all(stub_body(binary, alias).as_bytes())
-        .with_context(|| format!("failed to write the hook stub in {}", hooks_dir.display()))?;
+    tmp.write_all(stub_body(binary, alias, hook).as_bytes())
+        .with_context(|| format!("failed to write the {hook} stub in {}", hooks_dir.display()))?;
 
     #[cfg(unix)]
     {
@@ -72,15 +102,14 @@ pub fn install_in(root: &Path, alias: &str, binary: &Path) -> anyhow::Result<Pat
         tmp.as_file()
             .set_permissions(std::fs::Permissions::from_mode(0o755))
             .with_context(|| {
-                format!("failed to make the hook stub executable in {}", hooks_dir.display())
+                format!("failed to make the {hook} stub executable in {}", hooks_dir.display())
             })?;
     }
 
-    let hook = hooks_dir.join(PRE_PUSH_HOOK);
-    tmp.persist(&hook)
-        .with_context(|| format!("failed to persist the hook stub to {}", hook.display()))?;
-
-    Ok(hooks_dir)
+    let path = hooks_dir.join(hook);
+    tmp.persist(&path)
+        .with_context(|| format!("failed to persist the hook stub to {}", path.display()))?;
+    Ok(())
 }
 
 /// The three lines git will exec.
@@ -90,16 +119,20 @@ pub fn install_in(root: &Path, alias: &str, binary: &Path) -> anyhow::Result<Pat
 /// constraint than "shell-safe" — `is_plain_path_component` accepts a quote character —
 /// and a generated script is not a place to discover that difference.
 ///
+/// The hook filename **is** the subcommand name, which is why there is one stub
+/// shape rather than one per hook: a second template is a second place for the
+/// generated file to stop being a three-line stub.
+///
 /// `--hook-path "$0"` is the one value that is deliberately **not** baked in.
 /// A path recorded at generation time travels with a copy of the file, so a
 /// relocated stub would hand [`assert_provenance`] the original's path and
 /// certify itself. `$0` is the path the shell was actually invoked as, which is
 /// the only value a copy cannot forge by being copied.
-fn stub_body(binary: &Path, alias: &str) -> String {
+fn stub_body(binary: &Path, alias: &str, hook: &str) -> String {
     format!(
         "#!/bin/sh\n\
          # gsd-meta-manager envelope hook. Policy lives in the binary below (D-04).\n\
-         exec {} envelope pre-push {} --hook-path \"$0\"\n",
+         exec {} envelope {hook} {} --hook-path \"$0\"\n",
         sh_quote(&binary.to_string_lossy()),
         sh_quote(alias),
     )
@@ -147,11 +180,27 @@ pub fn assert_provenance_in(root: &Path, alias: &str, invoked_from: &Path) -> an
         ));
     }
 
-    let sanctioned = super::envelope_dir_in(root, alias)
-        .map(|dir| dir.join(HOOKS_SUBDIR).join(PRE_PUSH_HOOK))
+    let hooks_dir = super::envelope_dir_in(root, alias)
+        .map(|dir| dir.join(HOOKS_SUBDIR))
         .ok_or_else(|| {
             anyhow!("alias {alias:?} is not a plain path component, so it sanctions no hook")
         })?;
+
+    // The hook's own filename selects which sanctioned file it is compared
+    // against, so one provenance check covers every hook this envelope
+    // generates. A filename that is not on the closed list has no sanctioned
+    // counterpart at all, which is a refusal rather than a comparison.
+    let name = invoked_from
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if !SANCTIONED_HOOKS.contains(&name) {
+        return Err(anyhow!(
+            "hook provenance failed: {name:?} is not a hook this envelope generates, \
+             so there is no sanctioned hook to certify it against"
+        ));
+    }
+    let sanctioned = hooks_dir.join(name);
 
     let sanctioned_real = sanctioned.canonicalize().with_context(|| {
         format!(
@@ -176,18 +225,309 @@ pub fn assert_provenance_in(root: &Path, alias: &str, invoked_from: &Path) -> an
     Ok(())
 }
 
-/// The `pre-push` hook body: assert provenance, then classify.
+/// The `pre-push` hook body: assert provenance, then run all three checks.
 ///
-/// The order is the mechanism. Classification runs only for a hook that has
-/// proved it is the sanctioned one, so a relocated copy cannot decide anything —
-/// not even to allow.
+/// The order is the mechanism. Nothing below runs for a hook that has not proved
+/// it is the sanctioned one, so a relocated copy cannot decide anything — not
+/// even to allow.
+///
+/// Three independent refusals, and **all three run** rather than short-circuiting
+/// on the first: a human whose push was blocked should learn everything that is
+/// wrong with it in one round trip, not one problem per attempt.
+///
+/// 1. **The namespace verdict** (D-05), from the ref lines git supplies.
+/// 2. **The full-worktree credential scan** (SAFE-03), whose report is printed
+///    on both outcomes so the list of files it declined to read is visible even
+///    when it found nothing.
+/// 3. **The swept-path backstop** (D-22), over the paths the commits being
+///    pushed actually touch. This is the layer that catches a commit made with
+///    the verification step suppressed, which the `pre-commit` hook by
+///    construction never saw.
 pub fn pre_push(
     alias: &str,
     stdin: impl BufRead,
     invoked_from: &Path,
+    repo_root: &Path,
 ) -> anyhow::Result<i32> {
     assert_provenance(alias, invoked_from)?;
-    classify_refs(alias, stdin)
+
+    let lines = read_ref_lines(stdin)?;
+    let mut refused = classify_refs(alias, &lines);
+
+    // The scan report goes to stderr on BOTH outcomes (D-14): a "clean" that
+    // silently omitted forty unread files is the lie this phase argues against.
+    let report = super::scan::scan_with_external(repo_root, super::scan::ScanLimits::default());
+    eprint!("{}", report.render());
+    if !report.is_clean() {
+        eprintln!(
+            "gsd-meta-manager envelope: REFUSED push — the worktree carries \
+             credential-shaped content (reason: {})",
+            policy::REASON_SECRET_DETECTED,
+        );
+        refused += 1;
+    }
+
+    refused += refuse_swept_paths(repo_root, &pushed_ranges(&lines));
+
+    Ok(if refused > 0 { 1 } else { 0 })
+}
+
+/// The `pre-commit` hook body: assert provenance, then judge the staged paths.
+///
+/// Same order and same reason as [`pre_push`]. The staged list is read with a
+/// read-only `git --no-optional-locks` invocation — the shape
+/// [`crate::state_reader::git_ops`] already uses everywhere — because a hook
+/// that mutated the repository to decide whether the repository may be mutated
+/// would be its own counterexample.
+///
+/// **A staged list that cannot be read is a refusal, never an allow.** git
+/// exits zero with empty output for a genuinely empty index, and this cannot
+/// tell that apart from a failed read; the safe reading of the ambiguity is the
+/// one that blocks, and an empty commit is not a thing a driven run needs.
+pub fn pre_commit(alias: &str, invoked_from: &Path, repo_root: &Path) -> anyhow::Result<i32> {
+    assert_provenance(alias, invoked_from)?;
+
+    let staged = crate::state_reader::git_ops::git_read_raw(
+        repo_root,
+        &["diff", "--cached", "--name-only", "-z"],
+    )
+    .ok_or_else(|| {
+        anyhow!(
+            "could not read the staged path list, so this commit cannot be judged; \
+             refusing rather than allowing (reason: {})",
+            policy::REASON_ENVELOPE_ASSERTION_FAILED
+        )
+    })?;
+
+    let paths: Vec<PathBuf> = staged
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
+        .map(PathBuf::from)
+        .collect();
+
+    Ok(if refuse_paths(repo_root, &paths, "commit") > 0 { 1 } else { 0 })
+}
+
+/// Refuse any of `paths` that [`policy::forbidden_repo_path`] names, returning
+/// how many were refused.
+///
+/// One function for both hooks, so the two enforcement points cannot differ in
+/// what they refuse **or** in what they say about it.
+fn refuse_paths(repo_root: &Path, paths: &[PathBuf], operation: &str) -> usize {
+    let mut refused = 0usize;
+    for path in paths {
+        let nested = has_nested_git(repo_root, path);
+        let Some(reason) = policy::forbidden_repo_path(path, nested) else {
+            continue;
+        };
+        let what = if nested {
+            "sits inside a nested repository or linked worktree"
+        } else {
+            "is inside a directory the envelope reserves"
+        };
+        eprintln!(
+            "gsd-meta-manager envelope: REFUSED {operation} — {} {what} \
+             (reason: {})",
+            path.display(),
+            reason.as_str(),
+        );
+        refused += 1;
+    }
+    refused
+}
+
+/// Whether any ancestor directory of `rel` itself contains a `.git` entry.
+///
+/// The repository's **own** root is excluded by construction — the walk stops
+/// before the empty path — so this answers "is there a *second* repository
+/// between here and the root", which is the question D-22 asks.
+fn has_nested_git(repo_root: &Path, rel: &Path) -> bool {
+    let mut current = rel.parent();
+    while let Some(dir) = current {
+        if dir.as_os_str().is_empty() {
+            break;
+        }
+        if repo_root.join(dir).join(".git").exists() {
+            return true;
+        }
+        current = dir.parent();
+    }
+    false
+}
+
+/// The paths the commits this push would introduce actually touch, refused via
+/// the same predicate the commit hook uses.
+fn refuse_swept_paths(repo_root: &Path, ranges: &[(String, String)]) -> usize {
+    let mut paths: Vec<PathBuf> = Vec::new();
+
+    for (local_sha, remote_sha) in ranges {
+        // A deletion introduces no commits, so there is nothing to inspect.
+        if is_zero_sha(local_sha) {
+            continue;
+        }
+        // An all-zero remote sha means the remote has no such ref yet, so there
+        // is no range to diff against; the commit itself is what is new.
+        let output = if is_zero_sha(remote_sha) {
+            crate::state_reader::git_ops::git_read_raw(
+                repo_root,
+                &["show", "--name-only", "--format=", local_sha],
+            )
+        } else {
+            crate::state_reader::git_ops::git_read_raw(
+                repo_root,
+                &["diff", "--name-only", &format!("{remote_sha}..{local_sha}")],
+            )
+        };
+
+        let Some(output) = output else { continue };
+        for line in output.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let path = PathBuf::from(line);
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+
+    refuse_paths(repo_root, &paths, "push")
+}
+
+/// Read git's ref lines into memory, because two checks need them.
+fn read_ref_lines(stdin: impl BufRead) -> anyhow::Result<Vec<String>> {
+    let mut lines = Vec::new();
+    for (index, line) in stdin.lines().enumerate() {
+        lines.push(
+            line.with_context(|| format!("failed to read pre-push ref line {}", index + 1))?,
+        );
+    }
+    Ok(lines)
+}
+
+/// The `(local sha, remote sha)` pairs of every well-formed ref line.
+///
+/// Malformed lines are **not** silently dropped here — [`classify_refs`] has
+/// already refused them. This function's only job is to answer "which commits
+/// would this push introduce", and a line it cannot parse contributes no
+/// commits to that answer while the push is already being refused.
+fn pushed_ranges(lines: &[String]) -> Vec<(String, String)> {
+    lines
+        .iter()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            (fields.len() == 4).then(|| (fields[1].to_string(), fields[3].to_string()))
+        })
+        .collect()
+}
+
+/// Write the envelope's ignore block into `.git/info/exclude` (D-23).
+///
+/// **This is the single persistent mutation the envelope makes to a driven
+/// repository**, and it is an explicit exception to the touch-nothing posture
+/// rather than one quietly taken. Everything else the envelope does is
+/// process-scoped and vanishes with the process; this survives.
+///
+/// It is justified because an ignore rule is **inert for the human**: it changes
+/// no tracked file, no configuration git reads for behaviour, and nothing the
+/// user would notice except that `git status` stops offering to commit the
+/// envelope's own leavings. It is made safe by being idempotent, delimited by an
+/// unmistakable marker block, and **rewritten in place rather than appended**,
+/// so a thousand runs leave exactly one block.
+///
+/// **Why not the repository's tracked ignore file.** `.git/info/exclude` is
+/// untracked and per-repository, so the agent cannot commit a change to it,
+/// cannot push it, and cannot leak these paths to the remote by editing a
+/// tracked file. Writing the same patterns into a tracked ignore file would
+/// have put the envelope's own posture into the repository's history, where the
+/// agent can edit it, and where the edit is a commit the push hook would then
+/// have to police. This location prevents the failure rather than punishing it.
+pub fn write_exclude_block(project_root: &Path) -> anyhow::Result<()> {
+    let info_dir = git_dir(project_root)?.join("info");
+    std::fs::create_dir_all(&info_dir)
+        .with_context(|| format!("failed to create {}", info_dir.display()))?;
+    let exclude = info_dir.join("exclude");
+
+    let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
+    let mut kept: Vec<&str> = Vec::new();
+    let mut inside_block = false;
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if trimmed == EXCLUDE_BLOCK_START {
+            inside_block = true;
+            continue;
+        }
+        if trimmed == EXCLUDE_BLOCK_END {
+            inside_block = false;
+            continue;
+        }
+        if !inside_block {
+            kept.push(line);
+        }
+    }
+    // Trailing blank lines are dropped so the second run produces byte-identical
+    // output to the first. Without this the block would drift down the file by
+    // one line per invocation, which is exactly the accumulation D-23 forbids.
+    while kept.last().map(|line| line.trim().is_empty()).unwrap_or(false) {
+        kept.pop();
+    }
+
+    let mut out = String::new();
+    for line in kept {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str(EXCLUDE_BLOCK_START);
+    out.push('\n');
+    out.push_str(
+        "# Managed by gsd-meta-manager. Rewritten in place on every run; edits\n\
+         # inside this block are discarded. Delete the whole block to opt out.\n",
+    );
+    for prefix in policy::forbidden_repo_prefixes() {
+        out.push_str(prefix);
+        out.push_str("/\n");
+    }
+    out.push_str(EXCLUDE_BLOCK_END);
+    out.push('\n');
+
+    let mut tmp = NamedTempFile::new_in(&info_dir)
+        .with_context(|| format!("failed to create a temp file in {}", info_dir.display()))?;
+    tmp.write_all(out.as_bytes())
+        .with_context(|| format!("failed to write {}", exclude.display()))?;
+    tmp.persist(&exclude)
+        .with_context(|| format!("failed to persist {}", exclude.display()))?;
+    Ok(())
+}
+
+/// The repository's git directory, whether `.git` is a directory or the pointer
+/// file a linked worktree carries.
+///
+/// The pointer case is not hypothetical: a driven run inside a linked worktree
+/// has a `.git` **file**, and a `write_exclude_block` that assumed a directory
+/// would silently write into a path that is not an exclude file at all.
+fn git_dir(project_root: &Path) -> anyhow::Result<PathBuf> {
+    let dot_git = project_root.join(".git");
+    let meta = std::fs::metadata(&dot_git)
+        .with_context(|| format!("{} is not a git repository", project_root.display()))?;
+    if meta.is_dir() {
+        return Ok(dot_git);
+    }
+
+    let pointer = std::fs::read_to_string(&dot_git)
+        .with_context(|| format!("failed to read {}", dot_git.display()))?;
+    let target = pointer
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("gitdir:"))
+        .map(str::trim)
+        .ok_or_else(|| anyhow!("{} carries no `gitdir:` pointer", dot_git.display()))?;
+
+    let target = PathBuf::from(target);
+    Ok(if target.is_absolute() {
+        target
+    } else {
+        project_root.join(target)
+    })
 }
 
 /// Read git's ref lines and return the exit code, with no provenance check.
@@ -210,16 +550,15 @@ pub fn pre_push(
 ///   its input must not allow; skipping would make a malformed line the cheapest
 ///   possible bypass.
 ///
-/// The return value is the process exit code, and the exit code **is** the
-/// control (D-25) — not the message, which is only there so a human reading a
-/// failed push knows what happened.
-fn classify_refs(alias: &str, stdin: impl BufRead) -> anyhow::Result<i32> {
+/// The return value is how many refs were refused, and a non-zero count becomes
+/// a non-zero exit — and the exit code **is** the control (D-25), not the
+/// message, which is only there so a human reading a failed push knows what
+/// happened.
+fn classify_refs(alias: &str, lines: &[String]) -> usize {
     let namespace = policy::default_namespace(alias);
     let mut refused = 0usize;
 
-    for (index, line) in stdin.lines().enumerate() {
-        let line = line
-            .with_context(|| format!("failed to read pre-push ref line {}", index + 1))?;
+    for (index, line) in lines.iter().enumerate() {
         // A line with no tokens carries no ref; it is nothing, not something
         // unreadable. Anything else with the wrong field count is refused below.
         if line.trim().is_empty() {
@@ -251,7 +590,7 @@ fn classify_refs(alias: &str, stdin: impl BufRead) -> anyhow::Result<i32> {
         }
     }
 
-    Ok(if refused > 0 { 1 } else { 0 })
+    refused
 }
 
 #[cfg(test)]
@@ -260,9 +599,14 @@ mod tests {
 
     const BIN: &str = "/opt/gsd-meta-manager";
 
+    /// git's stdin, as the line vector both `pre-push` checks read.
+    fn ref_lines(stdin: &str) -> Vec<String> {
+        read_ref_lines(stdin.as_bytes()).expect("a &str always reads")
+    }
+
     #[test]
     fn the_generated_stub_is_three_lines_and_execs_the_absolute_binary_path() {
-        let body = stub_body(Path::new(BIN), "demo");
+        let body = stub_body(Path::new(BIN), "demo", PRE_PUSH_HOOK);
         assert_eq!(body.lines().count(), 3, "the stub must stay a stub:\n{body}");
         assert!(body.starts_with("#!/bin/sh\n"));
         assert!(body.ends_with(
@@ -271,8 +615,17 @@ mod tests {
     }
 
     #[test]
+    fn the_pre_commit_stub_is_the_same_shape_with_its_own_subcommand() {
+        let body = stub_body(Path::new(BIN), "demo", PRE_COMMIT_HOOK);
+        assert_eq!(body.lines().count(), 3, "{body}");
+        assert!(body.ends_with(
+            "exec '/opt/gsd-meta-manager' envelope pre-commit 'demo' --hook-path \"$0\"\n"
+        ));
+    }
+
+    #[test]
     fn a_quote_in_an_alias_cannot_escape_the_generated_stub() {
-        let body = stub_body(Path::new(BIN), "de'mo");
+        let body = stub_body(Path::new(BIN), "de'mo", PRE_PUSH_HOOK);
         assert!(
             body.contains(r"'de'\''mo'"),
             "a quote must be POSIX-escaped, not interpolated raw:\n{body}"
@@ -282,34 +635,34 @@ mod tests {
     #[test]
     fn a_push_inside_the_namespace_exits_zero() {
         let stdin = "refs/heads/x abc refs/heads/gsd-auto/demo/x def\n";
-        assert_eq!(classify_refs("demo", stdin.as_bytes()).unwrap(), 0);
+        assert_eq!(classify_refs("demo", &ref_lines(stdin)), 0);
     }
 
     #[test]
     fn a_push_outside_the_namespace_exits_non_zero() {
         let stdin = "refs/heads/x abc refs/heads/main def\n";
-        assert_ne!(classify_refs("demo", stdin.as_bytes()).unwrap(), 0);
+        assert_ne!(classify_refs("demo", &ref_lines(stdin)), 0);
     }
 
     #[test]
     fn one_refused_ref_in_a_batch_refuses_the_whole_push() {
         let stdin = "refs/heads/a 1 refs/heads/gsd-auto/demo/a 2\n\
                      refs/heads/b 3 refs/heads/main 4\n";
-        assert_ne!(classify_refs("demo", stdin.as_bytes()).unwrap(), 0);
+        assert_ne!(classify_refs("demo", &ref_lines(stdin)), 0);
     }
 
     #[test]
     fn a_deletion_is_classified_by_its_destination_ref() {
         let deleting_main =
             "(delete) 0000000000000000000000000000000000000000 refs/heads/main 5\n";
-        assert_ne!(classify_refs("demo", deleting_main.as_bytes()).unwrap(), 0);
+        assert_ne!(classify_refs("demo", &ref_lines(deleting_main)), 0);
     }
 
     #[test]
     fn an_unreadable_ref_line_is_refused_rather_than_skipped() {
-        assert_ne!(classify_refs("demo", "garbage\n".as_bytes()).unwrap(), 0);
+        assert_ne!(classify_refs("demo", &ref_lines("garbage\n")), 0);
         assert_ne!(
-            classify_refs("demo", "one two three\n".as_bytes()).unwrap(),
+            classify_refs("demo", &ref_lines("one two three\n")),
             0,
             "a three-field line has no destination ref and must not be allowed"
         );
@@ -317,7 +670,100 @@ mod tests {
 
     #[test]
     fn a_blank_line_is_nothing_rather_than_something_unreadable() {
-        assert_eq!(classify_refs("demo", "\n\n".as_bytes()).unwrap(), 0);
+        assert_eq!(classify_refs("demo", &ref_lines("\n\n")), 0);
+    }
+
+    #[test]
+    fn the_pushed_ranges_are_the_sha_pair_of_every_well_formed_line() {
+        let lines = ref_lines(
+            "refs/heads/a 1111 refs/heads/gsd-auto/demo/a 2222\n\
+             garbage\n\
+             refs/heads/b 3333 refs/heads/gsd-auto/demo/b 0000000000000000000000000000000000000000\n",
+        );
+        assert_eq!(
+            pushed_ranges(&lines),
+            vec![
+                ("1111".to_string(), "2222".to_string()),
+                (
+                    "3333".to_string(),
+                    "0000000000000000000000000000000000000000".to_string()
+                ),
+            ],
+            "an unparseable line contributes no commits, and is refused elsewhere"
+        );
+    }
+
+    #[test]
+    fn a_zero_sha_is_recognised_in_both_the_short_and_the_full_spelling() {
+        assert!(is_zero_sha("0000000000000000000000000000000000000000"));
+        assert!(is_zero_sha("0000"));
+        assert!(!is_zero_sha(""), "an empty field is not a zero sha");
+        assert!(!is_zero_sha("0000000000000000000000000000000000000001"));
+    }
+
+    #[test]
+    fn a_nested_repository_is_found_at_any_depth_but_the_root_is_not_one() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join("vendor/thing/.git")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+
+        assert!(has_nested_git(root, Path::new("vendor/thing/src/lib.rs")));
+        assert!(has_nested_git(root, Path::new("vendor/thing/README.md")));
+        assert!(
+            !has_nested_git(root, Path::new("src/main.rs")),
+            "the repository's OWN .git must not make every path nested"
+        );
+        assert!(!has_nested_git(root, Path::new("README.md")));
+    }
+
+    #[test]
+    fn the_exclude_block_is_idempotent_and_leaves_unrelated_lines_alone() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join(".git/info")).unwrap();
+        let exclude = root.join(".git/info/exclude");
+        std::fs::write(&exclude, "# a user's own rules\nscratch.txt\n").unwrap();
+
+        write_exclude_block(root).unwrap();
+        let once = std::fs::read(&exclude).unwrap();
+        write_exclude_block(root).unwrap();
+        let twice = std::fs::read(&exclude).unwrap();
+
+        assert_eq!(
+            once, twice,
+            "a second run changed the file, so a thousand runs accumulate a \
+             thousand blocks (D-23)"
+        );
+        let text = String::from_utf8(twice).unwrap();
+        assert!(text.contains("scratch.txt"), "the user's own rules survived:\n{text}");
+        assert_eq!(text.matches(EXCLUDE_BLOCK_START).count(), 1, "{text}");
+        assert_eq!(text.matches(EXCLUDE_BLOCK_END).count(), 1, "{text}");
+        assert!(text.contains(".claude/worktrees/"), "{text}");
+        assert!(text.contains(crate::journal::RUNS_SUBDIR), "{text}");
+    }
+
+    #[test]
+    fn the_exclude_block_writes_into_a_linked_worktrees_real_git_directory() {
+        // A `.git` FILE rather than a directory. A writer that assumed a
+        // directory would create `.git/info/` beside the pointer file, where git
+        // never looks, and the ignore rule would be silently inert.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let real_git = tmp.path().join("real.git");
+        std::fs::create_dir_all(&real_git).unwrap();
+        let work = tmp.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join(".git"), format!("gitdir: {}\n", real_git.display())).unwrap();
+
+        write_exclude_block(&work).unwrap();
+
+        let written = std::fs::read_to_string(real_git.join("info/exclude")).unwrap();
+        assert!(written.contains(EXCLUDE_BLOCK_START), "{written}");
+        assert!(
+            !work.join(".git/info").exists(),
+            "nothing may be created beside the pointer file"
+        );
     }
 
     #[test]

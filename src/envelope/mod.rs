@@ -87,6 +87,7 @@
 pub mod cred;
 pub mod hooks;
 pub mod policy;
+pub mod scan;
 
 use std::path::{Path, PathBuf};
 

@@ -85,12 +85,27 @@ pub fn drive_argv(
 /// it prevents:
 ///
 /// * **`current_dir(project_root)`** — the project root itself, **never a
-///   worktree**. OQ4 was resolved empirically (D-21): `claude --worktree` exists
-///   and works, and it was declined for five recorded reasons, chief among them
-///   that it writes inside the repo working directory where
-///   `watcher.rs::extract_project_root` would resolve the worktree's own
-///   `.planning/` as a phantom project. Phase 19 owns the decision. This line is
-///   where somebody would change it, so the citation lives here.
+///   worktree**. OQ4 was resolved empirically in Phase 17: `claude --worktree`
+///   exists and works. Phase 19's D-21 is the final answer, and it is
+///   **declined**, for four recorded reasons:
+///   1. `claude --worktree` writes **inside the repository working directory**,
+///      where `watcher.rs::extract_project_root` resolves the worktree's own
+///      `.planning/` as a phantom project on the dashboard.
+///   2. The journal, `run.json`, the `runs/active` pointer and the reattachment
+///      scan are all keyed to `<project>/.planning/`. A worktree forks every one
+///      of them, and the reattach path — a hard requirement — would have to
+///      learn which copy is authoritative.
+///   3. A driven GSD run whose entire purpose is to advance `.planning/` **in
+///      the project the user is watching** is not a thing to isolate from that
+///      project. The isolation would defeat the feature.
+///   4. The concrete hazard that motivated isolation — the agent's `git add -A`
+///      sweeping `.claude/worktrees/` or the runs directory into a commit — is
+///      closed **mechanically and differently** (D-22): `envelope::hooks`'
+///      `pre-commit` refuses the staged path, its `pre-push` backstop refuses
+///      the same path in a commit that skipped the first hook, and
+///      `envelope::hooks::write_exclude_block` makes the paths ignored in a file
+///      the agent cannot commit. "We declined isolation" would not have been an
+///      answer to that hazard; those three are.
 /// * **Three null stdio handles** — all three, not two. A detached child holding
 ///   an inherited terminal handle is a child that writes over the TUI's frame
 ///   buffer, and stdin is the one people forget.

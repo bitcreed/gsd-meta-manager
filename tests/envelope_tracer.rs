@@ -266,8 +266,15 @@ fn neither_push_writes_into_the_driven_repository_config_or_hooks() {
 }
 
 /// Run a hook stub directly, feeding it one ref line, and report its output.
+///
+/// `current_dir` is the work repository because that is where git runs a hook
+/// from — the top of the worktree. Since Phase 19-03 the `pre-push` body scans
+/// that directory for credential shapes, so a stub run from the *test process's*
+/// cwd would be scanning this project's own checkout: slow, and green or red for
+/// reasons that have nothing to do with the fixture.
 fn run_stub(fx: &Fixture, stub: &Path, ref_line: &str) -> Output {
     let mut child = Command::new(stub)
+        .current_dir(&fx.work)
         .env(ENVELOPE_ROOT_ENV, &fx.envelope_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

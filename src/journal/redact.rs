@@ -25,6 +25,20 @@
 //!    redact(x)` over the whole corpus is the cheapest possible detector for "a
 //!    replacement literal is itself redactable" and for "rule A ate rule B's
 //!    output". It caught three real defects in one session that review had not.
+//! 4. **Class, not a second table** (Phase 19, D-12). Each rule carries a
+//!    [`SecretClass`], and there are **two consumers of the one table**:
+//!    [`redact`] reads every rule, and the pre-push credential scanner
+//!    ([`crate::envelope::scan`], via [`credential_alternation`]) reads only the
+//!    `Credential` ones. The reason is concrete rather than tidy.
+//!    `/home/<user>` and Claude Code's dash-encoded `-home-<user>-<repo>` form
+//!    are redacted from logs **for privacy**, and a source file containing a
+//!    home-directory string is not a secret. A scanner that blocked every push
+//!    over one would be switched off within a day, and a control that gets
+//!    switched off is worse than one that was never claimed. Redaction
+//!    behaviour is **unchanged** by the split — the corpus test above and its
+//!    idempotence sibling pin that, and neither was edited to accommodate it.
+//!    **A new rule is still added in exactly one place**: a row in [`PARTS`],
+//!    tagged with the class that says which consumers read it.
 //!
 //! ## The honest limit (D-25)
 //!
@@ -62,16 +76,36 @@ use serde_json::{Map, Value};
 
 use super::MAX_EVENT_PAYLOAD_BYTES;
 
-/// `(group name, pattern, replacement literal)`, **in significant order**.
+/// What a rule in [`PARTS`] is for, and therefore which consumer reads it.
+///
+/// One table, two consumers (D-12). See point 4 of the module doc for why the
+/// split is a class tag on the existing table rather than a second table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretClass {
+    /// A credential shape. Read by **both** [`redact`] and the pre-push
+    /// scanner ([`crate::envelope::scan`]); a match blocks a push.
+    Credential,
+    /// A privacy shape — a home directory, a scratch path. Read by [`redact`]
+    /// **only**; a match never blocks anything.
+    PathHygiene,
+}
+
+/// `(group name, pattern, replacement literal, class)`, **in significant
+/// order**.
 ///
 /// Replacement literals contain no quote, backslash or newline (D-24) and are
 /// chosen so that no pattern in this table can match one — which is what the
 /// idempotence test over the corpus verifies.
-const PARTS: &[(&str, &str, &str)] = &[
+///
+/// The class is the fourth member rather than a second table, and the order is
+/// **unchanged** by the split: see the WR-15 note below, which records that a
+/// naive reorder silently regressed seven of eight fixtures.
+const PARTS: &[(&str, &str, &str, SecretClass)] = &[
     (
         "pem",
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?s:.)*?-----END [A-Z ]*PRIVATE KEY-----",
         "[REDACTED:private-key]",
+        SecretClass::Credential,
     ),
     // The header value scan runs to END OF LINE, not to whitespace. A
     // whitespace-terminated scan stops at the space after the scheme word, so
@@ -82,65 +116,100 @@ const PARTS: &[(&str, &str, &str)] = &[
         "authz",
         r#"(?i:authorization)[ \t]*[:=][ \t]*"?[^\r\n"]{4,}"#,
         "[REDACTED:authorization]",
+        SecretClass::Credential,
     ),
     (
         "env",
         r#"(?i:[A-Za-z_][A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|_KEY|CREDENTIALS?))[ \t]*[:=][ \t]*"?[^\s"',}\]]+"#,
         "[REDACTED:env]",
+        SecretClass::Credential,
     ),
     (
         "bearer",
         r"(?i:bearer)[ \t]+[A-Za-z0-9._\-+/=]{8,}",
         "[REDACTED:bearer]",
+        SecretClass::Credential,
     ),
-    ("skant", r"sk-ant-[A-Za-z0-9_\-]{8,}", "[REDACTED:anthropic-key]"),
-    ("sk", r"\bsk-[A-Za-z0-9_\-]{16,}", "[REDACTED:api-key]"),
+    (
+        "skant",
+        r"sk-ant-[A-Za-z0-9_\-]{8,}",
+        "[REDACTED:anthropic-key]",
+        SecretClass::Credential,
+    ),
+    (
+        "sk",
+        r"\bsk-[A-Za-z0-9_\-]{16,}",
+        "[REDACTED:api-key]",
+        SecretClass::Credential,
+    ),
     (
         "ghpat",
         r"\bgithub_pat_[A-Za-z0-9_]{20,}",
         "[REDACTED:github-token]",
+        SecretClass::Credential,
     ),
-    ("gh", r"\bgh[pousr]_[A-Za-z0-9]{20,}", "[REDACTED:github-token]"),
+    (
+        "gh",
+        r"\bgh[pousr]_[A-Za-z0-9]{20,}",
+        "[REDACTED:github-token]",
+        SecretClass::Credential,
+    ),
     (
         "aws",
         r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
         "[REDACTED:aws-key-id]",
+        SecretClass::Credential,
     ),
     (
         "slack",
         r"\bxox[baprs]-[A-Za-z0-9\-]{10,}",
         "[REDACTED:slack-token]",
+        SecretClass::Credential,
     ),
     (
         "jwt",
         r"\beyJ[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}",
         "[REDACTED:jwt]",
+        SecretClass::Credential,
     ),
     (
         "uinfo",
         r#"(?:[A-Za-z][A-Za-z0-9+.\-]*)://[^/\s:@"]+:[^/\s@"]+@"#,
         "[REDACTED:userinfo]@",
+        SecretClass::Credential,
     ),
     // ---- WR-15: the DASH-ENCODED forms must come BEFORE the slash forms.
     //      Claude Code encodes a session directory as `-home-<user>-<repo>`, and
     //      the original Phase 15 sweep matched only the slash form and missed
     //      this shape in seven of eight fixtures.
-    ("dtmp", r"-tmp-claude-[^/\s\\\x22]*", "-tmp-scratch-"),
+    (
+        "dtmp",
+        r"-tmp-claude-[^/\s\\\x22]*",
+        "-tmp-scratch-",
+        SecretClass::PathHygiene,
+    ),
     (
         "dhome",
         r"-(?:home|Users|root)-[^/\s\\\x22]*",
         "-home-redacted-project",
+        SecretClass::PathHygiene,
     ),
     // ---- slash forms. `[` and `]` are EXCLUDED from the tail character class
     //      so the replacement literal can never be re-matched: without the
     //      exclusion, `/home/[REDACTED:user]` matched the home rule again,
     //      stopped at the `]` and re-appended one, degrading the log by a
     //      bracket per pass.
-    ("stmp", r"/tmp/claude-[0-9]+", "/tmp/claude-[REDACTED:uid]"),
+    (
+        "stmp",
+        r"/tmp/claude-[0-9]+",
+        "/tmp/claude-[REDACTED:uid]",
+        SecretClass::PathHygiene,
+    ),
     (
         "shome",
         r#"/(?:home|Users|var/home)/[^/\s"':,)\[\]}\\]+"#,
         "/home/[REDACTED:user]",
+        SecretClass::PathHygiene,
     ),
 ];
 
@@ -148,14 +217,54 @@ const PARTS: &[(&str, &str, &str)] = &[
 ///
 /// `LazyLock` is stable since 1.80 and this crate's MSRV is 1.87, so the
 /// compiled-once regex costs **no** new dependency.
-static RE: LazyLock<Regex> = LazyLock::new(|| {
+static RE: LazyLock<Regex> = LazyLock::new(|| build_alternation(|_| true));
+
+/// One alternation over the rules `keep` selects, with the same
+/// `(?P<name>pattern)` builder for every consumer.
+///
+/// One builder rather than two, so the two alternations cannot drift in how a
+/// match is identified: both report the rule through a **named capture group**,
+/// which is what lets a caller name the rule that fired without re-scanning the
+/// input once per rule.
+fn build_alternation(keep: impl Fn(SecretClass) -> bool) -> Regex {
     let alt = PARTS
         .iter()
-        .map(|(name, pattern, _)| format!("(?P<{name}>{pattern})"))
+        .filter(|(_, _, _, class)| keep(*class))
+        .map(|(name, pattern, _, _)| format!("(?P<{name}>{pattern})"))
         .collect::<Vec<_>>()
         .join("|");
     Regex::new(&alt).expect("redaction alternation must compile")
-});
+}
+
+/// The `Credential`-tagged subset of [`PARTS`], compiled once (D-12).
+///
+/// This is the **scanner's** view of the table: a match here blocks a push. It
+/// is deliberately narrower than [`redact`]'s view — see point 4 of the module
+/// doc for the reason, which is concrete rather than tidy.
+///
+/// Compiled once in a `LazyLock`, exactly as the full alternation is, so a
+/// worktree scan pays the compile cost once no matter how many files it reads.
+pub fn credential_alternation() -> &'static Regex {
+    static CREDENTIAL_RE: LazyLock<Regex> =
+        LazyLock::new(|| build_alternation(|class| class == SecretClass::Credential));
+    &CREDENTIAL_RE
+}
+
+/// The rule names [`credential_alternation`] can report, in table order.
+///
+/// Exported so [`crate::envelope::scan`] can name the rule that fired **without
+/// importing the pattern strings** — a scanner that held its own copy of the
+/// patterns would be the second table D-12 exists to prevent.
+pub fn credential_rule_names() -> &'static [&'static str] {
+    static NAMES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+        PARTS
+            .iter()
+            .filter(|(_, _, _, class)| *class == SecretClass::Credential)
+            .map(|(name, _, _, _)| *name)
+            .collect()
+    });
+    &NAMES
+}
 
 /// The host-specific layer: this process's actual home path, both encodings.
 ///
@@ -200,7 +309,7 @@ static HOST_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
 /// whatever the first produced.
 pub fn redact(s: &str) -> String {
     let generic = RE.replace_all(s, |caps: &Captures| {
-        for (name, _, replacement) in PARTS {
+        for (name, _, replacement, _) in PARTS {
             if caps.name(name).is_some() {
                 return (*replacement).to_string();
             }
@@ -702,6 +811,109 @@ mod tests {
             "the dash form must map to the generic literal: {out}"
         );
         assert_eq!(redact(&out), out, "and be a fixed point");
+    }
+
+    /// Every credential shape the scanner is required to catch (D-11, D-12), as
+    /// `(rule name, a string containing that shape)`.
+    ///
+    /// The rule name is asserted alongside the match, because a scanner that
+    /// reports the wrong rule sends a human to the wrong line of the wrong file.
+    const CREDENTIAL_SHAPES: &[(&str, &str)] = &[
+        (
+            "pem",
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34\n-----END RSA PRIVATE KEY-----",
+        ),
+        ("authz", "authorization: Basic dXNlcjpwYXNzd29yZA=="),
+        ("env", "GITHUB_TOKEN=ghp_zzzzzzzzzzzzzzzzzzzzzzzzzz"),
+        ("bearer", "hdr was Bearer abc123def456ghi789 ok"),
+        ("skant", "key sk-ant-api03-AbCdEf012345_-XyZ end"),
+        ("sk", "OPENAI sk-proj-abcdefghijklmnopqrstuvwxyz012345 end"),
+        (
+            "ghpat",
+            "github_pat_11ABCDEFG0abcdefghijklmnop_qrstuvwxyz01234",
+        ),
+        ("gh", "token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 end"),
+        ("aws", "AWS AKIAIOSFODNN7EXAMPLE here"),
+        ("slack", "xoxb-1234567890-abcdefghijkl"),
+        (
+            "jwt",
+            "tok eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U end",
+        ),
+        ("uinfo", "clone https://andy:hunter2@github.com/org/repo.git"),
+    ];
+
+    /// The rule name the credential alternation reports for `input`, if any.
+    fn credential_rule_for(input: &str) -> Option<&'static str> {
+        let caps = credential_alternation().captures(input)?;
+        credential_rule_names()
+            .iter()
+            .find(|name| caps.name(name).is_some())
+            .copied()
+    }
+
+    #[test]
+    fn the_credential_alternation_matches_every_credential_shape() {
+        for (rule, input) in CREDENTIAL_SHAPES {
+            assert_eq!(
+                credential_rule_for(input),
+                Some(*rule),
+                "the credential alternation must match {rule} in {input:?}"
+            );
+        }
+
+        // The table is a floor, not a sample, and it is the whole scanner: a
+        // rule silently dropped from the `Credential` class is a secret that
+        // stops blocking a push, with no other symptom.
+        assert_eq!(
+            credential_rule_names().len(),
+            CREDENTIAL_SHAPES.len(),
+            "every Credential-tagged rule needs a shape row here, and vice versa: {:?}",
+            credential_rule_names()
+        );
+    }
+
+    #[test]
+    fn the_credential_alternation_ignores_a_home_directory_path_in_both_spellings() {
+        // D-12's whole reason. A source file containing a home-directory string
+        // is not a secret; a scanner that blocked every push over one would be
+        // switched off within a day, and a control that gets switched off is
+        // worse than one that was never claimed.
+        for benign in [
+            "/home/andy/projects/x",
+            "-home-andy-projects-x",
+            "cwd is /Users/andy/Code/thing",
+            "sess -tmp-claude-1000--home-andy-projects-x/memory/",
+            "scratch /tmp/claude-1000/work",
+        ] {
+            assert_eq!(
+                credential_rule_for(benign),
+                None,
+                "the credential alternation must not fire on the path-hygiene \
+                 string {benign:?} — that is the redactor's job, not the scanner's"
+            );
+        }
+    }
+
+    #[test]
+    fn both_classes_still_reach_redact_so_the_corpus_output_is_unchanged() {
+        // The class split must not narrow REDACTION (D-12). The corpus test
+        // above pins every row's exact output and is deliberately unedited;
+        // this asserts the property directly, by name, for the two classes.
+        assert_eq!(
+            redact("cwd is /home/blk/projects/x"),
+            "cwd is /home/[REDACTED:user]/projects/x",
+            "a PathHygiene rule must still redact"
+        );
+        assert_eq!(
+            redact("key sk-ant-api03-AbCdEf012345_-XyZ end"),
+            "key [REDACTED:anthropic-key] end",
+            "a Credential rule must still redact"
+        );
+        assert!(
+            PARTS.len() > credential_rule_names().len(),
+            "redact consumes strictly more rules than the scanner does, or the \
+             two consumers are the same consumer"
+        );
     }
 
     #[test]

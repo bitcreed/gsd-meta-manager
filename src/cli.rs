@@ -192,4 +192,24 @@ pub enum EnvelopeAction {
         #[arg(long)]
         hook_path: PathBuf,
     },
+    /// Refuse a commit whose staged paths include a directory the envelope reserves
+    PreCommit {
+        /// Registry alias whose envelope sanctions this hook
+        alias: String,
+        /// Path this hook was invoked from, checked against the envelope's own
+        #[arg(long)]
+        hook_path: PathBuf,
+    },
+    /// Scan a worktree for credential shapes and exit non-zero on any finding
+    ///
+    /// Not a hook: this is the same scan the `pre-push` hook runs, reachable on
+    /// its own so a human can see what the hook would say **before** a push
+    /// fails, and so the report — including the list of files the scan declined
+    /// to read (D-14) — can be inspected without a remote in the picture.
+    Scan {
+        /// Registry alias the scan is reported against
+        alias: String,
+        /// Repository root to walk
+        root: PathBuf,
+    },
 }
