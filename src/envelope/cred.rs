@@ -526,7 +526,13 @@ fn configured_remote_host(project_root: &Path) -> Option<String> {
 /// for: `scheme://[user@]host[:port]/path`, the scp-like `[user@]host:path`, and
 /// `file://` / a bare local path — which yield `None`, because a local
 /// repository is reached without authenticating to anybody.
-fn url_host(url: &str) -> Option<String> {
+///
+/// `pub(super)` rather than private because [`super::advisory`] asks the same
+/// question of the same URLs. A second copy of this parser is a second place for
+/// the look-alike cases — userinfo containing an `@`, an IPv6 literal's own
+/// colons, a bare local path — to be handled differently, and the drift would
+/// show up as a probe reasoning about a host the responder never scoped.
+pub(super) fn url_host(url: &str) -> Option<String> {
     if url.is_empty() {
         return None;
     }

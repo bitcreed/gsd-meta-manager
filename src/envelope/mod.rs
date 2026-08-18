@@ -84,6 +84,7 @@
 //! and the scope of the credential — which is why enabling **server-side branch
 //! protection** is the phase's conclusion rather than its footnote.
 
+pub mod advisory;
 pub mod cred;
 pub mod hooks;
 pub mod ledger;
