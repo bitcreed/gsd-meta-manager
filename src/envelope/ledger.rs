@@ -226,11 +226,15 @@ pub fn record_and_check_in(
         .with_context(|| format!("failed to read the ledger at {}", path.display()))?;
     let tally = tally(&bytes, now, &entry.run_id);
 
-    // RED STEP (removed by the GREEN commit that follows): the decision is
-    // stubbed to permit, so every refusal row below is proved load-bearing in
-    // committed history rather than by a mutation somebody performed and
-    // reverted. The same technique plan 19-02 used for `classify_git`.
-    let _ = policy;
+    if tally.used_24h > policy.pr_cap_per_24h || tally.used_run > policy.pr_cap_per_run {
+        return Ok(CapVerdict::Refuse {
+            reason: ParkReason::PrCapExceeded,
+            used_24h: tally.used_24h,
+            cap_24h: policy.pr_cap_per_24h,
+            used_run: tally.used_run,
+            cap_run: policy.pr_cap_per_run,
+        });
+    }
 
     Ok(CapVerdict::Permit {
         used_24h: tally.used_24h,
@@ -243,10 +247,23 @@ pub fn record_and_check_in(
 /// One `write_all` of the whole line including its newline, so the kernel is
 /// asked for one append rather than two: a line and its terminator written
 /// separately are two chances to be interrupted between them.
+///
+/// **The line is prefixed with a newline when the existing file does not end in
+/// one**, and that detail is load-bearing rather than tidy. A torn write leaves
+/// a final line with no terminator; appending straight onto it would fuse the
+/// torn record and the new one into a single unparseable line, which counts as
+/// **one** attempt instead of two — so the very failure the append-only format
+/// is meant to bound would swallow the attempt being recorded. Terminating the
+/// torn line first keeps it counted as the one damaged attempt it is, and keeps
+/// the new attempt countable as its own.
 fn append_entry(path: &Path, entry: &LedgerEntry) -> anyhow::Result<()> {
     let mut line = serde_json::to_string(entry)
         .context("failed to render a ledger entry as JSON")?;
     line.push('\n');
+
+    if ends_mid_line(path) {
+        line.insert(0, '\n');
+    }
 
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -258,6 +275,31 @@ fn append_entry(path: &Path, entry: &LedgerEntry) -> anyhow::Result<()> {
     file.flush()
         .with_context(|| format!("failed to flush the ledger at {}", path.display()))?;
     Ok(())
+}
+
+/// Whether the file exists, is non-empty and does **not** end with a newline —
+/// the signature of a torn final record.
+///
+/// Reads one byte from the end rather than the whole file: this runs on the
+/// agent's critical path inside the guard, and a whole-file read to answer a
+/// one-byte question is the sort of thing that turns a guard into a hang.
+/// An unreadable file answers `false`, because the append that follows will
+/// report the real error with the real context rather than this probe guessing.
+fn ends_mid_line(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    if file.seek(SeekFrom::End(-1)).is_err() {
+        // A zero-length file cannot be seeked to -1, and has no torn tail.
+        return false;
+    }
+    let mut last = [0u8; 1];
+    match file.read_exact(&mut last) {
+        Ok(()) => last[0] != b'\n',
+        Err(_) => false,
+    }
 }
 
 /// How many attempts the ledger accounts for.
@@ -525,6 +567,27 @@ mod tests {
             "a line the reader cannot parse is an attempt that happened; skipping it \
              under-counts, which is the failure this ledger exists to prevent: {verdict:?}"
         );
+    }
+
+    #[test]
+    fn appending_onto_a_torn_tail_does_not_fuse_the_two_records_into_one() {
+        let root = tempfile::tempdir().unwrap();
+        let path = ledger_path_in(root.path(), "alpha").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, br#"{"at":"2026-08-18T10:00:00Z","run_id":"run-0","comm"#).unwrap();
+
+        record_and_check_in(root.path(), "alpha", &entry(&now_stamp(), "new"), &policy(9, 9))
+            .unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "a torn record and the record appended after it must stay two lines; fused \
+             they parse as one, which counts ONE attempt where two happened: {text}"
+        );
+        assert!(serde_json::from_str::<LedgerEntry>(lines[1]).is_ok());
     }
 
     #[test]
