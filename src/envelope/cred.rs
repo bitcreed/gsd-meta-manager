@@ -171,6 +171,27 @@ impl EnvelopeEnv {
     pub fn is_removed(&self, key: &str) -> bool {
         matches!(self.get(key), Some(None))
     }
+
+    /// Add the [`RUN_ID_ENV`] entry, which only the driver can supply.
+    ///
+    /// **A separate call rather than a `build_env` parameter, and the split is
+    /// the same one [`RUN_ID_ENV`]'s own doc records:** `build_env` is given an
+    /// alias and a project root, not a run, and a run id invented inside it
+    /// would be a second place run ids come from. The driver already owns the
+    /// id — it is on the driver's argv, which is what makes a run findable at
+    /// all — so it folds it in here, at the one seam that hands the environment
+    /// to the spawn closure.
+    ///
+    /// Without this entry the guard falls back to a shared placeholder bucket,
+    /// which makes the per-run cap bound *every* run of the alias together. That
+    /// over-counts rather than under-counting, so it is safe, but it is not the
+    /// intended semantics and `super::hooks::current_run_id`'s doc says so.
+    #[must_use]
+    pub fn with_run_id(mut self, run_id: &str) -> Self {
+        self.0
+            .push((OsString::from(RUN_ID_ENV), Some(OsString::from(run_id))));
+        self
+    }
 }
 
 /// `GIT_CONFIG_COUNT` / `KEY_n` / `VALUE_n` for an arbitrary set of keys.

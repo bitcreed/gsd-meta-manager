@@ -351,6 +351,19 @@ pub struct ExecutionOptions {
     /// [`crate::driver`]'s envelope assertion refuses a run whose settings file
     /// could not be written *before* anything is created.
     pub envelope_settings: Option<PathBuf>,
+    /// The child's whole environment as a value (D-09, D-16).
+    ///
+    /// **Carried here rather than applied by the driver, because the child's
+    /// environment is built in exactly one place** — the spawn closure in
+    /// `src/executor/claude.rs`, which already scrubs the inherited agent
+    /// variables. A second applier would be a second thing that can disagree
+    /// about what the child inherits, and the whole point of
+    /// [`EnvelopeEnv`](crate::envelope::cred::EnvelopeEnv) arriving as a pure
+    /// value is that a test can assert on it without spawning anything.
+    ///
+    /// `None` means no envelope was established, exactly as for
+    /// [`Self::envelope_settings`].
+    pub envelope_env: Option<crate::envelope::cred::EnvelopeEnv>,
 }
 
 impl Default for ExecutionOptions {
@@ -375,6 +388,7 @@ impl Default for ExecutionOptions {
             // if it cannot.
             envelope_disallowed_tools: Vec::new(),
             envelope_settings: None,
+            envelope_env: None,
         }
     }
 }

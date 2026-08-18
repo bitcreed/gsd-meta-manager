@@ -18,6 +18,10 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::config::RegisteredProject;
 use crate::driver::{kill, liveness, lock, DriveArgs};
+use crate::envelope::advisory::{self, ProtectionState};
+use crate::envelope::cred::{self, EnvelopeEnv};
+use crate::envelope::hooks;
+use crate::envelope::policy::{self, ParkReason};
 use crate::error::{DriveError, LockError};
 use crate::executor::claude::ClaudeExecutor;
 use crate::executor::stream_json::UserMessage;
@@ -36,6 +40,97 @@ use crate::journal::{self, JournalEvent, JournalRun, RunRecord};
 /// from the TUI, stopped from a shell, or stopped by a service manager, and this
 /// record is the only thing that says a terminate signal is what arrived.
 const TERMINATE_DIAGNOSTIC_CODE: &str = "terminate_signal_shutdown";
+
+/// The prefix of the diagnostic code the run-start envelope notice carries.
+///
+/// Suffixed with [`ProtectionState::as_str`], so the code a reader greps for is
+/// `envelope_protection_protected`, `…_unprotected` or `…_unknown` — the stable
+/// identifiers `envelope::advisory` already owns, in the snake_case shape every
+/// other `Diagnostic` code in this tree uses.
+const PROTECTION_DIAGNOSTIC_PREFIX: &str = "envelope_protection_";
+
+/// Everything one established envelope hands to the run that it protects.
+///
+/// A single value rather than four out-parameters because establishment is
+/// all-or-nothing: a run with three of the four layers is the partial envelope
+/// [`DriveError::EnvelopeAssertionFailed`] exists to refuse.
+struct EstablishedEnvelope {
+    /// The generated settings file, for `--settings` (D-07).
+    settings: PathBuf,
+    /// The child's whole environment as a value (D-09, D-16).
+    env: EnvelopeEnv,
+    /// What the read-only probe found on the remote (D-26). Never a refusal:
+    /// an unknown protection state is a fact about the probe, not about the run.
+    protection: ProtectionState,
+}
+
+/// Establish the envelope for `alias` against `project_root`, or refuse.
+///
+/// **Synchronous by design and called only from inside `spawn_blocking`.** Every
+/// line below is file or process work: four generated files, two `git config`
+/// reads, and a bounded external-client probe. `<D-28, WR-10>` forbids that on an
+/// `async fn` path, and the deadlock the discipline prevents was **observed**
+/// rather than theorised — `tests/driver_lock.rs:201-215` records a blocking
+/// `flock` inside an `async fn` defeating `tokio::time::timeout` outright on a
+/// current-thread runtime.
+///
+/// The order is the decision:
+///
+/// 1. [`hooks::install`] first, because the hooks directory is what
+///    `core.hooksPath` in the generated environment will point at, and an
+///    environment naming a directory that does not exist is an environment that
+///    delivers nothing.
+/// 2. [`hooks::write_settings`] second, and **its `?` is the D-07 gate**. That
+///    function writes the file, reads it back and compares; a mismatch is an
+///    error and must never be downgraded to a warning, because a settings file
+///    that failed validation is silently ignored by the CLI with nothing shown.
+/// 3. [`hooks::write_exclude_block`] third — the one persistent mutation the
+///    envelope makes to the driven repository, so it happens before anything
+///    the agent could observe. It is the one layer with a **skip** condition,
+///    and the distinction the condition draws is *absence versus failure*: a
+///    project with no `.git` entry has no repository for an ignore rule to
+///    protect and no history for a swept file to reach, so the block is
+///    unnecessary rather than unwritable. A `.git` that exists and cannot be
+///    written to is a failure and refuses, because that is a repository whose
+///    protection was attempted and did not land. Refusing every non-git project
+///    outright would be a control failing into unusability, which is the shape
+///    of control that gets switched off.
+/// 4. [`cred::build_env`] last, because it is the layer that depends on the
+///    other three: it writes the generated git config (which is why
+///    `cred::write_gitconfig` is **not** called separately here — a second call
+///    would resolve the user's identity twice and could write two different
+///    files), creates the `gh` directory, generates the askpass responder, and
+///    folds in the `core.hooksPath` entry naming the directory step 1 created.
+///
+/// The probe runs **once**, here, after the environment exists — it needs that
+/// environment to run the external client under. One producer means the claim
+/// the dry-run preview makes and the claim the run journal records cannot
+/// disagree (T-19-42).
+fn establish_envelope(
+    alias: &str,
+    project_root: &Path,
+    run_id: &str,
+) -> anyhow::Result<EstablishedEnvelope> {
+    hooks::install(alias)?;
+    let settings = hooks::write_settings(alias)?;
+    // `.git` covers both forms — the directory, and the pointer file a linked
+    // worktree carries — which is exactly the pair `hooks::git_dir` resolves, so
+    // this predicate and that function cannot disagree about what a repository
+    // is. Existence is asked here rather than inside `write_exclude_block`
+    // because that function's failure IS the refusal for every caller that has a
+    // repository, and weakening it there would weaken it for all of them.
+    if project_root.join(".git").exists() {
+        hooks::write_exclude_block(project_root)?;
+    }
+    let env = cred::build_env(alias, project_root)?.with_run_id(run_id);
+    let protection = advisory::probe_protection(project_root, &env);
+
+    Ok(EstablishedEnvelope {
+        settings,
+        env,
+        protection,
+    })
+}
 
 /// The program this driver execs unless a debug build was told otherwise.
 ///
@@ -1013,8 +1108,6 @@ pub async fn execute_run(
 
     let pgid = establish_own_group();
 
-    let options = ExecutionOptions::default();
-
     // The TUI owns the id so it knows what to look for; the driver owns the
     // record (D-03).
     //
@@ -1027,7 +1120,53 @@ pub async fn execute_run(
     // which produced a run whose id appeared on no argv: invisible to the probe,
     // reported crashed by every scan, and un-stoppable because a stop answered
     // already-gone without signalling (CR-04).
+    //
+    // It is read **before** the envelope is established rather than after, so a
+    // run that has no id costs no generated file: the cheaper refusal goes first.
     let run_id = args.run_id.clone().ok_or(DriveError::RunIdRequired)?;
+
+    // **The envelope, established once, before the executor is constructed.**
+    //
+    // Everything the previous plans in this phase built is inert until it
+    // reaches the child, and argv plus the environment are the only two carriers
+    // that cross the spawn. This is where they are filled, and it is the single
+    // production `ExecutionOptions` construction site precisely so there is one
+    // place to look.
+    //
+    // **No blocking syscall inside an `async fn`** (D-28, WR-10), the same
+    // discipline and the same provenance as the lock and journal wraps below.
+    // See `establish_envelope`'s own doc for what is blocking in there.
+    //
+    // The alias and root are **cloned** into the closure rather than moved for
+    // the reason `driver::drive`'s dry-run arm records at length: `project` is
+    // the capability token and is still needed below, and rebuilding one would
+    // mean a second `DrivableProject::from_registry` call site — the exact
+    // uniqueness `tests/spawn_seam_guard.rs` exists to check.
+    let envelope_alias = project.alias().to_string();
+    let envelope_root = project.root().to_path_buf();
+    let envelope_run_id = run_id.clone();
+    let envelope = tokio::task::spawn_blocking(move || {
+        establish_envelope(&envelope_alias, &envelope_root, &envelope_run_id)
+    })
+    .await
+    .map_err(|_| DriveError::EnvelopeAssertionFailed {
+        reason: ParkReason::EnvelopeAssertionFailed,
+        detail: "the envelope establishment task did not run to completion".to_string(),
+    })?
+    .map_err(|err| DriveError::EnvelopeAssertionFailed {
+        reason: ParkReason::EnvelopeAssertionFailed,
+        // Redacted at the boundary, because the chain can carry a remote URL or
+        // a home-directory path and this text reaches the operator's terminal.
+        detail: crate::journal::redact::redact(&format!("{err:#}")),
+    })?;
+
+    let protection = envelope.protection.clone();
+    let options = ExecutionOptions {
+        envelope_disallowed_tools: policy::disallowed_tools(),
+        envelope_settings: Some(envelope.settings),
+        envelope_env: Some(envelope.env),
+        ..Default::default()
+    };
 
     // The executor's own generated argv is not reachable from here — the
     // builder is private to `src/executor/claude.rs` — so the digest covers the
@@ -1102,6 +1241,30 @@ pub async fn execute_run(
             detail: format!("{err:#}"),
         })?;
     let mut run = DriverRun { journal, lock };
+
+    // The envelope's honest account of itself, recorded at run start — the
+    // earliest moment there is a journal to record it into (D-26, D-27).
+    //
+    // **One producer, two consumers.** `advisory::envelope_notice` is the same
+    // function the dry-run preview renders, so the claim a user reads before a
+    // run and the claim a later reader finds in the journal cannot disagree
+    // about what was promised (T-19-42). The notice carries newlines; the
+    // journal line does not, because the writer escapes them — the record stays
+    // one NDJSON line, which is the property the reader depends on.
+    //
+    // A failure to record it is a warning rather than a refusal, and that
+    // direction is deliberate: the notice is *evidence*, and evidence that
+    // cannot be written must not take the run down with it. Every containment
+    // layer is already established by this point.
+    if let Err(err) = run.journal.record(&JournalEvent::Diagnostic {
+        code: format!("{PROTECTION_DIAGNOSTIC_PREFIX}{}", protection.as_str()),
+        detail: advisory::envelope_notice(&protection),
+    }) {
+        tracing::warn!(
+            detail = %format!("{err:#}"),
+            "could not journal the envelope notice",
+        );
+    }
 
     // D-30's second half, and its position is the whole of it: the journal is
     // open and nothing has been exec'd yet, so a run driven by a stand-in is

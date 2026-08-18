@@ -443,6 +443,9 @@ impl ClaudeExecutor {
         let program = self.program.clone();
         let cwd = root.clone();
         let bg_ceiling = options.bg_wait_ceiling_ms.to_string();
+        // Cloned out before the closure for the same reason `bg_ceiling` is:
+        // the closure is `move` and `options` is still needed below.
+        let envelope_env = options.envelope_env.clone();
 
         let mut wrap = CommandWrap::with_new(&program, |cmd| {
             cmd.args(&argv)
@@ -455,12 +458,40 @@ impl ClaudeExecutor {
             // so inherited CLAUDE* variables would leak into the driven child
             // and change `-p` behaviour in ways that look like "works on my
             // machine". Scrub them all, then set the one we mean to set.
+            //
+            // **The envelope extends that identical argument from the CLAUDE*
+            // family to git and ssh** (D-09, D-16). An inherited `SSH_AUTH_SOCK`
+            // is the shortest path from a driven run to the user's own keys, and
+            // an inherited `GIT_CONFIG_GLOBAL` is the shortest path to their
+            // credential helper — the same "works on my machine" failure with a
+            // blast radius instead of a support ticket. **This closure is the
+            // ONE place in the tree that builds the child's environment**, so
+            // the envelope is applied here and nowhere else; a second applier is
+            // a second thing that can disagree about what the child inherits.
             for (key, _) in std::env::vars_os() {
                 if key.to_string_lossy().starts_with("CLAUDE") {
                     cmd.env_remove(&key);
                 }
             }
             cmd.env("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", &bg_ceiling);
+
+            // Removal and assignment are distinct instructions and the `Option`
+            // in `EnvelopeVar` is what keeps them distinct: `SSH_AUTH_SOCK=""`
+            // is a variable an agent can notice and work around, while an absent
+            // one is absent. Matching here rather than collapsing to `env` is
+            // the whole reason that type carries an `Option` (D-16).
+            if let Some(envelope) = &envelope_env {
+                for (key, value) in envelope.entries() {
+                    match value {
+                        Some(value) => {
+                            cmd.env(key, value);
+                        }
+                        None => {
+                            cmd.env_remove(key);
+                        }
+                    }
+                }
+            }
         });
         wrap.wrap(ProcessGroup::leader());
         // Backstop only, never the teardown story: `KillOnDrop` is SIGKILL.

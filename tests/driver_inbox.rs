@@ -81,12 +81,35 @@ struct Fixture {
     config: Config,
 }
 
+/// Point the envelope at a temp root for this test binary.
+///
+/// **Since plan 19-07 a driven run establishes its envelope before the executor
+/// is constructed**, and the envelope lives under the application data
+/// directory. Without this redirect these fixtures would write hook stubs, a
+/// generated git config and a settings file into the developer's real
+/// `~/.local/share` under a fixture's alias — the same "a test may not write
+/// into the developer's real data directory" rule `envelope::hooks::guard_in`
+/// records for its own explicit-root sibling.
+///
+/// The `set_var` happens exactly **once** per test binary, inside the
+/// `OnceLock` initialiser, and the `TempDir` is held by the `static` for the
+/// process lifetime so the root outlives every test that drives a run.
+fn isolate_envelope_root() {
+    static ROOT: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let dir = TempDir::new().expect("an envelope temp root");
+        std::env::set_var(gsd_meta_manager::envelope::ENVELOPE_ROOT_ENV, dir.path());
+        dir
+    });
+}
+
 /// A one-entry registry pointing at `root`, opted in.
 ///
 /// Built fresh per caller rather than shared, following `tests/driver_lock.rs`:
 /// `Config` is not `Clone`, and a test that drives the run on its own task needs
 /// an owned value inside that task.
 fn config_for(root: &Path) -> Config {
+    isolate_envelope_root();
     let mut config = Config::new();
     config.projects.insert(
         ALIAS.to_string(),
