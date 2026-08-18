@@ -52,12 +52,12 @@ interleave and corrupt each other.
 
 ### Git & Blast Radius (SAFE)
 
-- [ ] **SAFE-01**: The driver pushes only to a reserved branch namespace; pushes outside it are blocked by a mechanism the agent cannot talk its way past
-- [ ] **SAFE-02**: Force-push and hook-bypass are blocked for driver-initiated git operations
-- [ ] **SAFE-03**: Driver-initiated pushes are scanned for secrets and blocked on detection
+- [x] **SAFE-01**: The driver pushes only to a reserved branch namespace; pushes outside it are blocked by a mechanism the agent cannot talk its way past
+- [x] **SAFE-02**: Force-push and hook-bypass are blocked for driver-initiated git operations
+- [x] **SAFE-03**: Driver-initiated pushes are scanned for secrets and blocked on detection
 - [x] **SAFE-04**: Credentials and tokens are redacted when captured into the run log, not when rendered
-- [ ] **SAFE-05**: A driven run uses a scoped git credential rather than inheriting the user's ambient credentials or SSH agent
-- [ ] **SAFE-06**: PR creation is rate-capped per project per day
+- [x] **SAFE-05**: A driven run uses a scoped git credential rather than inheriting the user's ambient credentials or SSH agent
+- [x] **SAFE-06**: PR creation is rate-capped per project per day
 - [ ] **SAFE-07**: `.planning/` content read by the driver is passed to the model inside an explicit untrusted-content boundary, never concatenated into instructions
 - [ ] **SAFE-08**: The model's chosen action is constrained to a fixed enum of GSD commands; free-form shell strings are never executed
 
@@ -140,12 +140,12 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-22.
 | CTRL-05 | Phase 17: Supervisor | Complete |
 | CTRL-06 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
 | CTRL-07 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
-| SAFE-01 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Pending |
-| SAFE-02 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Pending |
-| SAFE-03 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Pending |
+| SAFE-01 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Complete |
+| SAFE-02 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Complete |
+| SAFE-03 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Complete |
 | SAFE-04 | Phase 16: Run Journal & State Substrate | Complete |
-| SAFE-05 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Pending |
-| SAFE-06 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Pending |
+| SAFE-05 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Complete |
+| SAFE-06 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Complete |
 | SAFE-07 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
 | SAFE-08 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
 | OBS-01 | Phase 16: Run Journal & State Substrate | Complete |
