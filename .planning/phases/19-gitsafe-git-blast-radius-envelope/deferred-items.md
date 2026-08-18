@@ -57,3 +57,25 @@ the process — `live_within` is the wrong synchronisation primitive for these t
 pass/fail while this flake is live. Waves are accepted on the bounded-failure-set rule
 instead: a wave passes if the only failures are these two tests and the total passing count
 advances as expected.
+
+## `tests/envelope_tracer.rs` — ETXTBSY when a just-copied stub is exec'd (found during 19-07)
+
+**Symptom.** `a_relocated_copy_of_the_stub_refuses_instead_of_acting` fails intermittently
+under a full parallel `cargo test` with:
+
+```
+the generated stub is executable: Os { code: 26, kind: ExecutableFileBusy, message: "Text file busy" }
+```
+
+Observed once in ~6 full-suite runs during 19-07; green in every run of the file alone.
+
+**Cause (likely).** The fixture copies the generated stub and executes the copy. ETXTBSY is
+the kernel refusing to `exec` a file that still has an open writer descriptor somewhere — the
+classic write-then-exec race. Nothing about it is about the policy under test.
+
+**Not caused by 19-07.** `git diff c107e04 -- tests/envelope_tracer.rs` is empty: this plan
+did not touch the file, the stub generator, or `assert_provenance`. The file belongs to
+19-01/19-03.
+
+**Fix direction.** Drop or `sync_all` the copy's handle before exec, or retry a bounded number
+of times on `ExecutableFileBusy`. Do **not** serialise the suite — that hides the race.

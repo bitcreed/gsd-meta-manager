@@ -80,6 +80,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::config::{Config, RegisteredProject};
+use crate::envelope::{self, policy::ParkReason};
 use crate::error::{DriveError, OptInError};
 use crate::executor::DrivableProject;
 use crate::journal;
@@ -291,7 +292,78 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
         });
     }
 
+    // The envelope assertion, and its position is the decision in three clauses
+    // (D-24).
+    //
+    // **After the capability gate**, so `DrivableProject::from_registry` keeps
+    // its single production call site and a non-opted-in alias is still refused
+    // first — a project the user never opted in must not get so far as having an
+    // envelope reasoned about.
+    //
+    // **After the dry-run branch**, because a preview starts no process and
+    // creates no run to protect; refusing a preview because an envelope could
+    // not be established would refuse the one output that explains why.
+    //
+    // **Before `dispatch`**, so a refused run has created nothing at all: no
+    // lock file, no run directory, no run record, no journal.
+    //
+    // That last clause is also why this refusal writes **no**
+    // `journal::JournalEvent::Parked` event, even though its reason is
+    // `envelope_assertion_failed` and every other producer of that reason does.
+    // There is no journal for the run at this point — there is no run — so the
+    // evidence D-25 requires is the typed error, the non-zero process exit and
+    // the stderr line `src/main.rs` prints, all three of which are readable
+    // without consulting anything a model said. **Forward constraint:** should
+    // this assertion ever become reachable after a journal has been opened, the
+    // appender is `envelope::park`, the same one the hook and guard re-entries
+    // call — one appender, not a second one written here speculatively.
+    if let Some(refusal) = envelope_refusal(&project) {
+        return Err(refusal);
+    }
+
     dispatch(project, &args, entry).await
+}
+
+/// Whether an envelope can be established for `project` at all.
+///
+/// **An assertion, not the establishment.** Establishment writes four files and
+/// runs a probe, and it happens at the single production `ExecutionOptions`
+/// construction site in [`run`] where its results are consumed. This answers the
+/// cheaper question that can be answered before anything is created: is there a
+/// root to put an envelope under, and is this alias a name that may have one?
+/// Both are pure — no filesystem write, no process, no network — which is what
+/// lets the refusal sit in the ordered chain above rather than after the lock.
+///
+/// Shaped as `Option<DriveError>` rather than `Result<(), _>` deliberately, to
+/// match [`platform_refusal`] beside it: this chain reads as a sequence of
+/// refusals, and a function that returns "the refusal, if any" reads the same
+/// way at the call site as the one above it.
+///
+/// The **later** failure — an establishment that gets a root and an alias and
+/// still cannot write — returns the identical [`DriveError::EnvelopeAssertionFailed`]
+/// variant from `run::execute_run`, before the lock and before the journal. Two
+/// positions, one refusal, one park reason.
+fn envelope_refusal(project: &DrivableProject) -> Option<DriveError> {
+    if envelope::envelope_root().is_none() {
+        return Some(DriveError::EnvelopeAssertionFailed {
+            reason: ParkReason::EnvelopeAssertionFailed,
+            detail: "no application data directory is resolvable, and the envelope refuses \
+                     to fall back to a directory that could sit inside a repository"
+                .to_string(),
+        });
+    }
+    if envelope::envelope_dir(project.alias()).is_none() {
+        // The alias is not echoed. It came from the registry rather than from an
+        // argument, and every other refusal in this file that echoes a value
+        // echoes one the caller just typed.
+        return Some(DriveError::EnvelopeAssertionFailed {
+            reason: ParkReason::EnvelopeAssertionFailed,
+            detail: "this alias is not a single plain path component, so no envelope \
+                     directory can be sanctioned for it"
+                .to_string(),
+        });
+    }
+    None
 }
 
 /// The Unix run body.

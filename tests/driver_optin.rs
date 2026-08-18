@@ -197,8 +197,31 @@ fn make_project(tmp: &Path, name: &str) -> PathBuf {
     root
 }
 
+/// Point the envelope at a temp root for this test binary.
+///
+/// **Since plan 19-07 a driven run establishes its envelope before the executor
+/// is constructed**, and the envelope lives under the application data
+/// directory. Without this redirect these fixtures would write hook stubs, a
+/// generated git config and a settings file into the developer's real
+/// `~/.local/share` under a fixture's alias — the same "a test may not write
+/// into the developer's real data directory" rule `envelope::hooks::guard_in`
+/// records for its own explicit-root sibling.
+///
+/// The `set_var` happens exactly **once** per test binary, inside the
+/// `OnceLock` initialiser, and the `TempDir` is held by the `static` for the
+/// process lifetime so the root outlives every test that drives a run.
+fn isolate_envelope_root() {
+    static ROOT: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let dir = TempDir::new().expect("an envelope temp root");
+        std::env::set_var(gsd_meta_manager::envelope::ENVELOPE_ROOT_ENV, dir.path());
+        dir
+    });
+}
+
 /// A registry holding both projects, with `opted_in` the only one opted in.
 fn config_for(a: &Path, b: &Path, opted_in: &str) -> Config {
+    isolate_envelope_root();
     let mut config = Config::new();
     registry::add_project(&mut config, "a", a).expect("project a registers");
     registry::add_project(&mut config, "b", b).expect("project b registers");

@@ -329,6 +329,41 @@ pub struct ExecutionOptions {
     /// this cap is what covers a child that is still alive and simply not
     /// answering.
     pub control_response_cap: Duration,
+    /// The envelope's tool denylist, rendered onto `--disallowedTools`
+    /// (D-06 layer 1).
+    ///
+    /// **Empty means the envelope said nothing, never that it permitted
+    /// everything.** Every non-driven caller in this tree constructs
+    /// [`ExecutionOptions::default()`] and never spawns a supervised run, so
+    /// empty is the honest value for them; the driver's single production
+    /// construction site fills it from
+    /// [`crate::envelope::policy::disallowed_tools`]. The list is joined with
+    /// commas onto one flag value — the installed CLI documents
+    /// `--disallowedTools` as taking a *comma or space separated* list, and a
+    /// comma-joined single value cannot swallow the flag that follows it the
+    /// way a space-separated variadic can.
+    pub envelope_disallowed_tools: Vec<String>,
+    /// The generated envelope settings file, rendered onto `--settings`
+    /// (D-07).
+    ///
+    /// `None` means no envelope was established for this run — which today can
+    /// only be a non-driven caller, because
+    /// [`crate::driver`]'s envelope assertion refuses a run whose settings file
+    /// could not be written *before* anything is created.
+    pub envelope_settings: Option<PathBuf>,
+    /// The child's whole environment as a value (D-09, D-16).
+    ///
+    /// **Carried here rather than applied by the driver, because the child's
+    /// environment is built in exactly one place** — the spawn closure in
+    /// `src/executor/claude.rs`, which already scrubs the inherited agent
+    /// variables. A second applier would be a second thing that can disagree
+    /// about what the child inherits, and the whole point of
+    /// [`EnvelopeEnv`](crate::envelope::cred::EnvelopeEnv) arriving as a pure
+    /// value is that a test can assert on it without spawning anything.
+    ///
+    /// `None` means no envelope was established, exactly as for
+    /// [`Self::envelope_settings`].
+    pub envelope_env: Option<crate::envelope::cred::EnvelopeEnv>,
 }
 
 impl Default for ExecutionOptions {
@@ -348,6 +383,12 @@ impl Default for ExecutionOptions {
             bg_wait_ceiling_ms: 600_000,
             name: None,
             control_response_cap: Duration::from_secs(30),
+            // Absent rather than permissive. See the field docs: the driver's
+            // one construction site fills both, and it refuses the run outright
+            // if it cannot.
+            envelope_disallowed_tools: Vec::new(),
+            envelope_settings: None,
+            envelope_env: None,
         }
     }
 }

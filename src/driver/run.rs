@@ -18,6 +18,10 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::config::RegisteredProject;
 use crate::driver::{kill, liveness, lock, DriveArgs};
+use crate::envelope::advisory::{self, ProtectionState};
+use crate::envelope::cred::{self, EnvelopeEnv};
+use crate::envelope::hooks;
+use crate::envelope::policy::{self, ParkReason};
 use crate::error::{DriveError, LockError};
 use crate::executor::claude::ClaudeExecutor;
 use crate::executor::stream_json::UserMessage;
@@ -36,6 +40,98 @@ use crate::journal::{self, JournalEvent, JournalRun, RunRecord};
 /// from the TUI, stopped from a shell, or stopped by a service manager, and this
 /// record is the only thing that says a terminate signal is what arrived.
 const TERMINATE_DIAGNOSTIC_CODE: &str = "terminate_signal_shutdown";
+
+/// The prefix of the diagnostic code the run-start envelope notice carries.
+///
+/// Suffixed with [`ProtectionState::as_str`], so the code a reader greps for is
+/// `envelope_protection_protected`, `…_unprotected` or `…_unknown` — the stable
+/// identifiers `envelope::advisory` already owns, in the snake_case shape every
+/// other `Diagnostic` code in this tree uses.
+const PROTECTION_DIAGNOSTIC_PREFIX: &str = "envelope_protection_";
+
+/// Everything one established envelope hands to the run that it protects.
+///
+/// A single value rather than four out-parameters because establishment is
+/// all-or-nothing: a run with three of the four layers is the partial envelope
+/// [`DriveError::EnvelopeAssertionFailed`] exists to refuse.
+struct EstablishedEnvelope {
+    /// The generated settings file, for `--settings` (D-07).
+    settings: PathBuf,
+    /// The child's whole environment as a value (D-09, D-16).
+    env: EnvelopeEnv,
+    /// What the read-only probe found on the remote (D-26). Never a refusal:
+    /// an unknown protection state is a fact about the probe, not about the run.
+    protection: ProtectionState,
+}
+
+/// Establish the envelope for `alias` against `project_root`, or refuse.
+///
+/// **Synchronous by design and called only from inside `spawn_blocking`.** Every
+/// line below is file or process work: four generated files, two `git config`
+/// reads, and a bounded external-client probe. `<D-28, WR-10>` forbids that on an
+/// `async fn` path, and the deadlock the discipline prevents was **observed**
+/// rather than theorised — `tests/driver_lock.rs:201-215` records a blocking
+/// `flock` inside an `async fn` defeating `tokio::time::timeout` outright on a
+/// current-thread runtime.
+///
+/// The order is the decision:
+///
+/// 1. `envelope::hooks::install` ([`hooks::install`]) first, because the
+///    hooks directory is what
+///    `core.hooksPath` in the generated environment will point at, and an
+///    environment naming a directory that does not exist is an environment that
+///    delivers nothing.
+/// 2. [`hooks::write_settings`] second, and **its `?` is the D-07 gate**. That
+///    function writes the file, reads it back and compares; a mismatch is an
+///    error and must never be downgraded to a warning, because a settings file
+///    that failed validation is silently ignored by the CLI with nothing shown.
+/// 3. [`hooks::write_exclude_block`] third — the one persistent mutation the
+///    envelope makes to the driven repository, so it happens before anything
+///    the agent could observe. It is the one layer with a **skip** condition,
+///    and the distinction the condition draws is *absence versus failure*: a
+///    project with no `.git` entry has no repository for an ignore rule to
+///    protect and no history for a swept file to reach, so the block is
+///    unnecessary rather than unwritable. A `.git` that exists and cannot be
+///    written to is a failure and refuses, because that is a repository whose
+///    protection was attempted and did not land. Refusing every non-git project
+///    outright would be a control failing into unusability, which is the shape
+///    of control that gets switched off.
+/// 4. [`cred::build_env`] last, because it is the layer that depends on the
+///    other three: it writes the generated git config (which is why
+///    `cred::write_gitconfig` is **not** called separately here — a second call
+///    would resolve the user's identity twice and could write two different
+///    files), creates the `gh` directory, generates the askpass responder, and
+///    folds in the `core.hooksPath` entry naming the directory step 1 created.
+///
+/// The probe runs **once**, here, after the environment exists — it needs that
+/// environment to run the external client under. One producer means the claim
+/// the dry-run preview makes and the claim the run journal records cannot
+/// disagree (T-19-42).
+fn establish_envelope(
+    alias: &str,
+    project_root: &Path,
+    run_id: &str,
+) -> anyhow::Result<EstablishedEnvelope> {
+    hooks::install(alias)?;
+    let settings = hooks::write_settings(alias)?;
+    // `.git` covers both forms — the directory, and the pointer file a linked
+    // worktree carries — which is exactly the pair `hooks::git_dir` resolves, so
+    // this predicate and that function cannot disagree about what a repository
+    // is. Existence is asked here rather than inside `write_exclude_block`
+    // because that function's failure IS the refusal for every caller that has a
+    // repository, and weakening it there would weaken it for all of them.
+    if project_root.join(".git").exists() {
+        hooks::write_exclude_block(project_root)?;
+    }
+    let env = cred::build_env(alias, project_root)?.with_run_id(run_id);
+    let protection = advisory::probe_protection(project_root, &env);
+
+    Ok(EstablishedEnvelope {
+        settings,
+        env,
+        protection,
+    })
+}
 
 /// The program this driver execs unless a debug build was told otherwise.
 ///
@@ -318,6 +414,54 @@ pub(crate) fn outcome_label(outcome: &RunOutcome) -> &'static str {
     }
 }
 
+/// The prefix a terminal label carries when the run's journal names a park.
+///
+/// `parked:force_push_blocked` rather than a bare `parked`, so the terminal
+/// record answers *why* without a second read of the journal — and the suffix is
+/// [`ParkReason::as_str`], never a fresh string.
+pub(crate) const PARKED_LABEL_PREFIX: &str = "parked:";
+
+/// The label the terminal `run.json` carries, which is
+/// [`outcome_label`] **unless the run's journal names a park** (D-25).
+///
+/// D-25 requires the run's terminal record to carry the park reason, and
+/// `outcome_label` cannot know one: it maps a derived [`RunOutcome`], and a park
+/// is produced by *other processes* — the hook and guard re-entries — that this
+/// driver never observes. The journal is the only thing the two sides share, so
+/// the label is decided by reading it once at the end of the run.
+///
+/// **The LAST park wins.** A run may be refused more than once — a force push,
+/// then a secret, then a pull-request cap — and the terminal record names the
+/// state the run ended in, which is the one that was still true when it stopped.
+///
+/// A journal that cannot be read yields [`outcome_label`], not a panic and not a
+/// guess: a park that cannot be read is a park that was not observed, and
+/// claiming one would be inventing evidence in the file this phase exists to
+/// make trustworthy.
+///
+/// **Synchronous, and every caller hands it to a blocking task.** It is one
+/// end-of-run read rather than a hot path, but it is still `read_all` on an
+/// `async fn`'s path (D-28, WR-10), so both call sites move it into
+/// `spawn_blocking` alongside the value it needs.
+pub(crate) fn terminal_label(outcome: &RunOutcome, journal: &Path) -> String {
+    let Ok((records, _diagnostics)) = journal::reader::read_all(journal) else {
+        // A journal that cannot be read is a park that was not observed.
+        // Claiming one would be inventing evidence in the file this phase
+        // exists to make trustworthy.
+        return outcome_label(outcome).to_string();
+    };
+
+    match records
+        .iter()
+        .rev()
+        .find(|record| record.kind == "parked")
+        .and_then(|record| record.rest["reason"].as_str())
+    {
+        Some(reason) => format!("{PARKED_LABEL_PREFIX}{reason}"),
+        None => outcome_label(outcome).to_string(),
+    }
+}
+
 /// Build the immutable half of `run.json`.
 ///
 /// **`run.json` is written by the driver, not by the TUI before spawning.** The
@@ -487,7 +631,35 @@ async fn shutdown_on_terminate(
         );
     }
 
-    if let Err(err) = journal.finish(outcome_label(&outcome)) {
+    // **No blocking read inside an `async fn`** (D-28, WR-10). `terminal_label`
+    // reads the whole journal, so the read goes into a blocking task and only
+    // the resulting `String` comes back.
+    //
+    // The inline re-run on a join failure is `driver::drive`'s dry-run arm's own
+    // answer to the same question, and this repository's established one: it
+    // keeps the terminal record honest on a path no healthy run reaches, at the
+    // cost of a blocking call in a process that is already ending anyway. The
+    // record must be written either way — a run that ends with no record at all
+    // is the one failure OBS-01 cannot tolerate.
+    let journal_path = journal.paths().journal.clone();
+    let task_outcome = outcome.clone();
+    let task_path = journal_path.clone();
+    let label = match tokio::task::spawn_blocking(move || {
+        terminal_label(&task_outcome, &task_path)
+    })
+    .await
+    {
+        Ok(label) => label,
+        Err(err) => {
+            tracing::warn!(
+                panicked = err.is_panic(),
+                "the terminal-label task did not run to completion",
+            );
+            terminal_label(&outcome, &journal_path)
+        }
+    };
+
+    if let Err(err) = journal.finish(&label) {
         tracing::warn!(
             detail = %format!("{err:#}"),
             "could not close the journal after a terminate-signal shutdown",
@@ -1013,8 +1185,6 @@ pub async fn execute_run(
 
     let pgid = establish_own_group();
 
-    let options = ExecutionOptions::default();
-
     // The TUI owns the id so it knows what to look for; the driver owns the
     // record (D-03).
     //
@@ -1027,7 +1197,53 @@ pub async fn execute_run(
     // which produced a run whose id appeared on no argv: invisible to the probe,
     // reported crashed by every scan, and un-stoppable because a stop answered
     // already-gone without signalling (CR-04).
+    //
+    // It is read **before** the envelope is established rather than after, so a
+    // run that has no id costs no generated file: the cheaper refusal goes first.
     let run_id = args.run_id.clone().ok_or(DriveError::RunIdRequired)?;
+
+    // **The envelope, established once, before the executor is constructed.**
+    //
+    // Everything the previous plans in this phase built is inert until it
+    // reaches the child, and argv plus the environment are the only two carriers
+    // that cross the spawn. This is where they are filled, and it is the single
+    // production `ExecutionOptions` construction site precisely so there is one
+    // place to look.
+    //
+    // **No blocking syscall inside an `async fn`** (D-28, WR-10), the same
+    // discipline and the same provenance as the lock and journal wraps below.
+    // See `establish_envelope`'s own doc for what is blocking in there.
+    //
+    // The alias and root are **cloned** into the closure rather than moved for
+    // the reason `driver::drive`'s dry-run arm records at length: `project` is
+    // the capability token and is still needed below, and rebuilding one would
+    // mean a second `DrivableProject::from_registry` call site — the exact
+    // uniqueness `tests/spawn_seam_guard.rs` exists to check.
+    let envelope_alias = project.alias().to_string();
+    let envelope_root = project.root().to_path_buf();
+    let envelope_run_id = run_id.clone();
+    let envelope = tokio::task::spawn_blocking(move || {
+        establish_envelope(&envelope_alias, &envelope_root, &envelope_run_id)
+    })
+    .await
+    .map_err(|_| DriveError::EnvelopeAssertionFailed {
+        reason: ParkReason::EnvelopeAssertionFailed,
+        detail: "the envelope establishment task did not run to completion".to_string(),
+    })?
+    .map_err(|err| DriveError::EnvelopeAssertionFailed {
+        reason: ParkReason::EnvelopeAssertionFailed,
+        // Redacted at the boundary, because the chain can carry a remote URL or
+        // a home-directory path and this text reaches the operator's terminal.
+        detail: crate::journal::redact::redact(&format!("{err:#}")),
+    })?;
+
+    let protection = envelope.protection.clone();
+    let options = ExecutionOptions {
+        envelope_disallowed_tools: policy::disallowed_tools(),
+        envelope_settings: Some(envelope.settings),
+        envelope_env: Some(envelope.env),
+        ..Default::default()
+    };
 
     // The executor's own generated argv is not reachable from here — the
     // builder is private to `src/executor/claude.rs` — so the digest covers the
@@ -1102,6 +1318,30 @@ pub async fn execute_run(
             detail: format!("{err:#}"),
         })?;
     let mut run = DriverRun { journal, lock };
+
+    // The envelope's honest account of itself, recorded at run start — the
+    // earliest moment there is a journal to record it into (D-26, D-27).
+    //
+    // **One producer, two consumers.** `advisory::envelope_notice` is the same
+    // function the dry-run preview renders, so the claim a user reads before a
+    // run and the claim a later reader finds in the journal cannot disagree
+    // about what was promised (T-19-42). The notice carries newlines; the
+    // journal line does not, because the writer escapes them — the record stays
+    // one NDJSON line, which is the property the reader depends on.
+    //
+    // A failure to record it is a warning rather than a refusal, and that
+    // direction is deliberate: the notice is *evidence*, and evidence that
+    // cannot be written must not take the run down with it. Every containment
+    // layer is already established by this point.
+    if let Err(err) = run.journal.record(&JournalEvent::Diagnostic {
+        code: format!("{PROTECTION_DIAGNOSTIC_PREFIX}{}", protection.as_str()),
+        detail: advisory::envelope_notice(&protection),
+    }) {
+        tracing::warn!(
+            detail = %format!("{err:#}"),
+            "could not journal the envelope notice",
+        );
+    }
 
     // D-30's second half, and its position is the whole of it: the journal is
     // open and nothing has been exec'd yet, so a run driven by a stand-in is
@@ -1431,11 +1671,31 @@ pub async fn execute_run(
     sweep_inbox_as_missed(&mut run.journal, &inbox_path, &mut inbox_cursor).await;
 
     let outcome = handle.wait_outcome().await;
-    run.journal
-        .finish(outcome_label(&outcome))
-        .map_err(|err| DriveError::Journal {
-            detail: format!("{err:#}"),
-        })?;
+
+    // Same blocking hand-off and the same inline fallback as
+    // `shutdown_on_terminate`'s: one end-of-run journal read, moved off the
+    // async path (D-28, WR-10).
+    let journal_path = run.journal.paths().journal.clone();
+    let task_outcome = outcome.clone();
+    let task_path = journal_path.clone();
+    let label = match tokio::task::spawn_blocking(move || {
+        terminal_label(&task_outcome, &task_path)
+    })
+    .await
+    {
+        Ok(label) => label,
+        Err(err) => {
+            tracing::warn!(
+                panicked = err.is_panic(),
+                "the terminal-label task did not run to completion",
+            );
+            terminal_label(&outcome, &journal_path)
+        }
+    };
+
+    run.journal.finish(&label).map_err(|err| DriveError::Journal {
+        detail: format!("{err:#}"),
+    })?;
 
     Ok(())
 }
@@ -1480,6 +1740,102 @@ mod tests {
             driver_opt_in: None,
             extra: Default::default(),
         }
+    }
+
+    /// A started run in a temp project, for the terminal-label assertions.
+    fn started_run(run_id: &str) -> (tempfile::TempDir, JournalRun) {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let planning = dir.path().join(".planning");
+        let record = make_run_record(
+            run_id.to_string(),
+            &args(),
+            &entry(),
+            &ExecutionOptions::default(),
+            "fnv1a64:0000000000000000".to_string(),
+            std::process::id(),
+        );
+        let run = JournalRun::start(&planning, record).expect("the run starts");
+        (dir, run)
+    }
+
+    /// A succeeded-with-no-changes outcome, which is the label a park has to
+    /// displace — the pairing matters: a `terminal_label` that always said
+    /// `parked:` would satisfy every park assertion and be useless.
+    fn clean_outcome() -> RunOutcome {
+        RunOutcome::SucceededNoChanges {
+            turns: Vec::new(),
+            total_cost_usd: None,
+        }
+    }
+
+    #[test]
+    fn a_run_whose_journal_carries_no_park_keeps_its_ordinary_terminal_label() {
+        let (_dir, run) = started_run("2026-08-18T00-00-00Z-nopark");
+        assert_eq!(
+            terminal_label(&clean_outcome(), &run.paths().journal),
+            "succeeded_no_changes",
+            "a run nothing refused must not be labelled parked"
+        );
+    }
+
+    #[test]
+    fn the_terminal_label_names_the_park_reason_from_the_last_park_on_disk() {
+        let (_dir, mut run) = started_run("2026-08-18T00-00-00Z-parked");
+
+        // TWO parks, because a run may be refused more than once and the
+        // terminal record names the state it ENDED in.
+        run.record(&JournalEvent::Parked {
+            reason: ParkReason::SecretDetected.as_str().to_string(),
+            needs: "human".to_string(),
+        })
+        .expect("the first park");
+        run.record(&JournalEvent::Parked {
+            reason: ParkReason::ForcePushBlocked.as_str().to_string(),
+            needs: "human".to_string(),
+        })
+        .expect("the second park");
+
+        assert_eq!(
+            terminal_label(&clean_outcome(), &run.paths().journal),
+            format!(
+                "{PARKED_LABEL_PREFIX}{}",
+                ParkReason::ForcePushBlocked.as_str()
+            ),
+            "the LAST park is the state the run ended in"
+        );
+    }
+
+    #[test]
+    fn the_terminal_record_on_disk_carries_the_park_reason_as_its_outcome() {
+        // The whole of D-25's fourth evidence fact, through the production
+        // `finish` path rather than through the label function alone.
+        let (dir, mut run) = started_run("2026-08-18T00-00-00Z-record");
+        run.record(&JournalEvent::Parked {
+            reason: ParkReason::PrCapExceeded.as_str().to_string(),
+            needs: "human".to_string(),
+        })
+        .expect("the park");
+
+        let journal = run.paths().journal.clone();
+        let run_json = run.paths().run_json.clone();
+        let label = terminal_label(&clean_outcome(), &journal);
+        run.finish(&label).expect("the run finishes");
+
+        let body = std::fs::read_to_string(&run_json).expect("the run record is on disk");
+        let record: serde_json::Value = serde_json::from_str(&body).expect("it is JSON");
+        assert_eq!(
+            record["outcome"].as_str(),
+            Some(
+                format!(
+                    "{PARKED_LABEL_PREFIX}{}",
+                    ParkReason::PrCapExceeded.as_str()
+                )
+                .as_str()
+            ),
+            "the terminal record must name the park reason, not a generic label; \
+             record was {body}"
+        );
+        drop(dir);
     }
 
     #[test]

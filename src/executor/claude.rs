@@ -220,6 +220,22 @@ pub fn interrupt_stopped_a_turn(turns: &[TurnOutcome]) -> bool {
 /// `--strict-mcp-config` so a project-local MCP config in a registered
 /// third-party repository cannot introduce tools. The permission-bypass flag
 /// and the bypass permission mode are never emitted on the host.
+///
+/// **Why the envelope's tool denylist rides here rather than only in the
+/// settings file (D-06 layer 1, D-07).** Of the three enforcement layers this
+/// is the cheapest — it costs one flag and fires *before* the tool runs, with
+/// no process to spawn and no file to read. The decisive property is not the
+/// cost though: it is that **argv cannot be silently dropped, because it is
+/// argv rather than a file**. A `--settings` file that fails validation is
+/// silently ignored in print mode with no error shown, so a run whose only
+/// carrier was that file would be a run with the deny list quietly absent and
+/// nothing at all saying so. The same controls therefore ride on both, and
+/// `tests/envelope_pr_cap.rs`'s
+/// `every_pattern_the_settings_file_denies_is_also_carried_on_argv` is what
+/// keeps the two lists from drifting apart.
+///
+/// The settings path rides here too, because the file has to be *named* to be
+/// loaded at all; naming it is not the same as depending on it.
 pub fn build_argv(options: &ExecutionOptions) -> Vec<OsString> {
     let mut argv: Vec<OsString> = Vec::new();
 
@@ -261,6 +277,19 @@ pub fn build_argv(options: &ExecutionOptions) -> Vec<OsString> {
     if let Some(name) = &options.name {
         push(&mut argv, "--name");
         push(&mut argv, name);
+    }
+
+    // Comma-joined into ONE value rather than pushed as a variadic run of
+    // words. The installed CLI documents this flag as taking a "comma or space
+    // separated list", and a space-separated variadic would keep consuming
+    // words — including the next flag — if one were ever appended below.
+    if !options.envelope_disallowed_tools.is_empty() {
+        push(&mut argv, "--disallowedTools");
+        push(&mut argv, options.envelope_disallowed_tools.join(","));
+    }
+    if let Some(settings) = &options.envelope_settings {
+        push(&mut argv, "--settings");
+        push(&mut argv, settings);
     }
 
     argv
@@ -414,6 +443,9 @@ impl ClaudeExecutor {
         let program = self.program.clone();
         let cwd = root.clone();
         let bg_ceiling = options.bg_wait_ceiling_ms.to_string();
+        // Cloned out before the closure for the same reason `bg_ceiling` is:
+        // the closure is `move` and `options` is still needed below.
+        let envelope_env = options.envelope_env.clone();
 
         let mut wrap = CommandWrap::with_new(&program, |cmd| {
             cmd.args(&argv)
@@ -426,12 +458,42 @@ impl ClaudeExecutor {
             // so inherited CLAUDE* variables would leak into the driven child
             // and change `-p` behaviour in ways that look like "works on my
             // machine". Scrub them all, then set the one we mean to set.
+            //
+            // **The envelope extends that identical argument from the CLAUDE*
+            // family to git and ssh** (D-09, D-16). An inherited `SSH_AUTH_SOCK`
+            // is the shortest path from a driven run to the user's own keys, and
+            // an inherited `GIT_CONFIG_GLOBAL` is the shortest path to their
+            // credential helper — the same "works on my machine" failure with a
+            // blast radius instead of a support ticket. **This closure is the
+            // ONE place in the tree that builds the child's environment**, so
+            // the envelope is applied here and nowhere else; a second applier is
+            // a second thing that can disagree about what the child inherits.
             for (key, _) in std::env::vars_os() {
                 if key.to_string_lossy().starts_with("CLAUDE") {
                     cmd.env_remove(&key);
                 }
             }
             cmd.env("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", &bg_ceiling);
+
+            // The `EnvelopeEnv` value `envelope::cred::build_env` produced, applied
+            // one entry at a time. Removal and assignment are distinct
+            // instructions and the `Option` in `EnvelopeVar` is what keeps them
+            // distinct: `SSH_AUTH_SOCK=""`
+            // is a variable an agent can notice and work around, while an absent
+            // one is absent. Matching here rather than collapsing to `env` is
+            // the whole reason that type carries an `Option` (D-16).
+            if let Some(envelope) = &envelope_env {
+                for (key, value) in envelope.entries() {
+                    match value {
+                        Some(value) => {
+                            cmd.env(key, value);
+                        }
+                        None => {
+                            cmd.env_remove(key);
+                        }
+                    }
+                }
+            }
         });
         wrap.wrap(ProcessGroup::leader());
         // Backstop only, never the teardown story: `KillOnDrop` is SIGKILL.
@@ -1729,6 +1791,147 @@ mod tests {
         assert_eq!(flag_value(&argv, "--output-format"), Some("stream-json"));
         assert_eq!(flag_value(&argv, "--setting-sources"), Some("project"));
         assert_eq!(flag_value(&argv, "--permission-mode"), Some("dontAsk"));
+    }
+
+    /// The pinned baseline vector, with a fixed session id so the whole thing
+    /// can be compared rather than sampled.
+    fn pinned_baseline() -> Vec<String> {
+        vec![
+            "-p".to_string(),
+            "--input-format".to_string(),
+            "stream-json".to_string(),
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "--verbose".to_string(),
+            "--replay-user-messages".to_string(),
+            "--session-id".to_string(),
+            Uuid::nil().to_string(),
+            "--setting-sources".to_string(),
+            "project".to_string(),
+            "--permission-mode".to_string(),
+            "dontAsk".to_string(),
+            "--strict-mcp-config".to_string(),
+        ]
+    }
+
+    #[test]
+    fn the_pinned_vector_is_unchanged_when_no_envelope_was_established() {
+        // The half of the pair that keeps the two new flags from becoming
+        // unconditional: a caller that establishes no envelope gets exactly the
+        // vector this driver shipped before Phase 19, byte for byte.
+        let options = ExecutionOptions {
+            session_id: Uuid::nil(),
+            ..Default::default()
+        };
+        assert_eq!(argv_strings(&options), pinned_baseline());
+    }
+
+    #[test]
+    fn the_envelope_deny_list_and_settings_path_ride_on_argv() {
+        // D-06 layer 1 and D-07: both controls are carried on argv, where a
+        // validation failure cannot silently drop them the way it drops a
+        // settings file. The assertion is the EXACT vector rather than a
+        // `contains`, because the thing that goes wrong here is a flag arriving
+        // without its value or in the wrong place.
+        let options = ExecutionOptions {
+            session_id: Uuid::nil(),
+            envelope_disallowed_tools: vec![
+                "Bash(git push:*)".to_string(),
+                "Write(.claude/**)".to_string(),
+            ],
+            envelope_settings: Some(PathBuf::from("/envelope/alpha/settings.json")),
+            ..Default::default()
+        };
+
+        let mut expected = pinned_baseline();
+        expected.extend([
+            "--disallowedTools".to_string(),
+            "Bash(git push:*),Write(.claude/**)".to_string(),
+            "--settings".to_string(),
+            "/envelope/alpha/settings.json".to_string(),
+        ]);
+
+        assert_eq!(argv_strings(&options), expected);
+    }
+
+    #[test]
+    fn the_envelope_flags_are_each_absent_on_their_own_when_unset() {
+        // Independently optional, because they are established by different
+        // calls and a partial envelope must not render half a flag.
+        let only_tools = ExecutionOptions {
+            envelope_disallowed_tools: vec!["Bash(git push:*)".to_string()],
+            ..Default::default()
+        };
+        let argv = argv_strings(&only_tools);
+        assert_eq!(
+            flag_value(&argv, "--disallowedTools"),
+            Some("Bash(git push:*)")
+        );
+        assert!(
+            !argv.iter().any(|arg| arg == "--settings"),
+            "an unset settings path must emit no flag at all: {argv:?}"
+        );
+
+        let only_settings = ExecutionOptions {
+            envelope_settings: Some(PathBuf::from("/envelope/alpha/settings.json")),
+            ..Default::default()
+        };
+        let argv = argv_strings(&only_settings);
+        assert_eq!(
+            flag_value(&argv, "--settings"),
+            Some("/envelope/alpha/settings.json")
+        );
+        assert!(
+            !argv.iter().any(|arg| arg == "--disallowedTools"),
+            "an empty deny list must emit no flag at all: {argv:?}"
+        );
+    }
+
+    #[test]
+    fn the_permission_mode_enum_has_exactly_one_variant_and_it_is_not_a_bypass() {
+        // D-28: `PermissionMode` gains no bypass variant. The MATCH is what
+        // holds that — adding a variant makes this fail to compile, which is a
+        // louder failure than any grep, and the grep cannot see a variant that
+        // is spelled differently from the token it looks for.
+        let every: &[PermissionMode] = &[PermissionMode::DontAsk];
+        for mode in every {
+            match mode {
+                PermissionMode::DontAsk => {
+                    assert_eq!(mode.as_flag_value(), "dontAsk");
+                }
+            }
+        }
+        assert_eq!(
+            every.len(),
+            1,
+            "a second permission mode exists; if it is a bypass it must be \
+             removed, and if it is not, this count is what forces somebody to \
+             say so out loud"
+        );
+    }
+
+    #[test]
+    fn the_envelope_flags_never_smuggle_a_permission_bypass() {
+        // The envelope's own fields are attacker-adjacent in the sense that
+        // matters here: they are the newest thing on argv, so they are where a
+        // bypass would most plausibly arrive next. Same fragment-assembly
+        // discipline as the baseline test below.
+        let forbidden = [
+            concat!("--dangerously", "-skip-permissions"),
+            concat!("bypass", "Permissions"),
+        ];
+        let options = ExecutionOptions {
+            envelope_disallowed_tools: vec!["Bash(git push:*)".to_string()],
+            envelope_settings: Some(PathBuf::from("/envelope/alpha/settings.json")),
+            ..Default::default()
+        };
+        let argv = argv_strings(&options);
+        for token in forbidden {
+            assert!(
+                !argv.iter().any(|arg| arg.contains(token)),
+                "argv must never carry {token}: {argv:?}"
+            );
+        }
     }
 
     #[test]

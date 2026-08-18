@@ -494,6 +494,27 @@ pub enum DriveError {
         /// The rendered failure.
         detail: String,
     },
+    /// The safety envelope could not be established, so the run is refused
+    /// (D-24, SAFE-02).
+    ///
+    /// **A partial envelope is the failure this variant exists to prevent.**
+    /// The envelope is four independent writes — the hook stubs, the generated
+    /// git config, the settings file and the ignore block — and a run that
+    /// started with three of them would be a run with one enforcement layer
+    /// quietly absent and nothing at all saying so. That is precisely the
+    /// silently-disarmed control D-06's layering is written against, so any
+    /// establishment failure refuses instead of degrading.
+    ///
+    /// It carries the [`ParkReason`](crate::envelope::policy::ParkReason)
+    /// rather than a fresh string, so `grep envelope_assertion_failed` finds
+    /// this refusal alongside every other producer of that reason.
+    EnvelopeAssertionFailed {
+        /// D-24's taxonomy member this refusal parks under.
+        reason: crate::envelope::policy::ParkReason,
+        /// The rendered failure, already passed through
+        /// [`crate::journal::redact`].
+        detail: String,
+    },
 }
 
 impl fmt::Display for DriveError {
@@ -523,6 +544,12 @@ impl fmt::Display for DriveError {
             Self::Lock(err) => write!(f, "{err}"),
             Self::Spawn(err) => write!(f, "{err}"),
             Self::Journal { detail } => write!(f, "the run journal failed: {detail}"),
+            Self::EnvelopeAssertionFailed { reason, detail } => write!(
+                f,
+                "the safety envelope could not be established, so this run is refused \
+                 before anything is created (reason: {}): {detail}",
+                reason.as_str()
+            ),
         }
     }
 }
@@ -542,7 +569,8 @@ impl std::error::Error for DriveError {
             Self::UnsupportedPlatform { .. }
             | Self::RunIdRequired
             | Self::RunIdInvalid { .. }
-            | Self::Journal { .. } => None,
+            | Self::Journal { .. }
+            | Self::EnvelopeAssertionFailed { .. } => None,
         }
     }
 }
