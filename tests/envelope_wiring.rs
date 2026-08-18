@@ -28,13 +28,27 @@ use std::process::{Command, Output};
 
 use gsd_meta_manager::config::{Config, DriverOptIn, RegisteredProject};
 use gsd_meta_manager::driver::{drive, DriveArgs};
-use gsd_meta_manager::envelope::{hooks, policy, ENVELOPE_ROOT_ENV};
+use gsd_meta_manager::envelope::{cred, hooks, policy, ENVELOPE_ROOT_ENV};
 use gsd_meta_manager::error::DriveError;
 use gsd_meta_manager::journal::{self, reader, JournalEvent, JournalRun, RunPaths, RunRecord};
 use tempfile::TempDir;
 
 /// The binary under test, resolved by cargo for this integration target.
 const BIN: &str = env!("CARGO_BIN_EXE_gsd-meta-manager");
+
+/// The run id every fixture starts under.
+const RUN_ID: &str = "wiringrun";
+
+/// A credential shape planted by these fixtures.
+///
+/// A PEM block rather than a one-line token, and the shape is borrowed from
+/// `tests/envelope_hook_refusals.rs` rather than forked: a PEM block is the case
+/// a line-by-line scanner silently misses, because `BEGIN` and `END` are never
+/// on the same line.
+const PLANTED_PEM: &str = "-----BEGIN RSA PRIVATE KEY-----\n\
+                           MIIBOgIBAAJBAKj34GkxFhD9abcdefgh\n\
+                           ijklmnopqrstuvwxyz0123456789ABCD\n\
+                           -----END RSA PRIVATE KEY-----\n";
 
 // ---------------------------------------------------------------------------
 // The two shared helpers. Both are used by this plan's drive-time assertions
@@ -78,12 +92,119 @@ struct RunFixture {
     _tmp: TempDir,
     /// The driven project root, which is also a real git repository.
     project: PathBuf,
+    /// The `file://` bare remote, so a push has somewhere to go and a ref that
+    /// can be compared before and after.
+    bare: PathBuf,
+    /// The envelope root, redirected away from the developer's real data dir.
+    envelope_root: PathBuf,
+    /// The installed hook stubs.
+    hooks_dir: PathBuf,
     /// The run's six paths.
     paths: RunPaths,
+    /// The alias this run was started under.
+    alias: String,
     /// The run this fixture started. Held open so the journal handle exists;
     /// dropping it does not clear the `active` pointer, which is what makes a
     /// re-entry able to resolve the run.
     _run: JournalRun,
+}
+
+impl RunFixture {
+    /// A ref inside the namespace this alias may push to.
+    fn inside_ref(&self) -> String {
+        format!("refs/heads/gsd-auto/{}/wiring", self.alias)
+    }
+
+    /// The environment a child of this run carries.
+    ///
+    /// The three variables that matter to a re-entry: the hooks path (so git
+    /// runs the envelope's stubs), the envelope root (so the re-entered binary
+    /// agrees which directory is sanctioned), and **the run-journal locator**,
+    /// which is the whole subject of these tests. `RUN_ID_ENV` rides along
+    /// because the guard's per-run cap reads it.
+    fn child_env(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+        let mut env: Vec<(std::ffi::OsString, std::ffi::OsString)> =
+            cred::hooks_path_env(&self.hooks_dir);
+        env.push((
+            std::ffi::OsString::from(ENVELOPE_ROOT_ENV),
+            self.envelope_root.clone().into_os_string(),
+        ));
+        env.push((
+            std::ffi::OsString::from(cred::PROJECT_ROOT_ENV),
+            self.project.clone().into_os_string(),
+        ));
+        env.push((
+            std::ffi::OsString::from(cred::RUN_ID_ENV),
+            std::ffi::OsString::from(RUN_ID),
+        ));
+        env
+    }
+
+    /// The refs the bare remote actually holds, read from the remote itself.
+    ///
+    /// The remote's own answer, not the local repository's idea of it: a push
+    /// that was refused locally and a push that succeeded look identical from
+    /// the pushing side if you ask the wrong repository.
+    fn remote_refs(&self) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&self.bare)
+            .args(["for-each-ref", "--format=%(refname)"])
+            .output()
+            .expect("git for-each-ref is runnable");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// Ask the guard about one shell command, **as a separate process** —
+    /// which is the point: the journal it appends to is one it did not open.
+    fn ask_guard(&self, command: &str, with_locator: bool) -> Output {
+        let request = serde_json::json!({
+            "session_id": "wiring",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": { "command": command },
+        })
+        .to_string();
+
+        let mut cmd = Command::new(BIN);
+        cmd.args(["envelope", "guard", &self.alias]);
+        for (key, value) in self.child_env() {
+            if !with_locator && key == std::ffi::OsStr::new(cred::PROJECT_ROOT_ENV) {
+                continue;
+            }
+            cmd.env(key, value);
+        }
+        if !with_locator {
+            cmd.env_remove(cred::PROJECT_ROOT_ENV);
+        }
+
+        let mut child = cmd
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("the binary under test is spawnable");
+        {
+            use std::io::Write as _;
+            child
+                .stdin
+                .as_mut()
+                .expect("the guard's stdin")
+                .write_all(request.as_bytes())
+                .expect("the request is writable");
+        }
+        child.wait_with_output().expect("the guard answers")
+    }
+
+    /// `git push` under the envelope's environment, and nothing else changed.
+    fn push(&self, args: &[&str]) -> Output {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C").arg(&self.project).args(args);
+        for (key, value) in self.child_env() {
+            cmd.env(key, value);
+        }
+        cmd.output().expect("git push is runnable")
+    }
 }
 
 fn git(dir: &Path, args: &[&str]) -> bool {
@@ -165,17 +286,17 @@ fn start_run_with_envelope(alias: &str) -> Option<RunFixture> {
     // spelling of a path rather than the production one.
     let planning = project.join(".planning");
     std::fs::create_dir_all(&planning).ok()?;
-    let run = JournalRun::start(&planning, run_record("wiringrun")).expect("the run starts");
+    let run = JournalRun::start(&planning, run_record(RUN_ID)).expect("the run starts");
     let paths = run.paths().clone();
-
-    // Named so the compiler sees them used; the fixture grows fields for these
-    // when the re-entry assertions need them.
-    let _ = (&bare, &envelope_root, &hooks_dir);
 
     Some(RunFixture {
         _tmp: tmp,
         project,
+        bare,
+        envelope_root,
+        hooks_dir,
         paths,
+        alias: alias.to_string(),
         _run: run,
     })
 }
@@ -370,6 +491,314 @@ fn the_two_helpers_round_trip_a_park_reason_through_the_file() {
         gsd_meta_manager::journal::writer::read_active_run(&fx.project.join(".planning")).as_deref(),
         Some("wiringrun"),
         "the active pointer is the only thing a re-entering process has"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Every refusal parks the run — four reasons, four processes other than this
+// one, four journals read off disk (D-24, D-25, SAFE-02, SAFE-03, SAFE-06).
+//
+// Every test below asserts all four of D-25's evidence facts in ONE test rather
+// than in four: a non-zero exit, the `Parked` event with the expected reason in
+// the on-disk journal, the park reason in the run's terminal record, and — for
+// the two push rows — the remote ref byte-identical to what it was before.
+// Splitting them would let a refusal that exited non-zero and pushed anyway
+// pass three tests out of four.
+//
+// The refusing process is never this one. git spawns the pre-push stub; the
+// guard is spawned as `gsd-meta-manager envelope guard`. The only thing the
+// refusing process shares with this one is the filesystem, which is exactly the
+// property under test.
+// ---------------------------------------------------------------------------
+
+/// Seed the pull-request ledger to the default rolling-24h cap.
+fn seed_ledger_at_cap(fx: &RunFixture) {
+    let path = gsd_meta_manager::envelope::ledger::ledger_path_in(&fx.envelope_root, &fx.alias)
+        .expect("a plain alias has a ledger");
+    std::fs::create_dir_all(path.parent().unwrap()).expect("the ledger directory");
+
+    // Distinct run ids, so the PER-RUN bound is not what fires: this row is
+    // about the window, and a per-run refusal would satisfy the assertion for
+    // the wrong reason.
+    let mut body = String::new();
+    for index in 0..policy::DEFAULT_PR_CAP_PER_24H {
+        let at = (chrono::Utc::now() - chrono::Duration::seconds(60))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        body.push_str(
+            &serde_json::to_string(&gsd_meta_manager::envelope::ledger::LedgerEntry {
+                at,
+                run_id: format!("earlier-{index}"),
+                command: "gh pr create".to_string(),
+                platform: "github".to_string(),
+            })
+            .unwrap(),
+        );
+        body.push('\n');
+    }
+    std::fs::write(&path, body).expect("the seeded ledger");
+}
+
+/// The run's terminal record, closed the way the driver closes it, so the
+/// `outcome` field can be read.
+fn finish_and_read_outcome(fx: RunFixture) -> String {
+    let run_json = fx.paths.run_json.clone();
+    let mut run = fx._run;
+    // The label the driver computes at the end of a run. `terminal_label` is
+    // `pub(crate)`, so this reproduces its ONE decision — last park wins — from
+    // the same on-disk journal the driver reads, and the in-source tests in
+    // `src/driver/run.rs` hold the function itself.
+    let parks = parked_events(&fx.paths.journal);
+    let label = match parks.last() {
+        Some((reason, _)) => format!("parked:{reason}"),
+        None => "succeeded_no_changes".to_string(),
+    };
+    run.finish(&label).expect("the run finishes");
+
+    let body = std::fs::read_to_string(&run_json).expect("the run record is on disk");
+    let record: serde_json::Value = serde_json::from_str(&body).expect("it is JSON");
+    record["outcome"].as_str().unwrap_or_default().to_string()
+}
+
+#[test]
+fn a_force_push_is_refused_and_lands_a_force_push_blocked_park() {
+    let Some(fx) = start_run_with_envelope("forcepush") else {
+        return;
+    };
+    let before = fx.remote_refs();
+
+    // Through the guard, because `--force` is visible in ARGV and not in the
+    // ref lines git hands a pre-push hook: a force push inside the reserved
+    // namespace is a perfectly ordinary push as far as the hook can see. This
+    // is the layer that has the fact.
+    let out = fx.ask_guard(
+        &format!("git push --force origin HEAD:{}", fx.inside_ref()),
+        true,
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a force push must be denied with the hook protocol's blocking status; \
+         stderr was:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(policy::REASON_FORCE_PUSH_BLOCKED),
+        "the refusal must name its park reason; stderr was:\n{stderr}"
+    );
+    assert_eq!(
+        parked_events(&fx.paths.journal),
+        vec![(
+            policy::REASON_FORCE_PUSH_BLOCKED.to_string(),
+            "human".to_string()
+        )],
+        "a separate process must have found this run's journal and parked it"
+    );
+    assert_eq!(
+        fx.remote_refs(),
+        before,
+        "the remote changed; a refusal that still pushed is not a refusal"
+    );
+    assert_eq!(
+        finish_and_read_outcome(fx),
+        format!("parked:{}", policy::REASON_FORCE_PUSH_BLOCKED),
+        "the terminal record must name the park reason"
+    );
+}
+
+#[test]
+fn a_hooks_path_rewrite_is_refused_and_lands_a_hook_bypass_blocked_park() {
+    let Some(fx) = start_run_with_envelope("hookspath") else {
+        return;
+    };
+    let before = fx.remote_refs();
+
+    // The bypass the whole three-layer design exists for: rewriting
+    // `core.hooksPath` makes layer 3 unreachable, so layer 2 has to be the one
+    // that sees it — and it sees it in argv, before git ever runs.
+    let out = fx.ask_guard(
+        &format!(
+            "git -c core.hooksPath=/tmp/nowhere push origin HEAD:{}",
+            fx.inside_ref()
+        ),
+        true,
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a hooks-path rewrite must be denied; stderr was:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(policy::REASON_HOOK_BYPASS_BLOCKED),
+        "the refusal must name its park reason; stderr was:\n{stderr}"
+    );
+    assert_eq!(
+        parked_events(&fx.paths.journal),
+        vec![(
+            policy::REASON_HOOK_BYPASS_BLOCKED.to_string(),
+            "human".to_string()
+        )],
+    );
+    assert_eq!(fx.remote_refs(), before, "the remote must be unchanged");
+    assert_eq!(
+        finish_and_read_outcome(fx),
+        format!("parked:{}", policy::REASON_HOOK_BYPASS_BLOCKED)
+    );
+}
+
+#[test]
+fn a_worktree_carrying_a_credential_is_refused_and_lands_a_secret_detected_park() {
+    let Some(fx) = start_run_with_envelope("secretpush") else {
+        return;
+    };
+    let before = fx.remote_refs();
+
+    // This one goes through a REAL `git push` and the generated `pre-push`
+    // stub, because the full-worktree credential scan is that hook's, not the
+    // guard's. git spawns the stub; the stub re-enters this binary; the binary
+    // finds the run through the locator on the environment git handed down.
+    write(&fx.project, ".gitignore", "secrets/\n");
+    write(&fx.project, "secrets/prod.pem", PLANTED_PEM);
+
+    let inside = fx.inside_ref();
+    let out = fx.push(&["push", "origin", &format!("HEAD:{inside}")]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        !out.status.success(),
+        "a push carrying a credential left the machine; stderr was:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(policy::REASON_SECRET_DETECTED),
+        "the refusal must name its park reason; stderr was:\n{stderr}"
+    );
+    assert_eq!(
+        parked_events(&fx.paths.journal),
+        vec![(
+            policy::REASON_SECRET_DETECTED.to_string(),
+            "human".to_string()
+        )],
+    );
+    assert!(
+        !stderr.contains("MIIBOgIBAAJBAKj34GkxFhD9abcdefgh"),
+        "the refusal reproduced the secret it blocked; stderr was:\n{stderr}"
+    );
+    assert_eq!(
+        fx.remote_refs(),
+        before,
+        "the remote grew {inside} — the exit code refused but the write happened"
+    );
+    assert_eq!(
+        finish_and_read_outcome(fx),
+        format!("parked:{}", policy::REASON_SECRET_DETECTED)
+    );
+}
+
+#[test]
+fn a_pull_request_beyond_the_cap_is_refused_and_lands_a_pr_cap_exceeded_park() {
+    let Some(fx) = start_run_with_envelope("prcap") else {
+        return;
+    };
+    seed_ledger_at_cap(&fx);
+
+    let out = fx.ask_guard("gh pr create --title t --body b", true);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "the attempt past the cap must be denied; stderr was:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(policy::REASON_PR_CAP_EXCEEDED),
+        "the refusal must name its park reason; stderr was:\n{stderr}"
+    );
+    assert_eq!(
+        parked_events(&fx.paths.journal),
+        vec![(
+            policy::REASON_PR_CAP_EXCEEDED.to_string(),
+            "human".to_string()
+        )],
+    );
+    assert_eq!(
+        finish_and_read_outcome(fx),
+        format!("parked:{}", policy::REASON_PR_CAP_EXCEEDED)
+    );
+}
+
+#[test]
+fn a_permitted_command_is_permitted_and_parks_nothing() {
+    // **The pairing.** Every assertion above is a refusal, and an envelope that
+    // refused everything would satisfy all four of them while being useless. A
+    // push inside the reserved namespace is permitted, writes no decision, and
+    // leaves the journal without a park.
+    let Some(fx) = start_run_with_envelope("permitted") else {
+        return;
+    };
+
+    let out = fx.ask_guard(
+        &format!("git push origin HEAD:{}", fx.inside_ref()),
+        true,
+    );
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a push inside the namespace must be permitted; stderr was:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "a permit writes nothing at all; answering `allow` would turn a deny-only \
+         control into an approval authority"
+    );
+    assert!(
+        parked_events(&fx.paths.journal).is_empty(),
+        "a permitted command must park nothing"
+    );
+    assert_eq!(
+        finish_and_read_outcome(fx),
+        "succeeded_no_changes",
+        "a run nothing refused keeps its ordinary terminal label"
+    );
+}
+
+#[test]
+fn a_re_entry_with_the_locator_absent_still_refuses_and_says_it_could_not_park() {
+    // T-19-57, accepted and stated rather than papered over. An agent that
+    // unsets the locator loses its own park record and **gains nothing**: the
+    // verdict is already decided by the time the park is attempted, so the
+    // refusal and the exit code are identical with and without it.
+    let Some(fx) = start_run_with_envelope("nolocator") else {
+        return;
+    };
+
+    let out = fx.ask_guard(
+        &format!("git push --force origin HEAD:{}", fx.inside_ref()),
+        false,
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "the refusal must not depend on the park being recordable; stderr was:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(policy::REASON_FORCE_PUSH_BLOCKED),
+        "the refusal itself is unchanged; stderr was:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("NOT recorded"),
+        "silence is the one behaviour forbidden here: a refusal that could not be \
+         recorded must SAY so, or it is indistinguishable from a refusal nobody \
+         attempted to record; stderr was:\n{stderr}"
+    );
+    assert!(
+        parked_events(&fx.paths.journal).is_empty(),
+        "with no locator there is nothing to append to, and nothing was appended"
     );
 }
 

@@ -413,6 +413,43 @@ pub(crate) fn outcome_label(outcome: &RunOutcome) -> &'static str {
     }
 }
 
+/// The prefix a terminal label carries when the run's journal names a park.
+///
+/// `parked:force_push_blocked` rather than a bare `parked`, so the terminal
+/// record answers *why* without a second read of the journal — and the suffix is
+/// [`ParkReason::as_str`], never a fresh string.
+pub(crate) const PARKED_LABEL_PREFIX: &str = "parked:";
+
+/// The label the terminal `run.json` carries, which is
+/// [`outcome_label`] **unless the run's journal names a park** (D-25).
+///
+/// D-25 requires the run's terminal record to carry the park reason, and
+/// `outcome_label` cannot know one: it maps a derived [`RunOutcome`], and a park
+/// is produced by *other processes* — the hook and guard re-entries — that this
+/// driver never observes. The journal is the only thing the two sides share, so
+/// the label is decided by reading it once at the end of the run.
+///
+/// **The LAST park wins.** A run may be refused more than once — a force push,
+/// then a secret, then a pull-request cap — and the terminal record names the
+/// state the run ended in, which is the one that was still true when it stopped.
+///
+/// A journal that cannot be read yields [`outcome_label`], not a panic and not a
+/// guess: a park that cannot be read is a park that was not observed, and
+/// claiming one would be inventing evidence in the file this phase exists to
+/// make trustworthy.
+///
+/// **Synchronous, and every caller hands it to a blocking task.** It is one
+/// end-of-run read rather than a hot path, but it is still `read_all` on an
+/// `async fn`'s path (D-28, WR-10), so both call sites move it into
+/// `spawn_blocking` alongside the value it needs.
+pub(crate) fn terminal_label(outcome: &RunOutcome, journal: &Path) -> String {
+    // RED STEP (plan 19-07 Task 4): the journal is not consulted yet, so a run
+    // whose journal carries a park still reports the plain outcome. GREEN reads
+    // it and prefixes it with `PARKED_LABEL_PREFIX`.
+    let _ = (journal, PARKED_LABEL_PREFIX);
+    outcome_label(outcome).to_string()
+}
+
 /// Build the immutable half of `run.json`.
 ///
 /// **`run.json` is written by the driver, not by the TUI before spawning.** The
@@ -582,7 +619,19 @@ async fn shutdown_on_terminate(
         );
     }
 
-    if let Err(err) = journal.finish(outcome_label(&outcome)) {
+    // **No blocking read inside an `async fn`** (D-28, WR-10). `terminal_label`
+    // reads the whole journal, and the journal path plus the outcome are both
+    // cheap to move, so the read goes into a blocking task and only the
+    // resulting `String` comes back. A join failure falls back to the plain
+    // outcome label: the terminal record must be written either way, and a run
+    // that ends with no record at all is the one failure OBS-01 cannot tolerate.
+    let journal_path = journal.paths().journal.clone();
+    let fallback = outcome_label(&outcome).to_string();
+    let label = tokio::task::spawn_blocking(move || terminal_label(&outcome, &journal_path))
+        .await
+        .unwrap_or(fallback);
+
+    if let Err(err) = journal.finish(&label) {
         tracing::warn!(
             detail = %format!("{err:#}"),
             "could not close the journal after a terminate-signal shutdown",
@@ -1594,11 +1643,18 @@ pub async fn execute_run(
     sweep_inbox_as_missed(&mut run.journal, &inbox_path, &mut inbox_cursor).await;
 
     let outcome = handle.wait_outcome().await;
-    run.journal
-        .finish(outcome_label(&outcome))
-        .map_err(|err| DriveError::Journal {
-            detail: format!("{err:#}"),
-        })?;
+
+    // Same blocking hand-off and the same fallback as `shutdown_on_terminate`'s:
+    // one end-of-run journal read, moved off the async path (D-28, WR-10).
+    let journal_path = run.journal.paths().journal.clone();
+    let fallback = outcome_label(&outcome).to_string();
+    let label = tokio::task::spawn_blocking(move || terminal_label(&outcome, &journal_path))
+        .await
+        .unwrap_or(fallback);
+
+    run.journal.finish(&label).map_err(|err| DriveError::Journal {
+        detail: format!("{err:#}"),
+    })?;
 
     Ok(())
 }
@@ -1643,6 +1699,102 @@ mod tests {
             driver_opt_in: None,
             extra: Default::default(),
         }
+    }
+
+    /// A started run in a temp project, for the terminal-label assertions.
+    fn started_run(run_id: &str) -> (tempfile::TempDir, JournalRun) {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let planning = dir.path().join(".planning");
+        let record = make_run_record(
+            run_id.to_string(),
+            &args(),
+            &entry(),
+            &ExecutionOptions::default(),
+            "fnv1a64:0000000000000000".to_string(),
+            std::process::id(),
+        );
+        let run = JournalRun::start(&planning, record).expect("the run starts");
+        (dir, run)
+    }
+
+    /// A succeeded-with-no-changes outcome, which is the label a park has to
+    /// displace — the pairing matters: a `terminal_label` that always said
+    /// `parked:` would satisfy every park assertion and be useless.
+    fn clean_outcome() -> RunOutcome {
+        RunOutcome::SucceededNoChanges {
+            turns: Vec::new(),
+            total_cost_usd: None,
+        }
+    }
+
+    #[test]
+    fn a_run_whose_journal_carries_no_park_keeps_its_ordinary_terminal_label() {
+        let (_dir, run) = started_run("2026-08-18T00-00-00Z-nopark");
+        assert_eq!(
+            terminal_label(&clean_outcome(), &run.paths().journal),
+            "succeeded_no_changes",
+            "a run nothing refused must not be labelled parked"
+        );
+    }
+
+    #[test]
+    fn the_terminal_label_names_the_park_reason_from_the_last_park_on_disk() {
+        let (_dir, mut run) = started_run("2026-08-18T00-00-00Z-parked");
+
+        // TWO parks, because a run may be refused more than once and the
+        // terminal record names the state it ENDED in.
+        run.record(&JournalEvent::Parked {
+            reason: ParkReason::SecretDetected.as_str().to_string(),
+            needs: "human".to_string(),
+        })
+        .expect("the first park");
+        run.record(&JournalEvent::Parked {
+            reason: ParkReason::ForcePushBlocked.as_str().to_string(),
+            needs: "human".to_string(),
+        })
+        .expect("the second park");
+
+        assert_eq!(
+            terminal_label(&clean_outcome(), &run.paths().journal),
+            format!(
+                "{PARKED_LABEL_PREFIX}{}",
+                ParkReason::ForcePushBlocked.as_str()
+            ),
+            "the LAST park is the state the run ended in"
+        );
+    }
+
+    #[test]
+    fn the_terminal_record_on_disk_carries_the_park_reason_as_its_outcome() {
+        // The whole of D-25's fourth evidence fact, through the production
+        // `finish` path rather than through the label function alone.
+        let (dir, mut run) = started_run("2026-08-18T00-00-00Z-record");
+        run.record(&JournalEvent::Parked {
+            reason: ParkReason::PrCapExceeded.as_str().to_string(),
+            needs: "human".to_string(),
+        })
+        .expect("the park");
+
+        let journal = run.paths().journal.clone();
+        let run_json = run.paths().run_json.clone();
+        let label = terminal_label(&clean_outcome(), &journal);
+        run.finish(&label).expect("the run finishes");
+
+        let body = std::fs::read_to_string(&run_json).expect("the run record is on disk");
+        let record: serde_json::Value = serde_json::from_str(&body).expect("it is JSON");
+        assert_eq!(
+            record["outcome"].as_str(),
+            Some(
+                format!(
+                    "{PARKED_LABEL_PREFIX}{}",
+                    ParkReason::PrCapExceeded.as_str()
+                )
+                .as_str()
+            ),
+            "the terminal record must name the park reason, not a generic label; \
+             record was {body}"
+        );
+        drop(dir);
     }
 
     #[test]
