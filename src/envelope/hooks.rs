@@ -87,7 +87,7 @@ pub fn install_in(root: &Path, alias: &str, binary: &Path) -> anyhow::Result<Pat
 ///
 /// Both interpolated values are POSIX-quoted by [`sh_quote`] rather than wrapped
 /// in double quotes. An alias is a *plain path component*, which is a weaker
-/// constraint than "shell-safe" — `is_plain_run_id` accepts a quote character —
+/// constraint than "shell-safe" — `is_plain_path_component` accepts a quote character —
 /// and a generated script is not a place to discover that difference.
 ///
 /// `--hook-path "$0"` is the one value that is deliberately **not** baked in.
@@ -125,7 +125,7 @@ fn sh_quote(value: &str) -> String {
 /// Both sides are canonicalised before comparison, so a symlinked data directory
 /// — `~/.local/share` pointed elsewhere is ordinary — does not read as a
 /// relocation. Canonicalisation is safe *here* in a way it is not in
-/// [`crate::journal::is_plain_run_id`]: this compares two paths that must both
+/// [`crate::journal::is_plain_path_component`]: this compares two paths that must both
 /// already exist, rather than deciding whether a path that does not exist yet is
 /// allowed to be created.
 pub fn assert_provenance(alias: &str, invoked_from: &Path) -> anyhow::Result<()> {

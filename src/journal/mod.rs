@@ -195,15 +195,37 @@ pub fn runs_root(planning_dir: &Path) -> PathBuf {
     planning_dir.join("meta-manager").join("runs")
 }
 
-/// Whether `run_id` names **exactly one plain path component** (D-27, WR-02).
+/// Whether `value` names **exactly one plain path component** (D-27, WR-02).
 ///
-/// Non-empty, `Path::new(run_id).components()` yields exactly one item, that
-/// item is a [`Component::Normal`], and its text is the whole of `run_id`.
+/// Non-empty, `Path::new(value).components()` yields exactly one item, that
+/// item is a [`Component::Normal`], and its text is the whole of `value`.
+///
+/// **The property is general, and it now has two consumers** (D-03):
+///
+/// - a **run id**, joined under `<planning>/meta-manager/runs/`, and
+/// - a **registry alias**, joined under the envelope directory by
+///   [`crate::envelope::envelope_dir`].
+///
+/// Both are user-typed strings interpolated into a filesystem path, which is the
+/// whole of what this predicate is about — the name says the property rather
+/// than the first caller that needed it.
+///
+/// **The failure it exists to prevent was reproduced, not imagined.**
+/// `--run-id '../../../../escaped'` created `run.json` and `journal.jsonl`
+/// outside the project, in a directory with no `.gitignore`, **with exit 0**
+/// (WR-02). This subsystem runs unattended with git and push rights.
+///
+/// **The alternative D-03 declined: a second, alias-specific validator.**
+/// Keeping this one named for run ids and adding another for aliases is exactly
+/// how the next caller escapes validation — the argument [`run_paths`]' own
+/// signature already makes about infallible variants. Two predicates for one
+/// property is one predicate plus a hole. So the predicate was **promoted** and
+/// every caller swept in the same commit; the compiler enumerated the set.
 ///
 /// **The final equality is not redundant belt-and-braces.** `components()`
 /// silently normalises a leading `./` and a trailing `/` away, so `"./escape"`
 /// and `"escape/"` both yield one `Normal` — comparing the component back
-/// against the original string is what refuses an id whose written form is not
+/// against the original string is what refuses a value whose written form is not
 /// the plain name it resolves to.
 ///
 /// Modelled on [`classify_change`], which already rejects every non-`Normal`
@@ -217,18 +239,18 @@ pub fn runs_root(planning_dir: &Path) -> PathBuf {
 /// every new run), it follows symlinks (so a symlink planted by the driven
 /// agent decides the answer), and it cannot run on the `notify` callback
 /// thread. A token check has none of those properties.
-pub fn is_plain_run_id(run_id: &str) -> bool {
-    if run_id.is_empty() {
+pub fn is_plain_path_component(value: &str) -> bool {
+    if value.is_empty() {
         return false;
     }
-    let mut components = Path::new(run_id).components();
+    let mut components = Path::new(value).components();
     let Some(Component::Normal(name)) = components.next() else {
         return false;
     };
     if components.next().is_some() {
         return false;
     }
-    name == std::ffi::OsStr::new(run_id)
+    name == std::ffi::OsStr::new(value)
 }
 
 /// The six paths for one run, or `None` for a run id that is not a plain name.
@@ -264,7 +286,7 @@ pub fn is_plain_run_id(run_id: &str) -> bool {
 /// No infallible variant is kept alongside it, because keeping one is exactly
 /// how the next caller escapes validation.
 pub fn run_paths(planning_dir: &Path, run_id: &str) -> Option<RunPaths> {
-    if !is_plain_run_id(run_id) {
+    if !is_plain_path_component(run_id) {
         return None;
     }
     let root = runs_root(planning_dir);
@@ -1548,8 +1570,8 @@ mod tests {
         // WR-02's write side, at the predicate. Every rejected case below is a
         // shape the reproduction in `17-REVIEW.md` reached or a near neighbour
         // of it.
-        assert!(is_plain_run_id("2026-07-28T14-03-11Z-a3f9"));
-        assert!(is_plain_run_id("RID"));
+        assert!(is_plain_path_component("2026-07-28T14-03-11Z-a3f9"));
+        assert!(is_plain_path_component("RID"));
 
         for hostile in [
             "",
@@ -1565,7 +1587,7 @@ mod tests {
             "a/../b",
         ] {
             assert!(
-                !is_plain_run_id(hostile),
+                !is_plain_path_component(hostile),
                 "{hostile:?} must not be accepted as a run id"
             );
             assert!(

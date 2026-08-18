@@ -3,7 +3,7 @@
 //! **No I/O, no processes, no network.** Everything here is a total function of
 //! its arguments, which is what makes the envelope's decisions exhaustively
 //! unit-testable without a repository, a child process or a credential — the
-//! same property `journal::is_plain_run_id` was written for, and for the same
+//! same property `journal::is_plain_path_component` was written for, and for the same
 //! reason: a decision that needs the world to answer cannot be tested against
 //! the world's hostile cases.
 //!

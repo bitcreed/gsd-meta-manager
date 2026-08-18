@@ -20,7 +20,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use gsd_meta_manager::envelope::{cred, hooks, ENVELOPE_ROOT_ENV};
+use gsd_meta_manager::envelope::{
+    cred, envelope_dir, envelope_dir_in, hooks, ENVELOPE_ROOT_ENV,
+};
 use tempfile::TempDir;
 
 /// The binary under test, resolved by cargo for this integration target.
@@ -279,6 +281,80 @@ fn run_stub(fx: &Fixture, stub: &Path, ref_line: &str) -> Output {
         .write_all(ref_line.as_bytes())
         .expect("the stub reads its stdin");
     child.wait_with_output().expect("the stub terminates")
+}
+
+/// The hostile corpus, reused rather than reinvented.
+///
+/// The first eleven are exactly the shapes
+/// `src/journal/mod.rs::only_a_single_plain_component_is_accepted_as_a_run_id`
+/// drives, because D-03 promoted **one** predicate to cover run ids and aliases
+/// and a second corpus would be a second place for the two to drift apart. The
+/// remainder are the alias-shaped forms an absolute path and a bare `..` cover
+/// once the value is a registry key a user types rather than a generated id.
+const HOSTILE_ALIASES: &[&str] = &[
+    "",
+    ".",
+    "..",
+    "../escaped",
+    "../../../../escaped",
+    "a/b",
+    "/etc/passwd",
+    "/",
+    "./escaped",
+    "escaped/",
+    "a/../b",
+    "..//..",
+    "/absolute/alias",
+    "sub/dir/alias",
+];
+
+#[test]
+fn a_hostile_alias_is_refused_before_any_path_is_joined() {
+    let tmp = TempDir::new().expect("a temp directory");
+    let root = tmp.path().join("envelope");
+    std::fs::create_dir_all(&root).expect("the envelope root");
+    let outside = tmp.path().join("outside-marker");
+
+    for hostile in HOSTILE_ALIASES {
+        assert!(
+            envelope_dir_in(&root, hostile).is_none(),
+            "{hostile:?} must not be joined into an envelope path"
+        );
+        assert!(
+            envelope_dir(hostile).is_none(),
+            "{hostile:?} must yield no envelope directory at all"
+        );
+
+        let refused = hooks::install_in(&root, hostile, Path::new(BIN));
+        assert!(
+            refused.is_err(),
+            "{hostile:?} must not reach the point where a hook is installed"
+        );
+    }
+
+    assert_eq!(
+        std::fs::read_dir(&root)
+            .expect("the envelope root is readable")
+            .count(),
+        0,
+        "a refused alias created something inside the envelope root"
+    );
+    assert!(
+        !outside.exists(),
+        "a refused alias escaped the envelope root entirely"
+    );
+    // The temp root holds exactly what this test put there and nothing a
+    // traversal walked back into.
+    let entries: Vec<String> = std::fs::read_dir(tmp.path())
+        .expect("the temp root is readable")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        entries,
+        vec!["envelope".to_string()],
+        "a refused alias created a sibling of the envelope root: {entries:?}"
+    );
 }
 
 #[test]

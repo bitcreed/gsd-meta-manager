@@ -488,7 +488,7 @@ pub fn read_active_run(planning_dir: &Path) -> Option<String> {
     if run_id.is_empty() {
         return None;
     }
-    if !super::is_plain_run_id(run_id) {
+    if !super::is_plain_path_component(run_id) {
         // The same register as the stale-pointer warning below, and content-free
         // for the same reason every log line in this tree is: the refused value
         // is the untrusted one (D-28).

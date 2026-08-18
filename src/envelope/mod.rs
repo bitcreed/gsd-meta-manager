@@ -152,9 +152,9 @@ pub fn envelope_dir(alias: &str) -> Option<PathBuf> {
 /// **The validation happens before the `join`, not after it.** A check applied
 /// to the joined path would have to ask the filesystem what the path means,
 /// which is exactly what a traversal check must not depend on (the argument
-/// [`crate::journal::is_plain_run_id`] records in full).
+/// [`crate::journal::is_plain_path_component`] records in full).
 pub fn envelope_dir_in(root: &Path, alias: &str) -> Option<PathBuf> {
-    if !crate::journal::is_plain_run_id(alias) {
+    if !crate::journal::is_plain_path_component(alias) {
         return None;
     }
     Some(root.join(alias))
