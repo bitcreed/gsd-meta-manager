@@ -361,7 +361,46 @@ Plans:
   - `git stash` must be forbidden in the driver's allowlist outright
 
 **Research**: skip — branch-protection and pre-push-hook patterns are well-established practice (GitHub Copilot's `copilot/`-prefix model is a direct precedent)
-**Plans**: TBD
+**Plans**: 8 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 19-01-PLAN.md — Tracer: SAFE-01 end-to-end namespace refusal proved against a `file://` bare remote, with `src/envelope/`, the hidden `envelope` subcommand, the out-of-repo artifact directory and env-injected `core.hooksPath`
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 19-02-PLAN.md — SAFE-02: `classify_git` as one pure function over argv covering the whole denied set, the park-reason taxonomy, and the four `#[serde(default)]` `DriverOptIn` envelope fields with their migration literal
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 19-03-PLAN.md — SAFE-03: the `SecretClass` split of the shared pattern table, the full-worktree scan with its reported skip list, and the `git add -A` worktree-sweep guard (pre-commit, pre-push backstop, `.git/info/exclude`)
+
+**Wave 4** *(blocked on Wave 3)*
+
+- [ ] 19-04-PLAN.md — SAFE-05: the child-environment scrub-and-rebuild as a pure value, the host-scoped askpass responder, and the empty-`HOME` `file://` push that proves pushing still works
+
+**Wave 5** *(blocked on Wave 4)*
+
+- [ ] 19-05-PLAN.md — SAFE-06: the append-only PR ledger with an inclusive rolling 24h boundary, the network-free `PreToolUse` guard with an explicit timeout, and the round-tripped settings file
+
+**Wave 6** *(blocked on Wave 5)*
+
+- [ ] 19-06-PLAN.md — The read-only remote-protection probe (`protected | unprotected | unknown`) and the pinned honesty statement as a fourth dry-run section constant
+
+**Wave 7** *(blocked on Wave 6)*
+
+- [ ] 19-07-PLAN.md — Wiring: `--disallowedTools`/`--settings` on argv, the envelope environment in the one spawn closure, envelope establishment at the single options site, the positioned refusal, and `Parked`'s first emission
+
+**Wave 8** *(blocked on Wave 7)*
+
+- [ ] 19-08-PLAN.md — `tests/async_blocking_guard.rs`, the project gate with the unchanged 5-lint delta, and criterion-by-criterion traceability
+
+**UI hint**: no — this phase ships no visual surface. It delivers a policy module, two git hook
+stubs, a `PreToolUse` guard, an environment envelope and a secret scanner. The one user-visible
+string it adds is a pinned honesty paragraph in the existing dry-run preview and the existing run
+journal. The repo-wide `ui-plan-gate` frontend detector fires on the ratatui codebase, not on this
+phase's scope — the same reasoning Phases 15 and 16 recorded.
 
 ### Phase 20: Deterministic Decision Router & Run Bounds
 
