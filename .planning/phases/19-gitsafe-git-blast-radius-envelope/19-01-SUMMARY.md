@@ -292,6 +292,13 @@ None — no external service configuration required.
 - **Note for 19-08 (gate):** `SAFE-01` is declared by 19-01, 19-06, 19-07 and 19-08. The shared-ID gate correctly reported `0/1 ready`, so `REQUIREMENTS.md` was **not** touched by this plan — the checkbox flips when the last declaring plan produces its SUMMARY.
 - **No blockers.**
 
+## Self-Check: PASSED
+
+- All five created files present on disk (`src/envelope/{mod,policy,hooks,cred}.rs`, `tests/envelope_tracer.rs`).
+- All three task commits present in `git log` (`51c1be1`, `b6396a9`, `5483d1a`), plus the metadata commit.
+- Every task `<acceptance_criteria>` re-run and passing; plan-level `<verification>` re-run and passing (see Verification Results).
+- `STATE.md` and `ROADMAP.md` deliberately untouched — parallel worktree mode, orchestrator owns those writes.
+
 ---
 *Phase: 19-gitsafe-git-blast-radius-envelope*
 *Completed: 2026-08-18*
