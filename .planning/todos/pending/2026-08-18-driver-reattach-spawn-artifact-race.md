@@ -1,8 +1,11 @@
 ---
-created: 2026-08-18
+created: 2026-08-18T21:29:21.620Z
+title: driver_reattach liveness probe races the run.json write
+area: testing
+severity: major
 source: phase-19 wave-4 post-merge gate
-resolves_phase:
-severity: high
+files:
+  - tests/driver_reattach.rs:340-375
 ---
 
 # `tests/driver_reattach.rs` — liveness probe races the `run.json` write
