@@ -361,7 +361,7 @@ Plans:
   - `git stash` must be forbidden in the driver's allowlist outright
 
 **Research**: skip — branch-protection and pre-push-hook patterns are well-established practice (GitHub Copilot's `copilot/`-prefix model is a direct precedent)
-**Plans**: 4/8 plans executed
+**Plans**: 5/8 plans executed
 
 Plans:
 **Wave 1**
@@ -382,7 +382,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4)*
 
-- [ ] 19-05-PLAN.md — SAFE-06: the append-only PR ledger with an inclusive rolling 24h boundary, the network-free `PreToolUse` guard with an explicit timeout, and the round-tripped settings file
+- [x] 19-05-PLAN.md — SAFE-06: the append-only PR ledger with an inclusive rolling 24h boundary, the network-free `PreToolUse` guard with an explicit timeout, and the round-tripped settings file
 
 **Wave 6** *(blocked on Wave 5)*
 
@@ -481,7 +481,7 @@ phase's scope — the same reasoning Phases 15 and 16 recorded.
 | 16. Run Journal & State Substrate | 6/6 | Complete    | 2026-07-29 |
 | 17. Supervisor | 8/8 | Complete    | 2026-07-29 |
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
-| 19. GITSAFE — Git & Blast-Radius Envelope | 4/8 | In Progress|  |
+| 19. GITSAFE — Git & Blast-Radius Envelope | 5/8 | In Progress|  |
 | 20. Deterministic Decision Router & Run Bounds | 0/? | Not started | - |
 | 21. LLM Goal Layer & Prompt-Injection Hardening | 0/? | Not started | - |
 | 22. Container Execution Target | 0/? | Not started | - |
