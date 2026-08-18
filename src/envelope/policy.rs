@@ -255,33 +255,9 @@ pub struct GitContext {
 /// Config keys are compared case-insensitively, because git accepts
 /// `core.hookspath` and a case-sensitive check would be a one-keystroke bypass.
 pub fn classify_git(argv: &[&str], ctx: &GitContext) -> GitVerdict {
-    let mut index = 0;
-
-    // Rule 4: the leading options apply to whatever verb follows, so they are
-    // judged before the verb is even known.
-    while index < argv.len() {
-        let token = argv[index];
-        if !token.starts_with('-') || token == "-" {
-            break;
-        }
-        if token == "--" {
-            index += 1;
-            break;
-        }
-        let (assignment, consumed) = leading_git_option(argv, index);
-        if let Some(assignment) = assignment {
-            if is_hooks_path_key(config_key_of(assignment)) {
-                return refuse(
-                    ParkReason::HookBypassBlocked,
-                    format!(
-                        "`git -c {assignment}` sets core.hooksPath at command-line precedence, \
-                         which is the one form that outranks the envelope's own env-injected \
-                         setting (D-09)"
-                    ),
-                );
-            }
-        }
-        index += consumed;
+    let (index, refusal) = scan_leading(argv);
+    if let Some(refusal) = refusal {
+        return refusal;
     }
 
     let Some(verb) = argv.get(index) else {
@@ -315,6 +291,81 @@ pub fn classify_git(argv: &[&str], ctx: &GitContext) -> GitVerdict {
 /// `detail` is always a sentence rather than a repeated `format!` shape.
 fn refuse(reason: ParkReason, detail: String) -> GitVerdict {
     GitVerdict::Refuse { reason, detail }
+}
+
+/// Walk the leading `git` options (rule 4) and report where the verb starts,
+/// plus the refusal any of them earns.
+///
+/// **One scan, two callers.** [`classify_git`] needs the refusal and the index;
+/// [`push_needs_resolved_dests`] needs only the index, and it is asked by the
+/// `PreToolUse` guard *before* classification in order to decide whether this
+/// command is the one case that has to read the repository. A second copy of
+/// this loop would be a second thing to keep in step with git's own option
+/// grammar, and the day they drift is the day the guard resolves a context for
+/// the wrong argv — or fails to resolve one for the right argv, which reads as
+/// an unresolvable destination and refuses a push that was inside the namespace.
+fn scan_leading(argv: &[&str]) -> (usize, Option<GitVerdict>) {
+    let mut index = 0;
+
+    while index < argv.len() {
+        let token = argv[index];
+        if !token.starts_with('-') || token == "-" {
+            break;
+        }
+        if token == "--" {
+            index += 1;
+            break;
+        }
+        let (assignment, consumed) = leading_git_option(argv, index);
+        if let Some(assignment) = assignment {
+            if is_hooks_path_key(config_key_of(assignment)) {
+                return (
+                    index,
+                    Some(refuse(
+                        ParkReason::HookBypassBlocked,
+                        format!(
+                            "`git -c {assignment}` sets core.hooksPath at command-line \
+                             precedence, which is the one form that outranks the envelope's own \
+                             env-injected setting (D-09)"
+                        ),
+                    )),
+                );
+            }
+        }
+        index += consumed;
+    }
+
+    (index, None)
+}
+
+/// Whether this argv is a `git push` that carries no refspec, and therefore
+/// needs [`GitContext::resolved_push_dests`] filled in from the repository.
+///
+/// **Latency, and specifically the reproduced 180-240 second `PreToolUse` hang
+/// at `src/executor/mod.rs:225-239`, is why this predicate exists.** Resolving
+/// the push context shells out to git; the guard runs synchronously on the
+/// agent's critical path, so it must ask that question for the one command shape
+/// that cannot be judged without it and for no other. Every other command —
+/// including a `push` that names its refspec — is decided from argv alone.
+///
+/// A command that will be refused by [`scan_leading`] anyway answers `false`: it
+/// needs no destination to be refused, and reading a repository to reach a
+/// verdict already reached is the definition of latency spent for nothing.
+pub fn push_needs_resolved_dests(argv: &[&str]) -> bool {
+    let (index, refusal) = scan_leading(argv);
+    if refusal.is_some() {
+        return false;
+    }
+    if argv.get(index).copied() != Some("push") {
+        return false;
+    }
+    match push_operands(&argv[index + 1..]) {
+        // git's own operand order: the first is the repository, the rest are
+        // refspecs. No second operand means no refspec.
+        Ok(operands) => operands.len() <= 1,
+        // A denied flag refuses without consulting a destination.
+        Err(_) => false,
+    }
 }
 
 /// Leading `git` options that consume a **separate** following token.
@@ -387,68 +438,10 @@ fn denied_push_flag(name: &str) -> Option<(ParkReason, &'static str)> {
 }
 
 fn classify_push(rest: &[&str], ctx: &GitContext) -> GitVerdict {
-    let mut operands: Vec<&str> = Vec::new();
-    let mut index = 0;
-    let mut end_of_options = false;
-
-    while index < rest.len() {
-        let token = rest[index];
-
-        if end_of_options || !token.starts_with('-') || token == "-" {
-            operands.push(token);
-            index += 1;
-            continue;
-        }
-        if token == "--" {
-            end_of_options = true;
-            index += 1;
-            continue;
-        }
-
-        if let Some(long) = token.strip_prefix("--") {
-            // Rule 2: `--opt=value` and `--opt value` are the same option.
-            let (name, has_inline_value) = match long.split_once('=') {
-                Some((name, _)) => (name, true),
-                None => (long, false),
-            };
-            if let Some((reason, spelling)) = denied_push_flag(name) {
-                return refuse(reason, denied_push_detail(reason, spelling));
-            }
-            if PUSH_VALUE_OPTS.contains(&name) && !has_inline_value {
-                index += 1;
-            }
-            index += 1;
-            continue;
-        }
-
-        // Rule 3: unbundle short flags, so the `-f` inside `-fu` is found.
-        let mut chars = token[1..].chars();
-        while let Some(flag) = chars.next() {
-            match flag {
-                'f' => {
-                    return refuse(
-                        ParkReason::ForcePushBlocked,
-                        denied_push_detail(ParkReason::ForcePushBlocked, "-f"),
-                    )
-                }
-                'd' => {
-                    return refuse(
-                        ParkReason::ForcePushBlocked,
-                        denied_push_detail(ParkReason::ForcePushBlocked, "-d"),
-                    )
-                }
-                // `-o` takes a value: the rest of the bundle, or the next token.
-                'o' => {
-                    if chars.as_str().is_empty() {
-                        index += 1;
-                    }
-                    break;
-                }
-                _ => {}
-            }
-        }
-        index += 1;
-    }
+    let operands = match push_operands(rest) {
+        Ok(operands) => operands,
+        Err(refusal) => return refusal,
+    };
 
     // git's own operand order: the first is the repository, the rest are
     // refspecs. A push with no refspec resolves through local config instead.
@@ -520,6 +513,80 @@ fn classify_push(rest: &[&str], ctx: &GitContext) -> GitVerdict {
     }
 
     GitVerdict::Allow
+}
+
+/// The operands of a `git push`, or the refusal one of its flags earns.
+///
+/// Split out from [`classify_push`] so [`push_needs_resolved_dests`] can ask
+/// "does this push name a refspec?" through the **same** parser that judges it.
+/// Value-taking flags are consumed explicitly here, because a value read as an
+/// operand is how a denylist both false-refuses (`-o ci.skip` read as a
+/// repository) and false-allows.
+fn push_operands<'a>(rest: &[&'a str]) -> Result<Vec<&'a str>, GitVerdict> {
+    let mut operands: Vec<&str> = Vec::new();
+    let mut index = 0;
+    let mut end_of_options = false;
+
+    while index < rest.len() {
+        let token = rest[index];
+
+        if end_of_options || !token.starts_with('-') || token == "-" {
+            operands.push(token);
+            index += 1;
+            continue;
+        }
+        if token == "--" {
+            end_of_options = true;
+            index += 1;
+            continue;
+        }
+
+        if let Some(long) = token.strip_prefix("--") {
+            // Rule 2: `--opt=value` and `--opt value` are the same option.
+            let (name, has_inline_value) = match long.split_once('=') {
+                Some((name, _)) => (name, true),
+                None => (long, false),
+            };
+            if let Some((reason, spelling)) = denied_push_flag(name) {
+                return Err(refuse(reason, denied_push_detail(reason, spelling)));
+            }
+            if PUSH_VALUE_OPTS.contains(&name) && !has_inline_value {
+                index += 1;
+            }
+            index += 1;
+            continue;
+        }
+
+        // Rule 3: unbundle short flags, so the `-f` inside `-fu` is found.
+        let mut chars = token[1..].chars();
+        while let Some(flag) = chars.next() {
+            match flag {
+                'f' => {
+                    return Err(refuse(
+                        ParkReason::ForcePushBlocked,
+                        denied_push_detail(ParkReason::ForcePushBlocked, "-f"),
+                    ))
+                }
+                'd' => {
+                    return Err(refuse(
+                        ParkReason::ForcePushBlocked,
+                        denied_push_detail(ParkReason::ForcePushBlocked, "-d"),
+                    ))
+                }
+                // `-o` takes a value: the rest of the bundle, or the next token.
+                'o' => {
+                    if chars.as_str().is_empty() {
+                        index += 1;
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+
+    Ok(operands)
 }
 
 /// One sentence per denied push flag, naming the consequence rather than the
@@ -849,6 +916,403 @@ impl EnvelopePolicy {
             credential: opt_in.credential.clone(),
         }
     }
+}
+
+/// One word of a shell command line, with the three facts a classifier needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Token {
+    /// The word with its quoting removed, as the shell would pass it to `execve`.
+    pub text: String,
+    /// Whether the word is an unquoted control operator (`;`, `&&`, `|`, …).
+    pub operator: bool,
+    /// Whether any part of the word is subject to expansion — an unquoted or
+    /// double-quoted `$`, or a backtick. **The value is unknowable here**, which
+    /// is the whole reason the flag exists rather than an attempt to evaluate it.
+    pub expansion: bool,
+}
+
+/// The shell control operators that end one simple command and begin the next.
+///
+/// `>` and `<` are deliberately absent: a redirection does not start a new
+/// command, so treating it as a separator would hide the command it redirects.
+/// It stays an ordinary word and travels into the classifier with the rest.
+const SEPARATORS: &[&str] = &[";", "&&", "||", "|", "&", "\n", "(", ")", "{", "}"];
+
+/// Split a shell command line into words, POSIX quoting rules applied.
+///
+/// **This is layer 2's weak joint, and the doc says so rather than implying
+/// otherwise.** A quoting-aware split handles the honest cases: single quotes,
+/// double quotes with backslash escapes, backslash-escaped separators, and
+/// arbitrary runs of whitespace — so `git  push   --force` and `git push -f`
+/// arrive at the classifier as the same shape of argv and reach the same
+/// verdict. It does **not** handle, and cannot:
+///
+/// - a verb assembled from a shell variable (`g=push; git $g --force`),
+/// - `eval`, or any other construct that builds a command at run time,
+/// - a base64-decoded payload piped into a shell,
+/// - a script the agent writes to a file and then runs.
+///
+/// The correct framing, recorded here rather than left to be inferred: **layer 2
+/// raises the cost of an accident to near-certain detection, and layer 3 — the
+/// `pre-push` hook, which sees what git actually does regardless of how git was
+/// invoked — is what covers deliberate evasion of layer 2.** Up to the point
+/// where layer 3 is itself evaded, at which point the remote's own ruleset is
+/// the only remaining answer, which is why D-27's server-side recommendation is
+/// this phase's conclusion rather than its footnote.
+///
+/// What this function *will* do about the cases it cannot recover is return
+/// `None`: an unterminated quote and a trailing line-continuation backslash are
+/// both inputs whose word boundaries are not knowable, and **the guard denies
+/// whatever it cannot parse**. Never allow-by-default; a splitter that guessed
+/// would be a control that guessed.
+///
+/// **No crate was added for this.** A hand-rolled splitter with an exhaustive
+/// test table is what keeps this phase's dependency set unchanged, which is the
+/// mitigation for the package-legitimacy threat the phase register carries.
+///
+/// Operators appear in the returned vector as their own words, so a caller that
+/// wants one simple command wants [`split_segments`] instead.
+pub fn split_command(cmd: &str) -> Option<Vec<String>> {
+    Some(
+        tokenize(cmd)?
+            .into_iter()
+            .map(|token| token.text)
+            .collect(),
+    )
+}
+
+/// Split a shell command line into the simple commands it is composed of.
+///
+/// **A single-command splitter would be a hole rather than a control.**
+/// `echo hi && git push --force` has `echo` as its first word, so a guard that
+/// classified only the first command would look at `echo` and allow the force
+/// push sitting behind the `&&`. Every segment is classified.
+pub fn split_segments(cmd: &str) -> Option<Vec<Vec<Token>>> {
+    let tokens = tokenize(cmd)?;
+    let mut segments: Vec<Vec<Token>> = Vec::new();
+    let mut current: Vec<Token> = Vec::new();
+
+    for token in tokens {
+        if token.operator {
+            if !current.is_empty() {
+                segments.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        current.push(token);
+    }
+    if !current.is_empty() {
+        segments.push(current);
+    }
+
+    Some(segments)
+}
+
+/// The quoting state machine behind [`split_command`] and [`split_segments`].
+fn tokenize(cmd: &str) -> Option<Vec<Token>> {
+    let mut tokens: Vec<Token> = Vec::new();
+    let mut text = String::new();
+    let mut started = false;
+    let mut expansion = false;
+    let mut chars = cmd.chars().peekable();
+
+    // A word ends; push it if one was started at all. `started` distinguishes
+    // an empty word that was written (`""`) from no word at all.
+    macro_rules! flush {
+        () => {
+            if started {
+                tokens.push(Token {
+                    text: std::mem::take(&mut text),
+                    operator: false,
+                    expansion,
+                });
+                started = false;
+                expansion = false;
+            }
+        };
+    }
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            ' ' | '\t' | '\r' => flush!(),
+            '\n' | ';' | '|' | '&' | '(' | ')' | '{' | '}' => {
+                flush!();
+                // `&&` and `||` are one operator, not two. Which one it is does
+                // not matter to a classifier that treats every separator alike,
+                // but consuming both characters keeps the token list honest.
+                let mut op = ch.to_string();
+                if (ch == '&' || ch == '|') && chars.peek() == Some(&ch) {
+                    chars.next();
+                    op.push(ch);
+                }
+                tokens.push(Token {
+                    text: op,
+                    operator: true,
+                    expansion: false,
+                });
+            }
+            '\'' => {
+                started = true;
+                // Single quotes are literal all the way through, including `$`.
+                loop {
+                    match chars.next() {
+                        Some('\'') => break,
+                        Some(inner) => text.push(inner),
+                        // An unterminated quote has no knowable word boundary.
+                        None => return None,
+                    }
+                }
+            }
+            '"' => {
+                started = true;
+                loop {
+                    match chars.next() {
+                        Some('"') => break,
+                        Some('\\') => match chars.next() {
+                            // Only these four are escapes inside double quotes;
+                            // every other backslash is a literal backslash, and
+                            // a splitter that dropped it would change the word.
+                            Some(esc @ ('"' | '\\' | '$' | '`')) => text.push(esc),
+                            Some(other) => {
+                                text.push('\\');
+                                text.push(other);
+                            }
+                            None => return None,
+                        },
+                        Some(inner) => {
+                            // Expansion still happens inside double quotes.
+                            if inner == '$' || inner == '`' {
+                                expansion = true;
+                            }
+                            text.push(inner);
+                        }
+                        None => return None,
+                    }
+                }
+            }
+            '\\' => {
+                // A trailing backslash is a line continuation whose second half
+                // this function was never given, so `?` refuses the whole input.
+                let escaped = chars.next()?;
+                started = true;
+                text.push(escaped);
+            }
+            '#' if !started => {
+                // A comment runs to end of line; nothing after it is a command.
+                for next in chars.by_ref() {
+                    if next == '\n' {
+                        break;
+                    }
+                }
+            }
+            _ => {
+                started = true;
+                if ch == '$' || ch == '`' {
+                    expansion = true;
+                }
+                text.push(ch);
+            }
+        }
+    }
+
+    // The final word, pushed directly rather than through `flush!`: the macro's
+    // bookkeeping assignments would be dead at this point, and a lint suppressed
+    // is a lint that stops being read.
+    if started {
+        tokens.push(Token {
+            text,
+            operator: false,
+            expansion,
+        });
+    }
+
+    Some(tokens)
+}
+
+/// Whether a token is one of the control operators, by text.
+///
+/// Used by tests and by callers holding already-split words; the tokenizer
+/// itself sets the flag directly.
+pub fn is_separator(text: &str) -> bool {
+    SEPARATORS.contains(&text)
+}
+
+/// The program a path names, without its directory.
+///
+/// `/usr/bin/gh` and `gh` are the same program, and a classifier that compared
+/// whole strings would be defeated by an absolute path — which is not even an
+/// evasion, it is what `command -v` prints.
+pub fn program_name(program: &str) -> &str {
+    program.rsplit('/').next().unwrap_or(program)
+}
+
+/// The forge and the recorded shape of a pull-request creation, or `None`.
+///
+/// The three forms D-19 names, matched on **tokens** rather than on a joined
+/// string, because a substring match on `"pr create"` finds it inside a commit
+/// message and misses it when an extra space is typed.
+///
+/// The returned label is what reaches [`super::ledger::LedgerEntry::command`],
+/// and it is a **classification** rather than the command line: a ledger that
+/// quoted the command back would be a file on disk that can hold a token
+/// (SAFE-04).
+pub fn pr_command_label(argv: &[&str]) -> Option<(&'static str, String)> {
+    let program = program_name(argv.first()?);
+    let rest = &argv[1..];
+
+    match program {
+        "gh" => {
+            let words = subcommand_words(rest);
+            match words.as_slice() {
+                // `gh pr create …`
+                ["pr", "create", ..] => Some(("github", "gh pr create".to_string())),
+                // `gh api … /pulls` with a POST.
+                ["api", ..] => {
+                    if gh_api_posts_a_pull_request(rest) {
+                        Some(("github", "gh api POST …/pulls".to_string()))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        }
+        "glab" => match subcommand_words(rest).as_slice() {
+            ["mr", "create", ..] => Some(("gitlab", "glab mr create".to_string())),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether this argv creates a pull request (or a merge request) — D-19's three
+/// shapes.
+///
+/// A thin `is_some` over [`pr_command_label`] so there is exactly one place the
+/// three shapes are recognised. Two predicates would be two things to keep in
+/// step, and the drift would be a cap that counts a form it does not refuse.
+pub fn classify_pr_command(argv: &[&str]) -> bool {
+    pr_command_label(argv).is_some()
+}
+
+/// Global flags of `gh`/`glab` that consume a **separate** following word.
+///
+/// The list matters for the same reason `PUSH_VALUE_OPTS` does: with `--repo`
+/// unhandled, `gh --repo o/r pr create` yields the words `o/r pr create` and the
+/// subcommand match on `["pr", "create"]` fails — a creation form that is not
+/// counted, which is the under-counting direction the cap exists to prevent.
+const FORGE_VALUE_OPTS: &[&str] = &["-R", "--repo", "--hostname"];
+
+/// The non-flag words of a subcommand chain, in order.
+///
+/// Flags are skipped rather than terminating the scan, because `gh --repo o/r pr
+/// create` is a legal invocation and a scan that stopped at the first `-` would
+/// miss it.
+fn subcommand_words<'a>(rest: &[&'a str]) -> Vec<&'a str> {
+    let mut words = Vec::new();
+    let mut index = 0;
+
+    while index < rest.len() {
+        let word = rest[index];
+        if FORGE_VALUE_OPTS.contains(&word) {
+            index += 2;
+            continue;
+        }
+        if !word.starts_with('-') {
+            words.push(word);
+        }
+        index += 1;
+    }
+
+    words
+}
+
+/// Long and short flags of `gh api` that take a **separate** following value.
+const GH_API_VALUE_OPTS: &[&str] = &[
+    "-X",
+    "--method",
+    "-f",
+    "--raw-field",
+    "-F",
+    "--field",
+    "-H",
+    "--header",
+    "-q",
+    "--jq",
+    "-t",
+    "--template",
+    "--input",
+    "--hostname",
+    "--cache",
+    "-p",
+    "--preview",
+];
+
+/// The flags whose mere presence makes `gh api` default to `POST`.
+///
+/// This is `gh`'s own documented behaviour, and it is the reason a method check
+/// alone would be a hole: `gh api repos/o/r/pulls -f title=x` opens a pull
+/// request and never spells `POST`.
+const GH_API_IMPLIES_POST: &[&str] = &["-f", "--raw-field", "-F", "--field", "--input"];
+
+fn gh_api_posts_a_pull_request(rest: &[&str]) -> bool {
+    let mut method: Option<String> = None;
+    let mut implies_post = false;
+    let mut path: Option<&str> = None;
+    let mut index = 0;
+    // `api` itself is the first non-flag word; the endpoint is the second.
+    let mut seen_api = false;
+
+    while index < rest.len() {
+        let token = rest[index];
+
+        if let Some((name, value)) = token.split_once('=') {
+            if name == "-X" || name == "--method" {
+                method = Some(value.to_ascii_uppercase());
+                index += 1;
+                continue;
+            }
+        }
+        if GH_API_IMPLIES_POST.contains(&token) {
+            implies_post = true;
+        }
+        if GH_API_VALUE_OPTS.contains(&token) {
+            if token == "-X" || token == "--method" {
+                method = rest.get(index + 1).map(|m| m.to_ascii_uppercase());
+            }
+            index += 2;
+            continue;
+        }
+        if token.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        if !seen_api {
+            seen_api = true;
+        } else if path.is_none() {
+            path = Some(token);
+        }
+        index += 1;
+    }
+
+    let posts = match method.as_deref() {
+        Some(explicit) => explicit == "POST",
+        None => implies_post,
+    };
+
+    posts && path.is_some_and(endpoint_is_pulls)
+}
+
+/// Whether an endpoint names the pull-request collection.
+///
+/// The query string and any trailing slash are stripped first, and the check is
+/// on the final path segment: `repos/o/r/pulls`, a full
+/// `https://api.github.com/repos/o/r/pulls`, and `/repos/o/r/pulls?state=open`
+/// are the same endpoint. A single pull request (`…/pulls/7`) is **not** the
+/// collection, and a `POST` to it is a review comment rather than a creation.
+fn endpoint_is_pulls(endpoint: &str) -> bool {
+    let path = endpoint.split(['?', '#']).next().unwrap_or(endpoint);
+    path.trim_end_matches('/').rsplit('/').next() == Some("pulls")
 }
 
 /// The worktree-relocation directory a driven agent's `git add -A` sweeps up.
@@ -1488,6 +1952,228 @@ mod tests {
                 .any(|prefix| prefix.ends_with(crate::journal::RUNS_SUBDIR)),
             "{:?}",
             forbidden_repo_prefixes()
+        );
+    }
+
+    // ---- the shell split (D-06 layer 2's weak joint) ----
+
+    #[test]
+    fn a_single_quoted_argument_is_recovered_whole() {
+        assert_eq!(
+            split_command("git commit -m 'one two three'").unwrap(),
+            vec!["git", "commit", "-m", "one two three"]
+        );
+    }
+
+    #[test]
+    fn a_double_quoted_argument_containing_spaces_is_one_word() {
+        assert_eq!(
+            split_command(r#"git commit -m "one two three""#).unwrap(),
+            vec!["git", "commit", "-m", "one two three"]
+        );
+    }
+
+    #[test]
+    fn a_backslash_escaped_space_does_not_split_a_word() {
+        assert_eq!(
+            split_command(r"git add my\ file.txt").unwrap(),
+            vec!["git", "add", "my file.txt"]
+        );
+    }
+
+    #[test]
+    fn a_run_of_whitespace_is_one_boundary_not_several_empty_words() {
+        assert_eq!(
+            split_command("git  push   --force  origin\tmain").unwrap(),
+            vec!["git", "push", "--force", "origin", "main"]
+        );
+    }
+
+    #[test]
+    fn an_escape_inside_double_quotes_keeps_only_the_four_that_are_escapes() {
+        assert_eq!(
+            split_command(r#"echo "a\"b\\c\nd""#).unwrap(),
+            vec!["echo", r#"a"b\c\nd"#],
+            "only \\\" \\\\ \\$ and \\` are escapes inside double quotes; every other \
+             backslash is literal, and dropping it would change the word"
+        );
+    }
+
+    #[test]
+    fn an_unterminated_quote_is_unrecoverable_and_yields_none() {
+        assert_eq!(split_command("git commit -m 'unterminated"), None);
+        assert_eq!(split_command(r#"git commit -m "unterminated"#), None);
+        assert_eq!(
+            split_command(r"git push --force \"),
+            None,
+            "a trailing backslash is a line continuation whose second half we were \
+             never given"
+        );
+    }
+
+    #[test]
+    fn an_empty_quoted_word_is_a_word_and_an_empty_line_is_no_words() {
+        assert_eq!(split_command(r#"echo "" x"#).unwrap(), vec!["echo", "", "x"]);
+        assert!(split_command("   ").unwrap().is_empty());
+    }
+
+    #[test]
+    fn every_command_behind_a_separator_is_its_own_segment() {
+        let segments = split_segments("echo hi && git push --force origin main").unwrap();
+        let words: Vec<Vec<String>> = segments
+            .iter()
+            .map(|segment| segment.iter().map(|t| t.text.clone()).collect())
+            .collect();
+        assert_eq!(
+            words,
+            vec![
+                vec!["echo".to_string(), "hi".to_string()],
+                vec![
+                    "git".to_string(),
+                    "push".to_string(),
+                    "--force".to_string(),
+                    "origin".to_string(),
+                    "main".to_string()
+                ]
+            ],
+            "a guard that classified only the first command would look at `echo` and \
+             allow the force push sitting behind the `&&`"
+        );
+    }
+
+    #[test]
+    fn a_separator_inside_quotes_is_a_character_not_a_separator() {
+        let segments = split_segments("git commit -m 'fix; and push'").unwrap();
+        assert_eq!(segments.len(), 1, "{segments:?}");
+        assert_eq!(segments[0].last().unwrap().text, "fix; and push");
+    }
+
+    #[test]
+    fn a_word_subject_to_expansion_is_flagged_because_its_value_is_unknowable() {
+        let segments = split_segments("git $verb --force").unwrap();
+        assert!(
+            segments[0][1].expansion,
+            "an unquoted `$` is expansion: {:?}",
+            segments[0]
+        );
+        let quoted = split_segments("git 'literal$verb'").unwrap();
+        assert!(
+            !quoted[0][1].expansion,
+            "single quotes suppress expansion, so flagging it would false-refuse"
+        );
+        let double = split_segments(r#"git "$verb""#).unwrap();
+        assert!(
+            double[0][1].expansion,
+            "double quotes do NOT suppress expansion"
+        );
+    }
+
+    #[test]
+    fn separators_are_named_in_one_list_that_the_predicate_reads() {
+        for op in [";", "&&", "||", "|", "&"] {
+            assert!(is_separator(op), "{op}");
+        }
+        assert!(!is_separator(">"), "a redirection does not start a command");
+    }
+
+    // ---- pull-request creation (D-19's three shapes) ----
+
+    #[test]
+    fn the_github_pull_request_creation_form_is_recognised() {
+        assert!(classify_pr_command(&["gh", "pr", "create", "--title", "x"]));
+        assert!(
+            classify_pr_command(&["/usr/bin/gh", "pr", "create"]),
+            "an absolute path is not an evasion, it is what `command -v` prints"
+        );
+        assert!(
+            classify_pr_command(&["gh", "--repo", "o/r", "pr", "create"]),
+            "a global flag before the subcommand is a legal invocation"
+        );
+        assert_eq!(
+            pr_command_label(&["gh", "pr", "create"]),
+            Some(("github", "gh pr create".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_raw_api_post_to_a_pulls_path_is_recognised_in_both_its_spellings() {
+        assert!(classify_pr_command(&[
+            "gh", "api", "-X", "POST", "repos/o/r/pulls"
+        ]));
+        assert!(classify_pr_command(&[
+            "gh",
+            "api",
+            "--method=POST",
+            "https://api.github.com/repos/o/r/pulls"
+        ]));
+        assert!(
+            classify_pr_command(&["gh", "api", "repos/o/r/pulls", "-f", "title=x"]),
+            "`gh api` defaults to POST once a field is supplied, so a method check \
+             alone would be a hole this form walks through"
+        );
+    }
+
+    #[test]
+    fn the_gitlab_merge_request_creation_form_is_recognised() {
+        assert!(classify_pr_command(&["glab", "mr", "create"]));
+        assert_eq!(
+            pr_command_label(&["glab", "mr", "create", "--fill"]),
+            Some(("gitlab", "glab mr create".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_read_only_listing_form_is_not_a_creation() {
+        // The paired allow test. A classifier that returned true for everything
+        // would pass every assertion above and cap a run out of existence.
+        assert!(!classify_pr_command(&["gh", "pr", "list"]));
+        assert!(!classify_pr_command(&["gh", "pr", "view", "7"]));
+        assert!(!classify_pr_command(&["glab", "mr", "list"]));
+        assert!(
+            !classify_pr_command(&["gh", "api", "repos/o/r/pulls"]),
+            "a bare `gh api` is a GET"
+        );
+        assert!(
+            !classify_pr_command(&["gh", "api", "-X", "GET", "repos/o/r/pulls"]),
+            "an explicit GET is a GET even with the right path"
+        );
+        assert!(
+            !classify_pr_command(&["gh", "api", "-X", "POST", "repos/o/r/issues"]),
+            "a POST to another collection is not a pull request"
+        );
+        assert!(
+            !classify_pr_command(&["gh", "api", "-X", "POST", "repos/o/r/pulls/7/reviews"]),
+            "a POST to one pull request is a review, not a creation"
+        );
+        assert!(!classify_pr_command(&["git", "push"]));
+        assert!(!classify_pr_command(&[]));
+    }
+
+    // ---- the one command shape that has to read the repository ----
+
+    #[test]
+    fn only_a_push_with_no_refspec_needs_the_repository_consulted() {
+        assert!(push_needs_resolved_dests(&["push"]));
+        assert!(push_needs_resolved_dests(&["push", "origin"]));
+        assert!(
+            push_needs_resolved_dests(&["-C", "/tmp/x", "push", "origin"]),
+            "the leading-option scan is shared with the classifier, so both agree \
+             about where the verb starts"
+        );
+        assert!(
+            !push_needs_resolved_dests(&["push", "origin", "refs/heads/gsd-auto/a/b"]),
+            "a push that names its refspec is judged from argv alone"
+        );
+        assert!(!push_needs_resolved_dests(&["status"]));
+        assert!(
+            !push_needs_resolved_dests(&["push", "--force"]),
+            "a command that is refused anyway needs no destination resolved — reading \
+             a repository to reach a verdict already reached is latency spent for \
+             nothing on the agent's critical path"
+        );
+        assert!(
+            !push_needs_resolved_dests(&["push", "-o", "ci.skip", "origin", "refs/heads/x"]),
+            "an option value is not an operand"
         );
     }
 }

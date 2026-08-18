@@ -606,6 +606,391 @@ fn classify_refs(alias: &str, lines: &[String]) -> usize {
     refused
 }
 
+// ---------------------------------------------------------------------------
+// D-06 layer 2: the `PreToolUse` guard
+// ---------------------------------------------------------------------------
+
+/// The largest guard request this process will read, in bytes.
+///
+/// A bound rather than an unbounded `read_to_string`, for the same reason
+/// `crate::journal::reader` bounds its line reads: the writer is on the other
+/// side of a pipe, and a guard that can be made to read forever is a guard that
+/// can be made to hang — which is the failure mode this whole module is written
+/// against. A request past the bound is refused, never truncated-and-judged:
+/// judging a prefix of a command is worse than refusing it.
+const MAX_GUARD_REQUEST_BYTES: u64 = 1 << 20;
+
+/// How deep the guard follows `sh -c` payloads.
+///
+/// One level covers `bash -c "git push --force"`, which is an ordinary thing for
+/// an agent to write and not an evasion at all. Deeper nesting is bounded rather
+/// than followed: the cost of recursion here is latency on the critical path,
+/// and an agent nesting three shells to hide a push is doing something layer 3
+/// exists for.
+const MAX_SHELL_RECURSION: usize = 2;
+
+/// The shells whose `-c` payload the guard re-splits and re-classifies.
+const NESTED_SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
+
+/// One `PreToolUse` request, with unknown fields preserved rather than rejected.
+///
+/// The tolerant posture `crate::executor::stream_json` established: the agent
+/// CLI adds fields between releases, and a guard that failed to deserialise a
+/// request carrying a field it had not heard of would **deny every tool call**
+/// the day the CLI grew one. Preserving is what keeps the tolerance from
+/// becoming an allow — nothing is dropped, it is simply not required.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GuardRequest {
+    /// The tool about to run — `Bash`, `Write`, `Edit`, …
+    #[serde(default)]
+    pub tool_name: String,
+    /// The tool's own input object. For `Bash` it carries `command`.
+    #[serde(default)]
+    pub tool_input: serde_json::Value,
+    /// Everything else the CLI sent, kept verbatim.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The `PreToolUse` guard: split the command, apply the shared classifiers, and
+/// answer before the tool runs (D-06 layer 2).
+///
+/// **Latency is a first-class requirement here, not a nicety, and the reason is
+/// recorded in this repository rather than imagined.** `src/executor/mod.rs:225-239`
+/// records a *reproduced* 180-240 second hang caused by `PreToolUse` hooks that
+/// ran synchronously on the agent's critical path with no timeout, and
+/// `--setting-sources project` is the shipped mitigation. The envelope's own
+/// hook must not reintroduce the bug the envelope was born from. Three rules
+/// follow from that, and each is enforced rather than intended:
+///
+/// 1. **No network in the guard path at all.** The remote-protection probe
+///    happens once at run start, never per tool call. Nothing below opens a
+///    socket, and a test asserts the function body names no HTTP client.
+/// 2. **The repository is consulted for exactly one command shape** — a `push`
+///    with no refspec, which cannot be judged without its resolved destination
+///    ([`policy::push_needs_resolved_dests`]). Every other command is decided
+///    from argv alone, and the context is resolved at most once per invocation.
+/// 3. **The ledger read is a single pass over one append-only file.**
+///
+/// The registered timeout that backs all three lives in the settings file
+/// [`write_settings`] generates, as [`GUARD_TIMEOUT_SECS`].
+///
+/// **Failure is denial, never permission.** A request that will not parse, a
+/// command whose words cannot be recovered, a verb assembled from an expansion,
+/// an `eval` — each is refused. A guard that permitted what it could not
+/// understand would be a guard that an unparseable command walks straight
+/// through.
+///
+/// **A permit writes nothing at all**, and that is deliberate rather than
+/// lazy: answering `"permissionDecision": "allow"` would make this deny-only
+/// control into an approval authority, auto-approving commands the user's own
+/// permission rules would otherwise have prompted for. Staying silent leaves
+/// the ordinary permission flow exactly where it was.
+pub fn guard(alias: &str, stdin: impl std::io::Read) -> anyhow::Result<i32> {
+    let root = super::envelope_root().ok_or_else(|| {
+        anyhow!(
+            "no application data directory is resolvable, so no pull-request ledger can \
+             be consulted and the guard refuses rather than permitting unbounded"
+        )
+    })?;
+    let project_root = std::env::var_os(super::cred::PROJECT_ROOT_ENV).map(PathBuf::from);
+
+    guard_in(
+        &root,
+        &crate::config::Config::default_path(),
+        alias,
+        project_root.as_deref(),
+        stdin,
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+    )
+}
+
+/// [`guard`] against explicit roots and streams.
+///
+/// Split out for the same reason [`install_in`] is: a test may not write into
+/// the developer's real `~/.local/share`, and a decision that can only be
+/// observed by spawning a process is a decision that gets tested once.
+#[allow(clippy::too_many_arguments)]
+pub fn guard_in(
+    root: &Path,
+    config_path: &Path,
+    alias: &str,
+    project_root: Option<&Path>,
+    stdin: impl std::io::Read,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> anyhow::Result<i32> {
+    let request = match read_guard_request(stdin) {
+        Ok(request) => request,
+        Err(reason) => return deny(out, err, &reason),
+    };
+
+    // Only a shell tool carries a command to classify. Anything else is layer
+    // 1's business (`--disallowedTools` and the settings `deny` list), and
+    // denying it here would be this layer answering a question it was not asked.
+    if request.tool_name != "Bash" {
+        return Ok(0);
+    }
+
+    let Some(command) = request
+        .tool_input
+        .get("command")
+        .and_then(|value| value.as_str())
+    else {
+        return deny(
+            out,
+            err,
+            "this Bash request carries no readable `command`, so nothing about it can be \
+             classified; an unjudgeable command is refused rather than permitted",
+        );
+    };
+
+    let Some(segments) = policy::split_segments(command) else {
+        return deny(
+            out,
+            err,
+            "the command's words cannot be recovered — an unterminated quote or a trailing \
+             line continuation — so it cannot be classified and is refused",
+        );
+    };
+
+    let policy = resolve_policy(config_path, alias);
+    // Resolved at most once per invocation, and only if some segment turns out
+    // to need it. `None` means "not asked for yet", not "unresolvable".
+    let mut push_ctx: Option<policy::GitContext> = None;
+
+    match classify_segments(
+        &segments,
+        0,
+        root,
+        alias,
+        project_root,
+        &policy,
+        &mut push_ctx,
+    ) {
+        Ok(Some(reason)) => deny(out, err, &reason),
+        Ok(None) => Ok(0),
+        // An error reaching a verdict is not a verdict. The ledger could not be
+        // written, or the window could not be computed — either way the attempt
+        // is unbounded, and unbounded is exactly what the cap exists to prevent.
+        Err(error) => deny(
+            out,
+            err,
+            &format!(
+                "the envelope could not reach a verdict for this command, so it is refused \
+                 (reason: {}): {}",
+                policy::REASON_ENVELOPE_ASSERTION_FAILED,
+                crate::journal::redact::redact(&error.to_string())
+            ),
+        ),
+    }
+}
+
+/// Classify every simple command in `segments`, returning the first refusal.
+///
+/// `depth` bounds the `sh -c` recursion at [`MAX_SHELL_RECURSION`].
+#[allow(clippy::too_many_arguments)]
+fn classify_segments(
+    segments: &[Vec<policy::Token>],
+    depth: usize,
+    root: &Path,
+    alias: &str,
+    project_root: Option<&Path>,
+    envelope: &policy::EnvelopePolicy,
+    push_ctx: &mut Option<policy::GitContext>,
+) -> anyhow::Result<Option<String>> {
+    for segment in segments {
+        let Some(program_token) = segment.first() else {
+            continue;
+        };
+        let words: Vec<&str> = segment.iter().map(|token| token.text.as_str()).collect();
+        let program = policy::program_name(words[0]);
+
+        // A verb the shell will assemble at run time is a verb this function
+        // cannot see. `layer 2 raises the cost of an accident`; it does not
+        // pretend to evaluate a shell.
+        if program_token.expansion {
+            return Ok(Some(format!(
+                "this command's program is assembled by shell expansion, so what it will \
+                 run is not knowable before it runs; refused rather than guessed at \
+                 (reason: {})",
+                policy::REASON_ENVELOPE_ASSERTION_FAILED
+            )));
+        }
+        if program == "eval" {
+            return Ok(Some(format!(
+                "`eval` builds a command at run time, so no classifier can see what it \
+                 will run; refused (reason: {})",
+                policy::REASON_ENVELOPE_ASSERTION_FAILED
+            )));
+        }
+
+        // `bash -c "git push --force"` is an ordinary thing to write, not an
+        // evasion, so the payload is classified rather than the wrapper.
+        if NESTED_SHELLS.contains(&program) {
+            if let Some(payload) = shell_c_payload(&words) {
+                if depth >= MAX_SHELL_RECURSION {
+                    return Ok(Some(format!(
+                        "this command nests shells more deeply than the guard follows, so \
+                         its innermost command cannot be classified; refused (reason: {})",
+                        policy::REASON_ENVELOPE_ASSERTION_FAILED
+                    )));
+                }
+                let Some(inner) = policy::split_segments(payload) else {
+                    return Ok(Some(
+                        "the nested shell payload's words cannot be recovered, so it cannot \
+                         be classified and is refused"
+                            .to_string(),
+                    ));
+                };
+                if let Some(refusal) = classify_segments(
+                    &inner,
+                    depth + 1,
+                    root,
+                    alias,
+                    project_root,
+                    envelope,
+                    push_ctx,
+                )? {
+                    return Ok(Some(refusal));
+                }
+                continue;
+            }
+        }
+
+        if program == "git" {
+            let rest: Vec<&str> = words[1..].to_vec();
+            if policy::push_needs_resolved_dests(&rest) && push_ctx.is_none() {
+                let repo = project_root
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("."));
+                *push_ctx = Some(policy::resolve_push_context(&repo, &envelope.namespace));
+            }
+            let ctx = push_ctx.clone().unwrap_or_else(|| policy::GitContext {
+                namespace: envelope.namespace.clone(),
+                resolved_push_dests: Vec::new(),
+            });
+            if let policy::GitVerdict::Refuse { reason, detail } = policy::classify_git(&rest, &ctx)
+            {
+                return Ok(Some(format!(
+                    "gsd-meta-manager envelope: REFUSED (reason: {}) — {detail}",
+                    reason.as_str()
+                )));
+            }
+            continue;
+        }
+
+        if let Some((platform, label)) = policy::pr_command_label(&words) {
+            let entry = super::ledger::LedgerEntry {
+                at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                run_id: current_run_id(),
+                command: label,
+                platform: platform.to_string(),
+            };
+            let verdict = super::ledger::record_and_check_in(root, alias, &entry, envelope)?;
+            if let Some(detail) = verdict.refusal_detail() {
+                return Ok(Some(format!(
+                    "gsd-meta-manager envelope: REFUSED (reason: {}) — {detail}",
+                    policy::REASON_PR_CAP_EXCEEDED
+                )));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// The `-c` payload of a nested shell invocation, if this is one.
+fn shell_c_payload<'a>(words: &[&'a str]) -> Option<&'a str> {
+    let index = words.iter().position(|word| *word == "-c")?;
+    words.get(index + 1).copied()
+}
+
+/// The run this guard invocation belongs to, for the per-run cap.
+///
+/// Read from the environment the driver builds for the child, because the guard
+/// is a fresh process per tool call and has no other way to know. An absent
+/// value yields a stable placeholder rather than a fresh id: a **fresh** id per
+/// invocation would silently reset the per-run cap on every tool call, which is
+/// the one failure mode a per-run cap cannot survive.
+fn current_run_id() -> String {
+    std::env::var("GSD_MM_RUN_ID").unwrap_or_else(|_| "unattributed-run".to_string())
+}
+
+/// This alias's envelope settings, defaults applied.
+///
+/// **An unreadable registry or an unregistered alias resolves to the defaults
+/// rather than to an error**, and the direction is what makes that safe: every
+/// default is the *tighter* value — the reserved namespace and the 3/1 caps —
+/// so a guard that cannot read configuration confines the run more, never less.
+/// The alternative, refusing every tool call because a config file moved, is a
+/// control that fails into unusability and therefore gets switched off.
+fn resolve_policy(config_path: &Path, alias: &str) -> policy::EnvelopePolicy {
+    let opt_in = crate::config::load_config(config_path)
+        .ok()
+        .and_then(|config| {
+            config
+                .projects
+                .get(alias)
+                .and_then(|project| project.driver_opt_in.clone())
+        });
+
+    match opt_in {
+        Some(opt_in) => policy::EnvelopePolicy::resolve(alias, &opt_in),
+        None => policy::EnvelopePolicy {
+            namespace: policy::default_namespace(alias),
+            pr_cap_per_24h: policy::DEFAULT_PR_CAP_PER_24H,
+            pr_cap_per_run: policy::DEFAULT_PR_CAP_PER_RUN,
+            credential: None,
+        },
+    }
+}
+
+/// Read one request from the guard's stdin, bounded.
+fn read_guard_request(stdin: impl std::io::Read) -> Result<GuardRequest, String> {
+    use std::io::Read as _;
+
+    let mut text = String::new();
+    stdin
+        .take(MAX_GUARD_REQUEST_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(|error| format!("the guard could not read its request: {error}"))?;
+
+    if text.len() as u64 > MAX_GUARD_REQUEST_BYTES {
+        return Err(format!(
+            "the guard request is larger than {MAX_GUARD_REQUEST_BYTES} bytes; judging a \
+             prefix of a command is worse than refusing it, so it is refused"
+        ));
+    }
+
+    serde_json::from_str(&text).map_err(|error| {
+        format!("the guard request is not JSON it can read ({error}), so it is refused")
+    })
+}
+
+/// Write the deny decision and return the exit code.
+///
+/// **Two carriers, deliberately.** The JSON on stdout is the documented hook
+/// protocol; the non-zero exit with the reason on stderr is what still blocks if
+/// the protocol's shape ever drifts under us. A control with one carrier is a
+/// control that a schema change silently disarms — the same argument D-07 makes
+/// about the settings file, applied to the guard's own answer.
+fn deny(out: &mut impl Write, err: &mut impl Write, reason: &str) -> anyhow::Result<i32> {
+    let decision = serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    });
+    writeln!(out, "{decision}").context("failed to write the guard's decision")?;
+    writeln!(err, "{reason}").context("failed to mirror the guard's refusal")?;
+    // Exit code 2 is the hook protocol's blocking error, and it is the carrier
+    // that does not depend on the JSON being understood.
+    Ok(2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -839,5 +1224,292 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let err = assert_provenance_in(tmp.path(), "../escaped", Path::new("/bin/sh")).unwrap_err();
         assert!(err.to_string().contains("plain path component"), "{err}");
+    }
+
+    // ---- the `PreToolUse` guard (D-06 layer 2) ----
+
+    /// The guard's answer: exit code, the JSON it wrote, and its stderr mirror.
+    struct Answer {
+        code: i32,
+        stdout: String,
+        stderr: String,
+    }
+
+    impl Answer {
+        fn denied(&self) -> bool {
+            self.code == 2
+        }
+
+        fn reason(&self) -> String {
+            let value: serde_json::Value =
+                serde_json::from_str(self.stdout.trim()).unwrap_or(serde_json::Value::Null);
+            value["hookSpecificOutput"]["permissionDecisionReason"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        }
+    }
+
+    /// Run the guard over a Bash request carrying `command`.
+    fn ask(root: &Path, command: &str) -> Answer {
+        ask_request(
+            root,
+            &serde_json::json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": { "command": command },
+            })
+            .to_string(),
+        )
+    }
+
+    /// Run the guard over a verbatim request body.
+    fn ask_request(root: &Path, body: &str) -> Answer {
+        let mut out: Vec<u8> = Vec::new();
+        let mut err: Vec<u8> = Vec::new();
+        let code = guard_in(
+            root,
+            // A path with no registry on it: `resolve_policy` must apply the
+            // tighter defaults rather than failing the call.
+            &root.join("no-such-config.json"),
+            "alpha",
+            None,
+            body.as_bytes(),
+            &mut out,
+            &mut err,
+        )
+        .expect("the guard answers rather than erroring");
+
+        Answer {
+            code,
+            stdout: String::from_utf8(out).unwrap(),
+            stderr: String::from_utf8(err).unwrap(),
+        }
+    }
+
+    #[test]
+    fn the_two_spellings_of_a_force_push_reach_the_same_verdict_as_each_other() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let spaced = ask(tmp.path(), "git  push   --force origin main");
+        let short = ask(tmp.path(), "git push -f origin main");
+
+        assert!(spaced.denied(), "{}", spaced.stdout);
+        assert!(short.denied(), "{}", short.stdout);
+        assert!(
+            spaced.reason().contains(policy::REASON_FORCE_PUSH_BLOCKED)
+                && short.reason().contains(policy::REASON_FORCE_PUSH_BLOCKED),
+            "argv is parsed, not prefix-matched: {:?} vs {:?}",
+            spaced.reason(),
+            short.reason()
+        );
+    }
+
+    #[test]
+    fn a_push_inside_the_reserved_namespace_is_permitted_and_writes_nothing() {
+        // The paired allow test. An envelope that refused everything would pass
+        // every refusal assertion in this file.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let answer = ask(
+            tmp.path(),
+            "git push origin refs/heads/gsd-auto/alpha/work:refs/heads/gsd-auto/alpha/work",
+        );
+        assert_eq!(answer.code, 0, "{}", answer.stderr);
+        assert!(
+            answer.stdout.is_empty(),
+            "a permit answers nothing at all: emitting `allow` would turn a deny-only \
+             control into an approval authority. Got: {}",
+            answer.stdout
+        );
+    }
+
+    #[test]
+    fn a_force_push_hidden_behind_a_separator_is_still_seen() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let answer = ask(tmp.path(), "echo hi && git push --force origin main");
+        assert!(
+            answer.denied(),
+            "a guard that classified only the first command would look at `echo`: {}",
+            answer.stdout
+        );
+    }
+
+    #[test]
+    fn a_force_push_inside_a_nested_shell_is_still_seen() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let answer = ask(tmp.path(), r#"bash -c "git push --force origin main""#);
+        assert!(answer.denied(), "{}", answer.stdout);
+    }
+
+    #[test]
+    fn a_command_whose_words_cannot_be_recovered_is_denied() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let answer = ask(tmp.path(), "git commit -m 'unterminated");
+        assert!(answer.denied(), "{}", answer.stdout);
+        assert!(
+            answer.reason().contains("cannot be recovered"),
+            "{}",
+            answer.reason()
+        );
+    }
+
+    #[test]
+    fn a_verb_assembled_by_expansion_and_an_eval_are_both_denied() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let expanded = ask(tmp.path(), "$TOOL push --force");
+        assert!(expanded.denied(), "{}", expanded.stdout);
+        assert!(expanded.reason().contains("shell expansion"), "{}", expanded.reason());
+
+        let evaluated = ask(tmp.path(), "eval \"git push --force\"");
+        assert!(evaluated.denied(), "{}", evaluated.stdout);
+        assert!(evaluated.reason().contains("eval"), "{}", evaluated.reason());
+    }
+
+    #[test]
+    fn a_request_whose_json_cannot_be_parsed_is_denied() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let answer = ask_request(tmp.path(), "{not json at all");
+        assert!(
+            answer.denied(),
+            "a guard that permitted what it could not parse would be walked straight \
+             through: {}",
+            answer.stdout
+        );
+        assert!(answer.reason().contains("not JSON"), "{}", answer.reason());
+    }
+
+    #[test]
+    fn an_unknown_field_is_preserved_rather_than_rejected() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let body = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": { "command": "git status" },
+            "a_field_from_a_later_cli_release": { "nested": [1, 2, 3] },
+        })
+        .to_string();
+
+        let answer = ask_request(tmp.path(), &body);
+        assert_eq!(
+            answer.code, 0,
+            "a guard that rejected an unrecognised field would deny EVERY tool call the \
+             day the CLI grew one: {}",
+            answer.stderr
+        );
+
+        let parsed: GuardRequest = serde_json::from_str(&body).unwrap();
+        assert!(
+            parsed.extra.contains_key("a_field_from_a_later_cli_release"),
+            "preserved, not merely tolerated: {:?}",
+            parsed.extra
+        );
+    }
+
+    #[test]
+    fn a_request_for_another_tool_is_not_this_layers_business() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let answer = ask_request(
+            tmp.path(),
+            &serde_json::json!({
+                "tool_name": "Read",
+                "tool_input": { "file_path": "/etc/passwd" },
+            })
+            .to_string(),
+        );
+        assert_eq!(answer.code, 0, "layer 1's denylist owns non-shell tools");
+    }
+
+    #[test]
+    fn a_bash_request_with_no_readable_command_is_denied() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let answer = ask_request(
+            tmp.path(),
+            &serde_json::json!({ "tool_name": "Bash", "tool_input": {} }).to_string(),
+        );
+        assert!(answer.denied(), "{}", answer.stdout);
+    }
+
+    #[test]
+    fn the_refusal_is_mirrored_to_stderr_as_well_as_to_the_protocol() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let answer = ask(tmp.path(), "git push --force origin main");
+        assert!(
+            answer.stderr.contains(policy::REASON_FORCE_PUSH_BLOCKED),
+            "the refusal must be observable from the process boundary as well as from \
+             the protocol, because a protocol that drifts must not disarm the guard: {}",
+            answer.stderr
+        );
+        assert_eq!(answer.code, 2, "exit 2 is the second carrier");
+    }
+
+    #[test]
+    fn the_pull_request_cap_is_enforced_from_the_guard_and_the_third_still_succeeds() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Defaults are 3 per 24h and 1 per run; the run id is absent here, so
+        // every invocation shares the `unattributed-run` placeholder — which is
+        // exactly what proves the per-run cap is not silently reset per process.
+        let first = ask(tmp.path(), "gh pr create --title x --body y");
+        assert_eq!(first.code, 0, "{}", first.stderr);
+
+        let second = ask(tmp.path(), "gh pr create --title x --body y");
+        assert!(
+            second.denied(),
+            "the per-run cap is 1, so a second attempt in the same run is refused even \
+             though the window has capacity: {}",
+            second.stdout
+        );
+        assert!(
+            second.reason().contains(policy::REASON_PR_CAP_EXCEEDED)
+                && second.reason().contains("over-count"),
+            "{}",
+            second.reason()
+        );
+    }
+
+    #[test]
+    fn a_read_only_forge_command_is_not_recorded_against_the_cap() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        for _ in 0..5 {
+            let answer = ask(tmp.path(), "gh pr list --limit 5");
+            assert_eq!(answer.code, 0, "{}", answer.stderr);
+        }
+        assert!(
+            !super::super::ledger::ledger_path_in(tmp.path(), "alpha")
+                .unwrap()
+                .exists(),
+            "a listing is not a creation, and a cap that counted reads would refuse a \
+             run for looking"
+        );
+    }
+
+    #[test]
+    fn the_guard_makes_no_network_call_on_any_path_it_takes() {
+        // The mechanical half of the latency requirement. The behavioural half
+        // is that every test in this block answers without a socket at all —
+        // this one is what a future edit has to get past.
+        let source = include_str!("hooks.rs");
+        let guard_body: String = source
+            .split("pub fn guard_in(")
+            .nth(1)
+            .expect("guard_in exists")
+            .split("\n}\n")
+            .next()
+            .expect("its body ends")
+            .to_string();
+
+        // Without this the extraction could silently yield an empty string and
+        // every assertion below would pass having read nothing — the vacuous
+        // pass this phase exists to argue against.
+        assert!(
+            guard_body.contains("classify_segments"),
+            "the extracted body is not the guard's: {guard_body}"
+        );
+
+        for client in ["reqwest", "ureq", "hyper", "curl", "TcpStream"] {
+            assert!(
+                !guard_body.contains(client),
+                "`{client}` appeared on the guard's critical path; \
+                 src/executor/mod.rs:225-239 records the 180-240 second hang this rule \
+                 exists to prevent"
+            );
+        }
     }
 }
