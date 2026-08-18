@@ -79,3 +79,30 @@ did not touch the file, the stub generator, or `assert_provenance`. The file bel
 
 **Fix direction.** Drop or `sync_all` the copy's handle before exec, or retry a bounded number
 of times on `ExecutableFileBusy`. Do **not** serialise the suite — that hides the race.
+
+## `tests/driver_lock.rs` — one-off lock-acquisition timeout (found during 19-VERIFICATION)
+
+**Symptom.** `the_lock_is_released_when_the_holding_process_dies` failed once under full-suite
+parallel load with "the child driver never took the lock within 30s". Passed cleanly in
+isolation twice.
+
+**Orchestrator follow-up.** Three further full-suite runs under load did NOT reproduce it
+(two fully green at 993 passing; the third showed only the two known `driver_reattach`
+flakes). It is therefore rarer than the documented `driver_reattach` pair.
+
+**Why it is recorded anyway.** Two independent observers reached the same hypothesis from
+different directions. 19-07's executor flagged, unprompted, that moving envelope
+establishment ahead of the lock "plausibly widens that race without changing its cause"; the
+verifier then independently proposed that `establish_envelope()` — hook stub writes,
+settings-file generation plus round-trip readback, `.git/info/exclude` write, cred config
+generation, all inside one `spawn_blocking` **before** `lock::acquire` — is new I/O on the
+run-startup critical path that did not exist before Phase 19.
+
+**Assessment.** A test-timing observation, not a mechanism defect: no SAFE-0x success
+criterion depends on lock-acquisition latency. But it is the one item in this phase where
+Phase 19's own changes are the plausible cause, unlike the `driver_reattach` pair which is
+proved pre-existing.
+
+**Suggested owner.** Whoever fixes the `driver_reattach` race — the fix direction is the
+same (wait on the artifact/state, not a fixed budget), and Phase 20 builds on this envelope
+and will add further startup work.
