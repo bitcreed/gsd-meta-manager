@@ -76,7 +76,8 @@ struct EstablishedEnvelope {
 ///
 /// The order is the decision:
 ///
-/// 1. [`hooks::install`] first, because the hooks directory is what
+/// 1. `envelope::hooks::install` ([`hooks::install`]) first, because the
+///    hooks directory is what
 ///    `core.hooksPath` in the generated environment will point at, and an
 ///    environment naming a directory that does not exist is an environment that
 ///    delivers nothing.

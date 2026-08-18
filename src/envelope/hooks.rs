@@ -43,9 +43,10 @@ const NEEDS_HUMAN: &str = "human";
 /// [`super::cred::PROJECT_ROOT_ENV`] turn a park failure into a permitted
 /// operation, which is exactly the inversion D-25 forbids.
 ///
-/// [`super::park`] writes its own second stderr line for any outcome other than
-/// `Appended`, so silence is impossible here without deleting a line inside
-/// `park` itself.
+/// `envelope::park` ([`super::park`]) writes its own second stderr line for any
+/// outcome other than `Appended`, so silence is impossible here without deleting
+/// a line inside `park` itself. It is the **one** appender every refusal in this
+/// module reaches: `pre_push`, `pre_commit` and `guard` all come through here.
 fn park_refusal(reason: ParkReason, detail: &str) {
     let _ = super::park(reason, NEEDS_HUMAN, detail);
 }

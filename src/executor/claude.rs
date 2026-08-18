@@ -475,8 +475,10 @@ impl ClaudeExecutor {
             }
             cmd.env("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", &bg_ceiling);
 
-            // Removal and assignment are distinct instructions and the `Option`
-            // in `EnvelopeVar` is what keeps them distinct: `SSH_AUTH_SOCK=""`
+            // The `EnvelopeEnv` value `envelope::cred::build_env` produced, applied
+            // one entry at a time. Removal and assignment are distinct
+            // instructions and the `Option` in `EnvelopeVar` is what keeps them
+            // distinct: `SSH_AUTH_SOCK=""`
             // is a variable an agent can notice and work around, while an absent
             // one is absent. Matching here rather than collapsing to `env` is
             // the whole reason that type carries an `Option` (D-16).

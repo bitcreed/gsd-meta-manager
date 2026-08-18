@@ -307,7 +307,9 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
     // **Before `dispatch`**, so a refused run has created nothing at all: no
     // lock file, no run directory, no run record, no journal.
     //
-    // That last clause is also why this refusal writes **no** `Parked` event.
+    // That last clause is also why this refusal writes **no**
+    // `journal::JournalEvent::Parked` event, even though its reason is
+    // `envelope_assertion_failed` and every other producer of that reason does.
     // There is no journal for the run at this point — there is no run — so the
     // evidence D-25 requires is the typed error, the non-zero process exit and
     // the stderr line `src/main.rs` prints, all three of which are readable
