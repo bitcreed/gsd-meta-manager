@@ -115,6 +115,16 @@ pub fn record_opt_in(config: &mut Config, alias: &str) -> Result<()> {
     entry.driver_opt_in = Some(DriverOptIn {
         opted_in_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         claude_md_digest: digest,
+        // Every envelope field is named explicitly as `None` rather than
+        // reached for through `..Default::default()`, for the reason
+        // `config.rs:41-45` records about the opt-in field itself: the next
+        // field added must break this line, not be silently absorbed by it.
+        // `None` here means "the envelope's own defaults apply", resolved in
+        // the one place they are decided — `EnvelopePolicy::resolve` (D-30).
+        branch_namespace: None,
+        credential: None,
+        pr_cap_per_24h: None,
+        pr_cap_per_run: None,
     });
 
     Ok(())
