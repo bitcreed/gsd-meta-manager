@@ -51,6 +51,11 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     // The detached driver spawn; it re-invokes this same binary, so the
     // capability gate runs in the child.
     "src/driver/spawn.rs",
+    // `gitleaks` when a binary happens to be on PATH, as an ADDITIVE second
+    // opinion on the built-in credential rules (D-11). Its absence is never a
+    // reason to allow, and its output is discarded rather than reproduced. No
+    // agent.
+    "src/envelope/scan.rs",
     // `git check-ignore` for the run-record ignore diagnostic. No agent.
     "src/journal/writer.rs",
     // The TUI's blocking `$EDITOR` shell-out. No agent.

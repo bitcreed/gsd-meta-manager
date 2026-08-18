@@ -144,6 +144,27 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+            EnvelopeAction::Scan { alias, root } => {
+                if !gsd_meta_manager::journal::is_plain_path_component(&alias) {
+                    eprintln!(
+                        "Error: alias {alias:?} is not a plain path component, so no \
+                         envelope sanctions a scan for it"
+                    );
+                    std::process::exit(1);
+                }
+                let report = gsd_meta_manager::envelope::scan::scan_with_external(
+                    &root,
+                    gsd_meta_manager::envelope::scan::ScanLimits::default(),
+                );
+                // Stdout, because this entry point is read by a human. The
+                // report is safe to print by construction: it carries file,
+                // line and rule, and has nowhere to hold a matched secret.
+                println!("alias={alias} root={}", root.display());
+                print!("{}", report.render());
+                // The exit code IS the control (D-25), here as much as in the
+                // hook: a finding exits non-zero.
+                std::process::exit(if report.is_clean() { 0 } else { 1 });
+            }
         },
         None => {
             // TUI mode
