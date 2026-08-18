@@ -47,6 +47,17 @@ fn is_zero_sha(sha: &str) -> bool {
     !sha.is_empty() && sha.chars().all(|c| c == '0')
 }
 
+/// Where this alias's hooks live, or `None` for a hostile alias.
+///
+/// The **one** definition of that path. [`install_in`] writes into it,
+/// [`assert_provenance_in`] certifies against it, and
+/// [`super::cred::build_env_in`] hands it to git as `core.hooksPath` — three
+/// consumers whose disagreement would be a hook that is installed somewhere git
+/// never looks, or certified against a directory it was not installed in.
+pub fn hooks_dir_in(root: &Path, alias: &str) -> Option<PathBuf> {
+    super::envelope_dir_in(root, alias).map(|dir| dir.join(HOOKS_SUBDIR))
+}
+
 /// Install the `pre-push` stub for `alias`, returning the hooks **directory**.
 ///
 /// The directory rather than the file, because the directory is what
@@ -70,10 +81,9 @@ pub fn install(alias: &str) -> anyhow::Result<PathBuf> {
 /// [`std::env::current_exe`] is the *test* binary, which would produce a stub
 /// that execs something with no `envelope` subcommand.
 pub fn install_in(root: &Path, alias: &str, binary: &Path) -> anyhow::Result<PathBuf> {
-    let dir = super::envelope_dir_in(root, alias).ok_or_else(|| {
+    let hooks_dir = hooks_dir_in(root, alias).ok_or_else(|| {
         anyhow!("refusing to install a hook for alias {alias:?}: not a plain path component")
     })?;
-    let hooks_dir = dir.join(HOOKS_SUBDIR);
     std::fs::create_dir_all(&hooks_dir)
         .with_context(|| format!("failed to create {}", hooks_dir.display()))?;
 
@@ -180,11 +190,9 @@ pub fn assert_provenance_in(root: &Path, alias: &str, invoked_from: &Path) -> an
         ));
     }
 
-    let hooks_dir = super::envelope_dir_in(root, alias)
-        .map(|dir| dir.join(HOOKS_SUBDIR))
-        .ok_or_else(|| {
-            anyhow!("alias {alias:?} is not a plain path component, so it sanctions no hook")
-        })?;
+    let hooks_dir = hooks_dir_in(root, alias).ok_or_else(|| {
+        anyhow!("alias {alias:?} is not a plain path component, so it sanctions no hook")
+    })?;
 
     // The hook's own filename selects which sanctioned file it is compared
     // against, so one provenance check covers every hook this envelope

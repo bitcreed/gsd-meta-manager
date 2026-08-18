@@ -49,6 +49,29 @@ pub const PROJECT_ROOT_ENV: &str = "GSD_MM_ENVELOPE_PROJECT_ROOT";
 /// envelope directory.
 const GITCONFIG_FILE: &str = "gitconfig";
 
+/// The subdirectory `GH_CONFIG_DIR` is pointed at.
+///
+/// It is created empty and left empty. The external GitHub client reads
+/// `hosts.yml` from here, so an empty directory is a client that knows about no
+/// host and holds no token — which is the whole intent, and it is why the
+/// directory is created rather than merely named: a `GH_CONFIG_DIR` pointing at
+/// a path that does not exist is a configuration some versions decline to
+/// honour, and declining to honour it means falling back to the user's own.
+const GH_SUBDIR: &str = "gh";
+
+/// The identity a generated config falls back to when the user's own git
+/// configuration names none.
+///
+/// A driven run with no `user.name` cannot commit at all — git refuses with
+/// "Please tell me who you are" — so an absent identity has to become
+/// *something*. It becomes a name that is obviously this tool and an address in
+/// the RFC 2606 `.invalid` TLD, which can never resolve to a real mailbox. The
+/// alternative, failing the run, would turn a cosmetic gap in the user's
+/// configuration into a refusal, and refusals in this module are reserved for
+/// the thing SAFE-05 is actually about.
+const FALLBACK_NAME: &str = "gsd-meta-manager driven run";
+const FALLBACK_EMAIL: &str = "driven-run@gsd-meta-manager.invalid";
+
 /// The ssh invocation that offers no identity, consults no agent, reads no user
 /// configuration and cannot prompt (D-16).
 ///
@@ -225,11 +248,7 @@ pub fn write_gitconfig_in(
     // then `persist`. A half-written config is a config git would read.
     let mut tmp = NamedTempFile::new_in(&dir)
         .with_context(|| format!("failed to create a temp file in {}", dir.display()))?;
-    // RED: the identity is not copied through yet — that lands in the GREEN
-    // step. An empty identity is the "config git resolves nothing from" case, so
-    // the assertion below fails against it rather than passing vacuously.
-    let _ = (name, email);
-    tmp.write_all(gitconfig_body("", "").as_bytes())
+    tmp.write_all(gitconfig_body(name, email).as_bytes())
         .with_context(|| format!("failed to write {}", path.display()))?;
     tmp.persist(&path)
         .with_context(|| format!("failed to persist the generated config to {}", path.display()))?;
@@ -276,13 +295,128 @@ pub fn build_env(alias: &str, project_root: &Path) -> anyhow::Result<EnvelopeEnv
 }
 
 /// [`build_env`] against an explicit envelope root.
+///
+/// The two `git config --get` lookups for the user's identity are the only I/O
+/// beyond writing the generated config and creating the `gh` directory: no
+/// process of this module's own is spawned, because both reads go through
+/// [`crate::state_reader::git_ops::git_read_raw`], which already carries the
+/// `--no-optional-locks` and failure-as-data properties a read that must not
+/// mutate the repository it is reading needs.
 pub fn build_env_in(root: &Path, alias: &str, project_root: &Path) -> anyhow::Result<EnvelopeEnv> {
-    let _ = (root, alias, project_root);
-    // RED: the real builder lands in the GREEN step. An empty environment is the
-    // "envelope that does nothing" this plan exists to make impossible, so every
-    // assertion below fails against it — which is what proves each one is
-    // load-bearing (the pattern plan 19-02 established).
-    Ok(EnvelopeEnv(Vec::new()))
+    let dir = super::envelope_dir_in(root, alias).ok_or_else(|| {
+        anyhow!("refusing to build an environment for alias {alias:?}: not a plain path component")
+    })?;
+
+    // Canonicalised before anything is written, so a project root that does not
+    // exist is an error here rather than a locator pointing at nothing.
+    let project_root = std::fs::canonicalize(project_root).with_context(|| {
+        format!(
+            "cannot resolve the driven project root {}, so no run journal could be \
+             located from inside a hook",
+            project_root.display()
+        )
+    })?;
+
+    let (name, email) = resolve_identity(&project_root);
+    let gitconfig = write_gitconfig_in(root, alias, &name, &email)?;
+
+    let gh_dir = dir.join(GH_SUBDIR);
+    std::fs::create_dir_all(&gh_dir)
+        .with_context(|| format!("failed to create {}", gh_dir.display()))?;
+
+    let hooks_dir = super::hooks::hooks_dir_in(root, alias).ok_or_else(|| {
+        anyhow!("alias {alias:?} sanctions no hooks directory, so no hook can be delivered")
+    })?;
+
+    let mut entries: Vec<EnvelopeVar> = vec![
+        // Removed, not emptied. An ambient agent socket is the shortest path
+        // from a driven run to the user's own keys, and an empty value would
+        // leave a variable an agent can notice and work around (D-16).
+        (OsString::from("SSH_AUTH_SOCK"), None),
+        (OsString::from("SSH_AGENT_PID"), None),
+        // No user ssh config, no agent, no default identity file, no prompt.
+        (
+            OsString::from("GIT_SSH_COMMAND"),
+            Some(OsString::from(ENVELOPE_SSH_COMMAND)),
+        ),
+        // Both scopes, one file. git resolves `credential.helper` from system
+        // and global configuration, and there is now no system or global
+        // configuration that mentions one.
+        (
+            OsString::from("GIT_CONFIG_GLOBAL"),
+            Some(gitconfig.clone().into_os_string()),
+        ),
+        (
+            OsString::from("GIT_CONFIG_SYSTEM"),
+            Some(gitconfig.into_os_string()),
+        ),
+        // A detached driver's stdio is null (Phase 17 D-01), so an
+        // authentication prompt is not a prompt — it is a hang the idle cap
+        // eventually kills hours later.
+        (
+            OsString::from("GIT_TERMINAL_PROMPT"),
+            Some(OsString::from("0")),
+        ),
+        // The external GitHub client cannot read the user's own
+        // `~/.config/gh/hosts.yml`, so its credential helper has no host and no
+        // token to offer.
+        (
+            OsString::from("GH_CONFIG_DIR"),
+            Some(gh_dir.into_os_string()),
+        ),
+        // The run-journal locator, and the ONE variable here that exists for
+        // **evidence** rather than for containment. D-24 requires every envelope
+        // refusal to park the run and D-25 requires the park to land where a
+        // later reader can find it — which means the hook and guard re-entries,
+        // separate processes spawned by git and by the agent's own tooling, must
+        // be able to resolve the active run's journal. `alias` alone cannot get
+        // them there: mapping an alias to a project root runs through
+        // `DrivableProject::from_registry`, which has exactly one production
+        // call site that `tests/spawn_seam_guard.rs` holds (D-28). Carrying the
+        // root on the environment the envelope already owns is what avoids
+        // minting a second one.
+        //
+        // The honest limit: a child that unsets this loses its park evidence but
+        // does **not** gain the ability to push. Refusal never depends on the
+        // locator being present, and plan 19-07 wires the two in that order.
+        (
+            OsString::from(PROJECT_ROOT_ENV),
+            Some(project_root.into_os_string()),
+        ),
+    ];
+
+    // Folded in last so the count reflects every injected key. `config_env`
+    // derives it from the pairs, so adding a key here cannot silently drop the
+    // whole injection the way a hardcoded count would.
+    for (key, value) in hooks_path_env(&hooks_dir) {
+        entries.push((key, Some(value)));
+    }
+
+    Ok(EnvelopeEnv(entries))
+}
+
+/// The user's resolved `user.name` and `user.email`, or the `.invalid`
+/// fallbacks.
+///
+/// Read from the driven project, so a repository-local identity wins exactly as
+/// it would for the human — the generated config is meant to preserve the
+/// user's attribution, not to impose a new one.
+fn resolve_identity(project_root: &Path) -> (String, String) {
+    let read = |key: &str| -> Option<String> {
+        let raw = crate::state_reader::git_ops::git_read_raw(
+            project_root,
+            &["config", "--get", key],
+        )?;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        Some(trimmed.to_string())
+    };
+    (
+        read("user.name").unwrap_or_else(|| FALLBACK_NAME.to_string()),
+        read("user.email").unwrap_or_else(|| FALLBACK_EMAIL.to_string()),
+    )
 }
 
 #[cfg(test)]
