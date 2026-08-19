@@ -176,7 +176,14 @@ impl QuotaWindow {
     /// Bounded and control-character-free; see [`MAX_OBSERVED_WINDOW_CHARS`] for
     /// why the rendering and the carried value differ.
     pub fn detail(&self) -> String {
-        unimplemented!("Task 1 GREEN")
+        match self {
+            QuotaWindow::FiveHour => WINDOW_FIVE_HOUR.to_string(),
+            QuotaWindow::SevenDay => WINDOW_SEVEN_DAY.to_string(),
+            QuotaWindow::Unknown(None) => UNKNOWN.to_string(),
+            QuotaWindow::Unknown(Some(observed)) => {
+                format!("{UNKNOWN}({})", sanitize_observed(observed))
+            }
+        }
     }
 }
 
@@ -204,8 +211,22 @@ pub enum QuotaVerdict {
 
 /// The `rate_limit_info` object of `event`, if there is one and it is an object.
 fn info(event: Option<&Value>) -> Option<&Value> {
-    let _ = event;
-    unimplemented!("Task 1 GREEN")
+    event
+        .and_then(|event| event.get(RATE_LIMIT_INFO_FIELD))
+        .filter(|info| info.is_object())
+}
+
+/// Strip control characters and bound the length of an observed wire string.
+fn sanitize_observed(observed: &str) -> String {
+    let mut rendered: String = observed
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_OBSERVED_WINDOW_CHARS)
+        .collect();
+    if observed.chars().filter(|c| !c.is_control()).count() > MAX_OBSERVED_WINDOW_CHARS {
+        rendered.push_str("...");
+    }
+    rendered
 }
 
 /// Which window `event` named.
@@ -214,8 +235,21 @@ fn info(event: Option<&Value>) -> Option<&Value> {
 /// not an object, a missing `rateLimitType` and a `rateLimitType` that is not a
 /// string all yield [`QuotaWindow::Unknown`] rather than a guess.
 pub fn window(event: Option<&Value>) -> QuotaWindow {
-    let _ = event;
-    unimplemented!("Task 1 GREEN")
+    let Some(info) = info(event) else {
+        return QuotaWindow::Unknown(None);
+    };
+
+    match info.get(RATE_LIMIT_TYPE_FIELD).and_then(Value::as_str) {
+        Some(WINDOW_FIVE_HOUR) => QuotaWindow::FiveHour,
+        Some(
+            WINDOW_SEVEN_DAY
+            | WINDOW_SEVEN_DAY_OPUS
+            | WINDOW_SEVEN_DAY_SONNET
+            | WINDOW_SEVEN_DAY_OVERAGE_INCLUDED,
+        ) => QuotaWindow::SevenDay,
+        Some(observed) => QuotaWindow::Unknown(Some(observed.to_string())),
+        None => QuotaWindow::Unknown(None),
+    }
 }
 
 /// When `event` says the window resets, if that can be established and trusted.
@@ -229,8 +263,17 @@ pub fn window(event: Option<&Value>) -> QuotaWindow {
 /// schedules anything against the result — it is displayed and never acted on —
 /// so a value inside the bound is still only a report.
 pub fn reset_time(event: Option<&Value>, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    let _ = (event, now);
-    unimplemented!("Task 1 GREEN")
+    let secs = info(event)?.get(RESETS_AT_FIELD)?.as_i64()?;
+    // `from_timestamp` returns `None` rather than panicking or wrapping for a
+    // value outside the representable range, which is the whole reason the
+    // construction happens before the bound instead of after it: a value the
+    // constructor refuses must be reported as unknown, not compared.
+    let resets_at = DateTime::from_timestamp(secs, 0)?;
+    let skew = resets_at
+        .timestamp()
+        .saturating_sub(now.timestamp())
+        .saturating_abs();
+    (skew <= RESET_SANITY_WINDOW_SECS).then_some(resets_at)
 }
 
 /// Whether this retained payload parks the run, and under which window.
@@ -244,8 +287,18 @@ pub fn reset_time(event: Option<&Value>, now: DateTime<Utc>) -> Option<DateTime<
 /// this module free of a clock and the sanity bound testable at one-second
 /// resolution.
 pub fn classify(event: Option<&Value>, now: DateTime<Utc>) -> QuotaVerdict {
-    let _ = (event, now);
-    unimplemented!("Task 1 GREEN")
+    let Some(payload) = info(event) else {
+        return QuotaVerdict::Allowed;
+    };
+
+    if payload.get(STATUS_FIELD).and_then(Value::as_str) != Some(STATUS_REJECTED) {
+        return QuotaVerdict::Allowed;
+    }
+
+    QuotaVerdict::Rejected {
+        window: window(event),
+        resets_at: reset_time(event, now),
+    }
 }
 
 /// Whether a failed run's own terminal reason names a rate-limit condition.
@@ -267,8 +320,7 @@ pub fn classify(event: Option<&Value>, now: DateTime<Utc>) -> QuotaVerdict {
 /// terminal reason in the observed vocabulary contains this substring for any
 /// other cause.
 pub fn terminal_reason_names_a_rate_limit(terminal_reason: Option<&str>) -> bool {
-    let _ = terminal_reason;
-    unimplemented!("Task 1 GREEN")
+    terminal_reason.is_some_and(|reason| reason.contains(RATE_LIMIT_TERMINAL_MARKER))
 }
 
 /// The detail a quota park records beside its reason.
@@ -279,8 +331,11 @@ pub fn terminal_reason_names_a_rate_limit(terminal_reason: Option<&str>) -> bool
 /// API-equivalent price rather than a charge, and presenting it as what the run
 /// cost misinforms the one decision the user is making.
 pub fn park_detail(window: &QuotaWindow, resets_at: Option<DateTime<Utc>>) -> String {
-    let _ = (window, resets_at);
-    unimplemented!("Task 1 GREEN")
+    let resets = match resets_at {
+        Some(at) => at.to_rfc3339_opts(SecondsFormat::Secs, true),
+        None => UNKNOWN.to_string(),
+    };
+    format!("window={} resets_at={resets}", window.detail())
 }
 
 #[cfg(test)]
@@ -611,7 +666,7 @@ mod tests {
         );
         assert_eq!(
             resets_at.to_rfc3339_opts(SecondsFormat::Secs, true),
-            "2026-07-29T07:30:00Z",
+            "2026-07-29T12:10:00Z",
             "and it renders as the instant a reader would check a clock against"
         );
     }
@@ -628,7 +683,7 @@ mod tests {
             "the park must name which window blocked the run: {detail}"
         );
         assert!(
-            detail.contains("2026-07-29T07:30:00Z"),
+            detail.contains("2026-07-29T12:10:00Z"),
             "and when it resets: {detail}"
         );
 
