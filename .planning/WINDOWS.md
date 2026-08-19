@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 9
+open_count: 10
 waived_count: 0
 fixed_count: 0
-total_count: 9
-last_updated: 2026-08-19T19:47:28.307Z
+total_count: 10
+last_updated: 2026-08-19T20:32:38.102Z
 ---
 
 # Broken Windows Ledger
@@ -24,6 +24,7 @@ last_updated: 2026-08-19T19:47:28.307Z
 | 7 | 20 | stub | src/driver/router.rs |  | 20-01: RouterReason::DependencyUnsatisfied has no producer; belongs to the plan that widens the rule table (20-04) | open |  | 2026-08-19T19:47:28.080Z |  |
 | 8 | 20 | stub | src/driver/run.rs |  | 20-01: GOAL_MET_LABEL is unreachable — the one terminal label sourced from neither outcome_label nor the parked: prefix; needs a GoalMet producer (20-04) | open |  | 2026-08-19T19:47:28.196Z |  |
 | 9 | 20 | deviation | src/driver/dry_run.rs |  | 20-01: SECTION_COMMANDS and its sibling prose at dry_run.rs:14 and :107-111 still claim the single --command is the complete honest sequence, which the routed loop makes false (research Pitfall 6); a routed preview reports '(routed: chosen per iteration)' so nothing lies about a specific command — 20-02 owns the pinned-text fix | open |  | 2026-08-19T19:47:28.307Z |  |
+| 10 | 20 | deviation | tests/driver_reattach.rs |  | Wave-2 post-merge gate: 2 failures, both in driver_reattach. Bisected — FAILS at b6c1ae7 (docs-only, zero phase-20 source), so NOT a phase-20 regression; matches phase 19 deferred-items 'proved pre-existing'. New observation worth acting on: it now fails 3/3 in ISOLATION (0.53s), whereas phase 19 recorded it passing in isolation and failing only under parallel load. The failure rate has increased and the isolation-passes assumption in deferred-items.md is now stale. 930/932 tests pass; failures confined to this one target. | open |  | 2026-08-19T20:32:38.102Z |  |
 
 ````json
 [
@@ -133,6 +134,18 @@ last_updated: 2026-08-19T19:47:28.307Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-08-19T19:47:28.307Z",
+    "resolved_at": null
+  },
+  {
+    "id": 10,
+    "kind": "deviation",
+    "phase": "20",
+    "file": "tests/driver_reattach.rs",
+    "line": null,
+    "description": "Wave-2 post-merge gate: 2 failures, both in driver_reattach. Bisected — FAILS at b6c1ae7 (docs-only, zero phase-20 source), so NOT a phase-20 regression; matches phase 19 deferred-items 'proved pre-existing'. New observation worth acting on: it now fails 3/3 in ISOLATION (0.53s), whereas phase 19 recorded it passing in isolation and failing only under parallel load. The failure rate has increased and the isolation-passes assumption in deferred-items.md is now stale. 930/932 tests pass; failures confined to this one target.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-08-19T20:32:38.102Z",
     "resolved_at": null
   }
 ]

@@ -424,13 +424,13 @@ phase's scope — the same reasoning Phases 15 and 16 recorded.
   - Refuse to act on inferred-only state; v1.1's verified/inferred badge becomes a safety input here
 
 **Research**: yes — `/gsd-plan-phase --research-phase`. GSD's own autonomous-mode semantics and the `WAITING.json`/checkpoint contract need re-verification: the Phase 13 queue-execution design self-dated "valid until 2026-04-30" and GSD has shipped 1.8.0 since
-**Plans**: 1/5 plans executed in 3 waves
+**Plans**: 3/5 plans executed in 3 waves
 
 Plans:
 
 - [x] 20-01-PLAN.md — Tracer: build the iteration loop and prove one routed command, bounded, ending with the detector named on disk (CTRL-06, DRIVE-02, DRIVE-06)
-- [ ] 20-02-PLAN.md — Terminal-record honesty: per-field scope classification on `run.json`, the caps in force on disk, the pinned dry-run contract, the async-blocking lint hole (DRIVE-06, CTRL-06)
-- [ ] 20-03-PLAN.md — The one reader: GSD's `executed` vocabulary, the verification frontmatter status, the disk-observable gate set, declared roadmap dependencies (DRIVE-05, DRIVE-02)
+- [x] 20-02-PLAN.md — Terminal-record honesty: per-field scope classification on `run.json`, the caps in force on disk, the pinned dry-run contract, the async-blocking lint hole (DRIVE-06, CTRL-06)
+- [x] 20-03-PLAN.md — The one reader: GSD's `executed` vocabulary, the verification frontmatter status, the disk-observable gate set, declared roadmap dependencies (DRIVE-05, DRIVE-02)
 - [ ] 20-04-PLAN.md — The complete rule table, the closed gate taxonomy, the goal-met predicate, and the conformance oracle against GSD's own router (DRIVE-02, DRIVE-05, DRIVE-06)
 - [ ] 20-05-PLAN.md — Quota park: observe the rate-limit signal on the transport, name the window and reset, and stop without retrying (CTRL-07, DRIVE-06)
 
@@ -490,7 +490,7 @@ Plans:
 | 17. Supervisor | 8/8 | Complete    | 2026-07-29 |
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 8/8 | In Progress|  |
-| 20. Deterministic Decision Router & Run Bounds | 1/5 | In Progress|  |
+| 20. Deterministic Decision Router & Run Bounds | 3/5 | In Progress|  |
 | 21. LLM Goal Layer & Prompt-Injection Hardening | 0/? | Not started | - |
 | 22. Container Execution Target | 0/? | Not started | - |
 
