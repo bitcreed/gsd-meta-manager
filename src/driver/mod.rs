@@ -72,6 +72,13 @@ pub mod dry_run;
 // even type-check.
 pub mod bounds;
 pub mod router;
+// Third in the same block and for the identical reason: [`rate_limit`] reads no
+// clock and opens no file — the driver retains the payload off the stream and
+// hands in the instant to judge a reset time against — so there is nothing
+// platform-specific in it to gate, and gating it would put the classification
+// that decides whether a run parks on a shared quota out of reach of a non-Unix
+// build's type checker.
+pub mod rate_limit;
 // Also outside the block, and for a related but distinct reason. Both modules
 // are `/proc` and `run.json` **reads**, and D-10 is explicit that they should
 // carry `src/session_detector.rs`'s honest-failure posture — that module has no
