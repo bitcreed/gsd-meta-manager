@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 10
+open_count: 12
 waived_count: 0
 fixed_count: 0
-total_count: 10
-last_updated: 2026-08-19T20:32:38.102Z
+total_count: 12
+last_updated: 2026-08-19T23:26:50.849Z
 ---
 
 # Broken Windows Ledger
@@ -25,6 +25,8 @@ last_updated: 2026-08-19T20:32:38.102Z
 | 8 | 20 | stub | src/driver/run.rs |  | 20-01: GOAL_MET_LABEL is unreachable — the one terminal label sourced from neither outcome_label nor the parked: prefix; needs a GoalMet producer (20-04) | open |  | 2026-08-19T19:47:28.196Z |  |
 | 9 | 20 | deviation | src/driver/dry_run.rs |  | 20-01: SECTION_COMMANDS and its sibling prose at dry_run.rs:14 and :107-111 still claim the single --command is the complete honest sequence, which the routed loop makes false (research Pitfall 6); a routed preview reports '(routed: chosen per iteration)' so nothing lies about a specific command — 20-02 owns the pinned-text fix | open |  | 2026-08-19T19:47:28.307Z |  |
 | 10 | 20 | deviation | tests/driver_reattach.rs |  | Wave-2 post-merge gate: 2 failures, both in driver_reattach. Bisected — FAILS at b6c1ae7 (docs-only, zero phase-20 source), so NOT a phase-20 regression; matches phase 19 deferred-items 'proved pre-existing'. New observation worth acting on: it now fails 3/3 in ISOLATION (0.53s), whereas phase 19 recorded it passing in isolation and failing only under parallel load. The failure rate has increased and the isolation-passes assumption in deferred-items.md is now stale. 930/932 tests pass; failures confined to this one target. | open |  | 2026-08-19T20:32:38.102Z |  |
+| 11 | 20 | deviation | src/journal/mod.rs |  | 20-05: the Parked.reason taxonomy table gained a fourth sibling taxonomy (quota_) as a doc-only amendment. journal/mod.rs was outside 20-05's declared files_modified, but its own doc said 'Three sanctioned taxonomies' and its text says naming only some of them would be the same quiet lie the record exists to prevent — so leaving it stale was not an option. Quota is a sibling taxonomy, not a fifth BoundsReason arm: bounds.rs documents CTRL-06 as exactly four detectors, and router.rs belonged to a parallel worktree. | open |  | 2026-08-19T23:26:50.738Z |  |
+| 12 | 20 | deviation | src/driver/rate_limit.rs |  | 20-05: research assumption A2 recommended detecting quota exhaustion via terminal_reason.starts_with('api_error'). That is wrong — it would report api_error_overloaded and every future api_error_* as quota exhaustion, telling the user to wait out a 7-day window for a fault a retry clears in seconds. Shipped predicate is contains('rate_limit'), with a test pinning seven non-quota terminal reasons including budget_exhausted (the --max-budget-usd post-turn breaker, a different constraint per D-16). 20-RESEARCH.md A2 is stale. | open |  | 2026-08-19T23:26:50.849Z |  |
 
 ````json
 [
@@ -146,6 +148,30 @@ last_updated: 2026-08-19T20:32:38.102Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-08-19T20:32:38.102Z",
+    "resolved_at": null
+  },
+  {
+    "id": 11,
+    "kind": "deviation",
+    "phase": "20",
+    "file": "src/journal/mod.rs",
+    "line": null,
+    "description": "20-05: the Parked.reason taxonomy table gained a fourth sibling taxonomy (quota_) as a doc-only amendment. journal/mod.rs was outside 20-05's declared files_modified, but its own doc said 'Three sanctioned taxonomies' and its text says naming only some of them would be the same quiet lie the record exists to prevent — so leaving it stale was not an option. Quota is a sibling taxonomy, not a fifth BoundsReason arm: bounds.rs documents CTRL-06 as exactly four detectors, and router.rs belonged to a parallel worktree.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-08-19T23:26:50.738Z",
+    "resolved_at": null
+  },
+  {
+    "id": 12,
+    "kind": "deviation",
+    "phase": "20",
+    "file": "src/driver/rate_limit.rs",
+    "line": null,
+    "description": "20-05: research assumption A2 recommended detecting quota exhaustion via terminal_reason.starts_with('api_error'). That is wrong — it would report api_error_overloaded and every future api_error_* as quota exhaustion, telling the user to wait out a 7-day window for a fault a retry clears in seconds. Shipped predicate is contains('rate_limit'), with a test pinning seven non-quota terminal reasons including budget_exhausted (the --max-budget-usd post-turn breaker, a different constraint per D-16). 20-RESEARCH.md A2 is stale.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-08-19T23:26:50.849Z",
     "resolved_at": null
   }
 ]
