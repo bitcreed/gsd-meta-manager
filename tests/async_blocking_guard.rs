@@ -123,6 +123,13 @@ const BLOCKING_MARKERS: &[&str] = &[
 /// like a clean run.
 const BLOCKING_HELPERS: &[&str] = &[
     "build_report(",
+    // The driver's own preview entry point, added in Phase 20 when the dry-run
+    // grew a second mode. It wraps `build_report` / `build_routed_report`, so
+    // the two synchronous `git` calls are still there — only the name at the
+    // call site changed, and a marker that named only the old one would have
+    // silently stopped seeing the join-failure fallback it was written for.
+    "preview_text(",
+    "build_routed_report(",
     "establish_envelope(",
     "terminal_label(",
     "lock::acquire(",
@@ -211,7 +218,15 @@ const ASYNC_BLOCKING_ALLOWLIST: &[(&str, &str)] = &[
     // `spawn_blocking` on every healthy path; this inline re-run is reachable
     // only if that task panicked or the runtime is shutting down, and it exists
     // so a preview stays honest on a path no healthy run reaches.
-    ("src/driver/mod.rs", "build_report("),
+    //
+    // **The marker moved from `build_report(` to `preview_text(` in Phase 20**,
+    // in the same commit as the code that moved it. The dry-run gained a second
+    // mode, so the two builders sit behind one entry point and the async fn no
+    // longer names `build_report` at all. `no_allowlist_entry_is_stale` is what
+    // caught the drift: the old entry stopped suppressing anything, which is
+    // precisely the "wider than the truth it describes" state it refuses — and
+    // the blocking work had not gone anywhere, only its name had.
+    ("src/driver/mod.rs", "preview_text("),
     // The terminal record's two join-failure fallbacks, the same shape and the
     // same reason: the label is read inside `spawn_blocking`, and the inline
     // re-run keeps a park reason on `run.json` rather than losing it merely

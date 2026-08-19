@@ -244,56 +244,50 @@ fn command_source_refusal(command: Option<&str>, target_phase: Option<&str>) -> 
     }
 }
 
-/// The two routed-mode markers, and which surface each one belongs to.
+/// The routed-mode marker written into `run.json`'s `gsd_command`.
 ///
-/// **Two constants, two surfaces, one owner for each — and no third literal
-/// anywhere in the tree.** Both say "this run is routed, so no single command
-/// names it", but they are read by different audiences under different
-/// constraints, so they are spelled separately and defined together rather than
-/// sharing one string that would have to compromise between the two:
-///
-/// * [`ROUTED_PREVIEW`] goes to a **human reading `--dry-run` on stdout**, where
-///   there is room for a full clause.
-/// * [`ROUTED_RECORD_MARKER`] goes to **`run.json`'s `gsd_command`**, a durable
-///   field a separate process parses and the TUI renders inline in a
-///   width-constrained header — so it is short, and it points at where the real
-///   answer lives instead of restating it.
-///
-/// Defining them adjacently is the mechanism: the next person who needs a
-/// routed marker finds both and picks one, rather than minting a third that
-/// drifts. This is the `REASON_*` shape `crate::envelope::policy` uses, applied
-/// to user-facing text instead of to a reason taxonomy.
-///
-/// **Neither may ever be the empty string or an argv fragment.**
-/// `the_routed_record_marker_cannot_be_misread_as_absent_or_as_an_argv_fragment`
-/// pins that: `""` already means "field absent" on the tolerant read path
-/// (D-30), and a `--target-phase 3`-shaped value reads as a pasteable command
-/// line while being nothing of the kind.
-pub const ROUTED_PREVIEW: &str = "(routed: chosen per iteration by the decision router)";
-
-/// The routed-mode marker written into `run.json`'s `gsd_command` — see
-/// [`ROUTED_PREVIEW`] for why there are two and what separates them.
+/// **Exactly one routed literal exists in the tree, and this is it.** There were
+/// briefly two — this one and a `ROUTED_PREVIEW` the dry-run used in place of a
+/// command it declined to compute. The preview now renders the router's *own*
+/// first selection alongside a scope that refuses to call it a sequence
+/// ([`dry_run::PreviewScope`]), so it has a real command to show and needs no
+/// marker at all. Collapsing to one constant removes the drift risk that having
+/// two of them created.
 ///
 /// It names the journal records that hold the actual sequence, because the whole
 /// purpose of writing a marker rather than a command is to send the reader
 /// somewhere that is not a guess.
+///
+/// **It may never be the empty string or an argv fragment.**
+/// `the_routed_record_marker_cannot_be_misread_as_absent_or_as_an_argv_fragment`
+/// pins that rather than pinning the literal alone: `""` already means "field
+/// absent" on the tolerant read path (D-30), and a `--target-phase 3`-shaped
+/// value reads as a pasteable command line while being nothing of the kind.
 pub const ROUTED_RECORD_MARKER: &str = "(routed: see the decided journal records)";
 
-/// What a preview reports as the command it would run.
+/// The rendered preview for whichever execution model this invocation names.
 ///
-/// [`command_source_refusal`] has already established that exactly one source is
-/// present, so the `unwrap_or` arm is reached only by a routed preview.
+/// [`command_source_refusal`] has already established that exactly one of the
+/// two is present, so the last arm is unreachable; it is spelled out rather than
+/// `unwrap`ped because a preview is a foreground command and a panic here would
+/// tell the user nothing about what was wrong with their invocation.
 ///
-/// **A routed preview cannot honestly name one command**, because the sequence
-/// is derived per iteration from what the previous one leaves on disk — so it
-/// names the mode instead of inventing a command that the router might not
-/// choose. Rendering the *first* command the router would pick was declined: a
-/// preview that showed one command for a run that issues many is the same
-/// untruth in a more convincing form.
-fn previewed_command(args: &DriveArgs) -> String {
-    args.command
-        .clone()
-        .unwrap_or_else(|| ROUTED_PREVIEW.to_string())
+/// **The two modes make different honesty claims, so they render through
+/// different entry points** rather than through one that would have to hedge:
+/// a supplied command is the complete sequence, and a routed run shows the
+/// router's first selection with the fact that it continues stated plainly.
+fn preview_text(
+    project: &DrivableProject,
+    command: Option<&str>,
+    target_phase: Option<&str>,
+) -> String {
+    match (command, target_phase) {
+        (Some(command), _) => dry_run::render(&dry_run::build_report(project, command)),
+        (None, Some(target_phase)) => {
+            dry_run::render_routed(&dry_run::build_routed_report(project, target_phase))
+        }
+        (None, None) => dry_run::render(&dry_run::build_report(project, "")),
+    }
 }
 
 /// Run one GSD command against `alias`, or refuse.
@@ -381,22 +375,23 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
         // second one would mean a second `DrivableProject::from_registry` call
         // site — the exact uniqueness `tests/spawn_seam_guard.rs` exists to
         // check, and a property a comment cannot hold.
-        // The refusal above guarantees exactly one of the two is present, so a
-        // routed preview is the only case where `command` is absent and
-        // `previewed_command` is what it reports. It is a value, not the pinned
-        // `dry_run::SECTION_COMMANDS` prose — that text still claims a routed
-        // sequence is a single honest command, which becomes false with this
-        // plan and is corrected in the plan that owns `dry_run.rs` (research
-        // Pitfall 6). Recorded here so the next reader finds the two halves
-        // together rather than one of them.
-        let command = previewed_command(&args);
+        // The refusal above guarantees exactly one of the two is present, so the
+        // `Routed` arm is the only case where `command` is absent.
+        //
+        // **The mode is passed through rather than flattened to a string**, and
+        // the pinned `dry_run::SECTION_COMMANDS` prose has been corrected to
+        // match (research Pitfall 6). It used to say a routed sequence was a
+        // single honest command; the preview now shows the router's own first
+        // selection and states plainly that the run continues past it.
+        let command = args.command.clone();
+        let target_phase = args.target_phase.clone();
         let cloned = project.clone();
-        let report = match tokio::task::spawn_blocking(move || {
-            dry_run::build_report(&cloned, &command)
+        let rendered = match tokio::task::spawn_blocking(move || {
+            preview_text(&cloned, command.as_deref(), target_phase.as_deref())
         })
         .await
         {
-            Ok(report) => report,
+            Ok(rendered) => rendered,
             // Reachable only if the closure panicked or the runtime is shutting
             // down — `build_report` does neither, and `git_ops` reports a failed
             // shell-out as data rather than by unwinding. Re-running inline is
@@ -409,10 +404,10 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
                     panicked = err.is_panic(),
                     "the dry-run report task did not run to completion",
                 );
-                dry_run::build_report(&project, &previewed_command(&args))
+                preview_text(&project, args.command.as_deref(), args.target_phase.as_deref())
             }
         };
-        println!("{}", dry_run::render(&report));
+        println!("{rendered}");
         return Ok(());
     }
 
