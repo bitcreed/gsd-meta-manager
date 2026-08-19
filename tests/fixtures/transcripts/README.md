@@ -30,6 +30,16 @@ Claude Rate-Limit Wire Protocol" with the byte offsets it was read from: the
 `system/init`, the replay `user` message, the terminal `result` — follows the real
 captures' shape. Nothing in it was invented to make a test pass.
 
+**Its `resetsAt` is a fixed instant in the past, deliberately left there.** Replayed
+against a real clock it is judged unknown, because `reset_time`'s sanity bound is
+asymmetric: the full thirty-day window ahead, and clock skew only behind (WR-03). A
+window that "resets" before now is nonsense by construction — there is nothing to wait
+for — and rendering a past instant into a park detail tells a human to come back at a
+time that has been and gone. Refreshing the value would only postpone the same staleness
+by however long the new value happens to sit ahead of the day it was written, so the
+end-to-end fixture test asserts on `resets_at=unknown`, and the unit tests that need an
+accepted reset judge it against a `now` chosen to sit an hour before it.
+
 **Do not treat it as evidence of what the wire emits.** It is evidence of what this
 repository *believes* the wire emits, and research assumption **A2** records that belief's
 limit: the emission path for a rejection on a `-p` stream is inferred from the binary's

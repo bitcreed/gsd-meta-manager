@@ -880,6 +880,20 @@ async fn the_committed_rejection_fixture_parks_a_real_run() {
         "the park names the seven-day window the fixture's own rateLimitType \
          field carries: {detail}"
     );
+    // **The reset half, which nothing asserted on and which is WR-03.** This run
+    // is driven with a real `now`, and the committed fixture's `resetsAt` is a
+    // fixed instant in 2026 that recedes further into the past with every day
+    // that passes. Under the old symmetric bound it was accepted for thirty days
+    // and rendered into the detail as when the quota resets — telling a human to
+    // come back at a time that had already been and gone. A reset behind `now` by
+    // more than clock skew is not a reset time, and the honest report is that it
+    // is unknown.
+    assert!(
+        detail.contains(&format!("resets_at={}", rate_limit::UNKNOWN)),
+        "the fixture's reset instant is in the past relative to a real clock, so \
+         the bound must refuse it and the detail must SAY unknown rather than \
+         render a past instant as the moment the window reopens. Got: {detail}"
+    );
     assert_eq!(
         of_kind(&records, "exec_started").len(),
         1,

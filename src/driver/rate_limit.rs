@@ -101,7 +101,27 @@ pub const UNKNOWN: &str = "unknown";
 /// Both windows this event describes are at most seven days, so a legitimate
 /// reset can never approach thirty; the margin exists so ordinary clock skew and
 /// a queued overage window cannot suppress a true value.
+///
+/// **It bounds the FUTURE direction only.** See
+/// [`RESET_MAX_SKEW_BEHIND_SECS`] for the other side and why the two differ.
 pub const RESET_SANITY_WINDOW_SECS: i64 = 30 * 24 * 60 * 60;
+
+/// How far *behind* `now` a reset time may sit and still be reported.
+///
+/// **Five minutes, and the asymmetry with [`RESET_SANITY_WINDOW_SECS`] is the
+/// whole point.** A quota window that "resets" before now is nonsense by
+/// construction: there is nothing to wait for, and rendering it into
+/// `park_detail` as `resets_at=<a past instant>` tells a human to come back at a
+/// time that has already been and gone. The bound existed to reject exactly this
+/// class of corrupted, stale or hostile value, and a symmetric bound — which is
+/// what `saturating_abs` produced — was the one shape it let through: a reset
+/// thirty days in the past passed validation and was reported as fact (WR-03).
+///
+/// Five minutes is a clock-skew allowance rather than a window: the driver's
+/// clock and the API's may disagree by seconds, and a reset that has *just*
+/// passed is a true statement about a window that is reopening. Anything further
+/// behind is not a reset time.
+pub const RESET_MAX_SKEW_BEHIND_SECS: i64 = 5 * 60;
 
 /// The longest observed window string that reaches the journal.
 ///
@@ -259,9 +279,14 @@ pub fn window(event: Option<&Value>) -> QuotaWindow {
 /// absent field, so a value that is not an integer produces no reset time rather
 /// than a truncated or rounded one.
 ///
-/// Then bounded: see [`RESET_SANITY_WINDOW_SECS`]. Nothing in this crate
-/// schedules anything against the result — it is displayed and never acted on —
-/// so a value inside the bound is still only a report.
+/// Then bounded, and **the bound is asymmetric**: the full window forwards
+/// ([`RESET_SANITY_WINDOW_SECS`]) and clock skew only backwards
+/// ([`RESET_MAX_SKEW_BEHIND_SECS`]). A reset meaningfully in the past is not a
+/// reset time — it is the corrupted or stale value the bound exists to catch,
+/// and a symmetric bound was the one shape that let it through (WR-03).
+///
+/// Nothing in this crate schedules anything against the result — it is displayed
+/// and never acted on — so a value inside the bound is still only a report.
 pub fn reset_time(event: Option<&Value>, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let secs = info(event)?.get(RESETS_AT_FIELD)?.as_i64()?;
     // `from_timestamp` returns `None` rather than panicking or wrapping for a
@@ -269,11 +294,11 @@ pub fn reset_time(event: Option<&Value>, now: DateTime<Utc>) -> Option<DateTime<
     // construction happens before the bound instead of after it: a value the
     // constructor refuses must be reported as unknown, not compared.
     let resets_at = DateTime::from_timestamp(secs, 0)?;
-    let skew = resets_at
-        .timestamp()
-        .saturating_sub(now.timestamp())
-        .saturating_abs();
-    (skew <= RESET_SANITY_WINDOW_SECS).then_some(resets_at)
+    // `saturating_sub` because the constructor admits instants hundreds of
+    // thousands of years out, and the difference of two i64 timestamps is only
+    // *nearly* always in range.
+    let ahead = resets_at.timestamp().saturating_sub(now.timestamp());
+    (ahead >= -RESET_MAX_SKEW_BEHIND_SECS && ahead <= RESET_SANITY_WINDOW_SECS).then_some(resets_at)
 }
 
 /// Whether this payload carries the one `status` that parks a run.
@@ -631,36 +656,61 @@ mod tests {
     }
 
     #[test]
-    fn the_sanity_bound_accepts_one_second_inside_and_refuses_one_second_outside_on_both_sides() {
+    fn the_sanity_bound_is_asymmetric_a_full_window_ahead_and_clock_skew_only_behind() {
         let now = at(1_785_327_000);
 
-        for direction in [1_i64, -1_i64] {
-            let inside = now.timestamp() + direction * (RESET_SANITY_WINDOW_SECS - 1);
-            let edge = now.timestamp() + direction * RESET_SANITY_WINDOW_SECS;
-            let outside = now.timestamp() + direction * (RESET_SANITY_WINDOW_SECS + 1);
-
+        // ---- Ahead: the full window, one second either side of the edge ----
+        for (offset, expected) in [
+            (RESET_SANITY_WINDOW_SECS - 1, true),
+            (RESET_SANITY_WINDOW_SECS, true),
+            (RESET_SANITY_WINDOW_SECS + 1, false),
+        ] {
+            let secs = now.timestamp() + offset;
             assert_eq!(
-                reset_time(Some(&event(json!({ "resetsAt": inside }))), now),
-                Some(at(inside)),
-                "one second inside the bound is inside it. Both real windows are \
-                 at most seven days, so the margin exists for clock skew rather \
-                 than to be shaved (direction {direction})"
-            );
-            assert_eq!(
-                reset_time(Some(&event(json!({ "resetsAt": edge }))), now),
-                Some(at(edge)),
-                "the bound itself is inside; a strict comparison here would make \
-                 the documented figure mean one second less than it says"
-            );
-            assert_eq!(
-                reset_time(Some(&event(json!({ "resetsAt": outside }))), now),
-                None,
-                "one second outside must be reported as unknown. If resetsAt were \
-                 milliseconds rather than seconds, the same field would render a \
-                 reset fifty-six thousand years out — as FACT, to a human \
-                 deciding when to come back (direction {direction})"
+                reset_time(Some(&event(json!({ "resetsAt": secs }))), now).is_some(),
+                expected,
+                "ahead by {offset}s: the bound itself is inside, and one second \
+                 past it is unknown. If resetsAt were milliseconds rather than \
+                 seconds the same field would render a reset fifty-six thousand \
+                 years out — as FACT, to a human deciding when to come back"
             );
         }
+
+        // ---- Behind: clock skew ONLY, and this is WR-03 --------------------
+        //
+        // The bound used to be symmetric — `saturating_abs` over the delta — so
+        // a reset up to thirty days IN THE PAST passed validation and was
+        // rendered into `park_detail` as when the quota resets. A window that
+        // reset before now is nonsense by construction: there is nothing to wait
+        // for, and the user is told to come back at a time that has been and
+        // gone. That is precisely the corrupted-or-stale value the bound exists
+        // to catch, and it was the one shape it let through.
+        for (offset, expected) in [
+            (RESET_MAX_SKEW_BEHIND_SECS - 1, true),
+            (RESET_MAX_SKEW_BEHIND_SECS, true),
+            (RESET_MAX_SKEW_BEHIND_SECS + 1, false),
+            (RESET_SANITY_WINDOW_SECS - 1, false),
+        ] {
+            let secs = now.timestamp() - offset;
+            assert_eq!(
+                reset_time(Some(&event(json!({ "resetsAt": secs }))), now).is_some(),
+                expected,
+                "behind by {offset}s: five minutes is a clock-skew allowance, not \
+                 a window. A reset that has JUST passed is a true statement about \
+                 a window reopening; anything further behind is not a reset time \
+                 at all, and reporting one is the misinformation CTRL-07's \
+                 transparency requirement forbids"
+            );
+        }
+
+        // And the asymmetry is a property rather than a coincidence of the two
+        // numbers: a bound that treated the directions alike could not tell a
+        // seven-day window from a seven-day-old one.
+        assert!(
+            RESET_MAX_SKEW_BEHIND_SECS < RESET_SANITY_WINDOW_SECS,
+            "the backwards allowance must stay strictly smaller than the forward \
+             window, or the bound is symmetric again under a different name"
+        );
     }
 
     #[test]
