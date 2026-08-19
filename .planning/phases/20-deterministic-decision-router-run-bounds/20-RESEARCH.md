@@ -1016,32 +1016,36 @@ pub fn argv_digest(argv: &[String]) -> String {
 | A5 | The five-element `Observed.drpev` vector maps onto (has_context, has_research, plan_count, summary_count, verification_status) | The Loop | The field's only documentation is *"the five D-R-P-E-V stage statuses, in order"* (`src/journal/mod.rs:657`). No writer exists to compare against. The mapping is the obvious one but is not stated |
 | A6 | Phase 22's `ExecutionTarget` will gain a `Container` variant that the router must not branch on | Scope fence | `ExecutionTarget` currently has one variant, `Host` (`src/executor/mod.rs:219-223`), and ROADMAP says container is *"an `ExecutionTarget` enum inside the one executor — argv prefix plus path map swap"*. If Phase 22 instead introduces a second `Executor`, the loop's assumption that one `executor` value spans all iterations may need revisiting |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+> All five were resolved on 2026-08-19 by accepting each stated recommendation. The
+> authoritative record is `20-CONTEXT.md` § "Open Questions Resolved"; the `RESOLVED:` lines
+> below mirror it so this document is auditable on its own.
 
 1. **Does the run-level wall-clock cap or the per-iteration executor cap win, and by how much?**
    - What we know: both currently default to exactly 4 hours (`src/executor/mod.rs:381`); CONTEXT.md proposes 4 hours for the run.
    - What's unclear: which value moves.
-   - Recommendation: keep the run cap at CONTEXT.md's 4 hours (it is the user-facing number) and reduce the per-iteration executor `wall_clock_cap` the driver passes — a single GSD command taking four hours is already pathological, and the `idle_cap` of 15 minutes is the real stuck-detector. Assert the strict inequality in a named test.
+   - RESOLVED: accepted as recommended. keep the run cap at CONTEXT.md's 4 hours (it is the user-facing number) and reduce the per-iteration executor `wall_clock_cap` the driver passes — a single GSD command taking four hours is already pathological, and the `idle_cap` of 15 minutes is the real stuck-detector. Assert the strict inequality in a named test.
 
 2. **Is `gaps_found` a park or an auto-route?**
    - What we know: GSD emits `/gsd-plan-phase N --gaps` for it; CONTEXT.md's OQ7 resolution says always park.
    - What's unclear: whether parking here makes a fully autonomous run park at nearly every phase, which CONTEXT.md itself flags as the accepted consequence to record if dogfooding shows it.
-   - Recommendation: park, per CONTEXT.md, but make it a **named, separately-greppable reason** (`gate_verification_gaps_found`) rather than folding it into a generic gate reason, so the dogfooding finding is measurable from the journals rather than remembered.
+   - RESOLVED: accepted as recommended. park, per CONTEXT.md, but make it a **named, separately-greppable reason** (`gate_verification_gaps_found`) rather than folding it into a generic gate reason, so the dogfooding finding is measurable from the journals rather than remembered.
 
 3. **Can a driven run's own agent write `status: passed` into `*-VERIFICATION.md` and thereby unpark itself?**
    - What we know: nothing mechanically prevents it. The `--disallowedTools` envelope covers git, not file writes into `.planning/`.
    - What's unclear: whether this is in scope for Phase 20 at all, or belongs to Phase 21's hardening.
-   - Recommendation: out of scope for Phase 20 — but record it explicitly in the phase's residual-exposure disclosure, in the register `src/envelope/mod.rs` already established. The staleness detector is a partial mitigation worth naming.
+   - RESOLVED: accepted as recommended. out of scope for Phase 20 — but record it explicitly in the phase's residual-exposure disclosure, in the register `src/envelope/mod.rs` already established. The staleness detector is a partial mitigation worth naming.
 
 4. **What is the goal-met predicate for a run with no Phase 21 goal layer?**
    - What we know: criterion 5 requires goal-met as a terminal class; DRIVE-01/03 (the goal itself) is Phase 21. `DriveArgs::goal` today is *"free text recorded into `RunRecord.goal` and never interpreted"* (`src/driver/mod.rs:116-117`).
    - What's unclear: what Phase 20 can honestly declare goal-met against.
-   - Recommendation: a **target phase** supplied on argv, with goal-met = that phase's `verification_status == 'passed'`. It is deterministic, machine-checkable, satisfies criterion 5 without borrowing from Phase 21, and it is exactly the shape Phase 21's OQ6 says a goal must reduce to.
+   - RESOLVED: accepted as recommended. a **target phase** supplied on argv, with goal-met = that phase's `verification_status == 'passed'`. It is deterministic, machine-checkable, satisfies criterion 5 without borrowing from Phase 21, and it is exactly the shape Phase 21's OQ6 says a goal must reduce to.
 
 5. **Does the outer loop reuse one `claude` session across iterations, or start fresh each time?**
    - What we know: `ExecutionOptions.session_id` is a `Uuid` generated pre-spawn, and `resume_session: Option<String>` exists (`src/executor/mod.rs:296`). `run.json` carries a single `session_id` (`src/driver/run.rs:504`).
    - What's unclear: whether one GSD command per fresh session, or a resumed session across the run.
-   - Recommendation: **one fresh session per iteration.** Each GSD command is a discrete unit with its own context budget, and a resumed session accumulates the previous command's transcript into the next command's window — which is how a multi-hour run hits a context limit for reasons unrelated to the work. It also keeps `run.json`'s single `session_id` field from becoming a lie; if the sequence needs recording, it belongs on the per-iteration `Decided`/`ExecStarted` journal events, which already carry `session_id` (`src/journal/mod.rs:672-676`).
+   - RESOLVED: accepted as recommended. **one fresh session per iteration.** Each GSD command is a discrete unit with its own context budget, and a resumed session accumulates the previous command's transcript into the next command's window — which is how a multi-hour run hits a context limit for reasons unrelated to the work. It also keeps `run.json`'s single `session_id` field from becoming a lie; if the sequence needs recording, it belongs on the per-iteration `Decided`/`ExecStarted` journal events, which already carry `session_id` (`src/journal/mod.rs:672-676`).
 
 ## Sources
 
