@@ -1370,23 +1370,31 @@ pub(crate) const GOAL_MET_LABEL: &str = "goal_met";
 ///   single `session_id` honest: per-iteration ids belong on the journal's
 ///   `exec_started` records, which already carry one. `ExecutionOptions::default`
 ///   generates a fresh v4 UUID, so this is what *not* overriding it buys.
-/// * **[`bounds::ITERATION_WALL_CLOCK_CAP`] rather than the default**, which is
-///   strictly less than the run-level cap. Left at their own defaults the two
-///   are both exactly four hours, and a run that ran out of time would report
-///   the executor's `timed_out` while CTRL-06's run-level wall-clock reason
-///   became unreportable (research Pitfall 3).
+/// * **[`bounds::iteration_wall_clock_cap`] rather than the default or the bare
+///   [`bounds::ITERATION_WALL_CLOCK_CAP`] ceiling.** The caller passes what is
+///   left of the *run's* budget and the helper takes the smaller of the two, so
+///   an iteration can never outlive the run's own cap. Passing the ceiling
+///   unconditionally is what made that cap not a bound on the run (CR-01):
+///   `bounds::evaluate` runs only between iterations, so nothing at all bounds a
+///   *running* iteration except the value handed to the executor here, and a run
+///   asked for sixty seconds spawned an agent allowed three hours. The ceiling
+///   still applies on top, and is still strictly less than the default run-level
+///   cap so that CTRL-06's run-level reason stays reportable (research
+///   Pitfall 3).
 /// * The envelope's settings path and environment are **cloned**, because
 ///   establishment happens once per run and every iteration is protected by that
 ///   same envelope.
 fn iteration_options(
     envelope_settings: &Path,
     envelope_env: &EnvelopeEnv,
+    run_bounds: &bounds::RunBounds,
+    elapsed: Duration,
 ) -> ExecutionOptions {
     ExecutionOptions {
         envelope_disallowed_tools: policy::disallowed_tools(),
         envelope_settings: Some(envelope_settings.to_path_buf()),
         envelope_env: Some(envelope_env.clone()),
-        wall_clock_cap: bounds::ITERATION_WALL_CLOCK_CAP,
+        wall_clock_cap: bounds::iteration_wall_clock_cap(run_bounds, elapsed),
         ..Default::default()
     }
 }
@@ -1605,7 +1613,28 @@ pub async fn execute_run(
     // the *description* of them is rebuilt.
     let envelope_settings = envelope.settings;
     let envelope_env = envelope.env;
-    let options = iteration_options(&envelope_settings, &envelope_env);
+
+    // The caps in force, resolved **before** the record is built rather than at
+    // the loop below, so the record can name them. `bounds::resolve` is pure, so
+    // the value threaded down to the loop is provably the same one on disk —
+    // which is the property the field is claiming.
+    //
+    // **Resolved before `iteration_options` too, and that ordering is CR-01.**
+    // The per-iteration executor cap is now derived from these caps rather than
+    // from a constant, so the resolution has to precede the first construction
+    // of the options rather than merely precede the record.
+    let run_bounds =
+        bounds::resolve(args.max_steps, args.wall_clock_cap_secs).map_err(DriveError::from)?;
+
+    // Built here only for the two fields `run.json` reads off it — the target
+    // and the session id. Nothing spawns with these options; every iteration
+    // builds its own below, against the budget remaining at that moment.
+    let options = iteration_options(
+        &envelope_settings,
+        &envelope_env,
+        &run_bounds,
+        Duration::ZERO,
+    );
 
     // The executor's own generated argv is not reachable from here — the
     // builder is private to `src/executor/claude.rs` — so the digest covers the
@@ -1626,13 +1655,6 @@ pub async fn execute_run(
     argv.extend(agent_leading_args(args));
     argv.push(digested_command_fragment(args));
     let argv_digest = journal::argv_digest(&argv);
-
-    // The caps in force, resolved **before** the record is built rather than at
-    // the loop below, so the record can name them. `bounds::resolve` is pure, so
-    // the value threaded down to the loop is provably the same one on disk —
-    // which is the property the field is claiming.
-    let run_bounds =
-        bounds::resolve(args.max_steps, args.wall_clock_cap_secs).map_err(DriveError::from)?;
 
     let record = make_run_record(run_id, args, entry, &options, argv_digest, pgid, run_bounds);
 
@@ -1783,9 +1805,10 @@ pub async fn execute_run(
     // **not a second call**. It used to be resolved again here on the reasoning
     // that a pure function cannot disagree with itself, which was true but is no
     // longer sufficient: the same value now reaches disk in
-    // `RunRecord::bounds`, and "the caps on disk are the caps the loop enforced"
-    // is a property to guarantee by construction rather than by re-deriving and
-    // trusting purity.
+    // `RunRecord::bounds`, is what every iteration's executor cap is derived
+    // from, and "the caps on disk are the caps the loop enforced" is a property
+    // to guarantee by construction rather than by re-deriving and trusting
+    // purity.
     let mut bounds_state = bounds::BoundsState::default();
 
     // The run-level clock. `std::time::Instant` rather than `tokio`'s, so the
@@ -1947,10 +1970,19 @@ pub async fn execute_run(
                 return Ok(());
             }
 
+            // **The remaining run budget, read at the instant of the spawn**
+            // (CR-01). `bounds::evaluate` above cannot see inside the iteration
+            // this line is starting, so this value is the only thing that keeps
+            // that iteration inside the run's own wall-clock cap.
             result = executor.start(
                 &project,
                 command.clone(),
-                iteration_options(&envelope_settings, &envelope_env),
+                iteration_options(
+                    &envelope_settings,
+                    &envelope_env,
+                    &run_bounds,
+                    run_started_at.elapsed(),
+                ),
             ) => result,
         };
 

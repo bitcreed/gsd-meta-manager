@@ -99,7 +99,8 @@ pub const DEFAULT_MAX_STEPS: u32 = 20;
 /// value the user was told.
 pub const DEFAULT_RUN_WALL_CLOCK_CAP: Duration = Duration::from_secs(4 * 60 * 60);
 
-/// The wall-clock cap the driver hands the executor for **one iteration**.
+/// The **ceiling** on the wall-clock cap the driver hands the executor for one
+/// iteration.
 ///
 /// **Three hours, and the arithmetic is the whole reason this constant exists.**
 /// `ExecutionOptions` defaults its own `wall_clock_cap` to exactly four hours —
@@ -107,13 +108,17 @@ pub const DEFAULT_RUN_WALL_CLOCK_CAP: Duration = Duration::from_secs(4 * 60 * 60
 /// equal a run that ran out of time would report the *executor's* `timed_out`
 /// and the run-level [`BoundsReason::WallClock`] would be unreportable: CTRL-06
 /// asks a run that exceeds **its** cap to say so, distinguishably from an agent
-/// that hung. Three hours is strictly less than four, so the per-iteration cap
-/// always fires first for a single long iteration and the run-level cap always
-/// fires first for an accumulation across several.
+/// that hung. Three hours is strictly less than four, so with both at their
+/// defaults the run-level cap fires first for an accumulation across several
+/// iterations.
 ///
-/// `the_iteration_wall_clock_cap_is_strictly_inside_the_run_level_cap` asserts
-/// that relationship rather than this comment claiming it — the precedent is
-/// `the_startup_stop_budget_fits_inside_the_driver_teardown_grace`.
+/// **It is a ceiling and never the value passed on its own** — see
+/// [`iteration_wall_clock_cap`], which is the only thing that may build that
+/// value. Handing this constant to the executor unconditionally is what made the
+/// run-level cap not a bound on the run at all (CR-01): a run launched with
+/// `--wall-clock-cap-secs 60` recorded 60 as the cap in force and then spawned
+/// an iteration allowed to run for three hours, because the run-level detector
+/// is only ever evaluated *between* iterations.
 pub const ITERATION_WALL_CLOCK_CAP: Duration = Duration::from_secs(3 * 60 * 60);
 
 /// The largest wall-clock cap argv may ask for, in seconds.
@@ -239,6 +244,33 @@ pub fn resolve(
         max_steps,
         wall_clock_cap,
     })
+}
+
+/// The wall-clock cap for the iteration the run is about to spawn.
+///
+/// **The run's REMAINING budget, ceilinged by [`ITERATION_WALL_CLOCK_CAP`] — and
+/// the `min` is the whole of CR-01's fix.** [`evaluate`] is called once per
+/// iteration, immediately before the spawn, so it can only ever notice an
+/// overrun *after* the iteration that caused it has finished. Nothing evaluates
+/// the wall clock while an agent is running; the only thing that bounds a
+/// running iteration is the cap the executor was handed when it started. Handing
+/// it the fixed three-hour ceiling therefore made the run-level cap a bound on
+/// the *gaps between* iterations rather than on the run: `--wall-clock-cap-secs
+/// 60` was accepted, recorded in `run.json` as the cap in force, and then
+/// overrun by up to three hours by the first iteration alone. ROADMAP criterion 3
+/// asks that a run exceeding its wall-clock cap halt and report that as the
+/// reason, and a run that reports the reason three hours late has not.
+///
+/// `saturating_sub` rather than `-`: a caller that evaluates this after the
+/// deadline has already passed gets [`Duration::ZERO`], never a panic and never
+/// a wrapped near-infinite cap. Reaching here with nothing left is not a state
+/// the loop produces — [`evaluate`] halts on `elapsed >= wall_clock_cap` before
+/// the spawn — so zero is the honest answer for the one caller that could ask.
+pub fn iteration_wall_clock_cap(bounds: &RunBounds, elapsed: Duration) -> Duration {
+    bounds
+        .wall_clock_cap
+        .saturating_sub(elapsed)
+        .min(ITERATION_WALL_CLOCK_CAP)
 }
 
 /// What the run has done so far, as the detectors need to see it.
@@ -387,15 +419,66 @@ mod tests {
     }
 
     #[test]
-    fn the_iteration_wall_clock_cap_is_strictly_inside_the_run_level_cap() {
+    fn the_iteration_cap_is_bounded_by_the_resolved_run_cap_and_not_only_by_the_constant() {
+        // **This assertion is about the RESOLVED value, not about two
+        // constants, and that distinction is CR-01.** The test that stood here
+        // compared `ITERATION_WALL_CLOCK_CAP < DEFAULT_RUN_WALL_CLOCK_CAP` and
+        // nothing else, so it passed while a run launched with
+        // `--wall-clock-cap-secs 60` handed its first iteration a three-hour
+        // cap. A guard that cannot fail on the defect it is named for is not a
+        // guard.
+        let sixty = resolve(None, Some(60)).expect("sixty seconds is an acceptable cap");
+        assert_eq!(
+            iteration_wall_clock_cap(&sixty, Duration::ZERO),
+            Duration::from_secs(60),
+            "a run-level cap SMALLER than one iteration must bound that \
+             iteration. The run-level detector is evaluated only between \
+             iterations, so a cap it cannot reach until the iteration ends is a \
+             cap the run overruns by however long the agent runs — up to the \
+             three-hour ceiling, on a run that asked for sixty seconds and had \
+             that number written into its own run.json as the cap in force"
+        );
+        assert_eq!(
+            iteration_wall_clock_cap(&sixty, Duration::from_secs(59)),
+            Duration::from_secs(1),
+            "one second left of the run's budget is one second of iteration, so \
+             the LAST iteration cannot outlive the run's cap either"
+        );
+        assert_eq!(
+            iteration_wall_clock_cap(&sixty, Duration::from_secs(60)),
+            Duration::ZERO,
+            "an exhausted budget saturates to zero rather than wrapping to a \
+             near-infinite cap; `evaluate` halts before this is reachable, and \
+             zero is the honest answer if it ever is"
+        );
+
+        // The defaults: the ceiling is what binds, and the run's remaining
+        // budget is what binds once the run has spent enough of it.
+        let default = resolve(None, None).expect("the defaults are always acceptable");
+        assert_eq!(
+            iteration_wall_clock_cap(&default, Duration::ZERO),
+            ITERATION_WALL_CLOCK_CAP,
+            "at the defaults the per-iteration ceiling is the smaller of the two \
+             and must still be what an iteration gets"
+        );
+        assert_eq!(
+            iteration_wall_clock_cap(&default, Duration::from_secs(3 * 60 * 60 + 1_800)),
+            Duration::from_secs(1_800),
+            "three and a half hours into a four-hour run there is half an hour \
+             left, and an iteration allowed three more would end the run at six \
+             and a half hours — a stated four-hour bound overrun by 62%"
+        );
+
+        // The old constant relationship, kept as a CONTROL on the defaults and
+        // labelled as what it is: it proves the run-level REASON stays
+        // reportable, and proves nothing at all about enforcement.
         assert!(
             ITERATION_WALL_CLOCK_CAP < DEFAULT_RUN_WALL_CLOCK_CAP,
-            "the per-iteration executor cap ({ITERATION_WALL_CLOCK_CAP:?}) must be \
-             STRICTLY less than the run-level cap ({DEFAULT_RUN_WALL_CLOCK_CAP:?}). \
-             Left equal — which is what both default to on their own — a run that \
-             ran out of time reports the executor's timed_out and the run-level \
-             wall-clock reason becomes unreportable, so CTRL-06's 'halt and report \
-             that as the reason' cannot be satisfied at all"
+            "left equal — which is what both would default to on their own — a \
+             run that ran out of time reports the executor's timed_out and the \
+             run-level wall-clock reason becomes unreportable. This is about \
+             which reason is REPORTED; the assertions above are about when the \
+             run actually stops"
         );
     }
 

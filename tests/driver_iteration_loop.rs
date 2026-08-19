@@ -46,6 +46,17 @@ const CLEAN_BASELINE: &str = concat!(
     "/tests/fixtures/transcripts/01-success-textonly.ndjson"
 );
 
+/// The **paced** stand-in, for the one test that needs an agent still running
+/// when the run's own wall-clock cap passes.
+///
+/// `fake-claude.sh` replays its transcript and exits in milliseconds, which is
+/// exactly why every other test here uses it — and exactly why it cannot
+/// demonstrate a cap that has to fire *during* an iteration.
+const PACED_CLAUDE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/fake-claude-slow.sh"
+);
+
 const ALIAS: &str = "iterloop";
 
 /// The phase the fixture project declares and the router is pointed at.
@@ -393,6 +404,73 @@ async fn the_step_cap_halts_a_routed_run_and_reports_itself_rather_than_the_agen
     assert_eq!(
         run_record(root.path(), RUN_ID)["outcome"],
         format!("parked:{}", bounds::REASON_STEP_CAP)
+    );
+}
+
+#[tokio::test]
+async fn a_run_cap_smaller_than_one_iteration_bounds_the_iteration_and_not_the_gap_after_it() {
+    const RUN_ID: &str = "2026-08-19T12-00-00Z-wallclock";
+    /// The run-level cap this run asks for, in seconds.
+    const RUN_CAP_SECS: u64 = 1;
+
+    let root = project_root();
+    let config = config_for(root.path());
+
+    // A stand-in that chatters for twenty seconds and only then produces a
+    // terminal `result`. It is the whole experiment: the agent is still running
+    // long after the run's own one-second cap has passed, and nothing evaluates
+    // the run-level detector until the iteration ends.
+    //
+    // The idle cap cannot be what fires — the heartbeats arrive once a second
+    // against a fifteen-minute idle default — so a `timed_out` here is the
+    // WALL-CLOCK bound and nothing else.
+    let mut args = routed_args(RUN_ID, Some(EXPLICIT_STEP_CAP));
+    args.wall_clock_cap_secs = Some(RUN_CAP_SECS);
+    args.claude_program = Some(PACED_CLAUDE.into());
+    args.claude_args = vec![
+        OsString::from("20"),
+        OsString::from("1"),
+        OsString::from("result"),
+    ];
+
+    let started = std::time::Instant::now();
+    drive(args, &config)
+        .await
+        .expect("a run that runs out of time is an ordinary end, not an error");
+    let elapsed = started.elapsed();
+
+    // ---- The bound was enforced INSIDE the iteration ---------------------
+    //
+    // Before CR-01 was fixed this run took the full twenty seconds: the
+    // iteration was handed the fixed three-hour `ITERATION_WALL_CLOCK_CAP`, ran
+    // to completion, and only the check at the top of iteration two noticed the
+    // deadline — ending the run `parked:bounds_wall_clock` twenty times over its
+    // stated cap. Both assertions below fail against that behaviour.
+    assert_eq!(
+        run_record(root.path(), RUN_ID)["outcome"],
+        "timed_out",
+        "a one-second run cap must bound the ITERATION. `bounds::evaluate` is \
+         called once per iteration, immediately before the spawn, so the only \
+         thing that can stop a running agent is the cap the executor was handed \
+         — and handing it a constant makes the run-level cap a bound on the gaps \
+         between iterations rather than on the run. `parked:bounds_wall_clock` \
+         here would mean the agent ran to its own end first and the deadline was \
+         noticed afterwards"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(15),
+        "the run must END near its cap, not merely report the reason later. The \
+         stand-in chatters for twenty seconds, so anything approaching that is \
+         the pre-CR-01 behaviour: a run that overruns the cap written into its \
+         own run.json and then reports the overrun as though it had stopped at \
+         it. Took {elapsed:?}"
+    );
+
+    assert_eq!(
+        run_record(root.path(), RUN_ID)["bounds"]["wall_clock_cap_secs"],
+        serde_json::Value::from(RUN_CAP_SECS),
+        "and the cap the record names is the cap that was enforced — the two \
+         being the same value is the whole claim of the `bounds` field"
     );
 }
 
