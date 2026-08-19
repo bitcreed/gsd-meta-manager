@@ -442,6 +442,34 @@ mod tests {
     }
 
     #[test]
+    fn the_wall_clock_detector_fires_at_the_cap_and_not_one_nanosecond_below_it() {
+        let cap = Duration::from_secs(90 * 60);
+        let run = RunBounds {
+            max_steps: DEFAULT_MAX_STEPS,
+            wall_clock_cap: cap,
+        };
+        let state = BoundsState::default();
+
+        assert_eq!(
+            evaluate(
+                &run,
+                &state,
+                cap - Duration::from_nanos(1),
+                "/gsd-plan-phase 20"
+            ),
+            BoundVerdict::Continue,
+            "one nanosecond inside the cap is still inside it; a detector that \
+             rounded here would shorten every run it bounded by an unstated amount"
+        );
+        assert_eq!(
+            evaluate(&run, &state, cap, "/gsd-plan-phase 20"),
+            BoundVerdict::Halt(BoundsReason::WallClock),
+            "at the cap the run is out of time. A strict > here would leave a run \
+             that landed exactly on its deadline running forever at the boundary"
+        );
+    }
+
+    #[test]
     fn the_no_progress_detector_needs_two_consecutive_unchanged_iterations() {
         let mut state = BoundsState::default();
 
@@ -590,6 +618,71 @@ mod tests {
              shape of GSD work"
         );
     }
+
+    #[test]
+    fn the_documented_evaluation_order_decides_when_every_condition_holds_at_once() {
+        let cap = Duration::from_secs(60);
+        let all = RunBounds {
+            max_steps: 1,
+            wall_clock_cap: cap,
+        };
+        let mut state = BoundsState {
+            completed_steps: 9,
+            ..Default::default()
+        };
+        state.observe(snapshot("planning"));
+        state.observe(snapshot("planning"));
+        state.observe(snapshot("planning"));
+        state.previous_command = Some("/gsd-plan-phase 20".to_string());
+
+        // 1. Wall clock first: every one of the four conditions is true.
+        assert_eq!(
+            evaluate(&all, &state, cap, "/gsd-plan-phase 20"),
+            BoundVerdict::Halt(BoundsReason::WallClock),
+            "with all four conditions true the run is out of time, and time is the \
+             coarsest fact about it. Reporting a stall in place of an exhausted \
+             deadline sends a reader looking for a bug that is not there"
+        );
+
+        // 2. Remove the wall-clock condition; the step cap must be next.
+        assert_eq!(
+            evaluate(&all, &state, Duration::ZERO, "/gsd-plan-phase 20"),
+            BoundVerdict::Halt(BoundsReason::StepCap),
+            "second in the documented order; if a stall detector answered here the \
+             order would be sampled rather than pinned"
+        );
+
+        // 3. Remove the step-cap condition; no progress must be next.
+        let roomy = RunBounds {
+            max_steps: DEFAULT_MAX_STEPS,
+            wall_clock_cap: cap,
+        };
+        assert_eq!(
+            evaluate(&roomy, &state, Duration::ZERO, "/gsd-plan-phase 20"),
+            BoundVerdict::Halt(BoundsReason::NoProgress),
+            "third in the documented order"
+        );
+
+        // 4. Remove the no-progress condition; command repeat is what is left.
+        let mut moving = state.clone();
+        moving.consecutive_unchanged = 0;
+        assert_eq!(
+            evaluate(&roomy, &moving, Duration::ZERO, "/gsd-plan-phase 20"),
+            BoundVerdict::Halt(BoundsReason::CommandRepeat),
+            "last in the documented order, and reached only once the three above it \
+             are quiet"
+        );
+
+        // 5. And with nothing true at all, the run continues.
+        moving.previous_command = Some("/gsd-execute-phase 20".to_string());
+        assert_eq!(
+            evaluate(&roomy, &moving, Duration::ZERO, "/gsd-plan-phase 20"),
+            BoundVerdict::Continue,
+            "a detector that fired with no condition true would halt every run on \
+             its first iteration"
+        );
+    }
+
     #[test]
     fn a_zero_step_cap_is_refused_before_a_run_exists() {
         assert_eq!(
@@ -622,6 +715,27 @@ mod tests {
             "a cap above the ceiling is the wall-clock detector switched off while \
              still looking configured, and CTRL-06 forbids any value that disables a \
              detector"
+        );
+    }
+
+    #[test]
+    fn a_cap_at_the_compiled_in_ceiling_yields_a_deadline_in_the_future() {
+        let bounds = resolve(None, Some(MAX_WALL_CLOCK_CAP_SECS))
+            .expect("the ceiling itself is accepted; only values above it are refused");
+        assert_eq!(
+            bounds.wall_clock_cap,
+            Duration::from_secs(MAX_WALL_CLOCK_CAP_SECS)
+        );
+
+        let start = std::time::Instant::now();
+        let deadline = start
+            .checked_add(bounds.wall_clock_cap)
+            .expect("no accepted cap value may overflow an Instant");
+        assert!(
+            deadline > start,
+            "the largest accepted cap must still produce a deadline AHEAD of the \
+             instant it was added to. An already-elapsed deadline would halt the run \
+             on its first evaluation with a wall-clock reason that was never true"
         );
     }
 

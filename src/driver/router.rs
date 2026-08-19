@@ -333,6 +333,54 @@ mod tests {
     }
 
     #[test]
+    fn decide_is_insensitive_to_the_insertion_order_of_the_phase_status_map() {
+        // The same four entries, inserted in two different orders. `HashMap`
+        // iteration order differs between these two values; a router that read
+        // the map in iteration order would disagree with itself.
+        let forward = state_with(
+            &["18", "19", "20", "21"],
+            &[
+                ("18", DiskStatus::Complete),
+                ("19", DiskStatus::Partial),
+                ("20", DiskStatus::Discussed),
+                ("21", DiskStatus::Empty),
+            ],
+        );
+        let reversed = state_with(
+            &["18", "19", "20", "21"],
+            &[
+                ("21", DiskStatus::Empty),
+                ("20", DiskStatus::Discussed),
+                ("19", DiskStatus::Partial),
+                ("18", DiskStatus::Complete),
+            ],
+        );
+
+        let expected = Decision::Run {
+            command: "/gsd-plan-phase 20".to_string(),
+            rationale: RATIONALE_READY_TO_PLAN,
+        };
+
+        for iteration in 0..100 {
+            assert_eq!(
+                decide(&forward, "20"),
+                expected,
+                "iteration {iteration}: an undefined-order map iterated by a routing \
+                 decision falsifies the determinism criterion in a way no single test \
+                 run reveals — the same binary over the same bytes would choose \
+                 differently on different days"
+            );
+            assert_eq!(
+                decide(&reversed, "20"),
+                expected,
+                "iteration {iteration}: two maps holding the same entries in different \
+                 insertion orders must route identically; if they do not, the router \
+                 is reading the map in iteration order"
+            );
+        }
+    }
+
+    #[test]
     fn every_router_reason_carries_its_own_stable_identifier() {
         let reasons = [
             RouterReason::NoRule,

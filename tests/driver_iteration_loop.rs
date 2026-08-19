@@ -400,3 +400,135 @@ async fn single_command_mode_is_untouched_by_the_iteration_loop() {
          prefix — the exact string a Phase 17 run wrote for this transcript"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The source-scanning guard: "no digest over project state" is enforced, not
+// claimed
+// ---------------------------------------------------------------------------
+
+/// The module whose no-progress path is under audit.
+const BOUNDS_SOURCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/driver/bounds.rs");
+
+/// The comparison the no-progress detector is required to use.
+const REQUIRED_COMPARISON: &str = "DiskDelta::between";
+
+/// Every shape a hand-rolled digest takes in this tree.
+///
+/// **The hazard is not that a hash is slow; it is that it is WRONG.**
+/// `ProjectState::phase_disk_statuses` is a `HashMap` with undefined iteration
+/// order, so a digest computed by iterating it returns different answers on
+/// different runs of the same binary over the same bytes — and DRIVE-02's
+/// determinism claim becomes false in a way no single test run reveals. That is
+/// precisely the class of defect a scanner catches and a review does not.
+const DIGEST_MARKERS: &[&str] = &[
+    "Hasher",
+    "hash(",
+    "argv_digest",
+    "fnv1a",
+    "Sha256",
+    "blake3",
+];
+
+/// The lines of `source` that are not comments.
+///
+/// A line whose trimmed form starts with `//` is dropped, which is what lets the
+/// module under audit document itself in the very terms it forbids — and lets
+/// the constant above sit in this file without the guard reporting itself.
+fn executable_lines(source: &str) -> Vec<(usize, &str)> {
+    source
+        .lines()
+        .enumerate()
+        .map(|(index, line)| (index + 1, line))
+        .filter(|(_, line)| !line.trim_start().starts_with("//"))
+        .collect()
+}
+
+/// Whether any line in `lines` contains any of `markers`.
+fn hits<'a>(lines: &[(usize, &'a str)], markers: &[&str]) -> Vec<(usize, &'a str)> {
+    lines
+        .iter()
+        .filter(|(_, line)| markers.iter().any(|marker| line.contains(marker)))
+        .copied()
+        .collect()
+}
+
+/// The smallest number of executable lines that could plausibly be the whole
+/// module.
+///
+/// **The non-vacuity floor, and without it this guard passes on an empty file.**
+/// A scanner that examined nothing would report green forever, which is the
+/// failure mode `tests/spawn_seam_guard.rs`'s own emptiness assertion exists to
+/// close. Set well below the module's real size so ordinary editing does not
+/// trip it, and well above zero so deletion does.
+const NON_VACUITY_FLOOR: usize = 80;
+
+#[test]
+fn the_no_progress_path_uses_the_shipped_delta_and_computes_no_digest() {
+    let source = std::fs::read_to_string(BOUNDS_SOURCE).expect("the bounds module is readable");
+    let lines = executable_lines(&source);
+
+    assert!(
+        lines.len() >= NON_VACUITY_FLOOR,
+        "the scan examined only {} executable lines, below the floor of \
+         {NON_VACUITY_FLOOR}. A guard that examines nothing reports green \
+         forever, which is worse than no guard at all",
+        lines.len()
+    );
+
+    assert!(
+        !hits(&lines, &[REQUIRED_COMPARISON]).is_empty(),
+        "the no-progress detector must compare snapshots through \
+         `{REQUIRED_COMPARISON}`, which already draws the unknown-versus-unchanged \
+         distinction correctly and by value equality. A hand-rolled comparison \
+         beside it would have to rediscover that distinction, and a half-captured \
+         pair that fabricated a delta would either halt a working run or keep a \
+         stalled one alive"
+    );
+
+    let digests = hits(&lines, DIGEST_MARKERS);
+    assert!(
+        digests.is_empty(),
+        "no line under src/driver/bounds.rs may compute a digest over project \
+         state. `ProjectState::phase_disk_statuses` is a HashMap with undefined \
+         iteration order, so a digest that iterated it would make DRIVE-02's \
+         determinism claim false in a way no single test run reveals. Offending \
+         lines: {digests:?}"
+    );
+}
+
+#[test]
+fn the_digest_scanner_fires_on_a_synthetic_offender_and_spares_a_synthetic_clean_file() {
+    // The control arm. Without it, a matcher that had quietly stopped matching
+    // anything — a renamed marker, a broken `contains` — would keep reporting a
+    // clean tree, and the guard above would prove only that it still compiles.
+    let offender = "fn no_progress(a: &RunSnapshot, b: &RunSnapshot) -> bool {\n\
+                    let mut h = DefaultHasher::new();\n\
+                    a.project_state.hash(&mut h);\n\
+                    }";
+    assert!(
+        !hits(&executable_lines(offender), DIGEST_MARKERS).is_empty(),
+        "the matcher must fire on a hand-rolled state digest, or the guard above \
+         proves nothing about the real tree"
+    );
+
+    let clean = "fn no_progress(a: &RunSnapshot, b: &RunSnapshot) -> bool {\n\
+                 DiskDelta::between(a, b).made_changes()\n\
+                 }";
+    assert!(
+        hits(&executable_lines(clean), DIGEST_MARKERS).is_empty(),
+        "the matcher must spare the correct implementation, or it would force the \
+         very hand-rolling it exists to prevent"
+    );
+    assert!(
+        !hits(&executable_lines(clean), &[REQUIRED_COMPARISON]).is_empty(),
+        "and it must recognise the required comparison when it is present"
+    );
+
+    // A comment naming a forbidden token must not trip the scan, which is what
+    // lets the module document the hazard it avoids.
+    let documented = "// A hash(  over phase_disk_statuses would be nondeterministic.";
+    assert!(
+        hits(&executable_lines(documented), DIGEST_MARKERS).is_empty(),
+        "a comment naming a forbidden token must not invalidate its own gate"
+    );
+}
