@@ -172,6 +172,9 @@ fn plausible_record(run_id: &str) -> String {
         argv_digest: "fnv1a64:0000000000000000".to_string(),
         ended_at: None,
         outcome: None,
+        target_phase: None,
+        bounds: None,
+        extra: serde_json::Map::new(),
     };
     serde_json::to_string_pretty(&record).expect("the record serialises")
 }

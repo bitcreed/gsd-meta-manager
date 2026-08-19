@@ -219,7 +219,107 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, u64, u64)>) {
 
 // ---------------------------------------------------------------------------
 // The proofs
+/// The same invocation, routed instead of command-mode.
+///
+/// A routed preview reads `.planning/` and calls the decision router, neither of
+/// which the command-mode path does — so the zero-write and zero-spawn proofs
+/// have to be re-run against it rather than inherited.
+fn routed_args(evidence: Option<&Path>) -> DriveArgs {
+    DriveArgs {
+        command: None,
+        target_phase: Some("20".to_string()),
+        ..args(evidence)
+    }
+}
+
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_routed_dry_run_also_leaves_the_git_directory_byte_identical() {
+    let Some(repo_dir) = repo() else {
+        return;
+    };
+    let root = repo_dir.path();
+
+    let (reflog_before, refs_before, listing_before) = git_fingerprint(root);
+    assert!(
+        !refs_before.trim().is_empty(),
+        "the fingerprint must actually see this repository's refs"
+    );
+    assert!(
+        listing_before.len() > 3,
+        "the walk must descend into .git; it saw {} files",
+        listing_before.len()
+    );
+
+    drive(routed_args(None), &config_for(root))
+        .await
+        .expect("a routed dry-run against an opted-in project succeeds");
+
+    let (reflog_after, refs_after, listing_after) = git_fingerprint(root);
+
+    assert_eq!(
+        reflog_before, reflog_after,
+        "a routed preview reads project state and calls the router — neither may \
+         move a ref (D-23, PITFALLS:520)"
+    );
+    assert_eq!(refs_before, refs_after, "nor update one without a reflog entry");
+    assert_eq!(
+        listing_before, listing_after,
+        "nor write an object or the index"
+    );
+}
+
+#[tokio::test]
+async fn a_routed_dry_run_spawns_no_agent() {
+    let Some(repo_dir) = repo() else {
+        return;
+    };
+    let root = repo_dir.path();
+    let evidence = root.join("tripwire-fired-routed");
+
+    // The tripwire program leaves a file behind if it is ever executed, so this
+    // proves the absence of a spawn rather than asserting it.
+    drive(routed_args(Some(&evidence)), &config_for(root))
+        .await
+        .expect("a routed dry-run succeeds");
+
+    assert!(
+        !evidence.exists(),
+        "the tripwire fired — a routed PREVIEW executed the agent program, which \
+         is the one thing a preview may never become (D-23, T-20-11)"
+    );
+}
+
+#[test]
+fn a_routed_preview_lists_the_routers_own_first_selection_and_nothing_after_it() {
+    let Some(repo_dir) = repo() else {
+        return;
+    };
+    let root = repo_dir.path();
+
+    let project = DrivableProject::for_testing_bypassing_opt_in(ALIAS, root);
+    let preview = dry_run::build_routed_report(&project, "20");
+    let rendered = dry_run::render_routed(&preview);
+
+    // This fixture has no `.planning/` to corroborate phase 20, so the router
+    // parks — which is itself the honest answer, and the preview says so rather
+    // than inventing a command.
+    assert!(
+        preview.report.commands.len() <= 1,
+        "a routed preview lists at most the FIRST selection; it must never pad \
+         the list with guesses, got {:?}",
+        preview.report.commands
+    );
+    assert!(
+        rendered.contains(dry_run::SECTION_COMMANDS),
+        "the pinned commands section still renders:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("Routed run:"),
+        "and a routed preview says which model it is previewing:\n{rendered}"
+    );
+}
 
 #[tokio::test]
 async fn a_dry_run_leaves_the_git_directory_byte_identical() {

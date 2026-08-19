@@ -822,10 +822,27 @@ pub enum JournalEvent {
         /// Why the run parked.
         ///
         /// A short stable identifier, in the same convention
-        /// [`JournalEvent::Diagnostic`]'s `code` field documents. The taxonomy
-        /// is [`crate::envelope::policy::ParkReason`] and this string is always
-        /// its `as_str()` — **one list rather than two**, so a reader who greps
-        /// for `force_push_blocked` finds the producer and the record together.
+        /// [`JournalEvent::Diagnostic`]'s `code` field documents. This string is
+        /// always some taxonomy's `as_str()` and **never a fresh literal minted
+        /// at the call site** — one list rather than two, so a reader who greps
+        /// for `force_push_blocked` or `bounds_no_progress` finds the producer
+        /// and the record together.
+        ///
+        /// **Three sanctioned taxonomies ride this one field, and naming only
+        /// one of them would be the same quiet lie this record exists to
+        /// prevent.** They are siblings, never extensions of each other:
+        ///
+        /// | Taxonomy | Prefix on disk | What it means |
+        /// |---|---|---|
+        /// | [`crate::envelope::policy::ParkReason`] | none (e.g. `force_push_blocked`) | The safety envelope refused an operation (Phase 19, D-24). **Seven arms, and it stays at seven** — a new detector is a new sibling enum, not an eighth arm here. |
+        /// | `crate::driver::router::RouterReason` | `router_` | The deterministic router declined to choose a next command (Phase 20, DRIVE-06). |
+        /// | `crate::driver::bounds::BoundsReason` | `bounds_` | A run bound fired and the run halted itself before the next spawn (Phase 20, CTRL-06). |
+        ///
+        /// The prefixes make the producer readable from the string alone, and
+        /// they are a property of each enum's own `REASON_*` constants rather
+        /// than something assembled here. All three reach a terminal record
+        /// through the single `parked:` label prefix, so
+        /// `run.json`'s `outcome` needs no second carrier and no second parse.
         reason: String,
         /// What would unpark it, in the same register as [`Self::reason`]: a
         /// short phrase naming the actor, not a sentence of advice.
@@ -868,38 +885,164 @@ impl JournalEvent {
 /// update would leave the worktree perpetually dirty and let any `git add -A`
 /// the agent issues sweep a mid-run snapshot into an unrelated commit.
 ///
-/// **Forward constraint for Phase 20:** when a run becomes a multi-invocation
-/// loop, the terminal write must still happen after the *last* agent
-/// invocation exits, never between steps. Per-step state belongs in the
-/// journal, which is gitignored.
+/// **Forward constraint for Phase 20, now discharged:** when a run becomes a
+/// multi-invocation loop, the terminal write must still happen after the *last*
+/// agent invocation exits, never between steps. Per-step state belongs in the
+/// journal, which is gitignored. Phase 20's iteration loop honours it — the
+/// loop is strictly inside the two writes and adds neither a third nor a
+/// per-iteration one.
+///
+/// # Every field states its scope, and that is a requirement rather than a
+/// documentation habit
+///
+/// Phase 20 changed the driver's **unit of work from a command to a sequence**.
+/// Every field below was singular because the unit of work was singular, so a
+/// field left unclassified after that change is a field whose meaning moved
+/// without saying so — a record that lies quietly to the separate process that
+/// reads it (Phase 19 proved that reader exists). Each doc therefore names one
+/// of two scopes explicitly:
+///
+/// * **Run-scoped** — one value for the whole run, true from the first write to
+///   the last, no matter how many commands the run issued.
+/// * **Iteration-scoped** — the value belongs to *one* command of a sequence.
+///   No such field may stay on this record silently; either it is documented as
+///   naming a specific iteration (as [`session_id`](Self::session_id) is), or
+///   its per-iteration counterpart is named so a reader knows where the rest of
+///   the truth lives.
+///
+/// `run_record_fields_all_declare_their_scope` parses this struct's own body out
+/// of the source text and fails on a field declaration whose doc carries neither
+/// word, so the classification cannot rot as fields are added.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
     /// The run id, matching the directory name.
+    ///
+    /// **Run-scoped.** One directory per run, whatever the run issued.
     pub run_id: String,
     /// The originating goal prompt, verbatim — the reason D-07 commits this file.
+    ///
+    /// **Run-scoped.** The goal is what the *run* was started for; a routed run
+    /// pursues one goal across every command it issues, and no iteration
+    /// narrows it.
     pub goal: String,
-    /// The GSD command the run was started with.
+    /// What the run issued, when that is one namable thing.
+    ///
+    /// **Run-scoped, and in routed mode it deliberately names no command at
+    /// all.** In single-command mode this is the supplied `--command`, exactly
+    /// as it was before Phase 20. In routed mode the run has no single command —
+    /// that is the point of routing — so the field carries the marker
+    /// [`crate::driver::ROUTED_RECORD_MARKER`] and the run's identity moves to
+    /// [`target_phase`](Self::target_phase).
+    ///
+    /// **A marker rather than the goal text or an empty string, and both
+    /// alternatives were rejected for a stated reason.** Recording the goal
+    /// would put a non-command in a field whose name says command. Recording
+    /// `""` would collide with a meaning this field already has: an absent
+    /// field reads as empty on the tolerant path
+    /// (`a_record_from_an_unknown_schema_still_produces_a_row`, D-30), so a
+    /// routed run would be indistinguishable from a record this build could not
+    /// parse. The marker is the only value that cannot be misread as either.
+    ///
+    /// The **sequence itself** is on the journal's `decided` records, one per
+    /// iteration, naming each command in full and in order.
     pub gsd_command: String,
+    /// The phase a routed run was driving toward, or `None` in command mode.
+    ///
+    /// **Run-scoped** — the target bounds the whole sequence and no iteration
+    /// changes it; the *commands* chosen to reach it are the iteration-scoped
+    /// part, and they are on the `decided` records.
+    ///
+    /// `Option` plus `#[serde(default)]` per the serde migration posture: a
+    /// record written before Phase 20 has no such key and must still load, and
+    /// `run.json` carries **no version discriminator** to hang a migration from,
+    /// so tolerance on read is the only mechanism available.
+    /// `a_pre_phase_20_record_still_loads_with_the_new_fields_defaulted` proves
+    /// it against a byte literal of the old shape rather than against a record
+    /// this build produced.
+    #[serde(default)]
+    pub target_phase: Option<String>,
+    /// The run bounds actually in force, or `None` for a record written before
+    /// they were recorded.
+    ///
+    /// **Run-scoped.** CTRL-06's caps bound the run as a whole; the per-iteration
+    /// counter and elapsed clock they are compared against live in memory and
+    /// reach disk as the `parked` reason when a detector fires.
+    ///
+    /// **The resolved value, never the constants.** A reader must be able to
+    /// answer *"what was this run allowed to do?"* from the record, and a
+    /// default written here would force them to infer it from which binary
+    /// happened to run — which is exactly the inference a durable record exists
+    /// to remove. An argv override is therefore what appears on disk.
+    #[serde(default)]
+    pub bounds: Option<RecordedBounds>,
     /// The rendered execution target.
+    ///
+    /// **Run-scoped.** `ExecutionOptions::target` is rebuilt per iteration in a
+    /// routed run, but from the same envelope settings every time, so the
+    /// rendered value is invariant across the sequence.
     pub target: String,
     /// The user's driver opt-in record.
+    ///
+    /// **Run-scoped.** The opt-in authorises driving *this project*, not one
+    /// command of a sequence.
     ///
     /// `Option` because populating it is **Phase 17's** job; this phase writes
     /// the field so that phase adds no schema migration.
     pub opt_in: Option<String>,
     /// RFC3339 UTC timestamp of the first write.
+    ///
+    /// **Run-scoped.** It stamps write one, which lands before the loop starts
+    /// and before any agent is spawned. Per-iteration start times are the
+    /// `exec_started` records' own timestamps.
     pub started_at: String,
-    /// The agent session UUID.
+    /// The agent session UUID of the **first** iteration, and of nothing else.
+    ///
+    /// **Iteration-scoped, and this field names iteration one.** It is written
+    /// at the first write, before any command has run, so it can only ever be
+    /// the first session's. It is *not* the run's session: Phase 20 starts a
+    /// **fresh session per iteration** rather than resuming one (CONTEXT.md
+    /// OQ5), so that a multi-hour routed run cannot hit a context limit for
+    /// reasons unrelated to the work.
+    ///
+    /// The per-iteration ids ride the journal's **`exec_started`** events, one
+    /// per spawn, each already carrying its own `session_id` — so the full set
+    /// is recoverable without widening this record, which is why this stayed one
+    /// field rather than becoming a list. (`decided` records the *command*
+    /// chosen and its rationale; it carries no session id, because the decision
+    /// precedes the spawn that creates one.)
     pub session_id: String,
     /// The driver process id.
+    ///
+    /// **Run-scoped.** One driver process performs the whole sequence; the
+    /// agents it spawns are separate processes in their own group and are not
+    /// recorded here.
     pub pid: u32,
     /// The driver process group id.
+    ///
+    /// **Run-scoped**, and the kill switch depends on it staying so: `kill`
+    /// resolves a stop against this one group for the whole run.
     pub pgid: u32,
     /// The `claude_code_version` observed at `system/init`.
+    ///
+    /// **Iteration-scoped, naming iteration one**, for the same mechanical
+    /// reason as [`session_id`](Self::session_id): it is empty at write one and
+    /// nothing overwrites it, because the document is written exactly twice. In
+    /// practice every iteration of a run spawns the same binary, so the value is
+    /// invariant — but it is the *first* iteration's observation, and a reader
+    /// wanting per-iteration proof reads the `exec_event` records.
     pub claude_code_version: String,
-    /// [`argv_digest`] of the spawned command line.
+    /// [`argv_digest`] of the driver's own effective command line.
+    ///
+    /// **Run-scoped**, and deliberately the *driver's* argv rather than any
+    /// agent's. For a routed run it digests the `--target-phase` invocation the
+    /// user actually typed, which is what distinguishes two routed runs from one
+    /// another; the per-iteration argv variation is on the `decided` records.
+    /// The digest authenticates nothing (see [`argv_digest`]).
     pub argv_digest: String,
     /// RFC3339 UTC timestamp of the terminal transition.
+    ///
+    /// **Run-scoped.** It stamps write two, which lands after the **last**
+    /// iteration exits and never between iterations.
     ///
     /// **`None` is precisely the signal Phase 17's crash reconciliation reads**
     /// (D-06, D-32): a run directory whose record has no `ended_at` is a run
@@ -907,7 +1050,59 @@ pub struct RunRecord {
     /// it.
     pub ended_at: Option<String>,
     /// The derived run outcome, rendered. `None` until the terminal write.
+    ///
+    /// **Run-scoped** — how the *run* ended, from the `Terminal` classification
+    /// with no unclassified arm (DRIVE-06). A halted or parked run carries the
+    /// `parked:<reason>` form, so the detector that stopped the sequence is
+    /// readable here without a second read of the journal. Per-iteration
+    /// outcomes are the `exec_finished` records.
     pub outcome: Option<String>,
+    /// Every field of this record that this build does not model.
+    ///
+    /// **Run-scoped** in the trivial sense — it is the record's own overflow,
+    /// not any iteration's.
+    ///
+    /// The same tolerance technique `JournalRecord.rest` and
+    /// `RegisteredProject.extra` already use, applied to a file **two binary
+    /// versions may share** and that users commit (T-20-08). Without it, an
+    /// older binary deserialising a newer record and re-serialising it would
+    /// silently delete every field it had never heard of — a destructive rewrite
+    /// by omission. `#[serde(flatten)]` supplies default-when-absent for free: a
+    /// record with no unknown fields deserialises to an empty map and serialises
+    /// back to nothing at all.
+    ///
+    /// It complements rather than replaces the `Value`-based read paths
+    /// ([`run_summary_from_value`], `reconcile`): those exist so one *added*
+    /// field cannot make older runs invisible, and this exists so an *unknown*
+    /// field survives a round trip through the typed struct.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The run bounds a run actually ran under, as written to `run.json`.
+///
+/// A record-side mirror of `crate::driver::bounds::RunBounds` rather than that
+/// type itself, and the split is deliberate. `RunBounds` carries a
+/// [`std::time::Duration`], which serde renders as a `{"secs":…,"nanos":…}`
+/// object — a shape nothing reading this file wants and that a future change of
+/// representation would silently alter. Seconds as a plain integer is what a
+/// reader can act on, and keeping the mirror here means `journal` does not
+/// depend on `driver` to describe its own document.
+///
+/// Both fields are **run-scoped**: they bound the sequence, not an iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedBounds {
+    /// How many iterations the run was allowed, from
+    /// `bounds::RunBounds::max_steps`.
+    pub max_steps: u32,
+    /// The run-level wall-clock cap in whole seconds, from
+    /// `bounds::RunBounds::wall_clock_cap`.
+    ///
+    /// The run-level cap, not the per-iteration one: the two are different
+    /// values on purpose (the iteration cap is strictly inside this one), and
+    /// recording the wrong one would make the run-level wall-clock reason look
+    /// unreachable to anyone checking the record against the detector.
+    pub wall_clock_cap_secs: u64,
 }
 
 /// The `kind` values **this phase actually emits** (D-36).
@@ -1652,6 +1847,12 @@ mod tests {
             argv_digest: argv_digest(&["claude".to_string(), "-p".to_string()]),
             ended_at: None,
             outcome: None,
+            // The single-command shape: this helper backs the pre-Phase-20
+            // tests, and they must keep asserting what a command-mode run
+            // records rather than quietly acquiring routed values.
+            target_phase: None,
+            bounds: None,
+            extra: serde_json::Map::new(),
         }
     }
 
@@ -1772,6 +1973,318 @@ mod tests {
             "an absent ended_at is the crash signal, so a finished run must carry one"
         );
         assert_eq!(stamped.goal, "close the run journal phase");
+    }
+
+    // ---- Phase 20: the record's scope classification and its new fields ----
+
+    /// The `RunRecord` struct body, sliced out of this module's own source.
+    ///
+    /// Source-parsing rather than reflection, following the precedent
+    /// `tests/spawn_seam_guard.rs` sets: a doc comment is not visible at
+    /// runtime, so the only way to assert that every field *documents* its scope
+    /// is to read the text that documents it.
+    fn run_record_struct_body() -> &'static str {
+        const SOURCE: &str = include_str!("mod.rs");
+        let start = SOURCE
+            .find("pub struct RunRecord {")
+            .expect("the struct this test is named for must exist");
+        let body = &SOURCE[start..];
+        let end = body
+            .find("\n}\n")
+            .expect("the struct body must be brace-terminated at column zero");
+        &body[..end]
+    }
+
+    #[test]
+    fn run_record_fields_all_declare_their_scope() {
+        let body = run_record_struct_body();
+
+        // A field declaration is a `pub <name>:` line. Attributes and doc lines
+        // are gathered as the *preceding* run of non-declaration lines, which is
+        // where the doc comment for that field lives.
+        let mut examined = 0usize;
+        let mut undocumented: Vec<String> = Vec::new();
+        let mut doc_block = String::new();
+
+        for line in body.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("pub ") && trimmed.contains(':') {
+                examined += 1;
+                let name = trimmed
+                    .trim_start_matches("pub ")
+                    .split(':')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                let lowered = doc_block.to_lowercase();
+                if !lowered.contains("run-scoped") && !lowered.contains("iteration-scoped") {
+                    undocumented.push(name);
+                }
+                doc_block.clear();
+            } else if trimmed.starts_with("///") {
+                doc_block.push_str(trimmed);
+                doc_block.push('\n');
+            } else if trimmed.starts_with("#[") || trimmed.is_empty() {
+                // Attributes and blank lines do not end a doc block.
+            } else {
+                doc_block.clear();
+            }
+        }
+
+        // **The non-vacuity floor.** A parse that silently matched nothing would
+        // pass this test with an empty `undocumented` list while proving
+        // nothing at all — the exact failure mode a source-scanning guard is
+        // most prone to.
+        assert!(
+            examined >= 10,
+            "the scan examined only {examined} field declarations; the record has \
+             far more than that, so the parse has broken rather than the struct \
+             having shrunk"
+        );
+
+        assert!(
+            undocumented.is_empty(),
+            "Phase 20 made the driver's unit of work a SEQUENCE, so every field \
+             that was singular because the unit was singular must now say which \
+             scope it belongs to. These declare neither `run-scoped` nor \
+             `iteration-scoped`: {undocumented:?}"
+        );
+    }
+
+    #[test]
+    fn a_pre_phase_20_record_still_loads_with_the_new_fields_defaulted() {
+        // **A byte literal of the OLD shape, never a record built from the
+        // current struct.** A fixture constructed from today's `RunRecord` would
+        // acquire every field added since, and would therefore agree with itself
+        // while proving nothing about a record already on disk. `run.json`
+        // carries no version discriminator, so tolerance on read is the only
+        // migration mechanism there is.
+        const PRE_PHASE_20: &[u8] = br#"{
+            "run_id": "2026-07-28T14-03-11Z-a3f9",
+            "goal": "close the run journal phase",
+            "gsd_command": "/gsd:execute-phase 16",
+            "target": "host",
+            "opt_in": null,
+            "started_at": "2026-07-28T14:03:11Z",
+            "session_id": "9f1c0e2a-0000-4000-8000-000000000000",
+            "pid": 4242,
+            "pgid": 4242,
+            "claude_code_version": "2.1.0",
+            "argv_digest": "fnv1a64:0000000000000000",
+            "ended_at": null,
+            "outcome": null
+        }"#;
+
+        let record: RunRecord =
+            serde_json::from_slice(PRE_PHASE_20).expect("a pre-Phase-20 record must still load");
+
+        assert_eq!(record.run_id, "2026-07-28T14-03-11Z-a3f9");
+        assert_eq!(
+            record.gsd_command, "/gsd:execute-phase 16",
+            "a command-mode record keeps meaning exactly what it meant"
+        );
+        assert_eq!(
+            record.target_phase, None,
+            "the routed identity defaults to absent, which is the truth about a \
+             record written before routing existed"
+        );
+        assert_eq!(
+            record.bounds, None,
+            "`None` says the bounds were not recorded — it must never be \
+             fabricated as today's defaults, which would assert a cap the run \
+             may never have run under"
+        );
+        assert!(
+            record.extra.is_empty(),
+            "the old shape carries no unknown fields"
+        );
+    }
+
+    #[test]
+    fn a_record_written_by_a_newer_binary_keeps_its_unknown_fields_through_a_round_trip() {
+        // T-20-08: two binary versions share this file and users commit it. An
+        // older build that loaded and re-saved a newer record while dropping the
+        // fields it does not model would be a destructive rewrite by omission.
+        const FROM_THE_FUTURE: &[u8] = br#"{
+            "run_id": "2027-01-01T00-00-00Z-ffff",
+            "goal": "g",
+            "gsd_command": "/gsd-progress",
+            "target": "host",
+            "opt_in": null,
+            "started_at": "2027-01-01T00:00:00Z",
+            "session_id": "s",
+            "pid": 1,
+            "pgid": 1,
+            "claude_code_version": "9.9.9",
+            "argv_digest": "fnv1a64:0000000000000000",
+            "ended_at": null,
+            "outcome": null,
+            "a_field_from_2027": {"nested": [1, 2, 3]}
+        }"#;
+
+        let record: RunRecord = serde_json::from_slice(FROM_THE_FUTURE).expect("it loads");
+        assert_eq!(
+            record.extra.len(),
+            1,
+            "the unknown field lands in the flattened overflow rather than being \
+             dropped on the floor"
+        );
+
+        let round_tripped = serde_json::to_value(&record).expect("it serialises");
+        assert_eq!(
+            round_tripped["a_field_from_2027"]["nested"],
+            serde_json::json!([1, 2, 3]),
+            "and it survives the trip back out with its value intact"
+        );
+        assert!(
+            round_tripped.get("target_phase").is_some(),
+            "flattening the overflow must not stop this build writing its own \
+             fields"
+        );
+    }
+
+    #[test]
+    fn the_recorded_bounds_round_trip_as_plain_numbers() {
+        let mut record = run_record(RUN_ID);
+        record.bounds = Some(RecordedBounds {
+            max_steps: 7,
+            wall_clock_cap_secs: 3600,
+        });
+
+        let value = serde_json::to_value(&record).expect("it serialises");
+        assert_eq!(
+            value["bounds"]["max_steps"], 7,
+            "a reader gets a number, not a Duration's {{secs, nanos}} object"
+        );
+        assert_eq!(value["bounds"]["wall_clock_cap_secs"], 3600);
+
+        let back: RunRecord = serde_json::from_value(value).expect("it loads");
+        assert_eq!(back.bounds, record.bounds);
+    }
+
+    #[test]
+    fn a_routed_run_of_two_iterations_still_writes_the_record_exactly_twice() {
+        // The invariant the whole document depends on (D-06, D-07): the
+        // iteration loop lives strictly *inside* the two writes and adds neither
+        // a third nor a per-iteration one. Counted through the production
+        // journal's own counter rather than by watching the file, so a write
+        // that happened and was overwritten still counts.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let planning = dir.path().join(".planning");
+
+        let mut record = run_record(RUN_ID);
+        record.gsd_command = crate::driver::ROUTED_RECORD_MARKER.to_string();
+        record.target_phase = Some("20".to_string());
+        record.bounds = Some(RecordedBounds {
+            max_steps: 5,
+            wall_clock_cap_secs: 4 * 60 * 60,
+        });
+
+        let mut run = JournalRun::start(&planning, record).expect("start the run");
+        assert_eq!(run.record_writes(), 1, "write one lands at run start");
+
+        // Two iterations' worth of the events a routed run emits per command.
+        for command in ["/gsd-plan-phase 20", "/gsd-plan-phase 20"] {
+            run.record(&JournalEvent::Decided {
+                by: "policy".to_string(),
+                command: command.to_string(),
+                rationale: "the target phase is Discussed".to_string(),
+            })
+            .expect("the decision is journalled");
+        }
+
+        run.finish("parked:bounds_command_repeat")
+            .expect("finish the run");
+
+        assert_eq!(
+            run.record_writes(),
+            2,
+            "exactly two for a routed run of two iterations — the loop adds no \
+             third write and no per-iteration write"
+        );
+    }
+
+    #[test]
+    fn the_routed_record_marker_cannot_be_misread_as_absent_or_as_an_argv_fragment() {
+        let marker = crate::driver::ROUTED_RECORD_MARKER;
+
+        // The point of option-a is that the VALUE cannot be misread, so the
+        // properties are asserted rather than only the literal.
+        assert!(
+            !marker.is_empty(),
+            "`\"\"` already means `the field was absent` on the tolerant read \
+             path (a_record_from_an_unknown_schema_still_produces_a_row, D-30); \
+             a routed run must not be indistinguishable from an unparseable one"
+        );
+        assert!(
+            !marker.contains("--"),
+            "an argv fragment like `--target-phase 3` reads as a pasteable \
+             command line and is not one — that is the shape this marker \
+             replaced"
+        );
+        assert!(
+            !marker.starts_with('/'),
+            "a leading slash is what a real GSD command looks like; the marker \
+             must not be mistakable for one"
+        );
+        assert!(
+            !marker.starts_with('-'),
+            "nor for a flag"
+        );
+        assert!(
+            marker.contains("decided"),
+            "the marker earns its place by pointing at where the real sequence \
+             lives; a bare `(routed)` would say what is missing without saying \
+             where to look"
+        );
+
+        // And a routed record is distinguishable from an absent-field one on the
+        // tolerant path the TUI actually reads through.
+        let summary = run_summary_from_value(
+            RUN_ID,
+            &serde_json::json!({
+                "started_at": "2026-08-19T00:00:00Z",
+                "goal": "g",
+                "gsd_command": marker,
+                "ended_at": serde_json::Value::Null,
+            }),
+        );
+        assert_eq!(summary.gsd_command, marker);
+        assert_ne!(
+            summary.gsd_command, "",
+            "which is exactly what an absent field would have produced"
+        );
+    }
+
+    #[test]
+    fn a_bounds_reason_reaches_the_terminal_record_through_the_one_parked_prefix() {
+        // The park event's `reason` doc now names three sanctioned taxonomies.
+        // This proves the bounds one rides the same single field and the same
+        // single `parked:` prefix as the envelope one — one carrier, not three.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let planning = dir.path().join(".planning");
+        let mut run = JournalRun::start(&planning, run_record(RUN_ID)).expect("start the run");
+
+        let reason = crate::driver::bounds::REASON_NO_PROGRESS;
+        run.record(&JournalEvent::Parked {
+            reason: reason.to_string(),
+            needs: "human".to_string(),
+        })
+        .expect("the park is journalled");
+        run.finish(&format!("parked:{reason}"))
+            .expect("finish the run");
+
+        let stamped: RunRecord = serde_json::from_str(
+            &std::fs::read_to_string(&run.paths().run_json).expect("read the record"),
+        )
+        .expect("the record deserialises");
+
+        assert_eq!(
+            stamped.outcome.as_deref(),
+            Some("parked:bounds_no_progress"),
+            "a bounds reason reaches disk through the `parked:` prefix unchanged \
+             — no second carrier was invented for the run bounds"
+        );
     }
 
     #[test]

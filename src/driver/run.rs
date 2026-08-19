@@ -17,7 +17,7 @@ use rustix::process::Signal;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::config::RegisteredProject;
-use crate::driver::{bounds, kill, liveness, lock, router, DriveArgs};
+use crate::driver::{bounds, kill, liveness, lock, router, DriveArgs, ROUTED_RECORD_MARKER};
 use crate::envelope::advisory::{self, ProtectionState};
 use crate::envelope::cred::{self, EnvelopeEnv};
 use crate::envelope::hooks;
@@ -587,6 +587,7 @@ fn make_run_record(
     options: &ExecutionOptions,
     argv_digest: String,
     pgid: u32,
+    run_bounds: bounds::RunBounds,
 ) -> RunRecord {
     RunRecord {
         run_id,
@@ -595,9 +596,20 @@ fn make_run_record(
         // `run.json` is written exactly twice, so this field cannot accumulate;
         // the per-iteration sequence belongs on the journal's `decided` records,
         // which is where a reader finds every command a routed run issued and in
-        // what order. For a routed run this therefore names the *mode* — the
-        // target phase — rather than a command the router might not choose.
+        // what order. A routed run records the marker rather than a command,
+        // because it chose none at this point and will choose several later.
         gsd_command: recorded_command(args),
+        // The routed run's identity, in a field whose type says what it is
+        // rather than smuggled into one whose name says command.
+        target_phase: args.target_phase.clone(),
+        // **The resolved caps, never the constants.** This is the whole of what
+        // the field is for: a reader answering "what was this run allowed to
+        // do?" must not have to work out which binary produced the record and
+        // what its compiled-in defaults were at the time.
+        bounds: Some(journal::RecordedBounds {
+            max_steps: run_bounds.max_steps,
+            wall_clock_cap_secs: run_bounds.wall_clock_cap.as_secs(),
+        }),
         target: format!("{:?}", options.target),
         // The field Phase 16 reserved at `src/journal/mod.rs:475` specifically
         // so this phase adds no migration.
@@ -621,6 +633,11 @@ fn make_run_record(
         argv_digest,
         ended_at: None,
         outcome: None,
+        // Empty at write one and at write two: this build models every field it
+        // writes. The map exists so a record written by a *newer* build survives
+        // a round trip through this struct rather than being silently pruned
+        // (T-20-08).
+        extra: serde_json::Map::new(),
     }
 }
 
@@ -628,17 +645,51 @@ fn make_run_record(
 ///
 /// Single-command mode records the command, exactly as it always did. A routed
 /// run has no single command to record — that is the point of it — so it records
-/// the target that bounded the sequence. Both are one line a reader can act on;
-/// neither is a guess about what the router chose.
+/// [`ROUTED_RECORD_MARKER`], and its identity moves to the typed sibling field
+/// [`RunRecord::target_phase`].
+///
+/// **This deliberately no longer records `--target-phase N`.** That earlier
+/// value put an *argv fragment* in a field named `gsd_command` and rendered it
+/// to the user as `cmd: --target-phase 3` — something that reads as a pasteable
+/// command line and is not one. `run.json` carries no version discriminator, so
+/// a field whose meaning drifts silently reinterprets every record already on
+/// disk; the marker is the one value that can be neither pasted as a command nor
+/// mistaken for an absent field.
+///
+/// The argv **digest** does not go through here, and that separation is the
+/// point — see [`digested_command_fragment`].
 fn recorded_command(args: &DriveArgs) -> String {
     match (&args.command, &args.target_phase) {
         (Some(command), _) => command.clone(),
-        (None, Some(target_phase)) => format!("--target-phase {target_phase}"),
+        (None, Some(_)) => ROUTED_RECORD_MARKER.to_string(),
         // Unreachable: `driver::drive` refuses a run with neither before
         // anything is created. An empty string rather than a panic, because a
         // detached driver that panicked here would leave a run directory with no
         // terminal record, which is the crash signal D-12 reserves for a genuine
         // crash.
+        (None, None) => String::new(),
+    }
+}
+
+/// The command-selecting fragment of the **driver's own argv**, for the digest.
+///
+/// Split from [`recorded_command`] when the record started carrying a marker,
+/// because the two answer different questions and one string cannot answer both:
+///
+/// * `recorded_command` answers *"what command did this run issue?"* — for a
+///   routed run, none in particular.
+/// * This answers *"what command line was this driver invoked with?"* — for a
+///   routed run, `--target-phase 3`, which is literally what the user typed.
+///
+/// Digesting the marker instead would collapse **every routed run against every
+/// target** to one digest, destroying the only thing
+/// [`journal::argv_digest`](crate::journal::argv_digest) promises: telling two
+/// runs with different command lines apart. The digest authenticates nothing;
+/// it discriminates, and a constant discriminates nothing.
+fn digested_command_fragment(args: &DriveArgs) -> String {
+    match (&args.command, &args.target_phase) {
+        (Some(command), _) => command.clone(),
+        (None, Some(target_phase)) => format!("--target-phase {target_phase}"),
         (None, None) => String::new(),
     }
 }
@@ -1524,16 +1575,28 @@ pub async fn execute_run(
     // promises: comparing two runs for "same command line". It authenticates
     // nothing (see `journal::argv_digest`).
     //
-    // It is computed once from the run's *recorded* command, because `run.json`
-    // carries exactly one digest and is written exactly twice. A routed run's
-    // per-iteration argv differs by the command; that variation is visible on
-    // the journal's `decided` records, which name each command in full.
+    // It is computed once, because `run.json` carries exactly one digest and is
+    // written exactly twice. A routed run's per-iteration argv differs by the
+    // command; that variation is visible on the journal's `decided` records,
+    // which name each command in full.
+    //
+    // **`digested_command_fragment`, not `recorded_command`**: the record's
+    // routed marker is a constant, and digesting a constant would give every
+    // routed run against every target the same digest. The driver's real argv
+    // carries `--target-phase N`, which is what tells two routed runs apart.
     let mut argv = vec![agent_program(args).display().to_string()];
     argv.extend(agent_leading_args(args));
-    argv.push(recorded_command(args));
+    argv.push(digested_command_fragment(args));
     let argv_digest = journal::argv_digest(&argv);
 
-    let record = make_run_record(run_id, args, entry, &options, argv_digest, pgid);
+    // The caps in force, resolved **before** the record is built rather than at
+    // the loop below, so the record can name them. `bounds::resolve` is pure, so
+    // the value threaded down to the loop is provably the same one on disk —
+    // which is the property the field is claiming.
+    let run_bounds =
+        bounds::resolve(args.max_steps, args.wall_clock_cap_secs).map_err(DriveError::from)?;
+
+    let record = make_run_record(run_id, args, entry, &options, argv_digest, pgid, run_bounds);
 
     let planning_dir = project.root().join(".planning");
 
@@ -1678,11 +1741,13 @@ pub async fn execute_run(
         (None, None) => CommandSource::Fixed(String::new()),
     };
 
-    // The caps in force, resolved from the same pure function `driver::drive`
-    // already used to refuse an unbounded one. A second call cannot disagree
-    // with the first, so no value is threaded through `dispatch`.
-    let run_bounds =
-        bounds::resolve(args.max_steps, args.wall_clock_cap_secs).map_err(DriveError::from)?;
+    // `run_bounds` is the value resolved above, before the record was built —
+    // **not a second call**. It used to be resolved again here on the reasoning
+    // that a pure function cannot disagree with itself, which was true but is no
+    // longer sufficient: the same value now reaches disk in
+    // `RunRecord::bounds`, and "the caps on disk are the caps the loop enforced"
+    // is a property to guarantee by construction rather than by re-deriving and
+    // trusting purity.
     let mut bounds_state = bounds::BoundsState::default();
 
     // The run-level clock. `std::time::Instant` rather than `tokio`'s, so the
@@ -2337,6 +2402,7 @@ mod tests {
             &ExecutionOptions::default(),
             "fnv1a64:0000000000000000".to_string(),
             std::process::id(),
+            bounds::RunBounds::default(),
         );
         let run = JournalRun::start(&planning, record).expect("the run starts");
         (dir, run)
@@ -2436,6 +2502,7 @@ mod tests {
             &ExecutionOptions::default(),
             "fnv1a64:0000000000000000".to_string(),
             SENTINEL_PGID,
+            bounds::RunBounds::default(),
         );
 
         assert_eq!(
@@ -2562,6 +2629,7 @@ mod tests {
             &ExecutionOptions::default(),
             journal::argv_digest(&["claude".to_string()]),
             4242,
+            bounds::RunBounds::default(),
         );
         let mut journal = JournalRun::start(&planning, record).expect("start the run");
         let inbox_path = journal.paths().inbox.clone();
@@ -2667,6 +2735,7 @@ mod tests {
             &ExecutionOptions::default(),
             journal::argv_digest(&["claude".to_string()]),
             4242,
+            bounds::RunBounds::default(),
         );
         let mut journal = JournalRun::start(&planning, record).expect("start the run");
         let inbox_path = journal.paths().inbox.clone();

@@ -123,6 +123,13 @@ const BLOCKING_MARKERS: &[&str] = &[
 /// like a clean run.
 const BLOCKING_HELPERS: &[&str] = &[
     "build_report(",
+    // The driver's own preview entry point, added in Phase 20 when the dry-run
+    // grew a second mode. It wraps `build_report` / `build_routed_report`, so
+    // the two synchronous `git` calls are still there — only the name at the
+    // call site changed, and a marker that named only the old one would have
+    // silently stopped seeing the join-failure fallback it was written for.
+    "preview_text(",
+    "build_routed_report(",
     "establish_envelope(",
     "terminal_label(",
     "lock::acquire(",
@@ -211,7 +218,15 @@ const ASYNC_BLOCKING_ALLOWLIST: &[(&str, &str)] = &[
     // `spawn_blocking` on every healthy path; this inline re-run is reachable
     // only if that task panicked or the runtime is shutting down, and it exists
     // so a preview stays honest on a path no healthy run reaches.
-    ("src/driver/mod.rs", "build_report("),
+    //
+    // **The marker moved from `build_report(` to `preview_text(` in Phase 20**,
+    // in the same commit as the code that moved it. The dry-run gained a second
+    // mode, so the two builders sit behind one entry point and the async fn no
+    // longer names `build_report` at all. `no_allowlist_entry_is_stale` is what
+    // caught the drift: the old entry stopped suppressing anything, which is
+    // precisely the "wider than the truth it describes" state it refuses — and
+    // the blocking work had not gone anywhere, only its name had.
+    ("src/driver/mod.rs", "preview_text("),
     // The terminal record's two join-failure fallbacks, the same shape and the
     // same reason: the label is read inside `spawn_blocking`, and the inline
     // re-run keeps a park reason on `run.json` rather than losing it merely
@@ -707,6 +722,122 @@ fn every_named_blocking_helper_still_exists_in_the_tree() {
          marker in the same commit. Leaving it is a marker that matches nothing and an \
          audit that silently checks less: {missing:?}"
     );
+}
+
+#[test]
+fn the_non_vacuity_floor_counts_real_async_bodies_rather_than_reporting_a_constant() {
+    // **The guard of the guard's guard.** `every_blocking_call_inside_an_async_fn_
+    // is_handed_off_or_allowlisted` asserts an emptiness and then defends that
+    // against vacuity with `examined >= MIN_ASYNC_BODY_LINES`. But nothing
+    // proved the FLOOR itself was live: if `scan` returned a large count for
+    // reasons unrelated to async bodies, the floor would pass while the walk was
+    // broken, and the emptiness above it would be meaningless.
+    //
+    // Asserting `examined + 1 > examined` would prove arithmetic, not the
+    // scanner. What has to be shown is that the counter RESPONDS to its input —
+    // zero when there is no async body, and the body's own size when there is.
+
+    // Arm one: a file with no `async fn` contributes nothing to the count, even
+    // though it contains a call the marker set knows. A walk that counted every
+    // line regardless would clear the floor while auditing nothing.
+    let sync_only = lines(&[
+        "pub fn observe(path: &Path) -> RunSnapshot {",
+        "    let snapshot = RunSnapshot::capture(path);",
+        "    snapshot",
+        "}",
+    ]);
+    let (hits, examined) = scan("src/synthetic_sync.rs", &sync_only);
+    assert_eq!(
+        examined, 0,
+        "a file with no `async fn` must contribute ZERO examined lines; a counter \
+         that ticked here would let a broken walk clear the floor on synchronous \
+         code alone"
+    );
+    assert!(
+        hits.is_empty(),
+        "and a blocking call OUTSIDE an async fn is not a violation — D-29 is \
+         about the reactor thread, not about blocking calls in general: {hits:?}"
+    );
+
+    // Arm two: an async body of known size is counted, and counted as its own
+    // lines rather than the file's.
+    let async_body = lines(&[
+        "// a leading comment that is not inside any body",
+        "pub async fn observe(path: &Path) -> u64 {",
+        "    let a = 1;",
+        "    let b = 2;",
+        "    a + b",
+        "}",
+        "// a trailing comment that is not inside any body",
+    ]);
+    let (_, examined_async) = scan("src/synthetic_async.rs", &async_body);
+    assert!(
+        examined_async >= 3,
+        "the three statement lines of the async body must be counted, got \
+         {examined_async}"
+    );
+    assert!(
+        examined_async < async_body.len(),
+        "but the comments outside the body must NOT be, or the count is a file \
+         length wearing a floor's name: counted {examined_async} of {} lines",
+        async_body.len()
+    );
+
+    // Arm three: the floor discriminates between the two arms above. A tree
+    // whose walk broke completely would measure what arm one measured — and
+    // that value must fall BELOW the floor, or the floor could never fail and
+    // the non-vacuity guard would be decoration.
+    assert!(
+        examined < MIN_ASYNC_BODY_LINES,
+        "a broken walk measures {examined}, which must be under the floor of \
+         {MIN_ASYNC_BODY_LINES} for the floor to be capable of failing at all"
+    );
+    let (_, real, _) = audit();
+    assert!(
+        real >= MIN_ASYNC_BODY_LINES,
+        "and the real tree measures {real}, which clears it — so the floor sits \
+         strictly between a broken walk and a working one, which is the only \
+         position from which it distinguishes them"
+    );
+}
+
+#[test]
+fn the_snapshot_capture_marker_covers_both_of_the_trees_inline_captures() {
+    // Phase 20's plan expected to ADD the snapshot-capture coverage here. It was
+    // already added — by plan 20-01, in the same commit as the loop that made it
+    // urgent — so this test pins the coverage rather than re-adding it, and
+    // proves the claim is true of the tree rather than of the plan text.
+    assert!(
+        BLOCKING_HELPERS.contains(&"RunSnapshot::capture("),
+        "the synchronous full-tree capture must be visible to the scanner; it \
+         does full-tree file I/O and shells out to git twice, and was invisible \
+         from Phase 15 until Phase 20 named it"
+    );
+
+    // **`capture_snapshot(` is deliberately NOT a marker**, and that is the
+    // whole finding. Both spellings of it — `src/executor/claude.rs:747` and
+    // `src/driver/run.rs:1401` — are `async fn`s that hand the work to
+    // `spawn_blocking` internally. Naming them would report three call sites
+    // that are already correct, and the only way to make the suite green again
+    // would be three allowlist entries suppressing non-problems. An allowlist
+    // that grows for calls that were never violations is exactly the silent
+    // widening CTRL-06 forbids.
+    assert!(
+        !BLOCKING_HELPERS.contains(&"capture_snapshot("),
+        "`capture_snapshot` is an async wrapper that already hands off; naming it \
+         would force allowlist entries for compliant code"
+    );
+
+    // Both inline re-runs are the join-failure fallbacks, one per capture site,
+    // and each is allowlisted at marker granularity rather than by file.
+    for file in ["src/driver/run.rs", "src/executor/claude.rs"] {
+        assert!(
+            ASYNC_BLOCKING_ALLOWLIST
+                .iter()
+                .any(|(path, marker)| *path == file && *marker == "RunSnapshot::capture("),
+            "{file}'s inline join-failure capture must carry a declared entry"
+        );
+    }
 }
 
 #[test]
