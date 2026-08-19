@@ -143,7 +143,10 @@ fn config_for(root: &Path) -> Config {
 fn args(evidence: Option<&Path>) -> DriveArgs {
     DriveArgs {
         alias: ALIAS.to_string(),
-        command: COMMAND.to_string(),
+        command: Some(COMMAND.to_string()),
+        target_phase: None,
+        max_steps: None,
+        wall_clock_cap_secs: None,
         run_id: None,
         dry_run: true,
         goal: None,

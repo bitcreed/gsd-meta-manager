@@ -31,9 +31,18 @@
 //!    `.planning/` as a phantom project and mis-route every file event. Phase 19
 //!    owns the decision and the safe fallback (a worktree created *outside* the
 //!    repo).
-//! 4. **This phase runs exactly one GSD command, supplied on the command line.**
-//!    There is no loop and no sequence. The decision router is Phase 20's, which
-//!    is why [`DriveArgs::command`] is a single `String` and not a `Vec`.
+//! 4. **A run is either a single supplied command or a routed sequence, and
+//!    exactly one of the two (D-20.2, CTRL-06).** Phase 17 shipped only the
+//!    first: `--command` ran once and there was no loop at all. Phase 20 builds
+//!    the loop. `--target-phase` puts the run under [`router`], which chooses
+//!    each iteration's command from observed project state with **no model
+//!    call**, and under [`bounds`], whose four detectors are the only stopping
+//!    condition an unattended run has. [`DriveArgs::command`] is therefore an
+//!    `Option<String>` rather than a `Vec<String>`: the sequence is *derived*
+//!    per iteration, never supplied, so a field that accepted a list would
+//!    describe a mode neither half of the code has. The lock, the journal, the
+//!    envelope and the terminate handler are established once and held across
+//!    every iteration; only spawn, drain and outcome repeat.
 //! 5. **Stopping a run is two-layer, because there are TWO process groups, not
 //!    one (D-06).** Phase 15 spawns `claude` with `ProcessGroup::leader()`, so
 //!    the agent leads a group of its own and a signal aimed at the *driver's*
@@ -55,6 +64,14 @@
 // make the one mode that needs no platform facility the one mode a Windows
 // build could not even check.
 pub mod dry_run;
+// Outside the block for a third reason, and the plainest one: both modules are
+// **pure**. They open no file, spawn no process and read no clock — the caller
+// captures the state and hands it in (D-11) — so there is nothing platform-
+// specific in either to gate, and gating them would make the two modules whose
+// determinism is the phase's central claim the two a non-Unix build could not
+// even type-check.
+pub mod bounds;
+pub mod router;
 // Also outside the block, and for a related but distinct reason. Both modules
 // are `/proc` and `run.json` **reads**, and D-10 is explicit that they should
 // carry `src/session_detector.rs`'s honest-failure posture — that module has no
@@ -93,13 +110,48 @@ use crate::journal;
 pub struct DriveArgs {
     /// The registry alias to drive.
     pub alias: String,
-    /// The single GSD command to run.
+    /// The single GSD command to run, in single-command mode.
     ///
-    /// **Exactly one, and that is the whole of this phase's execution model.**
-    /// Phase 20 owns the decision router that turns a goal into a sequence; a
-    /// field that accepted a sequence now would imply a loop that does not
-    /// exist.
-    pub command: String,
+    /// **Mutually exclusive with [`target_phase`](Self::target_phase), and
+    /// exactly one of the two is required for a real run.** `Some` selects
+    /// single-command mode: one iteration, the existing terminal label, the
+    /// existing `run.json` — byte-for-byte the Phase 17 behaviour. `None`
+    /// requires `target_phase`, and puts the run under the decision router,
+    /// which derives each iteration's command from observed state.
+    ///
+    /// It is not a `Vec<String>` and never will be: a routed sequence is
+    /// *derived* per iteration from what the previous one left on disk, so a
+    /// supplied list would be a third execution model neither the router nor the
+    /// bounds know about.
+    pub command: Option<String>,
+    /// The phase a routed run is driving toward.
+    ///
+    /// **Mutually exclusive with [`command`](Self::command).** It is used only
+    /// as a map key into `ProjectState::phase_disk_statuses` and is **never
+    /// composed into a path**, but it is nonetheless validated with
+    /// `journal::is_plain_path_component` at the seam in [`drive`], mirroring
+    /// the `run_id` refusal that closed WR-02: the value arrives from a
+    /// hand-typed invocation, from the TUI's argv builder and from a re-read run
+    /// record, and a validator wired to one flag guards the least interesting of
+    /// those three (D-27).
+    pub target_phase: Option<String>,
+    /// How many iterations this run may perform, overriding
+    /// [`bounds::DEFAULT_MAX_STEPS`].
+    ///
+    /// Zero is refused at the seam by [`bounds::resolve`]: it is a run that can
+    /// never take a step, which is the appearance of a driven run with none of
+    /// the work.
+    pub max_steps: Option<u32>,
+    /// How long this run may take end to end, in seconds, overriding
+    /// [`bounds::DEFAULT_RUN_WALL_CLOCK_CAP`].
+    ///
+    /// Carried as seconds rather than as a `Duration` because that is the shape
+    /// argv supplies, and converting at the seam is what lets the refusal name
+    /// the number the caller typed. Zero and anything above
+    /// [`bounds::MAX_WALL_CLOCK_CAP_SECS`] are refused there — CTRL-06 forbids
+    /// any value that disables a detector, and a cap of `u64::MAX` is the
+    /// wall-clock detector switched off while still looking configured.
+    pub wall_clock_cap_secs: Option<u64>,
     /// The run id to record under. **Required for a real run**; `None` is legal
     /// only with [`dry_run`](Self::dry_run).
     ///
@@ -167,6 +219,49 @@ fn platform_refusal(liveness_supported: bool, dry_run: bool) -> Option<DriveErro
     })
 }
 
+/// Whether the pair of command sources a caller supplied names exactly one run.
+///
+/// **Pure, and shaped as `Option<DriveError>` to match [`platform_refusal`]
+/// beside it:** the chain in [`drive`] reads as a sequence of refusals, and a
+/// function returning "the refusal, if any" reads the same way at the call site
+/// as the one above it.
+///
+/// Both directions are refused, and neither is pedantry:
+///
+/// * **Neither present** is a run with nothing to do. Clap used to make this
+///   unrepresentable by requiring `--command`; the moment `--target-phase`
+///   became an alternative, "required" stopped being expressible in the parser
+///   and became this function's job.
+/// * **Both present** is ambiguous, and the ambiguity is dangerous rather than
+///   merely untidy. One of the two would have to win silently, and whichever it
+///   was, the run's terminal record would name a mode the caller did not choose
+///   — while the *other* mode's bounds went unenforced.
+fn command_source_refusal(command: Option<&str>, target_phase: Option<&str>) -> Option<DriveError> {
+    match (command, target_phase) {
+        (Some(_), None) | (None, Some(_)) => None,
+        (None, None) => Some(DriveError::NoCommandSource),
+        (Some(_), Some(_)) => Some(DriveError::AmbiguousCommandSource),
+    }
+}
+
+/// What a preview reports as the command it would run.
+///
+/// [`command_source_refusal`] has already established that exactly one source is
+/// present, so the `unwrap_or` arm is reached only by a routed preview.
+///
+/// **A routed preview cannot honestly name one command**, because the sequence
+/// is derived per iteration from what the previous one leaves on disk — so it
+/// names the mode instead of inventing a command that the router might not
+/// choose. Rendering the *first* command the router would pick was declined: a
+/// preview that showed one command for a run that issues many is the same
+/// untruth in a more convincing form.
+fn previewed_command(args: &DriveArgs) -> String {
+    const ROUTED_PREVIEW: &str = "(routed: chosen per iteration by the decision router)";
+    args.command
+        .clone()
+        .unwrap_or_else(|| ROUTED_PREVIEW.to_string())
+}
+
 /// Run one GSD command against `alias`, or refuse.
 ///
 /// The order of the body is the decision:
@@ -198,6 +293,23 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
         })?;
 
     let project = DrivableProject::from_registry(&args.alias, entry)?;
+
+    // **Before the dry-run branch, unlike every other refusal in this chain**,
+    // and the difference is what the question is about. The run-id and platform
+    // refusals below are about *running* — a preview creates no run to identify
+    // and starts no process to stop, so neither is about anything a preview
+    // does. This one is about **what was asked for at all**: a preview of
+    // nothing has nothing to show, and a preview of two conflicting sources
+    // cannot say which it previewed. Both are answered identically whether or
+    // not the run is real, so they are answered once, here.
+    //
+    // Still after the capability gate, so `from_registry` keeps its single
+    // production call site and an unregistered alias is refused first.
+    if let Some(refusal) =
+        command_source_refusal(args.command.as_deref(), args.target_phase.as_deref())
+    {
+        return Err(refusal);
+    }
 
     if args.dry_run {
         // Positioned **after** the gate and **before** anything Unix-only, and
@@ -235,7 +347,15 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
         // second one would mean a second `DrivableProject::from_registry` call
         // site — the exact uniqueness `tests/spawn_seam_guard.rs` exists to
         // check, and a property a comment cannot hold.
-        let command = args.command.clone();
+        // The refusal above guarantees exactly one of the two is present, so a
+        // routed preview is the only case where `command` is absent and
+        // `previewed_command` is what it reports. It is a value, not the pinned
+        // `dry_run::SECTION_COMMANDS` prose — that text still claims a routed
+        // sequence is a single honest command, which becomes false with this
+        // plan and is corrected in the plan that owns `dry_run.rs` (research
+        // Pitfall 6). Recorded here so the next reader finds the two halves
+        // together rather than one of them.
+        let command = previewed_command(&args);
         let cloned = project.clone();
         let report = match tokio::task::spawn_blocking(move || {
             dry_run::build_report(&cloned, &command)
@@ -255,7 +375,7 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
                     panicked = err.is_panic(),
                     "the dry-run report task did not run to completion",
                 );
-                dry_run::build_report(&project, &args.command)
+                dry_run::build_report(&project, &previewed_command(&args))
             }
         };
         println!("{}", dry_run::render(&report));
@@ -291,6 +411,30 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
             run_id: run_id.to_string(),
         });
     }
+
+    // The same question about `--target-phase`, asked at the same seam and for
+    // the same reason (D-27, T-20-03). The value is used **only** as a map key
+    // into `ProjectState::phase_disk_statuses` and the iteration loop composes
+    // no path from it — but "no caller composes a path from it today" is a fact
+    // about today, not a property of the type, and the run id's history is
+    // exactly what that distinction cost: `--run-id '../../../../escaped'` was
+    // reproduced against the shipped tree writing outside the project with exit
+    // 0. One refusal at the seam is cheaper than auditing every future use.
+    if let Some(target_phase) = args.target_phase.as_deref() {
+        if !journal::is_plain_path_component(target_phase) {
+            return Err(DriveError::TargetPhaseInvalid {
+                target_phase: target_phase.to_string(),
+            });
+        }
+    }
+
+    // The caps, resolved and refused **before** anything is created, so a run
+    // asked for with a cap that disables a detector leaves nothing on disk. The
+    // resolved value is recomputed in the run body rather than threaded through
+    // `dispatch`: `bounds::resolve` is a pure function of two `Option`s on
+    // `args`, so a second call cannot disagree with this one, and threading it
+    // would widen a signature three later plans in this phase also touch.
+    bounds::resolve(args.max_steps, args.wall_clock_cap_secs).map_err(DriveError::from)?;
 
     // The envelope assertion, and its position is the decision in three clauses
     // (D-24).
@@ -397,7 +541,10 @@ mod tests {
     fn args(alias: &str) -> DriveArgs {
         DriveArgs {
             alias: alias.to_string(),
-            command: "/gsd-progress".to_string(),
+            command: Some("/gsd-progress".to_string()),
+            target_phase: None,
+            max_steps: None,
+            wall_clock_cap_secs: None,
             run_id: None,
             dry_run: false,
             goal: None,
@@ -536,14 +683,127 @@ mod tests {
     }
 
     #[test]
-    fn drive_args_carry_the_single_command_the_router_phase_will_replace() {
+    fn drive_args_carry_exactly_one_command_source_and_never_a_supplied_sequence() {
+        // This test replaced `drive_args_carry_the_single_command_the_router_
+        // phase_will_replace`, which asserted the Phase 17 shape it was named
+        // for. Phase 20 built the router that test was waiting on, so the claim
+        // it pinned stopped being true and the assertion moved with the code
+        // rather than being deleted.
         let args = args("demo");
-        // A `String`, never a `Vec<String>`: this phase issues exactly one GSD
-        // command and Phase 20 owns the router that would issue a sequence.
-        assert_eq!(args.command, "/gsd-progress");
+        // An `Option<String>`, never a `Vec<String>`. A routed run's sequence is
+        // DERIVED per iteration from what the previous one left on disk, so a
+        // field that accepted a supplied list would be a third execution model
+        // that neither the router nor the bounds know about.
+        assert_eq!(args.command.as_deref(), Some("/gsd-progress"));
+        assert_eq!(
+            args.target_phase, None,
+            "the two sources are mutually exclusive; a fixture carrying both \
+             would exercise the refusal rather than the mode it names"
+        );
         assert!(
             !args.dry_run,
             "a real run is the default; the preview is opt-in"
         );
+    }
+
+    #[test]
+    fn a_run_with_no_command_source_at_all_is_refused_before_anything_is_created() {
+        assert!(
+            matches!(
+                command_source_refusal(None, None),
+                Some(DriveError::NoCommandSource)
+            ),
+            "clap used to make this unrepresentable by requiring --command. The \
+             moment --target-phase became an alternative, 'exactly one of these' \
+             stopped being expressible in the parser, and a run with nothing to do \
+             would otherwise reach the lock and the journal before anybody noticed"
+        );
+    }
+
+    #[test]
+    fn a_run_naming_both_command_sources_is_refused_rather_than_resolved() {
+        assert!(
+            matches!(
+                command_source_refusal(Some("/gsd-progress"), Some("20")),
+                Some(DriveError::AmbiguousCommandSource)
+            ),
+            "a precedence rule would let one source win SILENTLY, and whichever it \
+             was the run's terminal record would name a mode the caller did not \
+             choose while the other mode's bounds went unenforced. An unattended \
+             run whose stopping conditions are not the ones asked for is the \
+             failure CTRL-06 exists to prevent"
+        );
+
+        assert!(
+            command_source_refusal(Some("/gsd-progress"), None).is_none(),
+            "single-command mode must stay transparent"
+        );
+        assert!(
+            command_source_refusal(None, Some("20")).is_none(),
+            "routed mode must stay transparent"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_target_phase_that_is_not_a_plain_path_component_is_refused_without_touching_disk() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let config = opted_in(root.path());
+
+        let mut args = args("demo");
+        args.command = None;
+        args.target_phase = Some("../../../../escaped".to_string());
+        args.run_id = Some("2026-08-19T12-00-00Z-aaaa".to_string());
+
+        let err = drive(args, &config)
+            .await
+            .expect_err("a traversing target phase must be refused at the seam");
+
+        assert!(
+            matches!(err, DriveError::TargetPhaseInvalid { .. }),
+            "the refusal must be the typed one, got: {err:?}"
+        );
+        assert!(
+            !root.path().join(".planning/meta-manager").exists(),
+            "a refused run must have created NOTHING — the same property the \
+             run-id refusal beside it holds, and for the same reason: \
+             --run-id '../../../../escaped' was reproduced writing outside the \
+             project with exit 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cap_that_would_disable_a_detector_is_refused_without_touching_disk() {
+        for (max_steps, wall_clock_cap_secs) in [
+            (Some(0), None),
+            (None, Some(0)),
+            (None, Some(bounds::MAX_WALL_CLOCK_CAP_SECS + 1)),
+        ] {
+            let root = tempfile::TempDir::new().expect("temp dir");
+            let config = opted_in(root.path());
+
+            let mut args = args("demo");
+            args.command = None;
+            args.target_phase = Some("20".to_string());
+            args.run_id = Some("2026-08-19T12-00-00Z-aaaa".to_string());
+            args.max_steps = max_steps;
+            args.wall_clock_cap_secs = wall_clock_cap_secs;
+
+            let err = drive(args, &config).await.expect_err(
+                "a cap that switches a detector off must never reach a spawn \
+                 (max_steps={max_steps:?}, wall_clock_cap_secs={wall_clock_cap_secs:?})",
+            );
+
+            assert!(
+                matches!(err, DriveError::BoundsRefused(_)),
+                "the refusal must carry the bounds taxonomy rather than a fresh \
+                 string, got: {err:?}"
+            );
+            assert!(
+                !root.path().join(".planning/meta-manager").exists(),
+                "CTRL-06's detectors are an unattended run's only stopping \
+                 condition, so a run asked for with one of them disabled must \
+                 leave nothing at all behind"
+            );
+        }
     }
 }

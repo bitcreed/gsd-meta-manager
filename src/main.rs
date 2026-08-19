@@ -88,6 +88,9 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Drive {
             alias,
             command,
+            target_phase,
+            max_steps,
+            wall_clock_cap_secs,
             run_id,
             dry_run,
             goal,
@@ -103,6 +106,9 @@ async fn main() -> anyhow::Result<()> {
             let args = DriveArgs {
                 alias,
                 command,
+                target_phase,
+                max_steps,
+                wall_clock_cap_secs,
                 run_id,
                 dry_run,
                 goal,

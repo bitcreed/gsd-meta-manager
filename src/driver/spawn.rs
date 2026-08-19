@@ -266,7 +266,13 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(alias, "demo");
-                assert_eq!(command, "/gsd-progress");
+                // `Option<String>` since Phase 20 gave `--command` an
+                // alternative in `--target-phase`. The TUI's argv builder still
+                // emits `--command` and only `--command`, which is what this
+                // assertion pins: the spawn path drives single-command mode, and
+                // a builder that started emitting a routed run would change what
+                // the user gets from a button that says otherwise.
+                assert_eq!(command.as_deref(), Some("/gsd-progress"));
                 assert_eq!(run_id.as_deref(), Some(RUN_ID));
                 assert!(!dry_run, "the TUI spawns real runs, never previews");
             }

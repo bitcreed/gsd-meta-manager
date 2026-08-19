@@ -934,26 +934,37 @@ pub const EMITTED_KINDS: &[&str] = &[
     // Phase 19's, moved out of RESERVED_KINDS in the same edit that gave it its
     // first emitter — every safety-envelope refusal parks the run (D-24).
     "parked",
+    // Phase 20's two, moved out of RESERVED_KINDS in the same edit that gave
+    // them their first emitter: the iteration loop journals what it observed and
+    // what the deterministic router decided, once per routed iteration
+    // (DRIVE-02, DRIVE-06). D-36 held: they were schema'd in Phase 16 and this
+    // move needed no migration.
+    "observed",
+    "decided",
 ];
 
 /// The `kind` values that exist in the schema but that **this phase never
 /// writes** (D-36).
 ///
-/// `observed` and `decided` are Phase 20's — the D-R-P-E-V router that does not
-/// exist yet. They are modelled now so that phase adds no schema migration, and
-/// the reader tolerates them regardless (D-30): a build that has never heard of
-/// a kind still carries its payload.
+/// **Empty as of Phase 20, and an empty list here is a finished promise rather
+/// than a missing one.** D-36's mechanism was that Phase 16 would model every
+/// kind a later phase would emit, so no later phase would need a schema
+/// migration; this list is what was owed, and every entry has now been drawn
+/// down by the phase it was reserved for. `interjected` and its two transitions
+/// left in **Phase 18** when the TUI→driver channel acquired a producer;
+/// `parked` left in **Phase 19**, because the safety envelope refuses operations
+/// and D-24 requires every refusal to park the run; `observed` and `decided`
+/// left in **Phase 20**, when the iteration loop began journalling what it saw
+/// and what the deterministic router chose. Not one of the four needed a
+/// migration, which is the whole of what D-36 was buying.
 ///
-/// **`interjected` left this list in Phase 18** and moved into
-/// [`EMITTED_KINDS`], along with the two transitions the TUI→driver channel
-/// needs. **`parked` left it in Phase 19** for the same reason and by the same
-/// route: the safety envelope refuses operations, and D-24 requires every
-/// refusal to park the run, so the kind acquired a producer. The two lists are
-/// complements and
-/// `every_reserved_kind_is_declared_and_none_is_emitted_by_this_phase` is what
-/// proves it, so a kind that is emitted while still declared reserved fails the
-/// suite rather than shipping.
-pub const RESERVED_KINDS: &[&str] = &["observed", "decided"];
+/// It stays as a `pub const` rather than being deleted: the two lists are
+/// complements, `every_reserved_kind_is_declared_and_none_is_emitted_by_this_phase`
+/// is what proves it, and the next phase that wants to model a kind ahead of its
+/// producer has the mechanism waiting rather than having to rebuild it. The
+/// reader tolerates an unknown kind regardless (D-30): a build that has never
+/// heard of one still carries its payload.
+pub const RESERVED_KINDS: &[&str] = &[];
 
 /// The one type a driver holds for the duration of a run (D-06, D-36).
 ///
@@ -1924,6 +1935,25 @@ mod tests {
                 reason: "force_push_blocked".to_string(),
                 needs: "human".to_string(),
             },
+            // Phase 20's two, moved out of RESERVED_KINDS in the same edit that
+            // added them here — the iteration loop records what it observed and
+            // what the router decided, once per routed iteration. Exactly the
+            // route `interjected` and `parked` took before them.
+            JournalEvent::Observed {
+                phase: "20".to_string(),
+                drpev: vec![
+                    "yes".to_string(),
+                    "yes".to_string(),
+                    "0".to_string(),
+                    "0".to_string(),
+                    "no".to_string(),
+                ],
+            },
+            JournalEvent::Decided {
+                by: "policy".to_string(),
+                command: "/gsd-plan-phase 20".to_string(),
+                rationale: "next".to_string(),
+            },
         ] {
             let kind = kind_of(&event);
             assert!(EMITTED_KINDS.contains(&kind.as_str()), "{kind} undeclared");
@@ -1931,22 +1961,16 @@ mod tests {
         }
 
         // Every reserved kind is genuinely DECLARED in the schema — present as a
-        // real variant Phase 18 or 20 can construct with no migration — rather
+        // real variant a later phase can construct with no migration — rather
         // than being a string in a list nothing backs.
-        let declared: Vec<String> = [
-            JournalEvent::Observed {
-                phase: "14".to_string(),
-                drpev: vec!["Complete".to_string()],
-            },
-            JournalEvent::Decided {
-                by: "policy".to_string(),
-                command: "/gsd:execute-phase 14".to_string(),
-                rationale: "next".to_string(),
-            },
-        ]
-        .iter()
-        .map(kind_of)
-        .collect();
+        //
+        // **The list is empty as of Phase 20**, because every kind D-36 reserved
+        // has now been drawn down by the phase it was reserved for. The loop
+        // below therefore proves a vacuous property today, and it is kept
+        // deliberately: the mechanism is what the next phase reserving a kind
+        // ahead of its producer needs, and a guard deleted the moment its list
+        // empties is a guard that has to be rediscovered.
+        let declared: Vec<String> = Vec::new();
         for kind in RESERVED_KINDS {
             assert!(
                 declared.contains(&(*kind).to_string()),
