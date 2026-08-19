@@ -1,6 +1,19 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+/// GSD's eight-state phase vocabulary, in workflow order.
+///
+/// **Declaration order IS the ordering.** `Ord` is derived, so the position of a
+/// variant in this list is its rank, and more than thirty comparisons across the
+/// UI, the reader and the router read that rank. A new variant is therefore
+/// *inserted at its semantic position*, never appended: an appended variant
+/// sorts above [`DiskStatus::Complete`] and silently changes the meaning of
+/// every one of those comparisons without failing to compile.
+/// `test_disk_status_ordering` pins the relation rather than this comment
+/// claiming it.
+///
+/// The vocabulary matches `init.cjs:1875-1888` one-for-one, which is what lets a
+/// router rule keyed on a variant mean what the runtime means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum DiskStatus {
     #[default]
@@ -10,7 +23,94 @@ pub enum DiskStatus {
     Researched,
     Planned,
     Partial,
+    /// **Implementation complete, verification not yet passed** — GSD's own
+    /// `executed` (`init.cjs:1876`, predicate at `:181`).
+    ///
+    /// Inserted between [`DiskStatus::Partial`] and [`DiskStatus::Complete`],
+    /// which is the only correct position: it outranks a partially-summarised
+    /// phase and is outranked by one whose verification passed. Before this
+    /// variant existed, `Complete` carried this meaning, and a phase whose
+    /// verification was `human_needed` therefore read as finished — the exact
+    /// collapse DRIVE-05 exists to prevent.
+    Executed,
+    /// **Implementation complete AND verification passed** — GSD's `complete`
+    /// (`init.cjs:194-195`: `implementationComplete && verificationPassed`).
     Complete,
+}
+
+/// The status read from a phase's `*-VERIFICATION.md` leading frontmatter.
+///
+/// Six values, matching `verification.cjs:72-113`'s `VERIFICATION_ROUTING_TABLE`
+/// keys exactly. Only three are ever *written* by GSD's verifier
+/// (`VERIFIER_STATUSES = ['passed', 'gaps_found', 'human_needed']`,
+/// `verification.cjs:50`); `stale`, `missing` and `unknown` are constructed
+/// internally. All six are modelled here because a driven agent, a hand edit or
+/// a future GSD version can put any of them on disk.
+///
+/// **Matched as a string with an explicit fallback that keeps the value**, in
+/// the tolerant-wire-enum posture `executor::outcome` and `executor::stream_json`
+/// already use: a typed parse that discarded an unrecognised value would lose the
+/// one fact a human needs to see when GSD ships a seventh status.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum VerificationStatus {
+    /// No `*-VERIFICATION.md`, no leading frontmatter block, or no `status` key.
+    ///
+    /// The default, and fail-safe by construction: an unreadable or malformed
+    /// artifact yields "nothing observed", never an error and never a claim that
+    /// verification passed.
+    #[default]
+    Missing,
+    /// Verification passed. The **only** value that admits `DiskStatus::Complete`.
+    Passed,
+    /// The verifier found gaps. Takes precedence over staleness upstream
+    /// (`verification.cjs:333-342`).
+    GapsFound,
+    /// The verifier needs a human judgement. The definitional DRIVE-05 gate.
+    HumanNeeded,
+    /// A `*-SUMMARY.md` is newer than the `*-VERIFICATION.md`.
+    Stale,
+    /// A value outside the table, carried **verbatim**.
+    ///
+    /// Never mapped onto a known arm and never dropped: an unrecognised status
+    /// is not a passing one, and the observed bytes are what tells a reader
+    /// which unknown it was.
+    Unknown(String),
+}
+
+impl VerificationStatus {
+    /// Classify a raw frontmatter value. Case-insensitive on the known arms;
+    /// anything else is carried verbatim by [`VerificationStatus::Unknown`].
+    pub fn from_raw(raw: &str) -> Self {
+        let trimmed = raw.trim();
+        match trimmed.to_ascii_lowercase().as_str() {
+            "passed" => VerificationStatus::Passed,
+            "gaps_found" => VerificationStatus::GapsFound,
+            "human_needed" => VerificationStatus::HumanNeeded,
+            "stale" => VerificationStatus::Stale,
+            "missing" => VerificationStatus::Missing,
+            _ => VerificationStatus::Unknown(trimmed.to_string()),
+        }
+    }
+
+    /// The stable identifier a later reader greps for. Exhaustive, no wildcard.
+    pub fn as_str(&self) -> &str {
+        match self {
+            VerificationStatus::Missing => "missing",
+            VerificationStatus::Passed => "passed",
+            VerificationStatus::GapsFound => "gaps_found",
+            VerificationStatus::HumanNeeded => "human_needed",
+            VerificationStatus::Stale => "stale",
+            VerificationStatus::Unknown(observed) => observed,
+        }
+    }
+
+    /// Whether this status is the one that admits `DiskStatus::Complete`.
+    ///
+    /// Spelled as a predicate rather than an `== Passed` at each call site so
+    /// the completion rule has exactly one definition.
+    pub fn is_passed(&self) -> bool {
+        matches!(self, VerificationStatus::Passed)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -23,6 +123,16 @@ pub struct DiskInference {
     pub has_context: bool,
     pub has_research: bool,
     pub has_verification: bool,
+    /// The `status` read from the phase's `*-VERIFICATION.md` frontmatter.
+    ///
+    /// **Presence and status answer different questions, and only the status can
+    /// express a gate.** `has_verification` says an artifact exists; this says
+    /// what it concluded. A phase with `has_verification: true` and
+    /// `VerificationStatus::HumanNeeded` is *not* finished, and reading presence
+    /// as completion is how an unattended run walks past the one gate DRIVE-05
+    /// exists to stop at. `has_verification` is kept because the dashboard reads
+    /// it as an artifact-presence badge.
+    pub verification_status: VerificationStatus,
     pub has_security: bool,
     pub has_uat: bool,
     pub has_spec: bool,
@@ -43,33 +153,70 @@ pub struct DiskInference {
     pub has_skeleton: bool,
 }
 
+/// Read a scalar key out of a file's **leading** YAML frontmatter block.
+///
+/// A cheap line scan, no YAML dependency, returning the first match's trimmed
+/// value. Absence of a leading block, or of the key inside it, yields `None` —
+/// fail-safe, never an error.
+///
+/// **The byte-zero anchor is load-bearing, not stylistic.** The block must open
+/// on the very first line with a bare `---`, and the scan stops at the closing
+/// `---`. GSD's own verification library records the defect this prevents
+/// (`verification.cjs`'s `DEFECT.FRONTMATTER-SCALAR-BROAD-GREP`): a broad search
+/// for `status:` false-matched the key inside a fenced code block further down
+/// the file, so a document *describing* a status was read as *having* one.
+/// Widening this to a whole-file search reintroduces that defect verbatim.
+fn leading_frontmatter_value(content: &str, key: &str) -> Option<String> {
+    let mut lines = content.lines();
+    // Frontmatter must open on the very first line with a bare `---`.
+    if lines.next().map(str::trim) != Some("---") {
+        return None;
+    }
+    for line in lines {
+        if line.trim() == "---" {
+            // End of the leading block. Nothing below it is frontmatter.
+            return None;
+        }
+        if let Some((found, value)) = line.split_once(':') {
+            if found.trim() == key {
+                return Some(value.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Detect whether a plan file's YAML frontmatter declares `status: superseded`.
 ///
 /// GSD 1.8.0 (#2349): a plan marked `status: superseded` was deliberately
 /// reassigned or never executed — its work moved to a later plan, so it can
 /// never gain a matching `*-SUMMARY.md`. Such a plan is excluded from BOTH the
-/// plan and summary counts. We parse only the leading `---`…`---` frontmatter
-/// block via a cheap line scan (no YAML dependency); a plan without the marker
-/// is counted exactly as before. Fail-safe: a file with no frontmatter, or a
-/// closed block with no `status: superseded`, is treated as a normal plan.
+/// plan and summary counts. A plan without the marker is counted exactly as
+/// before. Fail-safe: a file with no frontmatter, or a closed block with no
+/// `status: superseded`, is treated as a normal plan.
 fn plan_frontmatter_superseded(content: &str) -> bool {
-    let mut lines = content.lines();
-    // Frontmatter must open on the very first line with a bare `---`.
-    if lines.next().map(str::trim) != Some("---") {
-        return false;
-    }
-    for line in lines {
-        if line.trim() == "---" {
-            // End of frontmatter block without a superseded marker.
-            return false;
-        }
-        if let Some((key, value)) = line.split_once(':') {
-            if key.trim() == "status" && value.trim().eq_ignore_ascii_case("superseded") {
-                return true;
-            }
-        }
-    }
-    false
+    leading_frontmatter_value(content, "status")
+        .is_some_and(|value| value.eq_ignore_ascii_case("superseded"))
+}
+
+/// Read the `status` out of the phase directory's verification artifact.
+///
+/// `names` is every `*-VERIFICATION.md` seen in the directory. **They are sorted
+/// and the first is read**, which is the tie-break GSD's own reader uses
+/// (`verification.cjs:302-303`), so a directory holding more than one artifact
+/// yields the same status on every read rather than whatever the filesystem
+/// happened to hand back first.
+///
+/// Every failure mode — no artifact, an unreadable file, no leading block, no
+/// `status` key — yields [`VerificationStatus::Missing`].
+fn read_verification_status(phase_dir: &Path, mut names: Vec<String>) -> VerificationStatus {
+    names.sort();
+    names
+        .first()
+        .and_then(|name| std::fs::read_to_string(phase_dir.join(name)).ok())
+        .and_then(|content| leading_frontmatter_value(&content, "status"))
+        .map(|raw| VerificationStatus::from_raw(&raw))
+        .unwrap_or_default()
 }
 
 /// Infer the GSD status of a phase directory by scanning its file artifacts.
@@ -108,9 +255,11 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     // then paired after the loop.
     let mut plan_ids: HashSet<String> = HashSet::new();
     let mut summary_names: Vec<String> = Vec::new();
+    // Verification artifacts are COLLECTED, not flagged: the status lives inside
+    // the file, and which file to read is decided after the scan by sorting.
+    let mut verification_names: Vec<String> = Vec::new();
     let mut has_context = false;
     let mut has_research = false;
-    let mut has_verification = false;
     let mut has_patterns = false;
     let mut has_plan_check = false;
     let mut has_validation = false;
@@ -251,11 +400,16 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
             has_research = true;
         }
 
-        // Match VERIFICATION.md or *-VERIFICATION.md
+        // Match VERIFICATION.md or *-VERIFICATION.md. Collected the way the
+        // summary pass above collects, rather than setting a boolean and moving
+        // on: presence cannot express a gate and the status can.
         if name == "VERIFICATION.md" || name.ends_with("-VERIFICATION.md") {
-            has_verification = true;
+            verification_names.push(name);
         }
     }
+
+    let has_verification = !verification_names.is_empty();
+    let verification_status = read_verification_status(phase_dir, verification_names);
 
     // Pass 2 (pairing) — a summary counts only if its ID matches a surviving
     // (non-superseded) plan ID (matched-summary rule, #1988). Standalone
@@ -272,9 +426,20 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         })
         .count() as u32;
 
-    // Determine status following GSD's priority order
-    let status = if summary_count >= plan_count && plan_count > 0 {
+    // Determine status following GSD's priority order (`init.cjs:1875-1888`).
+    //
+    // `implementation_complete` is GSD's predicate verbatim (`init.cjs:181`).
+    // Before this plan it was the FIRST arm and yielded `Complete`, which made
+    // this reader's `Complete` mean GSD's `executed` — so a phase whose
+    // verification was `human_needed` read as finished everywhere in the tree.
+    // It now yields `Executed`, and `Complete` requires the conjunct
+    // `init.cjs:194-195` requires: implementation complete AND verification
+    // passed.
+    let implementation_complete = summary_count >= plan_count && plan_count > 0;
+    let status = if implementation_complete && verification_status.is_passed() {
         DiskStatus::Complete
+    } else if implementation_complete {
+        DiskStatus::Executed
     } else if summary_count > 0 {
         DiskStatus::Partial
     } else if plan_count > 0 {
@@ -296,6 +461,7 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         has_context,
         has_research,
         has_verification,
+        verification_status,
         has_security,
         has_uat,
         has_spec,
@@ -410,7 +576,15 @@ pub fn infer_phase_status(planning_dir: &Path, phase_number: &str) -> DiskInfere
                         if phase_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                             if let Some(name) = phase_entry.file_name().to_str() {
                                 if phase_dir_matches(name, phase_number) {
-                                    // Archived phase -- always Complete
+                                    // Archived phase -- always Complete.
+                                    //
+                                    // Deliberately NOT re-derived through the
+                                    // verification conjunct: a phase archived
+                                    // into a milestone shipped, and the
+                                    // milestone archive is the corroboration.
+                                    // Its `verification_status` stays `Missing`
+                                    // because nothing was read, which is the
+                                    // honest value — not a claim it passed.
                                     return DiskInference {
                                         status: DiskStatus::Complete,
                                         ..Default::default()
@@ -495,14 +669,16 @@ mod tests {
     }
 
     #[test]
-    fn test_all_summaries_returns_complete() {
+    fn test_all_summaries_returns_executed_not_complete() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("05-01-PLAN.md"), "plan1").unwrap();
         fs::write(dir.path().join("05-02-PLAN.md"), "plan2").unwrap();
         fs::write(dir.path().join("05-01-SUMMARY.md"), "summary1").unwrap();
         fs::write(dir.path().join("05-02-SUMMARY.md"), "summary2").unwrap();
         let result = infer_disk_status(dir.path());
-        assert_eq!(result.status, DiskStatus::Complete);
+        // Every plan has a summary and there is no verification artifact: GSD
+        // calls that `executed`, not `complete` (init.cjs:181 vs :194-195).
+        assert_eq!(result.status, DiskStatus::Executed);
         assert_eq!(result.plan_count, 2);
         assert_eq!(result.summary_count, 2);
         assert!(result.has_plans);
@@ -551,14 +727,235 @@ mod tests {
         assert!(!result.has_summaries);
     }
 
+    /// The hazard this assertion message names, stated once and reused.
+    const APPEND_HAZARD: &str = "DiskStatus derives Ord from DECLARATION ORDER. A variant \
+         APPENDED rather than INSERTED at its semantic position still compiles, still passes \
+         every equality test, and silently reorders every `<`/`>=` comparison in the tree — \
+         including the dashboard pipeline's stage thresholds. Insert; never append.";
+
     #[test]
     fn test_disk_status_ordering() {
-        assert!(DiskStatus::NoDirectory < DiskStatus::Empty);
-        assert!(DiskStatus::Empty < DiskStatus::Discussed);
-        assert!(DiskStatus::Discussed < DiskStatus::Researched);
-        assert!(DiskStatus::Researched < DiskStatus::Planned);
-        assert!(DiskStatus::Planned < DiskStatus::Partial);
-        assert!(DiskStatus::Partial < DiskStatus::Complete);
+        assert!(DiskStatus::NoDirectory < DiskStatus::Empty, "{APPEND_HAZARD}");
+        assert!(DiskStatus::Empty < DiskStatus::Discussed, "{APPEND_HAZARD}");
+        assert!(DiskStatus::Discussed < DiskStatus::Researched, "{APPEND_HAZARD}");
+        assert!(DiskStatus::Researched < DiskStatus::Planned, "{APPEND_HAZARD}");
+        assert!(DiskStatus::Planned < DiskStatus::Partial, "{APPEND_HAZARD}");
+        // The two that pin `Executed`'s inserted position. An appended
+        // `Executed` would sort ABOVE `Complete` and fail the second.
+        assert!(DiskStatus::Partial < DiskStatus::Executed, "{APPEND_HAZARD}");
+        assert!(DiskStatus::Executed < DiskStatus::Complete, "{APPEND_HAZARD}");
+    }
+
+    // ── Plan 20-03 Task 1: GSD's vocabulary + the verification frontmatter ──
+
+    /// A phase directory with `n` plans and `n` matching summaries — GSD's
+    /// `implementation_complete` predicate satisfied, and nothing more.
+    fn implementation_complete_dir() -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("19-01-PLAN.md"), "plan1").unwrap();
+        fs::write(dir.path().join("19-01-SUMMARY.md"), "summary1").unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_implementation_complete_without_verification_is_executed() {
+        let dir = implementation_complete_dir();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(
+            result.status,
+            DiskStatus::Executed,
+            "every plan has a summary and no verification artifact exists — that is \
+             GSD's `executed`, not its `complete`. Reading it as Complete is the \
+             vocabulary collapse DRIVE-05 exists to prevent"
+        );
+        assert_ne!(result.status, DiskStatus::Complete);
+        assert_eq!(result.verification_status, VerificationStatus::Missing);
+        assert!(!result.has_verification);
+    }
+
+    #[test]
+    fn test_passing_verification_makes_it_complete() {
+        let dir = implementation_complete_dir();
+        fs::write(
+            dir.path().join("19-VERIFICATION.md"),
+            "---\nphase: 19\nstatus: passed\n---\nbody\n",
+        )
+        .unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.status, DiskStatus::Complete);
+        assert_eq!(result.verification_status, VerificationStatus::Passed);
+        assert!(result.has_verification);
+    }
+
+    #[test]
+    fn test_gating_verification_statuses_stay_executed_and_carry_the_value() {
+        for (raw, expected) in [
+            ("human_needed", VerificationStatus::HumanNeeded),
+            ("gaps_found", VerificationStatus::GapsFound),
+            ("stale", VerificationStatus::Stale),
+        ] {
+            let dir = implementation_complete_dir();
+            fs::write(
+                dir.path().join("19-VERIFICATION.md"),
+                format!("---\nstatus: {raw}\n---\nbody\n"),
+            )
+            .unwrap();
+            let result = infer_disk_status(dir.path());
+            assert_eq!(
+                result.status,
+                DiskStatus::Executed,
+                "a `{raw}` verification is a gate; a phase carrying one must never \
+                 read as Complete anywhere in the tree"
+            );
+            assert_eq!(result.verification_status, expected);
+            // Presence and status answer different questions, and both are kept.
+            assert!(result.has_verification);
+        }
+    }
+
+    #[test]
+    fn test_unrecognised_verification_status_is_carried_verbatim() {
+        let dir = implementation_complete_dir();
+        fs::write(
+            dir.path().join("19-VERIFICATION.md"),
+            "---\nstatus: reticulating_splines\n---\n",
+        )
+        .unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(
+            result.verification_status,
+            VerificationStatus::Unknown("reticulating_splines".to_string()),
+            "an unrecognised status must be carried verbatim, never mapped onto a \
+             known arm and never dropped: it is not a passing status, and the bytes \
+             are what tell a reader which unknown it was"
+        );
+        assert_eq!(result.status, DiskStatus::Executed);
+    }
+
+    #[test]
+    fn test_status_key_below_the_leading_block_is_never_matched() {
+        let dir = implementation_complete_dir();
+        // No leading frontmatter at all, and a fenced code block further down
+        // that *documents* a passing status. This is GSD's own
+        // DEFECT.FRONTMATTER-SCALAR-BROAD-GREP, reproduced as a fixture.
+        fs::write(
+            dir.path().join("19-VERIFICATION.md"),
+            "# Verification\n\nThe verifier writes:\n\n```yaml\nstatus: passed\n```\n",
+        )
+        .unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(
+            result.verification_status,
+            VerificationStatus::Missing,
+            "the parse is anchored at byte zero and reads only the leading delimited \
+             block. A broad search would read the fenced example as a real status and \
+             mark an unverified phase Complete"
+        );
+        assert_eq!(result.status, DiskStatus::Executed);
+    }
+
+    #[test]
+    fn test_closed_frontmatter_block_does_not_leak_into_the_body() {
+        let dir = implementation_complete_dir();
+        fs::write(
+            dir.path().join("19-VERIFICATION.md"),
+            "---\nphase: 19\n---\n\n```yaml\nstatus: passed\n```\n",
+        )
+        .unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(
+            result.verification_status,
+            VerificationStatus::Missing,
+            "the scan stops at the closing delimiter; a key below it is body text"
+        );
+    }
+
+    #[test]
+    fn test_two_verification_artifacts_always_yield_the_sorted_first() {
+        let dir = implementation_complete_dir();
+        fs::write(
+            dir.path().join("19-01-VERIFICATION.md"),
+            "---\nstatus: human_needed\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("19-02-VERIFICATION.md"),
+            "---\nstatus: passed\n---\n",
+        )
+        .unwrap();
+        // Repeated reads, because the defect this guards is directory-iteration
+        // order — which is not stable and need not differ on any single read.
+        for read in 0..8 {
+            let result = infer_disk_status(dir.path());
+            assert_eq!(
+                result.verification_status,
+                VerificationStatus::HumanNeeded,
+                "read {read}: names are sorted and the first is read, the same \
+                 tie-break GSD's own reader uses. Taking whichever the filesystem \
+                 offered first would make the same directory report two different \
+                 statuses on two different days"
+            );
+            assert_eq!(result.status, DiskStatus::Executed, "read {read}");
+        }
+    }
+
+    #[test]
+    fn test_unreadable_verification_artifact_is_fail_safe() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("19-01-PLAN.md"), "plan1").unwrap();
+        fs::write(dir.path().join("19-01-SUMMARY.md"), "summary1").unwrap();
+        // A *directory* named like the artifact: `read_to_string` fails.
+        fs::create_dir(dir.path().join("19-VERIFICATION.md")).unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(
+            result.verification_status,
+            VerificationStatus::Missing,
+            "an unreadable artifact yields the absent value, never an error and \
+             never a panic — the reader runs against other people's repositories"
+        );
+        assert_eq!(result.status, DiskStatus::Executed);
+    }
+
+    #[test]
+    fn test_verification_on_an_incomplete_phase_does_not_complete_it() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("19-01-PLAN.md"), "plan1").unwrap();
+        fs::write(dir.path().join("19-02-PLAN.md"), "plan2").unwrap();
+        fs::write(dir.path().join("19-01-SUMMARY.md"), "summary1").unwrap();
+        fs::write(
+            dir.path().join("19-VERIFICATION.md"),
+            "---\nstatus: passed\n---\n",
+        )
+        .unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(
+            result.status,
+            DiskStatus::Partial,
+            "Complete is a CONJUNCTION: a passing verification over an unfinished \
+             implementation is still unfinished"
+        );
+        assert_eq!(result.verification_status, VerificationStatus::Passed);
+    }
+
+    #[test]
+    fn test_verification_status_round_trips_through_its_identifier() {
+        for status in [
+            VerificationStatus::Missing,
+            VerificationStatus::Passed,
+            VerificationStatus::GapsFound,
+            VerificationStatus::HumanNeeded,
+            VerificationStatus::Stale,
+        ] {
+            assert_eq!(
+                VerificationStatus::from_raw(status.as_str()),
+                status,
+                "as_str and from_raw must name the same value, or a park record \
+                 and the state that produced it disagree"
+            );
+        }
+        assert!(VerificationStatus::Passed.is_passed());
+        assert!(!VerificationStatus::HumanNeeded.is_passed());
+        assert!(!VerificationStatus::Unknown("passed_ish".to_string()).is_passed());
     }
 
     #[test]
@@ -697,7 +1094,7 @@ mod tests {
             result.summary_count, 1,
             "FIX summary must not be counted in summary_count"
         );
-        assert_eq!(result.status, DiskStatus::Complete);
+        assert_eq!(result.status, DiskStatus::Executed);
     }
 
     #[test]
@@ -752,7 +1149,7 @@ mod tests {
             result.summary_count, 1,
             "summary of a superseded plan must not be counted"
         );
-        assert_eq!(result.status, DiskStatus::Complete);
+        assert_eq!(result.status, DiskStatus::Executed);
     }
 
     #[test]
@@ -771,7 +1168,7 @@ mod tests {
     }
 
     #[test]
-    fn test_normal_two_plan_two_summary_still_complete() {
+    fn test_normal_two_plan_two_summary_is_executed() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("05-01-PLAN.md"), "plan1").unwrap();
         fs::write(dir.path().join("05-02-PLAN.md"), "plan2").unwrap();
@@ -780,7 +1177,7 @@ mod tests {
         let result = infer_disk_status(dir.path());
         assert_eq!(result.plan_count, 2);
         assert_eq!(result.summary_count, 2);
-        assert_eq!(result.status, DiskStatus::Complete);
+        assert_eq!(result.status, DiskStatus::Executed);
     }
 
     #[test]
@@ -791,7 +1188,7 @@ mod tests {
         let result = infer_disk_status(dir.path());
         assert_eq!(result.plan_count, 1);
         assert_eq!(result.summary_count, 1);
-        assert_eq!(result.status, DiskStatus::Complete);
+        assert_eq!(result.status, DiskStatus::Executed);
     }
 
     #[test]

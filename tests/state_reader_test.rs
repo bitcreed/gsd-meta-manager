@@ -364,3 +364,121 @@ progress:
     assert_eq!(state.status, "active");
     assert_eq!(state.current_phase, "Phase 3"); // completed_phases + 1
 }
+
+// ============================================================================
+// Plan 20-03 Task 1 — GSD's `executed` vocabulary reaches ProjectState
+// ============================================================================
+//
+// The tests in `src/state_reader/disk_status.rs` prove the inference in
+// isolation. These prove the *seam*: that the corrected status and the typed
+// verification status arrive on `ProjectState.phase_disk_statuses`, which is
+// what the dashboard and the driver's router both read. A reader that inferred
+// correctly and threaded nothing through would pass every unit test and change
+// nothing a router can see.
+
+/// Build a `.planning/` holding a ROADMAP declaring one phase plus the given
+/// files under `phases/<phase_dir>/`. Returns the TempDir (keep it alive).
+fn planning_with_phase(phase_number: &str, phase_dir: &str, files: &[(&str, &str)]) -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(planning.join("STATE.md"), "---\nstatus: executing\n---\n").unwrap();
+    fs::write(
+        planning.join("ROADMAP.md"),
+        format!("- [ ] **Phase {phase_number}: Fixture** - a phase\n"),
+    )
+    .unwrap();
+    let dir = planning.join("phases").join(phase_dir);
+    fs::create_dir_all(&dir).unwrap();
+    for (name, content) in files {
+        fs::write(dir.join(name), content).unwrap();
+    }
+    tmp
+}
+
+#[test]
+fn test_project_state_reports_executed_for_an_unverified_phase() {
+    use gsd_meta_manager::state_reader::disk_status::{DiskStatus, VerificationStatus};
+
+    let tmp = planning_with_phase(
+        "19",
+        "19-thing",
+        &[
+            ("19-01-PLAN.md", "plan"),
+            ("19-01-SUMMARY.md", "summary"),
+            ("19-VERIFICATION.md", "---\nstatus: human_needed\n---\n"),
+        ],
+    );
+    let state = parse_project_state(&tmp.path().join(".planning"));
+    let inference = state
+        .phase_disk_statuses
+        .get("19")
+        .expect("the declared phase has a disk inference");
+
+    assert_eq!(
+        inference.status,
+        DiskStatus::Executed,
+        "a phase whose verification needs a human must not read as finished on \
+         the value the dashboard and the router share (DRIVE-05)"
+    );
+    assert_ne!(inference.status, DiskStatus::Complete);
+    assert_eq!(
+        inference.verification_status,
+        VerificationStatus::HumanNeeded
+    );
+    // The corrected predicate also moves what "the current phase" means: an
+    // executed-but-unverified phase is still the phase in flight.
+    assert_eq!(
+        state.current_phase_status.as_ref().map(|i| i.status),
+        Some(DiskStatus::Executed)
+    );
+}
+
+#[test]
+fn test_project_state_reports_complete_only_when_verification_passed() {
+    use gsd_meta_manager::state_reader::disk_status::{DiskStatus, VerificationStatus};
+
+    let tmp = planning_with_phase(
+        "19",
+        "19-thing",
+        &[
+            ("19-01-PLAN.md", "plan"),
+            ("19-01-SUMMARY.md", "summary"),
+            ("19-VERIFICATION.md", "---\nstatus: passed\n---\n"),
+        ],
+    );
+    let state = parse_project_state(&tmp.path().join(".planning"));
+    let inference = state.phase_disk_statuses.get("19").unwrap();
+    assert_eq!(inference.status, DiskStatus::Complete);
+    assert_eq!(inference.verification_status, VerificationStatus::Passed);
+}
+
+#[test]
+fn test_project_state_never_reports_complete_without_a_passing_verification() {
+    use gsd_meta_manager::state_reader::disk_status::DiskStatus;
+
+    // The property, swept over every gating status plus the absent artifact.
+    for frontmatter in [
+        None,
+        Some("---\nstatus: human_needed\n---\n"),
+        Some("---\nstatus: gaps_found\n---\n"),
+        Some("---\nstatus: stale\n---\n"),
+        Some("---\nstatus: missing\n---\n"),
+        Some("---\nstatus: something_new\n---\n"),
+        Some("no frontmatter at all\n\n```\nstatus: passed\n```\n"),
+    ] {
+        let mut files: Vec<(&str, &str)> =
+            vec![("19-01-PLAN.md", "plan"), ("19-01-SUMMARY.md", "summary")];
+        if let Some(content) = frontmatter {
+            files.push(("19-VERIFICATION.md", content));
+        }
+        let tmp = planning_with_phase("19", "19-thing", &files);
+        let state = parse_project_state(&tmp.path().join(".planning"));
+        let inference = state.phase_disk_statuses.get("19").unwrap();
+        assert_eq!(
+            inference.status,
+            DiskStatus::Executed,
+            "only a `passed` verification admits Complete; {frontmatter:?} is not one"
+        );
+    }
+}
