@@ -17,14 +17,16 @@ use rustix::process::Signal;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::config::RegisteredProject;
-use crate::driver::{bounds, kill, liveness, lock, router, DriveArgs, ROUTED_RECORD_MARKER};
+use crate::driver::{
+    bounds, kill, liveness, lock, rate_limit, router, DriveArgs, ROUTED_RECORD_MARKER,
+};
 use crate::envelope::advisory::{self, ProtectionState};
 use crate::envelope::cred::{self, EnvelopeEnv};
 use crate::envelope::hooks;
 use crate::envelope::policy::{self, ParkReason};
 use crate::error::{DriveError, LockError};
 use crate::executor::claude::ClaudeExecutor;
-use crate::executor::stream_json::UserMessage;
+use crate::executor::stream_json::{StreamMessage, UserMessage};
 use crate::executor::{
     DrivableProject, ExecutionEvent, ExecutionHandle, ExecutionOptions, Executor, RunOutcome,
 };
@@ -423,7 +425,7 @@ pub(crate) const PARKED_LABEL_PREFIX: &str = "parked:";
 
 /// How a run ended, with no unclassified arm (DRIVE-06, D-25).
 ///
-/// **Three arms, and the absence of a fourth is the requirement.** Criterion 5's
+/// **Four arms, and the absence of a fifth is the requirement.** Criterion 5's
 /// *"never as an unclassified 'loop ended'"* is a **type-level** property rather
 /// than a logging convention: if the type cannot express "ended for no stated
 /// reason", that failure mode is unrepresentable. Every match on this type is
@@ -468,6 +470,19 @@ pub(crate) enum Terminal {
         /// more than one.
         reason: bounds::BoundsReason,
     },
+    /// The transport reported a Claude subscription quota rejection, so the run
+    /// stopped (CTRL-07).
+    ///
+    /// **Its own arm rather than a fifth [`bounds::BoundsReason`]**, because the
+    /// four bounds are facts about *this* run's budget while a quota rejection is
+    /// a fact about a budget shared with every other Claude surface the user has.
+    /// That difference is the whole reason this arm never retries: a backoff
+    /// would spend somebody else's remaining quota as well as this run's.
+    QuotaParked {
+        /// Which window blocked the run and when it resets, from
+        /// [`rate_limit::park_detail`]. Never a dollar figure (D-16).
+        detail: String,
+    },
 }
 
 impl Terminal {
@@ -482,6 +497,22 @@ impl Terminal {
             Terminal::Completed => None,
             Terminal::Parked { reason, .. } => Some(reason.as_str()),
             Terminal::Halted { reason } => Some(reason.as_str()),
+            Terminal::QuotaParked { .. } => Some(rate_limit::QuotaReason::Rejected.as_str()),
+        }
+    }
+
+    /// The one token this terminal records beside its reason, or empty when the
+    /// reason says everything there is to say.
+    ///
+    /// Exhaustive, no wildcard, for the same reason [`Terminal::park_reason`] is:
+    /// an arm added later must be a decision here rather than a silent fall
+    /// through to "no detail", which is how a park loses the only field that
+    /// says *which* window or *which* state it was about.
+    fn detail(&self) -> &str {
+        match self {
+            Terminal::Completed | Terminal::Halted { .. } => "",
+            Terminal::Parked { detail, .. } => detail,
+            Terminal::QuotaParked { detail } => detail,
         }
     }
 
@@ -497,6 +528,11 @@ impl Terminal {
         match self {
             Terminal::Completed => "",
             Terminal::Parked { .. } | Terminal::Halted { .. } => "human",
+            // A quota park needs a person more plainly than either sibling: the
+            // only thing that unparks it is a human deciding to wait out the
+            // window or to run on a different surface. The driver may not decide
+            // that for itself, and specifically may not decide it by sleeping.
+            Terminal::QuotaParked { .. } => "human",
         }
     }
 }
@@ -1945,6 +1981,15 @@ pub async fn execute_run(
         // is the change that makes steering physically possible** (D-11).
         let mut stdin_open = true;
 
+        // The most recent `rate_limit_event` this iteration observed, retained
+        // verbatim and asked no questions of here (CTRL-07).
+        //
+        // **Per-iteration rather than per-run**, because the classification below
+        // runs at the end of this iteration and a value carried forward could only
+        // ever be a stale one: a quota rejection stops the run where it is
+        // observed, so there is no later iteration for it to be read by.
+        let mut latest_quota_event: Option<serde_json::Value> = None;
+
         // Every message written to stdin that has not yet been echoed back, and the
         // state the acted-on transition is derived from (D-08).
         let mut pending_acks = PendingAcks::default();
@@ -2030,6 +2075,37 @@ pub async fn execute_run(
                                 // The error KIND only. Never a message body, which
                                 // could carry agent output (T-17-05).
                                 tracing::warn!(kind = ?err.kind(), "journal write failed");
+                            }
+
+                            // **The quota signal is observed HERE, in the arm that
+                            // already receives it** (CTRL-07). It is not reachable
+                            // from `derive_run_outcome_from_envelopes`: that
+                            // function takes the full `result` envelopes, and this
+                            // event is not one — it never enters the envelope
+                            // vector at all. Widening that signature to reach it
+                            // would recreate the exact shape of CR-04, the
+                            // envelope-discarding sibling that let a blocked run
+                            // report as a plain success. The driver is the party
+                            // responsible for parsed protocol it consumes (D-08),
+                            // which is how the acknowledgement correlation above
+                            // already works.
+                            //
+                            // Extending this arm rather than adding a second
+                            // consumer of the stream, for the plainest reason:
+                            // there is one stream and it already arrives here.
+                            // Nothing else about the arm changes — the turn
+                            // boundary, the journal write and the stream-close
+                            // break are all exactly as they were.
+                            //
+                            // The payload is retained UNINSPECTED. Every question
+                            // about it is `driver::rate_limit`'s, which is pure and
+                            // reads no clock, so the one place a wire field is
+                            // interpreted is the one place its malformed shapes are
+                            // tested.
+                            if let ExecutionEvent::Message(message) = &event {
+                                if let StreamMessage::RateLimitEvent(payload) = message.as_ref() {
+                                    latest_quota_event = Some(payload.clone());
+                                }
                             }
 
                             if turn_boundary && stdin_open {
@@ -2167,11 +2243,69 @@ pub async fn execute_run(
         // drain loop above therefore ends only on `handle.events.recv()`
         // returning `None`, and this is the line after it.
         let iteration_outcome = handle.wait_outcome().await;
+
+        // **The quota check, and it applies to BOTH execution models** (CTRL-07).
+        //
+        // Two detectors, because no capture of a `rejected` `rate_limit_event`
+        // exists and one cannot be produced without burning the very quota it
+        // describes (research assumption A2). The first reads the payload the
+        // drain loop retained; the second reads the failure envelope's own
+        // terminal reason, off the outcome value this function already holds —
+        // so **nothing about the outcome derivation changes** and no second
+        // envelope-discarding path is created.
+        //
+        // The second detector reports the window as `unknown` rather than
+        // borrowing one from a retained payload, and that is deliberate: the only
+        // payload it could borrow from is one that said `allowed`, which by
+        // definition did not describe this refusal. CONTEXT.md's commitment is to
+        // report unknown rather than to guess, and a plausible window presented as
+        // the one that blocked the run is a guess wearing a fact's clothes.
+        let quota_park = match rate_limit::classify(latest_quota_event.as_ref(), chrono::Utc::now())
+        {
+            rate_limit::QuotaVerdict::Rejected { window, resets_at } => {
+                Some(rate_limit::park_detail(&window, resets_at))
+            }
+            rate_limit::QuotaVerdict::Allowed => {
+                let terminal_reason = match &iteration_outcome {
+                    RunOutcome::Failed {
+                        terminal_reason, ..
+                    } => terminal_reason.as_deref(),
+                    _ => None,
+                };
+                rate_limit::terminal_reason_names_a_rate_limit(terminal_reason).then(|| {
+                    rate_limit::park_detail(&rate_limit::QuotaWindow::Unknown(None), None)
+                })
+            }
+        };
+
         let succeeded = matches!(
             iteration_outcome,
             RunOutcome::SucceededWithChanges { .. } | RunOutcome::SucceededNoChanges { .. }
         );
         last_outcome = Some(iteration_outcome);
+
+        if let Some(detail) = quota_park {
+            // **The run STOPS. No retry, no backoff, no sleep-until-reset, and
+            // nothing scheduled against the reset time.** CTRL-07's requirement is
+            // that a rate-limited run parks rather than retrying, and a backoff is
+            // a retry with a delay — one that additionally spends the wait from a
+            // quota shared with every other Claude surface the user has, so the
+            // budget it burns on the retry is partly somebody else's.
+            //
+            // The reset time is reported so a human can decide when to come back.
+            // It is displayed and never acted on, which is also what makes an
+            // attacker-influenced value harmless beyond the sanity bound already
+            // applied to it (T-20-24).
+            //
+            // It breaks out of BOTH execution models rather than only the routed
+            // one. Single-command mode is otherwise byte-for-byte the run Phase 17
+            // shipped, and it stays so for every run that is not rate-limited; but
+            // a Phase 17 run that hit a quota reported a bare `failed` with no
+            // reason at all, which is exactly the unclassified ending DRIVE-06
+            // exists to remove.
+            terminal = Terminal::QuotaParked { detail };
+            break 'iterations;
+        }
 
         match &source {
             // One supplied command, one iteration. The break is what keeps
@@ -2327,14 +2461,13 @@ fn record_terminal(journal: &mut JournalRun, terminal: &Terminal) {
         return;
     };
 
-    if let Terminal::Parked { detail, .. } = terminal {
-        if !detail.is_empty() {
-            if let Err(err) = journal.record(&JournalEvent::Diagnostic {
-                code: reason.to_string(),
-                detail: detail.clone(),
-            }) {
-                tracing::warn!(kind = ?err.kind(), "could not journal the park detail");
-            }
+    let detail = terminal.detail();
+    if !detail.is_empty() {
+        if let Err(err) = journal.record(&JournalEvent::Diagnostic {
+            code: reason.to_string(),
+            detail: detail.to_string(),
+        }) {
+            tracing::warn!(kind = ?err.kind(), "could not journal the park detail");
         }
     }
 

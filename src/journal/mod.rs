@@ -828,7 +828,7 @@ pub enum JournalEvent {
         /// for `force_push_blocked` or `bounds_no_progress` finds the producer
         /// and the record together.
         ///
-        /// **Three sanctioned taxonomies ride this one field, and naming only
+        /// **Four sanctioned taxonomies ride this one field, and naming only
         /// one of them would be the same quiet lie this record exists to
         /// prevent.** They are siblings, never extensions of each other:
         ///
@@ -837,10 +837,11 @@ pub enum JournalEvent {
         /// | [`crate::envelope::policy::ParkReason`] | none (e.g. `force_push_blocked`) | The safety envelope refused an operation (Phase 19, D-24). **Seven arms, and it stays at seven** — a new detector is a new sibling enum, not an eighth arm here. |
         /// | `crate::driver::router::RouterReason` | `router_` **or** `gate_` | The deterministic router declined to choose a next command (Phase 20, DRIVE-06). Two prefixes on one enum, on purpose: `router_` marks a refusal about the rule table (no rule, unverified state, an unsatisfied dependency) and `gate_` a human-judgement gate the run reached and refused to answer (DRIVE-05). The split is what makes "how often does the always-park posture stop a run, and at which gate?" a grep over the journals rather than a memory. |
         /// | `crate::driver::bounds::BoundsReason` | `bounds_` | A run bound fired and the run halted itself before the next spawn (Phase 20, CTRL-06). |
+        /// | `crate::driver::rate_limit::QuotaReason` | `quota_` | The transport reported a Claude subscription quota rejection and the run stopped without retrying (Phase 20, CTRL-07). Its own taxonomy rather than a fifth `BoundsReason` arm: the four bounds are facts about *this* run's budget, while a quota rejection is a fact about a budget shared with every other Claude surface the user has. |
         ///
         /// The prefixes make the producer readable from the string alone, and
         /// they are a property of each enum's own `REASON_*` constants rather
-        /// than something assembled here. All three reach a terminal record
+        /// than something assembled here. All four reach a terminal record
         /// through the single `parked:` label prefix, so
         /// `run.json`'s `outcome` needs no second carrier and no second parse.
         reason: String,
@@ -2258,9 +2259,9 @@ mod tests {
 
     #[test]
     fn a_bounds_reason_reaches_the_terminal_record_through_the_one_parked_prefix() {
-        // The park event's `reason` doc now names three sanctioned taxonomies.
+        // The park event's `reason` doc now names four sanctioned taxonomies.
         // This proves the bounds one rides the same single field and the same
-        // single `parked:` prefix as the envelope one — one carrier, not three.
+        // single `parked:` prefix as the envelope one — one carrier, not four.
         let dir = tempfile::tempdir().expect("temp dir");
         let planning = dir.path().join(".planning");
         let mut run = JournalRun::start(&planning, run_record(RUN_ID)).expect("start the run");

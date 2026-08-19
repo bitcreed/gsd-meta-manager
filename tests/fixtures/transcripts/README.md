@@ -1,12 +1,51 @@
 # Golden `stream-json` transcripts
 
-Every `.ndjson` file in this directory is a **real capture** from the local `claude`
-2.1.220 binary, taken during the Phase 15 transport spikes — not a hand-written guess.
+This directory holds **eight real captures and one synthesised file**. Files `01`–`08` are
+real captures from the local `claude` 2.1.220 binary, taken during the Phase 15 transport
+spikes — not hand-written guesses. File `09` is the one exception and is labelled below.
 They exist so the entire `stream-json` parsing layer, the capability gate, the `--bare`
 regression guard, the tolerant-parsing behaviour and the outcome-derivation matrix can be
 tested with **zero subscription, network or quota dependency** (D-24).
 
 Each file is NDJSON: one JSON object per line, one trailing newline, no blank lines.
+
+## The one synthesised file (Phase 20, CTRL-07)
+
+`09-rate-limit-rejected.ndjson` is **synthesised and is not a capture.** It exists because
+a `rate_limit_event` carrying `status: "rejected"` cannot be captured without exhausting
+the very subscription quota it describes — a five-hour or seven-day window shared with
+every other Claude surface the operator has. Seven of the eight real captures carry a
+`rate_limit_event`, but every one of them says `allowed` or `allowed_warning`, so the one
+status the quota park actually keys on had no fixture at all.
+
+**Provenance of its contents.** Every field name and every enum value in it is taken
+verbatim from the string table of the installed 2.1.235 binary, recorded in
+`.planning/phases/20-deterministic-decision-router-run-bounds/20-RESEARCH.md` under "The
+Claude Rate-Limit Wire Protocol" with the byte offsets it was read from: the
+`rateLimitType` set (`five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`,
+`seven_day_overage_included`), the `status` set (`allowed`, `allowed_warning`,
+`rejected`), and the transcript renderer's own field order for a rejection
+(`rate_limit: rejected (` → `rateLimitType` → `resetsAt`). Its `resetsAt` is the same
+`seven_day` value fixture `08` carries. Every envelope around the event — the
+`system/init`, the replay `user` message, the terminal `result` — follows the real
+captures' shape. Nothing in it was invented to make a test pass.
+
+**Do not treat it as evidence of what the wire emits.** It is evidence of what this
+repository *believes* the wire emits, and research assumption **A2** records that belief's
+limit: the emission path for a rejection on a `-p` stream is inferred from the binary's
+strings rather than observed. That is why the driver carries a **second** detector on the
+failure envelope's own `terminal_reason`, which this fixture also exercises.
+
+## CLI version drift
+
+The eight captures were taken against **2.1.220**, and the binary the enum inventory above
+was read from is **2.1.235** — fifteen patch versions later. That drift is the reason the
+parsing layer matches `subtype`, `terminal_reason`, `status` and `rateLimitType` as `&str`
+with an explicit fallback arm rather than as typed enums: three of the five `rateLimitType`
+values (`seven_day_opus`, `seven_day_sonnet`, `seven_day_overage_included`) do not appear in
+any capture here, and a typed parse pinned at 2.1.220 would have lost all three. The
+tolerant matching is load-bearing, not stylistic, and this directory is where the evidence
+for that lives.
 
 ## Fixtures
 
@@ -20,13 +59,20 @@ Each file is NDJSON: one JSON object per line, one trailing newline, no blank li
 | `06-interrupt-aborted-streaming.ndjson` | OQ2 (b) — bare `{"type":"interrupt"}` at t=40s, then a `control_request` at t=55s | **1** | 26 | The bare form produces **nothing** (REFUTED, community #41665). The `control_request` form produces a `control_response` with the **double-nested** `response.response.still_queued`, then a synthetic `[Request interrupted by user]` user message, then `terminal_reason:"aborted_streaming"` (D-31, D-32). |
 | `07-interrupt-early.ndjson` | OQ2 (b) — interrupt landing *before* the turn was streaming | **1** | 7 | The race case. `control_response` returns `subtype:"success"` with `still_queued:[]` while cancelling nothing meaningful. Pins the hazard that **`success` means "the request was accepted", not "the thing you meant was cancelled"** — correlate on `request_id` and treat `still_queued` as authoritative (D-31). |
 | `08-tooluse-queued-two-turns.ndjson` | Phase 15 Plan 01 Task 1, Step 4 — the A3 sub-probe: text-only essay at t=0, a **tool-using** message written mid-turn at t=12s, stdin closed at t=14s | **0** | 19 | Settles RESEARCH Assumption **A3**: the per-turn `system/init` + `result` behaviour holds when the queued turn **uses tools**, not just for text-only turns. Two `init`, two `result`, an `assistant` message carrying a real `tool_use` block (`Read`), a `user` tool-result message, and `result:"hello from the scratch project"` — the genuine file content. `num_turns` is 1 on turn 1 and 2 on turn 2, because the tool round-trip adds an internal turn. |
+| `09-rate-limit-rejected.ndjson` | **SYNTHESISED — not a capture.** See "The one synthesised file" above | **1** | 4 | The only `status:"rejected"` quota event in the tree, on a `seven_day` window with `utilization:1` and a `resetsAt`. No assistant turn, because a rejected request never ran one: `init` → `rate_limit_event` → replay `user` → a terminal `result` with `is_error:true`, `subtype:"error_during_execution"`, `terminal_reason:"api_error_rate_limit"`, `errors[]` populated and no `result` field. Its `claude_code_version` is `2.1.235`, above `TESTED_MAXIMUM_CLAUDE_VERSION`, so it also exercises the gate's warn-and-proceed arm. |
 
-Every fixture was captured under subscription auth: `apiKeySource` is `"none"` in all eight
-`system/init` events, which is what the D-08 `--bare` regression guard asserts against.
+Every one of the eight captures was taken under subscription auth: `apiKeySource` is
+`"none"` in all eight `system/init` events, which is what the D-08 `--bare` regression guard
+asserts against. `09` carries the same value for the same reason — a quota rejection is a
+subscription condition and cannot arise on the API-key path at all.
 
 ## Redaction record (D-25)
 
-All eight files were redacted before being committed. Git history is forever, and a log
+This section is about the eight **captures** only. `09` was never captured, so it was never
+unredacted: its paths, uuids and session id were written in the already-redacted shape the
+transforms below produce, and there is no raw counterpart of it anywhere.
+
+All eight captures were redacted before being committed. Git history is forever, and a log
 written before a redaction retrofit stays unredacted forever (Pitfall G) — so the transform
 ran once, at promotion time, and its output is what you see here. Four transforms, applied
 uniformly, **preserving the line count and every envelope and every field**:
