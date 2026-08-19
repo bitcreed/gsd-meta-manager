@@ -167,7 +167,10 @@ fn drive_args(stdin_log: &Path) -> DriveArgs {
 fn drive_args_with(program: &str, stdin_log: &Path) -> DriveArgs {
     DriveArgs {
         alias: ALIAS.to_string(),
-        command: COMMAND.to_string(),
+        command: Some(COMMAND.to_string()),
+        target_phase: None,
+        max_steps: None,
+        wall_clock_cap_secs: None,
         run_id: Some(RUN_ID.to_string()),
         dry_run: false,
         goal: Some(GOAL.to_string()),

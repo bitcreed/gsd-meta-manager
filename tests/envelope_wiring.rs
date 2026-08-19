@@ -415,7 +415,10 @@ fn an_alias_that_can_have_no_envelope_is_refused_by_the_ordered_chain() {
 
     let args = DriveArgs {
         alias: "../escaped".to_string(),
-        command: "/gsd-progress".to_string(),
+        command: Some("/gsd-progress".to_string()),
+        target_phase: None,
+        max_steps: None,
+        wall_clock_cap_secs: None,
         run_id: Some("hostile1".to_string()),
         dry_run: false,
         goal: None,

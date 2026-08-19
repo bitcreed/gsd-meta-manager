@@ -89,7 +89,10 @@ fn config_for(root: &Path, opted_in: bool) -> Config {
 fn args() -> DriveArgs {
     DriveArgs {
         alias: ALIAS.to_string(),
-        command: "/gsd-progress".to_string(),
+        command: Some("/gsd-progress".to_string()),
+        target_phase: None,
+        max_steps: None,
+        wall_clock_cap_secs: None,
         run_id: Some(RUN_ID.to_string()),
         dry_run: false,
         goal: Some("prove the spine".to_string()),

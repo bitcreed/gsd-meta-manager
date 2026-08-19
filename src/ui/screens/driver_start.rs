@@ -590,7 +590,8 @@ mod tests {
             Some(crate::cli::Commands::Drive { command, goal, .. }) => {
                 assert_eq!(goal.as_deref(), Some(HYPHENATED), "verbatim");
                 assert_eq!(
-                    command, "/gsd-progress",
+                    command.as_deref(),
+                    Some("/gsd-progress"),
                     "and the goal must not have swallowed the command"
                 );
             }

@@ -470,6 +470,43 @@ pub enum DriveError {
         /// The id that was refused, verbatim.
         run_id: String,
     },
+    /// Neither `--command` nor `--target-phase` was supplied (CTRL-06).
+    ///
+    /// A run with no command source has nothing to do. Until Phase 20 clap made
+    /// this unrepresentable by requiring `--command`; the moment a second source
+    /// existed, "exactly one of these two" stopped being something a parser can
+    /// express and became a seam refusal — the same move, and for the same
+    /// reason, as the `run_id` pair above.
+    NoCommandSource,
+    /// Both `--command` and `--target-phase` were supplied (CTRL-06).
+    ///
+    /// **Refused rather than resolved by precedence, and the direction is the
+    /// decision.** One of the two would have to win silently, and whichever it
+    /// was, the run's terminal record would name a mode the caller did not
+    /// choose while the other mode's bounds went unenforced. An unattended run
+    /// whose stopping conditions are not the ones the operator asked for is the
+    /// failure CTRL-06 exists to prevent.
+    AmbiguousCommandSource,
+    /// `--target-phase` is present but is not a single plain path component
+    /// (D-27, T-20-03).
+    ///
+    /// The sibling of [`DriveError::RunIdInvalid`], refused at the same seam and
+    /// for the same reason. The value is used only as a map key into the project
+    /// state today and the iteration loop composes no path from it — but that is
+    /// a fact about today rather than a property of the type, and
+    /// `--run-id '../../../../escaped'` is what that distinction cost the last
+    /// time it was left to the callers.
+    TargetPhaseInvalid {
+        /// The value that was refused, verbatim.
+        target_phase: String,
+    },
+    /// A run bound was asked for that a run cannot be bounded by (CTRL-06).
+    ///
+    /// Raised **before anything is created**, so a run asked for with a cap that
+    /// switches off a detector leaves nothing on disk at all. The taxonomy is
+    /// [`crate::driver::bounds::BoundsRefusal`] and this variant carries it
+    /// rather than restating it, so one list answers "which caps are refusable".
+    BoundsRefused(crate::driver::bounds::BoundsRefusal),
     /// The opt-in gate refused before anything was spawned.
     OptIn(OptInError),
     // `DryRunUnavailable` lived here between plans 17-01 and 17-04. It said
@@ -540,6 +577,27 @@ impl fmt::Display for DriveError {
                  .planning/meta-manager/runs/; it may not contain a path separator, \
                  `..`, or a leading `/`"
             ),
+            Self::NoCommandSource => write!(
+                f,
+                "a run needs something to do: pass `--command <c>` to run one GSD \
+                 command, or `--target-phase <N>` to let the decision router choose \
+                 each command from observed project state"
+            ),
+            Self::AmbiguousCommandSource => write!(
+                f,
+                "`--command` and `--target-phase` are mutually exclusive — the first \
+                 runs one supplied command, the second runs a routed sequence under \
+                 the run bounds. Pass exactly one, so the run's terminal record names \
+                 the mode you chose"
+            ),
+            Self::TargetPhaseInvalid { target_phase } => write!(
+                f,
+                "the target phase {target_phase:?} is not a single plain path \
+                 component, so it is refused before anything is created. A target \
+                 phase is a phase number such as `20`; it may not contain a path \
+                 separator, `..`, or a leading `/`"
+            ),
+            Self::BoundsRefused(refusal) => write!(f, "{refusal}"),
             Self::OptIn(err) => write!(f, "{err}"),
             Self::Lock(err) => write!(f, "{err}"),
             Self::Spawn(err) => write!(f, "{err}"),
@@ -569,9 +627,21 @@ impl std::error::Error for DriveError {
             Self::UnsupportedPlatform { .. }
             | Self::RunIdRequired
             | Self::RunIdInvalid { .. }
+            | Self::NoCommandSource
+            | Self::AmbiguousCommandSource
+            | Self::TargetPhaseInvalid { .. }
+            // `BoundsRefusal` is a plain data enum rather than an `Error`: it is
+            // a classification of an argv value, not a failure that wrapped one.
+            | Self::BoundsRefused(_)
             | Self::Journal { .. }
             | Self::EnvelopeAssertionFailed { .. } => None,
         }
+    }
+}
+
+impl From<crate::driver::bounds::BoundsRefusal> for DriveError {
+    fn from(refusal: crate::driver::bounds::BoundsRefusal) -> Self {
+        Self::BoundsRefused(refusal)
     }
 }
 

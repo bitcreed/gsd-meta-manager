@@ -135,6 +135,16 @@ const BLOCKING_HELPERS: &[&str] = &[
     "write_settings(",
     "record_and_check(",
     "git_read_raw(",
+    // Phase 20's, and it was a **pre-existing hole** rather than one that phase
+    // opened: `RunSnapshot::capture` does full-tree file I/O and shells out to
+    // git twice — its own doc says so in as many words — and it has been
+    // reachable from an `async fn` since Phase 15 without appearing here at all.
+    // Phase 20 is what made naming it urgent: the iteration loop captures a
+    // snapshot before **every** command rather than twice per run, and the
+    // thread it must not park is the one polling the terminate arm. A driver
+    // that stops answering the kill switch during a long observe is a driver the
+    // user experiences as ignoring the stop.
+    "RunSnapshot::capture(",
 ];
 
 /// The hand-off shapes that move blocking work off the runtime thread.
@@ -208,6 +218,22 @@ const ASYNC_BLOCKING_ALLOWLIST: &[(&str, &str)] = &[
     // because a task failed to join. A run that ends with no record at all is
     // the one failure OBS-01 cannot tolerate.
     ("src/driver/run.rs", "terminal_label("),
+    // The per-iteration snapshot capture's join-failure fallback, the same shape
+    // and the same reason as the two above it: every healthy iteration captures
+    // inside `spawn_blocking`, and this inline re-run is reachable only if that
+    // task panicked or the runtime is shutting down. It re-runs rather than
+    // yielding a default snapshot on purpose — a default compares unequal to
+    // everything and would silently reset the no-progress evidence, which is
+    // CTRL-06's stall detector switched off on the one path no healthy run
+    // reaches.
+    ("src/driver/run.rs", "RunSnapshot::capture("),
+    // The executor's own capture fallback, which is the hole this marker was
+    // added to close. It has been unreported since Phase 15 — not because it was
+    // judged acceptable, but because nothing named the helper — and the entry is
+    // added in the same commit as the marker so the exemption is a decision
+    // rather than an inheritance. Same shape again: `capture_snapshot` hands the
+    // work to `spawn_blocking` and re-runs inline only on a join failure.
+    ("src/executor/claude.rs", "RunSnapshot::capture("),
 ];
 
 /// The floor below which this audit is examining too little to mean anything.

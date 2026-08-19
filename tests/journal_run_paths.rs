@@ -135,7 +135,10 @@ fn footprint(root: &Path) -> BTreeSet<PathBuf> {
 fn drive_args(run_id: &str) -> DriveArgs {
     DriveArgs {
         alias: ALIAS.to_string(),
-        command: COMMAND.to_string(),
+        command: Some(COMMAND.to_string()),
+        target_phase: None,
+        max_steps: None,
+        wall_clock_cap_secs: None,
         run_id: Some(run_id.to_string()),
         dry_run: false,
         goal: None,

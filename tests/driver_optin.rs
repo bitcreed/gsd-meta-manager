@@ -235,7 +235,10 @@ fn config_for(a: &Path, b: &Path, opted_in: &str) -> Config {
 fn drive_args(alias: &str, sentinel: &Path) -> DriveArgs {
     DriveArgs {
         alias: alias.to_string(),
-        command: "/gsd-progress".to_string(),
+        command: Some("/gsd-progress".to_string()),
+        target_phase: None,
+        max_steps: None,
+        wall_clock_cap_secs: None,
         run_id: Some(RUN_ID.to_string()),
         dry_run: false,
         goal: None,

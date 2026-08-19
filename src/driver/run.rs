@@ -17,7 +17,7 @@ use rustix::process::Signal;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::config::RegisteredProject;
-use crate::driver::{kill, liveness, lock, DriveArgs};
+use crate::driver::{bounds, kill, liveness, lock, router, DriveArgs};
 use crate::envelope::advisory::{self, ProtectionState};
 use crate::envelope::cred::{self, EnvelopeEnv};
 use crate::envelope::hooks;
@@ -421,6 +421,107 @@ pub(crate) fn outcome_label(outcome: &RunOutcome) -> &'static str {
 /// [`ParkReason::as_str`], never a fresh string.
 pub(crate) const PARKED_LABEL_PREFIX: &str = "parked:";
 
+/// How a run ended, with no unclassified arm (DRIVE-06, D-25).
+///
+/// **Three arms, and the absence of a fourth is the requirement.** Criterion 5's
+/// *"never as an unclassified 'loop ended'"* is a **type-level** property rather
+/// than a logging convention: if the type cannot express "ended for no stated
+/// reason", that failure mode is unrepresentable. Every match on this type is
+/// exhaustive with no wildcard, so an arm added later is a compile error at each
+/// site that has to classify it.
+///
+/// Every arm carries a reason, and every reason reaches disk through machinery
+/// that already existed rather than through a third string source:
+/// [`Terminal::Parked`] and [`Terminal::Halted`] write `JournalEvent::Parked`
+/// with their sibling enum's `as_str()`, which [`terminal_label`] picks up
+/// through the [`PARKED_LABEL_PREFIX`]; [`Terminal::Completed`] writes no park
+/// record and so falls through to [`outcome_label`], which is the same label
+/// every Phase 17 run already carried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Terminal {
+    /// The run performed every command it was asked to perform.
+    ///
+    /// **This is DRIVE-06's "goal met" arm**, and its reason is the derived
+    /// [`RunOutcome`]'s own label — `succeeded_with_changes`, `failed`,
+    /// `timed_out` and the six others [`outcome_label`] spells out. It is
+    /// reached in single-command mode when the one supplied command finishes,
+    /// and in routed mode when the agent's own outcome ends the run. It is named
+    /// for what it asserts (the work ran to its end) rather than for a goal
+    /// predicate this plan cannot yet evaluate: goal-met against a *declared
+    /// target* needs the verification frontmatter status that this repository's
+    /// one reader does not record yet (research Pitfall 2), and inventing it
+    /// from artifact presence would step past the `human_needed` gate DRIVE-05
+    /// exists to park at.
+    Completed,
+    /// The router refused to choose a next command.
+    Parked {
+        /// The taxonomy member, from the router's closed reason set.
+        reason: router::RouterReason,
+        /// One token naming what was observed. Empty when there is nothing to
+        /// add beyond the reason itself.
+        detail: String,
+    },
+    /// A run bound fired, so the run halted **before** the next spawn.
+    Halted {
+        /// Which one detector fired. Exactly one, never a list: CTRL-06 asks
+        /// which detector fired, and [`bounds::BoundVerdict`] cannot express
+        /// more than one.
+        reason: bounds::BoundsReason,
+    },
+}
+
+impl Terminal {
+    /// The stable identifier this terminal writes into `JournalEvent::Parked`,
+    /// or `None` when the run ends on its outcome label instead.
+    ///
+    /// Exhaustive, no wildcard. The reason is always the sibling enum's
+    /// `as_str()` — never a fresh string minted here — so `grep bounds_no_progress`
+    /// finds the detector and the record it produced together.
+    fn park_reason(&self) -> Option<&'static str> {
+        match self {
+            Terminal::Completed => None,
+            Terminal::Parked { reason, .. } => Some(reason.as_str()),
+            Terminal::Halted { reason } => Some(reason.as_str()),
+        }
+    }
+
+    /// What would unpark this run, in the register `JournalEvent::Parked.needs`
+    /// documents: a short phrase naming the actor, never a sentence of advice.
+    ///
+    /// Every reason in both sibling taxonomies needs a person. A bound that
+    /// fired wants an operator to decide whether to raise it or to fix the
+    /// stall; a router that found no rule wants one to widen the table. Neither
+    /// is something the driver may decide for itself, which is the whole of
+    /// CONTEXT.md's always-park resolution.
+    fn needs(&self) -> &'static str {
+        match self {
+            Terminal::Completed => "",
+            Terminal::Parked { .. } | Terminal::Halted { .. } => "human",
+        }
+    }
+}
+
+/// Where each iteration's command comes from.
+///
+/// Two arms, mutually exclusive, refused at the seam in
+/// [`crate::driver::drive`] if a caller supplies both or neither. The split is
+/// what keeps single-command mode byte-for-byte unchanged: [`Fixed`] runs
+/// exactly one iteration through exactly the Phase 17 path, with no snapshot
+/// capture, no bounds evaluation, no router call and no `observed`/`decided`
+/// record.
+///
+/// [`Fixed`]: CommandSource::Fixed
+enum CommandSource {
+    /// One supplied command, one iteration.
+    Fixed(String),
+    /// A routed sequence driving toward a phase.
+    Routed {
+        /// The phase number, already validated as a plain path component. It is
+        /// a map key and never a path component in practice (T-20-03).
+        target_phase: String,
+    },
+}
+
 /// The label the terminal `run.json` carries, which is
 /// [`outcome_label`] **unless the run's journal names a park** (D-25).
 ///
@@ -490,7 +591,13 @@ fn make_run_record(
     RunRecord {
         run_id,
         goal: args.goal.clone().unwrap_or_default(),
-        gsd_command: args.command.clone(),
+        // **A single `String`, and it stays one under a multi-command loop.**
+        // `run.json` is written exactly twice, so this field cannot accumulate;
+        // the per-iteration sequence belongs on the journal's `decided` records,
+        // which is where a reader finds every command a routed run issued and in
+        // what order. For a routed run this therefore names the *mode* — the
+        // target phase — rather than a command the router might not choose.
+        gsd_command: recorded_command(args),
         target: format!("{:?}", options.target),
         // The field Phase 16 reserved at `src/journal/mod.rs:475` specifically
         // so this phase adds no migration.
@@ -514,6 +621,25 @@ fn make_run_record(
         argv_digest,
         ended_at: None,
         outcome: None,
+    }
+}
+
+/// What `run.json`'s single `gsd_command` field carries.
+///
+/// Single-command mode records the command, exactly as it always did. A routed
+/// run has no single command to record — that is the point of it — so it records
+/// the target that bounded the sequence. Both are one line a reader can act on;
+/// neither is a guess about what the router chose.
+fn recorded_command(args: &DriveArgs) -> String {
+    match (&args.command, &args.target_phase) {
+        (Some(command), _) => command.clone(),
+        (None, Some(target_phase)) => format!("--target-phase {target_phase}"),
+        // Unreachable: `driver::drive` refuses a run with neither before
+        // anything is created. An empty string rather than a panic, because a
+        // detached driver that panicked here would leave a run directory with no
+        // terminal record, which is the crash signal D-12 reserves for a genuine
+        // crash.
+        (None, None) => String::new(),
     }
 }
 
@@ -1096,6 +1222,150 @@ fn journal_agent_program_override(journal: &mut JournalRun, args: &DriveArgs) {
     }
 }
 
+/// The executor for **one** iteration.
+///
+/// **Constructed per iteration rather than once per run, and the reason is the
+/// spawn observer.** `observing_spawn` takes a `oneshot::Sender` that is
+/// *consumed* by the first spawn, so an executor reused across iterations would
+/// publish the agent's process group for the first command and for no other —
+/// and that channel is precisely what a stop landing during startup uses to
+/// reach a group the driver otherwise has no handle on (CR-01). A second
+/// iteration whose startup stop found an exhausted channel would orphan the
+/// agent group it never signalled, which is the failure `driver::kill`'s whole
+/// two-layer design exists to prevent.
+///
+/// The replay-echo sender is **cloned** rather than moved, so the run-level
+/// channel outlives every iteration and `echo_open` keeps meaning what its own
+/// comment says it means.
+///
+/// A pair of `#[cfg]` functions rather than an `if cfg!(…)`, for exactly the
+/// reason [`agent_program`] gives: `cfg!` compiles both arms, so the released
+/// binary would still contain the path that execs an arbitrary program.
+#[cfg(debug_assertions)]
+fn build_executor(args: &DriveArgs) -> ClaudeExecutor {
+    match &args.claude_program {
+        Some(program) => ClaudeExecutor::with_program(program, args.claude_args.clone()),
+        None => ClaudeExecutor::new(),
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn build_executor(_args: &DriveArgs) -> ClaudeExecutor {
+    ClaudeExecutor::new()
+}
+
+/// The terminal label for a routed run whose target was met before it issued a
+/// single command.
+///
+/// **The one label in this module sourced from neither [`outcome_label`] nor the
+/// [`PARKED_LABEL_PREFIX`] carrier, and it exists because both are wrong here.**
+/// `outcome_label` maps a [`RunOutcome`] and a run that never spawned has none;
+/// `parked:` would claim the run stopped needing a human when in fact it stopped
+/// because there was nothing left to do.
+///
+/// **Unreachable in this plan.** `router::Decision::GoalMet` has no producer
+/// until the one reader records the VERIFICATION frontmatter `status` (research
+/// Pitfall 2), and until then no branch returns it. The constant exists so that
+/// the plan adding that producer finds a decision here instead of inheriting a
+/// guess, and so the match that consumes it is exhaustive today.
+pub(crate) const GOAL_MET_LABEL: &str = "goal_met";
+
+/// The options for **one** iteration of a run.
+///
+/// Rebuilt per iteration, and three of its properties are decisions:
+///
+/// * **A fresh `session_id` every time, and never `resume_session`** (CONTEXT.md
+///   OQ5). A resumed session accumulates the previous command's whole transcript
+///   into the next command's window, which is how a multi-hour run hits a
+///   context limit for reasons unrelated to the work. It also keeps `run.json`'s
+///   single `session_id` honest: per-iteration ids belong on the journal's
+///   `exec_started` records, which already carry one. `ExecutionOptions::default`
+///   generates a fresh v4 UUID, so this is what *not* overriding it buys.
+/// * **[`bounds::ITERATION_WALL_CLOCK_CAP`] rather than the default**, which is
+///   strictly less than the run-level cap. Left at their own defaults the two
+///   are both exactly four hours, and a run that ran out of time would report
+///   the executor's `timed_out` while CTRL-06's run-level wall-clock reason
+///   became unreportable (research Pitfall 3).
+/// * The envelope's settings path and environment are **cloned**, because
+///   establishment happens once per run and every iteration is protected by that
+///   same envelope.
+fn iteration_options(
+    envelope_settings: &Path,
+    envelope_env: &EnvelopeEnv,
+) -> ExecutionOptions {
+    ExecutionOptions {
+        envelope_disallowed_tools: policy::disallowed_tools(),
+        envelope_settings: Some(envelope_settings.to_path_buf()),
+        envelope_env: Some(envelope_env.clone()),
+        wall_clock_cap: bounds::ITERATION_WALL_CLOCK_CAP,
+        ..Default::default()
+    }
+}
+
+/// The five D-R-P-E-V stage statuses for `target_phase`, in order.
+///
+/// `JournalEvent::Observed.drpev` is documented as *"the five D-R-P-E-V stage
+/// statuses, in order"* — a `Vec<String>` of length five, not a free-form list —
+/// so this function is the one producer and the length is a property of it
+/// rather than of each call site.
+///
+/// The five stages map onto GSD's own artifact presence: Discuss is
+/// `has_context`, Research is `has_research`, Plan is the plan count, Execute is
+/// the summary count, Verify is `has_verification`. **Verify reports presence
+/// and not status**, and that is a known gap rather than an oversight: this
+/// repository's `DiskInference` records only whether a `*-VERIFICATION.md`
+/// exists, never its frontmatter `status`, which is the whole DRIVE-05 gate set
+/// (research Pitfall 2). Closing it is a separate plan's, and it is named here
+/// so a reader of this record knows what the fifth element does and does not
+/// mean.
+///
+/// Values are enum names and counts — never artifact content — so this record
+/// cannot carry agent-authored text (T-20-05).
+fn drpev_stages(state: &crate::state_reader::ProjectState, target_phase: &str) -> Vec<String> {
+    let inference = state.phase_disk_statuses.get(target_phase);
+    let flag = |present: bool| if present { "yes" } else { "no" }.to_string();
+    vec![
+        flag(inference.is_some_and(|found| found.has_context)),
+        flag(inference.is_some_and(|found| found.has_research)),
+        inference.map_or(0, |found| found.plan_count).to_string(),
+        inference.map_or(0, |found| found.summary_count).to_string(),
+        flag(inference.is_some_and(|found| found.has_verification)),
+    ]
+}
+
+/// Capture a project snapshot off the async path, with the inline fallback this
+/// module already uses for a join failure.
+///
+/// **`RunSnapshot::capture` does full-tree file I/O and shells out to git
+/// twice**, and it says so in its own doc — so it goes on a blocking thread
+/// (D-28, WR-10). The thread it must not park is the one polling the terminate
+/// arm: a driver that stops responding to the kill switch during a long observe
+/// is a driver the user experiences as ignoring the stop.
+///
+/// A join failure re-runs it inline rather than yielding a default snapshot,
+/// which is the same answer `ClaudeExecutor::capture_snapshot` and the
+/// terminal-label task below already give. A *default* snapshot would compare
+/// unequal to everything and quietly reset the no-progress evidence, which is a
+/// stall detector silently switched off on the one path no healthy run reaches.
+async fn capture_snapshot(project_root: &Path) -> crate::executor::outcome::RunSnapshot {
+    let owned = project_root.to_path_buf();
+    let for_task = owned.clone();
+    match tokio::task::spawn_blocking(move || {
+        crate::executor::outcome::RunSnapshot::capture(&for_task)
+    })
+    .await
+    {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            tracing::warn!(
+                panicked = err.is_panic(),
+                "the project snapshot task did not run to completion",
+            );
+            crate::executor::outcome::RunSnapshot::capture(&owned)
+        }
+    }
+}
+
 /// Run one GSD command to completion and leave a complete run directory.
 ///
 /// In order, and the order is the decision:
@@ -1238,21 +1508,29 @@ pub async fn execute_run(
     })?;
 
     let protection = envelope.protection.clone();
-    let options = ExecutionOptions {
-        envelope_disallowed_tools: policy::disallowed_tools(),
-        envelope_settings: Some(envelope.settings),
-        envelope_env: Some(envelope.env),
-        ..Default::default()
-    };
+    // **The envelope's two carriers are cloned per iteration rather than moved
+    // once**, because a routed run constructs a fresh `ExecutionOptions` for
+    // every command it issues. Establishment itself stays exactly where it was —
+    // once, above, before the lock — so the four generated files are written
+    // once and the external-client probe runs once (research Pitfall 4). Only
+    // the *description* of them is rebuilt.
+    let envelope_settings = envelope.settings;
+    let envelope_env = envelope.env;
+    let options = iteration_options(&envelope_settings, &envelope_env);
 
     // The executor's own generated argv is not reachable from here — the
     // builder is private to `src/executor/claude.rs` — so the digest covers the
     // driver's effective command line. That is enough for what the digest
     // promises: comparing two runs for "same command line". It authenticates
     // nothing (see `journal::argv_digest`).
+    //
+    // It is computed once from the run's *recorded* command, because `run.json`
+    // carries exactly one digest and is written exactly twice. A routed run's
+    // per-iteration argv differs by the command; that variation is visible on
+    // the journal's `decided` records, which name each command in full.
     let mut argv = vec![agent_program(args).display().to_string()];
     argv.extend(agent_leading_args(args));
-    argv.push(args.command.clone());
+    argv.push(recorded_command(args));
     let argv_digest = journal::argv_digest(&argv);
 
     let record = make_run_record(run_id, args, entry, &options, argv_digest, pgid);
@@ -1350,88 +1628,27 @@ pub async fn execute_run(
     #[cfg(debug_assertions)]
     journal_agent_program_override(&mut run.journal, args);
 
-    // The agent's process group, published the instant the child exists rather
-    // than only on the `ExecutionHandle` (CR-01). A stop that lands while `start`
-    // is still awaiting the capability gate never receives a handle, so without
-    // this channel it would have no way to reach the agent's group — which is a
-    // *different* group from this driver's, and therefore the one that survives a
-    // signal aimed here (D-06, D-09).
-    let (pgid_tx, mut pgid_rx) = oneshot::channel::<u32>();
-
     // The raw wire line of every `user` replay echo, which is the **only**
     // evidence the protocol offers that the agent has started on an injected
     // message (D-07, D-08). Unbounded on purpose: this channel must never be
     // able to park the executor's coordinator, which owns the caps, the cancel
     // and the teardown. Its depth is bounded by the number of user messages one
     // run sends, and the loop below drains it on every pass.
+    //
+    // **Per-RUN, and the sender is cloned into each iteration's executor.** The
+    // receiver has to survive between commands, and holding the original sender
+    // here for the whole run is what keeps `echo_open` below meaning what its
+    // comment says: the channel cannot close while the run is live.
     let (echo_tx, mut echo_rx) = mpsc::unbounded_channel::<String>();
 
-    // The only branch on the hidden development flags, and it lives here rather
-    // than in `main` so the fixture never touches the production dispatch.
-    //
-    // **In a release build there is no branch at all** — the fields do not
-    // exist, so `ClaudeExecutor::with_program` has no call site outside the
-    // debug-only arm below (D-30, WR-16).
-    #[cfg(debug_assertions)]
-    let executor = match &args.claude_program {
-        Some(program) => ClaudeExecutor::with_program(program, args.claude_args.clone()),
-        None => ClaudeExecutor::new(),
-    };
-    #[cfg(not(debug_assertions))]
-    let executor = ClaudeExecutor::new();
-
-    let executor = executor
-        .observing_spawn(pgid_tx)
-        .observing_replay_echoes(echo_tx);
-
-    // `biased`, terminate arm FIRST — the same discipline as the drain loop
-    // below, for a sharper reason. There the cost of losing the race is a
-    // *delayed* stop; here it is a **swallowed** one. `Executor::start` blocks on
-    // the capability gate, and the documented `SessionStart` hook hang parks it
-    // for minutes, during which the driver would ignore the TUI's SIGTERM, get
-    // SIGKILLed at the end of the twelve-second grace, and orphan the agent group
-    // it never signalled. That is CR-01, and `tests/driver_kill_startup.rs` is
-    // the three-process proof.
-    //
-    // Losing the race also drops the `start` future, which drops `cancel_tx` and
-    // fires the Coordinator's own cancellation — but that teardown is
-    // unobservable from here and dies with the runtime, which is why
-    // `shutdown_during_startup` tears the group down explicitly instead of
-    // relying on it.
-    let started = tokio::select! {
-        biased;
-
-        _ = term.recv() => {
-            shutdown_during_startup(&mut pgid_rx, &mut run.journal).await;
-            // Returning drops `run` and with it the `RunLock` — the descriptor
-            // close IS the release (D-20.2). The terminal record was written by
-            // the call above, so nothing below runs and no second one follows.
-            return Ok(());
-        }
-
-        result = executor.start(&project, args.command.clone(), options) => result,
-    };
-
-    let mut handle = match started {
-        Ok(handle) => handle,
-        Err(err) => {
-            // A run that started always has a terminal record, even when the
-            // thing it was started for never launched (T-17-06).
-            if let Err(journal_err) = run.journal.finish("spawn_failed") {
-                tracing::warn!(
-                    detail = %format!("{journal_err:#}"),
-                    "could not close the journal after a failed spawn",
-                );
-            }
-            return Err(DriveError::Spawn(err));
-        }
-    };
-
-    run.journal.set_claude_pgid(handle.pgid);
-
     // The inbox this run is steered through, and the driver's own cursor into it
-    // (D-03, D-04). The cursor lives here, in the run's own state, because the
-    // inbox is per-run and nothing outside this loop consumes it.
+    // (D-03, D-04).
+    //
+    // **Per-RUN, not per-iteration, and the cursor is why.** A cursor rebuilt
+    // between commands would rewind to the head of `inbox.jsonl` and re-deliver
+    // every message the previous iteration already handed the agent — the user's
+    // words repeated to a fresh agent that has no idea it is a replay. One
+    // inbox, one cursor, one run.
     let inbox_path = run.journal.paths().inbox.clone();
     let mut inbox_cursor = TailCursor::default();
 
@@ -1442,255 +1659,533 @@ pub async fn execute_run(
     let mut inbox_poll = tokio::time::interval(INBOX_POLL_INTERVAL);
     inbox_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-    // Whether the agent can still be written to. It starts `true`, and **that
-    // is the change that makes steering physically possible** (D-11).
-    let mut stdin_open = true;
-
-    // Every message written to stdin that has not yet been echoed back, and the
-    // state the acted-on transition is derived from (D-08).
-    let mut pending_acks = PendingAcks::default();
-
-    // How many messages have been written to stdin since the last turn boundary,
-    // **counting the ones the poll arm wrote** (CR-01).
-    //
-    // Two arms deliver, and only one of them decides whether stdin survives. The
-    // boundary arm's question is *"is another turn coming?"*, and the answer is
-    // yes if **either** arm wrote something since the last boundary — a message
-    // the poll arm delivered mid-turn is queued inside the CLI and will run as
-    // its own turn, exactly like one delivered at the boundary itself. Without
-    // this counter the poll arm's delivery was invisible to the boundary arm
-    // (`deliver_pending_inbox` has already advanced `inbox_cursor` past it), so
-    // the boundary drain read an empty inbox, concluded `delivered == 0` and
-    // closed stdin while a human-steered turn was queued and about to run. Since
-    // `INBOX_POLL_INTERVAL` is 750 ms and a turn is minutes, the poll arm wins
-    // that race for essentially every message a user types — so the run could be
-    // steered exactly **once** and every later message was journaled `missed`.
-    // Step 3 of the four-step rule below says the opposite, and this counter is
-    // what makes it true.
-    let mut delivered_since_boundary = 0usize;
-
     // Whether the echo channel can still produce. It cannot close while the run
-    // is live — `executor` owns the sender and outlives this loop — so this flag
-    // exists purely so a future refactor that *does* drop it early cannot turn a
-    // closed channel into a permanently ready arm spinning the poll thread.
+    // is live — `echo_tx` above outlives the loop — so this flag exists purely
+    // so a future refactor that *does* drop it early cannot turn a closed
+    // channel into a permanently ready arm spinning the poll thread.
     let mut echo_open = true;
 
-    // `biased`, with the terminate arm FIRST, following `src/main_loop.rs:130`.
+    // Which of the two execution models this run is. `driver::drive` has already
+    // refused both-or-neither, so the last arm is unreachable; it is spelled out
+    // rather than `unwrap`ped because a detached driver that panicked here would
+    // leave a run directory with no terminal record, which is the signal D-12
+    // reserves for a genuine crash.
+    let source = match (&args.command, &args.target_phase) {
+        (Some(command), _) => CommandSource::Fixed(command.clone()),
+        (None, Some(target_phase)) => CommandSource::Routed {
+            target_phase: target_phase.clone(),
+        },
+        (None, None) => CommandSource::Fixed(String::new()),
+    };
+
+    // The caps in force, resolved from the same pure function `driver::drive`
+    // already used to refuse an unbounded one. A second call cannot disagree
+    // with the first, so no value is threaded through `dispatch`.
+    let run_bounds =
+        bounds::resolve(args.max_steps, args.wall_clock_cap_secs).map_err(DriveError::from)?;
+    let mut bounds_state = bounds::BoundsState::default();
+
+    // The run-level clock. `std::time::Instant` rather than `tokio`'s, so the
+    // elapsed value handed to `bounds::evaluate` is the same monotonic quantity
+    // the cap was resolved against and cannot be moved by a test runtime's
+    // time-pausing.
+    let run_started_at = std::time::Instant::now();
+
+    // How the run ended, seeded with the arm that means "everything asked for
+    // ran". Every `break` below either leaves it alone or replaces it, and the
+    // type has no arm for "ended with nothing said" (DRIVE-06).
+    let mut terminal = Terminal::Completed;
+
+    // The last iteration's derived outcome. `None` only when no iteration ever
+    // spawned, which a routed run reaches by parking or halting on its first
+    // pass — the one case where there is no `RunOutcome` for `outcome_label` to
+    // map, handled explicitly at the terminal write below.
+    let mut last_outcome: Option<RunOutcome> = None;
+
+    // **THE ITERATION LOOP.** Everything above is per-run and established
+    // exactly once — the terminate handler, the process group, the envelope, the
+    // lock and the journal — and everything below the loop is the run's single
+    // terminal record. Only spawn, drain and outcome repeat (D-20.2, research
+    // Pitfall 4). The lock is never re-acquired: `RunLock` has no `Drop` impl
+    // and its descriptor *is* the lock, so a re-acquire would open the
+    // concurrency window CTRL-05 exists to close.
     //
-    // Arm order is the decision, not a formality. Without `biased` the macro
-    // picks a ready arm at random, and with a fast agent the event arm is
-    // essentially always ready — so a stop request would lose the race for as
-    // long as the stream kept producing, which is the entire duration of the run
-    // the user is trying to stop. A stop that loses to a busy event queue is a
-    // stop the user experiences as ignored (D-06.1). The inbox poll goes **last**
-    // for the mirror-image reason: it is the only arm whose work can wait, and
-    // the only one that touches the filesystem. The replay-echo arm sits between
-    // them — its work is a string compare against a deque, and the state it
-    // records happened 55 seconds ago (D-07), so it is neither urgent nor
-    // expensive.
-    //
-    // `tokio::select!` drops the other arms' futures before it runs the chosen
-    // arm's body, which is what lets the terminate arm take `&mut handle` while
-    // the event arm's future borrowed it.
-    //
-    // **When stdin closes, and why it is here rather than after the spawn**
-    // (D-11). Until this plan, `close_input()` ran immediately after the spawn
-    // with the comment *"one command means one message"* — correct for Phase 17
-    // and fatal for Phase 18, because the writer task breaks its loop on
-    // `Close` and every later `Executor::send` returns `WriterGone`. **While that
-    // line stood, STEER-01/02/03 were not merely unimplemented but physically
-    // impossible.** The rule that replaces it is four steps:
-    //
-    // 1. Do **not** close stdin after spawn.
-    // 2. On each `ExecutionEvent::TurnCompleted` — a `result`, which closes a
-    //    TURN and not the run (Phase 15 D-29) — drain the inbox one final time.
-    // 3. If a message was delivered **by either arm since the last boundary**
-    //    (`delivered_since_boundary`), the agent runs it as a new turn and the
-    //    loop repeats from step 2. This supports N human-steered turns for free.
-    // 4. If nothing was delivered, `close_input()`. EOF is "no more input", not
-    //    "stop": the CLI drains what is queued, finishes, and **exits 0**.
-    //
-    // The final drain at step 2 is what resolves the common race in the user's
-    // favour; anything arriving after the close is `missed`, named, and not
-    // retried (D-10) — see the sweep below the loop. No new bound is needed:
-    // `ExecutionOptions`' idle cap and wall-clock cap remain the backstop for an
-    // agent that goes quiet with stdin open.
-    loop {
-        tokio::select! {
+    // **The iteration tick is the previous iteration's `wait_outcome()`
+    // returning — never a file watcher.** The driver writes into
+    // `.planning/meta-manager/runs/…`, which sits under the tree a watcher would
+    // watch, so a watcher-fed loop would observe its own journal writes as
+    // project change, re-route, and never converge. The detached driver has no
+    // watcher today and this loop does not give it one.
+    'iterations: loop {
+        // ---- 1. OBSERVE and ROUTE (routed mode only) -------------------
+        //
+        // Single-command mode takes none of this: no snapshot capture, no
+        // bounds evaluation, no router call and no `observed`/`decided` record,
+        // so its journal and its `run.json` are byte-for-byte what Phase 17
+        // wrote.
+        let command = match &source {
+            CommandSource::Fixed(command) => command.clone(),
+            CommandSource::Routed { target_phase } => {
+                let snapshot = capture_snapshot(project.root()).await;
+                let observed = snapshot.project_state.clone();
+                bounds_state.observe(snapshot);
+
+                // Pure: no I/O, no model call. The state was read above and is
+                // handed in (D-11).
+                //
+                // **The router runs before the bounds even though the bounds are
+                // evaluated before the spawn**, because `evaluate` is asked
+                // *which* command is about to run — the command-repeat detector
+                // has no question to answer without one. Nothing happens between
+                // the two: `decide` opens no file, starts no process and writes
+                // no record, so a halt still halts before anything is spawned
+                // and before anything is journalled.
+                let (command, rationale) = match router::decide(&observed, target_phase) {
+                    router::Decision::Run { command, rationale } => (command, rationale),
+                    router::Decision::Park { reason, detail } => {
+                        terminal = Terminal::Parked { reason, detail };
+                        break 'iterations;
+                    }
+                    router::Decision::NoRule { observed } => {
+                        terminal = Terminal::Parked {
+                            reason: router::RouterReason::NoRule,
+                            detail: observed,
+                        };
+                        break 'iterations;
+                    }
+                    // No producer in this plan; the arm is spelled out rather
+                    // than wildcarded so that adding one is a decision here.
+                    router::Decision::GoalMet => {
+                        terminal = Terminal::Completed;
+                        break 'iterations;
+                    }
+                };
+
+                // **Journalled before the bounds are evaluated, and the order is
+                // the decision.** What the driver observed and what the router
+                // chose are facts about this iteration whether or not a bound
+                // then stops it — and the halt is only legible with them: a
+                // `parked` record reading `bounds_command_repeat` beside two
+                // `decided` records naming the same command says exactly what
+                // happened, while the same halt with the second decision missing
+                // asks the reader to take it on trust. Recording a decision the
+                // bounds refused is not a claim that it ran; `exec_started` is
+                // what says a command ran, and none follows a halt.
+                record_iteration_decision(
+                    &mut run.journal,
+                    target_phase,
+                    &observed,
+                    &command,
+                    rationale,
+                );
+
+                // The detectors, in their documented order, with the first hit
+                // deciding. Exactly one reason is ever reported, and the halt
+                // happens **before the spawn**: nothing between the router call
+                // and here starts a process.
+                if let bounds::BoundVerdict::Halt(reason) = bounds::evaluate(
+                    &run_bounds,
+                    &bounds_state,
+                    run_started_at.elapsed(),
+                    &command,
+                ) {
+                    terminal = Terminal::Halted { reason };
+                    break 'iterations;
+                }
+
+                command
+            }
+        };
+
+        // ---- 2. SPAWN --------------------------------------------------
+
+        // The agent's process group, published the instant the child exists
+        // rather than only on the `ExecutionHandle` (CR-01). A stop that lands
+        // while `start` is still awaiting the capability gate never receives a
+        // handle, so without this channel it would have no way to reach the
+        // agent's group — which is a *different* group from this driver's, and
+        // therefore the one that survives a signal aimed here (D-06, D-09).
+        //
+        // Per iteration, because the sender is consumed by the spawn it
+        // observes; see `build_executor`.
+        let (pgid_tx, mut pgid_rx) = oneshot::channel::<u32>();
+
+        let executor = build_executor(args)
+            .observing_spawn(pgid_tx)
+            .observing_replay_echoes(echo_tx.clone());
+
+        // `biased`, terminate arm FIRST — the same discipline as the drain loop
+        // below, for a sharper reason. There the cost of losing the race is a
+        // *delayed* stop; here it is a **swallowed** one. `Executor::start`
+        // blocks on the capability gate, and the documented `SessionStart` hook
+        // hang parks it for minutes, during which the driver would ignore the
+        // TUI's SIGTERM, get SIGKILLed at the end of the twelve-second grace,
+        // and orphan the agent group it never signalled. That is CR-01, and
+        // `tests/driver_kill_startup.rs` is the three-process proof.
+        //
+        // **Every iteration re-enters this window**, which is the whole reason
+        // the arm order is repeated rather than hoisted: an outer loop multiplies
+        // the number of startups a stop can land inside, so a swallow that used
+        // to be possible once per run is now possible once per command.
+        //
+        // Losing the race also drops the `start` future, which drops `cancel_tx`
+        // and fires the Coordinator's own cancellation — but that teardown is
+        // unobservable from here and dies with the runtime, which is why
+        // `shutdown_during_startup` tears the group down explicitly instead of
+        // relying on it.
+        let started = tokio::select! {
             biased;
 
             _ = term.recv() => {
-                shutdown_on_terminate(&executor, &mut handle, &mut run.journal).await;
-                // Returning here drops `run`, and with it the `RunLock` — the
-                // descriptor close IS the release (D-20.2). Nothing below this
-                // point runs, so the terminal record written by the call above
-                // is not followed by a second one.
+                shutdown_during_startup(&mut pgid_rx, &mut run.journal).await;
+                // Returning drops `run` and with it the `RunLock` — the descriptor
+                // close IS the release (D-20.2). The terminal record was written by
+                // the call above, so nothing below runs and no second one follows.
                 return Ok(());
             }
 
-            event = handle.events.recv() => {
-                match event {
-                    Some(event) => {
-                        let turn_boundary = matches!(event, ExecutionEvent::TurnCompleted(_));
+            result = executor.start(
+                &project,
+                command.clone(),
+                iteration_options(&envelope_settings, &envelope_env),
+            ) => result,
+        };
 
-                        if let Err(err) = run.journal.record_exec(&event) {
-                            // The error KIND only. Never a message body, which
-                            // could carry agent output (T-17-05).
-                            tracing::warn!(kind = ?err.kind(), "journal write failed");
-                        }
+        let mut handle = match started {
+            Ok(handle) => handle,
+            Err(err) => {
+                // A run that started always has a terminal record, even when the
+                // thing it was started for never launched (T-17-06).
+                if let Err(journal_err) = run.journal.finish("spawn_failed") {
+                    tracing::warn!(
+                        detail = %format!("{journal_err:#}"),
+                        "could not close the journal after a failed spawn",
+                    );
+                }
+                return Err(DriveError::Spawn(err));
+            }
+        };
 
-                        if turn_boundary && stdin_open {
-                            let delivered = delivered_since_boundary
-                                + deliver_pending_inbox(
-                                    &executor,
-                                    &mut handle,
-                                    &mut run.journal,
-                                    &inbox_path,
-                                    &mut inbox_cursor,
-                                    &mut pending_acks,
-                                )
-                                .await;
-                            // Reset unconditionally: whatever this boundary
-                            // decided, the next one asks about the turn that is
-                            // starting now and not about the one that just ended.
-                            delivered_since_boundary = 0;
+        run.journal.set_claude_pgid(handle.pgid);
 
-                            if delivered == 0 {
-                                // Raced the same way and for the same reason as
-                                // every other await in this file: by this point
-                                // there **is** a handle, so a stop here takes
-                                // the ordinary layer-2 path through
-                                // `Executor::cancel` and no second teardown is
-                                // written (D-06.2).
-                                tokio::select! {
-                                    biased;
+        // ---- 3. DRAIN --------------------------------------------------
+        //
+        // The three locals below are **per-iteration**, because each names a
+        // fact about one agent process. `stdin_open` in particular has to reset:
+        // the previous iteration closed its agent's stdin to let it exit, and a
+        // flag carried forward would leave the next agent unsteerable from the
+        // moment it started.
 
-                                    _ = term.recv() => {
-                                        shutdown_on_terminate(
-                                            &executor,
-                                            &mut handle,
-                                            &mut run.journal,
-                                        )
-                                        .await;
-                                        return Ok(());
-                                    }
+        // Whether the agent can still be written to. It starts `true`, and **that
+        // is the change that makes steering physically possible** (D-11).
+        let mut stdin_open = true;
 
-                                    result = handle.close_input() => {
-                                        if let Err(err) = result {
-                                            tracing::warn!(
-                                                kind = ?err,
-                                                "could not signal end-of-input to the agent",
-                                            );
+        // Every message written to stdin that has not yet been echoed back, and the
+        // state the acted-on transition is derived from (D-08).
+        let mut pending_acks = PendingAcks::default();
+
+        // How many messages have been written to stdin since the last turn boundary,
+        // **counting the ones the poll arm wrote** (CR-01).
+        //
+        // Two arms deliver, and only one of them decides whether stdin survives. The
+        // boundary arm's question is *"is another turn coming?"*, and the answer is
+        // yes if **either** arm wrote something since the last boundary — a message
+        // the poll arm delivered mid-turn is queued inside the CLI and will run as
+        // its own turn, exactly like one delivered at the boundary itself. Without
+        // this counter the poll arm's delivery was invisible to the boundary arm
+        // (`deliver_pending_inbox` has already advanced `inbox_cursor` past it), so
+        // the boundary drain read an empty inbox, concluded `delivered == 0` and
+        // closed stdin while a human-steered turn was queued and about to run. Since
+        // `INBOX_POLL_INTERVAL` is 750 ms and a turn is minutes, the poll arm wins
+        // that race for essentially every message a user types — so the run could be
+        // steered exactly **once** and every later message was journaled `missed`.
+        // Step 3 of the four-step rule below says the opposite, and this counter is
+        // what makes it true.
+        let mut delivered_since_boundary = 0usize;
+
+        // `biased`, with the terminate arm FIRST, following `src/main_loop.rs:130`.
+        //
+        // Arm order is the decision, not a formality. Without `biased` the macro
+        // picks a ready arm at random, and with a fast agent the event arm is
+        // essentially always ready — so a stop request would lose the race for as
+        // long as the stream kept producing, which is the entire duration of the run
+        // the user is trying to stop. A stop that loses to a busy event queue is a
+        // stop the user experiences as ignored (D-06.1). The inbox poll goes **last**
+        // for the mirror-image reason: it is the only arm whose work can wait, and
+        // the only one that touches the filesystem. The replay-echo arm sits between
+        // them — its work is a string compare against a deque, and the state it
+        // records happened 55 seconds ago (D-07), so it is neither urgent nor
+        // expensive.
+        //
+        // `tokio::select!` drops the other arms' futures before it runs the chosen
+        // arm's body, which is what lets the terminate arm take `&mut handle` while
+        // the event arm's future borrowed it.
+        //
+        // **When stdin closes, and why it is here rather than after the spawn**
+        // (D-11). Until this plan, `close_input()` ran immediately after the spawn
+        // with the comment *"one command means one message"* — correct for Phase 17
+        // and fatal for Phase 18, because the writer task breaks its loop on
+        // `Close` and every later `Executor::send` returns `WriterGone`. **While that
+        // line stood, STEER-01/02/03 were not merely unimplemented but physically
+        // impossible.** The rule that replaces it is four steps:
+        //
+        // 1. Do **not** close stdin after spawn.
+        // 2. On each `ExecutionEvent::TurnCompleted` — a `result`, which closes a
+        //    TURN and not the run (Phase 15 D-29) — drain the inbox one final time.
+        // 3. If a message was delivered **by either arm since the last boundary**
+        //    (`delivered_since_boundary`), the agent runs it as a new turn and the
+        //    loop repeats from step 2. This supports N human-steered turns for free.
+        // 4. If nothing was delivered, `close_input()`. EOF is "no more input", not
+        //    "stop": the CLI drains what is queued, finishes, and **exits 0**.
+        //
+        // The final drain at step 2 is what resolves the common race in the user's
+        // favour; anything arriving after the close is `missed`, named, and not
+        // retried (D-10) — see the sweep below the loop. No new bound is needed:
+        // `ExecutionOptions`' idle cap and wall-clock cap remain the backstop for an
+        // agent that goes quiet with stdin open.
+        loop {
+            tokio::select! {
+                biased;
+
+                _ = term.recv() => {
+                    shutdown_on_terminate(&executor, &mut handle, &mut run.journal).await;
+                    // Returning here drops `run`, and with it the `RunLock` — the
+                    // descriptor close IS the release (D-20.2). Nothing below this
+                    // point runs, so the terminal record written by the call above
+                    // is not followed by a second one.
+                    return Ok(());
+                }
+
+                event = handle.events.recv() => {
+                    match event {
+                        Some(event) => {
+                            let turn_boundary = matches!(event, ExecutionEvent::TurnCompleted(_));
+
+                            if let Err(err) = run.journal.record_exec(&event) {
+                                // The error KIND only. Never a message body, which
+                                // could carry agent output (T-17-05).
+                                tracing::warn!(kind = ?err.kind(), "journal write failed");
+                            }
+
+                            if turn_boundary && stdin_open {
+                                let delivered = delivered_since_boundary
+                                    + deliver_pending_inbox(
+                                        &executor,
+                                        &mut handle,
+                                        &mut run.journal,
+                                        &inbox_path,
+                                        &mut inbox_cursor,
+                                        &mut pending_acks,
+                                    )
+                                    .await;
+                                // Reset unconditionally: whatever this boundary
+                                // decided, the next one asks about the turn that is
+                                // starting now and not about the one that just ended.
+                                delivered_since_boundary = 0;
+
+                                if delivered == 0 {
+                                    // Raced the same way and for the same reason as
+                                    // every other await in this file: by this point
+                                    // there **is** a handle, so a stop here takes
+                                    // the ordinary layer-2 path through
+                                    // `Executor::cancel` and no second teardown is
+                                    // written (D-06.2).
+                                    tokio::select! {
+                                        biased;
+
+                                        _ = term.recv() => {
+                                            shutdown_on_terminate(
+                                                &executor,
+                                                &mut handle,
+                                                &mut run.journal,
+                                            )
+                                            .await;
+                                            return Ok(());
+                                        }
+
+                                        result = handle.close_input() => {
+                                            if let Err(err) = result {
+                                                tracing::warn!(
+                                                    kind = ?err,
+                                                    "could not signal end-of-input to the agent",
+                                                );
+                                            }
                                         }
                                     }
+                                    stdin_open = false;
                                 }
-                                stdin_open = false;
                             }
                         }
+                        None => break,
                     }
-                    None => break,
+                }
+
+                // The acted-on transition, and the only arm that produces it. It
+                // sits after the event arm because an echo is never urgent — the
+                // state it establishes happened 55 seconds ago (D-07) — and before
+                // the inbox poll because it is the cheaper of the two: a string
+                // compare against a deque, with no filesystem call at all.
+                echo = echo_rx.recv(), if echo_open => {
+                    match echo {
+                        Some(raw) => correlate_replay_echo(
+                            &mut pending_acks,
+                            &mut run.journal,
+                            &raw,
+                        ),
+                        // Unreachable while `executor` is alive; see `echo_open`.
+                        None => echo_open = false,
+                    }
+                }
+
+                _ = inbox_poll.tick() => {
+                    if stdin_open {
+                        // The count is CARRIED, never dropped (CR-01). A message
+                        // written here is a turn the CLI has queued, and the
+                        // boundary arm has no other way to learn that.
+                        delivered_since_boundary += deliver_pending_inbox(
+                            &executor,
+                            &mut handle,
+                            &mut run.journal,
+                            &inbox_path,
+                            &mut inbox_cursor,
+                            &mut pending_acks,
+                        )
+                        .await;
+                    } else {
+                        // **The arm keeps polling after the close, and that is the
+                        // point** (D-10). Nothing read here can ever be delivered —
+                        // stdin cannot be reopened — so each message is journaled
+                        // `missed` the moment it is seen rather than at the end of
+                        // the run. The difference is what the user watches: a
+                        // message that reports its fate within a poll interval,
+                        // versus one that sits in `queued` for however long the
+                        // agent takes to finish, indistinguishable from a slow
+                        // agent. That indistinguishability is PITFALLS' Pitfall 11
+                        // wearing a spinner.
+                        sweep_inbox_as_missed(
+                            &mut run.journal,
+                            &inbox_path,
+                            &mut inbox_cursor,
+                        )
+                        .await;
+                    }
                 }
             }
+        }
 
-            // The acted-on transition, and the only arm that produces it. It
-            // sits after the event arm because an echo is never urgent — the
-            // state it establishes happened 55 seconds ago (D-07) — and before
-            // the inbox poll because it is the cheaper of the two: a string
-            // compare against a deque, with no filesystem call at all.
-            echo = echo_rx.recv(), if echo_open => {
-                match echo {
-                    Some(raw) => correlate_replay_echo(
-                        &mut pending_acks,
-                        &mut run.journal,
-                        &raw,
-                    ),
-                    // Unreachable while `executor` is alive; see `echo_open`.
-                    None => echo_open = false,
-                }
-            }
+        // The stream has ended, so every echo that will ever arrive has arrived.
+        // Drained without awaiting: a `recv()` here would park until the executor's
+        // sender dropped, which happens after this function returns.
+        while let Ok(raw) = echo_rx.try_recv() {
+            correlate_replay_echo(&mut pending_acks, &mut run.journal, &raw);
+        }
 
-            _ = inbox_poll.tick() => {
-                if stdin_open {
-                    // The count is CARRIED, never dropped (CR-01). A message
-                    // written here is a turn the CLI has queued, and the
-                    // boundary arm has no other way to learn that.
-                    delivered_since_boundary += deliver_pending_inbox(
-                        &executor,
-                        &mut handle,
-                        &mut run.journal,
-                        &inbox_path,
-                        &mut inbox_cursor,
-                        &mut pending_acks,
-                    )
-                    .await;
-                } else {
-                    // **The arm keeps polling after the close, and that is the
-                    // point** (D-10). Nothing read here can ever be delivered —
-                    // stdin cannot be reopened — so each message is journaled
-                    // `missed` the moment it is seen rather than at the end of
-                    // the run. The difference is what the user watches: a
-                    // message that reports its fate within a poll interval,
-                    // versus one that sits in `queued` for however long the
-                    // agent takes to finish, indistinguishable from a slow
-                    // agent. That indistinguishability is PITFALLS' Pitfall 11
-                    // wearing a spinner.
-                    sweep_inbox_as_missed(
-                        &mut run.journal,
-                        &inbox_path,
-                        &mut inbox_cursor,
-                    )
-                    .await;
+        // Whatever is left was **delivered and never dequeued**. It keeps its
+        // `interjected` record and gains no `interjection_acted_on`, because the
+        // driver never observed one and inventing it would be the lie the whole
+        // three-state display exists to prevent. A count only — never an id and
+        // never a body — because this is the ordinary end of a run and not a fault.
+        let unacked = pending_acks.drain_undelivered().len();
+        if unacked > 0 {
+            tracing::debug!(
+                count = unacked,
+                "the run ended before the agent dequeued every delivered message",
+            );
+        }
+
+        // ---- 4. CLASSIFY -----------------------------------------------
+        //
+        // **The iteration boundary is the event stream closing, never a `result`
+        // envelope** (D-29). A single `claude` process emits one `result` per
+        // *turn*, and a run steered mid-turn emits several; breaking on the first
+        // would truncate every steered iteration while reporting success. The
+        // drain loop above therefore ends only on `handle.events.recv()`
+        // returning `None`, and this is the line after it.
+        let iteration_outcome = handle.wait_outcome().await;
+        let succeeded = matches!(
+            iteration_outcome,
+            RunOutcome::SucceededWithChanges { .. } | RunOutcome::SucceededNoChanges { .. }
+        );
+        last_outcome = Some(iteration_outcome);
+
+        match &source {
+            // One supplied command, one iteration. The break is what keeps
+            // single-command mode exactly the run Phase 17 shipped.
+            CommandSource::Fixed(_) => break 'iterations,
+            CommandSource::Routed { .. } => {
+                // Recorded **after** the iteration ran, so the step count is
+                // completed steps rather than attempted ones and the
+                // command-repeat detector compares against a command that
+                // actually executed.
+                bounds_state.record_step(command);
+
+                if !succeeded {
+                    // An agent that failed, was denied, timed out or stalled
+                    // ends the run. Continuing would issue the next command
+                    // against a project whose previous step did not land, which
+                    // is how a routed run converts one failure into a sequence
+                    // of them. The outcome's own label names it, so this
+                    // terminal needs no reason of its own.
+                    break 'iterations;
                 }
             }
         }
     }
 
-    // The stream has ended, so every echo that will ever arrive has arrived.
-    // Drained without awaiting: a `recv()` here would park until the executor's
-    // sender dropped, which happens after this function returns.
-    while let Ok(raw) = echo_rx.try_recv() {
-        correlate_replay_echo(&mut pending_acks, &mut run.journal, &raw);
-    }
+    // ---- The run's single terminal record --------------------------------
 
-    // Whatever is left was **delivered and never dequeued**. It keeps its
-    // `interjected` record and gains no `interjection_acted_on`, because the
-    // driver never observed one and inventing it would be the lie the whole
-    // three-state display exists to prevent. A count only — never an id and
-    // never a body — because this is the ordinary end of a run and not a fault.
-    let unacked = pending_acks.drain_undelivered().len();
-    if unacked > 0 {
-        tracing::debug!(
-            count = unacked,
-            "the run ended before the agent dequeued every delivered message",
-        );
-    }
+    // A park or a halt says why, once, through the carrier Phase 19 established
+    // and proved readable by a separate process — never through a second one
+    // invented here (D-25, DRIVE-06).
+    record_terminal(&mut run.journal, &terminal);
 
     // The stream has ended, so nothing further can be delivered. Anything still
     // in the inbox reaches its own named terminal state instead of sitting in
     // `queued` forever (D-10).
+    //
+    // **Once per run rather than once per iteration**, and the difference is
+    // real: swept between commands, a message queued while iteration one was
+    // finishing would be journaled `missed` even though iteration two was about
+    // to open a fresh stdin and could have delivered it.
     sweep_inbox_as_missed(&mut run.journal, &inbox_path, &mut inbox_cursor).await;
 
-    let outcome = handle.wait_outcome().await;
-
-    // Same blocking hand-off and the same inline fallback as
-    // `shutdown_on_terminate`'s: one end-of-run journal read, moved off the
-    // async path (D-28, WR-10).
-    let journal_path = run.journal.paths().journal.clone();
-    let task_outcome = outcome.clone();
-    let task_path = journal_path.clone();
-    let label = match tokio::task::spawn_blocking(move || {
-        terminal_label(&task_outcome, &task_path)
-    })
-    .await
-    {
-        Ok(label) => label,
-        Err(err) => {
-            tracing::warn!(
-                panicked = err.is_panic(),
-                "the terminal-label task did not run to completion",
-            );
-            terminal_label(&outcome, &journal_path)
+    // The label, from exactly two sources and no third: `outcome_label` — via
+    // `terminal_label`, which lets a park recorded in the journal win, including
+    // the one written immediately above — or the `parked:` carrier on its own
+    // when no iteration ever spawned.
+    let label = match last_outcome {
+        Some(outcome) => {
+            // Same blocking hand-off and the same inline fallback as
+            // `shutdown_on_terminate`'s: one end-of-run journal read, moved off the
+            // async path (D-28, WR-10).
+            let journal_path = run.journal.paths().journal.clone();
+            let task_outcome = outcome.clone();
+            let task_path = journal_path.clone();
+            match tokio::task::spawn_blocking(move || terminal_label(&task_outcome, &task_path))
+                .await
+            {
+                Ok(label) => label,
+                Err(err) => {
+                    tracing::warn!(
+                        panicked = err.is_panic(),
+                        "the terminal-label task did not run to completion",
+                    );
+                    terminal_label(&outcome, &journal_path)
+                }
+            }
         }
+        // Nothing ever spawned, so there is no `RunOutcome` for `outcome_label`
+        // to map — a routed run that parked or halted on its first pass. The
+        // `parked:` carrier is the whole label, read straight off the terminal
+        // rather than round-tripped through the journal that has just been told
+        // the same thing.
+        None => match terminal.park_reason() {
+            Some(reason) => format!("{PARKED_LABEL_PREFIX}{reason}"),
+            // `Terminal::Completed` with no spawn: the router reported the
+            // target already met. See `GOAL_MET_LABEL` for why neither of the
+            // other two sources is right here, and why no branch reaches it yet.
+            None => GOAL_MET_LABEL.to_string(),
+        },
     };
 
     run.journal.finish(&label).map_err(|err| DriveError::Journal {
@@ -1698,6 +2193,92 @@ pub async fn execute_run(
     })?;
 
     Ok(())
+}
+
+/// Journal what this iteration observed and what it decided, in that order.
+///
+/// Two records rather than one, because they answer different questions and a
+/// later reader wants them separately: *what did the driver see* and *what did it
+/// do about it*. Both were schema'd by Phase 16 specifically so this phase adds
+/// no migration (D-36).
+///
+/// **`by` is `"policy"` and nothing else.** The field's vocabulary is exactly
+/// three values — `policy`, `llm`, `human` — and `llm` is Phase 21's. This phase
+/// mints no fourth.
+///
+/// **Neither record can carry agent output.** `drpev` is enum names and counts,
+/// `command` is composed from a phase number, and `rationale` is a `&'static str`
+/// from the router's closed set (SAFE-04, T-20-05).
+///
+/// A failed write is warned about and swallowed, exactly as the envelope notice
+/// and the override diagnostic are: a journal that cannot take a decision record
+/// must still be given the chance to take the run's terminal one, which is the
+/// more important of the two.
+fn record_iteration_decision(
+    journal: &mut JournalRun,
+    target_phase: &str,
+    observed: &crate::state_reader::ProjectState,
+    command: &str,
+    rationale: &'static str,
+) {
+    for event in [
+        JournalEvent::Observed {
+            phase: target_phase.to_string(),
+            drpev: drpev_stages(observed, target_phase),
+        },
+        JournalEvent::Decided {
+            by: "policy".to_string(),
+            command: command.to_string(),
+            rationale: rationale.to_string(),
+        },
+    ] {
+        if let Err(err) = journal.record(&event) {
+            // The error KIND only, never a message body (T-17-05).
+            tracing::warn!(kind = ?err.kind(), "could not journal an iteration decision");
+        }
+    }
+}
+
+/// Record why the run stopped, if it stopped for a reason of its own.
+///
+/// [`Terminal::Completed`] writes nothing, and that is correct rather than a
+/// gap: its reason is the derived outcome's own label, which the terminal record
+/// already carries. A `Parked` record there would claim a run that finished its
+/// work needed a human.
+///
+/// A halt and a park share one carrier deliberately. Phase 19 established
+/// `JournalEvent::Parked` as the durable "this run stopped, here is why", proved
+/// readable by a separate process, and CONTEXT.md is explicit that the
+/// router/bounds reasons reuse it rather than inventing a second — so one grep
+/// answers *why did this run end* across the safety envelope, the router and the
+/// bounds at once.
+///
+/// The detail, when there is one, goes on a preceding `Diagnostic` rather than
+/// into `needs`: `needs` is documented as naming the actor that would unpark the
+/// run, and overloading it with an observed status would make the field mean two
+/// things depending on which producer wrote it.
+fn record_terminal(journal: &mut JournalRun, terminal: &Terminal) {
+    let Some(reason) = terminal.park_reason() else {
+        return;
+    };
+
+    if let Terminal::Parked { detail, .. } = terminal {
+        if !detail.is_empty() {
+            if let Err(err) = journal.record(&JournalEvent::Diagnostic {
+                code: reason.to_string(),
+                detail: detail.clone(),
+            }) {
+                tracing::warn!(kind = ?err.kind(), "could not journal the park detail");
+            }
+        }
+    }
+
+    if let Err(err) = journal.record(&JournalEvent::Parked {
+        reason: reason.to_string(),
+        needs: terminal.needs().to_string(),
+    }) {
+        tracing::warn!(kind = ?err.kind(), "could not journal the terminal park record");
+    }
 }
 
 #[cfg(test)]
@@ -1720,7 +2301,10 @@ mod tests {
     fn args() -> DriveArgs {
         DriveArgs {
             alias: "demo".to_string(),
-            command: "/gsd-progress".to_string(),
+            command: Some("/gsd-progress".to_string()),
+            target_phase: None,
+            max_steps: None,
+            wall_clock_cap_secs: None,
             run_id: Some("2026-07-29T12-00-00Z-aaaa".to_string()),
             dry_run: false,
             goal: None,

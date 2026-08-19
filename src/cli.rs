@@ -48,11 +48,44 @@ pub enum Commands {
     Drive {
         /// Alias of the project to drive; it must carry a driver opt-in record
         alias: String,
-        // Exactly one command. The decision router is Phase 20's, so there is
-        // deliberately no way to pass a sequence.
-        /// The single GSD command to run, e.g. `/gsd-progress`
+        // Exactly one of `--command` and `--target-phase`, and the refusal for
+        // both-or-neither lives in `driver::drive` rather than in a clap group.
+        // The pair arrives from three paths — a hand-typed invocation, the TUI's
+        // argv builder, and a re-read run record — and a parser-level constraint
+        // guards only the first (D-27, the `--run-id` precedent immediately
+        // below).
+        //
+        // `--command` is no longer required, and that is the visible half of
+        // Phase 20: a routed run derives its sequence per iteration from
+        // observed project state, so there is a second way to say what a run is
+        // for. There is still deliberately no way to pass a *list* — a supplied
+        // sequence would be a third execution model that neither the router nor
+        // the bounds know about.
+        /// A single GSD command to run, e.g. `/gsd-progress`; excludes --target-phase
         #[arg(long)]
-        command: String,
+        command: Option<String>,
+        // Used only as a map key into the parsed project state — the run body
+        // composes no path from it — but validated as a plain path component at
+        // the same seam as `--run-id` anyway, for the reason that flag's comment
+        // records at length (D-27, WR-02).
+        /// Phase number to drive toward, e.g. `20`; excludes --command
+        #[arg(long)]
+        target_phase: Option<String>,
+        // The two run bounds a caller may override. Both are refused at the
+        // seam rather than by a `value_parser`, so the refusal reaches every
+        // path that can build a `DriveArgs` and not only this one.
+        //
+        // There is deliberately **no** flag that switches a detector off, and no
+        // ceiling-free cap: CTRL-06 makes these four detectors the only stopping
+        // condition an unattended run has, and a value large enough to be a
+        // disablement in disguise is refused exactly like an explicit one would
+        // be.
+        /// How many GSD commands a routed run may issue before halting itself
+        #[arg(long)]
+        max_steps: Option<u32>,
+        /// How long the whole run may take, in seconds, before halting itself
+        #[arg(long)]
+        wall_clock_cap_secs: Option<u64>,
         // The TUI supplies it so it knows what to look for afterwards (D-03).
         //
         // It is **not** generated when absent, and this comment used to say it
