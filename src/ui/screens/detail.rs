@@ -470,6 +470,10 @@ fn disk_suffix_spans(
             DiskStatus::Researched => "Researched",
             DiskStatus::Planned => "Planned",
             DiskStatus::Partial => "Executing",
+            // Implementation done, verification not passed. Deliberately NOT
+            // "Complete": a phase awaiting a human's verification judgement
+            // must not read as finished on the one screen a human reads.
+            DiskStatus::Executed => "Executed",
             DiskStatus::Complete => "Complete",
         },
         None => "",

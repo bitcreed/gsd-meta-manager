@@ -9,6 +9,16 @@ pub struct RoadmapPhase {
     pub completed: bool,
     pub total_plans: u32,
     pub completed_plans: u32,
+    /// The phase identifiers this phase's `**Depends on**:` line declares, in
+    /// the order written. Empty when the entry has no dependency line.
+    ///
+    /// **Declared, never inferred.** GSD's own router gates two of its three
+    /// forward-motion actions on `deps_satisfied` (`init.cjs:2037-2064`), so a
+    /// dependency condition has to read what the roadmap says. Deriving one from
+    /// phase numbering — "20 depends on 19" — is exactly the kind of guess that
+    /// drifts from the runtime the driver is driving, and an absent line means
+    /// *no declared dependencies*, not *unknown*.
+    pub depends_on: Vec<String>,
 }
 
 /// Aggregate phase/plan counts parsed from a ROADMAP.md `## Progress` table.
@@ -52,6 +62,39 @@ fn is_sentinel_phase(number: &str) -> bool {
     n == "0" || n == "999" || n.starts_with("999.")
 }
 
+/// Extract the phase identifiers declared by a `**Depends on**:` line's text.
+///
+/// Two rules, both narrowing:
+///
+/// 1. **Parenthetical groups are stripped first.** A qualifier is prose about
+///    ordering, not a dependency — this repository's phase 20 declares
+///    `Phase 16, Phase 17, Phase 19 (and Phase 22 must land before this phase
+///    closes)`, and promoting `22` out of that aside would state a dependency
+///    the roadmap does not. It also disarms `Nothing (no v2.0 dependencies…)`,
+///    where a bare-number scan would invent a phase `2.0` from a version string
+///    and leave the condition unsatisfiable forever.
+/// 2. **Only `Phase <id>` occurrences count**, reusing [`PHASE_ID`] so the same
+///    identifier forms the rest of this file accepts — bare numeric, decimal,
+///    project-code-prefixed and milestone-prefixed — are accepted here too. The
+///    keyword is required precisely because a bare number in prose is
+///    indistinguishable from an identifier. `Phases 17-21` does not match: the
+///    plural leaves no whitespace after `Phase`, so a range stays prose.
+///
+/// Order written is preserved; a repeated identifier appears once.
+fn parse_depends_on(text: &str) -> Vec<String> {
+    let without_qualifiers = Regex::new(r"\([^)]*\)").unwrap().replace_all(text, " ");
+    let phase_ref = Regex::new(&format!(r"Phase\s+({id})", id = PHASE_ID)).unwrap();
+
+    let mut out: Vec<String> = Vec::new();
+    for caps in phase_ref.captures_iter(&without_qualifiers) {
+        let id = caps[1].trim_end_matches(['.', ',']).to_string();
+        if !id.is_empty() && !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    out
+}
+
 /// Parse ROADMAP.md content and extract phase checklist items with per-phase plan counts.
 ///
 /// Recognizes several heading shapes used by GSD 1.8.0 roadmaps:
@@ -77,6 +120,8 @@ pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
     ))
     .unwrap();
     let plan_re = Regex::new(r"^\s*- \[([ xX])\] (?:\d+-\d+-)?PLAN\.md").unwrap();
+    // `**Depends on**: …`, with the emphasis markers optional.
+    let depends_re = Regex::new(r"(?i)^\s*\*{0,2}Depends on\*{0,2}\s*:\s*(.*)$").unwrap();
 
     let is_header = |line: &str| checklist_re.is_match(line) || heading_re.is_match(line);
 
@@ -100,6 +145,7 @@ pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
                     description: caps[6].trim().to_string(),
                     total_plans: 0,
                     completed_plans: 0,
+                    depends_on: Vec::new(),
                 })
             }
         } else if let Some(caps) = heading_re.captures(line) {
@@ -115,6 +161,7 @@ pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
                     description: String::new(),
                     total_plans: 0,
                     completed_plans: 0,
+                    depends_on: Vec::new(),
                 })
             }
         } else {
@@ -136,6 +183,15 @@ pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
                     phase.total_plans += 1;
                     if &plan_caps[1] != " " {
                         phase.completed_plans += 1;
+                    }
+                }
+                // First dependency line inside the entry wins. Only the
+                // `## Phase Details` copy of a phase carries one; the summary
+                // checklist copy stops at the next header, so its list stays
+                // empty and `merge_duplicate_phases` takes the detail copy's.
+                if phase.depends_on.is_empty() {
+                    if let Some(dep_caps) = depends_re.captures(l) {
+                        phase.depends_on = parse_depends_on(&dep_caps[1]);
                     }
                 }
                 j += 1;
@@ -167,6 +223,8 @@ pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
 ///   carries no description, so the checklist text survives)
 /// - `total_plans`, `completed_plans` — max (the copy that actually scanned the
 ///   plan list wins over the one that stopped at the next header)
+/// - `depends_on` — first non-empty value wins (only the detail copy sees the
+///   `**Depends on**:` line)
 ///
 /// First-seen order is preserved, and the pass is O(n) — no nested scan.
 fn merge_duplicate_phases(phases: Vec<RoadmapPhase>) -> Vec<RoadmapPhase> {
@@ -186,6 +244,12 @@ fn merge_duplicate_phases(phases: Vec<RoadmapPhase>) -> Vec<RoadmapPhase> {
                 }
                 existing.total_plans = existing.total_plans.max(phase.total_plans);
                 existing.completed_plans = existing.completed_plans.max(phase.completed_plans);
+                // Same rule as `name`/`description`: first non-empty wins. The
+                // checklist copy never carries a dependency line, so this is
+                // what lets the `## Phase Details` copy's declaration survive.
+                if existing.depends_on.is_empty() {
+                    existing.depends_on = phase.depends_on;
+                }
             }
             None => {
                 index.insert(phase.number.clone(), merged.len());
@@ -317,6 +381,111 @@ pub fn roadmap_progress(content: &str) -> Option<RoadmapProgress> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Plan 20-03 Task 3: declared roadmap dependencies ──
+
+    /// Parse a `## Phase Details` entry carrying `depends` as its dependency
+    /// line, and return the phase's declared dependencies.
+    fn depends_of(depends: &str) -> Vec<String> {
+        let content = format!(
+            "### Phase 20: Router\n\n**Goal**: something\n**Depends on**: {depends}\n\
+             **Requirements**: DRIVE-02\n"
+        );
+        let phases = parse_roadmap_phases(&content);
+        assert_eq!(phases.len(), 1, "the fixture declares exactly one phase");
+        phases[0].depends_on.clone()
+    }
+
+    #[test]
+    fn test_depends_on_names_several_phases_in_the_order_written() {
+        assert_eq!(
+            depends_of("Phase 16, Phase 17, Phase 19"),
+            vec!["16", "17", "19"],
+            "order written is the order returned"
+        );
+        // Written out of ascending order, to prove nothing sorts them.
+        assert_eq!(depends_of("Phase 19, Phase 16"), vec!["19", "16"]);
+    }
+
+    #[test]
+    fn test_depends_on_ignores_a_parenthetical_qualifier() {
+        assert_eq!(
+            depends_of("Phase 16, Phase 17, Phase 19 (and Phase 22 must land before this phase closes)"),
+            vec!["16", "17", "19"],
+            "a parenthetical qualifier is prose about ordering, not a declared \
+             dependency. Promoting `22` out of the aside would state a \
+             dependency the roadmap does not"
+        );
+        assert!(
+            depends_of("Nothing (no v2.0 dependencies — parallel-safe, can ship any time)")
+                .is_empty(),
+            "a bare-number scan would invent a phase `2.0` from the version \
+             string `v2.0` and leave the dependency condition unsatisfiable \
+             forever"
+        );
+    }
+
+    #[test]
+    fn test_depends_on_absent_line_is_an_empty_list_not_a_guess() {
+        let content = "### Phase 20: Router\n\n**Goal**: something\n**Requirements**: DRIVE-02\n";
+        let phases = parse_roadmap_phases(content);
+        assert_eq!(phases.len(), 1);
+        assert!(
+            phases[0].depends_on.is_empty(),
+            "an absent line means NO declared dependencies. Inferring `19` from \
+             the phase number is the numbering heuristic that drifts from the \
+             runtime the driver is driving"
+        );
+    }
+
+    #[test]
+    fn test_depends_on_accepts_every_phase_id_form_and_rejects_a_plural_range() {
+        assert_eq!(
+            depends_of("Phase 0.3, Phase M-2, Phase AB-29"),
+            vec!["0.3", "M-2", "AB-29"],
+            "the same identifier forms the rest of this file accepts"
+        );
+        assert_eq!(
+            depends_of("Phase 15 only — parallel-eligible with Phases 17-21"),
+            vec!["15"],
+            "`Phases 17-21` is a prose range: the plural leaves no whitespace \
+             after `Phase`, so no identifier is invented from it"
+        );
+        assert!(depends_of("Nothing").is_empty());
+    }
+
+    #[test]
+    fn test_depends_on_is_read_from_this_repositorys_own_roadmap() {
+        let roadmap = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(".planning")
+            .join("ROADMAP.md");
+        let Ok(content) = std::fs::read_to_string(&roadmap) else {
+            return;
+        };
+        let phases = parse_roadmap_phases(&content);
+        let find = |number: &str| {
+            phases
+                .iter()
+                .find(|p| p.number == number)
+                .unwrap_or_else(|| panic!("the roadmap declares phase {number}"))
+        };
+
+        // A phase that declares dependencies, qualifier and all.
+        assert_eq!(
+            find("20").depends_on,
+            vec!["16", "17", "19"],
+            "phase 20's line is `Phase 16, Phase 17, Phase 19 (and Phase 22 must \
+             land before this phase closes)`"
+        );
+        assert_eq!(find("16").depends_on, vec!["15"]);
+        assert_eq!(find("17").depends_on, vec!["15", "16"]);
+        // A phase that declares none: `**Depends on**: Nothing (…)`.
+        assert!(
+            find("15").depends_on.is_empty(),
+            "phase 15 declares `Nothing`, which is an empty list and not an \
+             identifier scraped out of the parenthetical"
+        );
+    }
 
     #[test]
     fn test_parse_roadmap_phases_real() {

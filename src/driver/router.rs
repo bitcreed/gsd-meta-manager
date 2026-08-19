@@ -105,14 +105,20 @@ pub enum Decision {
     },
     /// The declared target has been reached.
     ///
-    /// **Declared here, produced by no branch in this plan**, and that is
-    /// deliberate rather than an omission. Goal-met is defined as the target
-    /// phase's verification status being `passed` (CONTEXT.md OQ4), and this
-    /// repository's `DiskInference` records only the *presence* of a
-    /// `*-VERIFICATION.md`, never its frontmatter `status` (research Pitfall 2).
-    /// Extending the one reader is a separate plan's; minting a goal-met arm
-    /// that guessed from presence would step straight past the `human_needed`
-    /// gate DRIVE-05 exists to park at.
+    /// **Declared here, produced by no branch yet**, and that is deliberate
+    /// rather than an omission. Goal-met is defined as the target phase's
+    /// verification status being `passed` (CONTEXT.md OQ4).
+    ///
+    /// The blocker that kept this arm unproducible is gone: `DiskInference` now
+    /// carries
+    /// [`VerificationStatus`](crate::state_reader::disk_status::VerificationStatus)
+    /// read from the artifact's leading frontmatter, not merely the artifact's
+    /// presence, and `DiskStatus::Complete` already *means* implementation
+    /// complete AND verification passed. What remains is a routing decision —
+    /// which of `Complete` and a passing status the goal is stated against —
+    /// and that belongs to the plan that widens the rule table (20-04). Minting
+    /// a producer here that guessed from presence is the specific mistake this
+    /// doc existed to prevent, and it stays prevented.
     GoalMet,
     /// No rule covers the observed state.
     ///
@@ -136,10 +142,13 @@ pub const RATIONALE_READY_TO_PLAN: &str =
 
 /// The stable identifier for a disk status.
 ///
-/// Exhaustive with no wildcard, so a new `DiskStatus` variant — the `Executed`
-/// state GSD's own vocabulary has and this repository's does not yet (research
-/// Pitfall 1) — is a compile error here rather than an unnamed state in a park
-/// record.
+/// Exhaustive with no wildcard, so a new `DiskStatus` variant is a compile error
+/// here rather than an unnamed state in a park record. That is not hypothetical:
+/// `Executed` below arrived exactly that way, as a compile error at every site
+/// that had to classify it.
+///
+/// Every token is GSD's own spelling (`init.cjs:1875-1888`), so a park record
+/// naming `executed` names the state the runtime names.
 fn status_token(status: DiskStatus) -> &'static str {
     match status {
         DiskStatus::NoDirectory => "no_directory",
@@ -148,6 +157,7 @@ fn status_token(status: DiskStatus) -> &'static str {
         DiskStatus::Researched => "researched",
         DiskStatus::Planned => "planned",
         DiskStatus::Partial => "partial",
+        DiskStatus::Executed => "executed",
         DiskStatus::Complete => "complete",
     }
 }
@@ -166,6 +176,7 @@ fn status_token(status: DiskStatus) -> &'static str {
 /// |---|---|
 /// | target phase absent from `state.phases` | [`Decision::Park`] / [`RouterReason::StateUnverified`] |
 /// | `DiskStatus::Discussed` \| `DiskStatus::Researched` | [`Decision::Run`] `/gsd-plan-phase <N>` |
+/// | `DiskStatus::Executed` | [`Decision::NoRule`] — observable but not yet routed (20-04) |
 /// | anything else | [`Decision::NoRule`] naming the observed status |
 ///
 /// The first row is CONTEXT.md's *"refuse to act on inferred-only state"* made
@@ -210,6 +221,17 @@ pub fn decide(state: &ProjectState, target_phase: &str) -> Decision {
             command: format!("/gsd-plan-phase {target_phase}"),
             rationale: RATIONALE_READY_TO_PLAN,
         },
+        // `Executed` is covered EXPLICITLY rather than by falling into the arm
+        // below, and the distinction is the point. GSD routes an executed phase
+        // to `verify` (`init.cjs:2028-2036`), and this repository's reader can
+        // now see that state — so an `Executed` phase reaching `NoRule` is a rule
+        // this table has not written yet, not a state it cannot observe. The
+        // disposition (verify when the verification status gates, goal-met when
+        // it passed) is plan 20-04's; parking until then is the fail-closed
+        // answer, never a guess at the command.
+        DiskStatus::Executed => Decision::NoRule {
+            observed: status_token(status).to_string(),
+        },
         // Every other observed state is a gap in the table, and parking is how
         // that gap becomes visible. Spelled out arm by arm rather than as `_`,
         // so a new `DiskStatus` variant has to be classified here on purpose.
@@ -245,6 +267,9 @@ mod tests {
                     completed: false,
                     total_plans: 0,
                     completed_plans: 0,
+                    // The router does not read declared dependencies yet; the
+                    // rule that gates on them is plan 20-04's.
+                    depends_on: Vec::new(),
                 })
                 .collect(),
             ..Default::default()
@@ -302,6 +327,10 @@ mod tests {
             (DiskStatus::Empty, "empty"),
             (DiskStatus::Planned, "planned"),
             (DiskStatus::Partial, "partial"),
+            // Observable since the reader learned GSD's vocabulary, and still
+            // unrouted: 20-04 owns the verify disposition. Until then it must
+            // park NAMING itself, so the missing rule is visible on disk.
+            (DiskStatus::Executed, "executed"),
             (DiskStatus::Complete, "complete"),
         ] {
             let state = state_with(&["20"], &[("20", status)]);

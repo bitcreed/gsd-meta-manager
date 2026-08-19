@@ -41,13 +41,22 @@ fn status_color(status: &str) -> Color {
 }
 
 /// Return the DiskStatus one step below the given threshold.
+///
+/// "One step below" is the *declaration-order predecessor*, so this function has
+/// to move whenever a variant is inserted into `DiskStatus`. `Executed` was
+/// inserted between `Partial` and `Complete`, so `Complete`'s predecessor is now
+/// `Executed` and not `Partial`. Leaving it at `Partial` would light the `V`
+/// stage yellow for a partially-executed phase — claiming verification is next
+/// up when execution has not finished — and leave it dark for the `Executed`
+/// phase where verification genuinely IS the next step.
 fn prev_status(threshold: DiskStatus) -> DiskStatus {
     match threshold {
         DiskStatus::Discussed => DiskStatus::Empty,
         DiskStatus::Researched => DiskStatus::Discussed,
         DiskStatus::Planned => DiskStatus::Researched,
         DiskStatus::Partial => DiskStatus::Planned,
-        DiskStatus::Complete => DiskStatus::Partial,
+        DiskStatus::Executed => DiskStatus::Partial,
+        DiskStatus::Complete => DiskStatus::Executed,
         _ => DiskStatus::NoDirectory,
     }
 }
@@ -1466,13 +1475,14 @@ mod tests {
 
     // --- UIFIX-02: D-R-P-E-V has no leading blank -------------------------
 
-    const ALL_DISK_STATUSES: [DiskStatus; 7] = [
+    const ALL_DISK_STATUSES: [DiskStatus; 8] = [
         DiskStatus::NoDirectory,
         DiskStatus::Empty,
         DiskStatus::Discussed,
         DiskStatus::Researched,
         DiskStatus::Planned,
         DiskStatus::Partial,
+        DiskStatus::Executed,
         DiskStatus::Complete,
     ];
 
@@ -1532,6 +1542,28 @@ mod tests {
                 ("E".to_string(), Some(Color::Yellow)),
                 ("V".to_string(), Some(Color::DarkGray)),
             ]
+        );
+    }
+
+    #[test]
+    fn test_compact_pipeline_executed_lights_v_as_next_up() {
+        // The state this whole vocabulary change exists for: implementation is
+        // done, verification is not. `E` must read as reached and `V` as the
+        // next step — never as reached, which is what `Complete` claimed before
+        // `Executed` existed.
+        let line = compact_pipeline(&DiskStatus::Executed);
+        assert_eq!(
+            stage_colors(&line),
+            vec![
+                ("D".to_string(), Some(Color::Green)),
+                ("R".to_string(), Some(Color::Green)),
+                ("P".to_string(), Some(Color::Green)),
+                ("E".to_string(), Some(Color::Green)),
+                ("V".to_string(), Some(Color::Yellow)),
+            ],
+            "an executed phase renders V green only if `prev_status` was left \
+             pointing at Partial — which would also mean the dashboard shows a \
+             phase awaiting human verification as verified"
         );
     }
 
