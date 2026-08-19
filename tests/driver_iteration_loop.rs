@@ -57,6 +57,18 @@ const PACED_CLAUDE: &str = concat!(
     "/tests/fixtures/fake-claude-slow.sh"
 );
 
+/// The **planting** stand-in, for the one test whose second iteration has to
+/// observe something the first iteration left behind.
+///
+/// A stand-in that changes nothing can only ever demonstrate the detectors that
+/// fire *because* nothing changed. This one copies a caller-supplied body to a
+/// caller-supplied path before replaying, so the fixture states its own premise
+/// in Rust rather than in shell.
+const PLANTING_CLAUDE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/fake-claude-planting.sh"
+);
+
 const ALIAS: &str = "iterloop";
 
 /// The phase the fixture project declares and the router is pointed at.
@@ -404,6 +416,68 @@ async fn the_step_cap_halts_a_routed_run_and_reports_itself_rather_than_the_agen
     assert_eq!(
         run_record(root.path(), RUN_ID)["outcome"],
         format!("parked:{}", bounds::REASON_STEP_CAP)
+    );
+}
+
+#[tokio::test]
+async fn a_run_that_drives_its_target_to_verified_reports_goal_met_and_not_the_agents_outcome() {
+    const RUN_ID: &str = "2026-08-19T12-00-00Z-goalmet";
+
+    let root = project_root();
+    let config = config_for(root.path());
+    let scratch = TempDir::new().expect("temp dir");
+
+    // The artifact iteration one plants: the target phase's verification,
+    // passing. `router::is_goal_met` is `verification_status.is_passed()` on the
+    // `--target-phase` (CONTEXT.md OQ4), so this is the declared goal being
+    // REACHED between iterations rather than a state the fixture was born in —
+    // which is the whole distinction WR-08 is about.
+    let body = scratch.path().join("verification-body.md");
+    std::fs::write(
+        &body,
+        "---\nphase: 20\nstatus: passed\n---\n\n# Verification\n",
+    )
+    .expect("the planted body is writable");
+    let artifact = root
+        .path()
+        .join(".planning/phases/20-deterministic-router/20-VERIFICATION.md");
+
+    let mut args = routed_args(RUN_ID, Some(EXPLICIT_STEP_CAP));
+    args.claude_program = Some(PLANTING_CLAUDE.into());
+    args.claude_args = vec![
+        OsString::from(artifact.as_os_str()),
+        OsString::from(body.as_os_str()),
+        OsString::from(CLEAN_BASELINE),
+        OsString::from("0"),
+    ];
+
+    drive(args, &config)
+        .await
+        .expect("a run that reaches its goal is an ordinary end");
+
+    let records = journal_records(root.path(), RUN_ID);
+    assert_eq!(
+        of_kind(&records, "exec_started").len(),
+        1,
+        "iteration one must have RUN — a run that never spawned would prove only \
+         that a fixture born goal-met is labelled goal-met, which was already \
+         true and is not the case this test is about"
+    );
+    assert!(
+        of_kind(&records, "parked").is_empty(),
+        "reaching the declared goal is not a park: nothing here needs a human. \
+         Got: {records:#?}"
+    );
+
+    assert_eq!(
+        run_record(root.path(), RUN_ID)["outcome"],
+        "goal_met",
+        "the run ended because its declared target's verification reads `passed`, \
+         and that is what the terminal record must say. Before WR-08 the label \
+         depended on whether any iteration had spawned: this run — the one that \
+         actually ACHIEVED the goal — reported `succeeded_with_changes`, the \
+         previous iteration's own outcome, leaving a reader to infer goal-met \
+         from the absence of a `parked:` prefix"
     );
 }
 

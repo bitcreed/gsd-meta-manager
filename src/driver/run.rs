@@ -425,7 +425,7 @@ pub(crate) const PARKED_LABEL_PREFIX: &str = "parked:";
 
 /// How a run ended, with no unclassified arm (DRIVE-06, D-25).
 ///
-/// **Four arms, and the absence of a fifth is the requirement.** Criterion 5's
+/// **Five arms, and the absence of a sixth is the requirement.** Criterion 5's
 /// *"never as an unclassified 'loop ended'"* is a **type-level** property rather
 /// than a logging convention: if the type cannot express "ended for no stated
 /// reason", that failure mode is unrepresentable. Every match on this type is
@@ -443,18 +443,32 @@ pub(crate) const PARKED_LABEL_PREFIX: &str = "parked:";
 pub(crate) enum Terminal {
     /// The run performed every command it was asked to perform.
     ///
-    /// **This is DRIVE-06's "goal met" arm**, and its reason is the derived
-    /// [`RunOutcome`]'s own label — `succeeded_with_changes`, `failed`,
-    /// `timed_out` and the six others [`outcome_label`] spells out. It is
-    /// reached in single-command mode when the one supplied command finishes,
-    /// and in routed mode when the agent's own outcome ends the run. It is named
-    /// for what it asserts (the work ran to its end) rather than for a goal
-    /// predicate this plan cannot yet evaluate: goal-met against a *declared
-    /// target* needs the verification frontmatter status that this repository's
-    /// one reader does not record yet (research Pitfall 2), and inventing it
-    /// from artifact presence would step past the `human_needed` gate DRIVE-05
-    /// exists to park at.
+    /// Its reason is the derived [`RunOutcome`]'s own label —
+    /// `succeeded_with_changes`, `failed`, `timed_out` and the six others
+    /// [`outcome_label`] spells out. It is reached in single-command mode when
+    /// the one supplied command finishes, and in routed mode when the agent's
+    /// own outcome ends the run. It is named for what it asserts: the work ran
+    /// to its end.
+    ///
+    /// **It is no longer DRIVE-06's goal-met arm** — [`Terminal::GoalMet`] is,
+    /// and the split is WR-08. Carrying both meanings here made the label depend
+    /// on whether any iteration had spawned: a target already met at launch
+    /// wrote `goal_met`, and a target the run actually *achieved* wrote
+    /// `succeeded_with_changes`, so the more interesting of the two goal-met
+    /// cases was the one that did not say so.
     Completed,
+    /// The declared target was reached: the `--target-phase`'s verification
+    /// frontmatter reads `passed` (CONTEXT.md OQ4, [`router::is_goal_met`]).
+    ///
+    /// **A fact about project state, never a claim by the agent**, and never an
+    /// inference from artifact presence — which is exactly what would step past
+    /// the `human_needed` gate DRIVE-05 exists to park at.
+    ///
+    /// Its label is [`GOAL_MET_LABEL`] whether or not this run issued a single
+    /// command. A run that found the target already met and a run that drove it
+    /// there ended in the same state, and a reader of `run.json` should not have
+    /// to infer goal-met from the absence of a `parked:` prefix.
+    GoalMet,
     /// The router refused to choose a next command.
     Parked {
         /// The taxonomy member, from the router's closed reason set.
@@ -494,7 +508,7 @@ impl Terminal {
     /// finds the detector and the record it produced together.
     fn park_reason(&self) -> Option<&'static str> {
         match self {
-            Terminal::Completed => None,
+            Terminal::Completed | Terminal::GoalMet => None,
             Terminal::Parked { reason, .. } => Some(reason.as_str()),
             Terminal::Halted { reason } => Some(reason.as_str()),
             Terminal::QuotaParked { .. } => Some(rate_limit::QuotaReason::Rejected.as_str()),
@@ -510,7 +524,7 @@ impl Terminal {
     /// says *which* window or *which* state it was about.
     fn detail(&self) -> &str {
         match self {
-            Terminal::Completed | Terminal::Halted { .. } => "",
+            Terminal::Completed | Terminal::GoalMet | Terminal::Halted { .. } => "",
             Terminal::Parked { detail, .. } => detail,
             Terminal::QuotaParked { detail } => detail,
         }
@@ -526,7 +540,7 @@ impl Terminal {
     /// CONTEXT.md's always-park resolution.
     fn needs(&self) -> &'static str {
         match self {
-            Terminal::Completed => "",
+            Terminal::Completed | Terminal::GoalMet => "",
             Terminal::Parked { .. } | Terminal::Halted { .. } => "human",
             // A quota park needs a person more plainly than either sibling: the
             // only thing that unparks it is a human deciding to wait out the
@@ -574,9 +588,17 @@ enum CommandSource {
 /// of its own, so a park recorded by another process (the hook or guard
 /// re-entries) may still decide the label.
 fn own_terminal_label(terminal: &Terminal) -> Option<String> {
-    terminal
-        .park_reason()
-        .map(|reason| format!("{PARKED_LABEL_PREFIX}{reason}"))
+    match terminal {
+        // **Regardless of whether any iteration spawned** (WR-08). The same
+        // terminal condition — the declared target's verification passed — must
+        // not write `goal_met` when the target was already met at launch and
+        // `succeeded_with_changes` when this run is what achieved it.
+        Terminal::GoalMet => Some(GOAL_MET_LABEL.to_string()),
+        Terminal::Completed => None,
+        Terminal::Parked { .. } | Terminal::Halted { .. } | Terminal::QuotaParked { .. } => terminal
+            .park_reason()
+            .map(|reason| format!("{PARKED_LABEL_PREFIX}{reason}")),
+    }
 }
 
 /// The label the terminal `run.json` carries, which is
@@ -1362,14 +1384,21 @@ fn build_executor(_args: &DriveArgs) -> ClaudeExecutor {
     ClaudeExecutor::new()
 }
 
-/// The terminal label for a routed run whose target was met before it issued a
-/// single command.
+/// The terminal label for a routed run whose declared target was met.
 ///
 /// **The one label in this module sourced from neither [`outcome_label`] nor the
 /// [`PARKED_LABEL_PREFIX`] carrier, and it exists because both are wrong here.**
-/// `outcome_label` maps a [`RunOutcome`] and a run that never spawned has none;
-/// `parked:` would claim the run stopped needing a human when in fact it stopped
-/// because there was nothing left to do.
+/// `outcome_label` maps a [`RunOutcome`] — and the outcome of the *previous*
+/// iteration describes that command, not the run's ending; `parked:` would claim
+/// the run stopped needing a human when in fact it stopped because there was
+/// nothing left to do.
+///
+/// **It is written whenever [`Terminal::GoalMet`] is reached, whether or not any
+/// iteration spawned** (WR-08). Keyed on the presence of a `RunOutcome` instead,
+/// it named only the case where the target was already met at launch, and a run
+/// that actually drove its target to `passed` ended `succeeded_with_changes` —
+/// leaving a reader of `run.json` to infer goal-met from the absence of a
+/// `parked:` prefix.
 ///
 /// **Reachable since 20-04.** It was unreachable when 20-01 introduced it —
 /// `router::Decision::GoalMet` had no producer until the one reader recorded the
@@ -1900,10 +1929,14 @@ pub async fn execute_run(
                         };
                         break 'iterations;
                     }
-                    // No producer in this plan; the arm is spelled out rather
-                    // than wildcarded so that adding one is a decision here.
+                    // **Its own terminal arm, not `Completed`** (WR-08). The
+                    // two are different endings and were labelled by whether an
+                    // iteration happened to have spawned, so the run that drove
+                    // its target to `passed` reported `succeeded_with_changes`
+                    // while the run that found it already there reported
+                    // `goal_met`.
                     router::Decision::GoalMet => {
-                        terminal = Terminal::Completed;
+                        terminal = Terminal::GoalMet;
                         break 'iterations;
                     }
                 };
@@ -2504,10 +2537,11 @@ fn record_iteration_decision(
 
 /// Record why the run stopped, if it stopped for a reason of its own.
 ///
-/// [`Terminal::Completed`] writes nothing, and that is correct rather than a
-/// gap: its reason is the derived outcome's own label, which the terminal record
-/// already carries. A `Parked` record there would claim a run that finished its
-/// work needed a human.
+/// [`Terminal::Completed`] and [`Terminal::GoalMet`] write nothing, and that is
+/// correct rather than a gap: the first's reason is the derived outcome's own
+/// label and the second's is [`GOAL_MET_LABEL`], both of which the terminal
+/// record already carries. A `Parked` record for either would claim a run that
+/// finished its work needed a human.
 ///
 /// A halt and a park share one carrier deliberately. Phase 19 established
 /// `JournalEvent::Parked` as the durable "this run stopped, here is why", proved
