@@ -276,6 +276,27 @@ pub fn reset_time(event: Option<&Value>, now: DateTime<Utc>) -> Option<DateTime<
     (skew <= RESET_SANITY_WINDOW_SECS).then_some(resets_at)
 }
 
+/// Whether this payload carries the one `status` that parks a run.
+///
+/// **The predicate half of [`classify`], split out so the drain loop can LATCH a
+/// rejection without reading a clock.** The loop retains one payload and
+/// classifies it once, at the end of the iteration; retaining simply the *latest*
+/// event meant a `rejected` on the five-hour window followed by an `allowed` on
+/// the seven-day one — one event per window, or one per turn on a steered run —
+/// left the driver holding the `allowed` payload and continuing (WR-02). The
+/// retained value is still uninspected *by the driver*: every question about it
+/// is asked here, which is the one place a wire field is interpreted and the one
+/// place its malformed shapes are tested.
+///
+/// Every malformed shape answers `false`, exactly as [`classify`] answers
+/// [`QuotaVerdict::Allowed`] for them: only the observed word parks.
+pub fn is_rejection(event: Option<&Value>) -> bool {
+    info(event)
+        .and_then(|payload| payload.get(STATUS_FIELD))
+        .and_then(Value::as_str)
+        == Some(STATUS_REJECTED)
+}
+
 /// Whether this retained payload parks the run, and under which window.
 ///
 /// **Only `status: "rejected"` parks.** See [`QuotaVerdict::Allowed`] for why
@@ -287,11 +308,7 @@ pub fn reset_time(event: Option<&Value>, now: DateTime<Utc>) -> Option<DateTime<
 /// this module free of a clock and the sanity bound testable at one-second
 /// resolution.
 pub fn classify(event: Option<&Value>, now: DateTime<Utc>) -> QuotaVerdict {
-    let Some(payload) = info(event) else {
-        return QuotaVerdict::Allowed;
-    };
-
-    if payload.get(STATUS_FIELD).and_then(Value::as_str) != Some(STATUS_REJECTED) {
+    if !is_rejection(event) {
         return QuotaVerdict::Allowed;
     }
 

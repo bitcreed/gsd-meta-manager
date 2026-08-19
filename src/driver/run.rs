@@ -2069,14 +2069,24 @@ pub async fn execute_run(
         // is the change that makes steering physically possible** (D-11).
         let mut stdin_open = true;
 
-        // The most recent `rate_limit_event` this iteration observed, retained
-        // verbatim and asked no questions of here (CTRL-07).
+        // The `rate_limit_event` this iteration will be classified on, retained
+        // verbatim (CTRL-07).
+        //
+        // **Two slots, because "latest" is the wrong retention rule when one of
+        // the values is terminal** (WR-02). A rejection is a fact about the whole
+        // iteration: a stream that emits `rejected` on one window and then
+        // `allowed` on another — one event per window, or one per turn on a
+        // steered run — left the single slot holding the `allowed` payload, so
+        // `classify` answered `Allowed` and a successful iteration went on to
+        // spend more of a quota that had already refused it. Once a rejection is
+        // seen it is latched and nothing later clears it.
         //
         // **Per-iteration rather than per-run**, because the classification below
         // runs at the end of this iteration and a value carried forward could only
         // ever be a stale one: a quota rejection stops the run where it is
         // observed, so there is no later iteration for it to be read by.
         let mut latest_quota_event: Option<serde_json::Value> = None;
+        let mut rejected_quota_event: Option<serde_json::Value> = None;
 
         // Every message written to stdin that has not yet been echoed back, and the
         // state the acted-on transition is derived from (D-08).
@@ -2192,6 +2202,17 @@ pub async fn execute_run(
                             // tested.
                             if let ExecutionEvent::Message(message) = &event {
                                 if let StreamMessage::RateLimitEvent(payload) = message.as_ref() {
+                                    // The FIRST rejection wins its slot and is
+                                    // never overwritten; the latest of anything
+                                    // else fills the other. The predicate is
+                                    // `rate_limit`'s, so this arm still asks no
+                                    // question of the payload itself and still
+                                    // reads no clock (WR-02).
+                                    if rejected_quota_event.is_none()
+                                        && rate_limit::is_rejection(Some(payload))
+                                    {
+                                        rejected_quota_event = Some(payload.clone());
+                                    }
                                     latest_quota_event = Some(payload.clone());
                                 }
                             }
@@ -2348,8 +2369,17 @@ pub async fn execute_run(
         // definition did not describe this refusal. CONTEXT.md's commitment is to
         // report unknown rather than to guess, and a plausible window presented as
         // the one that blocked the run is a guess wearing a fact's clothes.
-        let quota_park = match rate_limit::classify(latest_quota_event.as_ref(), chrono::Utc::now())
-        {
+        //
+        // **The latched rejection is classified first, and the latest event only
+        // if there was none** (WR-02). `or` rather than a second `classify` call,
+        // so there is still exactly one classification per iteration and still
+        // exactly one place that decides what a payload means.
+        let quota_park = match rate_limit::classify(
+            rejected_quota_event
+                .as_ref()
+                .or(latest_quota_event.as_ref()),
+            chrono::Utc::now(),
+        ) {
             rate_limit::QuotaVerdict::Rejected { window, resets_at } => {
                 Some(rate_limit::park_detail(&window, resets_at))
             }

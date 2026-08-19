@@ -552,6 +552,65 @@ async fn a_failure_whose_terminal_reason_names_a_rate_limit_parks_under_the_same
     );
 }
 
+#[tokio::test]
+async fn a_rejection_followed_by_an_allowed_event_still_parks_the_run() {
+    const RUN_ID: &str = "2026-08-19T12-00-00Z-latched";
+
+    let root = project_root();
+    let config = config_for(root.path());
+    let scratch = TempDir::new().expect("temp dir");
+
+    // **Two events on one stream, in the order that used to lose the first**
+    // (WR-02). The CLI emits one `rate_limit_event` per window, and a steered
+    // run emits one per turn, so `rejected` on the five-hour window followed by
+    // `allowed` on the seven-day one is an ordinary shape rather than a
+    // contrived one. Retaining the LATEST event left the driver classifying the
+    // `allowed` payload: `classify` answered `Allowed`, the second detector saw
+    // a successful run rather than a failed one, and the loop went round to
+    // spend more of a quota that had already refused it.
+    let transcript = transcript_file(
+        &scratch,
+        "rejected-then-allowed.ndjson",
+        &baseline_with_quota_event(Some(&format!(
+            "{}\n{}",
+            quota_event_line(
+                rate_limit::STATUS_REJECTED,
+                rate_limit::WINDOW_FIVE_HOUR,
+                None,
+            ),
+            quota_event_line(
+                "allowed",
+                rate_limit::WINDOW_SEVEN_DAY,
+                Some(chrono::Utc::now().timestamp() + 2 * 24 * 60 * 60),
+            ),
+        ))),
+    );
+
+    drive(routed_args(RUN_ID, &transcript, "0"), &config)
+        .await
+        .expect("a run that parks on a quota is an ordinary end");
+
+    let records = journal_records(root.path(), RUN_ID);
+    let (parked, detail) = park_and_detail(&records);
+
+    assert_eq!(
+        parked["reason"], rate_limit::REASON_QUOTA_REJECTED,
+        "a rejection is a fact about the whole iteration and a later event about \
+         a DIFFERENT window does not undo it. Got: {records:#?}"
+    );
+    assert!(
+        detail.contains(rate_limit::WINDOW_FIVE_HOUR),
+        "and the window reported must be the one that REFUSED the run, not the \
+         one that happened to be described last: {detail}"
+    );
+    assert_eq!(
+        of_kind(&records, "exec_started").len(),
+        1,
+        "no second command may run after a rejection, whatever arrived on the \
+         stream afterwards — CTRL-07's prohibition is on retrying at all"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The park STOPS the run: no next iteration, and no sleep
 // ---------------------------------------------------------------------------
