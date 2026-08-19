@@ -49,6 +49,7 @@ interleave and corrupt each other.
 - [x] **CTRL-05**: Only one driver may execute against a given project at a time, enforced by an OS-level lock
 - [ ] **CTRL-06**: A run halts itself when it stops making progress, repeats a command, exceeds a step cap, or exceeds a wall-clock cap
 - [ ] **CTRL-07**: A run parks rather than retrying when it hits a Claude subscription rate limit, and reports which quota window blocked it
+- [ ] **CTRL-08**: The policy for a human-judgement verification gate is user-configurable to skip, defer, or auto-validate — settable both per-run and per-project/session, with `defer` the default and every non-default choice visible in the run record
 
 ### Git & Blast Radius (SAFE)
 
@@ -85,6 +86,7 @@ interleave and corrupt each other.
 - [ ] **DRIVE-04**: The driver escalates to a model only for goal decomposition and for ambiguity the rules cannot resolve, with a per-run cap on such escalations
 - [ ] **DRIVE-05**: The driver parks and flags for a human when it encounters a GSD gate that requires human judgement
 - [ ] **DRIVE-06**: The driver reports a terminal outcome — goal met, parked, or halted — with the reason
+- [ ] **DRIVE-07**: Under the `auto` gate policy the driver attempts the verification a human would perform — driving the real surface (TUI, browser, or app) rather than asserting from source — and an auto-validated result is permanently distinguishable on disk from a human-verified one
 
 ### Containerized Sessions (CTNR)
 
@@ -124,7 +126,7 @@ Deferred to a later milestone — deliberately out of v2.0 scope:
 ## Traceability
 
 Every v2.0 requirement maps to exactly one phase. Phase numbering continues from
-the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-22.
+the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-23.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
@@ -140,6 +142,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-22.
 | CTRL-05 | Phase 17: Supervisor | Complete |
 | CTRL-06 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
 | CTRL-07 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
+| CTRL-08 | Phase 23: Gate Policy & Auto-Validation | Pending |
 | SAFE-01 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Complete |
 | SAFE-02 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Complete |
 | SAFE-03 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Complete |
@@ -164,6 +167,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-22.
 | DRIVE-04 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
 | DRIVE-05 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
 | DRIVE-06 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
+| DRIVE-07 | Phase 23: Gate Policy & Auto-Validation | Pending |
 | CTNR-01 | Phase 22: Container Execution Target | Pending |
 | CTNR-02 | Phase 22: Container Execution Target | Pending |
 | CTNR-03 | Phase 22: Container Execution Target | Pending |

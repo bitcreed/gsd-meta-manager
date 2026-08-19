@@ -9,7 +9,7 @@
 - ✅ **v1.4 Live Sessions & Document Browsing** - 4 quick tasks (shipped 2026-05-12)
 - ✅ **v1.5.0 Sub-phase Artifact Detection** - 2 quick tasks (shipped 2026-05-15)
 - ✅ **v1.6.0 GSD 1.8.0 Catch-up** - 1 quick task + 2 fast tasks (shipped 2026-07-22)
-- 🚧 **v2.0 Autonomous Orchestration** - Phases 14-22 (in progress)
+- 🚧 **v2.0 Autonomous Orchestration** - Phases 14-23 (in progress)
 
 ## Phases
 
@@ -83,7 +83,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 
 </details>
 
-### v2.0 Autonomous Orchestration (Phases 14-22)
+### v2.0 Autonomous Orchestration (Phases 14-23)
 
 - [x] **Phase 14: UI Fixes** - Four display defects that misreport project state (completed 2026-07-29)
 - [x] **Phase 15: Transport Foundation** - Duplex `stream-json` executor with envelope-derived outcomes (completed 2026-07-29)
@@ -94,10 +94,13 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 - [ ] **Phase 20: Deterministic Decision Router & Run Bounds** - Rules pick the next command; runs stop themselves
 - [ ] **Phase 21: LLM Goal Layer & Prompt-Injection Hardening** - One stated goal, model confined to two seams
 - [ ] **Phase 22: Container Execution Target** - Docker/podman parity with the host path
+- [ ] **Phase 23: Gate Policy & Auto-Validation** - The verify gate is a choice, not a law: skip, defer, or auto-validate
 
 **Parallelism:** Phase 14 has no dependencies and is parallel-safe throughout.
 Phase 22 depends only on Phase 15 and may run alongside Phases 17-21, but must land
 before Phase 20 closes so the router is never built against a stubbed target.
+Phase 23 depends on Phase 20's gate taxonomy and on Phase 22 (a containerized surface is
+one of the surfaces `auto` must be able to drive), so it runs last.
 
 ## Phase Details
 
@@ -480,6 +483,30 @@ Plans:
 **Research**: yes — `/gsd-plan-phase --research-phase`. Podman rootless uid mapping and volume permissions are asserted from Docker/devcontainer-centric docs, not verified
 **Plans**: TBD
 
+### Phase 23: Gate Policy & Auto-Validation
+
+**Goal**: Whether a human-judgement verification gate stops the run is the user's configured choice, and under `auto` the driver earns the verification by driving the real surface rather than asserting it
+**Depends on**: Phase 20 (the gate taxonomy and the router's safe alphabet), Phase 22 (a containerized surface is one of the surfaces `auto` must be able to drive)
+**Requirements**: CTRL-08, DRIVE-07
+**Success Criteria** (what must be TRUE):
+
+  1. The gate policy is settable per-run on argv **and** per-project/session in config, with a documented precedence between them, and `defer` remains the default when neither is set
+  2. Under `skip` a run continues past a human-judgement gate instead of parking, and the run record shows that a gate was skipped, which gate it was, and under whose configured choice — a skipped gate is never invisible
+  3. Under `defer` behaviour is byte-identical to Phase 20's: the run parks with the gate named
+  4. Under `auto` the driver attempts the verification by driving the real surface a human would use, and a surface it cannot drive is reported as un-attemptable rather than silently passed
+  5. An auto-validated verification result is permanently distinguishable on disk from a human-verified one, by any later reader, including GSD's own tooling
+
+**Phase risks**:
+
+  - **The `auto` mode's whole value depends on criterion 5.** A machine-written `status: passed` that a later reader cannot tell apart from a human's does not automate the gate, it removes it. Design the record shape before the automation.
+  - Phase 20's conformance oracle encodes the current `/gsd-verify-work` exclusion as a declared divergence from upstream that fails **in both directions**. It must be taught the modes, not weakened, or it goes red the first time `skip` is selected
+  - `skip` is the mode most likely to be reached for casually and least likely to be reviewed. It must be a recorded, visible choice at every layer — never a default, never implicit, never inherited silently from a stale session config
+  - Related open exposure, disclosed by 20-04 and explicitly NOT closed by Phase 20: nothing mechanically prevents a driven agent writing `status: passed` into a `*-VERIFICATION.md` itself. `auto` makes a legitimate machine-written pass a normal event, which removes the anomaly signal that would otherwise expose the illegitimate one. Resolve the two together or say plainly why not
+  - Driving a real surface (TUI/browser/app simulator) is a genuinely new capability class for this codebase — no in-tree precedent. Expect a spike
+
+**Research**: yes. No in-tree precedent for driving a UI surface; the recording-shape question in criterion 5 is a design artifact owed before implementation
+**Plans**: TBD
+
 ## Progress
 
 | Phase | Plans Complete | Status | Completed |
@@ -493,6 +520,7 @@ Plans:
 | 20. Deterministic Decision Router & Run Bounds | 3/5 | In Progress|  |
 | 21. LLM Goal Layer & Prompt-Injection Hardening | 0/? | Not started | - |
 | 22. Container Execution Target | 0/? | Not started | - |
+| 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
 
 ## Backlog
 
