@@ -835,7 +835,7 @@ pub enum JournalEvent {
         /// | Taxonomy | Prefix on disk | What it means |
         /// |---|---|---|
         /// | [`crate::envelope::policy::ParkReason`] | none (e.g. `force_push_blocked`) | The safety envelope refused an operation (Phase 19, D-24). **Seven arms, and it stays at seven** — a new detector is a new sibling enum, not an eighth arm here. |
-        /// | `crate::driver::router::RouterReason` | `router_` | The deterministic router declined to choose a next command (Phase 20, DRIVE-06). |
+        /// | `crate::driver::router::RouterReason` | `router_` **or** `gate_` | The deterministic router declined to choose a next command (Phase 20, DRIVE-06). Two prefixes on one enum, on purpose: `router_` marks a refusal about the rule table (no rule, unverified state, an unsatisfied dependency) and `gate_` a human-judgement gate the run reached and refused to answer (DRIVE-05). The split is what makes "how often does the always-park posture stop a run, and at which gate?" a grep over the journals rather than a memory. |
         /// | `crate::driver::bounds::BoundsReason` | `bounds_` | A run bound fired and the run halted itself before the next spawn (Phase 20, CTRL-06). |
         ///
         /// The prefixes make the producer readable from the string alone, and
