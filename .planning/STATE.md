@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Autonomous Orchestration
-current_phase: 19
-current_phase_name: gitsafe-git-blast-radius-envelope
+current_phase: 20
+current_phase_name: deterministic-decision-router-run-bounds
 status: executing
-stopped_at: Completed quick task 260729-vmp — Phase 18 still complete (11 of 11 plans)
-last_updated: "2026-08-18T16:54:39.465Z"
-last_activity: 2026-08-18
-last_activity_desc: Phase 19 execution started
+stopped_at: Phase 19 human verification deferred by user; starting Phase 20 autonomous run
+last_updated: "2026-08-19T00:00:00.000Z"
+last_activity: 2026-08-19
+last_activity_desc: Phase 19 UAT deferred, Phase 20 autonomous run started
 progress:
   total_phases: 9
   completed_phases: 5
   total_plans: 45
-  completed_plans: 37
+  completed_plans: 45
   percent: 56
 ---
 
@@ -24,14 +24,27 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 19 — gitsafe-git-blast-radius-envelope
+**Current focus:** Phase 20 — deterministic-decision-router-run-bounds
 
 ## Current Position
 
-Phase: 19 (gitsafe-git-blast-radius-envelope) — EXECUTING
-Plan: 3 of 8
-Status: Executing Phase 19 — waves 1-3 merged and accepted
-Last activity: 2026-08-18 — resumed after power loss; wave 3 gate re-run green (856 tests)
+Phase: 20 (deterministic-decision-router-run-bounds) — NOT STARTED
+Plan: 0 of 0 (discuss → plan → execute pending)
+Status: Phase 19 implementation complete (8 of 8 plans, 5/5 must-haves verified); its four
+  human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
+Last activity: 2026-08-19 — Phase 19 UAT deferred; autonomous run started at Phase 20
+
+## Deferred Verification
+
+| Phase | State | Resume |
+|-------|-------|--------|
+| 19 | verification_deferred_human | /gsd-verify-work 19 |
+
+Phase 19's `19-VERIFICATION.md` remains `status: human_needed` — 5/5 automated must-haves are
+verified, and the four outstanding items are all reading judgements (does the pinned honesty
+statement read as candour; are 19-08's composed proofs faithful decompositions; do the
+residual-exposure disclosures read as admissions) plus the `driver_lock` one-off risk call.
+Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked passed.
 
 ### Phase 17 gap-closure notes (autonomous run — review these)
 
@@ -250,6 +263,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-08-18T18:39:51.806Z
-Stopped at: Resumed after power interruption; wave 3 post-merge gate re-verified green, tracking committed; next is wave 4 (plan 19-04)
-Resume file: .planning/phases/19-gitsafe-git-blast-radius-envelope/.continue-here.md
+Last session: 2026-08-19
+Stopped at: Phase 19 fully executed (8/8 plans, verification human_needed → deferred by user); autonomous run started at Phase 20
+Resume file: none — resume with /gsd-autonomous --from 20 --to 22
+Note: `.planning/phases/19-gitsafe-git-blast-radius-envelope/.continue-here.md` is a stale
+mid-execution checkpoint (claims task 3 of 8); all 8 plans have summaries. Ignore it.

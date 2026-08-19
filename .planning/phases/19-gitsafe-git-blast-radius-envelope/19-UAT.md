@@ -1,12 +1,19 @@
 ---
-status: testing
+status: deferred
 phase: 19-gitsafe-git-blast-radius-envelope
 source: [19-VERIFICATION.md]
 started: 2026-08-18T23:27:41Z
-updated: 2026-08-18T23:27:41Z
+updated: 2026-08-19
+deferred_by: user
+deferred_reason: >-
+  Explicitly deferred on 2026-08-19 so Phase 20 could start. All four items are reading
+  judgements or a risk call; none block Phase 20's implementation. Resume with
+  /gsd-verify-work 19.
 ---
 
 ## Current Test
+
+DEFERRED — no test in progress. See `deferred_reason` above.
 
 number: 1
 name: The pinned honesty statement reads as candour, not as a hedge
@@ -19,7 +26,7 @@ expected: |
   chooses to; the PR cap specifically has no git-hook second carrier and degrades to
   unenforced if the settings file is ignored), and conclude with the server-side
   branch-protection recommendation as the phase's honest conclusion rather than a footnote.
-awaiting: user response
+awaiting: deferred (user decision, 2026-08-19)
 
 ## Tests
 
@@ -32,7 +39,7 @@ why_human: 19-06 coverage D5 and 19-08 coverage D2 both record this `human_judgm
   candid rather than as marketing is a reading judgement. This is the exact axis PITFALLS
   names as most dangerous to get wrong — an overstated safety claim is worse than a stated
   limitation, because it gets trusted.
-result: [pending]
+result: [skipped] — deferred by user 2026-08-19, unresolved
 
 ### 2. The composed proofs are faithful decompositions of the criteria as written
 expected: The `[C]`-marked rows in 19-08-SUMMARY.md's traceability table (criteria 1, 2, 4
@@ -43,7 +50,7 @@ expected: The `[C]`-marked rows in 19-08-SUMMARY.md's traceability table (criter
   and never by observing a forge (per D-35's fence).
 why_human: 19-08 coverage D6 records this `human_judgment: true` explicitly — "whether a
   composed proof is an adequate proof of the sentence as written is a reader's judgement".
-result: [pending]
+result: [skipped] — deferred by user 2026-08-19, unresolved
 
 ### 3. The residual-exposure disclosures read as admissions, not rationalisations
 expected: The paragraphs in `src/envelope/mod.rs`, `src/envelope/cred.rs` and
@@ -55,7 +62,7 @@ expected: The paragraphs in `src/envelope/mod.rs`, `src/envelope/cred.rs` and
 why_human: Recorded `human_judgment: true` across 19-01 D9, 19-02 D8, 19-03's pre-commit
   rationale, 19-04 D11, 19-05 D11 and 19-07 D25 — a systemic, deliberate pattern across the
   phase rather than an isolated item.
-result: [pending]
+result: [skipped] — deferred by user 2026-08-19, unresolved
 
 ### 4. Decide how to treat the `driver_lock` one-off
 expected: A decision on whether the observed one-off
@@ -71,16 +78,18 @@ orchestrator_evidence: Did NOT reproduce in three further full-suite runs under 
   `lock::acquire`. This is the one item in the phase where Phase 19's own changes are the
   plausible cause — unlike the `driver_reattach` pair, which is proved pre-existing (4/4 red
   at `0a84023`).
-result: [pending]
+result: [skipped] — deferred by user 2026-08-19, unresolved
 
 ## Summary
 
 total: 4
 passed: 0
 issues: 0
-pending: 4
-skipped: 0
+pending: 0
+skipped: 4
 blocked: 0
+
+All four skipped items are unresolved verification debt, not clearances.
 
 ## Gaps
 
