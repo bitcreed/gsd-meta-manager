@@ -1350,11 +1350,13 @@ fn build_executor(_args: &DriveArgs) -> ClaudeExecutor {
 /// `parked:` would claim the run stopped needing a human when in fact it stopped
 /// because there was nothing left to do.
 ///
-/// **Unreachable in this plan.** `router::Decision::GoalMet` has no producer
-/// until the one reader records the VERIFICATION frontmatter `status` (research
-/// Pitfall 2), and until then no branch returns it. The constant exists so that
-/// the plan adding that producer finds a decision here instead of inheriting a
-/// guess, and so the match that consumes it is exhaustive today.
+/// **Reachable since 20-04.** It was unreachable when 20-01 introduced it —
+/// `router::Decision::GoalMet` had no producer until the one reader recorded the
+/// VERIFICATION frontmatter `status` (research Pitfall 2). 20-03 added that
+/// status and 20-04 added the producer: [`router::is_goal_met`], which is
+/// `verification_status.is_passed()` on the run's `--target-phase` (CONTEXT.md
+/// OQ4). The constant existed so the plan adding that producer would find a
+/// decision here instead of inheriting a guess; it did.
 pub(crate) const GOAL_MET_LABEL: &str = "goal_met";
 
 /// The options for **one** iteration of a run.
