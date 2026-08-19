@@ -534,6 +534,51 @@ fn every_observed_status_has_a_stable_token_and_no_two_share_one() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The written non-goals
+// ---------------------------------------------------------------------------
+
+/// The artifact names GSD's inert waiting-signal contract goes by.
+///
+/// Both spellings, because the writer and the reader disagree about which
+/// directory it lives in — the writer prefers `.gsd/` when that directory
+/// exists and the reader hardcodes `.planning/` — and a rule that named either
+/// one would be a rule with no state behind it.
+const WAITING_SIGNAL_ARTIFACTS: &[&str] = &["WAITING.json", "signal-waiting", "signal-resume"];
+
+#[test]
+fn the_router_names_no_waiting_signal_artifact_and_says_why_in_prose() {
+    let files = source_files();
+    let router = files
+        .iter()
+        .find(|(path, _)| path == ROUTER_SOURCE)
+        .unwrap_or_else(|| panic!("{ROUTER_SOURCE} must exist"));
+
+    for artifact in WAITING_SIGNAL_ARTIFACTS {
+        let hits: Vec<&String> = router
+            .1
+            .iter()
+            .filter(|line| !line.trim_start().starts_with("//") && line.contains(artifact))
+            .collect();
+        assert!(
+            hits.is_empty(),
+            "{ROUTER_SOURCE} names `{artifact}` on an executable line: {hits:?}. GSD still \
+             ships the verbs and `init.manager` still reads the file back, but nothing in the \
+             whole runtime WRITES it — a driver that waited on it would wait forever, and a \
+             rule that read an always-absent file to decide nothing is a rule with no state \
+             behind it"
+        );
+    }
+
+    let doc: String = router.1.join("\n");
+    assert!(
+        doc.contains("waiting-signal contract (`WAITING.json`) is a written non-goal"),
+        "the module doc must state the non-goal in prose. An absent rule looks identical to a \
+         forgotten one; the sentence is what makes a later reader find a decision instead of a \
+         gap"
+    );
+}
+
 #[test]
 fn every_router_reason_is_greppable_by_its_producer_prefix() {
     for reason in RouterReason::ALL {

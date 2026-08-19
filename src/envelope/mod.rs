@@ -83,6 +83,50 @@
 //! that do not depend on the agent's cooperation are the remote's own ruleset
 //! and the scope of the credential — which is why enabling **server-side branch
 //! protection** is the phase's conclusion rather than its footnote.
+//!
+//! ## Residual exposure: an agent can write the status that unparks it
+//!
+//! **This one is disclosed, not closed, and the difference is the point of
+//! writing it down.**
+//!
+//! The deterministic router
+//! ([`crate::driver::router`]) parks an unattended run at every
+//! human-judgement gate it can observe, and its goal-met predicate is the
+//! target phase's verification status read from the leading frontmatter of that
+//! phase's `*-VERIFICATION.md`. Both facts come off disk, which is what makes
+//! them deterministic — and it is also the exposure: **nothing in this codebase
+//! mechanically prevents the driven agent writing `status: passed` into that
+//! artifact and thereby unparking itself, or reporting its own goal met.**
+//!
+//! Three sentences, each of which is a limit rather than a reassurance:
+//!
+//! 1. **This envelope does not cover it.** Every layer above governs *git
+//!    operations* — refspecs, force pushes, hook bypasses, the credential's
+//!    scope. A `Write` into the driven repository's `.planning/` directory is
+//!    not a git operation, and no layer here inspects one. The envelope was
+//!    never the boundary for this and does not become one by being nearby.
+//! 2. **GSD's staleness detector is a partial mitigation, and it is named here
+//!    as the partial thing it is.** GSD's own verification library derives a
+//!    `stale` status when a `*-SUMMARY.md` is newer than the `*-VERIFICATION.md`
+//!    it is supposed to have been checked against — which is exactly the
+//!    fingerprint of a passing status written after the fact. It is partial in
+//!    two directions at once: this repository's reader recognises `stale` only
+//!    when the value is literally on disk and does not derive it from mtimes,
+//!    and an agent that writes the summary and the verification in the same
+//!    breath leaves no ordering to detect. Calling it a mitigation without
+//!    calling it partial would be the quiet lie this paragraph exists to
+//!    refuse.
+//! 3. **The hardening belongs to the next phase, and the case is open until it
+//!    lands.** The router's contribution is narrower and worth stating exactly:
+//!    no *prose* the agent emits reaches a routing arm — every rule and gate
+//!    reads a typed enum, a count or a boolean, and the result envelope's own
+//!    free-text field is read by no branch of the outcome derivation. That
+//!    closes the agent *saying* it is done. It does not close the agent
+//!    *writing* the byte that says so.
+//!
+//! Recorded in this module rather than in the router because this is where the
+//! project keeps its list of things it cannot promise, and a residual exposure
+//! filed anywhere else is a residual exposure nobody re-reads.
 
 pub mod advisory;
 pub mod cred;
@@ -343,6 +387,42 @@ pub fn park(reason: policy::ParkReason, needs: &str, detail: &str) -> ParkOutcom
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// This module's own source, resolved at compile time.
+    ///
+    /// Reading the bytes is what makes the disclosure below a *pinned* one. A
+    /// test that asserted a constant would only prove a constant exists; the
+    /// paragraph this project owes a reader lives in the module doc, and the
+    /// module doc is the thing that can be quietly softened.
+    const OWN_SOURCE: &str = include_str!("mod.rs");
+
+    #[test]
+    fn the_residual_exposure_is_disclosed_as_open_and_its_mitigation_named_partial() {
+        assert!(
+            OWN_SOURCE.contains("Residual exposure: an agent can write the status that unparks it"),
+            "the residual-exposure section must exist. CONTEXT.md's OQ3 resolution puts the \
+             self-unpark case out of Phase 20's scope ON CONDITION that it is recorded here, \
+             and a scope exclusion with no disclosure is just an omission"
+        );
+        assert!(
+            OWN_SOURCE.contains("disclosed, not closed"),
+            "the disclosure must say plainly that the case is open. A paragraph that describes \
+             a hazard without saying it is unclosed reads, to the next person, as a hazard \
+             somebody handled"
+        );
+        assert!(
+            OWN_SOURCE.contains("staleness detector is a partial mitigation")
+                && OWN_SOURCE.contains("partial in\n//!    two directions"),
+            "GSD's staleness detector must be named as the PARTIAL mitigation it is, with the \
+             directions it is partial in stated. Naming a partial control without the \
+             qualifier is how a residual risk turns into a claimed boundary"
+        );
+        assert!(
+            OWN_SOURCE.contains("hardening belongs to the next phase"),
+            "the disclosure must say where the fix lives, or it is a complaint rather than a \
+             handoff"
+        );
+    }
 
     #[test]
     fn a_hostile_alias_yields_no_envelope_directory_at_all() {

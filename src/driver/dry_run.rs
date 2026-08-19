@@ -258,9 +258,12 @@ pub fn build_routed_report(project: &DrivableProject, target_phase: &str) -> Rou
                 detail: observed,
             },
         ),
-        // No producer today (see `router::Decision::GoalMet`), spelled out
-        // rather than wildcarded so that adding one is a decision here rather
-        // than a silent fall-through to "would park".
+        // The target phase's verification already passed, so the run would
+        // issue nothing at all — an empty command list whose scope says
+        // `Complete` rather than one that leaves a reader guessing whether the
+        // preview was truncated. Spelled out rather than wildcarded so that a
+        // change to the goal-met predicate is a decision here rather than a
+        // silent fall-through to "would park".
         super::router::Decision::GoalMet => (Vec::new(), PreviewScope::Complete),
     };
 
