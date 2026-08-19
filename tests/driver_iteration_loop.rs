@@ -51,6 +51,14 @@ const ALIAS: &str = "iterloop";
 /// The phase the fixture project declares and the router is pointed at.
 const TARGET_PHASE: &str = "20";
 
+/// A step cap this fixture supplies on argv, chosen to differ from
+/// `bounds::DEFAULT_MAX_STEPS`.
+///
+/// The difference is the whole point: a `bounds` field on `run.json` that
+/// happened to equal the default would prove nothing about whether the
+/// **resolved** value or the constant reached disk.
+const EXPLICIT_STEP_CAP: u32 = 5;
+
 /// The one command this plan's rule table can produce, spelled out here rather
 /// than imported, so a change to the rule fails this test instead of agreeing
 /// with itself.
@@ -176,7 +184,12 @@ async fn a_routed_run_issues_two_commands_and_halts_naming_the_detector_that_fir
     let root = project_root();
     let config = config_for(root.path());
 
-    drive(routed_args(RUN_ID, None), &config)
+    // **An explicit step cap, deliberately not the compiled-in default**, so the
+    // `bounds` assertion below proves an argv override reaches disk rather than
+    // passing by coincidence against a default this fixture never set. It is
+    // high enough that command-repeat still fires first, so the run's terminal
+    // reason is unchanged.
+    drive(routed_args(RUN_ID, Some(EXPLICIT_STEP_CAP)), &config)
         .await
         .expect("a routed run that halts on a bound is an ordinary end, not an error");
 
@@ -305,11 +318,42 @@ async fn a_routed_run_issues_two_commands_and_halts_naming_the_detector_that_fir
     );
     assert_eq!(
         record["gsd_command"],
-        format!("--target-phase {TARGET_PHASE}"),
+        serde_json::Value::from(gsd_meta_manager::driver::ROUTED_RECORD_MARKER),
         "`run.json` carries a single command field and is written exactly twice, \
-         so a routed run records the TARGET that bounded the sequence rather than \
-         a guess at which command the router picked. The sequence itself is on the \
-         `decided` records"
+         so a routed run records a MARKER rather than a guess at which command \
+         the router picked. It used to record `--target-phase N` here, which put \
+         an argv fragment in a field named `gsd_command` and rendered to the user \
+         as a pasteable command line that was not one. The sequence itself is on \
+         the `decided` records, which is where the marker points"
+    );
+    assert_eq!(
+        record["target_phase"],
+        serde_json::Value::from(TARGET_PHASE),
+        "the routed run's identity rides a typed sibling field whose name says \
+         what it holds, rather than being smuggled into one whose name says \
+         command"
+    );
+    assert_eq!(
+        record["bounds"]["max_steps"],
+        serde_json::Value::from(EXPLICIT_STEP_CAP),
+        "the caps in force are readable off the record after the fact rather \
+         than inferred from which binary happened to run — and this fixture \
+         supplies a step cap on argv precisely so a default written here would \
+         fail rather than pass by coincidence"
+    );
+    assert_ne!(
+        record["bounds"]["max_steps"],
+        serde_json::Value::from(bounds::DEFAULT_MAX_STEPS),
+        "the non-vacuity half: if the recorded cap equalled the compiled-in \
+         default, the assertion above could not tell a resolved value from a \
+         constant, which is the one thing this field exists to distinguish"
+    );
+    assert_eq!(
+        record["bounds"]["wall_clock_cap_secs"],
+        serde_json::Value::from(bounds::DEFAULT_RUN_WALL_CLOCK_CAP.as_secs()),
+        "an unsupplied cap records the default that was genuinely in force — \
+         recording the RESOLVED value means the default appears when the default \
+         is what bounded the run, not that the field is unwritten"
     );
 }
 

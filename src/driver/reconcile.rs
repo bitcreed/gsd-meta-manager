@@ -379,6 +379,11 @@ mod tests {
             argv_digest: "fnv1a64:0000000000000000".to_string(),
             ended_at: ended_at.map(|s| s.to_string()),
             outcome: ended_at.map(|_| "completed".to_string()),
+            // A single-command fixture: no routed target, and the bounds this
+            // file's assertions never read.
+            target_phase: None,
+            bounds: None,
+            extra: serde_json::Map::new(),
         }
     }
 

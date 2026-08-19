@@ -242,6 +242,9 @@ fn run_record(run_id: &str) -> RunRecord {
         argv_digest: "sha256:0".to_string(),
         ended_at: None,
         outcome: None,
+        target_phase: None,
+        bounds: None,
+        extra: serde_json::Map::new(),
     }
 }
 

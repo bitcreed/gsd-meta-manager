@@ -900,6 +900,9 @@ mod tests {
             argv_digest: crate::journal::argv_digest(&["claude".to_string()]),
             ended_at: None,
             outcome: None,
+            target_phase: None,
+            bounds: None,
+            extra: serde_json::Map::new(),
         }
     }
 

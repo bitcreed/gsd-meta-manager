@@ -244,6 +244,41 @@ fn command_source_refusal(command: Option<&str>, target_phase: Option<&str>) -> 
     }
 }
 
+/// The two routed-mode markers, and which surface each one belongs to.
+///
+/// **Two constants, two surfaces, one owner for each — and no third literal
+/// anywhere in the tree.** Both say "this run is routed, so no single command
+/// names it", but they are read by different audiences under different
+/// constraints, so they are spelled separately and defined together rather than
+/// sharing one string that would have to compromise between the two:
+///
+/// * [`ROUTED_PREVIEW`] goes to a **human reading `--dry-run` on stdout**, where
+///   there is room for a full clause.
+/// * [`ROUTED_RECORD_MARKER`] goes to **`run.json`'s `gsd_command`**, a durable
+///   field a separate process parses and the TUI renders inline in a
+///   width-constrained header — so it is short, and it points at where the real
+///   answer lives instead of restating it.
+///
+/// Defining them adjacently is the mechanism: the next person who needs a
+/// routed marker finds both and picks one, rather than minting a third that
+/// drifts. This is the `REASON_*` shape `crate::envelope::policy` uses, applied
+/// to user-facing text instead of to a reason taxonomy.
+///
+/// **Neither may ever be the empty string or an argv fragment.**
+/// `the_routed_record_marker_cannot_be_misread_as_absent_or_as_an_argv_fragment`
+/// pins that: `""` already means "field absent" on the tolerant read path
+/// (D-30), and a `--target-phase 3`-shaped value reads as a pasteable command
+/// line while being nothing of the kind.
+pub const ROUTED_PREVIEW: &str = "(routed: chosen per iteration by the decision router)";
+
+/// The routed-mode marker written into `run.json`'s `gsd_command` — see
+/// [`ROUTED_PREVIEW`] for why there are two and what separates them.
+///
+/// It names the journal records that hold the actual sequence, because the whole
+/// purpose of writing a marker rather than a command is to send the reader
+/// somewhere that is not a guess.
+pub const ROUTED_RECORD_MARKER: &str = "(routed: see the decided journal records)";
+
 /// What a preview reports as the command it would run.
 ///
 /// [`command_source_refusal`] has already established that exactly one source is
@@ -256,7 +291,6 @@ fn command_source_refusal(command: Option<&str>, target_phase: Option<&str>) -> 
 /// preview that showed one command for a run that issues many is the same
 /// untruth in a more convincing form.
 fn previewed_command(args: &DriveArgs) -> String {
-    const ROUTED_PREVIEW: &str = "(routed: chosen per iteration by the decision router)";
     args.command
         .clone()
         .unwrap_or_else(|| ROUTED_PREVIEW.to_string())

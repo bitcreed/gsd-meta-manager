@@ -387,6 +387,9 @@ mod tests {
             argv_digest: "fnv1a64:0000000000000000".to_string(),
             ended_at: None,
             outcome: None,
+            target_phase: None,
+            bounds: None,
+            extra: serde_json::Map::new(),
         };
         let run = crate::journal::JournalRun::start(&planning, record).expect("the run starts");
         (dir, run)
