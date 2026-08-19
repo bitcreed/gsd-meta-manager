@@ -579,6 +579,52 @@ fn the_router_names_no_waiting_signal_artifact_and_says_why_in_prose() {
     );
 }
 
+/// The verb that makes GSD's own router answer, and therefore the verb that
+/// would turn the conformance oracle into a runtime dependency.
+///
+/// Named as data so the scan and the test that uses it cannot drift, and
+/// deliberately spelled only in `tests/` — the walk below covers `src/` alone,
+/// which is what lets this constant exist without failing its own gate.
+const ORACLE_VERB: &str = "init.manager";
+
+#[test]
+fn no_source_file_invokes_the_conformance_oracle() {
+    let files = source_files();
+    let mut hits: Vec<String> = Vec::new();
+
+    for (path, lines) in &files {
+        for (number, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            if line.contains(ORACLE_VERB) {
+                hits.push(format!("{path}:{}: {}", number + 1, line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        hits.is_empty(),
+        "the conformance oracle is a TEST-time tool and must never be reachable from the run \
+         loop. Calling it there would be a second project-state reader (D-11), a blocking \
+         `Command` on the driver's async path (Phase 19's lint), and a Node process inside a \
+         loop whose whole value is surviving its parent (T-20-22). Offending lines: {hits:?}"
+    );
+
+    // Non-vacuity: the walk has to have examined a real tree, or "no hits"
+    // means "nothing looked".
+    let executable_lines: usize = files
+        .iter()
+        .flat_map(|(_, lines)| lines.iter())
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .count();
+    assert!(
+        executable_lines > 1000,
+        "the oracle scan examined only {executable_lines} executable lines under {SRC_ROOT}, \
+         which is too few for its silence to mean anything"
+    );
+}
+
 #[test]
 fn every_router_reason_is_greppable_by_its_producer_prefix() {
     for reason in RouterReason::ALL {
