@@ -116,6 +116,69 @@ making progress stop itself.
   target phase's verification passed, or the milestone closed), never from the agent saying it
   is done.
 
+### Research Corrections (2026-08-19, after `20-RESEARCH.md`)
+
+Two decisions above were written before research and are **factually wrong as worded**. CONTEXT.md's
+own header told the researcher to flag rather than silently honour them; it did. Both are corrected
+here, and in both cases the *principle* the original decision encoded survives intact — only the
+mechanism named was wrong. The original wording is left above deliberately, so the record shows what
+was assumed and what evidence changed it.
+
+- **CORRECTED — the rate-limit signal is not on the `result` envelope.** It is a separate top-level
+  stream type, `rate_limit_event`, carrying `rate_limit_info.rateLimitType`
+  (`five_hour` | `seven_day` | `seven_day_opus` | `seven_day_sonnet` | `seven_day_overage_included`),
+  `status` (`allowed` | `allowed_warning` | `rejected`) and `resetsAt`. It is structurally unreachable
+  from `derive_run_outcome_from_envelopes`, which takes `&[ResultMessage]`. Observe it in the driver's
+  **drain loop**, where it already arrives. Do **not** widen the outcome signature to reach it — that
+  is the shape of the CR-04 bug. The "read the structured transport, never the prose" rule (D-10) is
+  unchanged. Consequence: the 5h vs 7d window **is** distinguishable, so "window unknown" becomes the
+  malformed/absent-payload exception rather than the expected case.
+- **CORRECTED — do not hash the state; diff it.** `ProjectState.phase_disk_statuses` is a `HashMap`
+  with no defined iteration order, so a naive hash would be *nondeterministic* and would falsify
+  criterion 1 in a way no single test run reveals. `executor::outcome::DiskDelta::between` already
+  performs exactly the comparison intended, unknown-vs-unchanged distinction included, by value
+  equality. Use it. The no-progress detector compares deltas, not digests.
+- **CORRECTED (minor) — the execute-phase checkpoint gate is real but mislocated above.**
+  `execute-phase.md` contains no `AskUserQuestion`; the checkpoints live in generated plan files and
+  in `execute-plan.md`. Enumerate the gate set from `20-RESEARCH.md` §4 (twenty gates with file:line),
+  not from this file's prose.
+
+**Two reader defects must be closed before a single routing rule is written** (research Pitfalls 1
+and 2, and this is the phase's biggest correctness risk): this repo's `DiskStatus` has no `Executed`
+variant while GSD's vocabulary does, and this repo's `Complete` means *implementation complete* —
+GSD's `executed`. `DiskInference` also records `has_verification: bool` (presence) and never reads the
+VERIFICATION.md frontmatter `status`, which is the entire DRIVE-05 gate set. A router built on the
+reader as it stands would step straight past a phase whose verification is `human_needed` — exactly
+the gate it exists to park at. Extend the one reader (D-11); do not read verification in the router.
+
+### Open Questions Resolved (all five, per research recommendations)
+
+1. **Cap collision** — the run-level wall-clock cap keeps CONTEXT.md's 4 hours (it is the user-facing
+   number); the **per-iteration** executor `wall_clock_cap` the driver passes is reduced below it.
+   Both currently default to exactly 4h, which would make criterion 3's reason unreportable. Assert
+   the strict inequality in a named test, not a comment.
+2. **`gaps_found`** — parks, per the always-park resolution, but under its own separately-greppable
+   reason (`gate_verification_gaps_found`) rather than a generic gate reason, so "does always-park
+   make the driver useless?" is measurable from the journals instead of remembered.
+3. **An agent self-unparking by writing `status: passed` into a VERIFICATION.md** — out of scope for
+   Phase 20 (it is Phase 21 hardening), but it must be recorded in the phase's residual-exposure
+   disclosure, in the register `src/envelope/mod.rs` already established. Name the staleness detector
+   as the partial mitigation it is. Do not imply it is closed.
+4. **Goal-met without Phase 21's goal layer** — a **target phase** supplied on argv, with goal-met
+   defined as that phase's `verification_status == 'passed'`. Deterministic, machine-checkable,
+   satisfies criterion 5 without borrowing from Phase 21, and it is the shape Phase 21's OQ6 says a
+   goal must reduce to anyway.
+5. **Session reuse across iterations** — **one fresh `claude` session per iteration.** A resumed
+   session accumulates the previous command's transcript into the next command's window, which is how
+   a multi-hour run hits a context limit for reasons unrelated to the work. It also keeps
+   `run.json`'s single `session_id` honest; per-iteration ids belong on the `Decided`/`ExecStarted`
+   journal events, which already carry `session_id`.
+
+**Scope change this research forces:** Phase 20 must **build** the iteration loop, not bound an
+existing one. `DriveArgs::command` is a single `String` and three source sites plus a test say so.
+The change is a hoist of the single-command body into an outer loop, with the lock, journal and
+SIGTERM handler held across the whole run rather than re-established per iteration.
+
 ### Claude's Discretion
 
 - Module/file decomposition below `src/driver/router.rs`, naming of the bounds reason enum and
