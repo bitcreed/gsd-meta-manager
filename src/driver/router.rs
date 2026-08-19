@@ -267,6 +267,9 @@ mod tests {
                     completed: false,
                     total_plans: 0,
                     completed_plans: 0,
+                    // The router does not read declared dependencies yet; the
+                    // rule that gates on them is plan 20-04's.
+                    depends_on: Vec::new(),
                 })
                 .collect(),
             ..Default::default()

@@ -2088,6 +2088,7 @@ mod tests {
                     completed: true,
                     total_plans: 0,
                     completed_plans: 0,
+                    depends_on: Vec::new(),
                 },
                 RoadmapPhase {
                     number: "2".to_string(),
@@ -2096,6 +2097,7 @@ mod tests {
                     completed: false,
                     total_plans: 0,
                     completed_plans: 0,
+                    depends_on: Vec::new(),
                 },
             ],
             ..Default::default()

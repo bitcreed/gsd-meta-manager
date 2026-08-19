@@ -644,6 +644,17 @@ fn test_this_repositorys_own_planning_dir_reads_without_panicking() {
         "the roadmap declares phases; if this is empty the reader found nothing \
          to assert against and the checks below are vacuous"
     );
+    // Task 3: the roadmap's declared dependencies survive the trip onto
+    // ProjectState, where the router's dependency condition will read them.
+    let phase_20 = state.phases.iter().find(|p| p.number == "20");
+    if let Some(phase) = phase_20 {
+        assert_eq!(
+            phase.depends_on,
+            vec!["16", "17", "19"],
+            "the dependency condition must read what the roadmap DECLARES; a \
+             numbering heuristic would have said `19` alone"
+        );
+    }
     for (number, inference) in &state.phase_disk_statuses {
         // The DRIVE-05 invariant itself, over real artifacts: Complete is a
         // conjunction, so it can never coexist with a non-passing verification.

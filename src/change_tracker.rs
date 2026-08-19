@@ -126,6 +126,7 @@ mod tests {
                     completed,
                     total_plans: 0,
                     completed_plans: 0,
+                    depends_on: Vec::new(),
                 })
                 .collect(),
             ..Default::default()
