@@ -558,6 +558,27 @@ enum CommandSource {
     },
 }
 
+/// The label this run's **own** terminal decides, or `None` when the answer has
+/// to come from the outcome and the journal.
+///
+/// **It takes no path, and that is the property rather than a convenience.** A
+/// run that halted on a bound, parked at a gate or hit a quota already holds the
+/// authoritative reason in memory; deriving it by re-reading the journal makes a
+/// classification depend on an I/O operation that can fail — and
+/// [`record_terminal`] deliberately swallows a failed journal write with a
+/// `warn!`, so the failure is silent by design. WR-01 is what that cost: a run
+/// whose `Parked` record failed to land reported `succeeded_with_changes`.
+/// Because this signature cannot express a read, no read can lose the reason.
+///
+/// `None` is the genuinely journal-shaped case — this run stopped for no reason
+/// of its own, so a park recorded by another process (the hook or guard
+/// re-entries) may still decide the label.
+fn own_terminal_label(terminal: &Terminal) -> Option<String> {
+    terminal
+        .park_reason()
+        .map(|reason| format!("{PARKED_LABEL_PREFIX}{reason}"))
+}
+
 /// The label the terminal `run.json` carries, which is
 /// [`outcome_label`] **unless the run's journal names a park** (D-25).
 ///
@@ -2382,41 +2403,50 @@ pub async fn execute_run(
     // to open a fresh stdin and could have delivered it.
     sweep_inbox_as_missed(&mut run.journal, &inbox_path, &mut inbox_cursor).await;
 
-    // The label, from exactly two sources and no third: `outcome_label` — via
-    // `terminal_label`, which lets a park recorded in the journal win, including
-    // the one written immediately above — or the `parked:` carrier on its own
-    // when no iteration ever spawned.
-    let label = match last_outcome {
-        Some(outcome) => {
-            // Same blocking hand-off and the same inline fallback as
-            // `shutdown_on_terminate`'s: one end-of-run journal read, moved off the
-            // async path (D-28, WR-10).
-            let journal_path = run.journal.paths().journal.clone();
-            let task_outcome = outcome.clone();
-            let task_path = journal_path.clone();
-            match tokio::task::spawn_blocking(move || terminal_label(&task_outcome, &task_path))
-                .await
-            {
-                Ok(label) => label,
-                Err(err) => {
-                    tracing::warn!(
-                        panicked = err.is_panic(),
-                        "the terminal-label task did not run to completion",
-                    );
-                    terminal_label(&outcome, &journal_path)
+    // The label. **This run's own terminal is asked FIRST, and the order is
+    // WR-01.** It used to be asked only on the branch where no iteration had
+    // spawned; a run that halted on a bound *after* a successful iteration
+    // derived its label by re-reading the journal from disk instead, and
+    // `terminal_label` answers `outcome_label` whenever that read fails. Since
+    // `record_terminal` swallows every journal error with a `warn!`, a failed
+    // `Parked` write — ENOSPC, a truncated line, an unreadable journal at run
+    // end — turned `parked:bounds_step_cap` into `succeeded_with_changes`, and a
+    // supervising process reading `run.json` concluded the run had finished its
+    // work. The authoritative value was in hand the whole time; an I/O failure
+    // must not be able to change a run's classification (DRIVE-06, criterion 5).
+    //
+    // The journal read is still reached whenever this run has no reason of its
+    // own, which is the case it was written for: a park recorded by *another*
+    // process — the hook or guard re-entries — that this driver never observed.
+    let label = match own_terminal_label(&terminal) {
+        Some(label) => label,
+        None => match last_outcome {
+            Some(outcome) => {
+                // Same blocking hand-off and the same inline fallback as
+                // `shutdown_on_terminate`'s: one end-of-run journal read, moved off the
+                // async path (D-28, WR-10).
+                let journal_path = run.journal.paths().journal.clone();
+                let task_outcome = outcome.clone();
+                let task_path = journal_path.clone();
+                match tokio::task::spawn_blocking(move || terminal_label(&task_outcome, &task_path))
+                    .await
+                {
+                    Ok(label) => label,
+                    Err(err) => {
+                        tracing::warn!(
+                            panicked = err.is_panic(),
+                            "the terminal-label task did not run to completion",
+                        );
+                        terminal_label(&outcome, &journal_path)
+                    }
                 }
             }
-        }
-        // Nothing ever spawned, so there is no `RunOutcome` for `outcome_label`
-        // to map — a routed run that parked or halted on its first pass. The
-        // `parked:` carrier is the whole label, read straight off the terminal
-        // rather than round-tripped through the journal that has just been told
-        // the same thing.
-        None => match terminal.park_reason() {
-            Some(reason) => format!("{PARKED_LABEL_PREFIX}{reason}"),
-            // `Terminal::Completed` with no spawn: the router reported the
-            // target already met. See `GOAL_MET_LABEL` for why neither of the
-            // other two sources is right here, and why no branch reaches it yet.
+            // Nothing ever spawned and this run named no reason of its own.
+            // Unreachable today: every `break` that precedes a spawn sets a
+            // terminal that `own_terminal_label` answers. Spelled out rather
+            // than `unwrap`ped because a detached driver that panicked here
+            // would leave a run directory with no terminal record, which is the
+            // signal D-12 reserves for a genuine crash.
             None => GOAL_MET_LABEL.to_string(),
         },
     };
@@ -2619,6 +2649,68 @@ mod tests {
                 ParkReason::ForcePushBlocked.as_str()
             ),
             "the LAST park is the state the run ended in"
+        );
+    }
+
+    #[test]
+    fn a_halt_labels_itself_from_memory_and_a_journal_it_never_reads() {
+        // **WR-01.** The failure this pins: a routed run halts on
+        // `bounds_step_cap` after a successful iteration; the `Parked` record
+        // fails to land (ENOSPC, a truncated line, an unreadable journal at run
+        // end) and `record_terminal` swallows that with a `warn!`. Deriving the
+        // label from the journal then answers `outcome_label`, and `run.json`
+        // records `succeeded_with_changes` for a run that stopped short. A
+        // supervising process reads that as work completed.
+        //
+        // The proof is structural as well as behavioural: `own_terminal_label`
+        // takes no `&Path`, so no journal read — failed, stale or absent — can
+        // reach its answer. This test constructs the exact pair the bug needed
+        // (a terminal that halted AND a plausible successful outcome) and shows
+        // the outcome loses.
+        let halted = Terminal::Halted {
+            reason: bounds::BoundsReason::StepCap,
+        };
+        assert_eq!(
+            own_terminal_label(&halted).as_deref(),
+            Some(format!("{PARKED_LABEL_PREFIX}{}", bounds::REASON_STEP_CAP).as_str()),
+            "the run's own halt reason is authoritative and needs no round trip \
+             through disk. An I/O failure may cost a journal record; it may not \
+             change how the run is classified (DRIVE-06, criterion 5)"
+        );
+
+        // The same for every other arm that names a reason of its own.
+        assert_eq!(
+            own_terminal_label(&Terminal::Parked {
+                reason: router::RouterReason::NoRule,
+                detail: "planned".to_string(),
+            })
+            .as_deref(),
+            Some(format!("{PARKED_LABEL_PREFIX}{}", router::RouterReason::NoRule.as_str()).as_str())
+        );
+        assert_eq!(
+            own_terminal_label(&Terminal::QuotaParked {
+                detail: "window=five_hour resets_at=unknown".to_string(),
+            })
+            .as_deref(),
+            Some(
+                format!(
+                    "{PARKED_LABEL_PREFIX}{}",
+                    rate_limit::QuotaReason::Rejected.as_str()
+                )
+                .as_str()
+            )
+        );
+
+        // And the negative half, which is what keeps the journal read reachable
+        // for the case it was written for: a run that stopped for no reason of
+        // its OWN must still let a park recorded by another process — the hook
+        // or guard re-entries this driver never observes — decide the label.
+        assert_eq!(
+            own_terminal_label(&Terminal::Completed),
+            None,
+            "a completed run has no reason of its own, so the outcome and the \
+             journal still decide. Answering here would suppress an earlier \
+             envelope park that only the journal knows about"
         );
     }
 
