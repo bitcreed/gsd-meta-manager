@@ -482,3 +482,179 @@ fn test_project_state_never_reports_complete_without_a_passing_verification() {
         );
     }
 }
+
+// ============================================================================
+// Plan 20-03 Task 2 — the rest of the disk-observable human-judgement gates
+// ============================================================================
+
+#[test]
+fn test_non_empty_root_continue_here_sets_the_project_gate() {
+    let tmp = planning_with_phase("19", "19-thing", &[]);
+    fs::write(
+        tmp.path().join(".planning").join(".continue-here.md"),
+        "# Stopped\n\nAsk the user which option to take.\n",
+    )
+    .unwrap();
+    let state = parse_project_state(&tmp.path().join(".planning"));
+    assert!(
+        state.continue_here_present,
+        "a project-root continue-here marker is a hard stop whose only bypass is \
+         --force (next.md:46-58)"
+    );
+}
+
+#[test]
+fn test_empty_root_continue_here_does_not_set_the_project_gate() {
+    let tmp = planning_with_phase("19", "19-thing", &[]);
+    fs::write(
+        tmp.path().join(".planning").join(".continue-here.md"),
+        "   \n\t\n  \n",
+    )
+    .unwrap();
+    let state = parse_project_state(&tmp.path().join(".planning"));
+    assert!(
+        !state.continue_here_present,
+        "content check, not existence check — the precedent the handoff detector \
+         already sets. A file trimmed to nothing is a leftover, not a signal"
+    );
+}
+
+#[test]
+fn test_no_root_continue_here_does_not_set_the_project_gate() {
+    let tmp = planning_with_phase("19", "19-thing", &[]);
+    let state = parse_project_state(&tmp.path().join(".planning"));
+    assert!(!state.continue_here_present);
+}
+
+#[test]
+fn test_phase_continue_here_gate_flows_onto_the_phase_inference() {
+    let tmp = planning_with_phase("19", "19-thing", &[]);
+    let phase_dir = tmp
+        .path()
+        .join(".planning")
+        .join("phases")
+        .join("19-thing");
+    fs::write(
+        phase_dir.join(".continue-here.md"),
+        "| Task | Severity |\n|---|---|\n| Decide the schema | blocking |\n",
+    )
+    .unwrap();
+    let state = parse_project_state(&tmp.path().join(".planning"));
+    assert!(state
+        .phase_disk_statuses
+        .get("19")
+        .expect("the declared phase has an inference")
+        .continue_here_blocking);
+}
+
+#[test]
+fn test_outstanding_uat_gate_flows_onto_the_phase_inference() {
+    let tmp = planning_with_phase(
+        "19",
+        "19-thing",
+        &[("19-UAT.md", "---\nstatus: pending\n---\n")],
+    );
+    let state = parse_project_state(&tmp.path().join(".planning"));
+    let inference = state.phase_disk_statuses.get("19").unwrap();
+    assert!(inference.uat_status.is_outstanding());
+    assert_eq!(inference.uat_status.as_str(), "pending");
+}
+
+#[test]
+fn test_deferred_verification_row_names_the_deferred_phase() {
+    use gsd_meta_manager::state_reader::state_md::deferred_verification_phases;
+
+    let content = "\
+---
+status: executing
+---
+
+## Deferred Verification
+
+| Phase | State | Resume |
+|-------|-------|--------|
+| 19 | verification_deferred_human | /gsd-verify-work 19 |
+| 0.3 | verification_deferred_human | /gsd-verify-work 0.3 |
+
+Prose after the table.
+
+## Something Else
+
+| Phase | State |
+|-------|-------|
+| 21 | not deferred at all |
+";
+    assert_eq!(
+        deferred_verification_phases(content),
+        vec!["19".to_string(), "0.3".to_string()],
+        "the section scope closes at the next heading, so a table further down \
+         the document is never read as a deferred-verification row"
+    );
+
+    let tmp = planning_with_phase("19", "19-thing", &[]);
+    fs::write(tmp.path().join(".planning").join("STATE.md"), content).unwrap();
+    let state = parse_project_state(&tmp.path().join(".planning"));
+    assert_eq!(state.deferred_verification_phases, vec!["19", "0.3"]);
+}
+
+#[test]
+fn test_no_deferred_verification_section_yields_no_phases() {
+    use gsd_meta_manager::state_reader::state_md::deferred_verification_phases;
+
+    assert!(deferred_verification_phases("---\nstatus: executing\n---\n").is_empty());
+    // A malformed table under the right heading is still not an error.
+    assert!(deferred_verification_phases("## Deferred Verification\n\n| |\n|---|\n").is_empty());
+    assert!(deferred_verification_phases("").is_empty());
+}
+
+#[test]
+fn test_error_and_failed_project_statuses_read_as_a_gate() {
+    use gsd_meta_manager::state_reader::state_md::is_error_status;
+
+    for status in ["error", "failed", "ERROR", " Failed "] {
+        assert!(is_error_status(status), "{status:?} is next.md:60-69's hard stop");
+    }
+    for status in [
+        "executing",
+        "planning",
+        "recovered from error",
+        "failed to reach the registry",
+        "",
+    ] {
+        assert!(
+            !is_error_status(status),
+            "{status:?} is prose about a failure, not a project in one; a \
+             substring test would park on both"
+        );
+    }
+}
+
+#[test]
+fn test_this_repositorys_own_planning_dir_reads_without_panicking() {
+    use gsd_meta_manager::state_reader::disk_status::DiskStatus;
+
+    // Every new read pointed at real data, including the stale phase-19 marker.
+    let planning = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".planning");
+    if !planning.is_dir() {
+        return;
+    }
+    let state = parse_project_state(&planning);
+    assert!(
+        !state.phases.is_empty(),
+        "the roadmap declares phases; if this is empty the reader found nothing \
+         to assert against and the checks below are vacuous"
+    );
+    for (number, inference) in &state.phase_disk_statuses {
+        // The DRIVE-05 invariant itself, over real artifacts: Complete is a
+        // conjunction, so it can never coexist with a non-passing verification.
+        if inference.status == DiskStatus::Complete {
+            assert!(
+                inference.verification_status.is_passed()
+                    || !inference.has_verification,
+                "phase {number} reads Complete while its verification status is \
+                 {:?}",
+                inference.verification_status
+            );
+        }
+    }
+}

@@ -101,6 +101,78 @@ pub fn is_all_phases_complete(status: &str) -> bool {
     status.to_lowercase().contains("all phases complete")
 }
 
+/// G11: true when a project's `status` is the hard-stop `error` or `failed`.
+///
+/// A **predicate over the existing field, not a new field.** Whether an error
+/// status parks a run is the router's disposition to make; the reader's job is
+/// only to make the fact readable as a gate rather than as ordinary status text
+/// (`next.md:60-69`).
+///
+/// Matched exactly, case-insensitively, after trimming. Deliberately not a
+/// substring test: a `stopped_at` of "failed to reach the registry" or a status
+/// of "recovered from error" is prose about a past failure, not a project in
+/// one, and a substring match would park on both.
+pub fn is_error_status(status: &str) -> bool {
+    let s = status.trim().to_ascii_lowercase();
+    s == "error" || s == "failed"
+}
+
+/// G15: the phases named by the `## Deferred Verification` table in STATE.md.
+///
+/// GSD's autonomous workflow routes a `verification_deferred_human` row to
+/// `handle_blocker` (`autonomous.md:478-481`). The table's first column is the
+/// phase; the header row (first cell `Phase`) and the alignment row are skipped,
+/// and a row with an empty first cell contributes nothing.
+///
+/// Fail-safe: an absent section, a malformed table or a table with no data rows
+/// all yield an empty vector, never an error.
+pub fn deferred_verification_phases(content: &str) -> Vec<String> {
+    let mut phases: Vec<String> = Vec::new();
+    let mut in_section = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Any heading opens or closes the section scope, so a table further
+        // down the document is never read as this section's.
+        if trimmed.starts_with('#') {
+            in_section = trimmed
+                .trim_start_matches('#')
+                .trim()
+                .eq_ignore_ascii_case("Deferred Verification");
+            continue;
+        }
+        if !in_section || !trimmed.starts_with('|') {
+            continue;
+        }
+
+        let cells: Vec<String> = trimmed
+            .trim_matches('|')
+            .split('|')
+            .map(|c| c.trim().to_string())
+            .collect();
+
+        // Alignment row (`|---|---|`).
+        if cells
+            .iter()
+            .all(|c| !c.is_empty() && c.chars().all(|ch| ch == '-' || ch == ':'))
+        {
+            continue;
+        }
+
+        let Some(first) = cells.first() else { continue };
+        let phase = first.trim().trim_matches('*').trim();
+        // Header row, identified by NAME rather than by position, so a table
+        // written without a header still contributes its rows.
+        if phase.eq_ignore_ascii_case("Phase") || phase.is_empty() {
+            continue;
+        }
+        phases.push(phase.to_string());
+    }
+
+    phases
+}
+
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct ProgressInfo {
     #[serde(default)]

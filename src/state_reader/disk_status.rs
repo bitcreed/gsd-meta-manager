@@ -113,6 +113,80 @@ impl VerificationStatus {
     }
 }
 
+/// The UAT statuses `uat-predicate.cjs:30-32` treats as outstanding, plus the
+/// tolerant arms either side of that set.
+///
+/// Same posture as [`VerificationStatus`]: a value outside the vocabulary is
+/// carried verbatim rather than mapped onto a member of it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum UatStatus {
+    /// No `*-UAT.md`, no leading frontmatter block, or no `status` key.
+    #[default]
+    Missing,
+    /// UAT is partially complete — outstanding.
+    Partial,
+    /// A UAT item was diagnosed but not closed — outstanding.
+    Diagnosed,
+    /// UAT has not been run — outstanding.
+    Pending,
+    /// UAT is blocked — outstanding.
+    Blocked,
+    /// UAT is underway — outstanding.
+    InProgress,
+    /// UAT failed — outstanding.
+    Failed,
+    /// Any other value, carried verbatim. **Not outstanding**: this repository's
+    /// own phase 19 carries `status: deferred`, which is a human's explicit
+    /// decision to proceed and must not read as an unanswered gate.
+    Other(String),
+}
+
+impl UatStatus {
+    /// Classify a raw frontmatter value. Case-insensitive on the known arms.
+    pub fn from_raw(raw: &str) -> Self {
+        let trimmed = raw.trim();
+        match trimmed.to_ascii_lowercase().as_str() {
+            "partial" => UatStatus::Partial,
+            "diagnosed" => UatStatus::Diagnosed,
+            "pending" => UatStatus::Pending,
+            "blocked" => UatStatus::Blocked,
+            "in_progress" => UatStatus::InProgress,
+            "failed" => UatStatus::Failed,
+            _ => UatStatus::Other(trimmed.to_string()),
+        }
+    }
+
+    /// The stable identifier a later reader greps for. Exhaustive, no wildcard.
+    pub fn as_str(&self) -> &str {
+        match self {
+            UatStatus::Missing => "missing",
+            UatStatus::Partial => "partial",
+            UatStatus::Diagnosed => "diagnosed",
+            UatStatus::Pending => "pending",
+            UatStatus::Blocked => "blocked",
+            UatStatus::InProgress => "in_progress",
+            UatStatus::Failed => "failed",
+            UatStatus::Other(observed) => observed,
+        }
+    }
+
+    /// Whether this status sets the outstanding-UAT gate (G7).
+    ///
+    /// The set is `uat-predicate.cjs:30-32`'s, taken as written. Everything
+    /// outside it — including `passed` and `deferred` — is not a gate.
+    pub fn is_outstanding(&self) -> bool {
+        matches!(
+            self,
+            UatStatus::Partial
+                | UatStatus::Diagnosed
+                | UatStatus::Pending
+                | UatStatus::Blocked
+                | UatStatus::InProgress
+                | UatStatus::Failed
+        )
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DiskInference {
     pub status: DiskStatus,
@@ -135,6 +209,23 @@ pub struct DiskInference {
     pub verification_status: VerificationStatus,
     pub has_security: bool,
     pub has_uat: bool,
+    /// The `status` read from the phase's `*-UAT.md` frontmatter (G7).
+    ///
+    /// Presence is `has_uat`; whether anyone still owes an answer is this.
+    /// [`UatStatus::is_outstanding`] is the gate predicate.
+    pub uat_status: UatStatus,
+    /// A phase-directory `.continue-here.md` carrying **at least one
+    /// blocking-severity row** (G13).
+    ///
+    /// **Not a file-existence check, and it must never be simplified into one.**
+    /// This repository carries a stale `.continue-here.md` in
+    /// `.planning/phases/19-gitsafe-git-blast-radius-envelope/`, left behind by a
+    /// completed phase; every one of its severity rows reads `advisory`. An
+    /// existence test — or a substring search for the word "blocking", which its
+    /// prose contains as part of the filename `tests/async_blocking_guard.rs` —
+    /// would park every run against this project forever.
+    /// `test_phase_19_stale_continue_here_marker_is_not_blocking` pins that.
+    pub continue_here_blocking: bool,
     pub has_spec: bool,
     pub has_eval_review: bool,
     /// Sub-stage artifacts (per /gsd-settings Planning + Execution toggles).
@@ -219,6 +310,118 @@ fn read_verification_status(phase_dir: &Path, mut names: Vec<String>) -> Verific
         .unwrap_or_default()
 }
 
+/// Read the `status` out of the phase directory's UAT artifact.
+///
+/// Same sorted-first tie-break and the same byte-zero-anchored parse
+/// [`read_verification_status`] uses, for the same reason: one directory, one
+/// answer, on every read. Every failure mode yields [`UatStatus::Missing`].
+fn read_uat_status(phase_dir: &Path, mut names: Vec<String>) -> UatStatus {
+    names.sort();
+    names
+        .first()
+        .and_then(|name| std::fs::read_to_string(phase_dir.join(name)).ok())
+        .and_then(|content| leading_frontmatter_value(&content, "status"))
+        .map(|raw| UatStatus::from_raw(&raw))
+        .unwrap_or_default()
+}
+
+/// Normalize a markdown cell or value for comparison: strip emphasis and code
+/// ticks, trim, lowercase.
+fn normalize_cell(cell: &str) -> String {
+    cell.trim()
+        .trim_matches('*')
+        .trim_matches('`')
+        .trim()
+        .to_ascii_lowercase()
+}
+
+/// Split a markdown table row into cells, dropping the outer pipes.
+fn split_markdown_row(line: &str) -> Vec<String> {
+    line.trim()
+        .trim_matches('|')
+        .split('|')
+        .map(|c| c.trim().to_string())
+        .collect()
+}
+
+/// True when every cell of a table row is a `---` / `:--:` alignment marker.
+fn is_alignment_row(cells: &[String]) -> bool {
+    !cells.is_empty()
+        && cells.iter().all(|c| {
+            let t = c.trim();
+            !t.is_empty() && t.chars().all(|ch| ch == '-' || ch == ':')
+        })
+}
+
+/// Whether a `.continue-here.md` carries at least one blocking-severity ROW.
+///
+/// **A row, never the file.** GSD's `execute-phase.md:217-235` and
+/// `discuss-phase.md:162-177` stop on a marker whose rows carry
+/// `severity: blocking`; a marker whose rows are all advisory is a note, not a
+/// gate. Two row shapes are recognised, both of which locate the severity as a
+/// *field* rather than as text anywhere in the document:
+///
+/// 1. A markdown table with a `Severity` header column — the cell at that
+///    column index is compared, so prose in a neighbouring column cannot match.
+/// 2. A `severity: blocking` key line (optionally list-prefixed).
+///
+/// A substring search for "blocking" is deliberately NOT one of them. This
+/// repository's own stale marker contains the word inside the filename
+/// `tests/async_blocking_guard.rs`, and would fire on it.
+fn continue_here_has_blocking_row(content: &str) -> bool {
+    let mut severity_column: Option<usize> = None;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with('|') {
+            let cells = split_markdown_row(trimmed);
+            if is_alignment_row(&cells) {
+                continue;
+            }
+            match severity_column {
+                // Inside a table whose Severity column is known: compare that
+                // cell, and only that cell.
+                Some(index) => {
+                    if cells.get(index).map(|c| normalize_cell(c)).as_deref() == Some("blocking") {
+                        return true;
+                    }
+                }
+                // Not yet in a severity table: is this row its header?
+                None => {
+                    severity_column = cells
+                        .iter()
+                        .position(|cell| normalize_cell(cell) == "severity");
+                }
+            }
+            continue;
+        }
+
+        // A non-table line ends whatever table we were in, so a later table's
+        // rows are never read against an earlier table's column index.
+        severity_column = None;
+
+        // Key-line shape: `severity: blocking`, `- severity: blocking`.
+        if let Some((key, value)) = trimmed.split_once(':') {
+            let key = key.trim_start_matches(['-', '*', ' ']).trim();
+            if key.eq_ignore_ascii_case("severity") && normalize_cell(value) == "blocking" {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Whether a phase directory's `.continue-here.md` sets the G13 gate.
+///
+/// Fail-safe: an absent or unreadable marker is "no gate observed".
+fn phase_continue_here_blocking(phase_dir: &Path) -> bool {
+    std::fs::read_to_string(phase_dir.join(".continue-here.md"))
+        .map(|content| continue_here_has_blocking_row(&content))
+        .unwrap_or(false)
+}
+
 /// Infer the GSD status of a phase directory by scanning its file artifacts.
 ///
 /// Follows GSD's algorithm (from roadmap.cjs:127-166):
@@ -258,6 +461,8 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     // Verification artifacts are COLLECTED, not flagged: the status lives inside
     // the file, and which file to read is decided after the scan by sorting.
     let mut verification_names: Vec<String> = Vec::new();
+    // UAT artifacts are collected for the same reason, and read the same way.
+    let mut uat_names: Vec<String> = Vec::new();
     let mut has_context = false;
     let mut has_research = false;
     let mut has_patterns = false;
@@ -269,7 +474,6 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     let mut has_review = false;
     let mut has_ui_review = false;
     let mut has_security = false;
-    let mut has_uat = false;
     let mut has_spec = false;
     let mut has_eval_review = false;
     let mut has_coverage = false;
@@ -340,7 +544,7 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
             continue;
         }
         if name == "UAT.md" || name.ends_with("-UAT.md") {
-            has_uat = true;
+            uat_names.push(name);
             continue;
         }
         // GSD 1.8.0 informational artifacts — flagged only, never counted.
@@ -410,6 +614,9 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
 
     let has_verification = !verification_names.is_empty();
     let verification_status = read_verification_status(phase_dir, verification_names);
+    let has_uat = !uat_names.is_empty();
+    let uat_status = read_uat_status(phase_dir, uat_names);
+    let continue_here_blocking = phase_continue_here_blocking(phase_dir);
 
     // Pass 2 (pairing) — a summary counts only if its ID matches a surviving
     // (non-superseded) plan ID (matched-summary rule, #1988). Standalone
@@ -464,6 +671,8 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         verification_status,
         has_security,
         has_uat,
+        uat_status,
+        continue_here_blocking,
         has_spec,
         has_eval_review,
         has_patterns,
@@ -935,6 +1144,158 @@ mod tests {
              implementation is still unfinished"
         );
         assert_eq!(result.verification_status, VerificationStatus::Passed);
+    }
+
+    // ── Plan 20-03 Task 2: the rest of the disk-observable gate set ──
+
+    #[test]
+    fn test_uat_blocking_statuses_set_the_outstanding_gate() {
+        // uat-predicate.cjs:30-32's set, taken as written.
+        for raw in [
+            "partial",
+            "diagnosed",
+            "pending",
+            "blocked",
+            "in_progress",
+            "failed",
+        ] {
+            let dir = tempdir().unwrap();
+            fs::write(
+                dir.path().join("19-UAT.md"),
+                format!("---\nstatus: {raw}\n---\n"),
+            )
+            .unwrap();
+            let result = infer_disk_status(dir.path());
+            assert!(
+                result.uat_status.is_outstanding(),
+                "`{raw}` is in GSD's blocking UAT set and must set the gate"
+            );
+            assert_eq!(result.uat_status.as_str(), raw);
+            assert!(result.has_uat, "presence is still recorded alongside status");
+        }
+    }
+
+    #[test]
+    fn test_uat_statuses_outside_the_blocking_set_do_not_gate() {
+        // The negative arm. `deferred` is this repository's own phase-19 value:
+        // a human's explicit decision to proceed, not an unanswered question.
+        for raw in ["passed", "deferred", "complete"] {
+            let dir = tempdir().unwrap();
+            fs::write(
+                dir.path().join("19-UAT.md"),
+                format!("---\nstatus: {raw}\n---\n"),
+            )
+            .unwrap();
+            let result = infer_disk_status(dir.path());
+            assert!(
+                !result.uat_status.is_outstanding(),
+                "`{raw}` is outside GSD's blocking set; a gate that fires on \
+                 everything is as useless as one that fires on nothing"
+            );
+            assert_eq!(result.uat_status, UatStatus::Other(raw.to_string()));
+        }
+    }
+
+    #[test]
+    fn test_absent_uat_artifact_yields_the_missing_status() {
+        let dir = tempdir().unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.uat_status, UatStatus::Missing);
+        assert!(!result.uat_status.is_outstanding());
+        assert!(!result.has_uat);
+    }
+
+    #[test]
+    fn test_continue_here_with_a_blocking_row_sets_the_phase_gate() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join(".continue-here.md"),
+            "## Anti-Patterns\n\n| Pattern | Severity |\n|---|---|\n| Something | advisory |\n| \
+             Something else | blocking |\n",
+        )
+        .unwrap();
+        assert!(infer_disk_status(dir.path()).continue_here_blocking);
+    }
+
+    #[test]
+    fn test_continue_here_key_line_form_sets_the_phase_gate() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join(".continue-here.md"),
+            "---\ncontext: phase\n---\n\n- item: do the thing\n- severity: blocking\n",
+        )
+        .unwrap();
+        assert!(infer_disk_status(dir.path()).continue_here_blocking);
+    }
+
+    #[test]
+    fn test_continue_here_with_no_blocking_row_does_not_set_the_phase_gate() {
+        let dir = tempdir().unwrap();
+        // Rows exist; none is blocking. Plus the word "blocking" in prose and in
+        // a filename — exactly the shape of this repository's stale marker.
+        fs::write(
+            dir.path().join(".continue-here.md"),
+            "## Anti-Patterns\n\n| Pattern | Severity |\n|---|---|\n| Plan 19-08: \
+             `tests/async_blocking_guard.rs` | advisory |\n| Another blocking-sounding note | \
+             advisory |\n",
+        )
+        .unwrap();
+        assert!(
+            !infer_disk_status(dir.path()).continue_here_blocking,
+            "the gate is a blocking-severity ROW, never the file's existence and \
+             never the word appearing in prose. A substring match parks every run \
+             against a project carrying a stale advisory marker forever"
+        );
+    }
+
+    #[test]
+    fn test_absent_or_unreadable_continue_here_does_not_set_the_phase_gate() {
+        let empty = tempdir().unwrap();
+        assert!(!infer_disk_status(empty.path()).continue_here_blocking);
+
+        // A directory where the marker should be: read_to_string fails.
+        let unreadable = tempdir().unwrap();
+        fs::create_dir(unreadable.path().join(".continue-here.md")).unwrap();
+        assert!(
+            !infer_disk_status(unreadable.path()).continue_here_blocking,
+            "an unreadable marker is 'no gate observed', never an error and never \
+             a panic"
+        );
+    }
+
+    #[test]
+    fn test_blocking_row_in_a_table_without_a_severity_column_is_not_a_gate() {
+        let dir = tempdir().unwrap();
+        // "blocking" sits in a Description column of a table that has no
+        // Severity header at all. Comparing by column index is what stops it.
+        fs::write(
+            dir.path().join(".continue-here.md"),
+            "| Item | Description |\n|---|---|\n| One | blocking |\n",
+        )
+        .unwrap();
+        assert!(!infer_disk_status(dir.path()).continue_here_blocking);
+    }
+
+    #[test]
+    fn test_phase_19_stale_continue_here_marker_is_not_blocking() {
+        // The concrete regression the stale-marker note describes, read from
+        // this repository's own planning directory rather than a fixture.
+        let planning = Path::new(env!("CARGO_MANIFEST_DIR")).join(".planning");
+        let Some(phase_19) = find_phase_dir(&planning, "19") else {
+            // Archived away by a future milestone: the fixtures above still
+            // carry the property, so there is nothing left to regress here.
+            return;
+        };
+        if !phase_19.join(".continue-here.md").exists() {
+            return;
+        }
+        assert!(
+            !infer_disk_status(&phase_19).continue_here_blocking,
+            "phase 19's marker is left over from a completed phase and every one \
+             of its severity rows reads `advisory`. If this fires, the gate has \
+             been simplified back into an existence check or a substring search, \
+             and every run against this project parks forever"
+        );
     }
 
     #[test]

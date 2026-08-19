@@ -43,6 +43,18 @@ pub struct ProjectState {
     pub last_activity: Option<chrono::DateTime<chrono::Utc>>,
     /// Filesystem root of the project (the directory containing `.planning/`).
     pub project_root: PathBuf,
+    /// G10: a **non-empty** `.planning/.continue-here.md` at the project root.
+    ///
+    /// A hard stop whose only bypass is `--force` (`next.md:46-58`). The content
+    /// check, rather than a bare existence check, follows the precedent
+    /// [`detect_handoff`] already sets in this file: a file trimmed to nothing
+    /// is a leftover, not a signal.
+    pub continue_here_present: bool,
+    /// G15: the phases carrying a `## Deferred Verification` row in STATE.md.
+    ///
+    /// Named rather than counted, because what a router or a human needs is
+    /// *which* phase still owes a verification, not how many do.
+    pub deferred_verification_phases: Vec<String>,
     /// GSD 1.8.0 parallel workstreams under `.planning/workstreams/<ws>/`.
     /// Empty for flat projects. Bounded to one level: a workstream's own
     /// sub-state carries an empty `workstreams` vec (recursion guard below).
@@ -171,7 +183,16 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
 
             state.milestone = fm.milestone;
         }
+        // G15 reads the document body, not the frontmatter, so it is parsed
+        // from the same content regardless of whether the frontmatter parsed.
+        state.deferred_verification_phases = state_md::deferred_verification_phases(&content);
     }
+
+    // G10: a non-empty project-root continue-here marker. Content check, not
+    // existence check, on `detect_handoff`'s precedent.
+    state.continue_here_present = std::fs::read_to_string(planning_dir.join(".continue-here.md"))
+        .map(|content| !content.trim().is_empty())
+        .unwrap_or(false);
 
     // Parse ROADMAP.md. The `## Progress` table (GSD 1.8.0) is authoritative
     // for progress counts when present; otherwise STATE.md frontmatter stands.
