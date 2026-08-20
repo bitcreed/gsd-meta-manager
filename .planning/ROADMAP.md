@@ -453,12 +453,22 @@ Plans:
 **Phase risks**:
 
   - **OQ6 (non-blocking)**: "done" must be a machine-checkable predicate (e.g. the milestone is marked shipped in `STATE.md` and the tag exists). A goal that cannot be turned into a predicate has no stopping condition and must be refused at start
-  - The threat model is real, not theoretical: this tool drives other people's cloned repos, whose `CLAUDE.md` is third-party content. Structural delimiting plus `--strict-mcp-config` with an explicit `--mcp-config`, so a project-local `.mcp.json` cannot introduce tools
-  - Opt-in disclosure belongs here in UX terms — list the files that will enter prompts, record a content hash, re-confirm if `CLAUDE.md` changes after opt-in
+  - The threat model is real, not theoretical: this tool drives other people's cloned repos, whose `CLAUDE.md` is third-party content. **CORRECTED by research (C-1/C-2):** structural delimiting alone does not achieve SAFE-07 — the CLI auto-loads `CLAUDE.md` itself, outside any boundary the driver controls, so the control is `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` and explicitly **not** `--safe-mode`, which also disables the hooks Phase 19's envelope is enforced by. `--strict-mcp-config` is already emitted with **no** `--mcp-config`; supplying one would widen the permitted set from empty
+  - Opt-in disclosure belongs here in UX terms — list the files that will enter prompts, record a content hash, re-confirm if `CLAUDE.md` changes after opt-in. **CORRECTED by research (C-4):** the existing hash is FNV-1a and its own doc says it is not a security control, so the digest is upgraded to SHA-256 behind a `sha256:` prefix
   - The driver sets its goal once, from a human. It may never enqueue itself more goals from artifacts the agent created during the run
+  - **The vacuity hazard is the phase's sharpest risk (C-3):** the officially-recommended untrusted-content channel is accepted by this transport with exit 0 and never reaches the model, so an injection-corpus test built on it passes *vacuously*, forever. Every corpus assertion must prove arrival before it proves the property
 
-**Research**: optional — not flagged by research; decide at planning time
-**Plans**: TBD
+**Research**: done — `21-RESEARCH.md` (five live spikes; four CONTEXT.md decisions contradicted and corrected in `21-CONTEXT.md` § "Research Corrections")
+**Plans**: 6 plans in 6 waves
+
+Plans:
+
+- [ ] 21-01-PLAN.md — Tracer: the seam argv/env profile, the untrusted-content boundary, the structured plan type, and the OQ1 gate answered live (DRIVE-01, DRIVE-03, SAFE-07, SAFE-08)
+- [ ] 21-02-PLAN.md — The fifth sibling taxonomy, an escalation cap resolved against the *resolved* step cap, and the journal table's fifth row (DRIVE-04)
+- [ ] 21-03-PLAN.md — SHA-256 digests, the prompt-input disclosure with its residual-exposure statement, and drift re-confirmation at the gate (SAFE-07, DRIVE-03)
+- [ ] 21-04-PLAN.md — The two seams wired: decomposition once above the loop as a moved capability, ambiguity at the router's no-rule branch, approval bound to plan *and* files (DRIVE-01, DRIVE-03, DRIVE-04)
+- [ ] 21-05-PLAN.md — The injection corpus: arrival proven before property, class by class, plus the matched `CLAUDE.md` suppression control pair (SAFE-07, SAFE-08)
+- [ ] 21-06-PLAN.md — The refusal record as evidence, no constructed command line, the cap park read off disk, and Phase 19's envelope shown firing independently (DRIVE-04, SAFE-08, SAFE-07)
 
 ### Phase 22: Container Execution Target
 
@@ -518,7 +528,7 @@ Plans:
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 8/8 | In Progress|  |
 | 20. Deterministic Decision Router & Run Bounds | 5/5 | In Progress|  |
-| 21. LLM Goal Layer & Prompt-Injection Hardening | 0/? | Not started | - |
+| 21. LLM Goal Layer & Prompt-Injection Hardening | 0/6 | Planned | - |
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
 
