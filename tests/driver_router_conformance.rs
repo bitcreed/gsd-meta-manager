@@ -25,8 +25,14 @@
 // assertion that no non-comment line under `src/` names that verb, so the
 // separation is a property of the build rather than of this paragraph.
 //
-// **Skipping is loud and bounded.** When the oracle is unavailable the test
-// prints what was missing and returns; when it IS available every fixture must
+// **A missing oracle FAILS; skipping is opt-in.** This file used to return
+// early when `gsd-tools` could not be resolved, printing its reason to a stream
+// libtest captures — so on any machine or CI runner without it, the test passed
+// while nothing checked that the transcription still holds. Its own comment
+// claimed a companion test prevented that, and the named companion never
+// resolves or consults the oracle at all (WR-07). The default is now to fail,
+// and an environment that genuinely cannot run Node says so explicitly through
+// `ALLOW_MISSING_ORACLE`. When the oracle IS available every fixture must
 // produce a real comparison, and a run in which any fixture silently produced
 // none fails. A test that passes because it checked nothing is worse than no
 // test, which is the whole reason the counters below exist.
@@ -46,6 +52,27 @@ const TARGET: &str = "01";
 /// `tests/driver_router_table.rs` is that this string appears in `tests/` and
 /// nowhere under `src/`.
 const ORACLE_VERB: &str = "init.manager";
+
+/// The variable an environment sets to say that it genuinely cannot run the
+/// oracle, and accepts a conformance run that checked nothing.
+///
+/// **Opt-out rather than opt-in, so the default is fail-loud.** An absent
+/// oracle is not a neutral condition: this file is the only thing standing
+/// between the rule table and the runtime it transcribes, and the research
+/// behind it self-expires. A skip nobody has to ask for is a skip nobody
+/// notices.
+const ALLOW_MISSING_ORACLE: &str = "GSD_META_MANAGER_ALLOW_MISSING_ORACLE";
+
+/// Whether a run with no resolvable oracle may pass.
+///
+/// Pure over the variable's *value*, so the default can be pinned by a test
+/// without unsetting anything in a process other tests share. An empty or
+/// whitespace-only value is not an opt-out: `FOO= cargo test` is how a variable
+/// is unset by accident, and reading it as consent is the same silent pass by a
+/// different route.
+fn skip_permitted(opt_out: Option<&str>) -> bool {
+    matches!(opt_out, Some(value) if !value.trim().is_empty())
+}
 
 /// A resolved way to run GSD's own router.
 struct Oracle {
@@ -340,11 +367,32 @@ fn build(fixture: &Fixture) -> Tree {
 
 #[test]
 fn the_rust_rule_table_agrees_with_gsd_s_own_router_over_a_fixture_per_state() {
-    let Some(oracle) = Oracle::resolve() else {
-        // The reason was printed by `resolve`. Returning here is a skip, and the
-        // companion test below is what stops a skip becoming a silent pass in an
-        // environment where the oracle IS present.
-        return;
+    let oracle = match Oracle::resolve() {
+        Some(oracle) => oracle,
+        None => {
+            // The reason was printed by `resolve` — to a stream libtest
+            // captures, which is precisely why printing it cannot be the whole
+            // response. Failing is (WR-07).
+            let opt_out = std::env::var(ALLOW_MISSING_ORACLE).ok();
+            assert!(
+                skip_permitted(opt_out.as_deref()),
+                "the conformance oracle could not be resolved, and this run \
+                 therefore checked NOTHING about whether the Rust rule table is \
+                 still a faithful transcription of GSD's router. That is a \
+                 failure by default: the table is a transcription of a runtime \
+                 this project neither owns nor versions, GSD shipped 1.8.0 → \
+                 1.10.0 in about a month, and the research behind the table \
+                 self-expires. Install GSD (~/.claude/gsd-core/bin/gsd-tools.cjs) \
+                 and Node, or set {ALLOW_MISSING_ORACLE}=1 to accept a run that \
+                 verified none of it"
+            );
+            eprintln!(
+                "SKIP: {ALLOW_MISSING_ORACLE} is set, so a run with no oracle is \
+                 accepted. Nothing in it checked the rule table against GSD's own \
+                 router."
+            );
+            return;
+        }
     };
 
     let mut compared = 0usize;
@@ -474,11 +522,41 @@ fn the_rust_rule_table_agrees_with_gsd_s_own_router_over_a_fixture_per_state() {
 }
 
 #[test]
+fn a_missing_oracle_is_a_failure_unless_the_environment_says_otherwise() {
+    // **The genuine companion to the skip path** (WR-07). The one this file used
+    // to name — `every_fixture_reaches_the_state_it_is_named_for` — never
+    // resolves or consults the oracle, so on a machine without `gsd-tools` both
+    // tests passed while nothing checked the transcription. This pins the
+    // decision that made the skip visible: it is off unless asked for.
+    assert!(
+        !skip_permitted(None),
+        "an unset variable must NOT permit a skip. The default has to be \
+         fail-loud, because an absent oracle is invisible otherwise: `eprintln!` \
+         from a passing test is captured by libtest and never seen without \
+         --nocapture"
+    );
+    assert!(
+        !skip_permitted(Some("")),
+        "and neither may an empty value — `FOO= cargo test` is how a variable is \
+         unset by accident, and reading that as consent is the same silent pass \
+         by another route"
+    );
+    assert!(!skip_permitted(Some("   ")), "nor a whitespace-only one");
+    assert!(
+        skip_permitted(Some("1")),
+        "an environment that genuinely cannot run Node must have a way to say so, \
+         or the only remaining option is deleting the test"
+    );
+}
+
+#[test]
 fn every_fixture_reaches_the_state_it_is_named_for() {
     // A guard on the fixtures themselves, independent of the oracle. A fixture
     // that stopped producing its state would make the conformance run above
     // compare two routers about a state neither is being asked about — and it
-    // would do so while passing.
+    // would do so while passing. It is NOT the guard on the skip path: that one
+    // is `a_missing_oracle_is_a_failure_unless_the_environment_says_otherwise`,
+    // and this comment used to claim a duty this test never discharged (WR-07).
     for fixture in FIXTURES {
         let tree = build(fixture);
         let state = parse_project_state(&tree.root.join(".planning"));
