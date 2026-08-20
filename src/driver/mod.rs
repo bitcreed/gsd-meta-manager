@@ -308,7 +308,7 @@ fn preview_text(
 ///    property `tests/spawn_seam_guard.rs` can check while "every branch
 ///    remembers to gate" is not.
 /// 3. Refuse an invocation that is malformed **as an invocation**: no command
-///    source or two ([`command_source_refusal`]), a `--target-phase` that is not
+///    source or two (`command_source_refusal`), a `--target-phase` that is not
 ///    a single plain path component ([`DriveError::TargetPhaseInvalid`]), or
 ///    caps that cannot be honoured ([`bounds::resolve`]). All three sit **above**
 ///    the dry-run branch, because each is answered identically whether or not
