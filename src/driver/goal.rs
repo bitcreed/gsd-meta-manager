@@ -918,10 +918,14 @@ mod tests {
     fn the_only_terminal_state_reduces_to_the_routers_goal_met_predicate() {
         use crate::state_reader::disk_status::{DiskInference, VerificationStatus};
 
-        let mut passed = DiskInference::default();
-        passed.verification_status = VerificationStatus::Passed;
-        let mut pending = DiskInference::default();
-        pending.verification_status = VerificationStatus::GapsFound;
+        let passed = DiskInference {
+            verification_status: VerificationStatus::Passed,
+            ..DiskInference::default()
+        };
+        let pending = DiskInference {
+            verification_status: VerificationStatus::GapsFound,
+            ..DiskInference::default()
+        };
 
         for state in TerminalState::ALL {
             assert_eq!(
