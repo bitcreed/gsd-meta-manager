@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Autonomous Orchestration
-current_phase: 20
-current_phase_name: deterministic-decision-router-run-bounds
+current_phase: 21
+current_phase_name: llm-goal-layer-prompt-injection-hardening
 status: executing
 stopped_at: Phase 19 human verification deferred by user; starting Phase 20 autonomous run
-last_updated: "2026-08-19T19:06:47.762Z"
+last_updated: "2026-08-20T01:34:04.897Z"
 last_activity: 2026-08-19
 last_activity_desc: Phase 19 UAT deferred, Phase 20 autonomous run started
 progress:
-  total_phases: 9
-  completed_phases: 6
-  total_plans: 50
-  completed_plans: 45
-  percent: 67
+  total_phases: 10
+  completed_phases: 7
+  total_plans: 56
+  completed_plans: 50
+  percent: 70
 ---
 
 # Project State
@@ -24,15 +24,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 20 — deterministic-decision-router-run-bounds
+**Current focus:** Phase 21 — llm-goal-layer-prompt-injection-hardening
 
 ## Current Position
 
-Phase: 20 (deterministic-decision-router-run-bounds) — EXECUTING
-Plan: 1 of 5
-Status: Executing Phase 20
+Phase: 21 (llm-goal-layer-prompt-injection-hardening) — EXECUTING
+Plan: 1 of ?
+Status: Executing Phase 21
   human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-08-19 — Phase 20 execution started
+Last activity: 2026-08-19 — Phase 21 execution resumed (wave continue)
 
 ## Deferred Verification
 
