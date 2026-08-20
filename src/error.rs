@@ -541,6 +541,38 @@ pub enum DriveError {
     /// escalation caps are refusable" — exactly as `BoundsRefusal` does for the
     /// run bounds.
     EscalationRefused(crate::driver::escalate::EscalationRefusal),
+    /// The stated goal could not be reduced to a machine-checkable plan
+    /// (DRIVE-03, CONTEXT.md OQ6).
+    ///
+    /// **A refusal, never a repair.** The decomposition happens once, above the
+    /// run, and a plan with one unreducible step is not a plan with that step
+    /// dropped: repairing model output would make this driver a second producer
+    /// of plans, and the user would then be running something no model proposed
+    /// and no human wrote.
+    ///
+    /// The taxonomy is [`crate::driver::goal::GoalRefusal`] and this variant
+    /// carries it rather than restating it, exactly as [`Self::BoundsRefused`]
+    /// carries its own — so one list answers "why can a goal be refused", and
+    /// the refusal names the part that could not be reduced.
+    GoalRefused(crate::driver::goal::GoalRefusal),
+    /// The goal-decomposition seam produced nothing this driver can act on, or
+    /// the run's model-consultation budget was already spent (DRIVE-04).
+    ///
+    /// **It parks the run before it exists rather than retrying with a stricter
+    /// prompt.** Retrying a model that has just produced an unusable answer is
+    /// how a bounded seam becomes an unbounded one, and the CLI already retries
+    /// its own structured-output validation internally — a count plan 21-01
+    /// pinned by measurement rather than by assumption.
+    ///
+    /// The reason is [`crate::driver::escalate::EscalationReason`], the fifth
+    /// sibling taxonomy, so the string a reader greps for here is the same one
+    /// a mid-run escalation park writes. No second string source.
+    GoalSeamUnusable {
+        /// The taxonomy member, from the escalation reason set.
+        reason: crate::driver::escalate::EscalationReason,
+        /// What was observed, already bounded and control-character-stripped.
+        detail: String,
+    },
     /// The opt-in gate refused before anything was spawned.
     OptIn(OptInError),
     // `DryRunUnavailable` lived here between plans 17-01 and 17-04. It said
@@ -633,6 +665,24 @@ impl fmt::Display for DriveError {
             ),
             Self::BoundsRefused(refusal) => write!(f, "{refusal}"),
             Self::EscalationRefused(refusal) => write!(f, "{refusal}"),
+            // The refusal's own `Display` already names the reason and quotes
+            // the offending value; the sentence around it is what tells the
+            // caller the run never started and what they can do about it.
+            Self::GoalRefused(refusal) => write!(
+                f,
+                "the stated goal could not be reduced to a machine-checkable plan, \
+                 so the run was refused before anything was created ({refusal}). \
+                 Restate the goal in terms of a phase reaching verified, or pass \
+                 `--target-phase <N>` directly"
+            ),
+            Self::GoalSeamUnusable { reason, detail } => write!(
+                f,
+                "the goal-decomposition seam produced nothing usable, so the run \
+                 was refused before anything was created (reason: {}): {detail}. \
+                 It is not retried with a stricter prompt — a retry is how a \
+                 bounded seam becomes an unbounded one",
+                reason.as_str()
+            ),
             Self::OptIn(err) => write!(f, "{err}"),
             Self::Lock(err) => write!(f, "{err}"),
             Self::Spawn(err) => write!(f, "{err}"),
@@ -670,6 +720,10 @@ impl std::error::Error for DriveError {
             // `EscalationRefusal` is the same shape for the same reason.
             | Self::BoundsRefused(_)
             | Self::EscalationRefused(_)
+            // `GoalRefusal` is the same shape again: a classification of a
+            // payload, not a failure that wrapped an error.
+            | Self::GoalRefused(_)
+            | Self::GoalSeamUnusable { .. }
             | Self::Journal { .. }
             | Self::EnvelopeAssertionFailed { .. } => None,
         }
@@ -685,6 +739,12 @@ impl From<crate::driver::bounds::BoundsRefusal> for DriveError {
 impl From<crate::driver::escalate::EscalationRefusal> for DriveError {
     fn from(refusal: crate::driver::escalate::EscalationRefusal) -> Self {
         Self::EscalationRefused(refusal)
+    }
+}
+
+impl From<crate::driver::goal::GoalRefusal> for DriveError {
+    fn from(refusal: crate::driver::goal::GoalRefusal) -> Self {
+        Self::GoalRefused(refusal)
     }
 }
 
