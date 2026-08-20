@@ -27,6 +27,17 @@
 #     seam-spawns         one line per seam spawn, so the count is on disk
 #     seam-stdin.<N>      every byte spawn N was sent, so a test can assert on
 #                         what reached the model rather than on what was meant to
+#     agent-spawns        one line per EXECUTOR-profile spawn, carrying the argv
+#                         it was handed
+#
+# `agent-spawns` is the tripwire half, added by plan 21-06 and additive to every
+# earlier caller: a test proving that a refused action was never executed needs
+# evidence written by a program that actually ran, because a count kept inside
+# the driver is a count of what the driver believes it did. The file's ABSENCE is
+# what proves no GSD command was ever run, and `tests/driver_refusal_record.rs`
+# pairs every such absence with a control arm in which a legal command IS routed
+# and the file DOES appear — a tripwire that has never been seen to fire proves
+# nothing.
 #
 # A spawn with no payload available answers with a result envelope carrying no
 # `structured_output` at all — which is the transport's own shape for "the model
@@ -49,6 +60,12 @@ done
 if [ "$IS_SEAM" -eq 0 ]; then
     # The executor profile: replay the transcript, exactly as `fake-claude.sh`
     # does and for the same reasons.
+    #
+    # The tripwire line goes FIRST, before any replay, so a spawn that then
+    # failed for an unrelated reason still leaves the evidence that it happened.
+    mkdir -p "$WORKDIR"
+    printf '%s\n' "$*" >> "$WORKDIR/agent-spawns"
+
     cat >/dev/null &
     DRAIN_PID=$!
     while IFS= read -r line; do
