@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 15
+open_count: 16
 waived_count: 0
 fixed_count: 0
-total_count: 15
-last_updated: 2026-08-20T03:25:51.228Z
+total_count: 16
+last_updated: 2026-08-20T04:50:50.557Z
 ---
 
 # Broken Windows Ledger
@@ -30,6 +30,7 @@ last_updated: 2026-08-20T03:25:51.228Z
 | 13 | 21 | deviation | src/driver/escalate.rs |  | 21-02: plan acceptance criterion required escalate::resolve(None, 2) to REFUSE. Implementing it literally makes --max-steps 1 unrunnable — no legal cap exists (0 refused by the zero rule, 1 refused by the step-cap rule), so the refusal could name no remedy and a CTRL-06 test could only be 'fixed' by destroying the property it proves. Implemented instead: a SUPPLIED cap is refused exactly as specified; an UNSUPPLIED default is put through the same comparison and reduced to min(3, max_steps-1). Asymmetry is deliberate and documented in three places plus a test: supplied zero is a seam that looks configured but can never fire; derived zero is the honest consequence of a one-step run. Verified by the orchestrator. | open |  | 2026-08-20T02:45:53.478Z |  |
 | 14 | 21 | stub | src/driver/goal.rs |  | 21-03: research Q4 (approval bound to plan AND files) is HALF discharged. The files half is now enforced at the spawn gate with SHA-256; the plan half still rests on goal::plan_digest, which remains FNV-1a and is documented in-tree as not a security control. Binding the two belongs with the loop wiring in 21-04/21-06. Recorded so it is not read as closed. | open |  | 2026-08-20T03:25:51.109Z |  |
 | 15 | 21 | deviation | src/config.rs |  | 21-03: added #[serde(flatten)] extra to DriverOptIn. Empirically proven necessary — a probe against the real load_config/save_config showed entry-level unknown keys survive a round-trip but keys nested inside driver_opt_in are SILENTLY DELETED, which made the plan's own round-trip acceptance criterion unpassable and T-21-20's mitigation a paper one at that depth. Fail-safe: a dropped prompt_inputs reads as absent, absent means re-confirm, so the failure mode is a spurious re-confirmation after a downgrade, not a silent approval. | open |  | 2026-08-20T03:25:51.228Z |  |
+| 16 | 21 | stub | src/driver/router.rs |  | 21-04 STRUCTURAL FINDING affecting ROADMAP criterion 3: router::decide cannot return NoRule for ANY project state this tree's reader produces from disk. The rule table covers five statuses, gate_for intercepts partial and every executed verification status, and complete requires passed which is_goal_met answers first; the one uncovered state violates the reader's own invariant (src/state_reader/disk_status.rs:670). Consequences: (1) the ambiguity seam is wired, order-pinned and unit-tested but has NO reachable production path; (2) since goal decomposition is the only escalation that can occur, a run makes at most 1 escalation, so escalation_cap_reached is UNREACHABLE end-to-end and no run can park under it on disk. This is arguably a good property — it means the rule table is complete — but criterion 3's cap must be verified as 'mechanism correct and unit-proven, no production path reaches it', NOT as end-to-end proven. 21-06 cannot discharge 21-02's E7 deferral without deliberately widening the reader, removing a rule-table row, or accepting a fixture that writes an inference the reader would never produce. Do not let a fixture of that third kind be mistaken for end-to-end proof. | open |  | 2026-08-20T04:50:50.557Z |  |
 
 ````json
 [
@@ -211,6 +212,18 @@ last_updated: 2026-08-20T03:25:51.228Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-08-20T03:25:51.228Z",
+    "resolved_at": null
+  },
+  {
+    "id": 16,
+    "kind": "stub",
+    "phase": "21",
+    "file": "src/driver/router.rs",
+    "line": null,
+    "description": "21-04 STRUCTURAL FINDING affecting ROADMAP criterion 3: router::decide cannot return NoRule for ANY project state this tree's reader produces from disk. The rule table covers five statuses, gate_for intercepts partial and every executed verification status, and complete requires passed which is_goal_met answers first; the one uncovered state violates the reader's own invariant (src/state_reader/disk_status.rs:670). Consequences: (1) the ambiguity seam is wired, order-pinned and unit-tested but has NO reachable production path; (2) since goal decomposition is the only escalation that can occur, a run makes at most 1 escalation, so escalation_cap_reached is UNREACHABLE end-to-end and no run can park under it on disk. This is arguably a good property — it means the rule table is complete — but criterion 3's cap must be verified as 'mechanism correct and unit-proven, no production path reaches it', NOT as end-to-end proven. 21-06 cannot discharge 21-02's E7 deferral without deliberately widening the reader, removing a rule-table row, or accepting a fixture that writes an inference the reader would never produce. Do not let a fixture of that third kind be mistaken for end-to-end proof.",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-08-20T04:50:50.557Z",
     "resolved_at": null
   }
 ]
