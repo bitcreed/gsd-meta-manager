@@ -257,6 +257,24 @@ pub struct DiskInference {
 /// for `status:` false-matched the key inside a fenced code block further down
 /// the file, so a document *describing* a status was read as *having* one.
 /// Widening this to a whole-file search reintroduces that defect verbatim.
+///
+/// **The key must sit at column zero, and that is the same defect one level in**
+/// (WR-05). Trimming the key made an indented mapping key indistinguishable from
+/// a top-level one, so
+///
+/// ```text
+/// ---
+/// verification:
+///   status: passed
+/// status: human_needed
+/// ---
+/// ```
+///
+/// returned `passed` — the first match wins, and the nested one comes first.
+/// This function is the single input to `VerificationStatus`, which is the
+/// goal-met predicate and the whole DRIVE-05 gate set, so a nested
+/// `status: passed` is a false `Decision::GoalMet` and a nested
+/// `status: human_needed` a spurious park. A *nested* key is a different key.
 fn leading_frontmatter_value(content: &str, key: &str) -> Option<String> {
     let mut lines = content.lines();
     // Frontmatter must open on the very first line with a bare `---`.
@@ -268,8 +286,14 @@ fn leading_frontmatter_value(content: &str, key: &str) -> Option<String> {
             // End of the leading block. Nothing below it is frontmatter.
             return None;
         }
+        // Column zero or it is somebody else's key. (List items were already
+        // safe by accident — `- status` does not equal `status` — but a plain
+        // indented mapping key was not.)
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
         if let Some((found, value)) = line.split_once(':') {
-            if found.trim() == key {
+            if found == key {
                 return Some(value.trim().to_string());
             }
         }
@@ -1077,6 +1101,51 @@ mod tests {
             VerificationStatus::Missing,
             "the scan stops at the closing delimiter; a key below it is body text"
         );
+    }
+
+    #[test]
+    fn test_a_nested_status_key_is_not_the_documents_status() {
+        let dir = implementation_complete_dir();
+        // A nested mapping key that sorts BEFORE the real one, which is the
+        // whole shape: the first match used to win and the trimmed comparison
+        // could not tell the two apart (WR-05). The same defect as the fenced
+        // code block above, one level in.
+        fs::write(
+            dir.path().join("19-VERIFICATION.md"),
+            "---\nphase: 19\nverification:\n  status: passed\nstatus: human_needed\n---\n",
+        )
+        .unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(
+            result.verification_status,
+            VerificationStatus::HumanNeeded,
+            "the document's status is the key at column zero. Reading the nested \
+             one produces a false `passed`, which is a false Decision::GoalMet \
+             and a run routed straight past the human_needed gate DRIVE-05 exists \
+             to park at"
+        );
+        assert_eq!(
+            result.status,
+            DiskStatus::Executed,
+            "and Complete stays out of reach, since it requires a passing \
+             verification"
+        );
+    }
+
+    #[test]
+    fn test_a_top_level_status_after_a_nested_one_is_still_found() {
+        // The non-vacuity half: skipping indented lines must not turn into
+        // skipping the block. A `status` that follows nested keys is still the
+        // document's.
+        let dir = implementation_complete_dir();
+        fs::write(
+            dir.path().join("19-VERIFICATION.md"),
+            "---\nprogress:\n  status: draft\n  items: 3\nstatus: passed\n---\n",
+        )
+        .unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.verification_status, VerificationStatus::Passed);
+        assert_eq!(result.status, DiskStatus::Complete);
     }
 
     #[test]
