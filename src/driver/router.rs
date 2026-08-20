@@ -364,6 +364,12 @@ impl RouterAction {
     /// `phase` arrived on argv and was validated at the seam as a single plain
     /// path component (`driver::mod`'s `--target-phase` refusal), so this
     /// interpolation cannot smuggle a flag, a second command or a path.
+    ///
+    /// **On every path that reaches here, including the dry-run preview.** That
+    /// refusal used to sit *below* the preview branch, so the sentence above was
+    /// false for `--dry-run --target-phase '../../../escaped'`, which rendered
+    /// the unvalidated token into something that reads as a pasteable command
+    /// line (WR-09).
     fn command_for(self, phase: &str) -> String {
         format!("{} {phase}", self.verb())
     }

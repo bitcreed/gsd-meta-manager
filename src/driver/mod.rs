@@ -307,17 +307,25 @@ fn preview_text(
 ///    constructor. That call site is unique on purpose, and the uniqueness is a
 ///    property `tests/spawn_seam_guard.rs` can check while "every branch
 ///    remembers to gate" is not.
-/// 3. Only then branch on anything else — including the dry-run branch plan
+/// 3. Refuse an invocation that is malformed **as an invocation**: no command
+///    source or two ([`command_source_refusal`]), a `--target-phase` that is not
+///    a single plain path component ([`DriveError::TargetPhaseInvalid`]), or
+///    caps that cannot be honoured ([`bounds::resolve`]). All three sit **above**
+///    the dry-run branch, because each is answered identically whether or not
+///    the run is real and a preview that answered them differently would be
+///    previewing something the user cannot run (WR-09).
+/// 4. Only then branch on anything else — including the dry-run branch plan
 ///    17-04 adds. **Gating before the preview branch is stricter than CTRL-03
 ///    requires, and it is deliberate:** one gate call site is mechanically
 ///    verifiable, two are an invitation to add a third.
-/// 4. Refuse a real run that cannot be stopped ([`platform_refusal`]), that
+/// 5. Refuse a real run that cannot be stopped ([`platform_refusal`]), that
 ///    cannot be identified ([`DriveError::RunIdRequired`]), or whose id is not a
 ///    single plain path component ([`DriveError::RunIdInvalid`], D-27). All
-///    three sit **after** the dry-run branch, so none reaches a preview, and all
-///    three sit **before** `dispatch`, so a refused run has created nothing at
-///    all: no lock file, no run directory, no `run.json`, no journal.
-/// 5. Dispatch to the platform handler, which is the run body on Unix and a
+///    three sit **after** the dry-run branch, because a preview creates no run
+///    to identify and starts no process to stop; all three sit **before**
+///    `dispatch`, so a refused run has created nothing at all: no lock file, no
+///    run directory, no `run.json`, no journal.
+/// 6. Dispatch to the platform handler, which is the run body on Unix and a
 ///    typed refusal everywhere else (D-05).
 pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
     let entry = config
@@ -329,22 +337,63 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
 
     let project = DrivableProject::from_registry(&args.alias, entry)?;
 
-    // **Before the dry-run branch, unlike every other refusal in this chain**,
-    // and the difference is what the question is about. The run-id and platform
-    // refusals below are about *running* — a preview creates no run to identify
+    // **The three refusals about WHAT WAS ASKED FOR, before the dry-run branch**
+    // — unlike the ones about *running*, which sit below it. The run-id and
+    // platform refusals are about a run: a preview creates nothing to identify
     // and starts no process to stop, so neither is about anything a preview
-    // does. This one is about **what was asked for at all**: a preview of
-    // nothing has nothing to show, and a preview of two conflicting sources
-    // cannot say which it previewed. Both are answered identically whether or
-    // not the run is real, so they are answered once, here.
+    // does. These three are about the invocation itself, they are answered
+    // identically whether or not the run is real, and a preview that answers
+    // them differently is answering a different question from the one the user
+    // asked (WR-09).
+    //
+    // All three are pure and none creates anything on disk.
     //
     // Still after the capability gate, so `from_registry` keeps its single
     // production call site and an unregistered alias is refused first.
+
+    // A preview of nothing has nothing to show, and a preview of two
+    // conflicting sources cannot say which it previewed.
     if let Some(refusal) =
         command_source_refusal(args.command.as_deref(), args.target_phase.as_deref())
     {
         return Err(refusal);
     }
+
+    // The same question about `--target-phase` the run id is asked below, at the
+    // same seam and for the same reason (D-27, T-20-03). The value is used
+    // **only** as a map key into `ProjectState::phase_disk_statuses` and the
+    // iteration loop composes no path from it — but "no caller composes a path
+    // from it today" is a fact about today, not a property of the type, and the
+    // run id's history is exactly what that distinction cost:
+    // `--run-id '../../../../escaped'` was reproduced against the shipped tree
+    // writing outside the project with exit 0. One refusal at the seam is
+    // cheaper than auditing every future use.
+    //
+    // **It sits above the preview because the preview renders the value**
+    // (WR-09). `--dry-run --target-phase '../../../escaped'` used to print that
+    // token verbatim inside a pasteable command line, and
+    // `RouterAction::command_for`'s doc asserts the phase "arrived on argv and
+    // was validated at the seam" — a claim that was false on exactly this path.
+    if let Some(target_phase) = args.target_phase.as_deref() {
+        if !journal::is_plain_path_component(target_phase) {
+            return Err(DriveError::TargetPhaseInvalid {
+                target_phase: target_phase.to_string(),
+            });
+        }
+    }
+
+    // The caps, resolved and refused before anything is created, so a run asked
+    // for with a cap that disables a detector leaves nothing on disk. The
+    // resolved value is recomputed in the run body rather than threaded through
+    // `dispatch`: `bounds::resolve` is a pure function of two `Option`s on
+    // `args`, so a second call cannot disagree with this one, and threading it
+    // would widen a signature three later plans in this phase also touch.
+    //
+    // **Also above the preview** (WR-09). `--dry-run --max-steps 0` used to
+    // render a clean preview of an invocation that would be *refused* if run for
+    // real, and a preview whose whole purpose is "what would happen" answering
+    // anything but that is worse than no preview.
+    bounds::resolve(args.max_steps, args.wall_clock_cap_secs).map_err(DriveError::from)?;
 
     if args.dry_run {
         // Positioned **after** the gate and **before** anything Unix-only, and
@@ -447,30 +496,6 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
             run_id: run_id.to_string(),
         });
     }
-
-    // The same question about `--target-phase`, asked at the same seam and for
-    // the same reason (D-27, T-20-03). The value is used **only** as a map key
-    // into `ProjectState::phase_disk_statuses` and the iteration loop composes
-    // no path from it — but "no caller composes a path from it today" is a fact
-    // about today, not a property of the type, and the run id's history is
-    // exactly what that distinction cost: `--run-id '../../../../escaped'` was
-    // reproduced against the shipped tree writing outside the project with exit
-    // 0. One refusal at the seam is cheaper than auditing every future use.
-    if let Some(target_phase) = args.target_phase.as_deref() {
-        if !journal::is_plain_path_component(target_phase) {
-            return Err(DriveError::TargetPhaseInvalid {
-                target_phase: target_phase.to_string(),
-            });
-        }
-    }
-
-    // The caps, resolved and refused **before** anything is created, so a run
-    // asked for with a cap that disables a detector leaves nothing on disk. The
-    // resolved value is recomputed in the run body rather than threaded through
-    // `dispatch`: `bounds::resolve` is a pure function of two `Option`s on
-    // `args`, so a second call cannot disagree with this one, and threading it
-    // would widen a signature three later plans in this phase also touch.
-    bounds::resolve(args.max_steps, args.wall_clock_cap_secs).map_err(DriveError::from)?;
 
     // The envelope assertion, and its position is the decision in three clauses
     // (D-24).

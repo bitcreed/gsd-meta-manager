@@ -298,7 +298,9 @@ pub fn reset_time(event: Option<&Value>, now: DateTime<Utc>) -> Option<DateTime<
     // thousands of years out, and the difference of two i64 timestamps is only
     // *nearly* always in range.
     let ahead = resets_at.timestamp().saturating_sub(now.timestamp());
-    (ahead >= -RESET_MAX_SKEW_BEHIND_SECS && ahead <= RESET_SANITY_WINDOW_SECS).then_some(resets_at)
+    (-RESET_MAX_SKEW_BEHIND_SECS..=RESET_SANITY_WINDOW_SECS)
+        .contains(&ahead)
+        .then_some(resets_at)
 }
 
 /// Whether this payload carries the one `status` that parks a run.
@@ -703,14 +705,12 @@ mod tests {
             );
         }
 
-        // And the asymmetry is a property rather than a coincidence of the two
-        // numbers: a bound that treated the directions alike could not tell a
-        // seven-day window from a seven-day-old one.
-        assert!(
-            RESET_MAX_SKEW_BEHIND_SECS < RESET_SANITY_WINDOW_SECS,
-            "the backwards allowance must stay strictly smaller than the forward \
-             window, or the bound is symmetric again under a different name"
-        );
+        // The two loops above ARE the asymmetry: the same offset — one second
+        // short of the forward window — is accepted ahead and refused behind, so
+        // the property is proved by a pair of observed answers rather than by
+        // comparing the two constants to each other. A constant-to-constant
+        // assertion would pass whatever `reset_time` actually did with them,
+        // which is the shape CR-01's guard test failed in.
     }
 
     #[test]

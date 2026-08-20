@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 use gsd_meta_manager::config::{Config, DriverOptIn, RegisteredProject};
 use gsd_meta_manager::driver::{drive, dry_run, DriveArgs};
+use gsd_meta_manager::error::DriveError;
 use gsd_meta_manager::executor::DrivableProject;
 use tempfile::TempDir;
 
@@ -267,6 +268,46 @@ async fn a_routed_dry_run_also_leaves_the_git_directory_byte_identical() {
     assert_eq!(
         listing_before, listing_after,
         "nor write an object or the index"
+    );
+}
+
+#[tokio::test]
+async fn a_preview_refuses_exactly_what_the_real_run_would_refuse() {
+    let Some(repo_dir) = repo() else {
+        return;
+    };
+    let root = repo_dir.path();
+    let config = config_for(root);
+
+    // **WR-09.** Both refusals used to sit BELOW the dry-run branch.
+    //
+    // The first cost a false claim: `RouterAction::command_for`'s doc asserts
+    // the phase "arrived on argv and was validated at the seam", and the preview
+    // rendered `../../../escaped` verbatim into something that reads as a
+    // pasteable command line.
+    let mut escaped = routed_args(None);
+    escaped.target_phase = Some("../../../escaped".to_string());
+    let refusal = drive(escaped, &config)
+        .await
+        .expect_err("a preview must refuse a target phase that is not a plain path component");
+    assert!(
+        matches!(refusal, DriveError::TargetPhaseInvalid { .. }),
+        "and it must be the SAME typed refusal a real run gives, not a preview \
+         of an invocation nobody can run. Got: {refusal:?}"
+    );
+
+    // The second cost a wrong answer to the preview's only question. A preview
+    // of `--max-steps 0` reported what would happen; what would happen is a
+    // refusal.
+    let mut zero_cap = routed_args(None);
+    zero_cap.max_steps = Some(0);
+    let refusal = drive(zero_cap, &config)
+        .await
+        .expect_err("a preview of a cap that can never take a step must refuse it");
+    assert!(
+        matches!(refusal, DriveError::BoundsRefused(_)),
+        "a preview whose whole purpose is `what would happen` must not answer \
+         cleanly for an invocation that would be refused. Got: {refusal:?}"
     );
 }
 
