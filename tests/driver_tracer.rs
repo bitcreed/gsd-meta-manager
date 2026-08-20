@@ -93,6 +93,7 @@ fn args() -> DriveArgs {
         target_phase: None,
         max_steps: None,
         wall_clock_cap_secs: None,
+        max_escalations: None,
         run_id: Some(RUN_ID.to_string()),
         dry_run: false,
         goal: Some("prove the spine".to_string()),

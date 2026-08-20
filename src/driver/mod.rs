@@ -173,6 +173,22 @@ pub struct DriveArgs {
     /// any value that disables a detector, and a cap of `u64::MAX` is the
     /// wall-clock detector switched off while still looking configured.
     pub wall_clock_cap_secs: Option<u64>,
+    /// How many times this run may consult the model, overriding
+    /// [`escalate::DEFAULT_MAX_ESCALATIONS`].
+    ///
+    /// Zero and any value **at or above this run's resolved step cap** are
+    /// refused at the seam by [`escalate::resolve`], in the same register and for
+    /// the same reason as [`max_steps`](Self::max_steps): a zero cap is a seam
+    /// that can never fire while still looking configured, and a cap at or above
+    /// the step cap can never bind, because the run halts on its step cap first.
+    /// DRIVE-04's cap is only a control if exceeding it is possible and changes
+    /// what the run does.
+    ///
+    /// The comparison is against the value [`bounds::resolve`] **returned** for
+    /// this run, never [`bounds::DEFAULT_MAX_STEPS`]: under a default of 20 a cap
+    /// of 2 and a cap of 3 would both be accepted by a run bounded at two steps,
+    /// which is the exact shape of the Critical Phase 20's review found.
+    pub max_escalations: Option<u32>,
     /// The run id to record under. **Required for a real run**; `None` is legal
     /// only with [`dry_run`](Self::dry_run).
     ///
@@ -186,7 +202,24 @@ pub struct DriveArgs {
     pub run_id: Option<String>,
     /// Preview only, execute nothing (D-24). Plan 17-04 implements it.
     pub dry_run: bool,
-    /// Free text recorded into `RunRecord.goal` and never interpreted.
+    /// Free text recorded into `RunRecord.goal`, and the input [`goal`]
+    /// decomposes into a plan over [`router::SAFE_COMMAND_ALPHABET`].
+    ///
+    /// **This doc used to claim the goal was recorded and nothing more, and
+    /// Phase 21 is where that stopped being true.** The correction rides the
+    /// commit that
+    /// falsified it, per the `src/driver/dry_run.rs:78-83` precedent. What is
+    /// true now: the goal is decomposed **once, before the loop**, through the
+    /// model seam, and the decomposition is **refused rather than repaired** when
+    /// it is not machine-checkable — a command outside the alphabet, a target
+    /// phase the roadmap does not declare, or a terminal state that does not
+    /// reduce to [`router::is_goal_met`] each produce a `goal_`-prefixed refusal
+    /// rather than a repaired plan. Repairing a model's answer would make the
+    /// re-parse advisory, and the re-parse is the control (SAFE-08).
+    ///
+    /// The text itself is still never treated as an instruction: it is a
+    /// third-party string, and what the driver acts on is the validated
+    /// [`goal::GoalPlan`] rather than the prose.
     pub goal: Option<String>,
     /// Test and development only: the program to spawn instead of `claude`.
     ///
@@ -324,7 +357,9 @@ fn preview_text(
 /// 3. Refuse an invocation that is malformed **as an invocation**: no command
 ///    source or two (`command_source_refusal`), a `--target-phase` that is not
 ///    a single plain path component ([`DriveError::TargetPhaseInvalid`]), or
-///    caps that cannot be honoured ([`bounds::resolve`]). All three sit **above**
+///    caps that cannot be honoured ([`bounds::resolve`] and, on the adjacent
+///    line and against the step cap the first of them returned,
+///    [`escalate::resolve`]). All three sit **above**
 ///    the dry-run branch, because each is answered identically whether or not
 ///    the run is real and a preview that answered them differently would be
 ///    previewing something the user cannot run (WR-09).
@@ -407,7 +442,22 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
     // render a clean preview of an invocation that would be *refused* if run for
     // real, and a preview whose whole purpose is "what would happen" answering
     // anything but that is worse than no preview.
-    bounds::resolve(args.max_steps, args.wall_clock_cap_secs).map_err(DriveError::from)?;
+    let run_bounds =
+        bounds::resolve(args.max_steps, args.wall_clock_cap_secs).map_err(DriveError::from)?;
+
+    // The model seam's budget, on the adjacent line and in the same group, for
+    // the identical reason: DRIVE-04's cap is a control only if a value that
+    // cannot bind is refused, and refusing it here means a run asked for with
+    // such a cap leaves nothing on disk.
+    //
+    // **It is called with the step cap `bounds::resolve` just returned** — never
+    // with `args.max_steps`, which is an `Option` that may be `None`, and never
+    // with `bounds::DEFAULT_MAX_STEPS`. Comparing against the constant is the
+    // exact shape of the Critical Phase 20's review found: under a default of 20
+    // a cap of 2 and a cap of 3 are both accepted, so a run bounded at two steps
+    // carries an escalation cap that can never fire while looking configured.
+    // That is why the resolved value is now bound rather than discarded.
+    escalate::resolve(args.max_escalations, run_bounds.max_steps).map_err(DriveError::from)?;
 
     if args.dry_run {
         // Positioned **after** the gate and **before** anything Unix-only, and
@@ -620,6 +670,7 @@ mod tests {
             target_phase: None,
             max_steps: None,
             wall_clock_cap_secs: None,
+            max_escalations: None,
             run_id: None,
             dry_run: false,
             goal: None,
@@ -880,5 +931,102 @@ mod tests {
                  leave nothing at all behind"
             );
         }
+    }
+
+    /// **The above-the-run half of the phase's most load-bearing guard.**
+    ///
+    /// The invocation is `--max-steps 2 --max-escalations 2`: a cap equal to the
+    /// run's resolved step cap, which can never bind. Against a resolution that
+    /// compared the supplied cap with `bounds::DEFAULT_MAX_STEPS` this FAILS,
+    /// because 2 is comfortably below 20, the refusal never happens and the run
+    /// starts — creating the run directory this test asserts does not exist.
+    #[tokio::test]
+    async fn an_escalation_cap_that_can_never_bind_is_refused_before_the_run_exists() {
+        for max_escalations in [Some(2), Some(3), Some(0)] {
+            let root = tempfile::TempDir::new().expect("temp dir");
+            let config = opted_in(root.path());
+
+            let mut args = args("demo");
+            args.command = None;
+            args.target_phase = Some("20".to_string());
+            args.run_id = Some("2026-08-19T12-00-00Z-aaaa".to_string());
+            args.max_steps = Some(2);
+            args.max_escalations = max_escalations;
+
+            let err = drive(args, &config)
+                .await
+                .expect_err("a cap that can never bind must never reach a spawn");
+
+            assert!(
+                matches!(err, DriveError::EscalationRefused(_)),
+                "the refusal must carry the escalation taxonomy rather than a \
+                 fresh string, got: {err:?}"
+            );
+            assert!(
+                !root.path().join(".planning/meta-manager").exists(),
+                "a refused run creates NOTHING — no run directory, no journal, \
+                 no run.json"
+            );
+        }
+    }
+
+    /// The refusal names both numbers **and** something the caller can do, on
+    /// `BoundsRefusal::Display`'s terms: a refusal a caller cannot act on is a
+    /// bug report rather than an error message.
+    #[tokio::test]
+    async fn the_escalation_refusal_names_both_numbers_and_an_action() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let config = opted_in(root.path());
+
+        let mut args = args("demo");
+        args.command = None;
+        args.target_phase = Some("20".to_string());
+        args.run_id = Some("2026-08-19T12-00-00Z-aaaa".to_string());
+        args.max_steps = Some(4);
+        args.max_escalations = Some(9);
+
+        let rendered = drive(args, &config)
+            .await
+            .expect_err("a cap of 9 under a step cap of 4 can never bind")
+            .to_string();
+
+        assert!(
+            rendered.contains('9'),
+            "the message must name the cap the caller supplied; got: {rendered}"
+        );
+        assert!(
+            rendered.contains('4'),
+            "the message must name the RESOLVED step cap it was judged against — \
+             not the compiled-in default, which is what the Phase 20 Critical \
+             compared with; got: {rendered}"
+        );
+        assert!(
+            rendered.contains("--max-steps") || rendered.contains("Pass at most"),
+            "the message must name at least one concrete action; got: {rendered}"
+        );
+    }
+
+    /// The control arm for the two above: a run whose escalation cap CAN bind is
+    /// not refused at this seam, so the refusals are about the cap rather than
+    /// about `--target-phase` or the opt-in.
+    ///
+    /// It still fails afterwards (there is no agent to spawn in a unit test), so
+    /// the assertion is on the *kind* of error rather than on success.
+    #[tokio::test]
+    async fn a_cap_that_can_bind_passes_this_seam() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let config = opted_in(root.path());
+
+        let mut args = args("demo");
+        args.command = None;
+        args.target_phase = Some("20".to_string());
+        args.run_id = Some("2026-08-19T12-00-00Z-aaaa".to_string());
+        args.max_steps = Some(4);
+        args.max_escalations = Some(3);
+        args.dry_run = true;
+
+        drive(args, &config)
+            .await
+            .expect("a cap one below the step cap binds, so the preview renders");
     }
 }

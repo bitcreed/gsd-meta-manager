@@ -2637,6 +2637,7 @@ mod tests {
             target_phase: None,
             max_steps: None,
             wall_clock_cap_secs: None,
+            max_escalations: None,
             run_id: Some("2026-07-29T12-00-00Z-aaaa".to_string()),
             dry_run: false,
             goal: None,

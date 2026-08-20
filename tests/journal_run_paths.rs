@@ -139,6 +139,7 @@ fn drive_args(run_id: &str) -> DriveArgs {
         target_phase: None,
         max_steps: None,
         wall_clock_cap_secs: None,
+        max_escalations: None,
         run_id: Some(run_id.to_string()),
         dry_run: false,
         goal: None,

@@ -27,6 +27,18 @@ use crate::executor::stream_json::ResultMessage;
 use crate::executor::{RunOutcome, TurnOutcome};
 use crate::state_reader::{self, git_ops, ProjectState};
 
+/// The `subtype` the CLI emits when its structured-output validation loop is
+/// spent.
+///
+/// Named as a constant rather than spelled at the match arm so a reader who
+/// greps for the string finds the classification and the producer together —
+/// the convention every reason taxonomy under `src/driver/` follows.
+pub const SUBTYPE_MAX_STRUCTURED_OUTPUT_RETRIES: &str = "error_max_structured_output_retries";
+
+/// The `terminal_reason` that pairs with
+/// [`SUBTYPE_MAX_STRUCTURED_OUTPUT_RETRIES`].
+pub const TERMINAL_STRUCTURED_OUTPUT_RETRY_EXHAUSTED: &str = "structured_output_retry_exhausted";
+
 /// A point-in-time fingerprint of a project, captured before and after a run.
 ///
 /// The artifact half is deliberately **not** a new reader:
@@ -275,6 +287,32 @@ fn derive(
         (_, _, Some("aborted_streaming")) => RunOutcome::Killed {
             turns: turns.to_vec(),
         },
+        // **The model seam's answer never satisfied its schema.** The CLI runs a
+        // bounded validation loop over a structured-output response and this pair
+        // is what it emits when that loop is spent. It classifies exactly as the
+        // fallback arm below would — a failure carrying both strings — and naming
+        // it is the entire point: the pair stops being an assumption a research
+        // document recorded from a string table and becomes a case a reader can
+        // find, and the driver can tell "the seam's answer was unusable" from
+        // "some future subtype nobody has seen yet".
+        //
+        // This is DRIVE-04's `escalation_output_unusable`, and the reason a
+        // *refusal* is the right response rather than another attempt:
+        // re-prompting a model that has just produced an invalid action is how a
+        // bounded seam becomes an unbounded one. The run parks.
+        (
+            SUBTYPE_MAX_STRUCTURED_OUTPUT_RETRIES,
+            _,
+            Some(TERMINAL_STRUCTURED_OUTPUT_RETRY_EXHAUSTED),
+        ) => RunOutcome::Failed {
+            reason: describe_failure(
+                SUBTYPE_MAX_STRUCTURED_OUTPUT_RETRIES,
+                Some(TERMINAL_STRUCTURED_OUTPUT_RETRY_EXHAUSTED),
+            ),
+            subtype: Some(last.subtype.clone()),
+            terminal_reason: terminal_reason.map(str::to_string),
+            exit_code,
+        },
         // Explicit fallback arm. New `subtype` and `terminal_reason` values ship
         // at patch level, so an unrecognised pair must classify as a failure
         // carrying the observed strings, never panic and never be dropped.
@@ -319,6 +357,17 @@ fn describe_failure(subtype: &str, terminal_reason: Option<&str>) -> String {
     match (subtype, terminal_reason) {
         ("error_max_budget_usd", _) => "the run stopped at its budget ceiling".to_string(),
         ("error_max_turns", _) => "the run stopped at its turn ceiling".to_string(),
+        // Phrased so it cannot be read as "try again". The seam's answer never
+        // satisfied its schema, and the sanctioned response is a park: retrying
+        // a model that has just produced an invalid action with a stricter
+        // prompt is how a bounded seam becomes an unbounded one, and it is the
+        // fivefold under-count DRIVE-04's escalation cap exists to prevent.
+        (SUBTYPE_MAX_STRUCTURED_OUTPUT_RETRIES, _) => {
+            "the model seam's answer never satisfied its schema, and the CLI's own \
+             validation retries are spent — this is a refusal, not a retryable \
+             failure"
+                .to_string()
+        }
         (subtype, Some(reason)) => format!("the run failed: {subtype} / {reason}"),
         (subtype, None) => format!("the run failed: {subtype}"),
     }
@@ -505,6 +554,99 @@ mod tests {
                 assert_eq!(terminal_reason.as_deref(), Some("who_knows"));
             }
             other => panic!("expected a failure, got: {other:?}"),
+        }
+    }
+
+    /// The seam's unusable-output case, as a case rather than as an assumption.
+    ///
+    /// Research read `MAX_STRUCTURED_OUTPUT_RETRIES` out of the binary's string
+    /// table and never saw this pair on a real transcript (assumption A4). It is
+    /// named here so a reader can find it, and so the driver can distinguish "the
+    /// seam's answer was unusable" from "some future subtype nobody has seen".
+    #[test]
+    fn structured_output_retry_exhaustion_is_a_named_failure_carrying_both_strings() {
+        let outcome = derive_run_outcome_from_envelopes(
+            &[envelope(
+                SUBTYPE_MAX_STRUCTURED_OUTPUT_RETRIES,
+                true,
+                Some(TERMINAL_STRUCTURED_OUTPUT_RETRY_EXHAUSTED),
+            )],
+            None,
+            &snapshot(),
+            &snapshot(),
+        );
+        match outcome {
+            RunOutcome::Failed {
+                reason,
+                subtype,
+                terminal_reason,
+                ..
+            } => {
+                assert_eq!(
+                    subtype.as_deref(),
+                    Some(SUBTYPE_MAX_STRUCTURED_OUTPUT_RETRIES),
+                    "both strings are carried VERBATIM; a named arm that dropped \
+                     one would be worse than the fallback it replaced"
+                );
+                assert_eq!(
+                    terminal_reason.as_deref(),
+                    Some(TERMINAL_STRUCTURED_OUTPUT_RETRY_EXHAUSTED)
+                );
+                assert!(
+                    reason.contains("schema"),
+                    "the message must say what actually happened — the answer \
+                     never satisfied its schema; got: {reason}"
+                );
+                assert!(
+                    !reason.contains("retry the")
+                        && !reason.contains("try again")
+                        && reason.contains("refusal"),
+                    "the message must not imply a retry is available: re-prompting \
+                     a model that just produced an invalid action is how a bounded \
+                     seam becomes an unbounded one; got: {reason}"
+                );
+            }
+            other => panic!("expected a failure, got: {other:?}"),
+        }
+    }
+
+    /// **Naming one pair must not narrow the tolerant path**, in both the
+    /// directions a half-match can take.
+    ///
+    /// The fallback arm stays exactly where it is and keeps its doc: an
+    /// unmodelled pair must still arrive rather than be dropped. Against an
+    /// implementation that matched on the subtype alone — or on the terminal
+    /// reason alone — one of these two would take the named arm and the observed
+    /// strings would be replaced by the ones the arm assumed.
+    #[test]
+    fn a_half_matched_retry_exhaustion_pair_still_reaches_the_fallback_arm() {
+        for (subtype, reason) in [
+            (
+                SUBTYPE_MAX_STRUCTURED_OUTPUT_RETRIES,
+                "some_future_terminal_reason",
+            ),
+            (
+                "error_from_a_future_version",
+                TERMINAL_STRUCTURED_OUTPUT_RETRY_EXHAUSTED,
+            ),
+        ] {
+            let outcome = derive_run_outcome_from_envelopes(
+                &[envelope(subtype, true, Some(reason))],
+                None,
+                &snapshot(),
+                &snapshot(),
+            );
+            match outcome {
+                RunOutcome::Failed {
+                    subtype: observed_subtype,
+                    terminal_reason: observed_reason,
+                    ..
+                } => {
+                    assert_eq!(observed_subtype.as_deref(), Some(subtype));
+                    assert_eq!(observed_reason.as_deref(), Some(reason));
+                }
+                other => panic!("expected a failure for ({subtype}, {reason}), got: {other:?}"),
+            }
         }
     }
 
