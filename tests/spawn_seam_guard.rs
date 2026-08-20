@@ -1669,3 +1669,45 @@ fn the_free_string_field_parser_distinguishes_payloads_from_map_keys() {
          declaration, or a field declared in a struct beyond the closing brace"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Guard seven: the arrival-evidence field stays evidence
+// ---------------------------------------------------------------------------
+
+/// The wire field a corpus test uses to prove third-party content arrived.
+const EVIDENCE_FIELD: &str = "FIELD_OBSERVED_MARKERS";
+
+/// The one module that may name it: where the schema declares it.
+const EVIDENCE_FIELD_HOME: &str = "src/driver/goal.rs";
+
+#[test]
+fn the_arrival_evidence_field_is_named_only_where_the_schema_declares_it() {
+    let files = source_files();
+    let hits = executable_hits(&files, EVIDENCE_FIELD);
+
+    // The guard-of-the-guard: a scanner that found nothing at all would report
+    // "no offenders" forever, which is the shape `tests/driver_dry_run.rs:428`
+    // calls a tripwire that has never been seen to fire.
+    assert!(
+        hits.iter().any(|(path, _, _)| path == EVIDENCE_FIELD_HOME),
+        "the scan found no reference to `{EVIDENCE_FIELD}` in {EVIDENCE_FIELD_HOME} \
+         at all, so the emptiness below is a fact about the scanner rather than \
+         about the tree"
+    );
+
+    let offenders: Vec<_> = hits
+        .iter()
+        .filter(|(path, _, _)| path != EVIDENCE_FIELD_HOME)
+        .cloned()
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "`{EVIDENCE_FIELD}` carries text a hostile repository file can choose — a \
+         corpus fixture names its own marker, so a model can be induced to report \
+         any marker at all. It exists so a TEST can prove arrival before claiming \
+         the injection lost, and a production path that read it would be a control \
+         the attacker writes (T-21-36). Move the read into \
+         `tests/driver_injection_corpus.rs` or delete it. Offending lines:{}",
+        render(&offenders)
+    );
+}
