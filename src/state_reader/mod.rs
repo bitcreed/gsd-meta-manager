@@ -30,7 +30,13 @@ pub struct ProjectState {
     pub queued_actions: Vec<queue_md::QueuedAction>,
     /// Per-phase disk inference keyed by phase number (e.g., "01", "05")
     pub phase_disk_statuses: HashMap<String, disk_status::DiskInference>,
-    /// Disk inference for the current/active phase (first non-complete, or last if all complete)
+    /// Disk inference for the current/active phase: the first phase whose
+    /// **implementation** is unfinished (status below
+    /// [`disk_status::DiskStatus::Executed`]), or the last phase when every one
+    /// of them is implemented.
+    ///
+    /// The threshold is implementation and not verification, deliberately — see
+    /// the comment at the assignment site in [`parse_project_state`] (WR-04).
     pub current_phase_status: Option<disk_status::DiskInference>,
     /// Whether the project has a non-empty HANDOFF.md or HANDOFF.json in .planning/
     pub paused: bool,
@@ -211,9 +217,33 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
     let mut current_phase_inference: Option<disk_status::DiskInference> = None;
     for phase in &state.phases {
         let inference = disk_status::infer_phase_status(planning_dir, &phase.number);
-        // Track first non-complete phase as the current phase status
-        if current_phase_inference.is_none()
-            && inference.status != disk_status::DiskStatus::Complete
+        // Track the first phase whose IMPLEMENTATION is not finished as the
+        // current phase status.
+        //
+        // **`< Executed`, and the threshold is a decision rather than an
+        // inheritance (WR-04).** This condition read `!= Complete` until Phase
+        // 20 made `Complete` a conjunction (implementation AND verification
+        // passed) and inserted `Executed` beneath it. That silently moved the
+        // threshold: every phase awaiting verification now reads `Executed`, so
+        // the loop stopped at the first *unverified* phase instead of the first
+        // *unexecuted* one, and this repository's own dashboard cell moved from
+        // phase 20 to phase 19.
+        //
+        // The frontier is implementation, and the reason is what this value
+        // feeds: the dashboard row's compact D-R-P-E-V cell
+        // (`ui/screens/normal.rs`) sits beside a phase LABEL taken from
+        // STATE.md's `current_phase`, which GSD advances on execution. A cell
+        // describing a different phase from the one its own row names is worse
+        // than a cell that omits something. The verification gate is not lost by
+        // this choice — it surfaces through the needs-human badge (D-24) and,
+        // for the driver, through the DRIVE-05 gate set, both of which read the
+        // per-phase inference directly rather than this summary.
+        //
+        // Written against the `Ord` Phase 20 added, so the next variant inserted
+        // below `Executed` is included automatically and one inserted above it
+        // is not — which is the behaviour a threshold wants and the reason this
+        // is a comparison rather than a list of variants.
+        if current_phase_inference.is_none() && inference.status < disk_status::DiskStatus::Executed
         {
             current_phase_inference = Some(inference.clone());
         }
@@ -221,7 +251,9 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
             .phase_disk_statuses
             .insert(phase.number.clone(), inference);
     }
-    // If all phases are complete, use the last phase's status
+    // If every phase is implemented, use the last phase's status — including
+    // when some of them are still awaiting verification, which is the same
+    // threshold the loop above uses and for the same reason.
     if current_phase_inference.is_none() && !state.phases.is_empty() {
         if let Some(last) = state.phases.last() {
             current_phase_inference = state.phase_disk_statuses.get(&last.number).cloned();

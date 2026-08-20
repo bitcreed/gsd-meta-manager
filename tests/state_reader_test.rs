@@ -669,3 +669,106 @@ fn test_this_repositorys_own_planning_dir_reads_without_panicking() {
         }
     }
 }
+
+// ============================================================================
+// Which phase `current_phase_status` names (WR-04)
+// ============================================================================
+
+/// A planning dir declaring two phases, where phase 1 is EXECUTED but not
+/// verified and phase 2 is only planned.
+fn two_phase_project(verification: Option<&str>) -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path();
+    fs::write(planning.join("STATE.md"), "---\nstatus: executing\n---\n# State\n").unwrap();
+    fs::write(
+        planning.join("ROADMAP.md"),
+        "# Roadmap\n\n- [ ] **Phase 1: First** - implemented, awaiting verification\n\
+         - [ ] **Phase 2: Second** - planned only\n",
+    )
+    .unwrap();
+
+    let one = planning.join("phases").join("01-first");
+    fs::create_dir_all(&one).unwrap();
+    fs::write(one.join("01-01-PLAN.md"), "# Plan\n").unwrap();
+    fs::write(one.join("01-01-SUMMARY.md"), "# Summary\n").unwrap();
+    if let Some(status) = verification {
+        fs::write(
+            one.join("01-VERIFICATION.md"),
+            format!("---\nstatus: {status}\n---\n# Verification\n"),
+        )
+        .unwrap();
+    }
+
+    let two = planning.join("phases").join("02-second");
+    fs::create_dir_all(&two).unwrap();
+    fs::write(two.join("02-01-PLAN.md"), "# Plan\n").unwrap();
+
+    tmp
+}
+
+#[test]
+fn the_current_phase_status_is_the_first_unexecuted_phase_not_the_first_unverified_one() {
+    use gsd_meta_manager::state_reader::disk_status::DiskStatus;
+
+    // **The decision this pins (WR-04).** Phase 20 made `Complete` a conjunction
+    // — implementation AND verification passed — and inserted `Executed` beneath
+    // it. A "first non-Complete" scan therefore stops at a phase awaiting
+    // verification, which silently moved this value one phase backwards for
+    // every project with an unverified completed phase.
+    //
+    // The threshold is implementation, deliberately: this value feeds the
+    // dashboard row's compact pipeline cell, which sits beside a phase label
+    // taken from STATE.md's `current_phase` — a label GSD advances on execution.
+    // A cell describing a different phase from the one its own row names is the
+    // worse failure. The verification gate surfaces through the needs-human
+    // badge and the driver's DRIVE-05 gate set instead, both of which read the
+    // per-phase inference rather than this summary.
+    let unverified = two_phase_project(Some("human_needed"));
+    let state = parse_project_state(unverified.path());
+
+    assert_eq!(
+        state.phase_disk_statuses.get("1").map(|i| i.status),
+        Some(DiskStatus::Executed),
+        "the premise: phase 1 is implemented and its verification is \
+         human_needed, so it reads Executed and NOT Complete. Without this the \
+         assertion below would be vacuous"
+    );
+    assert_eq!(
+        state
+            .current_phase_status
+            .as_ref()
+            .map(|inference| inference.status),
+        Some(DiskStatus::Planned),
+        "the current phase must be phase 2 — the first phase whose \
+         implementation is unfinished. Stopping at phase 1 would describe a \
+         phase the dashboard row does not name"
+    );
+
+    // The same tree with phase 1 fully verified answers identically, which is
+    // what makes the choice a threshold rather than a coincidence of this
+    // fixture's verification status.
+    let verified = two_phase_project(Some("passed"));
+    assert_eq!(
+        parse_project_state(verified.path())
+            .current_phase_status
+            .as_ref()
+            .map(|inference| inference.status),
+        Some(DiskStatus::Planned),
+        "a verified phase 1 and an unverified one must both hand the current \
+         phase to phase 2; if they differ, the dashboard's current phase moves \
+         when a VERIFICATION.md lands rather than when work does"
+    );
+
+    // And with no verification artifact at all — the shape most projects are in,
+    // since GSD writes one only when the phase is verified.
+    let bare = two_phase_project(None);
+    assert_eq!(
+        parse_project_state(bare.path())
+            .current_phase_status
+            .as_ref()
+            .map(|inference| inference.status),
+        Some(DiskStatus::Planned),
+        "a project that never runs /gsd:verify-work must not have its dashboard \
+         pinned to its first executed phase forever"
+    );
+}
