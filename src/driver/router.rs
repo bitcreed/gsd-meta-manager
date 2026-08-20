@@ -605,10 +605,21 @@ fn gate_for(
     }
 
     // 7. G15.
+    //
+    // **Both sides normalised through the roadmap parser's own identifier
+    // extraction** (WR-06). The cell is whatever STATE.md's table author wrote —
+    // `19`, `Phase 19`, `**19**`, `19-gitsafe-git-blast-radius-envelope` — and
+    // `target_phase` is whatever arrived on argv. Raw equality matched this
+    // repository's own spelling (bare numbers, which is why every test passed)
+    // and silently never fired on any other, routing a run straight past a phase
+    // that explicitly owes a verification. A gate that never fires is worse than
+    // an absent one: it also answers "how often did this stop a run?" with a
+    // zero that has nothing to do with the posture.
+    let target_id = phase_identity(target_phase);
     if state
         .deferred_verification_phases
         .iter()
-        .any(|phase| phase == target_phase)
+        .any(|phase| phase_identity(phase) == target_id)
     {
         return Some((
             RouterReason::GateDeferredVerification,
@@ -617,6 +628,18 @@ fn gate_for(
     }
 
     None
+}
+
+/// One written phase reference reduced to the identifier it names, for
+/// comparison against another (WR-06).
+///
+/// The extraction is [`crate::state_reader::roadmap_md::extract_phase_id`] — the
+/// same one the roadmap parser's dependency line uses, rather than a second set
+/// of accepted spellings maintained here. Text that names no identifier at all
+/// keeps its own bytes, so two unparseable cells still compare as themselves and
+/// nothing is silently equated with a guess.
+fn phase_identity(text: &str) -> String {
+    crate::state_reader::roadmap_md::extract_phase_id(text).unwrap_or_else(|| text.to_string())
 }
 
 /// The verification gate for an `executed` target, or `None` when its status is
@@ -1577,6 +1600,43 @@ mod tests {
             matches!(decide(&state, "20"), Decision::Run { .. }),
             "G15 names WHICH phase owes a verification; parking phase 20 on phase 19's row \
              would make one deferred verification stop every phase in the project"
+        );
+    }
+
+    #[test]
+    fn the_deferred_verification_gate_fires_on_every_spelling_a_state_table_uses() {
+        // **WR-06.** The cell is whatever the table's author wrote and
+        // `target_phase` is whatever arrived on argv. Raw equality matched this
+        // repository's bare-number spelling — which is why every test passed —
+        // and silently never fired on any other, routing a run straight past a
+        // phase that explicitly owes a verification.
+        for cell in [
+            "19",
+            "Phase 19",
+            "phase 19",
+            "**19**",
+            "#19",
+            "19-gitsafe-git-blast-radius-envelope",
+        ] {
+            let mut state = state_with(&["19"], &[("19", DiskStatus::Discussed)]);
+            state.deferred_verification_phases = vec![cell.to_string()];
+            assert_eq!(
+                park_reason(&decide(&state, "19")),
+                RouterReason::GateDeferredVerification,
+                "a G15 row written as `{cell}` names phase 19 and must gate it. A \
+                 gate that fires only on one spelling fails OPEN on every other, \
+                 which is worse than an absent gate: it also answers `how often \
+                 did this stop a run?` with a zero unrelated to the posture"
+            );
+        }
+
+        // The negative half, unchanged: normalising must not start equating
+        // different phases.
+        let mut other = state_with(&["20"], &[("20", DiskStatus::Discussed)]);
+        other.deferred_verification_phases = vec!["Phase 19".to_string()];
+        assert!(
+            matches!(decide(&other, "20"), Decision::Run { .. }),
+            "phase 19's row, however spelled, is not phase 20's gate"
         );
     }
 

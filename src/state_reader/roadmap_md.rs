@@ -1,5 +1,6 @@
 use regex::Regex;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RoadmapPhase {
@@ -45,6 +46,49 @@ pub struct RoadmapProgress {
 /// The optional leading `[A-Za-z]{1,4}-` is the project-code/milestone prefix;
 /// the numeric body is `[0-9][0-9.]*` with an optional trailing `[A-Za-z]`.
 const PHASE_ID: &str = r"(?:[A-Za-z]{1,4}-)?[0-9][0-9.]*[A-Za-z]?";
+
+/// The phase identifier a written phase reference names, in the forms this file
+/// already recognises.
+///
+/// **One normaliser, because a gate keyed on one spelling is a gate that fails
+/// open on every other** (WR-06). GSD writes a phase reference several ways —
+/// `19`, `Phase 19`, `**19**`, `#19`, `19-gitsafe-git-blast-radius-envelope` —
+/// and [`parse_depends_on`] already accepts the keyword form for exactly this
+/// reason. A consumer comparing a table cell to an argv token by raw string
+/// equality matches this repository's own spelling and silently never fires on
+/// any other, which is worse than an absent gate: the journal grep that asks
+/// "how often did this gate stop a run?" answers zero for a reason unrelated to
+/// the gate.
+///
+/// Accepts an optional leading `Phase` keyword and `#`, surrounding `*`
+/// emphasis, and a trailing `-<slug>`. Returns `None` when nothing identifier
+/// shaped is there, so a caller can keep the raw text rather than substituting a
+/// guess.
+pub fn extract_phase_id(text: &str) -> Option<String> {
+    static ID_AT_START: OnceLock<Regex> = OnceLock::new();
+    let id_at_start =
+        ID_AT_START.get_or_init(|| Regex::new(&format!(r"^({id})", id = PHASE_ID)).unwrap());
+
+    let trimmed = text
+        .trim()
+        .trim_matches('*')
+        .trim()
+        .trim_start_matches('#')
+        .trim();
+    // `get(..5)` rather than a slice: the text is arbitrary and a byte index
+    // inside a multi-byte character would panic.
+    let body = match trimmed.get(..5) {
+        Some(head) if head.eq_ignore_ascii_case("phase") => trimmed[5..].trim_start(),
+        _ => trimmed,
+    };
+
+    id_at_start
+        .captures(body)
+        // The same trailing-punctuation trim `parse_depends_on` applies, so
+        // `Phase 19.` and `Phase 19,` yield what they name.
+        .map(|caps| caps[1].trim_end_matches(['.', ',']).to_string())
+        .filter(|id| !id.is_empty())
+}
 
 /// Returns true when a phase number is a backlog sentinel that must be excluded
 /// from the returned phase list (and every count).
@@ -381,6 +425,39 @@ pub fn roadmap_progress(content: &str) -> Option<RoadmapProgress> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_phase_reference_reduces_to_its_identifier_in_every_written_form() {
+        for (written, expected) in [
+            ("19", "19"),
+            ("Phase 19", "19"),
+            ("phase 19", "19"),
+            ("PHASE 19", "19"),
+            ("#19", "19"),
+            ("  **19**  ", "19"),
+            ("19-gitsafe-git-blast-radius-envelope", "19"),
+            ("Phase 19.", "19"),
+            ("20.1", "20.1"),
+            ("M-2-something", "M-2"),
+        ] {
+            assert_eq!(
+                extract_phase_id(written).as_deref(),
+                Some(expected),
+                "`{written}` names phase {expected}. A consumer comparing two \
+                 written references by raw equality fires on one spelling and \
+                 fails open on every other (WR-06)"
+            );
+        }
+
+        for nothing in ["", "TBD", "Phase", "—"] {
+            assert_eq!(
+                extract_phase_id(nothing),
+                None,
+                "text naming no identifier must yield None so a caller keeps the \
+                 raw bytes rather than substituting a guess: {nothing:?}"
+            );
+        }
+    }
 
     // ── Plan 20-03 Task 3: declared roadmap dependencies ──
 
