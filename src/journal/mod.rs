@@ -828,7 +828,7 @@ pub enum JournalEvent {
         /// for `force_push_blocked` or `bounds_no_progress` finds the producer
         /// and the record together.
         ///
-        /// **Four sanctioned taxonomies ride this one field, and naming only
+        /// **Five sanctioned taxonomies ride this one field, and naming only
         /// one of them would be the same quiet lie this record exists to
         /// prevent.** They are siblings, never extensions of each other:
         ///
@@ -838,10 +838,11 @@ pub enum JournalEvent {
         /// | `crate::driver::router::RouterReason` | `router_` **or** `gate_` | The deterministic router declined to choose a next command (Phase 20, DRIVE-06). Two prefixes on one enum, on purpose: `router_` marks a refusal about the rule table (no rule, unverified state, an unsatisfied dependency) and `gate_` a human-judgement gate the run reached and refused to answer (DRIVE-05). The split is what makes "how often does the always-park posture stop a run, and at which gate?" a grep over the journals rather than a memory. |
         /// | `crate::driver::bounds::BoundsReason` | `bounds_` | A run bound fired and the run halted itself before the next spawn (Phase 20, CTRL-06). |
         /// | `crate::driver::rate_limit::QuotaReason` | `quota_` | The transport reported a Claude subscription quota rejection and the run stopped without retrying (Phase 20, CTRL-07). Its own taxonomy rather than a fifth `BoundsReason` arm: the four bounds are facts about *this* run's budget, while a quota rejection is a fact about a budget shared with every other Claude surface the user has. |
+        /// | `crate::driver::escalate::EscalationReason` | `escalation_` | The model seam's per-run budget was exhausted, or the seam's answer was refused (Phase 21, DRIVE-04). Its own taxonomy rather than a fifth `BoundsReason` arm, on the same axis the quota park is a sibling on: the four bounds are facts about *whether the run is making progress*, while an escalation count is a fact about *how much the model was consulted* — a run can burn its whole escalation budget while making excellent progress, and a stalled run can burn none. |
         ///
         /// The prefixes make the producer readable from the string alone, and
         /// they are a property of each enum's own `REASON_*` constants rather
-        /// than something assembled here. All four reach a terminal record
+        /// than something assembled here. All five reach a terminal record
         /// through the single `parked:` label prefix, so
         /// `run.json`'s `outcome` needs no second carrier and no second parse.
         reason: String,

@@ -87,6 +87,12 @@ pub mod rate_limit;
 // central safety claims, out of reach of a non-Unix build's type checker.
 pub mod goal;
 pub mod untrusted;
+// Sixth in the same block, and for the identical reason a sixth time:
+// [`escalate`] opens no file, spawns no process and reads no clock — the caller
+// makes the model call and hands in what it retained. Gating it would put the
+// per-run model-consultation budget, which is DRIVE-04's whole control, out of
+// reach of a non-Unix build's type checker.
+pub mod escalate;
 // Also outside the block, and for a related but distinct reason. Both modules
 // are `/proc` and `run.json` **reads**, and D-10 is explicit that they should
 // carry `src/session_detector.rs`'s honest-failure posture — that module has no
