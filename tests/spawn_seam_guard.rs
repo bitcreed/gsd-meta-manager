@@ -1064,6 +1064,570 @@ fn the_spawn_closure_comment_no_longer_claims_one_variable_is_set() {
     );
 }
 
+// ============================================================================
+// The goal-decomposition capability, and the property its SHAPE holds
+//
+// The property: **the driver sets its goal once, from a human, and may never
+// enqueue itself another goal from an artifact created during its own run.** A
+// run that can write its own next goal has no bound that means anything.
+//
+// The shape that holds it is the one `DrivableProject` already uses — private
+// fields, exactly two constructors, and a consuming method that takes the value
+// by MOVE — so a second decomposition inside the iteration loop does not
+// compile. These guards check the shape has not quietly stopped being that
+// shape, which is a thing a comment cannot do.
+// ============================================================================
+
+/// The capability type, and the one file allowed to construct it.
+const DECOMPOSITION_TYPE: &str = "GoalDecomposition";
+const DECOMPOSITION_HOME: &str = "src/driver/run.rs";
+
+/// Its production constructor, and the function that must enclose the only call.
+const DECOMPOSITION_CONSTRUCTOR: &str = "from_argv_goal";
+const DECOMPOSITION_CALL_SITE_HOME: &str = "src/driver/mod.rs";
+const DECOMPOSITION_CALL_SITE_FN: &str = "drive";
+
+/// Its self-incriminating test escape hatch.
+const DECOMPOSITION_ESCAPE_HATCH: &str = "for_testing_bypassing_the_human_goal";
+
+/// Its consuming method. Takes `self` by value, never `&self`.
+const DECOMPOSITION_CONSUMER: &str = "pub async fn decompose(";
+
+/// The label of the iteration loop the capability may never be constructed
+/// inside.
+const ITERATION_LOOP_LABEL: &str = "'iterations:";
+
+/// The body of `struct <name>`, from its opening line to the first bare `}` at
+/// column zero.
+///
+/// The same parse `drivable_project_has_exactly_two_constructors_and_private_fields`
+/// performs inline, lifted so two guards can share it rather than each growing
+/// its own copy that can disagree.
+fn struct_body(file: &SourceFile, name: &str) -> Vec<(usize, String)> {
+    let opening = format!("pub struct {name} {{");
+    let mut body = Vec::new();
+    let mut inside = false;
+    for (number, line) in &file.1 {
+        if line.starts_with(&opening) {
+            inside = true;
+            continue;
+        }
+        if inside {
+            if line == "}" {
+                break;
+            }
+            body.push((*number, line.clone()));
+        }
+    }
+    body
+}
+
+/// The name of the function enclosing 1-based `line_number` in `lines`.
+///
+/// Found by scanning **upwards** for the nearest `fn <name>(` declaration,
+/// which is what makes the answer about where the call actually sits rather
+/// than about which function happens to be nearest in the file.
+fn enclosing_fn(lines: &[(usize, String)], line_number: usize) -> Option<String> {
+    lines
+        .iter()
+        .filter(|(number, _)| *number <= line_number)
+        .rev()
+        .find_map(|(_, line)| fn_name_on(line))
+}
+
+/// The function name a line declares, if it declares one.
+fn fn_name_on(line: &str) -> Option<String> {
+    let mut rest = line.trim_start();
+    for prefix in ["pub(crate) ", "pub ", "async ", "const ", "unsafe "] {
+        while let Some(stripped) = rest.strip_prefix(prefix) {
+            rest = stripped;
+        }
+    }
+    // `async` can follow `pub`, so strip once more after the visibility pass.
+    for prefix in ["async ", "const ", "unsafe "] {
+        while let Some(stripped) = rest.strip_prefix(prefix) {
+            rest = stripped;
+        }
+    }
+    let rest = rest.strip_prefix("fn ")?;
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Whether 1-based `line_number` sits inside the brace scope opened by a line
+/// carrying `label`.
+///
+/// Brace counting from the label line, which is what distinguishes "inside the
+/// loop" from "below the loop in the same function" — a line-number comparison
+/// alone would call every later line a violation and every earlier one clean,
+/// which is not the property.
+///
+/// Braces inside string literals and comments are not tracked. That is a stated
+/// limit rather than an oversight: the scan runs over Rust source in this tree's
+/// own house style, and the control arm below is what proves it answers both
+/// directions on the shapes that actually occur.
+fn inside_label_scope(lines: &[(usize, String)], label: &str, line_number: usize) -> bool {
+    let mut depth = 0i32;
+    let mut open = false;
+    for (number, line) in lines {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        if !open {
+            if line.contains(label) {
+                open = true;
+                depth = line.matches('{').count() as i32 - line.matches('}').count() as i32;
+            }
+            continue;
+        }
+        if *number == line_number {
+            return depth > 0;
+        }
+        depth += line.matches('{').count() as i32;
+        depth -= line.matches('}').count() as i32;
+        if depth <= 0 {
+            open = false;
+        }
+    }
+    false
+}
+
+#[test]
+fn the_goal_decomposition_has_exactly_two_constructors_and_private_fields() {
+    let files = source_files();
+    let home = files
+        .iter()
+        .find(|(path, _)| path == DECOMPOSITION_HOME)
+        .unwrap_or_else(|| panic!("{DECOMPOSITION_HOME} must exist"));
+
+    let production: Vec<_> = executable_lines(home)
+        .filter(|(_, line)| line.contains(&format!("pub fn {DECOMPOSITION_CONSTRUCTOR}")))
+        .collect();
+    assert_eq!(
+        production.len(),
+        1,
+        "there is exactly one production constructor for the decomposition \
+         capability, and it takes `DriveArgs` — which can only be built from \
+         this process's own argv. A second constructor is a second way for a \
+         goal to enter the driver, and the one that matters is the one that \
+         could take a goal out of a file the run itself wrote. Found {}",
+        production.len()
+    );
+
+    let hatch: Vec<_> = executable_lines(home)
+        .filter(|(_, line)| line.contains(&format!("pub fn {DECOMPOSITION_ESCAPE_HATCH}")))
+        .collect();
+    assert_eq!(
+        hatch.len(),
+        1,
+        "there is exactly one escape hatch, and a second would be a second way \
+         to bypass the human-goal property; found {}",
+        hatch.len()
+    );
+
+    let body = struct_body(home, DECOMPOSITION_TYPE);
+    assert!(
+        !body.is_empty(),
+        "the audit could not locate the `{DECOMPOSITION_TYPE}` struct body, so \
+         it is checking nothing"
+    );
+    let public: Vec<_> = body
+        .iter()
+        .filter(|(_, line)| line.trim_start().starts_with("pub "))
+        .map(|(number, line)| {
+            (
+                DECOMPOSITION_HOME.to_string(),
+                *number,
+                line.trim().to_string(),
+            )
+        })
+        .collect();
+    assert!(
+        public.is_empty(),
+        "every field of `{DECOMPOSITION_TYPE}` must be private: a public field \
+         is a caller assembling the capability without passing a constructor, \
+         which is the whole reason it is a type rather than a `String`. Public \
+         fields:{}",
+        render(&public)
+    );
+}
+
+#[test]
+fn the_decomposition_is_consumed_by_move_and_carries_no_clone_or_copy() {
+    let files = source_files();
+    let home = files
+        .iter()
+        .find(|(path, _)| path == DECOMPOSITION_HOME)
+        .unwrap_or_else(|| panic!("{DECOMPOSITION_HOME} must exist"));
+
+    // The consuming method's signature, read as source text rather than
+    // inferred. **Against the unfixed behaviour — a method taking `&self` —
+    // this FAILS by finding a reference signature**, because the whole
+    // mechanism is that there is no capability left afterwards.
+    let consumer: Vec<_> = executable_lines(home)
+        .filter(|(_, line)| line.contains(DECOMPOSITION_CONSUMER))
+        .collect();
+    assert_eq!(
+        consumer.len(),
+        1,
+        "the consuming method must be declared exactly once; found {}",
+        consumer.len()
+    );
+
+    // The receiver is on the line after the signature in this file's style, so
+    // read the few lines that follow and require a bare `self,`.
+    let signature_line = consumer[0].0;
+    let receiver: Vec<String> = home
+        .1
+        .iter()
+        .filter(|(number, _)| *number > signature_line && *number <= signature_line + 3)
+        .map(|(_, line)| line.trim().to_string())
+        .collect();
+    assert!(
+        receiver.iter().any(|line| line == "self,"),
+        "the consuming method must take the capability BY VALUE. A `&self` or \
+         `&mut self` receiver leaves the value alive, so a second decomposition \
+         inside the iteration loop would compile and the never-self-goal \
+         property would be a comment again. Found: {receiver:?}"
+    );
+    assert!(
+        !receiver.iter().any(|line| line.starts_with("&self")
+            || line.starts_with("&mut self")
+            || line == "&self,"),
+        "a reference receiver was found: {receiver:?}"
+    );
+
+    // And no derive that would make the move a formality. A `Clone` lets the
+    // caller keep a copy; a `Copy` means the move never happened at all.
+    let opening = format!("pub struct {DECOMPOSITION_TYPE} {{");
+    let declaration = home
+        .1
+        .iter()
+        .position(|(_, line)| line.starts_with(&opening))
+        .expect("the capability type must be declared");
+    let derives: Vec<String> = home.1[declaration.saturating_sub(4)..declaration]
+        .iter()
+        .map(|(_, line)| line.trim().to_string())
+        .filter(|line| line.starts_with("#[derive"))
+        .collect();
+    for derive in &derives {
+        assert!(
+            !derive.contains("Clone") && !derive.contains("Copy"),
+            "`{DECOMPOSITION_TYPE}` must derive neither Clone nor Copy — either \
+             would let a caller keep a second capability past the move, and the \
+             move is the mechanism. Found: {derive}"
+        );
+    }
+}
+
+#[test]
+fn the_decomposition_constructor_has_one_call_site_and_it_is_above_the_loop() {
+    let files = source_files();
+    let marker = format!("{DECOMPOSITION_TYPE}::{DECOMPOSITION_CONSTRUCTOR}(");
+    let hits = executable_hits(&files, &marker);
+
+    assert_eq!(
+        hits.len(),
+        1,
+        "the decomposition capability must be constructed at exactly ONE site \
+         under src/. A second site is a second place a run can acquire a goal, \
+         and the one that matters is a site inside the iteration loop — which is \
+         a run enqueueing itself a goal from an artifact it just wrote. \
+         Found:{}",
+        render(&hits)
+    );
+
+    let (path, number, _) = &hits[0];
+    assert_eq!(
+        path, DECOMPOSITION_CALL_SITE_HOME,
+        "the one call site must live where the above-the-run refusals do"
+    );
+
+    let home = files
+        .iter()
+        .find(|(candidate, _)| candidate == path)
+        .expect("the call site's file was just read");
+    assert_eq!(
+        enclosing_fn(&home.1, *number).as_deref(),
+        Some(DECOMPOSITION_CALL_SITE_FN),
+        "the construction must sit in `{DECOMPOSITION_CALL_SITE_FN}`, above the \
+         run and beside the other refusals — not inside a helper whose position \
+         a later reader would have to go and check"
+    );
+
+    // And nowhere under src/ constructs it inside the iteration loop's scope.
+    for file in &files {
+        for (line_number, line) in executable_lines(file) {
+            if line.contains(&marker) {
+                assert!(
+                    !inside_label_scope(&file.1, ITERATION_LOOP_LABEL, *line_number),
+                    "{}:{line_number} constructs the decomposition capability \
+                     INSIDE the iteration loop. That is a run taking a new goal \
+                     from an artifact created during its own run, which removes \
+                     every bound the run has (T-21-23)",
+                    file.0
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_loop_scope_scanner_reports_a_construction_inside_a_label_and_not_one_above_it() {
+    // The guard-of-the-guard, **both directions in one test**, so the assertion
+    // above cannot be satisfied by a scanner that reports nothing. Synthetic
+    // source rather than lines read from the tree, so it keeps proving the
+    // scanner works once — especially once — the tree is correct.
+    let lines: Vec<(usize, String)> = [
+        "fn drive() {",
+        "    let capability = GoalDecomposition::from_argv_goal(&args);",
+        "    'iterations: loop {",
+        "        let sneaky = GoalDecomposition::from_argv_goal(&args);",
+        "        if done {",
+        "            break 'iterations;",
+        "        }",
+        "    }",
+        "    let after = GoalDecomposition::from_argv_goal(&args);",
+        "}",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(index, line)| (index + 1, line.to_string()))
+    .collect();
+
+    assert!(
+        inside_label_scope(&lines, ITERATION_LOOP_LABEL, 4),
+        "a construction INSIDE the loop label's scope must be reported, or the \
+         guard above is a no-op that passes forever"
+    );
+    assert!(
+        !inside_label_scope(&lines, ITERATION_LOOP_LABEL, 2),
+        "a construction ABOVE the loop must NOT be reported — the sanctioned \
+         call site is exactly there, and a scanner that reported it would make \
+         the property unsatisfiable"
+    );
+    assert!(
+        !inside_label_scope(&lines, ITERATION_LOOP_LABEL, 9),
+        "a construction BELOW the closed loop must not be reported either; a \
+         line-number comparison rather than brace counting would get this wrong"
+    );
+
+    // And the enclosing-function finder, on the same synthetic text.
+    assert_eq!(enclosing_fn(&lines, 2).as_deref(), Some("drive"));
+    assert_eq!(fn_name_on("pub async fn decompose(").as_deref(), Some("decompose"));
+    assert_eq!(fn_name_on("    let x = 1;"), None);
+}
+
+// ============================================================================
+// GUARD FIVE: the seam count is two, and a third is a test failure with a name
+//
+// **Exactly two seams, and the count is a property of the design rather than a
+// coincidence**: goal decomposition, once, above the loop; and ambiguity
+// escalation, at the router's no-rule branch. There is deliberately no third for
+// error recovery — an error the deterministic rules cannot classify is a park,
+// not a prompt.
+//
+// The diff fails in BOTH directions, and the second direction is the one that
+// rots quietly: a third site is a violation, and an allowlisted site that no
+// longer spawns a seam is equally one, because the allowlist is then wider than
+// the truth it describes (T-20-17).
+//
+// The entries are `path::enclosing_fn` rather than bare paths, because both
+// sanctioned seams live in the same file — a per-file allowlist would report one
+// entry where two seams exist and would go on passing if a third appeared beside
+// them.
+// ============================================================================
+
+/// The call that spawns a model seam. Every site is diffed against the list
+/// below; the function's own definition is excluded by name.
+const SEAM_CALL: &str = "consult_model_seam(";
+const SEAM_DEFINITION: &str = "async fn consult_model_seam(";
+
+/// The two sanctioned seam sites, as `path::enclosing_fn`.
+const SEAM_SITES: &[&str] = &[
+    // The goal decomposition: once, above the loop, consuming a capability that
+    // makes a second one a compile error.
+    "src/driver/run.rs::decompose",
+    // The ambiguity escalation: at `router::Decision::NoRule`, the one state the
+    // deterministic rule table does not cover.
+    "src/driver/run.rs::execute_run",
+];
+
+#[test]
+fn every_model_seam_spawn_site_in_src_is_one_of_exactly_two() {
+    let files = source_files();
+
+    let mut observed: Vec<String> = Vec::new();
+    for file in &files {
+        for (number, line) in executable_lines(file) {
+            if !line.contains(SEAM_CALL) || line.contains(SEAM_DEFINITION) {
+                continue;
+            }
+            let enclosing = enclosing_fn(&file.1, *number).unwrap_or_else(|| {
+                panic!(
+                    "{}:{number} spawns a model seam outside any function, which \
+                     this audit cannot attribute",
+                    file.0
+                )
+            });
+            observed.push(format!("{}::{enclosing}", file.0));
+        }
+    }
+    observed.sort();
+    observed.dedup();
+    assert!(
+        !observed.is_empty(),
+        "the scan found no model-seam spawn site at all under src/, so the diff \
+         below would pass vacuously. If {SEAM_CALL:?} was renamed, re-point \
+         SEAM_CALL in the same commit"
+    );
+
+    let mut allowed: Vec<String> = SEAM_SITES.iter().map(|site| site.to_string()).collect();
+    allowed.sort();
+
+    let extra: Vec<&String> = observed.iter().filter(|site| !allowed.contains(site)).collect();
+    assert!(
+        extra.is_empty(),
+        "a THIRD model seam appeared. The count is two by design: decomposition \
+         once above the loop, and ambiguity only where the router returns \
+         `router_no_rule`. An error the deterministic rules cannot classify is a \
+         PARK, not a prompt — a recovery consultation is the third seam this \
+         guard exists to refuse. Unexpected: {extra:?}"
+    );
+
+    let stale: Vec<&String> = allowed.iter().filter(|site| !observed.contains(site)).collect();
+    assert!(
+        stale.is_empty(),
+        "an allowlisted seam site no longer spawns a seam, so the allowlist is \
+         now wider than the truth it describes — an allowlist wider than the \
+         truth is the failure that shape exists to catch (T-20-17). If a seam \
+         was removed on purpose, remove its entry in the same commit. Stale: \
+         {stale:?}"
+    );
+}
+
+// ============================================================================
+// The ambiguity seam's order of operations
+//
+// The arm's order IS the design: budget, then spawn, then re-parse, then verb.
+// Each step is load-bearing in a different direction, and swapping any adjacent
+// pair produces a build that still compiles and still passes every behavioural
+// test written against the pieces:
+//
+// * budget AFTER spawn is a cap that reports a consultation which already
+//   happened — the tokens are spent and the control is a log line;
+// * re-parse AFTER verb is a command string assembled from an unvalidated
+//   action, which is SAFE-08 inverted.
+//
+// A behavioural test cannot see the order — it sees only the outcome — so the
+// order is pinned here, over the source, where it is visible.
+// ============================================================================
+
+/// The four markers whose relative order in the no-rule arm is the design.
+const SEAM_ARM_ORDER: &[&str] = &[
+    "budget.permit_consultation()",
+    "consult_model_seam(",
+    "escalated_action(",
+    ".command_for(",
+];
+
+/// The marker opening the arm whose order is pinned.
+const NO_RULE_ARM: &str = "router::Decision::NoRule { observed } =>";
+
+#[test]
+fn the_ambiguity_seam_asks_the_budget_then_spawns_then_reparses_then_builds_a_command() {
+    let files = source_files();
+    let run = files
+        .iter()
+        .find(|(path, _)| path == DECOMPOSITION_HOME)
+        .unwrap_or_else(|| panic!("{DECOMPOSITION_HOME} must exist"));
+
+    let arm_start = executable_lines(run)
+        .find(|(_, line)| line.contains(NO_RULE_ARM))
+        .map(|(number, _)| *number)
+        .unwrap_or_else(|| {
+            panic!(
+                "the no-rule arm could not be located by its opening marker \
+                 {NO_RULE_ARM:?}, so this audit is checking nothing. If the arm \
+                 was reshaped, re-point NO_RULE_ARM in the same commit"
+            )
+        });
+
+    let mut previous = arm_start;
+    for marker in SEAM_ARM_ORDER {
+        let at = executable_lines(run)
+            .find(|(number, line)| *number > arm_start && line.contains(marker))
+            .map(|(number, _)| *number)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the no-rule arm no longer contains {marker:?} after line \
+                     {arm_start}. Every step of budget → spawn → re-parse → verb \
+                     is load-bearing; a missing one is a step somebody removed"
+                )
+            });
+        assert!(
+            at >= previous,
+            "the ambiguity seam's steps are out of order: {marker:?} appears at \
+             line {at}, before a step that must precede it at line {previous}. \
+             Budget BEFORE spawn, or the cap describes a consultation that has \
+             already happened; re-parse BEFORE the command is built, or a command \
+             string is assembled from an unvalidated action (SAFE-08)"
+        );
+        previous = at;
+    }
+
+    // And the arm contains no retry: nothing loops over the consultation, and
+    // nothing calls the seam twice.
+    let arm_text: String = executable_lines(run)
+        .filter(|(number, _)| *number >= arm_start && *number <= previous)
+        .map(|(_, line)| format!("{line}\n"))
+        .collect();
+    assert_eq!(
+        arm_text.matches("consult_model_seam(").count(),
+        1,
+        "the ambiguity seam consults the model EXACTLY once per no-rule state. A \
+         second call inside the arm is a retry, and retrying a model that has \
+         just produced an invalid action is how a bounded seam becomes an \
+         unbounded one. Arm:\n{arm_text}"
+    );
+}
+
+#[test]
+fn the_goal_escape_hatch_has_no_call_site_in_src() {
+    let files = source_files();
+    let hits = executable_hits(&files, DECOMPOSITION_ESCAPE_HATCH);
+
+    let offenders: Vec<_> = hits
+        .iter()
+        .filter(|(path, _, _)| path != DECOMPOSITION_HOME)
+        .cloned()
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "`{DECOMPOSITION_ESCAPE_HATCH}` builds the decomposition capability from \
+         a string that did NOT come from a human's argv. A production call site \
+         means the compiler is no longer what enforces the never-self-goal \
+         property. Offending lines:{}",
+        render(&offenders)
+    );
+    assert_eq!(
+        hits.len(),
+        1,
+        "the escape hatch must appear on exactly one executable line — its own \
+         definition in {DECOMPOSITION_HOME}. Found:{}",
+        render(&hits)
+    );
+    assert!(
+        hits[0].2.contains("pub fn"),
+        "the single occurrence must be the `pub fn` definition, not a use of it. \
+         Found:{}",
+        render(&hits)
+    );
+}
+
 #[test]
 fn the_free_string_field_parser_distinguishes_payloads_from_map_keys() {
     // Guard four's control arm, over synthetic struct text, so the parser keeps

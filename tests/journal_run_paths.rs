@@ -142,6 +142,7 @@ fn drive_args(run_id: &str) -> DriveArgs {
         max_steps: None,
         wall_clock_cap_secs: None,
         max_escalations: None,
+        approved_plan: None,
         run_id: Some(run_id.to_string()),
         dry_run: false,
         goal: None,
@@ -162,6 +163,11 @@ fn drive_args(run_id: &str) -> DriveArgs {
 /// returned.
 fn plausible_record(run_id: &str) -> String {
     let record = RunRecord {
+        // Phase 21's three Run-scoped fields, absent on a fixture that
+        // predates them.
+        approved_plan: None,
+        escalation_cap: None,
+        escalations_used: None,
         run_id: run_id.to_string(),
         goal: "a record the scan must never reach".to_string(),
         gsd_command: COMMAND.to_string(),

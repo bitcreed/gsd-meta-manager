@@ -26,9 +26,19 @@
 //! returns that string so the caller can record it verbatim — an injection
 //! attempt that is silently dropped teaches nobody that the repository is
 //! hostile. It is **never** interpolated into a command string, a log format or
-//! a preview. The precedent is `router::RouterAction::command_for`, which is
-//! private precisely because WR-09 rendered an unvalidated token into something
-//! that reads as a pasteable command line through the *preview* path.
+//! a preview.
+//!
+//! The precedent is `router::RouterAction::command_for`, which is the **one**
+//! path from an action to a command string in this tree. It was private until
+//! Phase 21 and is `pub(crate)` now; the correction rides the commit that
+//! widened it, per the `src/driver/dry_run.rs:78-83` precedent. What made it
+//! private was WR-09 — an *unvalidated* token rendered into something that reads
+//! as a pasteable command line through the preview path — and that property is
+//! unchanged: its inputs are a typed [`RouterAction`](router::RouterAction) and
+//! a `--target-phase` validated at the seam, neither of which can carry a byte a
+//! model wrote. The ambiguity seam calls it precisely so that a second
+//! `format!("{verb} {phase}")` is not written at that call site, because a
+//! second composition site is how "one path" stops being true.
 //!
 //! # OQ1, answered empirically before the rest of the phase was committed to
 //!

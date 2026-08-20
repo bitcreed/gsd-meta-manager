@@ -456,6 +456,12 @@ mod tests {
         let record = crate::journal::RunRecord {
             run_id: run_id.to_string(),
             goal: "prove the park lands".to_string(),
+            // Phase 21's three Run-scoped fields, absent on a fixture that
+            // predates them — which is precisely the shape the tolerant read
+            // path has to keep loading.
+            approved_plan: None,
+            escalation_cap: None,
+            escalations_used: None,
             gsd_command: "/gsd-progress".to_string(),
             target: "host".to_string(),
             opt_in: None,

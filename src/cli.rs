@@ -100,6 +100,28 @@ pub enum Commands {
         /// and a value at or above `--max-steps` is refused because it can never bind
         #[arg(long)]
         max_escalations: Option<u32>,
+        // **The explicit approval act, and its explicitness is the point.**
+        // DRIVE-01 requires an approved plan on the run record, and CONTEXT.md
+        // is unambiguous that approval is "an explicit recorded act — not an
+        // inferred consent, not a timeout-to-yes". A `--goal`-only run that
+        // simply started on whatever the model proposed would be inferred
+        // consent with extra steps, so the digest the reviewer saw is what
+        // authorises the run.
+        //
+        // It binds to the plan AND the disclosed files together
+        // (`journal::approval_digest`), and it is re-checked at spawn — a plan
+        // approved an hour ago against a `CLAUDE.md` a `git pull` has since
+        // rewritten is not an approval of what would now run (research Q4).
+        //
+        // The digest is obtained by running the invocation WITHOUT this flag:
+        // the refusal is the review surface, and it prints the decomposed plan
+        // as typed tokens together with the digest that identifies it.
+        // `--dry-run` deliberately decomposes nothing, because a preview spawns
+        // no process (D-23), so it is not and cannot be where the plan is shown.
+        /// The digest of the decomposed plan you reviewed, binding the approval
+        /// to that plan AND to the disclosed files; required with `--goal` alone
+        #[arg(long)]
+        approved_plan: Option<String>,
         // The TUI supplies it so it knows what to look for afterwards (D-03).
         //
         // It is **not** generated when absent, and this comment used to say it

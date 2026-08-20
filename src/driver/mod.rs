@@ -189,6 +189,25 @@ pub struct DriveArgs {
     /// of 2 and a cap of 3 would both be accepted by a run bounded at two steps,
     /// which is the exact shape of the Critical Phase 20's review found.
     pub max_escalations: Option<u32>,
+    /// The digest identifying the plan the user reviewed and approved.
+    ///
+    /// **Required for a `--goal`-only run, and its absence is a refusal rather
+    /// than a default yes.** Approval is an explicit recorded act: this value is
+    /// [`journal::approval_digest`] over the decomposed plan **and** the
+    /// disclosed files, so it identifies both the plan that was reviewed and the
+    /// bytes that will actually enter the prompts. An approval that does not
+    /// cover the second half is not an approval of what will actually run
+    /// (research Q4).
+    ///
+    /// It is re-checked at spawn as well as here, because time and other
+    /// processes pass between the two: the decomposition happens above the run
+    /// and the first agent starts after the lock, the journal and the envelope,
+    /// and a `git pull` in that window rewrites the very files the approval
+    /// covered.
+    ///
+    /// Ignored when the run supplies a `--command` or a `--target-phase`, both
+    /// of which are already machine-checkable and decompose nothing.
+    pub approved_plan: Option<String>,
     /// The run id to record under. **Required for a real run**; `None` is legal
     /// only with [`dry_run`](Self::dry_run).
     ///
@@ -273,7 +292,7 @@ fn platform_refusal(liveness_supported: bool, dry_run: bool) -> Option<DriveErro
     })
 }
 
-/// Whether the pair of command sources a caller supplied names exactly one run.
+/// Whether the command sources a caller supplied name exactly one run.
 ///
 /// **Pure, and shaped as `Option<DriveError>` to match [`platform_refusal`]
 /// beside it:** the chain in [`drive`] reads as a sequence of refusals, and a
@@ -290,9 +309,26 @@ fn platform_refusal(liveness_supported: bool, dry_run: bool) -> Option<DriveErro
 ///   merely untidy. One of the two would have to win silently, and whichever it
 ///   was, the run's terminal record would name a mode the caller did not choose
 ///   — while the *other* mode's bounds went unenforced.
-fn command_source_refusal(command: Option<&str>, target_phase: Option<&str>) -> Option<DriveError> {
+///
+/// **`goal` became a third source in Phase 21, and this doc used to describe
+/// two.** The correction rides the commit that falsified it, per the
+/// `src/driver/dry_run.rs:78-83` precedent. A goal supplied *alongside* either
+/// of the other two is recorded prose and nothing more — both of those sources
+/// are already machine-checkable, so there is nothing to decompose. A goal
+/// supplied **alone** is the DRIVE-01 invocation: the plan
+/// [`goal`](crate::driver::goal) decomposes it into is what tells the router
+/// which phase the run is driving toward, and its terminal step's phase becomes
+/// the `--target-phase` the loop would otherwise have been given directly. It is
+/// not a fourth execution model — it resolves *into* the routed one, above the
+/// run, before anything is created.
+fn command_source_refusal(
+    command: Option<&str>,
+    target_phase: Option<&str>,
+    goal: Option<&str>,
+) -> Option<DriveError> {
     match (command, target_phase) {
         (Some(_), None) | (None, Some(_)) => None,
+        (None, None) if goal.is_some_and(|goal| !goal.trim().is_empty()) => None,
         (None, None) => Some(DriveError::NoCommandSource),
         (Some(_), Some(_)) => Some(DriveError::AmbiguousCommandSource),
     }
@@ -376,7 +412,7 @@ fn preview_text(
 ///    run directory, no `run.json`, no journal.
 /// 6. Dispatch to the platform handler, which is the run body on Unix and a
 ///    typed refusal everywhere else (D-05).
-pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
+pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveError> {
     let entry = config
         .projects
         .get(&args.alias)
@@ -402,9 +438,11 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
 
     // A preview of nothing has nothing to show, and a preview of two
     // conflicting sources cannot say which it previewed.
-    if let Some(refusal) =
-        command_source_refusal(args.command.as_deref(), args.target_phase.as_deref())
-    {
+    if let Some(refusal) = command_source_refusal(
+        args.command.as_deref(),
+        args.target_phase.as_deref(),
+        args.goal.as_deref(),
+    ) {
         return Err(refusal);
     }
 
@@ -457,7 +495,16 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
     // a cap of 2 and a cap of 3 are both accepted, so a run bounded at two steps
     // carries an escalation cap that can never fire while looking configured.
     // That is why the resolved value is now bound rather than discarded.
-    escalate::resolve(args.max_escalations, run_bounds.max_steps).map_err(DriveError::from)?;
+    //
+    // **The returned budget is now bound rather than discarded**, and that is
+    // Phase 21: the goal decomposition below spends one consultation out of it
+    // and the ambiguity seam inside the loop spends the rest, so one budget has
+    // to survive from here to the last iteration. A second `resolve` call in the
+    // run body would be a second thing that can disagree about how many
+    // consultations have already happened.
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut budget =
+        escalate::resolve(args.max_escalations, run_bounds.max_steps).map_err(DriveError::from)?;
 
     if args.dry_run {
         // Positioned **after** the gate and **before** anything Unix-only, and
@@ -590,7 +637,169 @@ pub async fn drive(args: DriveArgs, config: &Config) -> Result<(), DriveError> {
         return Err(refusal);
     }
 
-    dispatch(project, &args, entry).await
+    // **THE FIRST OF THE TWO MODEL SEAMS: goal decomposition, once, above the
+    // run.** The capability is constructed here and consumed here, on the same
+    // expression, and this is its only construction site under `src/`.
+    //
+    // **The move is the mechanism, not the comment.** `decompose` takes
+    // `self` by value, so after this line there is no capability left — a
+    // second decomposition anywhere, and in particular inside `run`'s
+    // `'iterations` loop, does not compile. That is what makes "the driver may
+    // never enqueue itself a goal from an artifact created during its own run"
+    // a type-level property rather than a control-flow habit somebody has to
+    // keep. `tests/spawn_seam_guard.rs` additionally scans for a construction
+    // inside the loop's label scope and for a `Clone`/`Copy` derive that would
+    // make the move a formality.
+    //
+    // **Positioned below the dry-run branch, unlike the refusals above it, and
+    // the position is the decision.** Every refusal above this line is pure —
+    // it opens no file and starts no process — which is why each is answered
+    // identically for a preview and for a real run. A decomposition *spawns a
+    // process*, and D-23 is explicit that a preview does none. A preview of a
+    // goal-only invocation therefore renders without consulting a model at all.
+    //
+    // Positioned above `dispatch` for the reason every refusal in this function
+    // is: a refused decomposition has created nothing at all — no lock file, no
+    // run directory, no `run.json`, no journal — because none of those exist
+    // until `execute_run` builds them.
+    //
+    // **Unix-gated because the seam is the executor's spawn seam**, which is
+    // Unix by construction (D-05). A non-Unix build refuses at `dispatch`
+    // immediately below regardless, so nothing is skipped that would otherwise
+    // have run.
+    #[cfg(unix)]
+    let decomposed = match run::GoalDecomposition::from_argv_goal(&args) {
+        None => None,
+        Some(decomposition) => Some(
+            decomposition
+                .decompose(&project, &args, &mut budget, run_bounds.max_steps)
+                .await?,
+        ),
+    };
+    #[cfg(not(unix))]
+    let decomposed: Option<goal::GoalPlan> = None;
+
+    // **The approval, bound to the plan AND to the bytes that will enter the
+    // prompts, and refused when either half is unmatched or absent.**
+    //
+    // Approval is an explicit recorded act. There is deliberately no path here
+    // that infers it, defaults it, or times out into it: a `--goal`-only run
+    // whose `--approved-plan` is absent is refused with a message that says
+    // *absent* rather than reporting a mismatch, because "nobody approved this"
+    // and "what was approved has changed" are different statements to the person
+    // reading the refusal.
+    //
+    // The digest covers `goal::plan_digest` **and** the disclosed prompt inputs
+    // together, through one mechanism, because two comparisons are two places a
+    // caller can check one and forget the other. Plan 21-03 closed the files
+    // half at the spawn gate; this closes the plan half and binds the two.
+    #[cfg(unix)]
+    let approved_plan = match decomposed.as_ref() {
+        None => None,
+        Some(plan) => Some(approve_plan(&project, &args, plan)?),
+    };
+    #[cfg(not(unix))]
+    let approved_plan: Option<journal::ApprovedPlan> = None;
+
+    // The decomposed plan's terminal step is the phase the run drives toward,
+    // written back onto `args` so every consumer below — the run record, the
+    // argv digest, the `CommandSource` — reads one field rather than each
+    // deciding for itself which of two places the target lives in.
+    //
+    // **It is the LAST step's phase, never the first's** (see
+    // `run::plan_target_phase`), and it has already passed a *stricter* check
+    // than the `--target-phase` seam above: `goal::legality` applies
+    // `journal::is_plain_path_component` **and** requires the roadmap to declare
+    // it, where the argv seam applies only the first.
+    if let Some(plan) = approved_plan.as_ref() {
+        args.target_phase = Some(plan.target_phase.clone());
+    }
+
+    dispatch(project, &args, entry, approved_plan, budget).await
+}
+
+/// Record the approval for `plan`, or refuse the run.
+///
+/// **Pure of decisions and impure only in the one way it has to be**: it reads
+/// the disclosed files' current digests, because an approval that does not cover
+/// the bytes that will enter the prompt is not an approval of what will actually
+/// run. Everything it *judges* is handed to [`journal::recheck_approval`], which
+/// opens nothing and is therefore testable on either side of every boundary.
+///
+/// The three outcomes are the three the caller needs:
+///
+/// * **no `--approved-plan` at all** → [`DriveError::PlanApprovalRequired`],
+///   carrying the digest the user would approve, so the refusal is actionable in
+///   one step rather than being a bug report;
+/// * **a digest that covers a different plan** → the plan half changed;
+/// * **a digest whose plan half matches and whose file half does not** → the
+///   disclosed bytes changed under the approval.
+///
+/// The last two share a variant carrying [`journal::ApprovalRefusal`], which is
+/// what keeps *which half* readable without a second error type.
+#[cfg(unix)]
+fn approve_plan(
+    project: &DrivableProject,
+    args: &DriveArgs,
+    plan: &goal::GoalPlan,
+) -> Result<journal::ApprovedPlan, DriveError> {
+    let plan_digest = goal::plan_digest(plan);
+    let prompt_inputs = crate::registry::current_prompt_inputs(project.root());
+    let digest = journal::approval_digest(&plan_digest, &prompt_inputs);
+
+    // The plan rendered as typed tokens, built once here and used for both the
+    // refusal the user reads and the record the run carries — one producer, so
+    // what the reviewer approved and what the record says cannot disagree.
+    let steps: Vec<String> = plan
+        .steps
+        .iter()
+        .map(|step| {
+            format!(
+                "command={} phase={} terminal={}",
+                step.command.verb(),
+                step.target_phase,
+                step.terminal_state.as_str(),
+            )
+        })
+        .collect();
+
+    let recorded = args.approved_plan.as_deref().map(|approved| {
+        // The record built from what the caller approved, so the comparison
+        // below is `recheck_approval`'s — one predicate, used here and again at
+        // spawn, rather than an equality written twice.
+        journal::ApprovedPlan {
+            steps: Vec::new(),
+            target_phase: String::new(),
+            // The plan half is the digest of the plan we just decomposed: the
+            // caller approved a digest, not a plan, so a mismatch on the whole
+            // value is what "this is not what you approved" means. Recording the
+            // observed plan digest here lets `recheck_approval` report WHICH half
+            // moved rather than only that something did.
+            plan_digest: plan_digest.clone(),
+            approval_digest: approved.to_string(),
+            approved_at: String::new(),
+            extra: serde_json::Map::new(),
+        }
+    });
+
+    if recorded.is_none() {
+        return Err(DriveError::PlanApprovalRequired { digest, steps });
+    }
+
+    journal::recheck_approval(recorded.as_ref(), &plan_digest, &prompt_inputs)
+        .map_err(DriveError::PlanApprovalStale)?;
+
+    Ok(journal::ApprovedPlan {
+        steps,
+        // `legality` refuses an empty plan, so the last step is always present.
+        // Spelled out rather than `unwrap`ped because a detached driver that
+        // panicked here would leave no terminal record at all.
+        target_phase: run::plan_target_phase(plan).unwrap_or_default().to_string(),
+        plan_digest,
+        approval_digest: digest,
+        approved_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        extra: serde_json::Map::new(),
+    })
 }
 
 /// Whether an envelope can be established for `project` at all.
@@ -641,8 +850,10 @@ async fn dispatch(
     project: DrivableProject,
     args: &DriveArgs,
     entry: &RegisteredProject,
+    approved_plan: Option<journal::ApprovedPlan>,
+    budget: escalate::EscalationBudget,
 ) -> Result<(), DriveError> {
-    run::execute_run(project, args, entry).await
+    run::execute_run(project, args, entry, approved_plan, budget).await
 }
 
 /// The typed refusal every non-Unix platform gets (D-05).
@@ -651,8 +862,10 @@ async fn dispatch(
     project: DrivableProject,
     args: &DriveArgs,
     entry: &RegisteredProject,
+    approved_plan: Option<journal::ApprovedPlan>,
+    budget: escalate::EscalationBudget,
 ) -> Result<(), DriveError> {
-    let _ = (project, args, entry);
+    let _ = (project, args, entry, approved_plan, budget);
     Err(DriveError::UnsupportedPlatform {
         detail: "process-group detachment is a Unix facility and has no portable equivalent"
             .to_string(),
@@ -671,6 +884,7 @@ mod tests {
             max_steps: None,
             wall_clock_cap_secs: None,
             max_escalations: None,
+            approved_plan: None,
             run_id: None,
             dry_run: false,
             goal: None,
@@ -840,7 +1054,7 @@ mod tests {
     fn a_run_with_no_command_source_at_all_is_refused_before_anything_is_created() {
         assert!(
             matches!(
-                command_source_refusal(None, None),
+                command_source_refusal(None, None, None),
                 Some(DriveError::NoCommandSource)
             ),
             "clap used to make this unrepresentable by requiring --command. The \
@@ -848,13 +1062,40 @@ mod tests {
              stopped being expressible in the parser, and a run with nothing to do \
              would otherwise reach the lock and the journal before anybody noticed"
         );
+
+        // A goal made of nothing but whitespace is nothing to do either. The
+        // trim is what stops `--goal ' '` from becoming a third command source
+        // that decomposes an empty string, which the seam would answer somehow
+        // and `legality` would then be asked to judge.
+        assert!(
+            matches!(
+                command_source_refusal(None, None, Some("   ")),
+                Some(DriveError::NoCommandSource)
+            ),
+            "a blank goal is not a command source"
+        );
+    }
+
+    #[test]
+    fn a_stated_goal_alone_is_a_command_source_because_the_plan_supplies_the_target() {
+        // DRIVE-01's invocation: the user says what they want once, in plain
+        // language, and the decomposed plan's terminal step is what tells the
+        // router which phase the run is driving toward. Against the UNFIXED
+        // behaviour — a two-source refusal that knows nothing about goals — this
+        // FAILS with `NoCommandSource`, and the run the requirement describes is
+        // unrepresentable.
+        assert!(
+            command_source_refusal(None, None, Some("get phase 22 verified")).is_none(),
+            "a stated goal alone must reach the decomposition rather than be \
+             refused as a run with nothing to do"
+        );
     }
 
     #[test]
     fn a_run_naming_both_command_sources_is_refused_rather_than_resolved() {
         assert!(
             matches!(
-                command_source_refusal(Some("/gsd-progress"), Some("20")),
+                command_source_refusal(Some("/gsd-progress"), Some("20"), None),
                 Some(DriveError::AmbiguousCommandSource)
             ),
             "a precedence rule would let one source win SILENTLY, and whichever it \
@@ -865,12 +1106,25 @@ mod tests {
         );
 
         assert!(
-            command_source_refusal(Some("/gsd-progress"), None).is_none(),
+            command_source_refusal(Some("/gsd-progress"), None, None).is_none(),
             "single-command mode must stay transparent"
         );
         assert!(
-            command_source_refusal(None, Some("20")).is_none(),
+            command_source_refusal(None, Some("20"), None).is_none(),
             "routed mode must stay transparent"
+        );
+
+        // A goal supplied ALONGSIDE either source is recorded prose and nothing
+        // more — both of those sources are already machine-checkable, so there
+        // is nothing to decompose and no seam fires. A goal must not turn a
+        // legal invocation into an ambiguous one.
+        assert!(
+            command_source_refusal(Some("/gsd-progress"), None, Some("a goal")).is_none(),
+            "a goal beside --command is recorded text, not a second source"
+        );
+        assert!(
+            command_source_refusal(None, Some("20"), Some("a goal")).is_none(),
+            "a goal beside --target-phase is recorded text, not a second source"
         );
     }
 

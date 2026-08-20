@@ -541,6 +541,71 @@ pub enum DriveError {
     /// escalation caps are refusable" — exactly as `BoundsRefusal` does for the
     /// run bounds.
     EscalationRefused(crate::driver::escalate::EscalationRefusal),
+    /// The stated goal could not be reduced to a machine-checkable plan
+    /// (DRIVE-03, CONTEXT.md OQ6).
+    ///
+    /// **A refusal, never a repair.** The decomposition happens once, above the
+    /// run, and a plan with one unreducible step is not a plan with that step
+    /// dropped: repairing model output would make this driver a second producer
+    /// of plans, and the user would then be running something no model proposed
+    /// and no human wrote.
+    ///
+    /// The taxonomy is [`crate::driver::goal::GoalRefusal`] and this variant
+    /// carries it rather than restating it, exactly as [`Self::BoundsRefused`]
+    /// carries its own — so one list answers "why can a goal be refused", and
+    /// the refusal names the part that could not be reduced.
+    GoalRefused(crate::driver::goal::GoalRefusal),
+    /// The goal-decomposition seam produced nothing this driver can act on, or
+    /// the run's model-consultation budget was already spent (DRIVE-04).
+    ///
+    /// **It parks the run before it exists rather than retrying with a stricter
+    /// prompt.** Retrying a model that has just produced an unusable answer is
+    /// how a bounded seam becomes an unbounded one, and the CLI already retries
+    /// its own structured-output validation internally — a count plan 21-01
+    /// pinned by measurement rather than by assumption.
+    ///
+    /// The reason is [`crate::driver::escalate::EscalationReason`], the fifth
+    /// sibling taxonomy, so the string a reader greps for here is the same one
+    /// a mid-run escalation park writes. No second string source.
+    GoalSeamUnusable {
+        /// The taxonomy member, from the escalation reason set.
+        reason: crate::driver::escalate::EscalationReason,
+        /// What was observed, already bounded and control-character-stripped.
+        detail: String,
+    },
+    /// A goal-driven run supplied no plan approval (DRIVE-01, research Q4).
+    ///
+    /// **Absence of a recorded approval is a refusal, never a default yes.** It
+    /// is its own variant rather than a mismatch so the message can say *absent*
+    /// — reporting an unapproved run as a stale approval would tell the user to
+    /// look for a change that never happened.
+    ///
+    /// **This refusal IS the review surface**, and that is why it carries the
+    /// plan as well as the digest. DRIVE-03 requires the user to review the plan
+    /// before it runs, and a refusal that named only a digest would be asking
+    /// them to approve an opaque string — which is consent in form and not in
+    /// substance. `--dry-run` deliberately decomposes nothing (a preview spawns
+    /// no process, D-23), so it is not and cannot be the place the plan is
+    /// shown.
+    ///
+    /// A refusal a caller cannot act on is a bug report rather than an error
+    /// message; this one shows what would run and the exact flag that authorises
+    /// it.
+    PlanApprovalRequired {
+        /// The approval digest for the plan just decomposed and the files as
+        /// they stand.
+        digest: String,
+        /// The plan's steps, as the typed `key=value` tokens the run record
+        /// carries. Never a command line and never the model's prose.
+        steps: Vec<String>,
+    },
+    /// A recorded approval no longer covers what would run (research Q4).
+    ///
+    /// The taxonomy is [`crate::journal::ApprovalRefusal`] and this variant
+    /// carries it rather than restating it, exactly as [`Self::BoundsRefused`]
+    /// carries its own — so *which half* moved, the plan or the disclosed files,
+    /// stays readable without a second error type.
+    PlanApprovalStale(crate::journal::ApprovalRefusal),
     /// The opt-in gate refused before anything was spawned.
     OptIn(OptInError),
     // `DryRunUnavailable` lived here between plans 17-01 and 17-04. It said
@@ -633,6 +698,40 @@ impl fmt::Display for DriveError {
             ),
             Self::BoundsRefused(refusal) => write!(f, "{refusal}"),
             Self::EscalationRefused(refusal) => write!(f, "{refusal}"),
+            // The refusal's own `Display` already names the reason and quotes
+            // the offending value; the sentence around it is what tells the
+            // caller the run never started and what they can do about it.
+            Self::GoalRefused(refusal) => write!(
+                f,
+                "the stated goal could not be reduced to a machine-checkable plan, \
+                 so the run was refused before anything was created ({refusal}). \
+                 Restate the goal in terms of a phase reaching verified, or pass \
+                 `--target-phase <N>` directly"
+            ),
+            Self::GoalSeamUnusable { reason, detail } => write!(
+                f,
+                "the goal-decomposition seam produced nothing usable, so the run \
+                 was refused before anything was created (reason: {}): {detail}. \
+                 It is not retried with a stricter prompt — a retry is how a \
+                 bounded seam becomes an unbounded one",
+                reason.as_str()
+            ),
+            Self::PlanApprovalRequired { digest, steps } => write!(
+                f,
+                "this run states a goal but records no approval for the plan it \
+                 was decomposed into, and approval is an explicit act rather than \
+                 something inferred from silence. The plan is:\n{}\n\nIf that is \
+                 what you want run, re-run with `--approved-plan {digest}`, which \
+                 binds the approval to this plan AND to the disclosed files whose \
+                 bytes reach a prompt. Both are re-checked at spawn",
+                steps
+                    .iter()
+                    .enumerate()
+                    .map(|(index, step)| format!("  {}. {step}", index + 1))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+            Self::PlanApprovalStale(refusal) => write!(f, "{refusal}"),
             Self::OptIn(err) => write!(f, "{err}"),
             Self::Lock(err) => write!(f, "{err}"),
             Self::Spawn(err) => write!(f, "{err}"),
@@ -670,6 +769,14 @@ impl std::error::Error for DriveError {
             // `EscalationRefusal` is the same shape for the same reason.
             | Self::BoundsRefused(_)
             | Self::EscalationRefused(_)
+            // `GoalRefusal` is the same shape again: a classification of a
+            // payload, not a failure that wrapped an error.
+            | Self::GoalRefused(_)
+            | Self::GoalSeamUnusable { .. }
+            // `ApprovalRefusal` is the same shape once more: a classification of
+            // two digests, not a failure that wrapped an error.
+            | Self::PlanApprovalRequired { .. }
+            | Self::PlanApprovalStale(_)
             | Self::Journal { .. }
             | Self::EnvelopeAssertionFailed { .. } => None,
         }
@@ -685,6 +792,12 @@ impl From<crate::driver::bounds::BoundsRefusal> for DriveError {
 impl From<crate::driver::escalate::EscalationRefusal> for DriveError {
     fn from(refusal: crate::driver::escalate::EscalationRefusal) -> Self {
         Self::EscalationRefused(refusal)
+    }
+}
+
+impl From<crate::driver::goal::GoalRefusal> for DriveError {
+    fn from(refusal: crate::driver::goal::GoalRefusal) -> Self {
+        Self::GoalRefused(refusal)
     }
 }
 

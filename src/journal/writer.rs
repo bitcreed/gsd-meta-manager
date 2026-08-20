@@ -889,6 +889,12 @@ mod tests {
         RunRecord {
             run_id: run_id.to_string(),
             goal: "ship the run journal".to_string(),
+            // Phase 21's three Run-scoped fields, absent on a fixture that
+            // predates them — which is precisely the shape the tolerant read
+            // path has to keep loading.
+            approved_plan: None,
+            escalation_cap: None,
+            escalations_used: None,
             gsd_command: "/gsd:execute-phase".to_string(),
             target: "claude".to_string(),
             opt_in: None,

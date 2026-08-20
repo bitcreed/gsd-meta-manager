@@ -240,6 +240,7 @@ fn drive_args(alias: &str, sentinel: &Path) -> DriveArgs {
         max_steps: None,
         wall_clock_cap_secs: None,
         max_escalations: None,
+        approved_plan: None,
         run_id: Some(RUN_ID.to_string()),
         dry_run: false,
         goal: None,

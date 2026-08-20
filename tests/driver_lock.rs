@@ -118,6 +118,7 @@ fn args(run_id: &str, heartbeats: &str, interval: &str) -> DriveArgs {
         max_steps: None,
         wall_clock_cap_secs: None,
         max_escalations: None,
+        approved_plan: None,
         run_id: Some(run_id.to_string()),
         dry_run: false,
         goal: None,
