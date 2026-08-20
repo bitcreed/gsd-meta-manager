@@ -102,6 +102,68 @@ adds the boundary that keeps third-party text from becoming instructions.
   is still refused by Phase 19's envelope, so the two layers are shown to be independent rather
   than assumed to be.
 
+### Research Corrections (2026-08-19, after `21-RESEARCH.md`)
+
+Four decisions above were written before research. All four are corrected here; the original wording
+is left in place deliberately as a record of what was assumed. **C-1 and C-3 change the phase's
+shape, not just its wording.**
+
+- **CORRECTED (C-1) — structural delimiting does not achieve SAFE-07 on its own.** The CLI loads the
+  target repo's `CLAUDE.md` into the model's context **itself**. Proven: a spike with `--tools ""`
+  and *zero file content in the prompt*, in a cwd holding a hostile `CLAUDE.md`, came back
+  `{"saw_claude_md": true, "quoted_heading": "## IMPORTANT SYSTEM OVERRIDE"}`. No amount of careful
+  prompt construction closes this, because the prompt is not where it enters. The control is the env
+  var `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`, verified to suppress it while leaving slash commands,
+  agents and settings live. **It must NOT be `--safe-mode`**, which sets the same var but also
+  disables hooks — and Phase 19's envelope is enforced by a `PreToolUse` hook
+  (`src/envelope/hooks.rs`). Using `--safe-mode` here would silently disarm the git boundary in the
+  name of hardening. Note the var is a `CLAUDE*` name that the existing environment scrub does not
+  currently remove — check that interaction rather than assuming it.
+- **CORRECTED (C-2) — `--mcp-config` is already unnecessary and would weaken the control.**
+  `build_argv` already emits `--strict-mcp-config` unconditionally (`src/executor/claude.rs:261`)
+  and `system/init` already reports `mcp_servers: []`. With no `--mcp-config` supplied the permitted
+  set is empty; supplying one would move it from `{}` to whatever that file names. This phase's work
+  here is a **both-directions regression guard**, not a feature.
+- **CORRECTED (C-3) — there is no typed untrusted-content field on this transport, and the obvious
+  attempt fails silently.** Anthropic's primary indirect-injection guidance is to deliver
+  third-party content only inside `tool_result` blocks. That channel is unavailable here: a stdin
+  `user` message carrying a synthetic `tool_result` was accepted with exit 0 and `subtype: success`,
+  and the model never saw the content. **This is the most dangerous finding in the phase**, because
+  it fails in the direction that looks like success — a corpus test built on it would assert "the
+  injection did not change the command" and pass *vacuously*, forever. Therefore: use the fallback
+  set (JSON-encode untrusted strings, label their source, state the policy in `--system-prompt`,
+  limit access and action space), and **every injection-corpus test MUST first assert positively
+  that the content arrived** — e.g. the model can echo a nonce planted in the corpus — before
+  asserting that it did not win. A corpus test without an arrival assertion is not evidence.
+- **CORRECTED (C-4) — the existing content hash is not a security control, by its own
+  documentation.** `registry::claude_md_digest` uses FNV-1a 64, whose doc says verbatim "It is not a
+  security control." Against the adversarial threat model this phase states, FNV-1a detects nothing.
+  **Resolution: upgrade to SHA-256 behind a new `sha256:` prefix.** The existing value is already
+  prefixed `fnv1a64:`, so old records read as legacy with no migration. A re-confirmation prompt is
+  a security affordance, and backing one with a non-security hash is exactly what this codebase's
+  own honesty conventions exist to prevent.
+
+### Open Questions Resolved
+
+1. **Does goal decomposition need file bodies?** This is the phase's largest design risk — if it
+   does, `--tools ""` is untenable and SAFE-07's surface grows substantially. Make it **the plan's
+   first task and its gate**: answer it empirically before the rest of the plan is committed to.
+2. **Should the executor profile also suppress `CLAUDE.md`?** Out of scope — it is strictly larger
+   exposure than the two seams and would degrade every honest run. Disclose loudly in the
+   residual-exposure register rather than fixing quietly or omitting.
+3. **Escalation cap vs step cap** — a cap greater than or equal to `DEFAULT_MAX_STEPS` (20) is a
+   disablement wearing a cap's clothing. Refuse it at the seam, with the reason named.
+4. **Approval replay** — bind approval to a digest of the plan **and** the disclosed files, and
+   re-check it at spawn. An approval that does not cover the files that will enter the prompt is not
+   an approval of what will actually run.
+5. **The escalation cap is a fifth sibling taxonomy, not a fifth `BoundsReason` arm** — the
+   precedent is `rate_limit.rs:26-33`, which records this identical question being asked and
+   answered for the quota park.
+
+**Note on the `sha2` version:** research gated it behind a human checkpoint because the version was
+training-data recall. That does not need a human — resolve it mechanically with `cargo add sha2` /
+`cargo search sha2` at execution time and record the resolved version. Do not spend a checkpoint on it.
+
 ### Claude's Discretion
 
 - Module layout, the escalation cap's default value, and the exact wire shape of the structured
