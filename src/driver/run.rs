@@ -1458,13 +1458,19 @@ fn iteration_options(
 ///
 /// The five stages map onto GSD's own artifact presence: Discuss is
 /// `has_context`, Research is `has_research`, Plan is the plan count, Execute is
-/// the summary count, Verify is `has_verification`. **Verify reports presence
-/// and not status**, and that is a known gap rather than an oversight: this
-/// repository's `DiskInference` records only whether a `*-VERIFICATION.md`
-/// exists, never its frontmatter `status`, which is the whole DRIVE-05 gate set
-/// (research Pitfall 2). Closing it is a separate plan's, and it is named here
-/// so a reader of this record knows what the fifth element does and does not
-/// mean.
+/// the summary count, Verify is `has_verification`.
+///
+/// **Verify reports presence, and since 20-03 that is a choice rather than a
+/// limit.** `DiskInference::verification_status` now carries the frontmatter
+/// `status` — the reader gap research Pitfall 2 named was closed, and the two
+/// doc comments here that still described it as open were stale (IN-01). This
+/// element stays a presence flag because the five are one positional vocabulary:
+/// four artifact-presence facts and a count pair, read by index. A status word in
+/// slot five would make that slot mean something different from its neighbours,
+/// and the status is not lost — it is what decides the DRIVE-05 gate, so it
+/// reaches the journal through the `parked` record's reason and its `Diagnostic`
+/// detail, which is where a reader greps for *why a run stopped* rather than
+/// *what its stages looked like*.
 ///
 /// Values are enum names and counts — never artifact content — so this record
 /// cannot carry agent-authored text (T-20-05).
