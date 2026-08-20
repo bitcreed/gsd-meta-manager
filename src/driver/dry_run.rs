@@ -651,6 +651,11 @@ mod tests {
             driver_opt_in: Some(DriverOptIn {
                 opted_in_at: "2026-07-29T11:59:00Z".to_string(),
                 claude_md_digest: None,
+                // The real disclosed set for this root, so the fixture is a
+                // genuine fresh opt-in rather than one the spawn gate's drift
+                // check would refuse.
+                prompt_inputs: crate::registry::current_prompt_inputs(root.path()),
+                extra: Default::default(),
                 branch_namespace: None,
                 credential: None,
                 pr_cap_per_24h: None,

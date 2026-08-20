@@ -315,6 +315,8 @@ fn registry_at(dir: &Path, alias: &str, project: &Path) -> PathBuf {
             driver_opt_in: Some(DriverOptIn {
                 opted_in_at: "2026-08-18T00:00:00Z".to_string(),
                 claude_md_digest: None,
+                prompt_inputs: gsd_meta_manager::registry::current_prompt_inputs(project),
+                extra: Default::default(),
                 branch_namespace: None,
                 credential: None,
                 pr_cap_per_24h: None,
@@ -407,6 +409,8 @@ fn an_alias_that_can_have_no_envelope_is_refused_by_the_ordered_chain() {
             driver_opt_in: Some(DriverOptIn {
                 opted_in_at: "2026-08-18T00:00:00Z".to_string(),
                 claude_md_digest: None,
+                prompt_inputs: gsd_meta_manager::registry::current_prompt_inputs(&project),
+                extra: Default::default(),
                 branch_namespace: None,
                 credential: None,
                 pr_cap_per_24h: None,

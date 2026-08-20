@@ -717,6 +717,10 @@ mod tests {
                 driver_opt_in: Some(crate::config::DriverOptIn {
                     opted_in_at: "2026-07-29T11:59:00Z".to_string(),
                     claude_md_digest: None,
+                    // See `dry_run.rs`: the real disclosed set, so this fixture
+                    // is not refused by the spawn gate's drift check.
+                    prompt_inputs: crate::registry::current_prompt_inputs(root),
+                    extra: Default::default(),
                     branch_namespace: None,
                     credential: None,
                     pr_cap_per_24h: None,

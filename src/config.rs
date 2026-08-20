@@ -71,10 +71,14 @@ pub struct RegisteredProject {
 ///    "may be driven" indistinguishable from "was registered".
 /// 2. A record cannot be accidentally true. `Some(record)` requires deliberate
 ///    construction; a defaulted `false` flipping to `true` has no analogue.
-/// 3. Phase 21 re-confirms the opt-in when `CLAUDE.md` drifts, and adding the
-///    digest later would be a second migration of a user-owned file.
+/// 3. Phase 21 re-confirms the opt-in when a disclosed file drifts, and adding
+///    the digest later would be a second migration of a user-owned file.
 ///
-/// Phase 17 **records** the digest and acts on nothing.
+/// **Phase 21 is that phase, and it has landed.** The record now carries
+/// [`DriverOptIn::prompt_inputs`] — the files whose bytes can reach a model
+/// prompt, each with a `sha256:` digest — and the drift check runs at the spawn
+/// gate. Reason 3 above paid off exactly as intended: no user's `config.json`
+/// needed a migration, because the record was already a struct.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct DriverOptIn {
     /// RFC3339 UTC at **second** precision.
@@ -84,11 +88,62 @@ pub struct DriverOptIn {
     /// `registry.rs`'s bare `to_rfc3339()`, so an opt-in stamp and a run's
     /// `ended_at` compare directly without normalising.
     pub opted_in_at: String,
-    /// A digest of the project's `CLAUDE.md` as it stood at opt-in time.
+    /// **Legacy.** A digest of the project's `CLAUDE.md` as it stood at opt-in
+    /// time, written by Phase 17 and Phase 19 binaries.
     ///
-    /// Recorded now, acted on by **nothing** in this phase. Phase 21 re-confirms
-    /// the opt-in on drift.
+    /// **Nothing writes this any more** — Phase 21 superseded it with
+    /// [`DriverOptIn::prompt_inputs`], which covers `CLAUDE.md` *and* the other
+    /// files whose bytes can reach a prompt, and does so with a digest that is
+    /// a security control rather than an FNV-1a fingerprint that says in its own
+    /// documentation that it is not one (C-4).
+    ///
+    /// It is **kept, not removed**, and that is the whole reason no user needs a
+    /// migration: an older binary that loads and re-saves this file still finds
+    /// the field it expects. Nothing reads it as an integrity check — a record
+    /// carrying only this key has an empty `prompt_inputs`, and an empty
+    /// `prompt_inputs` re-confirms.
     pub claude_md_digest: Option<String>,
+    /// The files whose bytes can reach a model prompt, each with the digest it
+    /// had when the user opted in.
+    ///
+    /// **The safe reading is one reading for five different states.** An absent
+    /// list, an entry that does not parse, an entry whose digest prefix names a
+    /// hash family this binary does not compute, an entry whose digest no longer
+    /// matches the file on disk, and an entry for a file that has appeared or
+    /// vanished since opt-in **all mean the same thing: re-confirm.** That is
+    /// deliberately the same register as
+    /// [`DriverOptIn::branch_namespace`]'s "an absent value and a rejected value
+    /// therefore mean the same thing, which is the safe thing" — a gate with one
+    /// answer for every unclear state has no unclear state left to get wrong.
+    ///
+    /// `#[serde(default)]` so every pre-Phase-21 `config.json` loads unchanged,
+    /// coming back with an empty list — which re-confirms, which is correct: a
+    /// record written before this field existed never disclosed anything to the
+    /// user, so it cannot stand as an informed approval of what reaches a prompt.
+    #[serde(default)]
+    pub prompt_inputs: Vec<PromptInput>,
+    /// Every field of this record that this build does not model.
+    ///
+    /// **The same technique as [`RegisteredProject::extra`], and it belongs here
+    /// for a reason that was measured rather than assumed.** That flatten sits
+    /// on the *enclosing* struct, and a second sits on [`Preferences`] — but
+    /// until Phase 21 there was none here, so a key nested inside
+    /// `driver_opt_in` was silently deleted by a load-and-save while a key one
+    /// level up survived. A probe against the real `load_config`/`save_config`
+    /// confirmed it: entry-level unknown survived, nested unknown did not.
+    ///
+    /// That made T-21-20's stated mitigation — "the existing flatten-preservation
+    /// posture" — a paper mitigation at this nesting level, and it would have
+    /// left `prompt_inputs` deletable by any older binary that merely opened the
+    /// config.
+    ///
+    /// **The failure mode was fail-safe, not a vulnerability**, and the
+    /// distinction is worth keeping: a deleted `prompt_inputs` reads as absent,
+    /// absent re-confirms, so the cost was a spurious re-confirmation after a
+    /// version downgrade rather than a silent approval. It is fixed anyway,
+    /// because "annoying" is not a reason to leave a user-owned file lossy.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
     /// The push namespace this project's driven runs are confined to, or
     /// `None` for the default `refs/heads/gsd-auto/<alias>/` (D-30).
     ///
@@ -121,6 +176,42 @@ pub struct DriverOptIn {
     /// [`DriverOptIn::pr_cap_per_24h`].
     #[serde(default)]
     pub pr_cap_per_run: Option<u32>,
+}
+
+/// One file whose bytes can reach a model prompt, and its digest at opt-in time.
+///
+/// **A path plus a digest, and nothing about *which* prompt profile reads it.**
+/// The profile attribution is owned by
+/// [`crate::registry::DISCLOSED_PROMPT_INPUTS`] in code, not recorded here, and
+/// that split is deliberate: which files a build actually feeds to a model is a
+/// fact about the build, so storing it in a user-owned file would let a stale
+/// record disagree with the binary about what it does. The *list* is recorded —
+/// so the disclosure the user approved is what gets rendered back — while the
+/// label describing each entry comes from the code that does the reading.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct PromptInput {
+    /// The file's path **relative to the project root** — `CLAUDE.md`,
+    /// `.planning/STATE.md`. Relative rather than absolute so a record survives
+    /// the project being moved or the config being synced between machines.
+    pub path: String,
+    /// The `sha256:`-prefixed digest of the file's bytes at opt-in time, or
+    /// `None` for a file that **did not exist** then.
+    ///
+    /// `None` is a recorded fact, not a missing one, and conflating the two
+    /// would open the hole this field exists to close: if an absent file were
+    /// simply left out of the list, a `CLAUDE.md` that appears *after* opt-in
+    /// would reach the executor's prompt with no digest to contradict and no
+    /// re-confirmation. Recorded as `None`, its later appearance is a mismatch
+    /// like any other, and mismatches re-confirm.
+    pub digest: Option<String>,
+    /// Every field of this entry that this build does not model.
+    ///
+    /// See [`DriverOptIn::extra`] — same technique, same reason, and applied
+    /// here rather than only one level up because this struct lives in the same
+    /// user-owned, version-shared file and would otherwise reproduce that exact
+    /// bug one level deeper.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 /// Where a driven run's git credential comes from (D-18).
@@ -375,6 +466,60 @@ mod tests {
   }
 }"#;
 
+    /// A real pre-Phase-21 `config.json`, byte for byte: an opt-in carrying the
+    /// legacy `claude_md_digest` with the `fnv1a64:` prefix `journal::argv_digest`
+    /// actually emits, and **no** `prompt_inputs` key at all.
+    ///
+    /// **A byte literal, never a serialised `Config`.** The same distinction
+    /// [`PRE_PHASE_17_CONFIG`] and [`PRE_PHASE_19_CONFIG`] record: round-tripping
+    /// a struct would pass even if `prompt_inputs` had been made mandatory, and
+    /// mandatory is exactly the failure that would force a migration of a
+    /// user-owned file.
+    const PRE_PHASE_21_CONFIG: &str = r#"{
+  "version": 2,
+  "projects": {
+    "alpha": {
+      "path": "/home/testuser/projects/alpha",
+      "added": "2026-01-04T09:15:00+00:00",
+      "driver_opt_in": {
+        "opted_in_at": "2026-07-29T11:59:00Z",
+        "claude_md_digest": "fnv1a64:0123456789abcdef"
+      }
+    }
+  },
+  "preferences": {
+    "hooks": {
+      "pre_create": null,
+      "post_create": null
+    },
+    "gsd_integration": false
+  }
+}"#;
+
+    /// A config written by a binary from this build's future, carrying an
+    /// unknown key **nested inside `driver_opt_in`**.
+    ///
+    /// Distinct from [`FUTURE_CONFIG`], whose invented keys sit one level up. The
+    /// nesting is the whole point: until Phase 21 `DriverOptIn` carried no
+    /// `extra` flatten, so a key at *this* depth was silently deleted by a
+    /// load-and-save while a key at the entry level survived.
+    const FUTURE_CONFIG_NESTED_UNKNOWN: &str = r#"{
+  "version": 2,
+  "projects": {
+    "alpha": {
+      "path": "/home/testuser/projects/alpha",
+      "added": "2026-01-04T09:15:00+00:00",
+      "driver_opt_in": {
+        "opted_in_at": "2026-07-29T11:59:00Z",
+        "claude_md_digest": null,
+        "prompt_inputs": [],
+        "driver_attestation_v3": "a key this build has never heard of"
+      }
+    }
+  },
+  "preferences": {}
+}"#;
+
     /// A real pre-Phase-19 `config.json`, byte for byte: schema version 2, one
     /// opted-in project, and a `driver_opt_in` record carrying exactly the two
     /// fields Phase 17 wrote.
@@ -572,6 +717,100 @@ mod tests {
             text.contains("\"version\": 99"),
             "the recorded version survives the save verbatim. Got:\n{text}"
         );
+    }
+
+    #[test]
+    fn a_pre_phase_21_opt_in_loads_with_no_migration_and_reads_as_re_confirm() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_config(dir.path(), PRE_PHASE_21_CONFIG);
+
+        let config = load_config(&path).expect(
+            "a config written before `prompt_inputs` existed must load unchanged; \
+             needing a migration here is the one-way door the record shape exists to avoid",
+        );
+        let opt_in = config.projects["alpha"]
+            .driver_opt_in
+            .as_ref()
+            .expect("the opt-in record survives");
+
+        assert_eq!(
+            opt_in.claude_md_digest.as_deref(),
+            Some("fnv1a64:0123456789abcdef"),
+            "the legacy key is kept, not dropped — that is what makes an older \
+             binary's load-and-save non-destructive"
+        );
+        assert!(
+            opt_in.prompt_inputs.is_empty(),
+            "an absent `prompt_inputs` key defaults to empty rather than failing to parse"
+        );
+
+        // The safe reading: a record that never disclosed anything cannot stand
+        // as an informed approval of what reaches a prompt.
+        let drift = crate::registry::check_prompt_input_drift(dir.path(), opt_in);
+        assert_eq!(
+            drift,
+            Some(crate::registry::OptInDrift::NothingDisclosed),
+            "a pre-disclosure opt-in must re-confirm, never silently pass the gate"
+        );
+    }
+
+    #[test]
+    fn an_unknown_key_nested_inside_the_opt_in_survives_a_load_and_save() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_config(dir.path(), FUTURE_CONFIG_NESTED_UNKNOWN);
+
+        let config = load_config(&path).expect("a future config must still parse");
+        save_config(&config, &path).expect("the round-tripped config saves");
+        let text = std::fs::read_to_string(&path).expect("the saved config is readable");
+
+        assert!(
+            text.contains("driver_attestation_v3"),
+            "an unknown key INSIDE `driver_opt_in` must survive a save by this \
+             build. Before Phase 21 added the `extra` flatten to `DriverOptIn` \
+             this failed, while the same assertion one level up passed — which is \
+             why T-21-20's 'the existing flatten-preservation posture' was a paper \
+             mitigation at this nesting level. Got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_digest_from_an_unknown_hash_family_reads_as_re_confirm() {
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        // Matched on "is not sha256:", NOT on "is fnv1a64:". The pre-Phase-19
+        // fixture in this very file carries `fnv1a:` — a real legacy value an
+        // exact-prefix match would sail straight past.
+        for legacy in [
+            "fnv1a64:0123456789abcdef",
+            "fnv1a:0123456789abcdef",
+            "blake3:00112233",
+            "0123456789abcdef",
+        ] {
+            let opt_in = DriverOptIn {
+                opted_in_at: "2026-07-29T11:59:00Z".to_string(),
+                claude_md_digest: None,
+                prompt_inputs: vec![PromptInput {
+                    path: "CLAUDE.md".to_string(),
+                    digest: Some(legacy.to_string()),
+                    extra: Default::default(),
+                }],
+                extra: Default::default(),
+                branch_namespace: None,
+                credential: None,
+                pr_cap_per_24h: None,
+                pr_cap_per_run: None,
+            };
+
+            let drift = crate::registry::check_prompt_input_drift(dir.path(), &opt_in);
+            assert!(
+                matches!(
+                    drift,
+                    Some(crate::registry::OptInDrift::LegacyDigest { .. })
+                ),
+                "`{legacy}` names a hash family this binary does not compute, so it \
+                 must re-confirm rather than read as a match or as an error. Got: {drift:?}"
+            );
+        }
     }
 
     #[test]

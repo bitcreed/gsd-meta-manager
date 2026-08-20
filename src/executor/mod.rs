@@ -863,6 +863,11 @@ mod tests {
             driver_opt_in: opted_in.then(|| crate::config::DriverOptIn {
                 opted_in_at: "2026-07-29T00:00:00Z".to_string(),
                 claude_md_digest: None,
+                // The real disclosed set for this root: these fixtures exist to
+                // exercise the opt-in gate, so they must represent an opt-in
+                // that actually covers the bytes on disk.
+                prompt_inputs: crate::registry::current_prompt_inputs(root),
+                extra: Default::default(),
                 branch_namespace: None,
                 credential: None,
                 pr_cap_per_24h: None,

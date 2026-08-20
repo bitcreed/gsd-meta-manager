@@ -1394,6 +1394,11 @@ mod tests {
         DriverOptIn {
             opted_in_at: "2026-08-18T00:00:00Z".to_string(),
             claude_md_digest: None,
+            // Deliberately empty: this fixture is the pre-Phase-19 shape, and
+            // these tests are about envelope field resolution rather than the
+            // prompt-input disclosure.
+            prompt_inputs: Vec::new(),
+            extra: Default::default(),
             branch_namespace: None,
             credential: None,
             pr_cap_per_24h: None,
