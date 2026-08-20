@@ -476,34 +476,35 @@ fn assert_the_seam_was_not_confounded(run: &SeamRun, arm: &str) {
 /// answer. Comparing the first step's phase against the human's choice asked
 /// "what does the run do first", which is not the question OQ1 poses.
 fn assert_plan_is_legal_and_return_target(payload: &serde_json::Value, arm: &str) -> String {
-    let steps = payload
-        .get("steps")
-        .and_then(|v| v.as_array())
-        .unwrap_or_else(|| panic!("{arm}: the payload carries no steps array: {payload}"));
-    assert!(!steps.is_empty(), "{arm}: the plan has no steps");
+    // Through the SHIPPED legality predicate, not a re-implementation of it in
+    // this file. That is the difference between "the payload looks plausible" and
+    // "the payload is one the driver would actually accept": every command
+    // re-parsing to a `RouterAction`, every phase surviving
+    // `journal::is_plain_path_component` and appearing in the roadmap, and every
+    // terminal state reducing to `router::is_goal_met` are all checked there.
+    let plan = goal::legality(payload, ROADMAP_PHASES, resolved_step_cap())
+        .unwrap_or_else(|refusal| panic!("{arm}: the returned plan was refused — {refusal}"));
 
-    let mut last_target = None;
-    for (index, step) in steps.iter().enumerate() {
-        let named = step
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or_else(|| panic!("{arm}: step {index} names no command: {step}"));
-        goal::parse_action(named).unwrap_or_else(|refusal| {
-            panic!("{arm}: step {index} did not re-parse to a RouterAction: {refusal}")
-        });
+    assert!(!plan.steps.is_empty(), "{arm}: the plan has no steps");
 
-        let phase = step
-            .get("phase")
-            .and_then(|v| v.as_str())
-            .unwrap_or_else(|| panic!("{arm}: step {index} names no phase: {step}"));
-        assert!(
-            step.get("terminal_state").and_then(|v| v.as_str()).is_some(),
-            "{arm}: step {index} names no terminal state: {step}"
-        );
-        last_target = Some(phase.to_string());
-    }
+    plan.steps
+        .last()
+        .expect("a non-empty plan has a last step")
+        .target_phase
+        .clone()
+}
 
-    last_target.expect("a non-empty plan has a last step")
+/// The phases the typed-state fixture declares, as the roadmap set.
+const ROADMAP_PHASES: &[&str] = &[
+    "14", "15", "16", "17", "18", "19", "20", "21", "22", "23",
+];
+
+/// The step cap a default run resolves to, obtained by calling `bounds::resolve`
+/// rather than by naming the default constant.
+fn resolved_step_cap() -> u32 {
+    gsd_meta_manager::driver::bounds::resolve(None, None)
+        .expect("the default bounds resolve")
+        .max_steps
 }
 
 #[test]
