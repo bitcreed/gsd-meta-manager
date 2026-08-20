@@ -338,6 +338,27 @@ pub struct ResultMessage {
     /// is what makes two `result`s from one process distinguishable (D-29).
     #[serde(default)]
     pub uuid: Option<String>,
+    /// The schema-validated payload a `--json-schema` run produced, carried
+    /// unmodelled.
+    ///
+    /// Follows [`Self::permission_denials`] exactly and for the same reason: the
+    /// shape is the caller's own schema, so this layer has no business having an
+    /// opinion about it. Tolerant parse throughout — no strict unknown-field
+    /// rejection, no panicking accessor, no `unwrap` on a wire field.
+    ///
+    /// **Read this off the TERMINAL `result` envelope**, the one
+    /// `derive_run_outcome_from_envelopes` already selects with `last`, and
+    /// never by indexing a turns vector. The CLI populates the field from the
+    /// **last** structured-output call rather than the first, and this repo has
+    /// already proved that a `result` envelope is a *turn* boundary rather than
+    /// a run terminator (D-29) — so "there is exactly one" is a request the
+    /// tool's own prompt makes, not a guarantee the wire gives.
+    ///
+    /// Absent on error envelopes, exactly as [`Self::result`] is (D-32). An
+    /// absent value and a schema-invalid one therefore both arrive as `None`
+    /// here, and the caller decides — this layer classifies nothing.
+    #[serde(default)]
+    pub structured_output: Option<serde_json::Value>,
 }
 
 /// A `control_response` envelope. Note the **double nesting** of `response`.

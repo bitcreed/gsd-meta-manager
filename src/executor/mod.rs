@@ -222,6 +222,62 @@ pub enum ExecutionTarget {
     Host,
 }
 
+/// What kind of spawn this is — a GSD command, or a model seam.
+///
+/// **Exhaustive at every match site, no wildcard**, in the same register and for
+/// the same reason as [`ExecutionTarget`] above: a third profile must land as a
+/// compile error at [`crate::executor::claude::build_argv`] and at the spawn
+/// closure, rather than as a silently executor-shaped spawn with a model seam's
+/// name on it.
+///
+/// The two profiles are opposites on purpose, and conflating them breaks one of
+/// them:
+///
+/// - [`Executor`](SpawnProfile::Executor) runs a GSD command. **GSD commands are
+///   skills**, so skills must be live; the Phase 19 envelope must be live; and
+///   `CLAUDE.md` is loaded, because the driven agent is meant to be reading the
+///   project it is working on. This is the behaviour every existing caller gets
+///   today, and [`ExecutionOptions::default`] selects it, so no existing run
+///   changes.
+/// - [`ModelSeam`](SpawnProfile::ModelSeam) asks a model one bounded question
+///   and reads one schema-constrained answer. It carries no tools but the
+///   structured-output tool, no `CLAUDE.md`, no MCP servers, and a pinned
+///   structured-output retry count.
+///
+/// # The declined alternative: the CLI's hook-disabling safe-mode flag
+///
+/// That flag sets `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`, which is exactly the
+/// suppression the seam wants — and it **also disables hooks**. Phase 19's git
+/// envelope is enforced by a `PreToolUse` hook (`src/envelope/hooks.rs`), so a
+/// seam spawned with that flag runs with the git boundary off and nothing on the
+/// wire says so. Choosing it would disarm the last line of defence in the name
+/// of hardening. The environment variable is therefore set directly in the spawn
+/// closure, and `tests/spawn_seam_guard.rs` asserts no executable line under
+/// `src/` passes the flag.
+///
+/// Today the seam also carries an empty tool set, so there would be nothing for
+/// the hook to guard and the combination would be harmless. **The hazard is
+/// entirely in the future**: the day somebody gives the seam a read tool "just
+/// to look at the roadmap", the envelope is already off. That is why the guard
+/// exists now rather than then.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum SpawnProfile {
+    /// Runs a GSD command. Skills on, hooks on, `CLAUDE.md` on, envelope on.
+    #[default]
+    Executor,
+    /// A model seam: one bounded question, one schema-constrained answer.
+    ModelSeam {
+        /// The JSON Schema, rendered inline onto `--json-schema`.
+        ///
+        /// **Inline JSON only, never a path.** The CLI parses this value as a
+        /// schema document; a file path is rejected at startup with exit 1 and
+        /// nothing on stdout, which is a failure mode with no stream to explain
+        /// it. Carrying the document itself is also what makes the schema a
+        /// value a test can assert on without a temp file existing.
+        json_schema: String,
+    },
+}
+
 /// Which `settings.json` tiers the driven CLI is allowed to load.
 ///
 /// `--setting-sources project` (omitting `user`) is the mitigation for the
@@ -282,6 +338,13 @@ pub struct ExecutionOptions {
     pub session_id: Uuid,
     /// Where the run executes.
     pub target: ExecutionTarget,
+    /// What kind of spawn this is (see [`SpawnProfile`]).
+    ///
+    /// Declared beside [`Self::target`] because the two are the same kind of
+    /// fact — a discriminant resolved inside the one `build_argv` and matched
+    /// exhaustively there, never a bag of independent booleans that can be set
+    /// into a combination nobody designed.
+    pub profile: SpawnProfile,
     /// Plumbed to `--max-budget-usd` and **nothing more** (D-16). It is a
     /// post-turn circuit breaker — the turn it fires on runs to completion
     /// first — so it bounds the *next* turn and can never cap the current one.
@@ -371,6 +434,9 @@ impl Default for ExecutionOptions {
         Self {
             session_id: Uuid::new_v4(),
             target: ExecutionTarget::Host,
+            // The behaviour every caller has today. A seam is opted into by
+            // naming it, never arrived at by forgetting to.
+            profile: SpawnProfile::Executor,
             budget_usd: None,
             model: None,
             resume_session: None,

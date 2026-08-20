@@ -83,7 +83,7 @@ use crate::executor::stream_json::{
 use crate::executor::{
     encode_interrupt, BoxFuture, DrivableProject, ExecutionEvent, ExecutionHandle, ExecutionId,
     ExecutionOptions, ExecutionTarget, Executor, InterruptAck, PendingControl, PermissionMode,
-    RunOutcome, TurnOutcome, WriterCommand,
+    RunOutcome, SpawnProfile, TurnOutcome, WriterCommand,
 };
 
 /// Upper bound on one stream line, **in bytes**.
@@ -292,6 +292,35 @@ pub fn build_argv(options: &ExecutionOptions) -> Vec<OsString> {
         push(&mut argv, settings);
     }
 
+    // Exhaustive on purpose, exactly as `options.target` is above: a third
+    // profile must land here as a compile error rather than as a silently
+    // executor-shaped spawn wearing a seam's name.
+    //
+    // Note what is deliberately NOT here. `--strict-mcp-config` stays
+    // unconditional at its line above, for both profiles, and `--mcp-config` is
+    // pushed under neither: with no config supplied the permitted MCP set is
+    // empty, and supplying one would move it from empty to whatever that file
+    // names. This is a regression guard rather than a feature, and
+    // `tests/spawn_seam_guard.rs` fails in both directions on it.
+    match &options.profile {
+        SpawnProfile::Executor => {}
+        SpawnProfile::ModelSeam { json_schema } => {
+            // An EMPTY VALUE, not an absent flag. The CLI reduces the advertised
+            // tool set to exactly `["StructuredOutput"]` when this is present
+            // and empty; omitting it leaves the full set. The value is pushed as
+            // its own argv word rather than joined, so an empty string reaches
+            // the child as an empty argument rather than disappearing the way it
+            // would through a shell.
+            push(&mut argv, "--tools");
+            push(&mut argv, "");
+            // Inline JSON only. A path here is rejected at startup with exit 1
+            // and nothing on stdout, so the schema is never written to a temp
+            // file — see `SpawnProfile::ModelSeam::json_schema`.
+            push(&mut argv, "--json-schema");
+            push(&mut argv, json_schema);
+        }
+    }
+
     argv
 }
 
@@ -446,6 +475,7 @@ impl ClaudeExecutor {
         // Cloned out before the closure for the same reason `bg_ceiling` is:
         // the closure is `move` and `options` is still needed below.
         let envelope_env = options.envelope_env.clone();
+        let profile = options.profile.clone();
 
         let mut wrap = CommandWrap::with_new(&program, |cmd| {
             cmd.args(&argv)
@@ -457,7 +487,8 @@ impl ClaudeExecutor {
             // The TUI is plausibly launched from inside a Claude Code session,
             // so inherited CLAUDE* variables would leak into the driven child
             // and change `-p` behaviour in ways that look like "works on my
-            // machine". Scrub them all, then set the one we mean to set.
+            // machine". Scrub them all, then set the ones we mean to set —
+            // one unconditionally, and two more under the model-seam profile.
             //
             // **The envelope extends that identical argument from the CLAUDE*
             // family to git and ssh** (D-09, D-16). An inherited `SSH_AUTH_SOCK`
@@ -474,6 +505,47 @@ impl ClaudeExecutor {
                 }
             }
             cmd.env("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", &bg_ceiling);
+
+            // Exhaustive, no wildcard — the same discipline `build_argv` uses on
+            // this discriminant.
+            match &profile {
+                SpawnProfile::Executor => {}
+                SpawnProfile::ModelSeam { .. } => {
+                    // Two variables, and they are DISTINCT INSTRUCTIONS for
+                    // opposite reasons. Spelling that out because the pair reads
+                    // like one idea and is two:
+                    //
+                    // 1. `CLAUDE_CODE_DISABLE_CLAUDE_MDS` carries the `CLAUDE`
+                    //    prefix, so the loop directly above ALREADY REMOVED it.
+                    //    Setting it here is a re-set, exactly as
+                    //    `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` one line up is.
+                    //    It is the control for the finding that the CLI loads the
+                    //    target repository's `CLAUDE.md` into the model's context
+                    //    ITSELF, outside any boundary this driver builds — so no
+                    //    amount of careful prompt construction closes it, because
+                    //    the prompt is not where it enters.
+                    //
+                    // 2. `MAX_STRUCTURED_OUTPUT_RETRIES` does NOT carry that
+                    //    prefix. It SURVIVES the scrub, so assignment rather than
+                    //    removal is the control: an ambient
+                    //    `MAX_STRUCTURED_OUTPUT_RETRIES=50` in the operator's
+                    //    shell would otherwise be inherited, and one driver-side
+                    //    escalation would silently become up to that many model
+                    //    turns — which makes the per-run escalation count a lie.
+                    //
+                    // **There is NO on-the-wire signal that either took effect.**
+                    // The init envelope reports the tool set and the MCP server
+                    // list, and it reports nothing at all about `CLAUDE.md`
+                    // suppression or the retry ceiling. The guard for these two is
+                    // the argv/env shape asserted in `tests/spawn_seam_guard.rs`
+                    // plus the end-to-end corpus fixture in plan 21-05 — never a
+                    // field read back off the stream, because there is none, and
+                    // claiming otherwise would be the unearned assurance this
+                    // codebase's honesty conventions exist to prevent.
+                    cmd.env("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "1");
+                    cmd.env("MAX_STRUCTURED_OUTPUT_RETRIES", "1");
+                }
+            }
 
             // The `EnvelopeEnv` value `envelope::cred::build_env` produced, applied
             // one entry at a time. Removal and assignment are distinct
