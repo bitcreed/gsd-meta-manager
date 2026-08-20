@@ -1,2 +1,5 @@
 /.claude/worktrees/
 /target/
+
+# Phase 21 raw spike transcripts: absolute host paths, redact before promoting to tests/fixtures/
+.planning/phases/21-llm-goal-layer-prompt-injection-hardening/transcripts-raw/
