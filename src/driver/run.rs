@@ -692,6 +692,36 @@ pub(crate) fn terminal_label(outcome: &RunOutcome, journal: &Path) -> String {
     }
 }
 
+/// The **run-scoped** facts a run establishes before its first write, gathered
+/// into one value.
+///
+/// A struct rather than four more parameters, and the reason is more than the
+/// argument count: every field here is a fact about *the whole run* that was
+/// resolved once, above the loop, and is then true from the first write to the
+/// last. Grouping them says that, where a flat parameter list said nothing —
+/// and it is the same reason `bounds::RunBounds` is a value rather than two
+/// loose numbers.
+///
+/// It is consumed by [`make_run_record`] and by nothing else. A field added
+/// here that no `RunRecord` field reads would be a value with no producer, which
+/// is what plan 21-02 declined to ship when it left the escalation cap off the
+/// record until something spent it.
+struct EstablishedRun {
+    /// [`journal::argv_digest`] of the driver's own effective command line.
+    argv_digest: String,
+    /// The process group the kernel reports, never a second `process::id()`.
+    pgid: u32,
+    /// The caps in force, resolved rather than defaulted.
+    bounds: bounds::RunBounds,
+    /// The approved plan, for a goal-driven run. `None` for every run handed a
+    /// `--command` or a `--target-phase` directly.
+    approved_plan: Option<journal::ApprovedPlan>,
+    /// The model-consultation cap in force, as
+    /// [`escalate::resolve`] returned it — never
+    /// [`escalate::DEFAULT_MAX_ESCALATIONS`].
+    escalation_cap: u32,
+}
+
 /// Build the immutable half of `run.json`.
 ///
 /// **`run.json` is written by the driver, not by the TUI before spawning.** The
@@ -714,13 +744,20 @@ fn make_run_record(
     args: &DriveArgs,
     entry: &RegisteredProject,
     options: &ExecutionOptions,
-    argv_digest: String,
-    pgid: u32,
-    run_bounds: bounds::RunBounds,
+    established: EstablishedRun,
 ) -> RunRecord {
     RunRecord {
         run_id,
         goal: args.goal.clone().unwrap_or_default(),
+        // The approval, recorded at write ONE — before any agent is spawned,
+        // which is what makes it evidence that the approval preceded the work
+        // rather than a note added afterwards.
+        approved_plan: established.approved_plan,
+        // The cap is known at write one; the count is not, and is stamped at
+        // write two. Recording a total here would be recording a zero that
+        // describes nothing.
+        escalation_cap: Some(established.escalation_cap),
+        escalations_used: None,
         // **A single `String`, and it stays one under a multi-command loop.**
         // `run.json` is written exactly twice, so this field cannot accumulate;
         // the per-iteration sequence belongs on the journal's `decided` records,
@@ -736,8 +773,8 @@ fn make_run_record(
         // do?" must not have to work out which binary produced the record and
         // what its compiled-in defaults were at the time.
         bounds: Some(journal::RecordedBounds {
-            max_steps: run_bounds.max_steps,
-            wall_clock_cap_secs: run_bounds.wall_clock_cap.as_secs(),
+            max_steps: established.bounds.max_steps,
+            wall_clock_cap_secs: established.bounds.wall_clock_cap.as_secs(),
         }),
         target: format!("{:?}", options.target),
         // The field Phase 16 reserved at `src/journal/mod.rs:475` specifically
@@ -755,11 +792,11 @@ fn make_run_record(
         // reports an inherited group: the first makes the kill switch refuse,
         // the second at least tells the truth about what to signal.
         pid: std::process::id(),
-        pgid,
+        pgid: established.pgid,
         // Empty until the first `system/init`. Record what is known; nothing
         // overwrites it, because `run.json` is written exactly twice.
         claude_code_version: String::new(),
-        argv_digest,
+        argv_digest: established.argv_digest,
         ended_at: None,
         outcome: None,
         // Empty at write one and at write two: this build models every field it
@@ -2163,7 +2200,7 @@ pub async fn execute_run(
     project: DrivableProject,
     args: &DriveArgs,
     entry: &RegisteredProject,
-    approved_plan: Option<goal::GoalPlan>,
+    approved_plan: Option<journal::ApprovedPlan>,
     mut budget: escalate::EscalationBudget,
 ) -> Result<(), DriveError> {
     // Installed FIRST — before the group is established, before the lock, and
@@ -2194,6 +2231,33 @@ pub async fn execute_run(
                 err.kind()
             ),
         })?;
+
+    // **THE APPROVAL, RE-CHECKED AT SPAWN.** The first check happened in
+    // `driver::drive`, above the run; this one happens here because **time and
+    // other processes pass between the two**. Between the decomposition and the
+    // first agent there is a lock acquisition, a journal start and four envelope
+    // writes, and a `git pull` landing in that window rewrites the very files the
+    // approval covered. Checking once, early, would make the approval a
+    // statement about a moment that has passed — which is the replay hazard
+    // research Q4 names, and the same reason plan 21-03 put the opt-in's drift
+    // check at the spawn gate rather than at render time.
+    //
+    // It sits **before** `establish_own_group`, the lock and the journal, so a
+    // stale approval leaves nothing at all on disk — the property every
+    // above-the-run refusal in `driver::drive` already holds, extended to the
+    // one check that could only be made down here.
+    //
+    // `recheck_approval` is the same predicate the first check used. One
+    // predicate, two positions: an equality written twice is two things that can
+    // disagree about what an approval covers.
+    if let Some(approved) = approved_plan.as_ref() {
+        journal::recheck_approval(
+            Some(approved),
+            &approved.plan_digest,
+            &crate::registry::current_prompt_inputs(project.root()),
+        )
+        .map_err(DriveError::PlanApprovalStale)?;
+    }
 
     let pgid = establish_own_group();
 
@@ -2301,7 +2365,19 @@ pub async fn execute_run(
     argv.push(digested_command_fragment(args));
     let argv_digest = journal::argv_digest(&argv);
 
-    let record = make_run_record(run_id, args, entry, &options, argv_digest, pgid, run_bounds);
+    let record = make_run_record(
+        run_id,
+        args,
+        entry,
+        &options,
+        EstablishedRun {
+            argv_digest,
+            pgid,
+            bounds: run_bounds,
+            approved_plan: approved_plan.clone(),
+            escalation_cap: budget.cap(),
+        },
+    );
 
     let planning_dir = project.root().join(".planning");
 
@@ -3198,6 +3274,16 @@ pub async fn execute_run(
         },
     };
 
+    // The run's model-consultation total, stamped onto write TWO — the only
+    // write that can carry it, because the total is not known until the last
+    // iteration has run and `run.json` is written exactly twice.
+    //
+    // It is set unconditionally rather than only for a goal-driven run: a run
+    // that consulted no model records a zero, which is a true statement about
+    // it and one a reader can distinguish from an absent field written by a
+    // build that predates the counter.
+    run.journal.set_escalations_used(budget.used());
+
     run.journal.finish(&label).map_err(|err| DriveError::Journal {
         detail: format!("{err:#}"),
     })?;
@@ -3232,30 +3318,18 @@ pub(crate) const DECOMPOSED_PLAN_DIAGNOSTIC_CODE: &str = "goal_plan_decomposed";
 /// and the override diagnostic are.
 fn record_decomposed_plan(
     journal: &mut JournalRun,
-    plan: &goal::GoalPlan,
+    plan: &journal::ApprovedPlan,
     budget: &escalate::EscalationBudget,
 ) {
-    let steps: Vec<String> = plan
-        .steps
-        .iter()
-        .map(|step| {
-            format!(
-                "command={} phase={} terminal={}",
-                step.command.verb(),
-                step.target_phase,
-                step.terminal_state.as_str(),
-            )
-        })
-        .collect();
-
     if let Err(err) = journal.record(&JournalEvent::Diagnostic {
         code: DECOMPOSED_PLAN_DIAGNOSTIC_CODE.to_string(),
         detail: format!(
-            "steps={} escalations_used={}/{} plan=[{}]",
+            "steps={} escalations_used={}/{} approval={} plan=[{}]",
             plan.steps.len(),
             budget.used(),
             budget.cap(),
-            steps.join(" | "),
+            plan.approval_digest,
+            plan.steps.join(" | "),
         ),
     }) {
         tracing::warn!(kind = ?err.kind(), "could not journal the decomposed plan");
@@ -3381,6 +3455,7 @@ mod tests {
             max_steps: None,
             wall_clock_cap_secs: None,
             max_escalations: None,
+            approved_plan: None,
             run_id: Some("2026-07-29T12-00-00Z-aaaa".to_string()),
             dry_run: false,
             goal: None,
@@ -3637,9 +3712,13 @@ mod tests {
             &args(),
             &entry(),
             &ExecutionOptions::default(),
-            "fnv1a64:0000000000000000".to_string(),
-            std::process::id(),
-            bounds::RunBounds::default(),
+            EstablishedRun {
+                argv_digest: "fnv1a64:0000000000000000".to_string(),
+                pgid: std::process::id(),
+                bounds: bounds::RunBounds::default(),
+                approved_plan: None,
+                escalation_cap: 0,
+            },
         );
         let run = JournalRun::start(&planning, record).expect("the run starts");
         (dir, run)
@@ -3820,9 +3899,13 @@ mod tests {
             &args(),
             &entry(),
             &ExecutionOptions::default(),
-            "fnv1a64:0000000000000000".to_string(),
-            SENTINEL_PGID,
-            bounds::RunBounds::default(),
+            EstablishedRun {
+                argv_digest: "fnv1a64:0000000000000000".to_string(),
+                pgid: SENTINEL_PGID,
+                bounds: bounds::RunBounds::default(),
+                approved_plan: None,
+                escalation_cap: 0,
+            },
         );
 
         assert_eq!(
@@ -3947,9 +4030,13 @@ mod tests {
             &args(),
             &entry(),
             &ExecutionOptions::default(),
-            journal::argv_digest(&["claude".to_string()]),
-            4242,
-            bounds::RunBounds::default(),
+            EstablishedRun {
+                argv_digest: journal::argv_digest(&["claude".to_string()]),
+                pgid: 4242,
+                bounds: bounds::RunBounds::default(),
+                approved_plan: None,
+                escalation_cap: 0,
+            },
         );
         let mut journal = JournalRun::start(&planning, record).expect("start the run");
         let inbox_path = journal.paths().inbox.clone();
@@ -4053,9 +4140,13 @@ mod tests {
             &args(),
             &entry(),
             &ExecutionOptions::default(),
-            journal::argv_digest(&["claude".to_string()]),
-            4242,
-            bounds::RunBounds::default(),
+            EstablishedRun {
+                argv_digest: journal::argv_digest(&["claude".to_string()]),
+                pgid: 4242,
+                bounds: bounds::RunBounds::default(),
+                approved_plan: None,
+                escalation_cap: 0,
+            },
         );
         let mut journal = JournalRun::start(&planning, record).expect("start the run");
         let inbox_path = journal.paths().inbox.clone();

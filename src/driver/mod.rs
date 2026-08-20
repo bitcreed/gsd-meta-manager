@@ -189,6 +189,25 @@ pub struct DriveArgs {
     /// of 2 and a cap of 3 would both be accepted by a run bounded at two steps,
     /// which is the exact shape of the Critical Phase 20's review found.
     pub max_escalations: Option<u32>,
+    /// The digest identifying the plan the user reviewed and approved.
+    ///
+    /// **Required for a `--goal`-only run, and its absence is a refusal rather
+    /// than a default yes.** Approval is an explicit recorded act: this value is
+    /// [`journal::approval_digest`] over the decomposed plan **and** the
+    /// disclosed files, so it identifies both the plan that was reviewed and the
+    /// bytes that will actually enter the prompts. An approval that does not
+    /// cover the second half is not an approval of what will actually run
+    /// (research Q4).
+    ///
+    /// It is re-checked at spawn as well as here, because time and other
+    /// processes pass between the two: the decomposition happens above the run
+    /// and the first agent starts after the lock, the journal and the envelope,
+    /// and a `git pull` in that window rewrites the very files the approval
+    /// covered.
+    ///
+    /// Ignored when the run supplies a `--command` or a `--target-phase`, both
+    /// of which are already machine-checkable and decompose nothing.
+    pub approved_plan: Option<String>,
     /// The run id to record under. **Required for a real run**; `None` is legal
     /// only with [`dry_run`](Self::dry_run).
     ///
@@ -649,7 +668,7 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
     // immediately below regardless, so nothing is skipped that would otherwise
     // have run.
     #[cfg(unix)]
-    let approved_plan = match run::GoalDecomposition::from_argv_goal(&args) {
+    let decomposed = match run::GoalDecomposition::from_argv_goal(&args) {
         None => None,
         Some(decomposition) => Some(
             decomposition
@@ -658,7 +677,29 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
         ),
     };
     #[cfg(not(unix))]
-    let approved_plan: Option<goal::GoalPlan> = None;
+    let decomposed: Option<goal::GoalPlan> = None;
+
+    // **The approval, bound to the plan AND to the bytes that will enter the
+    // prompts, and refused when either half is unmatched or absent.**
+    //
+    // Approval is an explicit recorded act. There is deliberately no path here
+    // that infers it, defaults it, or times out into it: a `--goal`-only run
+    // whose `--approved-plan` is absent is refused with a message that says
+    // *absent* rather than reporting a mismatch, because "nobody approved this"
+    // and "what was approved has changed" are different statements to the person
+    // reading the refusal.
+    //
+    // The digest covers `goal::plan_digest` **and** the disclosed prompt inputs
+    // together, through one mechanism, because two comparisons are two places a
+    // caller can check one and forget the other. Plan 21-03 closed the files
+    // half at the spawn gate; this closes the plan half and binds the two.
+    #[cfg(unix)]
+    let approved_plan = match decomposed.as_ref() {
+        None => None,
+        Some(plan) => Some(approve_plan(&project, &args, plan)?),
+    };
+    #[cfg(not(unix))]
+    let approved_plan: Option<journal::ApprovedPlan> = None;
 
     // The decomposed plan's terminal step is the phase the run drives toward,
     // written back onto `args` so every consumer below — the run record, the
@@ -670,12 +711,95 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
     // than the `--target-phase` seam above: `goal::legality` applies
     // `journal::is_plain_path_component` **and** requires the roadmap to declare
     // it, where the argv seam applies only the first.
-    #[cfg(unix)]
     if let Some(plan) = approved_plan.as_ref() {
-        args.target_phase = run::plan_target_phase(plan).map(str::to_string);
+        args.target_phase = Some(plan.target_phase.clone());
     }
 
     dispatch(project, &args, entry, approved_plan, budget).await
+}
+
+/// Record the approval for `plan`, or refuse the run.
+///
+/// **Pure of decisions and impure only in the one way it has to be**: it reads
+/// the disclosed files' current digests, because an approval that does not cover
+/// the bytes that will enter the prompt is not an approval of what will actually
+/// run. Everything it *judges* is handed to [`journal::recheck_approval`], which
+/// opens nothing and is therefore testable on either side of every boundary.
+///
+/// The three outcomes are the three the caller needs:
+///
+/// * **no `--approved-plan` at all** → [`DriveError::PlanApprovalRequired`],
+///   carrying the digest the user would approve, so the refusal is actionable in
+///   one step rather than being a bug report;
+/// * **a digest that covers a different plan** → the plan half changed;
+/// * **a digest whose plan half matches and whose file half does not** → the
+///   disclosed bytes changed under the approval.
+///
+/// The last two share a variant carrying [`journal::ApprovalRefusal`], which is
+/// what keeps *which half* readable without a second error type.
+#[cfg(unix)]
+fn approve_plan(
+    project: &DrivableProject,
+    args: &DriveArgs,
+    plan: &goal::GoalPlan,
+) -> Result<journal::ApprovedPlan, DriveError> {
+    let plan_digest = goal::plan_digest(plan);
+    let prompt_inputs = crate::registry::current_prompt_inputs(project.root());
+    let digest = journal::approval_digest(&plan_digest, &prompt_inputs);
+
+    // The plan rendered as typed tokens, built once here and used for both the
+    // refusal the user reads and the record the run carries — one producer, so
+    // what the reviewer approved and what the record says cannot disagree.
+    let steps: Vec<String> = plan
+        .steps
+        .iter()
+        .map(|step| {
+            format!(
+                "command={} phase={} terminal={}",
+                step.command.verb(),
+                step.target_phase,
+                step.terminal_state.as_str(),
+            )
+        })
+        .collect();
+
+    let recorded = args.approved_plan.as_deref().map(|approved| {
+        // The record built from what the caller approved, so the comparison
+        // below is `recheck_approval`'s — one predicate, used here and again at
+        // spawn, rather than an equality written twice.
+        journal::ApprovedPlan {
+            steps: Vec::new(),
+            target_phase: String::new(),
+            // The plan half is the digest of the plan we just decomposed: the
+            // caller approved a digest, not a plan, so a mismatch on the whole
+            // value is what "this is not what you approved" means. Recording the
+            // observed plan digest here lets `recheck_approval` report WHICH half
+            // moved rather than only that something did.
+            plan_digest: plan_digest.clone(),
+            approval_digest: approved.to_string(),
+            approved_at: String::new(),
+            extra: serde_json::Map::new(),
+        }
+    });
+
+    if recorded.is_none() {
+        return Err(DriveError::PlanApprovalRequired { digest, steps });
+    }
+
+    journal::recheck_approval(recorded.as_ref(), &plan_digest, &prompt_inputs)
+        .map_err(DriveError::PlanApprovalStale)?;
+
+    Ok(journal::ApprovedPlan {
+        steps,
+        // `legality` refuses an empty plan, so the last step is always present.
+        // Spelled out rather than `unwrap`ped because a detached driver that
+        // panicked here would leave no terminal record at all.
+        target_phase: run::plan_target_phase(plan).unwrap_or_default().to_string(),
+        plan_digest,
+        approval_digest: digest,
+        approved_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        extra: serde_json::Map::new(),
+    })
 }
 
 /// Whether an envelope can be established for `project` at all.
@@ -726,7 +850,7 @@ async fn dispatch(
     project: DrivableProject,
     args: &DriveArgs,
     entry: &RegisteredProject,
-    approved_plan: Option<goal::GoalPlan>,
+    approved_plan: Option<journal::ApprovedPlan>,
     budget: escalate::EscalationBudget,
 ) -> Result<(), DriveError> {
     run::execute_run(project, args, entry, approved_plan, budget).await
@@ -738,7 +862,7 @@ async fn dispatch(
     project: DrivableProject,
     args: &DriveArgs,
     entry: &RegisteredProject,
-    approved_plan: Option<goal::GoalPlan>,
+    approved_plan: Option<journal::ApprovedPlan>,
     budget: escalate::EscalationBudget,
 ) -> Result<(), DriveError> {
     let _ = (project, args, entry, approved_plan, budget);
@@ -760,6 +884,7 @@ mod tests {
             max_steps: None,
             wall_clock_cap_secs: None,
             max_escalations: None,
+            approved_plan: None,
             run_id: None,
             dry_run: false,
             goal: None,

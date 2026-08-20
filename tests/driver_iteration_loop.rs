@@ -164,6 +164,7 @@ fn routed_args(run_id: &str, max_steps: Option<u32>) -> DriveArgs {
         max_steps,
         wall_clock_cap_secs: None,
         max_escalations: None,
+        approved_plan: None,
         run_id: Some(run_id.to_string()),
         dry_run: false,
         goal: Some("drive phase 20 forward".to_string()),

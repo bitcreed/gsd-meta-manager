@@ -1422,6 +1422,94 @@ fn the_loop_scope_scanner_reports_a_construction_inside_a_label_and_not_one_abov
 }
 
 // ============================================================================
+// GUARD FIVE: the seam count is two, and a third is a test failure with a name
+//
+// **Exactly two seams, and the count is a property of the design rather than a
+// coincidence**: goal decomposition, once, above the loop; and ambiguity
+// escalation, at the router's no-rule branch. There is deliberately no third for
+// error recovery — an error the deterministic rules cannot classify is a park,
+// not a prompt.
+//
+// The diff fails in BOTH directions, and the second direction is the one that
+// rots quietly: a third site is a violation, and an allowlisted site that no
+// longer spawns a seam is equally one, because the allowlist is then wider than
+// the truth it describes (T-20-17).
+//
+// The entries are `path::enclosing_fn` rather than bare paths, because both
+// sanctioned seams live in the same file — a per-file allowlist would report one
+// entry where two seams exist and would go on passing if a third appeared beside
+// them.
+// ============================================================================
+
+/// The call that spawns a model seam. Every site is diffed against the list
+/// below; the function's own definition is excluded by name.
+const SEAM_CALL: &str = "consult_model_seam(";
+const SEAM_DEFINITION: &str = "async fn consult_model_seam(";
+
+/// The two sanctioned seam sites, as `path::enclosing_fn`.
+const SEAM_SITES: &[&str] = &[
+    // The goal decomposition: once, above the loop, consuming a capability that
+    // makes a second one a compile error.
+    "src/driver/run.rs::decompose",
+    // The ambiguity escalation: at `router::Decision::NoRule`, the one state the
+    // deterministic rule table does not cover.
+    "src/driver/run.rs::execute_run",
+];
+
+#[test]
+fn every_model_seam_spawn_site_in_src_is_one_of_exactly_two() {
+    let files = source_files();
+
+    let mut observed: Vec<String> = Vec::new();
+    for file in &files {
+        for (number, line) in executable_lines(file) {
+            if !line.contains(SEAM_CALL) || line.contains(SEAM_DEFINITION) {
+                continue;
+            }
+            let enclosing = enclosing_fn(&file.1, *number).unwrap_or_else(|| {
+                panic!(
+                    "{}:{number} spawns a model seam outside any function, which \
+                     this audit cannot attribute",
+                    file.0
+                )
+            });
+            observed.push(format!("{}::{enclosing}", file.0));
+        }
+    }
+    observed.sort();
+    observed.dedup();
+    assert!(
+        !observed.is_empty(),
+        "the scan found no model-seam spawn site at all under src/, so the diff \
+         below would pass vacuously. If {SEAM_CALL:?} was renamed, re-point \
+         SEAM_CALL in the same commit"
+    );
+
+    let mut allowed: Vec<String> = SEAM_SITES.iter().map(|site| site.to_string()).collect();
+    allowed.sort();
+
+    let extra: Vec<&String> = observed.iter().filter(|site| !allowed.contains(site)).collect();
+    assert!(
+        extra.is_empty(),
+        "a THIRD model seam appeared. The count is two by design: decomposition \
+         once above the loop, and ambiguity only where the router returns \
+         `router_no_rule`. An error the deterministic rules cannot classify is a \
+         PARK, not a prompt — a recovery consultation is the third seam this \
+         guard exists to refuse. Unexpected: {extra:?}"
+    );
+
+    let stale: Vec<&String> = allowed.iter().filter(|site| !observed.contains(site)).collect();
+    assert!(
+        stale.is_empty(),
+        "an allowlisted seam site no longer spawns a seam, so the allowlist is \
+         now wider than the truth it describes — an allowlist wider than the \
+         truth is the failure that shape exists to catch (T-20-17). If a seam \
+         was removed on purpose, remove its entry in the same commit. Stale: \
+         {stale:?}"
+    );
+}
+
+// ============================================================================
 // The ambiguity seam's order of operations
 //
 // The arm's order IS the design: budget, then spawn, then re-parse, then verb.

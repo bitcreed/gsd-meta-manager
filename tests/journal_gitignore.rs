@@ -115,6 +115,11 @@ fn rel(root: &Path, absolute: &Path) -> String {
 
 fn record(run_id: &str) -> RunRecord {
     RunRecord {
+        // Phase 21's three Run-scoped fields, absent on a fixture whose
+        // assertions predate them.
+        approved_plan: None,
+        escalation_cap: None,
+        escalations_used: None,
         run_id: run_id.to_string(),
         goal: "prove the ignore posture".to_string(),
         gsd_command: "/gsd:execute-phase".to_string(),

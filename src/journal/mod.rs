@@ -597,6 +597,195 @@ pub fn sha256_digest(bytes: &[u8]) -> String {
     out
 }
 
+/// The token recorded for a disclosed prompt input that did not exist.
+///
+/// A word rather than an omission, for `driver::escalate::UNNAMED`'s reason: a
+/// digest built by simply leaving absent files out could not tell "the file was
+/// not there" from "the file was not disclosed", and one of those is drift.
+pub const ABSENT_INPUT_DIGEST: &str = "absent";
+
+/// The identity of an approval: a digest over the approved plan **and** the
+/// disclosed files that will enter the prompts.
+///
+/// # Why both halves, and why one digest over the two
+///
+/// Research Q4 asks that an approval bind to the plan *and* the disclosed files
+/// and be re-checked at spawn. **An approval that does not cover the bytes that
+/// will actually enter the prompt is not an approval of what will actually
+/// run** — the plan can be identical while `CLAUDE.md` has been rewritten under
+/// a `git pull` the user never read, and this tool drives other people's cloned
+/// repositories, so that is the ordinary case rather than the exotic one.
+///
+/// One digest over both rather than two compared separately, because two
+/// comparisons are two places a caller can check one and forget the other. The
+/// *reason* a re-check failed is still recoverable, because
+/// [`ApprovedPlan`] records the plan digest alongside this one and
+/// [`recheck_approval`] compares that first — so "the plan changed" and "the
+/// files changed" stay distinguishable to the person reading the refusal.
+///
+/// **SHA-256, and that matters here specifically.** `argv_digest` is FNV-1a and
+/// its own doc says it is not a security control; an approval is exactly the
+/// affordance an adversary wants to defeat, so the outer digest is the
+/// collision-resistant one. The inner `plan_digest` remains FNV-1a drift
+/// detection, which is honest as long as it is not the only thing standing
+/// between an approval and a substituted plan — and it is not, because it is one
+/// of the inputs hashed here.
+///
+/// The file entries are **sorted**, so the digest is a fact about the disclosed
+/// *set* rather than about the order a particular build happened to enumerate
+/// it in.
+pub fn approval_digest(plan_digest: &str, prompt_inputs: &[crate::config::PromptInput]) -> String {
+    let mut lines = vec![format!("plan={plan_digest}")];
+    let mut files: Vec<String> = prompt_inputs
+        .iter()
+        .map(|input| {
+            format!(
+                "file={}={}",
+                input.path,
+                input.digest.as_deref().unwrap_or(ABSENT_INPUT_DIGEST)
+            )
+        })
+        .collect();
+    files.sort();
+    lines.extend(files);
+    sha256_digest(lines.join("\n").as_bytes())
+}
+
+/// The approval recorded on a run record: what was approved, and its identity.
+///
+/// **Approval is an explicit recorded act, never an inferred consent and never
+/// a timeout-to-yes.** The absence of one of these on a goal-driven run is a
+/// refusal with its own message ([`ApprovalRefusal::Absent`]), not a default
+/// yes — a run that started because nobody said no is a run nobody approved.
+///
+/// It is a record of a decision rather than the decision itself: the human act
+/// is supplying [`approval_digest`]'s value on argv, having seen the plan it
+/// identifies. This type is what makes that act durable and re-checkable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovedPlan {
+    /// The plan's steps, as typed `key=value` tokens in plan order.
+    ///
+    /// **Never a command line and never the model's prose.** Each entry is built
+    /// from a validated `RouterAction`'s own verb, a roadmap-declared phase and
+    /// a reduced terminal state; the seam's free-text `rationale` is excluded,
+    /// because a record whose one-line-per-entry shape every reader depends on
+    /// is the last place model-authored prose belongs.
+    pub steps: Vec<String>,
+    /// The phase the plan's **terminal** step targets — the phase the run drives
+    /// toward. Never the first step's: a plan is an ordered traversal that may
+    /// pass through prerequisites.
+    pub target_phase: String,
+    /// `driver::goal::plan_digest` of the approved plan.
+    ///
+    /// FNV-1a, and therefore drift detection rather than a control on its own.
+    /// It is recorded so a failed re-check can say *which half* changed; the
+    /// control is [`Self::approval_digest`], which hashes this value together
+    /// with the disclosed files under SHA-256.
+    pub plan_digest: String,
+    /// [`approval_digest`] over the plan digest and the disclosed prompt inputs
+    /// as they stood when the approval was given.
+    pub approval_digest: String,
+    /// RFC3339 UTC timestamp of the recorded approval.
+    pub approved_at: String,
+    /// Every field of this record that this build does not model.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Why a recorded approval no longer covers what would run.
+///
+/// Three arms, and the split between the first and the other two is the one the
+/// tests turn on: **"nobody approved this" and "what was approved has changed"
+/// are different statements to the person reading the refusal**, and a single
+/// "mismatch" for both would report an unapproved run as a stale approval.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApprovalRefusal {
+    /// No approval was recorded at all. Never a default yes.
+    Absent,
+    /// The plan changed since it was approved.
+    PlanChanged {
+        /// The plan digest the approval covered.
+        approved: String,
+        /// The plan digest observed now.
+        observed: String,
+    },
+    /// The plan is identical but the disclosed files' bytes are not.
+    DisclosedFilesChanged {
+        /// The approval digest that was recorded.
+        approved: String,
+        /// The approval digest the current disclosed set produces.
+        observed: String,
+    },
+}
+
+impl std::fmt::Display for ApprovalRefusal {
+    /// Each message names what happened **and** something the caller can do,
+    /// because a refusal a caller cannot act on is a bug report rather than an
+    /// error message (`driver::bounds::BoundsRefusal`'s rule).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApprovalRefusal::Absent => write!(
+                f,
+                "no plan approval was recorded for this run. Approval is an \
+                 explicit act and never an inferred consent: run the same \
+                 invocation with `--dry-run` to see the plan and the digest that \
+                 identifies it, then pass that digest as `--approved-plan`"
+            ),
+            ApprovalRefusal::PlanChanged { approved, observed } => write!(
+                f,
+                "the plan this run decomposed ({observed}) is not the plan that \
+                 was approved ({approved}). A model asked the same question twice \
+                 may answer differently, and an approval covers one answer. \
+                 Review the new plan with `--dry-run` and approve it explicitly"
+            ),
+            ApprovalRefusal::DisclosedFilesChanged { approved, observed } => write!(
+                f,
+                "the plan is unchanged but the disclosed files whose bytes reach \
+                 a prompt are not: the approval covered {approved} and the files \
+                 on disk now produce {observed}. An approval that does not cover \
+                 the bytes that will enter the prompt is not an approval of what \
+                 will actually run. Review and approve again"
+            ),
+        }
+    }
+}
+
+/// Whether `recorded` still covers the plan and the files that would run.
+///
+/// **Pure, which is what makes both halves testable without a spawn.** The
+/// caller reads the current prompt inputs and hands them in; nothing here opens
+/// a file.
+///
+/// The plan half is compared **first**, so a run whose plan changed says so
+/// rather than reporting the combined mismatch a file change would also
+/// produce. Both refuse; the order is a legibility decision.
+pub fn recheck_approval(
+    recorded: Option<&ApprovedPlan>,
+    plan_digest: &str,
+    prompt_inputs: &[crate::config::PromptInput],
+) -> Result<(), ApprovalRefusal> {
+    let Some(recorded) = recorded else {
+        return Err(ApprovalRefusal::Absent);
+    };
+
+    if recorded.plan_digest != plan_digest {
+        return Err(ApprovalRefusal::PlanChanged {
+            approved: recorded.plan_digest.clone(),
+            observed: plan_digest.to_string(),
+        });
+    }
+
+    let observed = approval_digest(plan_digest, prompt_inputs);
+    if recorded.approval_digest != observed {
+        return Err(ApprovalRefusal::DisclosedFilesChanged {
+            approved: recorded.approval_digest.clone(),
+            observed,
+        });
+    }
+
+    Ok(())
+}
+
 /// What kind of write a watched path change represents (D-11).
 ///
 /// `Hash` is load-bearing, not decorative: the watcher's debounce dedup becomes
@@ -1021,6 +1210,59 @@ pub struct RunRecord {
     /// to remove. An argv override is therefore what appears on disk.
     #[serde(default)]
     pub bounds: Option<RecordedBounds>,
+    /// The plan the run's stated goal was decomposed into, and the approval that
+    /// covers it. `None` for every run that was handed a `--command` or a
+    /// `--target-phase` directly, which is every Phase 20 run.
+    ///
+    /// **Run-scoped.** The goal is set once, from a human, before the loop
+    /// starts, and **no iteration narrows it** — the driver may never enqueue
+    /// itself another goal from an artifact created during its own run, which is
+    /// a type-level property of `driver::run::GoalDecomposition` rather than a
+    /// promise made here. A run therefore has one plan or none, never a
+    /// sequence of them, and this field is a value rather than a list for
+    /// exactly that reason.
+    ///
+    /// **Approval is an explicit recorded act, never an inferred consent and
+    /// never a timeout-to-yes.** A goal-driven run with no approval recorded here
+    /// is refused before it starts, with its own message
+    /// ([`ApprovalRefusal::Absent`]) rather than a mismatch; the absence of a
+    /// record is a refusal and not a default yes.
+    ///
+    /// `Option` plus `#[serde(default)]` per the serde migration posture: a
+    /// record written before Phase 21 has no such key and must still load, and
+    /// `run.json` carries no version discriminator to hang a migration from.
+    #[serde(default)]
+    pub approved_plan: Option<ApprovedPlan>,
+    /// How many model consultations this run was permitted, as resolved.
+    ///
+    /// **Run-scoped.** DRIVE-04's cap bounds the run as a whole — the
+    /// decomposition above the loop and every ambiguity escalation inside it
+    /// spend one budget between them — and no iteration has a cap of its own.
+    ///
+    /// **The resolved value, never the constant.** `escalate::resolve` refuses a
+    /// supplied cap that could never bind and *reduces* an unsupplied default to
+    /// what the step cap leaves room for, so a reader answering "how often could
+    /// this run consult a model?" must not have to work out which binary produced
+    /// the record and what its compiled-in default was. A one-step run records a
+    /// cap of zero, which is a true statement about that run.
+    #[serde(default)]
+    pub escalation_cap: Option<u32>,
+    /// How many model consultations this run actually spent, as a running total.
+    ///
+    /// **Run-scoped**, and a total rather than a per-iteration count for the
+    /// same reason the cap is: the budget is the run's. The per-iteration
+    /// evidence is the journal's `decided` records, whose `by` field reads `llm`
+    /// for a command a seam named and `policy` for one the rule table chose.
+    ///
+    /// It **never under-reports**: the counter increments on the ask rather than
+    /// on the answer, so a permitted consultation that then failed still counts.
+    /// A number that reads as a safety property while under-reporting is worse
+    /// than no number.
+    ///
+    /// It is stamped at write **two**, because the total is not known until the
+    /// last iteration has run; write one records the cap alone.
+    #[serde(default)]
+    pub escalations_used: Option<u32>,
     /// The rendered execution target.
     ///
     /// **Run-scoped.** `ExecutionOptions::target` is rebuilt per iteration in a
@@ -1310,6 +1552,22 @@ impl JournalRun {
     /// which is why the ordering matters rather than being tidy.
     pub fn set_claude_pgid(&mut self, pgid: u32) {
         self.claude_pgid = Some(pgid);
+    }
+
+    /// Record how many model consultations this run spent (DRIVE-04).
+    ///
+    /// **It lands on write TWO and cannot land on write one**, because the total
+    /// is not known until the last iteration has run — and `run.json` is written
+    /// exactly twice, so there is no third write for it to arrive on. Call it
+    /// immediately before [`finish`](Self::finish); the cap it is read against
+    /// was stamped at write one.
+    ///
+    /// It mutates the in-memory record rather than appending an event, for the
+    /// reason [`set_claude_pgid`](Self::set_claude_pgid) does: the field belongs
+    /// to the record, and a per-iteration event carrying a running total would
+    /// be N places a reader has to reconcile instead of one.
+    pub fn set_escalations_used(&mut self, used: u32) {
+        self.record.escalations_used = Some(used);
     }
 
     /// Close a run out: announce, stamp, record, unpoint.
@@ -1808,6 +2066,193 @@ mod tests {
         assert_ne!(argv_digest(&a), argv_digest(&b));
     }
 
+    // ========================================================================
+    // The approval binding: the plan AND the bytes, together
+    // ========================================================================
+
+    /// The disclosed set as it would stand for a project with these digests.
+    fn inputs(pairs: &[(&str, Option<&str>)]) -> Vec<crate::config::PromptInput> {
+        pairs
+            .iter()
+            .map(|(path, digest)| crate::config::PromptInput {
+                path: (*path).to_string(),
+                digest: digest.map(str::to_string),
+                extra: Default::default(),
+            })
+            .collect()
+    }
+
+    /// An approval covering `plan_digest` against `files`.
+    fn approval(plan_digest: &str, files: &[crate::config::PromptInput]) -> ApprovedPlan {
+        ApprovedPlan {
+            steps: vec!["command=/gsd-plan-phase phase=21 terminal=verification_passed".to_string()],
+            target_phase: "21".to_string(),
+            plan_digest: plan_digest.to_string(),
+            approval_digest: approval_digest(plan_digest, files),
+            approved_at: "2026-08-19T12:00:00Z".to_string(),
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    #[test]
+    fn an_approval_digest_changes_when_the_disclosed_file_set_changes_under_an_identical_plan() {
+        let plan = "fnv1a64:aaaaaaaaaaaaaaaa";
+
+        let before = inputs(&[
+            ("CLAUDE.md", Some("sha256:1111")),
+            (".planning/STATE.md", None),
+        ]);
+        // The plan is byte-for-byte identical; only the bytes of a disclosed
+        // file moved. **Against a binding that covered the plan alone this
+        // assertion FAILS**, because the two digests are then equal and an
+        // approval given before a `git pull` would still authorise the run
+        // afterwards — which is the replay hazard research Q4 names.
+        let after = inputs(&[
+            ("CLAUDE.md", Some("sha256:2222")),
+            (".planning/STATE.md", None),
+        ]);
+        assert_ne!(
+            approval_digest(plan, &before),
+            approval_digest(plan, &after),
+            "an approval must not survive a change to the bytes that will enter \
+             the prompt"
+        );
+
+        // A file APPEARING is drift too, which is why absent files are recorded
+        // with a `None` digest rather than omitted from the list.
+        let appeared = inputs(&[
+            ("CLAUDE.md", Some("sha256:1111")),
+            (".planning/STATE.md", Some("sha256:3333")),
+        ]);
+        assert_ne!(approval_digest(plan, &before), approval_digest(plan, &appeared));
+
+        // And the same set in a different enumeration order is the same set: the
+        // digest is a fact about which files carry which bytes, not about the
+        // order a build happened to walk them in.
+        let reordered = inputs(&[
+            (".planning/STATE.md", None),
+            ("CLAUDE.md", Some("sha256:1111")),
+        ]);
+        assert_eq!(approval_digest(plan, &before), approval_digest(plan, &reordered));
+
+        // The control: a changed PLAN moves it too, so the assertions above are
+        // about the file half rather than about a digest that changes for
+        // everything.
+        assert_ne!(
+            approval_digest(plan, &before),
+            approval_digest("fnv1a64:bbbbbbbbbbbbbbbb", &before)
+        );
+    }
+
+    #[test]
+    fn an_absent_approval_reports_itself_absent_rather_than_mismatched() {
+        let files = inputs(&[("CLAUDE.md", Some("sha256:1111"))]);
+        let refusal = recheck_approval(None, "fnv1a64:aaaaaaaaaaaaaaaa", &files)
+            .expect_err("a run with no recorded approval must never spawn");
+
+        assert_eq!(
+            refusal,
+            ApprovalRefusal::Absent,
+            "absence of an approval is a refusal, never a default yes — and it \
+             must be DISTINGUISHABLE from a mismatch, or the message sends the \
+             user looking for a change that never happened"
+        );
+        let rendered = refusal.to_string();
+        assert!(
+            rendered.contains("no plan approval was recorded"),
+            "the message must say the approval is absent; got: {rendered}"
+        );
+        assert!(
+            rendered.contains("--approved-plan"),
+            "and it must name the flag that supplies one, because a refusal a \
+             caller cannot act on is a bug report; got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn an_approval_bound_to_a_different_plan_is_refused_naming_the_plan_half() {
+        let files = inputs(&[("CLAUDE.md", Some("sha256:1111"))]);
+        let recorded = approval("fnv1a64:aaaaaaaaaaaaaaaa", &files);
+
+        // The same files, a different plan: a model asked the same question
+        // twice may answer differently, and an approval covers one answer.
+        let refusal = recheck_approval(Some(&recorded), "fnv1a64:bbbbbbbbbbbbbbbb", &files)
+            .expect_err("a plan the approval never covered must not run");
+        assert!(
+            matches!(refusal, ApprovalRefusal::PlanChanged { .. }),
+            "got: {refusal:?}"
+        );
+
+        // The control arm: unchanged, it passes — so the refusal above is about
+        // the plan rather than about a check that refuses everything.
+        recheck_approval(Some(&recorded), "fnv1a64:aaaaaaaaaaaaaaaa", &files)
+            .expect("an unchanged plan against unchanged files is approved");
+    }
+
+    #[test]
+    fn an_approval_whose_disclosed_files_moved_is_refused_even_though_the_plan_is_identical() {
+        // **Against the unfixed behaviour — an approval bound to the plan only —
+        // this test FAILS**, because the plan digest still matches and the run
+        // starts against files the approval never covered. That is the whole of
+        // research Q4's second half, and the reason one mechanism has to cover
+        // both.
+        let plan = "fnv1a64:aaaaaaaaaaaaaaaa";
+        let recorded = approval(plan, &inputs(&[("CLAUDE.md", Some("sha256:1111"))]));
+
+        let rewritten = inputs(&[("CLAUDE.md", Some("sha256:2222"))]);
+        let refusal = recheck_approval(Some(&recorded), plan, &rewritten)
+            .expect_err("bytes that changed after the approval must not be run against");
+
+        assert!(
+            matches!(refusal, ApprovalRefusal::DisclosedFilesChanged { .. }),
+            "and the refusal must say the FILES moved rather than the plan, or \
+             the user goes looking in the wrong place; got: {refusal:?}"
+        );
+        assert!(
+            refusal.to_string().contains("the plan is unchanged"),
+            "got: {refusal}"
+        );
+    }
+
+    #[test]
+    fn the_three_new_run_record_fields_survive_a_round_trip_and_default_when_absent() {
+        // A record written by a pre-Phase-21 binary has none of the three keys
+        // and must still load — `run.json` carries no version discriminator, so
+        // tolerance on read is the only mechanism available.
+        let legacy = serde_json::to_value(run_record(RUN_ID)).expect("serialises");
+        let mut stripped = legacy.as_object().expect("an object").clone();
+        for key in ["approved_plan", "escalation_cap", "escalations_used"] {
+            stripped.remove(key);
+        }
+        let loaded: RunRecord =
+            serde_json::from_value(serde_json::Value::Object(stripped)).expect("a pre-Phase-21 record still loads");
+        assert!(loaded.approved_plan.is_none());
+        assert_eq!(loaded.escalation_cap, None);
+        assert_eq!(loaded.escalations_used, None);
+
+        // And a record carrying all three round-trips through the typed struct
+        // without losing any of them.
+        let files = inputs(&[("CLAUDE.md", Some("sha256:1111"))]);
+        let mut record = run_record(RUN_ID);
+        record.approved_plan = Some(approval("fnv1a64:aaaaaaaaaaaaaaaa", &files));
+        record.escalation_cap = Some(3);
+        record.escalations_used = Some(1);
+
+        let round: RunRecord =
+            serde_json::from_str(&serde_json::to_string(&record).expect("serialises"))
+                .expect("deserialises");
+        assert_eq!(round.escalation_cap, Some(3));
+        assert_eq!(round.escalations_used, Some(1));
+        assert_eq!(
+            round.approved_plan.as_ref().map(|plan| plan.plan_digest.as_str()),
+            Some("fnv1a64:aaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            round.approved_plan.as_ref().map(|plan| plan.target_phase.as_str()),
+            Some("21")
+        );
+    }
+
     #[test]
     fn sha256_digest_is_prefixed_and_is_sixty_four_lowercase_hex_digits() {
         // A known vector, so this fails if the function ever stops being
@@ -1933,6 +2378,12 @@ mod tests {
         RunRecord {
             run_id: run_id.to_string(),
             goal: "close the run journal phase".to_string(),
+            // Phase 21's three Run-scoped fields, absent on a fixture that
+            // predates them — which is precisely the shape the tolerant read
+            // path has to keep loading.
+            approved_plan: None,
+            escalation_cap: None,
+            escalations_used: None,
             gsd_command: "/gsd:execute-phase 16".to_string(),
             target: "host".to_string(),
             opt_in: None,

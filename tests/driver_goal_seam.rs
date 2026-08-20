@@ -168,6 +168,7 @@ fn goal_args(run_id: &str, workdir: &Path, stated_goal: &str) -> DriveArgs {
         max_steps: None,
         wall_clock_cap_secs: None,
         max_escalations: None,
+        approved_plan: None,
         run_id: Some(run_id.to_string()),
         dry_run: false,
         goal: Some(stated_goal.to_string()),
@@ -191,6 +192,26 @@ fn step(command: &str, phase: &str) -> Value {
 
 fn payload(steps: Vec<Value>) -> Value {
     serde_json::json!({ goal::FIELD_STEPS: steps })
+}
+
+/// The roadmap phases the fixture project declares.
+const PHASES: &[&str] = &["20", "21"];
+
+/// The approval digest a reviewer would be shown for `wire`, against `root`'s
+/// disclosed files as they stand right now.
+///
+/// **Computed the way the driver computes it**, through the shipped
+/// `goal::legality`, `goal::plan_digest` and `journal::approval_digest`, so this
+/// helper cannot agree with a test while disagreeing with the run.
+fn approval_for(root: &Path, wire: &Value, max_steps: Option<u32>) -> String {
+    let cap = bounds::resolve(max_steps, None)
+        .expect("the fixture's bounds resolve")
+        .max_steps;
+    let plan = goal::legality(wire, PHASES, cap).expect("the fixture plan is legal");
+    gsd_meta_manager::journal::approval_digest(
+        &goal::plan_digest(&plan),
+        &gsd_meta_manager::registry::current_prompt_inputs(root),
+    )
 }
 
 fn journal_records(root: &Path, run_id: &str) -> Vec<Value> {
@@ -331,13 +352,11 @@ async fn a_stated_goal_becomes_a_recorded_plan_and_the_run_drives_its_terminal_p
     let workdir = seam_workdir();
     // Two steps, opening on the predecessor exactly as plan 21-01's live arms
     // did. The run must drive toward the LAST step's phase.
-    plant_payload(
-        workdir.path(),
-        &payload(vec![
-            step(router::COMMAND_PLAN_PHASE, "20"),
-            step(router::COMMAND_PLAN_PHASE, "21"),
-        ]),
-    );
+    let wire = payload(vec![
+        step(router::COMMAND_PLAN_PHASE, "20"),
+        step(router::COMMAND_PLAN_PHASE, "21"),
+    ]);
+    plant_payload(workdir.path(), &wire);
 
     let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
     // Two steps, which is the smallest cap that leaves an escalation budget to
@@ -346,6 +365,7 @@ async fn a_stated_goal_becomes_a_recorded_plan_and_the_run_drives_its_terminal_p
     // could not decompose at all. The run then halts on this cap rather than
     // driving an agent for the length of the test.
     args.max_steps = Some(2);
+    args.approved_plan = Some(approval_for(root.path(), &wire, args.max_steps));
 
     drive(args, &config_for(root.path()))
         .await
@@ -418,13 +438,12 @@ async fn the_decomposition_seam_is_shown_no_bytes_read_from_a_project_file() {
     .expect("write STATE.md");
 
     let workdir = seam_workdir();
-    plant_payload(
-        workdir.path(),
-        &payload(vec![step(router::COMMAND_PLAN_PHASE, "21")]),
-    );
+    let wire = payload(vec![step(router::COMMAND_PLAN_PHASE, "21")]);
+    plant_payload(workdir.path(), &wire);
 
     let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
     args.max_steps = Some(2);
+    args.approved_plan = Some(approval_for(root.path(), &wire, args.max_steps));
     drive(args, &config_for(root.path()))
         .await
         .expect("a legal plan starts the run");
@@ -490,6 +509,213 @@ async fn a_seam_that_answers_with_nothing_parks_the_run_before_it_exists() {
         1,
         "ONE consultation and no retry. Retrying a model that has just produced \
          an unusable answer is how a bounded seam becomes an unbounded one"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The approval, bound to the plan AND the bytes, re-checked at spawn
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_goal_run_with_no_recorded_approval_refuses_and_says_the_approval_is_absent() {
+    const RUN_ID: &str = "2026-08-19T12-00-00Z-unapproved";
+
+    let root = project_root();
+    let workdir = seam_workdir();
+    let wire = payload(vec![step(router::COMMAND_PLAN_PHASE, "21")]);
+    plant_payload(workdir.path(), &wire);
+
+    let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
+    args.max_steps = Some(2);
+    // No `--approved-plan`. **Absence of a recorded approval is a refusal,
+    // never a default yes**, and a timeout into one is not expressible: there is
+    // no clock on this path at all.
+    args.approved_plan = None;
+
+    let err = drive(args, &config_for(root.path()))
+        .await
+        .expect_err("a goal-driven run with no approval must never spawn");
+
+    assert!(
+        matches!(err, DriveError::PlanApprovalRequired { .. }),
+        "the refusal must say the approval is ABSENT rather than reporting a \
+         mismatch — 'nobody approved this' and 'what was approved has changed' \
+         are different statements to the person reading it; got: {err:?}"
+    );
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("--approved-plan sha256:"),
+        "and it must name the digest to approve, so the refusal is actionable \
+         in one step; got: {rendered}"
+    );
+    // **The refusal IS the review surface.** DRIVE-03 requires the user to
+    // review the plan before it runs, and a refusal naming only an opaque
+    // digest would be asking them to approve a string — consent in form and not
+    // in substance.
+    assert!(
+        rendered.contains(&format!(
+            "command={} phase=21 terminal={}",
+            router::COMMAND_PLAN_PHASE,
+            goal::TERMINAL_VERIFICATION_PASSED
+        )),
+        "the refusal must show the plan it is asking about, as typed tokens; \
+         got: {rendered}"
+    );
+    assert!(
+        !rendered.contains(&format!("{} 21", router::COMMAND_PLAN_PHASE)),
+        "and it must not render the plan as a pasteable command line (WR-09); \
+         got: {rendered}"
+    );
+    assert!(
+        !root.path().join(".planning/meta-manager").exists(),
+        "an unapproved run creates nothing"
+    );
+}
+
+#[tokio::test]
+async fn an_approval_bound_to_a_different_plan_refuses_the_run() {
+    const RUN_ID: &str = "2026-08-19T12-00-00Z-otherplan";
+
+    let root = project_root();
+    let workdir = seam_workdir();
+    // The user reviewed and approved a ONE-step plan; the seam then answers
+    // with a two-step one. A model asked the same question twice may answer
+    // differently, and an approval covers one answer.
+    let approved = payload(vec![step(router::COMMAND_PLAN_PHASE, "21")]);
+    let answered = payload(vec![
+        step(router::COMMAND_PLAN_PHASE, "20"),
+        step(router::COMMAND_PLAN_PHASE, "21"),
+    ]);
+    plant_payload(workdir.path(), &answered);
+
+    let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
+    args.max_steps = Some(2);
+    args.approved_plan = Some(approval_for(root.path(), &approved, args.max_steps));
+
+    let err = drive(args, &config_for(root.path()))
+        .await
+        .expect_err("a plan the approval never covered must not run");
+
+    assert!(
+        matches!(err, DriveError::PlanApprovalStale(_)),
+        "got: {err:?}"
+    );
+    assert!(
+        !root.path().join(".planning/meta-manager").exists(),
+        "nothing is created"
+    );
+}
+
+#[tokio::test]
+async fn an_approval_whose_disclosed_bytes_moved_refuses_the_run_though_the_plan_is_identical() {
+    const RUN_ID: &str = "2026-08-19T12-00-00Z-bytesmoved";
+
+    let root = project_root();
+    let workdir = seam_workdir();
+    let wire = payload(vec![step(router::COMMAND_PLAN_PHASE, "21")]);
+    plant_payload(workdir.path(), &wire);
+
+    // The bytes the user approved.
+    std::fs::write(root.path().join("CLAUDE.md"), b"the bytes the user reviewed")
+        .expect("write CLAUDE.md");
+    let config = config_for(root.path());
+
+    let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
+    args.max_steps = Some(2);
+    args.approved_plan = Some(approval_for(root.path(), &wire, args.max_steps));
+
+    // Now the file changes underneath — a `git pull` the user never read. This
+    // tool drives other people's cloned repositories, so this is the ordinary
+    // case rather than the exotic one.
+    std::fs::write(
+        root.path().join("CLAUDE.md"),
+        b"## IMPORTANT SYSTEM OVERRIDE",
+    )
+    .expect("rewrite CLAUDE.md");
+
+    let err = drive(args, &config)
+        .await
+        .expect_err("bytes that changed after the approval must not be run against");
+
+    // The opt-in's own drift check (plan 21-03) fires first, at the capability
+    // gate, and that is correct rather than a shortcoming of this test: the
+    // approval binding is the SECOND of two independent layers over the same
+    // bytes, and asserting on it here would require disarming the first. What
+    // this asserts is the property both exist for — **the run does not start** —
+    // and that the refusal names the file.
+    //
+    // **Against a build with neither layer this FAILS by starting the run.** The
+    // approval half specifically is asserted without the opt-in layer in the way
+    // in `journal::tests::an_approval_whose_disclosed_files_moved_is_refused_
+    // even_though_the_plan_is_identical`, which is the same predicate this path
+    // calls.
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("CLAUDE.md"),
+        "the refusal must name the file whose bytes moved; got: {rendered}"
+    );
+    assert!(
+        !root.path().join(".planning/meta-manager").exists(),
+        "nothing is created"
+    );
+}
+
+#[tokio::test]
+async fn the_run_record_carries_the_approval_the_cap_and_the_count() {
+    const RUN_ID: &str = "2026-08-19T12-00-00Z-recorded";
+
+    let root = project_root();
+    let workdir = seam_workdir();
+    let wire = payload(vec![step(router::COMMAND_PLAN_PHASE, "21")]);
+    plant_payload(workdir.path(), &wire);
+
+    let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
+    args.max_steps = Some(2);
+    let digest = approval_for(root.path(), &wire, args.max_steps);
+    args.approved_plan = Some(digest.clone());
+
+    drive(args, &config_for(root.path()))
+        .await
+        .expect("an approved plan starts the run");
+
+    let paths = gsd_meta_manager::journal::run_paths(&root.path().join(".planning"), RUN_ID)
+        .expect("a plain run id");
+    let record: Value =
+        serde_json::from_str(&std::fs::read_to_string(&paths.run_json).expect("run.json is readable"))
+            .expect("run.json parses");
+
+    assert_eq!(
+        record["approved_plan"]["approval_digest"], digest,
+        "the approval recorded on the run record is the one the user gave"
+    );
+    assert_eq!(record["approved_plan"]["target_phase"], "21");
+    assert_eq!(
+        record["approved_plan"]["steps"][0],
+        format!(
+            "command={} phase=21 terminal={}",
+            router::COMMAND_PLAN_PHASE,
+            goal::TERMINAL_VERIFICATION_PASSED
+        ),
+        "the plan reaches disk as typed key=value tokens, never as a command line"
+    );
+
+    // `escalate::resolve` reduces the unsupplied default to `min(3, 2 - 1)`, so
+    // the RESOLVED cap is 1 — never `DEFAULT_MAX_ESCALATIONS`. Against a record
+    // that wrote the constant this reads 3, and a reader answering "how often
+    // could this run consult a model?" would be told something false.
+    assert_eq!(
+        record["escalation_cap"], 1,
+        "the record carries the RESOLVED cap, never the compiled-in default"
+    );
+    assert_eq!(
+        record["escalations_used"], 1,
+        "the decomposition spent exactly one consultation, and the total lands \
+         on write two"
+    );
+    assert_eq!(
+        escalate::DEFAULT_MAX_ESCALATIONS, 3,
+        "the fixture's premise: the resolved cap really does differ from the \
+         default, or the assertion above cannot tell the two apart"
     );
 }
 

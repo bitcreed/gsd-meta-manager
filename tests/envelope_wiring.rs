@@ -229,6 +229,12 @@ fn write(root: &Path, rel: &str, contents: &str) {
 /// A run record with the fixed fields these tests do not care about.
 fn run_record(run_id: &str) -> RunRecord {
     RunRecord {
+        // Phase 21's three Run-scoped fields, absent on a fixture whose
+        // assertions predate them — which is precisely the shape the tolerant
+        // read path has to keep loading.
+        approved_plan: None,
+        escalation_cap: None,
+        escalations_used: None,
         run_id: run_id.to_string(),
         goal: "prove the envelope parks the run".to_string(),
         gsd_command: "/gsd-progress".to_string(),
@@ -427,6 +433,7 @@ fn an_alias_that_can_have_no_envelope_is_refused_by_the_ordered_chain() {
         max_steps: None,
         wall_clock_cap_secs: None,
         max_escalations: None,
+        approved_plan: None,
         run_id: Some("hostile1".to_string()),
         dry_run: false,
         goal: None,

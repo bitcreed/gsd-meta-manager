@@ -573,6 +573,39 @@ pub enum DriveError {
         /// What was observed, already bounded and control-character-stripped.
         detail: String,
     },
+    /// A goal-driven run supplied no plan approval (DRIVE-01, research Q4).
+    ///
+    /// **Absence of a recorded approval is a refusal, never a default yes.** It
+    /// is its own variant rather than a mismatch so the message can say *absent*
+    /// — reporting an unapproved run as a stale approval would tell the user to
+    /// look for a change that never happened.
+    ///
+    /// **This refusal IS the review surface**, and that is why it carries the
+    /// plan as well as the digest. DRIVE-03 requires the user to review the plan
+    /// before it runs, and a refusal that named only a digest would be asking
+    /// them to approve an opaque string — which is consent in form and not in
+    /// substance. `--dry-run` deliberately decomposes nothing (a preview spawns
+    /// no process, D-23), so it is not and cannot be the place the plan is
+    /// shown.
+    ///
+    /// A refusal a caller cannot act on is a bug report rather than an error
+    /// message; this one shows what would run and the exact flag that authorises
+    /// it.
+    PlanApprovalRequired {
+        /// The approval digest for the plan just decomposed and the files as
+        /// they stand.
+        digest: String,
+        /// The plan's steps, as the typed `key=value` tokens the run record
+        /// carries. Never a command line and never the model's prose.
+        steps: Vec<String>,
+    },
+    /// A recorded approval no longer covers what would run (research Q4).
+    ///
+    /// The taxonomy is [`crate::journal::ApprovalRefusal`] and this variant
+    /// carries it rather than restating it, exactly as [`Self::BoundsRefused`]
+    /// carries its own — so *which half* moved, the plan or the disclosed files,
+    /// stays readable without a second error type.
+    PlanApprovalStale(crate::journal::ApprovalRefusal),
     /// The opt-in gate refused before anything was spawned.
     OptIn(OptInError),
     // `DryRunUnavailable` lived here between plans 17-01 and 17-04. It said
@@ -683,6 +716,22 @@ impl fmt::Display for DriveError {
                  bounded seam becomes an unbounded one",
                 reason.as_str()
             ),
+            Self::PlanApprovalRequired { digest, steps } => write!(
+                f,
+                "this run states a goal but records no approval for the plan it \
+                 was decomposed into, and approval is an explicit act rather than \
+                 something inferred from silence. The plan is:\n{}\n\nIf that is \
+                 what you want run, re-run with `--approved-plan {digest}`, which \
+                 binds the approval to this plan AND to the disclosed files whose \
+                 bytes reach a prompt. Both are re-checked at spawn",
+                steps
+                    .iter()
+                    .enumerate()
+                    .map(|(index, step)| format!("  {}. {step}", index + 1))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+            Self::PlanApprovalStale(refusal) => write!(f, "{refusal}"),
             Self::OptIn(err) => write!(f, "{err}"),
             Self::Lock(err) => write!(f, "{err}"),
             Self::Spawn(err) => write!(f, "{err}"),
@@ -724,6 +773,10 @@ impl std::error::Error for DriveError {
             // payload, not a failure that wrapped an error.
             | Self::GoalRefused(_)
             | Self::GoalSeamUnusable { .. }
+            // `ApprovalRefusal` is the same shape once more: a classification of
+            // two digests, not a failure that wrapped an error.
+            | Self::PlanApprovalRequired { .. }
+            | Self::PlanApprovalStale(_)
             | Self::Journal { .. }
             | Self::EnvelopeAssertionFailed { .. } => None,
         }
