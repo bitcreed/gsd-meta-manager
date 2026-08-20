@@ -59,8 +59,8 @@ interleave and corrupt each other.
 - [x] **SAFE-04**: Credentials and tokens are redacted when captured into the run log, not when rendered
 - [x] **SAFE-05**: A driven run uses a scoped git credential rather than inheriting the user's ambient credentials or SSH agent
 - [x] **SAFE-06**: PR creation is rate-capped per project per day
-- [ ] **SAFE-07**: `.planning/` content read by the driver is passed to the model inside an explicit untrusted-content boundary, never concatenated into instructions
-- [ ] **SAFE-08**: The model's chosen action is constrained to a fixed enum of GSD commands; free-form shell strings are never executed
+- [x] **SAFE-07**: `.planning/` content read by the driver is passed to the model inside an explicit untrusted-content boundary, never concatenated into instructions
+- [x] **SAFE-08**: The model's chosen action is constrained to a fixed enum of GSD commands; free-form shell strings are never executed
 
 ### Run State & Observability (OBS)
 
@@ -83,7 +83,7 @@ interleave and corrupt each other.
 - [ ] **DRIVE-01**: A user states a goal once in natural language and the driver pursues it across multiple GSD commands without further input
 - [ ] **DRIVE-02**: The driver chooses the next GSD command from observed project state using deterministic rules, not a model call, for every case the rules cover
 - [ ] **DRIVE-03**: The driver's goal is decomposed into a structured, machine-checkable plan that the user can review before the run starts
-- [ ] **DRIVE-04**: The driver escalates to a model only for goal decomposition and for ambiguity the rules cannot resolve, with a per-run cap on such escalations
+- [x] **DRIVE-04**: The driver escalates to a model only for goal decomposition and for ambiguity the rules cannot resolve, with a per-run cap on such escalations
 - [ ] **DRIVE-05**: The driver parks and flags for a human when it encounters a GSD gate that requires human judgement
 - [ ] **DRIVE-06**: The driver reports a terminal outcome — goal met, parked, or halted — with the reason
 - [ ] **DRIVE-07**: Under the `auto` gate policy the driver attempts the verification a human would perform — driving the real surface (TUI, browser, or app) rather than asserting from source — and an auto-validated result is permanently distinguishable on disk from a human-verified one
@@ -149,8 +149,8 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-23.
 | SAFE-04 | Phase 16: Run Journal & State Substrate | Complete |
 | SAFE-05 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Complete |
 | SAFE-06 | Phase 19: GITSAFE — Git & Blast-Radius Envelope | Complete |
-| SAFE-07 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
-| SAFE-08 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
+| SAFE-07 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Complete |
+| SAFE-08 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Complete |
 | OBS-01 | Phase 16: Run Journal & State Substrate | Complete |
 | OBS-02 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | OBS-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
@@ -164,7 +164,7 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-23.
 | DRIVE-01 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
 | DRIVE-02 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
 | DRIVE-03 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
-| DRIVE-04 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Pending |
+| DRIVE-04 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Complete |
 | DRIVE-05 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
 | DRIVE-06 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
 | DRIVE-07 | Phase 23: Gate Policy & Auto-Validation | Pending |
