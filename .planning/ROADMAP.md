@@ -459,12 +459,12 @@ Plans:
   - **The vacuity hazard is the phase's sharpest risk (C-3):** the officially-recommended untrusted-content channel is accepted by this transport with exit 0 and never reaches the model, so an injection-corpus test built on it passes *vacuously*, forever. Every corpus assertion must prove arrival before it proves the property
 
 **Research**: done — `21-RESEARCH.md` (five live spikes; four CONTEXT.md decisions contradicted and corrected in `21-CONTEXT.md` § "Research Corrections")
-**Plans**: 1/6 plans executed in 6 waves
+**Plans**: 2/6 plans executed in 6 waves
 
 Plans:
 
 - [x] 21-01-PLAN.md — Tracer: the seam argv/env profile, the untrusted-content boundary, the structured plan type, and the OQ1 gate answered live (DRIVE-01, DRIVE-03, SAFE-07, SAFE-08)
-- [ ] 21-02-PLAN.md — The fifth sibling taxonomy, an escalation cap resolved against the *resolved* step cap, and the journal table's fifth row (DRIVE-04)
+- [x] 21-02-PLAN.md — The fifth sibling taxonomy, an escalation cap resolved against the *resolved* step cap, and the journal table's fifth row (DRIVE-04)
 - [ ] 21-03-PLAN.md — SHA-256 digests, the prompt-input disclosure with its residual-exposure statement, and drift re-confirmation at the gate (SAFE-07, DRIVE-03)
 - [ ] 21-04-PLAN.md — The two seams wired: decomposition once above the loop as a moved capability, ambiguity at the router's no-rule branch, approval bound to plan *and* files (DRIVE-01, DRIVE-03, DRIVE-04)
 - [ ] 21-05-PLAN.md — The injection corpus: arrival proven before property, class by class, plus the matched `CLAUDE.md` suppression control pair (SAFE-07, SAFE-08)
@@ -528,7 +528,7 @@ Plans:
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 8/8 | In Progress|  |
 | 20. Deterministic Decision Router & Run Bounds | 5/5 | In Progress|  |
-| 21. LLM Goal Layer & Prompt-Injection Hardening | 1/6 | In Progress|  |
+| 21. LLM Goal Layer & Prompt-Injection Hardening | 2/6 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
 
