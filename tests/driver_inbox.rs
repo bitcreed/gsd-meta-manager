@@ -171,6 +171,7 @@ fn drive_args_with(program: &str, stdin_log: &Path) -> DriveArgs {
         target_phase: None,
         max_steps: None,
         wall_clock_cap_secs: None,
+        max_escalations: None,
         run_id: Some(RUN_ID.to_string()),
         dry_run: false,
         goal: Some(GOAL.to_string()),

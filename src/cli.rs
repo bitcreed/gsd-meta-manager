@@ -86,6 +86,20 @@ pub enum Commands {
         /// How long the whole run may take, in seconds, before halting itself
         #[arg(long)]
         wall_clock_cap_secs: Option<u64>,
+        // The third bound a caller may override, and it is refused at the same
+        // seam and for the same reason as the two above: the value reaches
+        // `DriveArgs` from a hand-typed invocation, from the TUI's argv builder
+        // and from a re-read run record, so a `value_parser` wired to this one
+        // flag would guard the least interesting of the three (D-27).
+        //
+        // DRIVE-04's cap is only a control if it can be exceeded, so a value at
+        // or above the run's RESOLVED step cap is refused by
+        // `driver::escalate::resolve` — the run would halt on its step cap
+        // first, which makes such a cap a disablement wearing a cap's clothing.
+        /// How many times a run may consult the model before parking; default 3,
+        /// and a value at or above `--max-steps` is refused because it can never bind
+        #[arg(long)]
+        max_escalations: Option<u32>,
         // The TUI supplies it so it knows what to look for afterwards (D-03).
         //
         // It is **not** generated when absent, and this comment used to say it
@@ -107,7 +121,21 @@ pub enum Commands {
         /// Report what the run would do without executing anything
         #[arg(long)]
         dry_run: bool,
-        // Interpreting a goal is Phase 21's; this phase only records it.
+        // **This comment used to say interpreting a goal belonged to a later
+        // phase, and that stopped being true here.** Phase 21 is that phase:
+        // `driver::goal` turns this text into an ordered plan over
+        // `router::SAFE_COMMAND_ALPHABET` through the model seam, and a
+        // decomposition that is not machine-checkable is **refused rather than
+        // repaired** — every step's command must re-parse to a
+        // `router::RouterAction`, every target phase must survive
+        // `journal::is_plain_path_component` and appear in the roadmap, and every
+        // terminal state must reduce to `router::is_goal_met`. The correction
+        // rides the commit that falsified the line, per the
+        // `src/driver/dry_run.rs:78-83` precedent: a comment describing the
+        // PREVIOUS build is worse than no comment, because it is read as current.
+        //
+        // What bounds the interpreting is `--max-escalations` above: the
+        // decomposition is one model consultation and it is counted.
         //
         // `allow_hyphen_values` because this phase turned the goal into a
         // free-text field a human types (WR-04). Without it, clap in the CHILD
@@ -122,7 +150,8 @@ pub enum Commands {
         // Safe here in a way it would not be on `--command`: the goal is the
         // LAST operand the argv builder emits, so there is no following flag for
         // a hyphen-led value to swallow.
-        /// Free-text goal recorded into the run record, never interpreted
+        /// Free-text goal, recorded into the run record and decomposed once
+        /// through the model seam into a plan over the router's own alphabet
         #[arg(long, allow_hyphen_values = true)]
         goal: Option<String>,
         /// Test and development only: the program to spawn instead of `claude`

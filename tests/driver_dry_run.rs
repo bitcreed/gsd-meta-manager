@@ -148,6 +148,7 @@ fn args(evidence: Option<&Path>) -> DriveArgs {
         target_phase: None,
         max_steps: None,
         wall_clock_cap_secs: None,
+        max_escalations: None,
         run_id: None,
         dry_run: true,
         goal: None,

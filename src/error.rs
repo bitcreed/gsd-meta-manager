@@ -507,6 +507,18 @@ pub enum DriveError {
     /// [`crate::driver::bounds::BoundsRefusal`] and this variant carries it
     /// rather than restating it, so one list answers "which caps are refusable".
     BoundsRefused(crate::driver::bounds::BoundsRefusal),
+    /// An escalation cap was asked for that could never bind (DRIVE-04).
+    ///
+    /// The sibling of [`DriveError::BoundsRefused`], raised at the same seam, on
+    /// the adjacent line, and **before anything is created** for the same reason:
+    /// a run asked for with a model-consultation budget that can never fire
+    /// leaves nothing on disk at all.
+    ///
+    /// The taxonomy is [`crate::driver::escalate::EscalationRefusal`] and this
+    /// variant carries it rather than restating it, so one list answers "which
+    /// escalation caps are refusable" — exactly as `BoundsRefusal` does for the
+    /// run bounds.
+    EscalationRefused(crate::driver::escalate::EscalationRefusal),
     /// The opt-in gate refused before anything was spawned.
     OptIn(OptInError),
     // `DryRunUnavailable` lived here between plans 17-01 and 17-04. It said
@@ -598,6 +610,7 @@ impl fmt::Display for DriveError {
                  separator, `..`, or a leading `/`"
             ),
             Self::BoundsRefused(refusal) => write!(f, "{refusal}"),
+            Self::EscalationRefused(refusal) => write!(f, "{refusal}"),
             Self::OptIn(err) => write!(f, "{err}"),
             Self::Lock(err) => write!(f, "{err}"),
             Self::Spawn(err) => write!(f, "{err}"),
@@ -632,7 +645,9 @@ impl std::error::Error for DriveError {
             | Self::TargetPhaseInvalid { .. }
             // `BoundsRefusal` is a plain data enum rather than an `Error`: it is
             // a classification of an argv value, not a failure that wrapped one.
+            // `EscalationRefusal` is the same shape for the same reason.
             | Self::BoundsRefused(_)
+            | Self::EscalationRefused(_)
             | Self::Journal { .. }
             | Self::EnvelopeAssertionFailed { .. } => None,
         }
@@ -642,6 +657,12 @@ impl std::error::Error for DriveError {
 impl From<crate::driver::bounds::BoundsRefusal> for DriveError {
     fn from(refusal: crate::driver::bounds::BoundsRefusal) -> Self {
         Self::BoundsRefused(refusal)
+    }
+}
+
+impl From<crate::driver::escalate::EscalationRefusal> for DriveError {
+    fn from(refusal: crate::driver::escalate::EscalationRefusal) -> Self {
+        Self::EscalationRefused(refusal)
     }
 }
 

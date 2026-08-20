@@ -248,6 +248,7 @@ fn routed_args(run_id: &str, transcript: &Path, exit_code: &str) -> DriveArgs {
         target_phase: Some(TARGET_PHASE.to_string()),
         max_steps: Some(ROOMY_STEP_CAP),
         wall_clock_cap_secs: None,
+        max_escalations: None,
         run_id: Some(run_id.to_string()),
         dry_run: false,
         goal: Some("drive phase 20 forward".to_string()),
