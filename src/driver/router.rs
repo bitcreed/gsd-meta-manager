@@ -370,7 +370,21 @@ impl RouterAction {
     /// false for `--dry-run --target-phase '../../../escaped'`, which rendered
     /// the unvalidated token into something that reads as a pasteable command
     /// line (WR-09).
-    fn command_for(self, phase: &str) -> String {
+    ///
+    /// **`pub(crate)` since Phase 21, and the widening is the point rather than
+    /// a concession.** The ambiguity seam at [`Decision::NoRule`] produces a
+    /// [`RouterAction`] that survived `driver::goal::parse_action` — the SAFE-08
+    /// re-parse — and has to turn it into the iteration's command. Keeping this
+    /// private would have meant a second `format!("{verb} {phase}")` written at
+    /// that call site, and a second composition site is exactly how "there is one
+    /// path from an action to a string" stops being true.
+    ///
+    /// Neither input can carry model bytes: `self` is a typed variant of a
+    /// three-arm enum, and `phase` is the run's own `--target-phase`, validated
+    /// at the seam. **This is not a widening of what may be built, only of where
+    /// the one builder may be called from**, and `tests/driver_router_table.rs`
+    /// still proves the emitted set is exactly [`SAFE_COMMAND_ALPHABET`].
+    pub(crate) fn command_for(self, phase: &str) -> String {
         format!("{} {phase}", self.verb())
     }
 

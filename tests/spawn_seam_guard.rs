@@ -1421,6 +1421,92 @@ fn the_loop_scope_scanner_reports_a_construction_inside_a_label_and_not_one_abov
     assert_eq!(fn_name_on("    let x = 1;"), None);
 }
 
+// ============================================================================
+// The ambiguity seam's order of operations
+//
+// The arm's order IS the design: budget, then spawn, then re-parse, then verb.
+// Each step is load-bearing in a different direction, and swapping any adjacent
+// pair produces a build that still compiles and still passes every behavioural
+// test written against the pieces:
+//
+// * budget AFTER spawn is a cap that reports a consultation which already
+//   happened — the tokens are spent and the control is a log line;
+// * re-parse AFTER verb is a command string assembled from an unvalidated
+//   action, which is SAFE-08 inverted.
+//
+// A behavioural test cannot see the order — it sees only the outcome — so the
+// order is pinned here, over the source, where it is visible.
+// ============================================================================
+
+/// The four markers whose relative order in the no-rule arm is the design.
+const SEAM_ARM_ORDER: &[&str] = &[
+    "budget.permit_consultation()",
+    "consult_model_seam(",
+    "escalated_action(",
+    ".command_for(",
+];
+
+/// The marker opening the arm whose order is pinned.
+const NO_RULE_ARM: &str = "router::Decision::NoRule { observed } =>";
+
+#[test]
+fn the_ambiguity_seam_asks_the_budget_then_spawns_then_reparses_then_builds_a_command() {
+    let files = source_files();
+    let run = files
+        .iter()
+        .find(|(path, _)| path == DECOMPOSITION_HOME)
+        .unwrap_or_else(|| panic!("{DECOMPOSITION_HOME} must exist"));
+
+    let arm_start = executable_lines(run)
+        .find(|(_, line)| line.contains(NO_RULE_ARM))
+        .map(|(number, _)| *number)
+        .unwrap_or_else(|| {
+            panic!(
+                "the no-rule arm could not be located by its opening marker \
+                 {NO_RULE_ARM:?}, so this audit is checking nothing. If the arm \
+                 was reshaped, re-point NO_RULE_ARM in the same commit"
+            )
+        });
+
+    let mut previous = arm_start;
+    for marker in SEAM_ARM_ORDER {
+        let at = executable_lines(run)
+            .find(|(number, line)| *number > arm_start && line.contains(marker))
+            .map(|(number, _)| *number)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the no-rule arm no longer contains {marker:?} after line \
+                     {arm_start}. Every step of budget → spawn → re-parse → verb \
+                     is load-bearing; a missing one is a step somebody removed"
+                )
+            });
+        assert!(
+            at >= previous,
+            "the ambiguity seam's steps are out of order: {marker:?} appears at \
+             line {at}, before a step that must precede it at line {previous}. \
+             Budget BEFORE spawn, or the cap describes a consultation that has \
+             already happened; re-parse BEFORE the command is built, or a command \
+             string is assembled from an unvalidated action (SAFE-08)"
+        );
+        previous = at;
+    }
+
+    // And the arm contains no retry: nothing loops over the consultation, and
+    // nothing calls the seam twice.
+    let arm_text: String = executable_lines(run)
+        .filter(|(number, _)| *number >= arm_start && *number <= previous)
+        .map(|(_, line)| format!("{line}\n"))
+        .collect();
+    assert_eq!(
+        arm_text.matches("consult_model_seam(").count(),
+        1,
+        "the ambiguity seam consults the model EXACTLY once per no-rule state. A \
+         second call inside the arm is a retry, and retrying a model that has \
+         just produced an invalid action is how a bounded seam becomes an \
+         unbounded one. Arm:\n{arm_text}"
+    );
+}
+
 #[test]
 fn the_goal_escape_hatch_has_no_call_site_in_src() {
     let files = source_files();

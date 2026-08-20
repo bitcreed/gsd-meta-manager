@@ -471,10 +471,19 @@ pub(crate) enum Terminal {
     /// there ended in the same state, and a reader of `run.json` should not have
     /// to infer goal-met from the absence of a `parked:` prefix.
     GoalMet,
-    /// The router refused to choose a next command.
+    /// The router refused to choose a next command, or the model seam the
+    /// router's one uncovered state opens could not produce one.
     Parked {
-        /// The taxonomy member, from the router's closed reason set.
-        reason: router::RouterReason,
+        /// The taxonomy member, from a closed sibling reason set.
+        ///
+        /// **A carrier over two taxonomies rather than a sixth `Terminal` arm**
+        /// (see [`ParkTaxonomy`]). Phase 21's escalation parks are the same
+        /// *kind* of ending as the router's — the run stopped and a human is
+        /// needed — so they reach disk through this arm and this arm's
+        /// `as_str()`, exactly as this type's own doc prescribes: every reason
+        /// reaches disk through machinery that already existed rather than
+        /// through a third string source.
+        reason: ParkTaxonomy,
         /// One token naming what was observed. Empty when there is nothing to
         /// add beyond the reason itself.
         detail: String,
@@ -499,6 +508,45 @@ pub(crate) enum Terminal {
         /// [`rate_limit::park_detail`]. Never a dollar figure (D-16).
         detail: String,
     },
+}
+
+/// Which sibling taxonomy a [`Terminal::Parked`] reason came from.
+///
+/// **This is not a sixth `Terminal` arm and must never become one.** That type's
+/// own doc states why a sixth is forbidden, and its statement stays true: there
+/// are still exactly five endings a run can have. What Phase 21 added is a
+/// second *producer* of the park ending, and a producer is not an ending.
+///
+/// It is a two-arm carrier rather than a `&'static str` field for the reason
+/// every sibling taxonomy in this tree is an enum: the reason string is always
+/// somebody's `as_str()` and never a fresh literal minted at a call site, and a
+/// `String` field here would be one call site away from being exactly that.
+///
+/// A third arm is a deliberate act, and both this type's `as_str` and every
+/// exhaustive match on it are where the compiler makes it one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ParkTaxonomy {
+    /// The deterministic rule table refused to choose (Phase 20).
+    Router(router::RouterReason),
+    /// The bounded model seam the no-rule state opens could not produce a
+    /// usable, in-alphabet action, or the run's consultation budget was spent
+    /// (Phase 21, DRIVE-04).
+    Escalation(escalate::EscalationReason),
+}
+
+impl ParkTaxonomy {
+    /// The stable snake_case identifier a later reader greps for.
+    ///
+    /// Exhaustive with no wildcard, and each arm **delegates** to its own
+    /// taxonomy's `as_str()` rather than restating a string — so
+    /// `grep escalation_cap_reached` finds the budget and the record it
+    /// produced together, exactly as `grep router_no_rule` already does.
+    fn as_str(&self) -> &'static str {
+        match self {
+            ParkTaxonomy::Router(reason) => reason.as_str(),
+            ParkTaxonomy::Escalation(reason) => reason.as_str(),
+        }
+    }
 }
 
 impl Terminal {
@@ -1923,6 +1971,125 @@ impl GoalDecomposition {
     }
 }
 
+/// The rationale a journal `decided` record carries for an escalated command.
+///
+/// A `&'static str` from a closed set of exactly one member, in the same
+/// register as [`router::Decision::Run`]'s own rationale and for the identical
+/// reason (SAFE-04, T-20-05): **the model's prose never reaches a record.** The
+/// seam's schema carries a `rationale` field, and the run deliberately reads
+/// none of it — a record that quoted the model would be a record whose contents
+/// a hostile repository influences.
+const ESCALATED_RATIONALE: &str =
+    "the rule table covered no rule for the observed state, so the bounded model \
+     seam named this action and it re-parsed to the safe alphabet";
+
+/// The `by` value a journal `decided` record carries for an escalated command.
+///
+/// The third member of the field's three-value vocabulary — `policy`, `llm`,
+/// `human` — and Phase 21 is the phase that was always going to produce it. It
+/// is what makes "which commands did a model choose?" answerable by grepping the
+/// journals rather than by remembering.
+const DECIDED_BY_MODEL: &str = "llm";
+
+/// The prompt for the ambiguity seam.
+///
+/// **Its input is the router's observed state and the target phase, and nothing
+/// else.** `observed` is one typed status token the router produced from a typed
+/// enum; `target_phase` arrived on argv and was validated at the seam as a plain
+/// path component. Neither is a file body, a directory listing or a path the
+/// seam could resolve — which is the restriction that keeps the one place a
+/// model influences the running loop narrow enough to reason about.
+///
+/// Both are nonetheless passed through [`untrusted::bounded`]: "the router only
+/// ever produces short tokens" is a fact about the router rather than a property
+/// of the `String` it hands over.
+fn escalation_prompt(target_phase: &str, observed: &str) -> String {
+    format!(
+        "The deterministic rule table covers no rule for the state observed on \
+         the phase this run is driving toward. Choose the single next GSD \
+         command.\n\
+         \n\
+         {}\n\
+         \n\
+         TARGET PHASE (validated on argv, typed): {}\n\
+         OBSERVED STATE (one typed token produced by the caller's rule table): {}\n\
+         \n\
+         Answer with a single-step plan naming the command, the target phase \
+         above, and the terminal state that would satisfy it. Call the \
+         StructuredOutput tool exactly once.",
+        seam_preamble(),
+        untrusted::bounded(target_phase),
+        untrusted::bounded(observed),
+    )
+}
+
+/// Reduce a seam answer to a [`router::RouterAction`], or name the park.
+///
+/// **Three failure modes and three named reasons, and not one of them is a
+/// retry.** `Err` carries the [`escalate::EscalationReason`] the run parks under
+/// together with the detail that reaches the record, already bounded and
+/// control-character-stripped:
+///
+/// * an **absent or malformed payload**, or a seam that produced nothing at all,
+///   is [`escalate::EscalationReason::OutputUnusable`];
+/// * a **named action outside the alphabet** is
+///   [`escalate::EscalationReason::ActionRefused`], and the named string is
+///   recorded **verbatim** — so an injection attempt becomes evidence on disk
+///   rather than a silent no-op, because a silently dropped injection teaches
+///   nobody that the repository is hostile.
+///
+/// The detail is built through [`escalate::NamedAction`], whose `detail()` is
+/// the bounded rendering, and it is deliberately **not** a space-separated pair:
+/// a record carrying `"/gsd-ship 21"` reads as a string somebody can paste, and
+/// producing one from model output is the thing CONTEXT.md forbids outright.
+fn escalated_action(
+    answer: SeamAnswer,
+) -> Result<router::RouterAction, (escalate::EscalationReason, String)> {
+    let payload = match answer {
+        SeamAnswer::Payload(payload) => payload,
+        SeamAnswer::Unusable(detail) => {
+            return Err((escalate::EscalationReason::OutputUnusable, detail))
+        }
+    };
+
+    // The wire shape is the decomposition schema with one step, so the named
+    // command is read through the same field constants rather than through a
+    // second spelling of the same path.
+    let named = payload
+        .get(goal::FIELD_STEPS)
+        .and_then(|steps| steps.as_array())
+        .and_then(|steps| steps.first())
+        .and_then(|step| step.get(goal::FIELD_COMMAND))
+        .and_then(|command| command.as_str());
+
+    let Some(named) = named else {
+        return Err((
+            escalate::EscalationReason::OutputUnusable,
+            format!(
+                "the payload named no {} in its first {}: {}",
+                goal::FIELD_COMMAND,
+                goal::FIELD_STEPS,
+                escalate::NamedAction::Absent.detail(),
+            ),
+        ));
+    };
+
+    // The SAFE-08 control. It walks `RouterAction::ALL` and compares `verb()`,
+    // so the set it accepts is exactly the set the router can emit, and nothing
+    // is repaired: a near-miss is refused rather than corrected, because
+    // repairing model output is how a validator becomes a second producer of
+    // commands.
+    goal::parse_action(named).map_err(|unknown| {
+        (
+            escalate::EscalationReason::ActionRefused,
+            format!(
+                "the seam named an action outside the safe alphabet: {}",
+                escalate::NamedAction::Named(unknown.named().to_string()).detail(),
+            ),
+        )
+    })
+}
+
 /// The phase a decomposed plan is driving toward: its **last** step's.
 ///
 /// **Never the first step's**, and plan 21-01's live arms are why: both opened
@@ -1997,7 +2164,7 @@ pub async fn execute_run(
     args: &DriveArgs,
     entry: &RegisteredProject,
     approved_plan: Option<goal::GoalPlan>,
-    budget: escalate::EscalationBudget,
+    mut budget: escalate::EscalationBudget,
 ) -> Result<(), DriveError> {
     // Installed FIRST — before the group is established, before the lock, and
     // before a single byte lands on disk.
@@ -2346,28 +2513,104 @@ pub async fn execute_run(
                 let observed = snapshot.project_state.clone();
                 bounds_state.observe(snapshot);
 
-                // Pure: no I/O, no model call. The state was read above and is
-                // handed in (D-11).
+                // **`router::decide` itself is still pure — no I/O, no process,
+                // no record — and THREE of the four arms below still are.** This
+                // comment used to say that of all four, and Phase 21 is where it
+                // stopped being true; the correction rides the commit that
+                // falsified it, per the `src/driver/dry_run.rs:78-83` precedent.
+                //
+                // **The fourth arm — and only the fourth — spawns a model.**
+                // `Decision::NoRule` is the one state the rule table does not
+                // cover, and `router::REASON_NO_RULE` is the single greppable
+                // signal marking it. The `Run`, `Park` and `GoalMet` arms are
+                // byte-identical to Phase 20's: the router stays authoritative
+                // for every state it covers, and the model never overrides a
+                // rule.
+                //
+                // **The escalation's input is restricted to the `observed`
+                // value this arm already carries** — one typed status token the
+                // router produced from a typed enum — plus the target phase,
+                // which arrived on argv and was validated at the seam. Nothing
+                // read from a file reaches it. That restriction is what keeps
+                // the one place a model influences the running loop narrow
+                // enough to reason about: feeding it file excerpts would reopen
+                // SAFE-07 at exactly the worst point.
                 //
                 // **The router runs before the bounds even though the bounds are
                 // evaluated before the spawn**, because `evaluate` is asked
                 // *which* command is about to run — the command-repeat detector
-                // has no question to answer without one. Nothing happens between
-                // the two: `decide` opens no file, starts no process and writes
-                // no record, so a halt still halts before anything is spawned
-                // and before anything is journalled.
-                let (command, rationale) = match router::decide(&observed, target_phase) {
-                    router::Decision::Run { command, rationale } => (command, rationale),
+                // has no question to answer without one. `decide` opens no file,
+                // starts no process and writes no record, so a halt on any of
+                // the three deterministic arms still halts before anything is
+                // spawned and before anything is journalled. The escalation arm
+                // is the exception and says so: it spawns a *seam*, never a GSD
+                // command, and a park on it still precedes any agent spawn.
+                let (command, rationale, decided_by) = match router::decide(&observed, target_phase)
+                {
+                    router::Decision::Run { command, rationale } => (command, rationale, "policy"),
                     router::Decision::Park { reason, detail } => {
-                        terminal = Terminal::Parked { reason, detail };
-                        break 'iterations;
-                    }
-                    router::Decision::NoRule { observed } => {
                         terminal = Terminal::Parked {
-                            reason: router::RouterReason::NoRule,
-                            detail: observed,
+                            reason: ParkTaxonomy::Router(reason),
+                            detail,
                         };
                         break 'iterations;
+                    }
+                    // **THE SECOND OF THE TWO MODEL SEAMS**, and the only place
+                    // a model influences a running loop. The order of operations
+                    // is the whole design and reads in exactly this order:
+                    // budget, spawn, re-parse, verb.
+                    router::Decision::NoRule { observed } => {
+                        // 1. Ask the budget for permission. A refusal parks —
+                        //    NOT a halt, and NOT a silent degrade to rules-only.
+                        //    A run that stopped consulting the model has
+                        //    materially changed what it is, and a change that
+                        //    large has to be readable off disk.
+                        if let Some(reason) = budget.permit_consultation().reason() {
+                            terminal = Terminal::Parked {
+                                reason: ParkTaxonomy::Escalation(reason),
+                                detail: untrusted::bounded(&observed),
+                            };
+                            break 'iterations;
+                        }
+
+                        // 2. Spawn the seam with the observed state and nothing
+                        //    else.
+                        let answer = consult_model_seam(
+                            &project,
+                            args,
+                            escalation_prompt(target_phase, &observed),
+                            &goal::escalation_schema(),
+                        )
+                        .await;
+
+                        // 3. Re-parse the named command through the SAFE-08
+                        //    control. Every failure mode is a park with a named
+                        //    reason, and NONE of them is a retry: retrying a
+                        //    model that has just produced an invalid action is
+                        //    how a bounded seam becomes an unbounded one.
+                        let action = match escalated_action(answer) {
+                            Ok(action) => action,
+                            Err((reason, detail)) => {
+                                terminal = Terminal::Parked {
+                                    reason: ParkTaxonomy::Escalation(reason),
+                                    detail,
+                                };
+                                break 'iterations;
+                            }
+                        };
+
+                        // 4. The validated action plus the phase the router was
+                        //    already driving toward. `RouterAction::command_for`
+                        //    is the one path from an action to a command string
+                        //    in this tree, and it is what this arm uses — so no
+                        //    shell string is constructed from model output at
+                        //    any point, including for logging and for the
+                        //    dry-run preview.
+                        (
+                            action.command_for(target_phase),
+                            ESCALATED_RATIONALE,
+                            DECIDED_BY_MODEL,
+                        )
                     }
                     // **Its own terminal arm, not `Completed`** (WR-08). The
                     // two are different endings and were labelled by whether an
@@ -2397,6 +2640,7 @@ pub async fn execute_run(
                     &observed,
                     &command,
                     rationale,
+                    decided_by,
                 );
 
                 // The detectors, in their documented order, with the first hit
@@ -3025,13 +3269,20 @@ fn record_decomposed_plan(
 /// do about it*. Both were schema'd by Phase 16 specifically so this phase adds
 /// no migration (D-36).
 ///
-/// **`by` is `"policy"` and nothing else.** The field's vocabulary is exactly
-/// three values — `policy`, `llm`, `human` — and `llm` is Phase 21's. This phase
-/// mints no fourth.
+/// **`by` is `"policy"` for a rule-table decision and [`DECIDED_BY_MODEL`] for
+/// an escalated one.** The field's vocabulary is exactly three values —
+/// `policy`, `llm`, `human`. This doc used to say `by` was `"policy"` and
+/// nothing else, with `llm` named as Phase 21's; Phase 21 is here and the
+/// correction rides the commit that produced the first `llm` record, per the
+/// `src/driver/dry_run.rs:78-83` precedent. This phase still mints no fourth
+/// value, and `human` still has no producer.
 ///
-/// **Neither record can carry agent output.** `drpev` is enum names and counts,
-/// `command` is composed from a phase number, and `rationale` is a `&'static str`
-/// from the router's closed set (SAFE-04, T-20-05).
+/// **Neither record can carry agent output.** `drpev` is enum names and counts;
+/// `command` is composed by `RouterAction::command_for` from a typed action and
+/// a validated phase, on both paths — the escalated action reached that type
+/// only by surviving `goal::parse_action` — and `rationale` is a `&'static str`
+/// from a closed set on both paths too (SAFE-04, T-20-05). The seam's own
+/// `rationale` prose is read by nothing.
 ///
 /// A failed write is warned about and swallowed, exactly as the envelope notice
 /// and the override diagnostic are: a journal that cannot take a decision record
@@ -3043,6 +3294,7 @@ fn record_iteration_decision(
     observed: &crate::state_reader::ProjectState,
     command: &str,
     rationale: &'static str,
+    by: &str,
 ) {
     for event in [
         JournalEvent::Observed {
@@ -3050,7 +3302,7 @@ fn record_iteration_decision(
             drpev: drpev_stages(observed, target_phase),
         },
         JournalEvent::Decided {
-            by: "policy".to_string(),
+            by: by.to_string(),
             command: command.to_string(),
             rationale: rationale.to_string(),
         },
@@ -3188,6 +3440,161 @@ mod tests {
         assert_eq!(plan_target_phase(&plan), Some("22"));
     }
 
+    // ========================================================================
+    // The ambiguity seam's answer handling
+    //
+    // **Why these are unit tests over the arm's own helpers rather than a run
+    // driven into the no-rule state.** `router::decide` cannot return
+    // `Decision::NoRule` for any project state this tree's reader can produce
+    // from disk: the rule table covers `no_directory`, `empty`, `discussed`,
+    // `researched` and `planned`; `gate_for` intercepts `partial` and every
+    // `executed` verification status; and `complete` requires `passed`, which
+    // `is_goal_met` answers first. The one uncovered state — `complete` with a
+    // non-passing verification — violates the reader's own invariant and is
+    // reachable only by constructing the struct, which
+    // `router::tests::a_state_the_table_does_not_cover_parks_as_no_rule_naming_it`
+    // already does.
+    //
+    // That is a finding rather than a gap in these tests: the seam exists for a
+    // state the rule table does not cover, and today the table plus the gates
+    // plus the goal-met predicate jointly cover everything the reader emits. The
+    // arm is written, wired and unit-tested; the end-to-end park is recorded as
+    // an honest limit rather than demonstrated with a fixture that violates a
+    // reader invariant to manufacture one.
+    // ========================================================================
+
+    #[test]
+    fn a_seam_naming_an_in_alphabet_action_yields_the_action_rather_than_a_park() {
+        let answer = SeamAnswer::Payload(serde_json::json!({
+            goal::FIELD_STEPS: [{
+                goal::FIELD_COMMAND: router::COMMAND_PLAN_PHASE,
+                goal::FIELD_PHASE: "21",
+                goal::FIELD_TERMINAL_STATE: goal::TERMINAL_VERIFICATION_PASSED,
+                goal::FIELD_RATIONALE: "the phase has context and no plans",
+            }]
+        }));
+
+        let action = escalated_action(answer)
+            .expect("an in-alphabet action must continue the loop rather than park it");
+        assert_eq!(action, router::RouterAction::Plan);
+
+        // And the command the loop would issue comes from the ONE path from an
+        // action to a string, with the phase the router was already driving
+        // toward — never from anything the seam said.
+        assert_eq!(
+            action.command_for("21"),
+            format!("{} 21", router::COMMAND_PLAN_PHASE)
+        );
+    }
+
+    #[test]
+    fn a_seam_naming_an_action_outside_the_alphabet_parks_and_records_it_verbatim() {
+        // The injection shape: a real GSD command that is deliberately NOT in
+        // the alphabet, with an argument, so the park detail has something
+        // command-line-shaped to leak if it is going to.
+        let hostile = "/gsd-ship 21 --force";
+        let answer = SeamAnswer::Payload(serde_json::json!({
+            goal::FIELD_STEPS: [{
+                goal::FIELD_COMMAND: hostile,
+                goal::FIELD_PHASE: "21",
+                goal::FIELD_TERMINAL_STATE: goal::TERMINAL_VERIFICATION_PASSED,
+            }]
+        }));
+
+        let (reason, detail) =
+            escalated_action(answer).expect_err("an action outside the alphabet is refused");
+        assert_eq!(
+            reason,
+            escalate::EscalationReason::ActionRefused,
+            "the park must carry the fifth taxonomy's own reason rather than a \
+             literal typed at the call site"
+        );
+        assert!(
+            detail.contains(hostile),
+            "the named string must be recorded VERBATIM — an injection attempt \
+             that is silently dropped teaches nobody that the repository is \
+             hostile; got: {detail}"
+        );
+
+        // And the detail is evidence, never an instruction. It must contain no
+        // space-separated command line assembled FROM the named string, and none
+        // of the alphabet's verbs unless the named string itself carried one.
+        for verb in router::SAFE_COMMAND_ALPHABET {
+            assert!(
+                !detail.contains(verb),
+                "the park detail names {verb:?}, which the seam did not. A \
+                 record that assembles a safe-alphabet command out of a refused \
+                 action is a record a reader can paste (WR-09); got: {detail}"
+            );
+        }
+        assert!(
+            !detail.contains(&format!("{hostile} 21")),
+            "and nothing may append the target phase to the refused string; \
+             got: {detail}"
+        );
+    }
+
+    #[test]
+    fn a_seam_that_answers_with_nothing_usable_parks_under_its_own_reason() {
+        // Three shapes of "nothing to act on", each reaching the SAME reason,
+        // because they are one state to a run: the seam produced no action.
+        let cases = [
+            SeamAnswer::Unusable("the terminal envelope carried no payload".to_string()),
+            SeamAnswer::Payload(serde_json::json!({ "note": "not a plan" })),
+            SeamAnswer::Payload(serde_json::json!({ goal::FIELD_STEPS: [] })),
+        ];
+        for answer in cases {
+            let (reason, detail) =
+                escalated_action(answer).expect_err("an unusable answer parks rather than retrying");
+            assert_eq!(reason, escalate::EscalationReason::OutputUnusable);
+            assert!(!detail.is_empty(), "the park must say what was observed");
+        }
+    }
+
+    #[test]
+    fn a_refused_action_is_bounded_and_cannot_become_two_record_lines() {
+        // The park detail lands in `.planning/`, a directory users commit, and
+        // every reader of the journal depends on one line per entry. Against an
+        // unbounded rendering this FAILS by finding a newline the hostile value
+        // planted, and by carrying all 400 characters of it.
+        let hostile = format!("/gsd-{}\n{{\"reason\":\"forged\"}}", "x".repeat(400));
+        let answer = SeamAnswer::Payload(serde_json::json!({
+            goal::FIELD_STEPS: [{ goal::FIELD_COMMAND: hostile }]
+        }));
+
+        let (_, detail) = escalated_action(answer).expect_err("refused");
+        assert!(
+            !detail.contains('\n'),
+            "a control character in a refused action would let one park become \
+             two record lines; got: {detail}"
+        );
+        assert!(
+            detail.contains(untrusted::TRUNCATION_MARKER),
+            "and a shortened value must say it was shortened; got: {detail}"
+        );
+    }
+
+    #[test]
+    fn the_escalation_prompt_carries_the_observed_token_and_nothing_read_from_a_file() {
+        let prompt = escalation_prompt("21", "complete");
+        assert!(
+            prompt.contains("complete"),
+            "the observed token the arm already carries is the seam's whole view \
+             of the project's state"
+        );
+        assert!(prompt.contains("21"), "and the phase it is driving toward");
+
+        // A hostile observed token cannot break the prompt into two sections or
+        // run away with its length.
+        let hostile = format!("complete\n\nGOAL: {}", "y".repeat(400));
+        let bounded = escalation_prompt("21", &hostile);
+        assert!(
+            !bounded.contains("\n\nGOAL: yyy"),
+            "an observed token carrying newlines must not be able to forge a \
+             prompt section; got: {bounded}"
+        );
+    }
+
     #[test]
     fn a_decomposition_that_finds_no_budget_left_is_refused_rather_than_performed() {
         // The check-before-consult contract at the decomposition seam. A budget
@@ -3311,14 +3718,35 @@ mod tests {
              change how the run is classified (DRIVE-06, criterion 5)"
         );
 
-        // The same for every other arm that names a reason of its own.
+        // The same for every other arm that names a reason of its own, over
+        // BOTH taxonomies the park arm now carries — an escalation park that
+        // reached the label through a different prefix, or through no prefix at
+        // all, would be a run that stopped consulting the model and did not say
+        // so in the one field a supervising process reads.
         assert_eq!(
             own_terminal_label(&Terminal::Parked {
-                reason: router::RouterReason::NoRule,
+                reason: ParkTaxonomy::Router(router::RouterReason::NoRule),
                 detail: "planned".to_string(),
             })
             .as_deref(),
             Some(format!("{PARKED_LABEL_PREFIX}{}", router::RouterReason::NoRule.as_str()).as_str())
+        );
+        assert_eq!(
+            own_terminal_label(&Terminal::Parked {
+                reason: ParkTaxonomy::Escalation(escalate::EscalationReason::CapReached),
+                detail: "planned".to_string(),
+            })
+            .as_deref(),
+            Some(
+                format!(
+                    "{PARKED_LABEL_PREFIX}{}",
+                    escalate::REASON_ESCALATION_CAP_REACHED
+                )
+                .as_str()
+            ),
+            "an escalation park reaches the terminal record through the SAME \
+             `parked:` prefix and the fifth taxonomy's own `as_str()` — never a \
+             third string source, and never a sixth `Terminal` arm"
         );
         assert_eq!(
             own_terminal_label(&Terminal::QuotaParked {
