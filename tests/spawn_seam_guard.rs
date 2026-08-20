@@ -635,3 +635,473 @@ fn no_executable_line_in_src_opts_into_strict_unknown_field_rejection() {
         render(&hits)
     );
 }
+
+// ============================================================================
+// The model-seam profile's controls, coupled by tests rather than by convention
+//
+// Four guards, each in this file's house style: scan `executable_lines` so a doc
+// comment naming a declined alternative does not trip the scan, assert
+// non-vacuity so a rename that empties a scan fails rather than passes, and diff
+// observed against declared in BOTH directions wherever a set is involved.
+// ============================================================================
+
+/// The hook-disabling flag, assembled at **runtime** from two halves.
+///
+/// Written this way for the reason [`REJECT_HEAD`] is: spelled out as one
+/// literal, this file's own source would match its own scan and the guard would
+/// start reporting itself. The halves are meaningless apart.
+const HOOK_DISABLING_HEAD: &str = "--safe";
+const HOOK_DISABLING_TAIL: &str = "-mode";
+
+/// The flag that would resume a prior session on a seam spawn.
+const RESUME_FLAG: &str = "--resume";
+
+/// The struct bodies whose free-string fields must be enumerated, and the file
+/// that declares each.
+const UNTRUSTED_STRUCTS: &[(&str, &str)] = &[
+    ("ProjectState", "src/state_reader/mod.rs"),
+    ("RoadmapPhase", "src/state_reader/roadmap_md.rs"),
+];
+
+/// The module whose enumeration those fields must appear in.
+const UNTRUSTED_ENUMERATION_HOME: &str = "src/driver/untrusted.rs";
+
+/// Every free-string field `struct_name` declares, as `Struct::field`.
+///
+/// A field counts when its declared type is `String`, `Option<String>` or
+/// `Vec<String>` — the three shapes that carry third-party *text*. A
+/// `HashMap<String, T>` is excluded because there the `String` is a **key** the
+/// reader generates (a phase number), not a payload the repository wrote; the
+/// control arm below proves that distinction rather than asserting it.
+///
+/// The scan stops at the first line that is exactly `}`, so a nested type inside
+/// the struct cannot leak fields from beyond it.
+fn free_string_fields(file: &SourceFile, struct_name: &str) -> Vec<String> {
+    let opening = format!("pub struct {struct_name} {{");
+    let mut out = Vec::new();
+    let mut inside = false;
+
+    for (_, line) in &file.1 {
+        if !inside {
+            if line.trim_start().starts_with(&opening) {
+                inside = true;
+            }
+            continue;
+        }
+        if line.trim_end() == "}" {
+            break;
+        }
+        if let Some(field) = free_string_field_name(line) {
+            out.push(format!("{struct_name}::{field}"));
+        }
+    }
+
+    out.sort();
+    out
+}
+
+/// The field name on `line`, when `line` declares a free-string field.
+fn free_string_field_name(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.starts_with("//") || trimmed.starts_with("#[") {
+        return None;
+    }
+    let declaration = trimmed.strip_prefix("pub ")?;
+    let (name, rest) = declaration.split_once(':')?;
+    if name.trim().is_empty() || name.contains(' ') {
+        return None;
+    }
+    let declared_type: String = rest
+        .trim()
+        .trim_end_matches(',')
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    matches!(
+        declared_type.as_str(),
+        "String" | "Option<String>" | "Vec<String>"
+    )
+    .then(|| name.trim().to_string())
+}
+
+/// Every `Struct::field` pair the untrusted enumeration names.
+///
+/// Read out of the enumeration's own source rather than by calling into the
+/// crate, so the guard checks what is **written** rather than what a constructor
+/// happened to return — the same posture every other scan in this file takes.
+fn enumerated_untrusted_fields(files: &[SourceFile]) -> Vec<String> {
+    let home = files
+        .iter()
+        .find(|(path, _)| path == UNTRUSTED_ENUMERATION_HOME)
+        .expect("the untrusted enumeration must exist");
+
+    let mut out = Vec::new();
+    let mut pending_struct: Option<String> = None;
+
+    for (_, line) in executable_lines(home) {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("struct_name: \"") {
+            if let Some(name) = rest.split('"').next() {
+                pending_struct = Some(name.to_string());
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("field: \"") {
+            if let (Some(struct_name), Some(field)) = (&pending_struct, rest.split('"').next()) {
+                out.push(format!("{struct_name}::{field}"));
+                pending_struct = None;
+            }
+        }
+    }
+
+    out.sort();
+    out
+}
+
+#[test]
+fn the_seam_profile_couples_the_empty_tool_set_to_the_schema() {
+    // Guard one. It calls `build_argv` and inspects the vector it RETURNS. It
+    // does not assert about a constant that `build_argv` also reads: a test that
+    // compares a constant with itself cannot detect its return, which is exactly
+    // the Critical Phase 20's code review found (`src/driver/dry_run.rs:582-584`
+    // is the counter-pattern this codebase wrote for itself).
+    use gsd_meta_manager::executor::claude::build_argv;
+    use gsd_meta_manager::executor::{ExecutionOptions, SpawnProfile};
+
+    let seam = ExecutionOptions {
+        profile: SpawnProfile::ModelSeam {
+            json_schema: gsd_meta_manager::driver::goal::escalation_schema().to_string(),
+        },
+        ..ExecutionOptions::default()
+    };
+    let words: Vec<String> = build_argv(&seam)
+        .iter()
+        .map(|word| word.to_string_lossy().into_owned())
+        .collect();
+
+    assert!(!words.is_empty(), "build_argv returned nothing to examine");
+
+    let tools_at = words
+        .iter()
+        .position(|word| word == "--tools")
+        .unwrap_or_else(|| panic!("the seam profile must carry the tool flag; argv was {words:?}"));
+    assert_eq!(
+        words.get(tools_at + 1).map(String::as_str),
+        Some(""),
+        "the tool flag must carry an EMPTY value. With it present and empty the \
+         CLI advertises exactly the structured-output tool; with it absent it \
+         advertises everything, and the OQ1 measurement — and every later \
+         injection assertion — is confounded by a seam that quietly had file \
+         access. argv was {words:?}"
+    );
+    assert!(
+        words.iter().any(|word| word == "--json-schema"),
+        "the seam profile must carry the schema flag together with the empty \
+         tool set: they are one control, not two. argv was {words:?}"
+    );
+
+    // And the executor profile is byte-identical to what it produces today, so
+    // the new discriminant cannot silently change an existing run.
+    let executor: Vec<String> = build_argv(&ExecutionOptions::default())
+        .iter()
+        .map(|word| word.to_string_lossy().into_owned())
+        .collect();
+    let expected: Vec<&str> = vec![
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--replay-user-messages",
+        "--session-id",
+        "<uuid>",
+        "--setting-sources",
+        "project",
+        "--permission-mode",
+        "dontAsk",
+        "--strict-mcp-config",
+    ];
+    assert_eq!(executor.len(), expected.len(), "argv was {executor:?}");
+    for (index, want) in expected.iter().enumerate() {
+        if *want == "<uuid>" {
+            assert_eq!(executor[index].len(), 36, "argv was {executor:?}");
+            continue;
+        }
+        assert_eq!(&executor[index], want, "argv was {executor:?}");
+    }
+}
+
+#[test]
+fn no_executable_line_in_src_passes_the_hook_disabling_flag() {
+    // Guard two. The reason rather than the rule, because a future author reads
+    // the failure message at the moment of the change.
+    let files = source_files();
+    let flag = format!("{HOOK_DISABLING_HEAD}{HOOK_DISABLING_TAIL}");
+    let hits = executable_hits(&files, &flag);
+
+    assert!(
+        hits.is_empty(),
+        "no executable line under src/ may pass the CLI's hook-disabling flag on \
+         any profile. It suppresses CLAUDE.md, which the model seam wants — and \
+         it ALSO disables hooks, and Phase 19's git envelope is enforced by a \
+         PreToolUse hook (src/envelope/hooks.rs). A seam spawned with it runs \
+         with the git boundary off and NOTHING on the wire says so. Set \
+         CLAUDE_CODE_DISABLE_CLAUDE_MDS in the spawn closure instead. \
+         Offending lines:{}",
+        render(&hits)
+    );
+
+    // Non-vacuity: the scan must have had a non-empty tree to examine.
+    assert!(
+        files.len() > 1,
+        "the scan examined {} files, so the emptiness above proves nothing",
+        files.len()
+    );
+}
+
+#[test]
+fn the_hook_disabling_scan_fires_on_code_and_not_on_a_comment() {
+    // Guard two's control arm, both directions in one test so the guard cannot
+    // be satisfied by a scanner that reports nothing. Synthetic lines rather than
+    // lines read from the tree, so this keeps proving the scanner works once —
+    // especially once — the tree is correct.
+    let flag = format!("{HOOK_DISABLING_HEAD}{HOOK_DISABLING_TAIL}");
+
+    let executable = format!("    push(&mut argv, \"{flag}\");");
+    let synthetic: SourceFile = (
+        "src/synthetic.rs".to_string(),
+        vec![(1, executable.clone())],
+    );
+    assert_eq!(
+        executable_hits(std::slice::from_ref(&synthetic), &flag).len(),
+        1,
+        "the scanner must report an executable line carrying the flag, or the \
+         guard above is a no-op that passes forever: {executable}"
+    );
+
+    // The declined alternative must remain DOCUMENTABLE in a comment — that is
+    // what the rationale-in-code convention requires, and `src/executor/mod.rs`
+    // really does name it in a doc comment today.
+    let commented = format!("/// The declined alternative: the CLI's `{flag}` flag disables hooks.");
+    let synthetic_comment: SourceFile =
+        ("src/synthetic.rs".to_string(), vec![(1, commented.clone())]);
+    assert!(
+        executable_hits(std::slice::from_ref(&synthetic_comment), &flag).is_empty(),
+        "the scanner must NOT report a doc comment naming the flag, or a guard \
+         whose whole point is a documented rationale would forbid documenting \
+         it: {commented}"
+    );
+}
+
+#[test]
+fn the_permitted_mcp_set_stays_empty_on_both_profiles() {
+    // Guard three, both directions: losing the strict flag fails, and gaining a
+    // config path fails.
+    use gsd_meta_manager::executor::claude::build_argv;
+    use gsd_meta_manager::executor::{ExecutionOptions, SpawnProfile};
+
+    for (name, options) in [
+        ("executor", ExecutionOptions::default()),
+        (
+            "seam",
+            ExecutionOptions {
+                profile: SpawnProfile::ModelSeam {
+                    json_schema: gsd_meta_manager::driver::goal::escalation_schema().to_string(),
+                },
+                ..ExecutionOptions::default()
+            },
+        ),
+    ] {
+        let words: Vec<String> = build_argv(&options)
+            .iter()
+            .map(|word| word.to_string_lossy().into_owned())
+            .collect();
+        assert!(!words.is_empty(), "{name}: build_argv returned nothing");
+
+        assert!(
+            words.iter().any(|word| word == "--strict-mcp-config"),
+            "the {name} profile lost --strict-mcp-config. With it present and no \
+             config path supplied the permitted MCP server set is EMPTY; without \
+             it, a project-local .mcp.json in a cloned third-party repository \
+             introduces tools into a driven run. argv was {words:?}"
+        );
+        assert!(
+            !words.iter().any(|word| word == "--mcp-config"),
+            "the {name} profile supplied an MCP config path. With none supplied \
+             the permitted set is empty; supplying one moves it from empty to \
+             whatever that file names, which is a widening wearing a control's \
+             clothing. argv was {words:?}"
+        );
+
+        // Each consultation is a fresh single-turn spawn. The empty-tool and
+        // schema flags were never exercised in composition with a resumed
+        // session, and the seams are single-turn BY CONSTRUCTION — this
+        // assertion is what keeps that true rather than incidental.
+        assert!(
+            !words.iter().any(|word| word == RESUME_FLAG),
+            "the {name} profile carried a session-resume flag. A resumed seam \
+             would carry prior turns into a consultation whose bounds were \
+             measured on a fresh one. argv was {words:?}"
+        );
+    }
+
+    // And no executable line under src/ supplies a config path either, so the
+    // absence above cannot be reintroduced through a different construction.
+    let files = source_files();
+    let hits = executable_hits(&files, "--mcp-config");
+    assert!(
+        hits.is_empty(),
+        "an executable line under src/ supplies an MCP config path:{}",
+        render(&hits)
+    );
+    assert!(
+        !executable_hits(&files, "--strict-mcp-config").is_empty(),
+        "no executable line under src/ emits --strict-mcp-config at all, so the \
+         absence assertions above are about a flag nothing produces"
+    );
+}
+
+#[test]
+fn every_free_string_field_that_could_reach_a_prompt_is_enumerated() {
+    // Guard four, both directions. A `String`-typed field on either struct that
+    // the enumeration does not name is a field that could reach a prompt
+    // UNLABELLED; an enumerated entry with no corresponding field means the
+    // enumeration is wider than the truth it describes.
+    let files = source_files();
+
+    let mut observed: Vec<String> = Vec::new();
+    for (struct_name, path) in UNTRUSTED_STRUCTS {
+        let file = files
+            .iter()
+            .find(|(candidate, _)| candidate == path)
+            .unwrap_or_else(|| panic!("{path} must exist to be audited"));
+        let fields = free_string_fields(file, struct_name);
+        assert!(
+            !fields.is_empty(),
+            "the parser found no free-string field on {struct_name} in {path}, so \
+             the diff below would pass vacuously. If the struct was renamed, \
+             re-point UNTRUSTED_STRUCTS in the same commit"
+        );
+        observed.extend(fields);
+    }
+    observed.sort();
+
+    let declared = enumerated_untrusted_fields(&files);
+    assert!(
+        !declared.is_empty(),
+        "the enumeration in {UNTRUSTED_ENUMERATION_HOME} parsed as empty, so this \
+         audit is checking nothing"
+    );
+
+    let unenumerated: Vec<&String> = observed.iter().filter(|f| !declared.contains(f)).collect();
+    assert!(
+        unenumerated.is_empty(),
+        "a free-string field is declared on a struct parsed from a third-party \
+         repository and is not named in {UNTRUSTED_ENUMERATION_HOME}. Every such \
+         field is text somebody else wrote, and one nobody classified is one that \
+         can reach a model prompt unlabelled. Add it with a Disposition in the \
+         same commit. Unenumerated: {unenumerated:?}"
+    );
+
+    let stale: Vec<&String> = declared.iter().filter(|f| !observed.contains(f)).collect();
+    assert!(
+        stale.is_empty(),
+        "the enumeration names a field neither struct declares any more, so it is \
+         wider than the truth it describes — an allowlist wider than the truth is \
+         the failure that shape exists to catch (T-20-17). Stale: {stale:?}"
+    );
+}
+
+#[test]
+fn the_spawn_closure_comment_no_longer_claims_one_variable_is_set() {
+    // The pinned-honesty guard, in the shape `src/driver/dry_run.rs:580-595`
+    // establishes. The stale claim is spelled out here VERBATIM rather than
+    // referenced, because a test that compared the comment with itself could not
+    // detect its return.
+    //
+    // What was falsified: the closure used to set one variable and its comment
+    // said so. It now sets three, two of them under the seam profile only, and a
+    // user-facing — here, maintainer-facing — statement the code has falsified is
+    // worse than having said nothing.
+    let files = source_files();
+    let claude = files
+        .iter()
+        .find(|(path, _)| path == "src/executor/claude.rs")
+        .expect("the agent spawn seam must exist");
+    let text: String = claude
+        .1
+        .iter()
+        .map(|(_, line)| format!("{line}\n"))
+        .collect();
+
+    assert!(
+        !text.contains("then set the one we mean to set"),
+        "the spawn closure sets three variables now, so the comment claiming it \
+         sets one is false. Rewrite it in the same commit as the code that \
+         falsified it (the `dry_run.rs:78-83` precedent)"
+    );
+    assert!(
+        text.contains("set the ones we mean to set"),
+        "and the replacement must state the plural rather than merely being \
+         vaguer than what it replaced"
+    );
+
+    // The honesty the phase actually owes: there is NO field on this transport
+    // reporting whether CLAUDE.md suppression took effect. Claiming otherwise —
+    // or saying nothing and letting a reader assume the init envelope covers it
+    // the way it covers the tool set and the MCP list — is the unearned
+    // assurance this codebase's conventions exist to prevent.
+    assert!(
+        text.contains("There is NO on-the-wire signal that either took effect."),
+        "the spawn closure must state that no init-envelope field reports \
+         whether CLAUDE.md suppression took effect, and name what guards it \
+         instead (the argv/env source scan plus the 21-05 corpus fixture)"
+    );
+    assert!(
+        text.contains("CLAUDE_CODE_DISABLE_CLAUDE_MDS")
+            && text.contains("MAX_STRUCTURED_OUTPUT_RETRIES"),
+        "and it must still name both variables, or the statement above is about \
+         code that is no longer there"
+    );
+}
+
+#[test]
+fn the_free_string_field_parser_distinguishes_payloads_from_map_keys() {
+    // Guard four's control arm, over synthetic struct text, so the parser keeps
+    // being proved correct once the tree is correct.
+    let synthetic: SourceFile = (
+        "src/synthetic.rs".to_string(),
+        [
+            "pub struct Sample {",
+            "    pub status: String,",
+            "    pub pause_context: Option<String>,",
+            "    pub deferred: Vec<String>,",
+            "    /// pub commented_out: String,",
+            "    #[serde(default)]",
+            "    pub keyed: HashMap<String, DiskInference>,",
+            "    pub count: u32,",
+            "    pub nested: Vec<RoadmapPhase>,",
+            "}",
+            "pub struct Beyond {",
+            "    pub leaked: String,",
+            "}",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, line)| (index + 1, line.to_string()))
+        .collect(),
+    );
+
+    let found = free_string_fields(&synthetic, "Sample");
+    assert_eq!(
+        found,
+        vec![
+            "Sample::deferred".to_string(),
+            "Sample::pause_context".to_string(),
+            "Sample::status".to_string(),
+        ],
+        "the parser must find String, Option<String> and Vec<String> — the three \
+         shapes that carry third-party TEXT — and must not find a HashMap whose \
+         String is a key the reader generates, a non-string field, a commented \
+         declaration, or a field declared in a struct beyond the closing brace"
+    );
+}

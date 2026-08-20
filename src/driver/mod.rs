@@ -79,6 +79,14 @@ pub mod router;
 // that decides whether a run parks on a shared quota out of reach of a non-Unix
 // build's type checker.
 pub mod rate_limit;
+// Fourth and fifth in the same block, and for the identical reason once more:
+// both are pure. [`untrusted`] builds a string out of values the caller hands
+// in, and [`goal`] validates a payload the caller retained off the stream —
+// neither opens a file, spawns a process or reads a clock. Gating them would put
+// the boundary construction and the SAFE-08 re-parse, which are the phase's two
+// central safety claims, out of reach of a non-Unix build's type checker.
+pub mod goal;
+pub mod untrusted;
 // Also outside the block, and for a related but distinct reason. Both modules
 // are `/proc` and `run.json` **reads**, and D-10 is explicit that they should
 // carry `src/session_detector.rs`'s honest-failure posture — that module has no
