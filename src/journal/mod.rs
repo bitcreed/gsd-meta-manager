@@ -537,9 +537,15 @@ pub fn sort_run_summaries_newest_first(runs: &mut [RunSummary]) {
 /// - **It is not a security control.** It exists so two runs can be compared for
 ///   "same command line" in a `run.json`, nothing more. Nothing authenticates,
 ///   authorises or trusts anything on the strength of this value.
-/// - **It is implemented inline because this phase adds zero dependencies.**
-///   No hashing crate is present in `Cargo.toml` and the digest does not warrant
-///   adding one.
+/// - **It stays inline even though a hashing crate is now present.** Phase 21
+///   added `sha2` to `Cargo.toml` for the driver opt-in's re-confirmation
+///   digest, so the second half of this bullet's original claim — that no
+///   hashing crate existed and none was warranted — stopped being true. This
+///   function deliberately does **not** switch: a command-line identity
+///   fingerprint has no adversary, and rewriting it would churn every
+///   `fnv1a64:` value already sitting in a `run.json` for no gain. The function
+///   that does need collision resistance is [`sha256_digest`], and it is a
+///   sibling rather than a replacement so the two cannot be confused.
 pub fn argv_digest(argv: &[String]) -> String {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -551,6 +557,44 @@ pub fn argv_digest(argv: &[String]) -> String {
         hash = hash.wrapping_mul(PRIME);
     }
     format!("fnv1a64:{hash:016x}")
+}
+
+/// A collision-resistant digest of arbitrary bytes, rendered as `sha256:` plus
+/// 64 lowercase hex digits.
+///
+/// **A sibling of [`argv_digest`], never a replacement.** The two exist for
+/// opposite reasons and the prefixes are what keep them apart on disk:
+///
+/// - `argv_digest` answers "same command line?" for a human reading a
+///   `run.json`. It has no adversary and says so.
+/// - This one backs the driver opt-in's re-confirmation prompt, which **is** a
+///   security affordance. The tool drives other people's cloned repositories,
+///   whose `CLAUDE.md` can change under a `git pull` the user never read, so
+///   the question "did these bytes change?" has to survive someone who wants
+///   the answer to be no.
+///
+/// The prefix is not decoration. A recorded digest is compared as a whole
+/// string, so a legacy `fnv1a64:` value can never accidentally compare equal to
+/// a freshly computed `sha256:` one — the upgrade cannot be defeated by leaving
+/// an old record in place, and no user's `config.json` needs a migration.
+/// The hex rendering is written out by hand rather than through a `hex` crate:
+/// `sha2` 0.11 returns a `hybrid_array::Array`, which — unlike 0.10's
+/// `GenericArray` — does not implement `LowerHex`, and one `write!` per byte is
+/// a smaller thing to own than another dependency.
+pub fn sha256_digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+
+    let mut out = String::from("sha256:");
+    for byte in hasher.finalize() {
+        // `write!` to a String is infallible; the result is discarded rather
+        // than unwrapped so this cannot panic on a path with no error to report.
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 /// What kind of write a watched path change represents (D-11).
@@ -1762,6 +1806,57 @@ mod tests {
         // that merely contains the joined text.
         let b = vec!["claude".to_string(), "-p hello".to_string()];
         assert_ne!(argv_digest(&a), argv_digest(&b));
+    }
+
+    #[test]
+    fn sha256_digest_is_prefixed_and_is_sixty_four_lowercase_hex_digits() {
+        // A known vector, so this fails if the function ever stops being
+        // SHA-256 rather than merely stops being stable against itself.
+        let digest = sha256_digest(b"abc");
+        assert_eq!(
+            digest,
+            "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "the published SHA-256 vector for `abc`; comparing the function with \
+             itself would not detect a swap to a different hash"
+        );
+
+        let hex = digest
+            .strip_prefix("sha256:")
+            .expect("the prefix is what keeps a legacy value from comparing equal");
+        assert_eq!(hex.len(), 64, "SHA-256 renders as 64 hex digits");
+        assert!(
+            hex.chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            "lowercase hex only, so two records of the same bytes compare as \
+             strings without normalising. Got: {hex}"
+        );
+    }
+
+    #[test]
+    fn two_different_inputs_produce_different_sha256_digests() {
+        assert_ne!(sha256_digest(b"one"), sha256_digest(b"two"));
+        // A single flipped byte must move the digest — the whole point of the
+        // upgrade is that a crafted near-identical file does not slip through.
+        assert_ne!(sha256_digest(b"CLAUDE.md v1"), sha256_digest(b"CLAUDE.md v2"));
+    }
+
+    #[test]
+    fn the_two_digest_functions_cannot_be_confused_for_the_same_input() {
+        // Same logical input through both functions. If a caller ever reaches
+        // for the wrong one, the prefix is what makes it visible on disk rather
+        // than a silent downgrade to a non-security hash.
+        let argv = vec!["abc".to_string()];
+        let weak = argv_digest(&argv);
+        let strong = sha256_digest(b"abc");
+
+        assert_ne!(weak, strong);
+        assert!(weak.starts_with("fnv1a64:"));
+        assert!(strong.starts_with("sha256:"));
+        assert!(
+            !weak.starts_with("sha256:"),
+            "a value that is not collision resistant must never wear the prefix \
+             the re-confirmation gate treats as trustworthy"
+        );
     }
 
     #[test]

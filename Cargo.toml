@@ -48,6 +48,27 @@ uuid = { version = "1.24", features = ["v4", "serde"] }
 # the graph. It is pure Rust with no libc linkage, which matches the deliberate
 # no-`nix`/no-`libc` posture documented at `src/executor/claude.rs:102-103`.
 rustix = { version = "1.1", features = ["process", "fs"] }
+# SHA-256 for the driver opt-in's re-confirmation digest (C-4). A maintained
+# RustCrypto implementation rather than a third hand-rolled hash in this tree:
+# `journal::argv_digest` is already an inline FNV-1a, and "don't hand-roll" is
+# at its sharpest for a function whose whole job is to resist a crafted
+# collision.
+# The declined alternative was keeping FNV-1a and pinning an honesty sentence
+# saying the digest detects accidental drift only. Declined because this
+# phase's threat model is explicitly adversarial — the tool drives other
+# people's cloned repositories — and a security affordance backed by a
+# non-security hash is the exact failure this codebase's honesty conventions
+# exist to prevent.
+# Graph cost, measured rather than borrowed: 7 newly locked packages —
+# sha2 0.11.0, digest 0.11.3, block-buffer 0.12.1, crypto-common 0.2.2,
+# hybrid-array 0.4.14, const-oid 0.10.2, cpufeatures 0.3.0 (cfg-if was already
+# present). NOTE: this is deliberately NOT the `rustix` case above. A
+# `sha2 0.10.9` entry does sit in Cargo.lock, but `cargo tree -i sha2@0.10.9`
+# reports "nothing to print" — it is an orphan entry from an unenabled ratatui
+# backend feature, not a compiled unit. So this add costs real compilation
+# units and leaves two sha2 majors in the lockfile; claiming otherwise by
+# reusing rustix's "already present, zero new units" sentence would be false.
+sha2 = "0.11.0"
 
 [dev-dependencies]
 assert_fs = "1"

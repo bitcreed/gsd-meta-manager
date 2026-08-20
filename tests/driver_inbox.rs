@@ -119,6 +119,8 @@ fn config_for(root: &Path) -> Config {
             driver_opt_in: Some(DriverOptIn {
                 opted_in_at: "2026-07-29T11:59:00Z".to_string(),
                 claude_md_digest: None,
+                prompt_inputs: gsd_meta_manager::registry::current_prompt_inputs(root),
+                extra: Default::default(),
                 branch_namespace: None,
                 credential: None,
                 pr_cap_per_24h: None,
