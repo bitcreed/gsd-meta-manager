@@ -459,7 +459,7 @@ Plans:
   - **The vacuity hazard is the phase's sharpest risk (C-3):** the officially-recommended untrusted-content channel is accepted by this transport with exit 0 and never reaches the model, so an injection-corpus test built on it passes *vacuously*, forever. Every corpus assertion must prove arrival before it proves the property
 
 **Research**: done — `21-RESEARCH.md` (five live spikes; four CONTEXT.md decisions contradicted and corrected in `21-CONTEXT.md` § "Research Corrections")
-**Plans**: 5/6 plans executed in 6 waves
+**Plans**: 6/6 plans executed in 6 waves
 
 Plans:
 
@@ -468,7 +468,7 @@ Plans:
 - [x] 21-03-PLAN.md — SHA-256 digests, the prompt-input disclosure with its residual-exposure statement, and drift re-confirmation at the gate (SAFE-07, DRIVE-03)
 - [x] 21-04-PLAN.md — The two seams wired: decomposition once above the loop as a moved capability, ambiguity at the router's no-rule branch, approval bound to plan *and* files (DRIVE-01, DRIVE-03, DRIVE-04)
 - [x] 21-05-PLAN.md — The injection corpus: arrival proven before property, class by class, plus the matched `CLAUDE.md` suppression control pair (SAFE-07, SAFE-08)
-- [ ] 21-06-PLAN.md — The refusal record as evidence, no constructed command line, the cap park read off disk, and Phase 19's envelope shown firing independently (DRIVE-04, SAFE-08, SAFE-07)
+- [x] 21-06-PLAN.md — The refusal record as evidence, no constructed command line, the cap park read off disk, and Phase 19's envelope shown firing independently (DRIVE-04, SAFE-08, SAFE-07)
 
 ### Phase 22: Container Execution Target
 
@@ -528,7 +528,7 @@ Plans:
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 8/8 | In Progress|  |
 | 20. Deterministic Decision Router & Run Bounds | 5/5 | In Progress|  |
-| 21. LLM Goal Layer & Prompt-Injection Hardening | 5/6 | In Progress|  |
+| 21. LLM Goal Layer & Prompt-Injection Hardening | 6/6 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
 
