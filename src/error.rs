@@ -294,6 +294,22 @@ pub enum OptInError {
         /// The root that failed the check.
         root: PathBuf,
     },
+    /// The opt-in record no longer covers the bytes that would reach a prompt.
+    ///
+    /// **Checked at the gate, not at render time**, which is the whole point:
+    /// a confirmation screen left open while a `git pull` rewrites `CLAUDE.md`
+    /// must not be able to approve bytes that changed underneath it. The user
+    /// approved a specific set of files with specific contents; if either has
+    /// moved, the approval no longer describes what would run.
+    ///
+    /// Not a failure — a re-confirmation. The remedy is to opt in again, having
+    /// seen the new disclosure.
+    PromptInputsDrifted {
+        /// The alias whose disclosed inputs no longer match.
+        alias: String,
+        /// Which file moved, and how.
+        drift: crate::registry::OptInDrift,
+    },
 }
 
 impl fmt::Display for OptInError {
@@ -312,6 +328,12 @@ impl fmt::Display for OptInError {
                 f,
                 "the registered path for `{alias}` is not a usable directory: {}",
                 root.display()
+            ),
+            Self::PromptInputsDrifted { alias, drift } => write!(
+                f,
+                "the driver opt-in for `{alias}` needs re-confirming: {}. \
+                 Opt in again to review what reaches a prompt and approve it",
+                drift.describe()
             ),
         }
     }

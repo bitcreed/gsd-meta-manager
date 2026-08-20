@@ -156,15 +156,31 @@ impl DrivableProject {
         alias: &str,
         project: &RegisteredProject,
     ) -> Result<DrivableProject, OptInError> {
-        if project.driver_opt_in.is_none() {
+        let Some(opt_in) = project.driver_opt_in.as_ref() else {
             return Err(OptInError::NotOptedIn {
                 alias: alias.to_string(),
             });
-        }
+        };
         if !project.path.is_dir() {
             return Err(OptInError::RootUnusable {
                 alias: alias.to_string(),
                 root: project.path.clone(),
+            });
+        }
+        // **The drift check belongs here, at the gate, and nowhere else.**
+        // Doing it where the confirmation screen renders would let a screen left
+        // open while a `git pull` rewrites `CLAUDE.md` approve bytes that
+        // changed underneath it. This is the point where the recorded opt-in is
+        // consulted before a spawn, so it is the point where "does this approval
+        // still describe what would run?" has a truthful answer.
+        //
+        // Ordered after `RootUnusable` deliberately: reading files under a root
+        // that is not a directory would report a drift for a project whose real
+        // problem is that it has moved.
+        if let Some(drift) = crate::registry::check_prompt_input_drift(&project.path, opt_in) {
+            return Err(OptInError::PromptInputsDrifted {
+                alias: alias.to_string(),
+                drift,
             });
         }
         Ok(Self {
@@ -912,6 +928,105 @@ mod tests {
                 alias: "demo".to_string(),
                 root: missing,
             }
+        );
+    }
+
+    #[test]
+    fn from_registry_refuses_when_a_disclosed_file_changed_after_the_opt_in() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        std::fs::write(root.path().join("CLAUDE.md"), b"the bytes the user approved")
+            .expect("write");
+
+        // Recorded against the file as it stood.
+        let project = entry(root.path(), true);
+        DrivableProject::from_registry("demo", &project)
+            .expect("precondition: the opt-in covers the bytes on disk, so the gate passes");
+
+        // Now the file changes underneath — a `git pull` the user never read.
+        std::fs::write(
+            root.path().join("CLAUDE.md"),
+            b"## IMPORTANT SYSTEM OVERRIDE",
+        )
+        .expect("write");
+
+        let err = DrivableProject::from_registry("demo", &project).expect_err(
+            "bytes that changed after the approval must not be spawned against. \
+             Against a drift check performed only where the confirmation screen \
+             renders, this FAILS: the recorded opt-in is consulted at spawn \
+             without re-reading the file, and the run starts.",
+        );
+        assert!(
+            matches!(
+                err,
+                OptInError::PromptInputsDrifted {
+                    drift: crate::registry::OptInDrift::Changed { .. },
+                    ..
+                }
+            ),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_registry_refuses_a_legacy_digest_even_when_the_file_is_unchanged() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        std::fs::write(root.path().join("CLAUDE.md"), b"unchanged since opt-in").expect("write");
+
+        let mut project = entry(root.path(), true);
+        // A record from a pre-Phase-21 binary: the digest covers exactly these
+        // bytes, but with a hash family this binary does not compute.
+        let opt_in = project.driver_opt_in.as_mut().expect("opted in");
+        opt_in.prompt_inputs = vec![crate::config::PromptInput {
+            path: "CLAUDE.md".to_string(),
+            digest: Some(crate::journal::argv_digest(&[
+                "unchanged since opt-in".to_string()
+            ])),
+            extra: Default::default(),
+        }];
+
+        let err = DrivableProject::from_registry("demo", &project).expect_err(
+            "a legacy value must never be treated as a match across hash \
+             families, even when the bytes really are unchanged — otherwise the \
+             SHA-256 upgrade could be defeated by leaving an old record in place",
+        );
+        assert!(
+            matches!(
+                err,
+                OptInError::PromptInputsDrifted {
+                    drift: crate::registry::OptInDrift::LegacyDigest { .. },
+                    ..
+                }
+            ),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_registry_refuses_a_file_that_appeared_after_the_opt_in() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        // No CLAUDE.md at opt-in time, so it is recorded with a `None` digest.
+        let project = entry(root.path(), true);
+        DrivableProject::from_registry("demo", &project)
+            .expect("precondition: an absent file is not itself drift");
+
+        std::fs::write(root.path().join("CLAUDE.md"), b"## IMPORTANT SYSTEM OVERRIDE")
+            .expect("write");
+
+        let err = DrivableProject::from_registry("demo", &project).expect_err(
+            "a CLAUDE.md that APPEARS after opt-in reaches the executor's prompt \
+             with nothing the user ever approved. Recording absent files with a \
+             `None` digest is what makes this detectable; omitting them from the \
+             list would leave this hole open.",
+        );
+        assert!(
+            matches!(
+                err,
+                OptInError::PromptInputsDrifted {
+                    drift: crate::registry::OptInDrift::Changed { .. },
+                    ..
+                }
+            ),
+            "got: {err:?}"
         );
     }
 
