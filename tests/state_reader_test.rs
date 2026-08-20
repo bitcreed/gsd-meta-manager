@@ -634,10 +634,17 @@ fn test_this_repositorys_own_planning_dir_reads_without_panicking() {
     use gsd_meta_manager::state_reader::disk_status::DiskStatus;
 
     // Every new read pointed at real data, including the stale phase-19 marker.
+    //
+    // An assertion, not an early return (IN-07): this directory is committed and
+    // always present, so a `return` here would turn "the reader could not find
+    // its subject" into a pass — the vacuous shape every other guard in this
+    // phase is written to avoid.
     let planning = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".planning");
-    if !planning.is_dir() {
-        return;
-    }
+    assert!(
+        planning.is_dir(),
+        "this repository ships its own .planning/ directory; if it is missing, \
+         every assertion below would be checking nothing"
+    );
     let state = parse_project_state(&planning);
     assert!(
         !state.phases.is_empty(),

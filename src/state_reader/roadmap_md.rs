@@ -536,9 +536,13 @@ mod tests {
         let roadmap = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join(".planning")
             .join("ROADMAP.md");
-        let Ok(content) = std::fs::read_to_string(&roadmap) else {
-            return;
-        };
+        // `expect`, not an early return (IN-07). This file is committed and
+        // always present, so the escape hatch bought nothing and cost the one
+        // thing the rest of this phase's guards are careful about: a test that
+        // cannot read its own subject must fail, not pass having checked
+        // nothing.
+        let content = std::fs::read_to_string(&roadmap)
+            .expect("this repository ships its own .planning/ROADMAP.md");
         let phases = parse_roadmap_phases(&content);
         let find = |number: &str| {
             phases
