@@ -575,6 +575,84 @@ async fn a_blank_command_is_refused_in_preview_and_in_a_real_run() {
     );
 }
 
+/// **Round-4 CR-01, as the reproduction `21-VERIFICATION.md` performed by hand.**
+///
+/// The sibling above closed `--command`; 21-07 closed `--goal` before it. The
+/// `Routed` arm was left bare a third time, so `--target-phase '   '` resolved to
+/// `Ok(CommandSource::Routed("   "))`, previewed cleanly at exit 0, and on a real
+/// run created `run.lock`, a run directory, `journal.jsonl` and a `run.json`
+/// carrying `"target_phase": "   "` — a value that reads as *field absent* on the
+/// tolerant read path (D-30), so the committed record cannot be used as evidence
+/// of what the run was driving toward.
+///
+/// **This test is the tracer for the type-level fix**, and its red arm is the
+/// point: against the pre-fix build `drive` returns `Ok(())` for the preview arm.
+/// Three cycles of per-arm trims each proved a *fix* correct and a *scope* wrong;
+/// the payload newtype is what removes the fourth arm this test would otherwise
+/// be written for next round (21-PREMISES.md, Premise 1).
+///
+/// Every payload here is refused by `command_source` **before**
+/// `journal::is_plain_path_component` is consulted — the ordering fact matters,
+/// because `""` used to be refused further down as `TargetPhaseInvalid` and
+/// `"   "` was refused nowhere at all.
+#[tokio::test]
+async fn a_blank_target_phase_is_refused_in_preview_and_in_a_real_run() {
+    let Some(repo_dir) = repo() else {
+        return;
+    };
+    let root = repo_dir.path();
+    let config = config_for(root);
+    let evidence = root.join("tripwire-fired-blank-target-phase");
+
+    // `"   "` leads deliberately: it is the payload the round-4 verification
+    // reproduced previewing cleanly at exit 0 and creating a run record, so the
+    // tracer's red arm names the Critical rather than the older `""` refusal.
+    for blank in ["   ", "\t", "\n  \n", ""] {
+        for dry_run in [true, false] {
+            let mut blank_args = args(Some(&evidence));
+            blank_args.command = None;
+            blank_args.target_phase = Some(blank.to_string());
+            blank_args.dry_run = dry_run;
+
+            let refusal = drive(blank_args, &config).await.expect_err(
+                "a target phase made of nothing names no phase to drive toward, \
+                 on both paths",
+            );
+            assert!(
+                matches!(refusal, DriveError::NoCommandSource),
+                "the refusal must be the SAME typed variant on both paths, and it \
+                 must be the command-source one — a preview and a real run must \
+                 answer an invocation-shape question identically (WR-09). \
+                 blank={blank:?} dry_run={dry_run} gave: {refusal:?}"
+            );
+            assert!(
+                !evidence.exists(),
+                "the refusal is a pure string check, so no program may have been \
+                 executed; the tripwire left evidence at {}",
+                evidence.display()
+            );
+            assert!(
+                !root.join(".planning/meta-manager").exists(),
+                "a refused run creates NOTHING — no run.lock, no run directory, no \
+                 journal.jsonl, and so no `run.json` carrying a `target_phase` that \
+                 reads as absent. This is the exact artifact set the round-4 \
+                 verification reproduced being created. blank={blank:?} \
+                 dry_run={dry_run}"
+            );
+        }
+    }
+
+    // **The control arm.** Without it, a `command_source` that refused every
+    // routed invocation would pass everything above.
+    drive(routed_args(Some(&evidence)), &config)
+        .await
+        .expect("the identical invocation with a real --target-phase still previews");
+    assert!(
+        !evidence.exists(),
+        "and the successful preview still spawns nothing"
+    );
+}
+
 #[tokio::test]
 async fn a_routed_dry_run_spawns_no_agent() {
     let Some(repo_dir) = repo() else {
