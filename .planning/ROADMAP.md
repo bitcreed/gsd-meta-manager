@@ -459,7 +459,7 @@ Plans:
   - **The vacuity hazard is the phase's sharpest risk (C-3):** the officially-recommended untrusted-content channel is accepted by this transport with exit 0 and never reaches the model, so an injection-corpus test built on it passes *vacuously*, forever. Every corpus assertion must prove arrival before it proves the property
 
 **Research**: done — `21-RESEARCH.md` (five live spikes; four CONTEXT.md decisions contradicted and corrected in `21-CONTEXT.md` § "Research Corrections")
-**Plans**: 11/12 plans executed — 10/10 executed (6/6 in 6 waves, then 4 gap-closure plans in 3 further waves); the re-verification scored 4/5 must-have truths (criterion 1 ✗ FAILED again, on two NEW Criticals introduced by the gap-closure diff itself), so 2 further gap-closure plans were added in 2 more waves
+**Plans**: 12/12 plans executed — 10/10 executed (6/6 in 6 waves, then 4 gap-closure plans in 3 further waves); the re-verification scored 4/5 must-have truths (criterion 1 ✗ FAILED again, on two NEW Criticals introduced by the gap-closure diff itself), so 2 further gap-closure plans were added in 2 more waves
 
 Plans:
 **Wave 1**
@@ -501,7 +501,7 @@ Gap closure, round 3 (from the re-verification in `21-VERIFICATION.md`, which fo
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 21-12-PLAN.md — review-WR-01 (guard six scans every `src/` file and its header names each remaining limit with the direction it fails in), the `CommandSource` single-construction-site guard 21-11's design depends on, and review-WR-03 (`plan_digest`'s doc names the refusal production actually produces for a legacy value) (DRIVE-04, SAFE-07, SAFE-08)
+- [x] 21-12-PLAN.md — review-WR-01 (guard six scans every `src/` file and its header names each remaining limit with the direction it fails in), the `CommandSource` single-construction-site guard 21-11's design depends on, and review-WR-03 (`plan_digest`'s doc names the refusal production actually produces for a legacy value) (DRIVE-04, SAFE-07, SAFE-08)
 
 ### Phase 22: Container Execution Target
 
@@ -561,7 +561,7 @@ Gap closure, round 3 (from the re-verification in `21-VERIFICATION.md`, which fo
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 8/8 | In Progress|  |
 | 20. Deterministic Decision Router & Run Bounds | 5/5 | In Progress|  |
-| 21. LLM Goal Layer & Prompt-Injection Hardening | 11/12 | In Progress|  |
+| 21. LLM Goal Layer & Prompt-Injection Hardening | 12/12 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
 
