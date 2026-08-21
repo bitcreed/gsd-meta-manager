@@ -4236,6 +4236,120 @@ mod tests {
         );
     }
 
+    // ========================================================================
+    // Every terminal write carries the escalation count (WR-02, DRIVE-04)
+    //
+    // The field's doc says the value is recorded UNCONDITIONALLY, precisely so a
+    // reader can tell "this run spent no consultations" apart from "this record
+    // came from a build that predates the counter". Three production paths used
+    // to call `finish` without the stamp — the terminate-signal shutdown, the
+    // startup kill and the spawn-failure arm — and a goal-driven run has always
+    // spent at least one consultation before any of them can fire, because the
+    // decomposition happens above `execute_run`. So the runs that lost the
+    // count were exactly the killed and failed-to-spawn ones an operator opens
+    // an investigation with.
+    //
+    // These three assert the VALUE on disk. That the four production call sites
+    // route through the one helper is a different property, and a behavioural
+    // test cannot see it — `tests/spawn_seam_guard.rs` carries it over the
+    // source, which is where it is visible.
+    // ========================================================================
+
+    /// The terminal `run.json`, read back through the same deserialisation a
+    /// reader uses rather than through an ad-hoc JSON field poke.
+    fn finished_record(run_json: &Path) -> RunRecord {
+        let body = std::fs::read_to_string(run_json).expect("the terminal record is on disk");
+        serde_json::from_str(&body).expect("the terminal record parses as a RunRecord")
+    }
+
+    #[tokio::test]
+    async fn a_terminate_signal_shutdown_records_the_consultations_the_run_spent() {
+        const SPENT: u32 = 3;
+        let (dir, mut journal) = started_run("2026-08-20T00-00-00Z-term");
+        let run_json = journal.paths().run_json.clone();
+
+        // A handle whose agent is not running, so `cancel` resolves immediately
+        // through `wait_outcome`'s already-consumed arm. No child, no signal and
+        // no race — the path under test is the journal write, not the teardown.
+        let executor = ClaudeExecutor::new();
+        let mut handle = dead_handle();
+        shutdown_on_terminate(&executor, &mut handle, &mut journal, SPENT).await;
+
+        let record = finished_record(&run_json);
+        assert_eq!(
+            record.escalations_used,
+            Some(SPENT),
+            "a stopped run's terminal record must name the consultations it \
+             spent. A `null` here is indistinguishable from a record written by \
+             a build that predates the counter — on precisely the run a reader \
+             is auditing, because a goal-driven run has already consulted a \
+             model above `execute_run` before a stop can arrive"
+        );
+        assert!(
+            record.ended_at.is_some(),
+            "and the stamp must not have displaced the terminal write itself"
+        );
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn a_startup_kill_records_the_consultations_the_run_spent() {
+        const SPENT: u32 = 1;
+        let (dir, mut journal) = started_run("2026-08-20T00-00-00Z-startup");
+        let run_json = journal.paths().run_json.clone();
+
+        // The sender is dropped, so the non-blocking `try_recv` reports no agent
+        // group: the stop arrived before the spawn reached `child.id()`. Nothing
+        // is signalled and no live process is involved, which is what makes this
+        // deterministic rather than a race against a real startup.
+        let (pgid_tx, mut pgid_rx) = oneshot::channel::<u32>();
+        drop(pgid_tx);
+
+        shutdown_during_startup(&mut pgid_rx, &mut journal, SPENT).await;
+
+        let record = finished_record(&run_json);
+        assert_eq!(
+            record.escalations_used,
+            Some(SPENT),
+            "a run stopped during startup must name the consultations it spent. \
+             The decomposition happens ABOVE the run, so a goal-driven run \
+             reaching this path has already spent one — and a `null` here reads \
+             identically to a build with no counter at all"
+        );
+        assert_eq!(
+            record.outcome.as_deref(),
+            Some("killed"),
+            "and the label is unchanged by the stamp"
+        );
+        drop(dir);
+    }
+
+    #[test]
+    fn a_spawn_failure_records_the_consultations_the_run_spent() {
+        const SPENT: u32 = 2;
+        let (dir, mut journal) = started_run("2026-08-20T00-00-00Z-spawnfail");
+        let run_json = journal.paths().run_json.clone();
+
+        // The spawn-failure arm is inline in `execute_run`'s iteration loop and
+        // reaching it needs a spawn that fails, so what is exercised here is the
+        // helper the arm calls with the arm's own label. That the arm calls it —
+        // rather than reaching for `finish` directly, which is what it used to do
+        // — is proved by `tests/spawn_seam_guard.rs` over the source, which is
+        // the only place that property is visible.
+        finish_run(&mut journal, "spawn_failed", SPENT).expect("the run finishes");
+
+        let record = finished_record(&run_json);
+        assert_eq!(
+            record.escalations_used,
+            Some(SPENT),
+            "a run whose agent never launched must still name the consultations \
+             it spent: a goal-driven run was decomposed before the spawn was \
+             even attempted, so `null` here loses a count that was known"
+        );
+        assert_eq!(record.outcome.as_deref(), Some("spawn_failed"));
+        drop(dir);
+    }
+
     #[test]
     fn the_inbox_poll_interval_is_sized_for_a_unit_of_work_measured_in_minutes() {
         // The bound in both directions is the decision, not the number. Too
