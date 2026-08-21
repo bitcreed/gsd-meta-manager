@@ -623,8 +623,20 @@ pub enum DriveError {
     /// approved has changed" and "what you passed is not a token" are three
     /// different statements to the person reading the refusal, and only the last
     /// one is answered by re-transcribing a value. An approval that cannot be
-    /// parsed is an absent approval — never a partial one — so this is raised
-    /// before any other approval work happens.
+    /// parsed is an absent approval — never a partial one.
+    ///
+    /// **Raised in [`crate::driver::drive`]'s invocation-shape group, above the
+    /// dry-run branch and above the decomposition seam**, and the position is
+    /// what the variant is worth. The parse is pure — it opens no file and starts
+    /// no process — so a typo costs **zero** process spawns and zero model
+    /// consultations, and a preview refuses exactly what the real run would.
+    /// Both halves of that sentence were false until 21-11: the parse lived
+    /// inside `approve_plan`, which `drive` reached only *after*
+    /// `GoalDecomposition::decompose` had spawned into the driven repository and
+    /// spent a consultation out of the run's budget, and `--dry-run` returned
+    /// above that whole region so a preview never performed the parse at all
+    /// (review-CR-01). A preview that refuses less than the run it previews is
+    /// previewing something the user cannot run (WR-09).
     PlanApprovalMalformed(crate::journal::ApprovalTokenError),
     /// A recorded approval no longer covers what would run (research Q4).
     ///

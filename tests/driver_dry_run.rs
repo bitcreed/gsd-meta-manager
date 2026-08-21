@@ -22,6 +22,7 @@ use gsd_meta_manager::config::{Config, DriverOptIn, RegisteredProject};
 use gsd_meta_manager::driver::{drive, dry_run, DriveArgs};
 use gsd_meta_manager::error::DriveError;
 use gsd_meta_manager::executor::DrivableProject;
+use gsd_meta_manager::journal::ApprovalTokenError;
 use tempfile::TempDir;
 
 const TRIPWIRE: &str = concat!(
@@ -469,6 +470,108 @@ async fn a_preview_refuses_exactly_what_the_real_run_would_refuse() {
         matches!(refusal, DriveError::BoundsRefused(_)),
         "a preview whose whole purpose is `what would happen` must not answer \
          cleanly for an invocation that would be refused. Got: {refusal:?}"
+    );
+
+    // **review-CR-01, the third arm.** This one sat below the dry-run branch
+    // rather than merely below the preview: `--dry-run` returned above the whole
+    // decompose/approve region, so the preview never performed the parse at all.
+    // Against that build this arm FAILS — `drive` returns `Ok(())` and prints a
+    // clean preview that does not mention the token — while the SAME invocation
+    // run for real was refused, after a model consultation had already been
+    // spent reaching the refusal.
+    let mut garbage_token = goal_args(None);
+    garbage_token.approved_plan = Some("total-garbage-no-separator".to_string());
+    let refusal = drive(garbage_token, &config)
+        .await
+        .expect_err("a preview must refuse a value that is not an approval token");
+    assert!(
+        matches!(
+            refusal,
+            DriveError::PlanApprovalMalformed(ApprovalTokenError::SeparatorAbsent)
+        ),
+        "the inner arm is named rather than left as `malformed somehow` — \
+         `you forgot the separator` and `this is malformed` send the reader to \
+         different fixes. Got: {refusal:?}"
+    );
+}
+
+/// **review-CR-02, as the reproduction `21-VERIFICATION.md` performed by hand.**
+///
+/// `command_source` trimmed and refused a blank `--goal` and applied no emptiness
+/// rule at all to `--command`, so `Some("")` resolved to
+/// `CommandSource::Command("")`. Against that build this test FAILS: the preview
+/// exits `Ok(())` having printed `1 command in the sequence:` and a numbered
+/// entry with nothing after the number, beneath the header promising *the
+/// complete and honest sequence* — a total and a command the tool never checked,
+/// offered to a user deciding whether to authorise the run. A real run recorded
+/// the empty string in `run.json`'s `gsd_command`, where `""` already means
+/// "field absent" on the tolerant read path (D-30), leaving a record that cannot
+/// be used as evidence of what ran.
+///
+/// Both paths are asserted, because the refusal is a pure invocation-shape check
+/// and a preview that refuses less than the run it previews is previewing
+/// something the user cannot run (WR-09).
+#[tokio::test]
+async fn a_blank_command_is_refused_in_preview_and_in_a_real_run() {
+    let Some(repo_dir) = repo() else {
+        return;
+    };
+    let root = repo_dir.path();
+    let config = config_for(root);
+    let evidence = root.join("tripwire-fired-blank-command");
+
+    for blank in ["", "   "] {
+        for dry_run in [true, false] {
+            let mut blank_args = args(Some(&evidence));
+            blank_args.command = Some(blank.to_string());
+            blank_args.dry_run = dry_run;
+
+            let refusal = drive(blank_args, &config).await.expect_err(
+                "a command made of nothing is a run with nothing to instruct it, \
+                 on both paths",
+            );
+            assert!(
+                matches!(refusal, DriveError::NoCommandSource),
+                "the refusal must be the SAME typed variant on both paths — a \
+                 preview and a real run must answer an invocation-shape question \
+                 identically (WR-09). blank={blank:?} dry_run={dry_run} gave: \
+                 {refusal:?}"
+            );
+            assert!(
+                !evidence.exists(),
+                "the refusal is a pure string check, so no program may have been \
+                 executed; the tripwire left evidence at {}",
+                evidence.display()
+            );
+            assert!(
+                !root.join(".planning/meta-manager").exists(),
+                "a refused run creates NOTHING — no run directory, no journal, no \
+                 run.json, and so no `gsd_command` field to be misread as absent"
+            );
+        }
+    }
+
+    // **The control arm.** A refusal test whose control arm is missing cannot
+    // tell a working guard from a broken fixture: without this, a
+    // `command_source` that refused every invocation would pass everything above.
+    drive(args(Some(&evidence)), &config)
+        .await
+        .expect("the identical invocation with a real --command still previews");
+    assert!(
+        !evidence.exists(),
+        "and the successful preview still spawns nothing"
+    );
+
+    // The rendering is built directly rather than captured from stdout, and it is
+    // compared against the pinned CONSTANT rather than against a string the
+    // renderer produced — which is why `COMMAND_MODE_TOTAL` exists at all.
+    let project = DrivableProject::for_testing_bypassing_opt_in(ALIAS, root);
+    let rendered = dry_run::render(&dry_run::build_report(&project, COMMAND));
+    assert!(
+        rendered.contains(COMMAND_MODE_TOTAL),
+        "command mode still states its one-command total for a REAL command — \
+         the phrase the blank-command preview had no business printing; got:\n\
+         {rendered}"
     );
 }
 
