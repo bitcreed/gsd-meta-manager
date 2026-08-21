@@ -37,3 +37,42 @@ they run before any terminal write by construction — the crash test asserts
 `tests/driver_reattach.rs` is in any `21-*` plan's `<files>`, and a fix is a
 synchronisation change to a live-process probe rather than a one-line
 correction. Carry into the next phase's backlog.
+
+**Update (2026-08-21, round 4): `driver_reattach` is now flakier than recorded
+above, and its documented mitigation no longer works.** Under
+`--test-threads=4` it fails intermittently in whole-suite runs; under
+`-- --test-threads=1` — which this file records as passing three times out of
+three — it now also fails intermittently. Confirmed **not** a round-4
+regression by building the pre-round-4 tree (`6eb1d49`) in a separate worktree
+and running the binary six times: `ok, FAILED, FAILED, FAILED, FAILED, FAILED`.
+The untouched baseline flakes *worse* than the round-4 tree. The run ids it uses
+(`2026-07-29T12-00-00Z-aaaa`) are exactly the shape 21-13's tightened
+`is_plain_path_component` pins as accepted, so that change cannot be the cause.
+`--test-threads=2` remains reliably green for the whole workspace. Raising the
+priority of the carried item rather than adding a new one.
+
+---
+
+# Round-4 adjudications (2026-08-21)
+
+Items carried forward from the round-2 review that round 4 deliberately declines,
+each with the reason from `21-PREMISES.md` Premise 6. Recorded here rather than
+dropped, so nothing leaves the phase silently — the prohibition
+`21-14-PLAN.md` carries as `MUST NOT drop an adjudicated-out finding silently`.
+
+## OUT — deferred
+
+| Item | Location | Reason declined |
+|---|---|---|
+| `registry::current_prompt_inputs` absent from `BLOCKING_HELPERS` | `tests/async_blocking_guard.rs:124-144` | Async-hygiene (synchronous disk reads under an `async fn`), not the failing criterion's class. The fix forces production `spawn_blocking` rewiring in `approve_plan` and `execute_run` — real scope, and zero bearing on ROADMAP criterion 1. |
+| The spawn-gate plan-half argument lives in a comment rather than in a checked property | `src/driver/run.rs:2300-2328` | The comment now states plainly that the plan half is a no-op there and why that is sound (decompose-once). Converting a sound, honestly-documented argument into a checked property is hardening, not gap closure. |
+| Dead `PlanStep::rationale` | `src/driver/goal.rs` | No production reader. A cosmetic dead field with no security or honesty bearing. |
+
+Any of the three can be promoted into a future phase; none is closed by
+round 4, and none should be read as fixed.
+
+## IN — closed by 21-13
+
+| Item | Location | Disposition |
+|---|---|---|
+| `plan_target_phase(plan).unwrap_or_default()` writing a blank `target_phase` | `src/driver/mod.rs` (`approve_plan`) | **Adjudicated IN and closed.** Same defect class as the criterion-1 failures — a blank value reaching a persisted record, where `""` already means field-absent (D-30) — merely arriving through the model seam instead of argv. Excluding it would have repeated the exact scoping bet that lost three times. `approve_plan` now refuses with the same typed error `goal::legality` raises for a stepless plan. |
