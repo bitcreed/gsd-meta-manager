@@ -786,23 +786,49 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
 /// run. Everything it *judges* is handed to [`journal::recheck_approval`], which
 /// opens nothing and is therefore testable on either side of every boundary.
 ///
-/// The three outcomes are the three the caller needs:
+/// The four outcomes are the four the caller needs:
 ///
 /// * **no `--approved-plan` at all** → [`DriveError::PlanApprovalRequired`],
-///   carrying the digest the user would approve, so the refusal is actionable in
+///   carrying the token the user would approve, so the refusal is actionable in
 ///   one step rather than being a bug report;
-/// * **a digest that covers a different plan** → the plan half changed;
-/// * **a digest whose plan half matches and whose file half does not** → the
+/// * **a value that is not a token at all** → [`DriveError::PlanApprovalMalformed`],
+///   raised before anything else happens, because an approval that cannot be
+///   parsed is an absent approval and never a partial one;
+/// * **a token that covers a different plan** → the plan half changed;
+/// * **a token whose plan half matches and whose file half does not** → the
 ///   disclosed bytes changed under the approval.
 ///
 /// The last two share a variant carrying [`journal::ApprovalRefusal`], which is
 /// what keeps *which half* readable without a second error type.
+///
+/// **The third of those used to be unreachable, and that was WR-01.** This
+/// function built a throwaway [`journal::ApprovedPlan`] whose `plan_digest` was
+/// the digest of the plan it had *just decomposed*, then asked
+/// [`journal::recheck_approval`] to compare that against the same value — a
+/// comparison of a value against itself, reported as a check. Every real
+/// mismatch therefore fell through to the files-changed arm, whose message
+/// opens *"the plan is unchanged but the disclosed files … are not"*, and the
+/// **common** case is the one it lied about: the review flow re-decomposes the
+/// goal through a non-deterministic model, so a differing plan is expected, and
+/// the user was told to go looking for a `git pull` that never happened. The
+/// recorded plan digest now arrives from the caller's token, where the approval
+/// put it.
 #[cfg(unix)]
 fn approve_plan(
     project: &DrivableProject,
     args: &DriveArgs,
     plan: &goal::GoalPlan,
 ) -> Result<journal::ApprovedPlan, DriveError> {
+    // **Parsed first, before any of the work below.** A value that is not a
+    // token cannot approve anything, so nothing is computed on the strength of
+    // it and no path treats a half-supplied value as a partial approval.
+    let recorded = match args.approved_plan.as_deref() {
+        Some(raw) => Some(
+            journal::parse_approval_token(raw).map_err(DriveError::PlanApprovalMalformed)?,
+        ),
+        None => None,
+    };
+
     let plan_digest = goal::plan_digest(plan);
     let prompt_inputs = crate::registry::current_prompt_inputs(project.root());
     let digest = journal::approval_digest(&plan_digest, &prompt_inputs);
@@ -823,31 +849,28 @@ fn approve_plan(
         })
         .collect();
 
-    let recorded = args.approved_plan.as_deref().map(|approved| {
-        // The record built from what the caller approved, so the comparison
-        // below is `recheck_approval`'s — one predicate, used here and again at
-        // spawn, rather than an equality written twice.
-        journal::ApprovedPlan {
-            steps: Vec::new(),
-            target_phase: String::new(),
-            // The plan half is the digest of the plan we just decomposed: the
-            // caller approved a digest, not a plan, so a mismatch on the whole
-            // value is what "this is not what you approved" means. Recording the
-            // observed plan digest here lets `recheck_approval` report WHICH half
-            // moved rather than only that something did.
-            plan_digest: plan_digest.clone(),
-            approval_digest: approved.to_string(),
-            approved_at: String::new(),
-            extra: serde_json::Map::new(),
-        }
-    });
+    let Some((recorded_plan_digest, recorded_approval_digest)) = recorded else {
+        // The token the reviewer copies back: one value carrying both halves,
+        // rendered by the one function that joins them, so what the refusal
+        // prints and what the flag accepts cannot drift apart.
+        return Err(DriveError::PlanApprovalRequired {
+            token: journal::render_approval_token(&plan_digest, &digest),
+            steps,
+        });
+    };
 
-    if recorded.is_none() {
-        return Err(DriveError::PlanApprovalRequired { digest, steps });
-    }
-
-    journal::recheck_approval(recorded.as_ref(), &plan_digest, &prompt_inputs)
-        .map_err(DriveError::PlanApprovalStale)?;
+    // **The substitution that fixes WR-01.** The recorded plan digest is the one
+    // the caller's token carried — the plan the approval covered — and it is
+    // compared against the plan just decomposed. It is no longer the same value
+    // on both sides, so `PlanChanged` is a distinction the code can actually
+    // draw. One predicate, used here and again at the spawn gate, rather than an
+    // equality written twice.
+    journal::recheck_approval(
+        Some((&recorded_plan_digest, &recorded_approval_digest)),
+        &plan_digest,
+        &prompt_inputs,
+    )
+    .map_err(DriveError::PlanApprovalStale)?;
 
     Ok(journal::ApprovedPlan {
         steps,

@@ -32,6 +32,7 @@ use gsd_meta_manager::config::{Config, DriverOptIn, RegisteredProject};
 use gsd_meta_manager::driver::run::GoalDecomposition;
 use gsd_meta_manager::driver::{bounds, drive, escalate, goal, router, DriveArgs};
 use gsd_meta_manager::error::DriveError;
+use gsd_meta_manager::journal::{ApprovalRefusal, ApprovalTokenError};
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -221,21 +222,26 @@ fn plan_from(wire: &Value) -> goal::GoalPlan {
     goal::legality(wire, PHASES, resolved_cap()).expect("the fixture plan is legal")
 }
 
-/// The approval digest a reviewer would be shown for `wire`, against `root`'s
-/// disclosed files as they stand right now.
+/// The approval TOKEN a reviewer would be shown for `wire`, against `root`'s
+/// disclosed files as they stand right now: both halves in one value.
 ///
-/// **Computed the way the driver computes it**, through the shipped
-/// `goal::legality`, `goal::plan_digest` and `journal::approval_digest`, so this
-/// helper cannot agree with a test while disagreeing with the run.
+/// **Composed the way the driver composes it**, through the shipped
+/// `goal::legality`, `goal::plan_digest`, `journal::approval_digest` and
+/// `journal::render_approval_token`, so this helper cannot agree with a test
+/// while disagreeing with the run — and so no test in this file assembles a
+/// token by string concatenation, which would be a second spelling of the
+/// renderer and therefore a second thing that can be wrong about the order.
 fn approval_for(root: &Path, wire: &Value, max_steps: Option<u32>) -> String {
     let cap = bounds::resolve(max_steps, None)
         .expect("the fixture's bounds resolve")
         .max_steps;
     let plan = goal::legality(wire, PHASES, cap).expect("the fixture plan is legal");
-    gsd_meta_manager::journal::approval_digest(
-        &goal::plan_digest(&plan),
+    let plan_digest = goal::plan_digest(&plan);
+    let approval_digest = gsd_meta_manager::journal::approval_digest(
+        &plan_digest,
         &gsd_meta_manager::registry::current_prompt_inputs(root),
-    )
+    );
+    gsd_meta_manager::journal::render_approval_token(&plan_digest, &approval_digest)
 }
 
 fn journal_records(root: &Path, run_id: &str) -> Vec<Value> {
@@ -540,6 +546,238 @@ async fn a_seam_that_answers_with_nothing_parks_the_run_before_it_exists() {
 // The approval, bound to the plan AND the bytes, re-checked at spawn
 // ---------------------------------------------------------------------------
 
+/// The token a user would copy, lifted out of the refusal that printed it.
+///
+/// **Extracted rather than recomputed, and that is the point of the tests that
+/// use it.** Recomputing the token in a test proves the test agrees with the
+/// helper; lifting it out of the rendered refusal proves the value the user is
+/// *shown* is the value the run then *checks*. Those are different claims, and
+/// only the second one is about the review flow.
+fn token_from_refusal(rendered: &str) -> String {
+    const FLAG: &str = "--approved-plan ";
+    let after = rendered
+        .split_once(FLAG)
+        .unwrap_or_else(|| {
+            panic!("the refusal must name `{FLAG}` and the token to pass; got: {rendered}")
+        })
+        .1;
+    let token: String = after.chars().take_while(|c| *c != '`').collect();
+    assert!(
+        !token.is_empty(),
+        "the refusal named the flag but printed no token after it; got: {rendered}"
+    );
+    token
+}
+
+#[tokio::test]
+async fn a_re_decomposition_that_changed_the_plan_is_refused_as_a_changed_plan_not_as_changed_files()
+{
+    const REVIEW_RUN_ID: &str = "2026-08-19T12-00-00Z-planchanged-review";
+    const RUN_ID: &str = "2026-08-19T12-00-00Z-planchanged";
+
+    let root = project_root();
+    let config = config_for(root.path());
+    let workdir = seam_workdir();
+
+    // **The review flow, exactly as a user performs it.** Run once with no
+    // token to obtain one, then re-run with it. The second run re-decomposes
+    // the goal through a non-deterministic model, so a different answer is the
+    // EXPECTED case rather than an exotic one — which is precisely why the
+    // refusal it produces has to name the right cause.
+    let reviewed = payload(vec![step(router::COMMAND_PLAN_PHASE, "21")]);
+    plant_payload(workdir.path(), &reviewed);
+
+    let mut review = goal_args(REVIEW_RUN_ID, workdir.path(), "get the goal layer verified");
+    review.max_steps = Some(2);
+    review.approved_plan = None;
+    let required = drive(review, &config)
+        .await
+        .expect_err("a goal run with no approval prints the plan and its token");
+    let token = token_from_refusal(&required.to_string());
+
+    // The model answers differently the second time: a two-step plan over the
+    // same roadmap, legal under the same cap.
+    let answered = payload(vec![
+        step(router::COMMAND_PLAN_PHASE, "20"),
+        step(router::COMMAND_PLAN_PHASE, "21"),
+    ]);
+    plant_payload(workdir.path(), &answered);
+
+    let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
+    args.max_steps = Some(2);
+    args.approved_plan = Some(token);
+
+    let err = drive(args, &config)
+        .await
+        .expect_err("a plan the approval never covered must not run");
+
+    assert!(
+        matches!(
+            err,
+            DriveError::PlanApprovalStale(ApprovalRefusal::PlanChanged { .. })
+        ),
+        "**this is the defect.** `approve_plan` used to compare the freshly \
+         observed plan digest against ITSELF, so `PlanChanged` was unreachable \
+         from production and every real mismatch fell through to \
+         `DisclosedFilesChanged`. Against that build this reads \
+         `DisclosedFilesChanged`, and the user is sent looking for a `git pull` \
+         that never happened; got: {err:?}"
+    );
+
+    // The message defect is half of WR-01, so the rendered bytes are asserted
+    // on as well as the variant: a user reads the sentence, not the enum.
+    let rendered = err.to_string();
+    assert!(
+        !rendered.contains("the plan is unchanged"),
+        "the refusal must not assert a fact the code just disproved — the plan \
+         is exactly what changed; got: {rendered}"
+    );
+    assert!(
+        rendered.contains("is not the plan that was approved"),
+        "and it must say so in the words the plan-changed arm owns; got: \
+         {rendered}"
+    );
+
+    // Both plan digests are named, so the refusal is diagnosable rather than
+    // merely correct. Recomputed here only to check the MESSAGE — the token
+    // above came from the refusal, which is the claim under test.
+    let approved_digest = goal::plan_digest(&plan_from(&reviewed));
+    let observed_digest = goal::plan_digest(&plan_from(&answered));
+    assert_ne!(
+        approved_digest, observed_digest,
+        "the fixture's premise: the two plans really do have different digests, \
+         or the assertion below cannot tell the arms apart"
+    );
+    assert!(
+        rendered.contains(&approved_digest) && rendered.contains(&observed_digest),
+        "the refusal must name the digest the approval covered AND the one \
+         observed now; got: {rendered}"
+    );
+
+    assert!(
+        !root.path().join(".planning/meta-manager").exists(),
+        "an approval refusal is an above-the-run refusal: it creates nothing at \
+         all, which is the property the ordered refusal chain in \
+         `src/driver/mod.rs` documents"
+    );
+}
+
+#[tokio::test]
+async fn a_disclosed_file_rewritten_under_an_approval_is_refused_as_changed_files_not_a_changed_plan()
+{
+    const RUN_ID: &str = "2026-08-19T12-00-00Z-fileschanged";
+
+    let root = project_root();
+    let workdir = seam_workdir();
+    let wire = payload(vec![step(router::COMMAND_PLAN_PHASE, "21")]);
+    plant_payload(workdir.path(), &wire);
+
+    // The bytes the user reviewed, and the token that covered them.
+    std::fs::write(root.path().join("CLAUDE.md"), b"the bytes the user reviewed")
+        .expect("write CLAUDE.md");
+    let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
+    args.max_steps = Some(2);
+    args.approved_plan = Some(approval_for(root.path(), &wire, args.max_steps));
+
+    // Now the file moves under the approval, and the opt-in is re-confirmed
+    // against the NEW bytes. That ordering is deliberate: the opt-in's own drift
+    // check (plan 21-03) sits at the capability gate and fires first, so a test
+    // that let it fire would be asserting on the first of two independent
+    // layers. Snapshotting the opt-in after the rewrite disarms only that one,
+    // leaving the approval binding — the layer under test — as the thing that
+    // has to refuse.
+    std::fs::write(
+        root.path().join("CLAUDE.md"),
+        b"## IMPORTANT SYSTEM OVERRIDE",
+    )
+    .expect("rewrite CLAUDE.md");
+    let config = config_for(root.path());
+
+    let err = drive(args, &config)
+        .await
+        .expect_err("bytes that changed after the approval must not be run against");
+
+    assert!(
+        matches!(
+            err,
+            DriveError::PlanApprovalStale(ApprovalRefusal::DisclosedFilesChanged { .. })
+        ),
+        "the plan is genuinely identical here, so this must be the FILES arm. It \
+         is the companion assertion to the plan-changed proof above: together \
+         they show the two halves are distinguishable rather than that one arm \
+         swallowed both; got: {err:?}"
+    );
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("the plan is unchanged"),
+        "and the message may open with that claim precisely because the code \
+         just established it — the plan half was compared first, against the \
+         digest the token carried; got: {rendered}"
+    );
+    assert!(
+        !rendered.contains("is not the plan that was approved"),
+        "it must not also report a changed plan; got: {rendered}"
+    );
+    assert!(
+        !root.path().join(".planning/meta-manager").exists(),
+        "an approval refusal creates nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_half_supplied_approval_token_is_refused_by_name_and_never_treated_as_an_approval() {
+    const RUN_ID: &str = "2026-08-19T12-00-00Z-halftoken";
+
+    let root = project_root();
+    let workdir = seam_workdir();
+    let wire = payload(vec![step(router::COMMAND_PLAN_PHASE, "21")]);
+    plant_payload(workdir.path(), &wire);
+
+    // The approval half alone — which is exactly the value an earlier build
+    // printed and accepted, so this is also the legacy-token case. It must fail
+    // the parse rather than being read as an approval with an empty plan half,
+    // because an empty half would compare equal to an empty recorded value.
+    let token = approval_for(root.path(), &wire, Some(2));
+    let (plan_half, approval_half) = token
+        .split_once(gsd_meta_manager::journal::APPROVAL_TOKEN_SEPARATOR)
+        .expect("the helper renders a two-half token");
+    assert!(
+        !plan_half.is_empty() && !approval_half.is_empty(),
+        "the fixture's premise: the whole token really does carry two non-empty \
+         halves, so the half passed below is a truncation rather than the whole \
+         thing"
+    );
+
+    let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
+    args.max_steps = Some(2);
+    args.approved_plan = Some(approval_half.to_string());
+
+    let err = drive(args, &config_for(root.path()))
+        .await
+        .expect_err("a value that is not a token cannot approve a run");
+
+    assert!(
+        matches!(
+            err,
+            DriveError::PlanApprovalMalformed(ApprovalTokenError::SeparatorAbsent)
+        ),
+        "a half token is refused BY NAME. It is neither an absent approval — the \
+         caller did supply something, and telling them nobody approved it sends \
+         them to the wrong fix — nor a stale one, and above all it is not a \
+         partial approval that starts a run; got: {err:?}"
+    );
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("--approved-plan"),
+        "and the refusal names the flag, or it is a bug report rather than an \
+         error message; got: {rendered}"
+    );
+    assert!(
+        !root.path().join(".planning/meta-manager").exists(),
+        "a malformed token creates nothing at all"
+    );
+}
+
 #[tokio::test]
 async fn a_goal_run_with_no_recorded_approval_refuses_and_says_the_approval_is_absent() {
     const RUN_ID: &str = "2026-08-19T12-00-00Z-unapproved";
@@ -695,8 +933,8 @@ async fn the_run_record_carries_the_approval_the_cap_and_the_count() {
 
     let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
     args.max_steps = Some(2);
-    let digest = approval_for(root.path(), &wire, args.max_steps);
-    args.approved_plan = Some(digest.clone());
+    let token = approval_for(root.path(), &wire, args.max_steps);
+    args.approved_plan = Some(token.clone());
 
     drive(args, &config_for(root.path()))
         .await
@@ -708,9 +946,23 @@ async fn the_run_record_carries_the_approval_the_cap_and_the_count() {
         serde_json::from_str(&std::fs::read_to_string(&paths.run_json).expect("run.json is readable"))
             .expect("run.json parses");
 
+    // The record keeps the two halves as separate fields — that is what lets a
+    // failed re-check name WHICH half moved — so the round trip back through the
+    // renderer is what says "this record is the token the user gave". A bare
+    // comparison against one field would pass while the other half was empty,
+    // which is precisely the shape WR-01's throwaway record had.
     assert_eq!(
-        record["approved_plan"]["approval_digest"], digest,
-        "the approval recorded on the run record is the one the user gave"
+        gsd_meta_manager::journal::render_approval_token(
+            record["approved_plan"]["plan_digest"]
+                .as_str()
+                .expect("the record carries a plan digest"),
+            record["approved_plan"]["approval_digest"]
+                .as_str()
+                .expect("the record carries an approval digest"),
+        ),
+        token,
+        "the approval recorded on the run record is the one the user gave, both \
+         halves of it"
     );
     assert_eq!(record["approved_plan"]["target_phase"], "21");
     assert_eq!(
@@ -911,7 +1163,11 @@ fn a_recorded_approval_carrying_a_legacy_fnv1a64_plan_digest_re_checks_as_stale(
         extra: Default::default(),
     };
 
-    let refusal = gsd_meta_manager::journal::recheck_approval(Some(&recorded), &fresh, &[])
+    let refusal = gsd_meta_manager::journal::recheck_approval(
+        Some((&recorded.plan_digest, &recorded.approval_digest)),
+        &fresh,
+        &[],
+    )
         .expect_err(
             "a legacy `fnv1a64:` record must never cover a freshly computed \
              `sha256:` plan. Failing closed is the whole reason the digests \
@@ -1086,9 +1342,15 @@ fn the_approval_refusal_cannot_repaint_the_terminal_of_the_person_about_to_appro
          a single-codepoint C1 introducer"
     );
 
+    // The token composed through the shipped renderer, never by concatenation,
+    // so this test cannot agree with itself about a shape the run would not
+    // print.
+    let token = gsd_meta_manager::journal::render_approval_token(
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    );
     let rendered = DriveError::PlanApprovalRequired {
-        digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-            .to_string(),
+        token: token.clone(),
         steps: vec![benign.clone(), hostile],
     }
     .to_string();
@@ -1119,13 +1381,10 @@ fn the_approval_refusal_cannot_repaint_the_terminal_of_the_person_about_to_appro
          got: {rendered}"
     );
     assert!(
-        rendered.contains(
-            "--approved-plan sha256:\
-             0000000000000000000000000000000000000000000000000000000000000000"
-        ),
-        "and it must still name the flag and the digest the caller must pass, \
-         or the refusal is a bug report rather than an error message; got: \
-         {rendered}"
+        rendered.contains(&format!("--approved-plan {token}")),
+        "and it must still name the flag and the WHOLE token the caller must \
+         pass — both halves, not just the approval digest — or the refusal is a \
+         bug report rather than an error message; got: {rendered}"
     );
     assert!(
         rendered.contains("  1. ") && rendered.contains("  2. "),

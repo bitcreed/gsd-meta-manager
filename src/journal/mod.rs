@@ -623,6 +623,17 @@ pub const ABSENT_INPUT_DIGEST: &str = "absent";
 /// [`recheck_approval`] compares that first — so "the plan changed" and "the
 /// files changed" stay distinguishable to the person reading the refusal.
 ///
+/// **How they stay distinguishable, concretely, because the paragraph above
+/// used to promise it without a mechanism.** The plan half travels *with* the
+/// approval, on argv, inside the token [`render_approval_token`] builds and
+/// [`parse_approval_token`] reads. It is therefore the digest the approval
+/// actually covered, and [`recheck_approval`] compares it against the digest of
+/// the plan under test. An earlier build re-derived the "recorded" plan digest
+/// from the plan under test and compared it against itself, which made
+/// [`ApprovalRefusal::PlanChanged`] unreachable and reported every real
+/// mismatch as a file change — telling the operator their `CLAUDE.md` moved on
+/// the exact path where the model simply answered differently.
+///
 /// **SHA-256 on BOTH halves, and the "both" is the load-bearing word.** An
 /// approval is exactly the affordance an adversary wants to defeat, so the outer
 /// digest is the collision-resistant one — but an outer SHA-256 does not rescue a
@@ -661,6 +672,130 @@ pub fn approval_digest(plan_digest: &str, prompt_inputs: &[crate::config::Prompt
     files.sort();
     lines.extend(files);
     sha256_digest(lines.join("\n").as_bytes())
+}
+
+/// What joins the two halves of an approval token on argv.
+///
+/// **Why this character.** Both halves are `prefix:hexdigits` values produced by
+/// [`sha256_digest`], so `+` occurs in neither half and
+/// [`parse_approval_token`]'s split is unambiguous rather than heuristic. It
+/// also needs no shell quoting, which matters because the value is copied out of
+/// a refusal message and pasted onto a command line — a separator a shell
+/// expanded would turn a correct paste into a malformed token.
+///
+/// **This is a user-visible CLI contract, not an implementation detail.**
+/// Changing it is a breaking change on exactly the terms
+/// [`crate::driver::dry_run::SECTION_REFSPECS`]'s doc establishes for the
+/// preview's pinned headers: a token a user holds from an earlier build stops
+/// parsing. The fail-closed direction is the saving grace — an old value is
+/// refused by name rather than being read as a partial approval — but it is
+/// still a break, and it belongs in the same commit as whatever falsified it.
+pub const APPROVAL_TOKEN_SEPARATOR: &str = "+";
+
+/// The single value a reviewer copies back onto argv: the plan they approved and
+/// the disclosed files that approval covered, in one token.
+///
+/// **The only place the two halves are joined.** The refusal that *prints* a
+/// token ([`crate::error::DriveError::PlanApprovalRequired`]) and the flag that
+/// *accepts* one both route through here, so they cannot disagree about the
+/// order — and the order is load-bearing, because both halves are `sha256:`
+/// strings and a reversed pair would compare cleanly against the wrong things.
+///
+/// One flag rather than two, deliberately: with two flags "one supplied, the
+/// other not" is a state the code has to classify anyway, and a reviewer has two
+/// values to transcribe. With one token, a value that does not carry both halves
+/// is simply malformed and the parse *is* the check.
+pub fn render_approval_token(plan_digest: &str, approval_digest: &str) -> String {
+    format!("{plan_digest}{APPROVAL_TOKEN_SEPARATOR}{approval_digest}")
+}
+
+/// Read a token back into its plan half and its approval half.
+///
+/// **An approval that cannot be parsed is an ABSENT approval.** Nothing here
+/// repairs, trims or tolerates: a value with surrounding whitespace is the
+/// caller's to fix, and silently normalising it would mean two spellings of one
+/// approval whose digests then disagree about which was recorded. Every
+/// malformed shape returns a named [`ApprovalTokenError`] and no shape returns a
+/// half-approval.
+pub fn parse_approval_token(raw: &str) -> Result<(String, String), ApprovalTokenError> {
+    let mut halves = raw.split(APPROVAL_TOKEN_SEPARATOR);
+    // `split` on a non-empty pattern always yields at least one element, so the
+    // first `next` cannot be `None`; it is matched rather than unwrapped because
+    // a panic on a parse of third-party argv is not a refusal.
+    let (Some(plan), Some(approval)) = (halves.next(), halves.next()) else {
+        return Err(ApprovalTokenError::SeparatorAbsent);
+    };
+    if halves.next().is_some() {
+        // Three or more values concatenated must never be read as two: the
+        // second half would silently be a prefix of what the caller meant.
+        return Err(ApprovalTokenError::SeparatorRepeated);
+    }
+    if plan.is_empty() || approval.is_empty() {
+        return Err(ApprovalTokenError::HalfEmpty);
+    }
+    Ok((plan.to_string(), approval.to_string()))
+}
+
+/// Why an `--approved-plan` value could not be read as a token at all.
+///
+/// A sibling taxonomy of [`ApprovalRefusal`], and deliberately **not** an arm of
+/// it: "this token is malformed" and "this approval no longer covers what would
+/// run" are different statements to the person reading the refusal, in exactly
+/// the way [`ApprovalRefusal::Absent`] is different from the other two. A
+/// malformed token is also not an absent one — an absent approval is a run
+/// nobody approved, a malformed one is a run somebody tried to approve and got
+/// wrong, and only the second is worth telling them how to re-transcribe.
+///
+/// No wildcard anywhere it is matched, so a fourth shape has to be given a
+/// message by whoever adds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalTokenError {
+    /// No separator at all — including a legacy value carrying only one digest.
+    SeparatorAbsent,
+    /// More than one separator, so the value carries more than two halves.
+    SeparatorRepeated,
+    /// The separator is present but one of the halves is empty.
+    HalfEmpty,
+}
+
+impl std::fmt::Display for ApprovalTokenError {
+    /// Every arm names the flag **and** how to obtain a good value, because a
+    /// refusal a caller cannot act on is a bug report rather than an error
+    /// message ([`ApprovalRefusal::Absent`]'s register, copied deliberately).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The offending value is never echoed. It arrives on argv from whoever
+        // launched the run, and the caller already has it; printing it back
+        // would put an unbounded third-party string on the terminal of the
+        // person reading a refusal, which is the capability WR-05 closed
+        // elsewhere in this phase.
+        match self {
+            ApprovalTokenError::SeparatorAbsent => write!(
+                f,
+                "the `--approved-plan` value carries no `{APPROVAL_TOKEN_SEPARATOR}`, \
+                 so it is not an approval token. A token names BOTH halves — the plan \
+                 that was approved and the disclosed files that approval covered — \
+                 joined by `{APPROVAL_TOKEN_SEPARATOR}`. A value carrying one half is \
+                 not half an approval; re-run this invocation WITHOUT \
+                 `--approved-plan` to see the plan and the token that authorises it"
+            ),
+            ApprovalTokenError::SeparatorRepeated => write!(
+                f,
+                "the `--approved-plan` value carries more than one \
+                 `{APPROVAL_TOKEN_SEPARATOR}`, so it is not two halves and is refused \
+                 rather than read as the first two. Re-run this invocation WITHOUT \
+                 `--approved-plan` to see the plan and the single token that \
+                 authorises it"
+            ),
+            ApprovalTokenError::HalfEmpty => write!(
+                f,
+                "the `--approved-plan` value has an empty half, which is what a token \
+                 truncated at a copy or a shell boundary looks like. An approval that \
+                 cannot be parsed is an absent approval, so nothing here is treated as \
+                 partially approved; re-run this invocation WITHOUT `--approved-plan` \
+                 to see the plan and the whole token that authorises it"
+            ),
+        }
+    }
 }
 
 /// The approval recorded on a run record: what was approved, and its identity.
@@ -723,6 +858,16 @@ pub struct ApprovedPlan {
 /// tests turn on: **"nobody approved this" and "what was approved has changed"
 /// are different statements to the person reading the refusal**, and a single
 /// "mismatch" for both would report an unapproved run as a stale approval.
+///
+/// **[`Self::DisclosedFilesChanged`]'s message opens by asserting the plan is
+/// unchanged, and that assertion is now backed by a comparison the code
+/// actually performs.** It was not always: `driver::approve_plan` used to hand
+/// [`recheck_approval`] the digest of the plan it had *just observed* as though
+/// it were the recorded one, so the plan half compared equal by construction,
+/// [`Self::PlanChanged`] was unreachable from production, and every real
+/// mismatch fell through to this arm — announcing a file change to a user whose
+/// files had not moved. The recorded plan digest now arrives from the caller's
+/// token, so the sentence is true rather than aspirational.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApprovalRefusal {
     /// No approval was recorded at all. Never a default yes.
@@ -775,7 +920,24 @@ impl std::fmt::Display for ApprovalRefusal {
     }
 }
 
-/// Whether `recorded` still covers the plan and the files that would run.
+/// Whether the recorded approval still covers the plan and the files that would
+/// run.
+///
+/// `recorded` is the approval's **two halves as the caller supplied them** —
+/// `(plan_digest, approval_digest)`, in that order, which is the order
+/// [`parse_approval_token`] returns them in. It takes the two digests rather
+/// than an [`ApprovedPlan`] because a comparison-only predicate has no business
+/// requiring a struct whose other three fields it never reads: the call site
+/// that had to build one filled them with empty strings, and one of the values
+/// it filled in was the plan digest of the plan under test — which made the
+/// first comparison below a value against itself.
+///
+/// **Where the recorded plan digest comes from is the whole of WR-01.** It
+/// arrives from the caller's token, so it is the digest the approval actually
+/// covered rather than one re-derived from the plan being judged. That is what
+/// makes [`ApprovalRefusal::PlanChanged`] reachable, and what makes
+/// [`ApprovalRefusal::DisclosedFilesChanged`]'s opening claim — that the plan is
+/// unchanged — a fact this function established rather than an assumption.
 ///
 /// **Pure, which is what makes both halves testable without a spawn.** The
 /// caller reads the current prompt inputs and hands them in; nothing here opens
@@ -785,25 +947,25 @@ impl std::fmt::Display for ApprovalRefusal {
 /// rather than reporting the combined mismatch a file change would also
 /// produce. Both refuse; the order is a legibility decision.
 pub fn recheck_approval(
-    recorded: Option<&ApprovedPlan>,
+    recorded: Option<(&str, &str)>,
     plan_digest: &str,
     prompt_inputs: &[crate::config::PromptInput],
 ) -> Result<(), ApprovalRefusal> {
-    let Some(recorded) = recorded else {
+    let Some((recorded_plan_digest, recorded_approval_digest)) = recorded else {
         return Err(ApprovalRefusal::Absent);
     };
 
-    if recorded.plan_digest != plan_digest {
+    if recorded_plan_digest != plan_digest {
         return Err(ApprovalRefusal::PlanChanged {
-            approved: recorded.plan_digest.clone(),
+            approved: recorded_plan_digest.to_string(),
             observed: plan_digest.to_string(),
         });
     }
 
     let observed = approval_digest(plan_digest, prompt_inputs);
-    if recorded.approval_digest != observed {
+    if recorded_approval_digest != observed {
         return Err(ApprovalRefusal::DisclosedFilesChanged {
-            approved: recorded.approval_digest.clone(),
+            approved: recorded_approval_digest.to_string(),
             observed,
         });
     }
@@ -2107,6 +2269,14 @@ mod tests {
             .collect()
     }
 
+    /// A recorded approval's two halves in the order `recheck_approval` reads
+    /// them — the order [`parse_approval_token`] hands them back in, so a test
+    /// cannot pass them the other way round while the production caller does
+    /// not.
+    fn halves(recorded: &ApprovedPlan) -> (&str, &str) {
+        (&recorded.plan_digest, &recorded.approval_digest)
+    }
+
     /// An approval covering `plan_digest` against `files`.
     fn approval(plan_digest: &str, files: &[crate::config::PromptInput]) -> ApprovedPlan {
         ApprovedPlan {
@@ -2201,7 +2371,7 @@ mod tests {
 
         // The same files, a different plan: a model asked the same question
         // twice may answer differently, and an approval covers one answer.
-        let refusal = recheck_approval(Some(&recorded), "fnv1a64:bbbbbbbbbbbbbbbb", &files)
+        let refusal = recheck_approval(Some(halves(&recorded)), "fnv1a64:bbbbbbbbbbbbbbbb", &files)
             .expect_err("a plan the approval never covered must not run");
         assert!(
             matches!(refusal, ApprovalRefusal::PlanChanged { .. }),
@@ -2210,7 +2380,7 @@ mod tests {
 
         // The control arm: unchanged, it passes — so the refusal above is about
         // the plan rather than about a check that refuses everything.
-        recheck_approval(Some(&recorded), "fnv1a64:aaaaaaaaaaaaaaaa", &files)
+        recheck_approval(Some(halves(&recorded)), "fnv1a64:aaaaaaaaaaaaaaaa", &files)
             .expect("an unchanged plan against unchanged files is approved");
     }
 
@@ -2225,7 +2395,7 @@ mod tests {
         let recorded = approval(plan, &inputs(&[("CLAUDE.md", Some("sha256:1111"))]));
 
         let rewritten = inputs(&[("CLAUDE.md", Some("sha256:2222"))]);
-        let refusal = recheck_approval(Some(&recorded), plan, &rewritten)
+        let refusal = recheck_approval(Some(halves(&recorded)), plan, &rewritten)
             .expect_err("bytes that changed after the approval must not be run against");
 
         assert!(
@@ -2237,6 +2407,124 @@ mod tests {
             refusal.to_string().contains("the plan is unchanged"),
             "got: {refusal}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The approval TOKEN: one copy-pasteable value carrying both halves
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn an_approval_token_round_trips_its_two_halves_in_plan_then_approval_order() {
+        let plan = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let approval = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+
+        let token = render_approval_token(plan, approval);
+        assert!(
+            token.contains(APPROVAL_TOKEN_SEPARATOR),
+            "the rendered token must carry the separator the parse splits on; \
+             got: {token}"
+        );
+
+        let (parsed_plan, parsed_approval) = parse_approval_token(&token)
+            .expect("a token this module rendered must parse back");
+        assert_eq!(
+            parsed_plan, plan,
+            "the PLAN half comes first. Order is not a detail: the two halves are \
+             both `sha256:`-prefixed strings, so a reversed parse would compare \
+             the plan digest against the approval digest and report the wrong \
+             half as the one that moved"
+        );
+        assert_eq!(parsed_approval, approval, "and the approval half second");
+
+        // One producer, one consumer, and nothing in between: a caller that
+        // assembles a token by concatenation is a second spelling of this
+        // function, and two spellings are two things that can disagree.
+        assert_eq!(
+            token,
+            format!("{plan}{APPROVAL_TOKEN_SEPARATOR}{approval}"),
+            "the rendered shape is exactly the two halves joined by the \
+             separator; got: {token}"
+        );
+    }
+
+    #[test]
+    fn a_token_that_does_not_carry_both_halves_is_refused_rather_than_read_as_one() {
+        let half = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let other = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+
+        // **A legacy single-half value.** Before this became a two-half token,
+        // `--approved-plan` took the approval digest alone. Such a value must
+        // fail the parse rather than being read as a plan half with an empty
+        // approval half — an approval that cannot be parsed is an ABSENT
+        // approval, and the fail-closed direction is the only safe one.
+        assert_eq!(
+            parse_approval_token(half),
+            Err(ApprovalTokenError::SeparatorAbsent),
+            "a value carrying no separator is not half an approval; got: {:?}",
+            parse_approval_token(half)
+        );
+
+        // Three values concatenated must not be read as two.
+        let three = format!("{half}{APPROVAL_TOKEN_SEPARATOR}{other}{APPROVAL_TOKEN_SEPARATOR}{half}");
+        assert_eq!(
+            parse_approval_token(&three),
+            Err(ApprovalTokenError::SeparatorRepeated),
+            "got: {:?}",
+            parse_approval_token(&three)
+        );
+
+        // An empty half on either side, which is what a token truncated at a
+        // shell boundary or copied without one end looks like.
+        for truncated in [
+            format!("{APPROVAL_TOKEN_SEPARATOR}{other}"),
+            format!("{half}{APPROVAL_TOKEN_SEPARATOR}"),
+            APPROVAL_TOKEN_SEPARATOR.to_string(),
+        ] {
+            assert_eq!(
+                parse_approval_token(&truncated),
+                Err(ApprovalTokenError::HalfEmpty),
+                "an empty half is not an approval of anything; got: {:?} for \
+                 {truncated:?}",
+                parse_approval_token(&truncated)
+            );
+        }
+
+        // Nothing is trimmed. A value with surrounding whitespace is the
+        // caller's to fix; accepting it silently would mean two spellings of one
+        // approval, and the digests would then disagree about which is recorded.
+        let padded = format!(" {half}{APPROVAL_TOKEN_SEPARATOR}{other}");
+        assert_eq!(
+            parse_approval_token(&padded),
+            Ok((format!(" {half}"), other.to_string())),
+            "the parse splits and does not trim, so a padded half stays padded \
+             and fails the digest comparison by name rather than being quietly \
+             normalised into a different value"
+        );
+    }
+
+    #[test]
+    fn every_approval_token_refusal_names_the_flag_and_says_how_to_obtain_a_token() {
+        // No wildcard: a fourth arm added later has to be added here too, which
+        // is the moment the decision about its message is cheap.
+        for refusal in [
+            ApprovalTokenError::SeparatorAbsent,
+            ApprovalTokenError::SeparatorRepeated,
+            ApprovalTokenError::HalfEmpty,
+        ] {
+            let rendered = refusal.to_string();
+            assert!(
+                rendered.contains("--approved-plan"),
+                "a refusal a caller cannot act on is a bug report rather than an \
+                 error message, and the flag is half of the action; got: \
+                 {rendered}"
+            );
+            assert!(
+                rendered.to_lowercase().contains("without"),
+                "and the other half is HOW to obtain a good token: by re-running \
+                 the same invocation WITHOUT the flag, which prints the plan and \
+                 the token that authorises it; got: {rendered}"
+            );
+        }
     }
 
     #[test]

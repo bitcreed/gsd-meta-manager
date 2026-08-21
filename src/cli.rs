@@ -108,18 +108,33 @@ pub enum Commands {
         // consent with extra steps, so the digest the reviewer saw is what
         // authorises the run.
         //
-        // It binds to the plan AND the disclosed files together
-        // (`journal::approval_digest`), and it is re-checked at spawn — a plan
+        // **The value is ONE token carrying TWO halves**, joined by
+        // `journal::APPROVAL_TOKEN_SEPARATOR`: the plan that was approved, and
+        // the disclosed files that approval covered
+        // (`journal::approval_digest`). Both are re-checked at spawn — a plan
         // approved an hour ago against a `CLAUDE.md` a `git pull` has since
         // rewritten is not an approval of what would now run (research Q4).
         //
-        // The digest is obtained by running the invocation WITHOUT this flag:
-        // the refusal is the review surface, and it prints the decomposed plan
-        // as typed tokens together with the digest that identifies it.
-        // `--dry-run` deliberately decomposes nothing, because a preview spawns
-        // no process (D-23), so it is not and cannot be where the plan is shown.
-        /// The digest of the decomposed plan you reviewed, binding the approval
-        /// to that plan AND to the disclosed files; required with `--goal` alone
+        // Two halves in one flag rather than two flags, because the refusal IS
+        // the review surface and a reviewer copies one value: two values are two
+        // things to transcribe and a new way to get it half right. A value that
+        // does not carry both halves is refused by name and is never treated as
+        // a partial approval — an approval that cannot be parsed is an absent
+        // approval.
+        //
+        // Carrying the plan half here is also what makes the plan-changed
+        // refusal REACHABLE. The digest the re-check compares against has to be
+        // the one the approval covered; re-deriving it from the plan under test
+        // compares a value against itself, and every real mismatch then reports
+        // itself as a file change.
+        //
+        // The token is obtained by running the invocation WITHOUT this flag:
+        // the refusal prints the decomposed plan as typed tokens together with
+        // the token that authorises exactly it. `--dry-run` deliberately
+        // decomposes nothing, because a preview spawns no process (D-23), so it
+        // is not and cannot be where the plan is shown.
+        /// The token printed for the plan you reviewed — `<plan>+<approval>` —
+        /// binding the approval to that plan AND to the disclosed files
         #[arg(long)]
         approved_plan: Option<String>,
         // The TUI supplies it so it knows what to look for afterwards (D-03).
