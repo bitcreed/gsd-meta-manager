@@ -1963,6 +1963,107 @@ fn every_terminal_write_in_the_driver_run_goes_through_the_stamped_helper() {
     }
 }
 
+/// The token list that makes a column-zero line an ITEM declaration.
+///
+/// Explicit rather than a regex, so what the assertion below can and cannot see
+/// is readable in one place. `#[` is included because an attribute at column
+/// zero introduces the item on the following line.
+const ITEM_OPENERS: &[&str] = &[
+    "pub ",
+    "fn ",
+    "async ",
+    "const ",
+    "static ",
+    "struct ",
+    "enum ",
+    "trait ",
+    "impl ",
+    "mod ",
+    "type ",
+    "use ",
+    "macro_rules!",
+    "#[",
+];
+
+/// **The bound guard six's limit 4 names, and guard eight's limit 3.**
+///
+/// Both guards find a file's production/test boundary with a column-zero
+/// `mod tests {` marker and then skip **from the marker to END OF FILE**
+/// (`test_region_start(file).unwrap_or(usize::MAX)`, then `*number >= boundary
+/// -> continue`). That skip is an approximation, and it fails the quiet way: a
+/// production item placed after the marker is invisible to every scan in this
+/// file, and a green result would then be a statement about nothing.
+///
+/// The region was not hypothetical. `src/state_reader/mod.rs` carried its marker
+/// at :311 and a production `pub fn count_backlog_items` at :530 — 219 lines
+/// into the blind region, with a real caller — and clippy's
+/// `items_after_test_module` corroborated it independently while this guard said
+/// nothing. Roughly 37% of `src/`'s lines sit past a marker.
+///
+/// **The only way a skipped region can be trusted is if it is empty**, so this
+/// asserts exactly that. It converts a SILENT UNDER-DETECTION into a LOUD
+/// OVER-DETECTION: the failure arrives as a `path:line: text` a reader can look
+/// at, and it is deliberately over-eager — a legitimate future post-marker item
+/// means deleting this assertion **consciously**, in a commit that says why,
+/// rather than discovering years later that a guard had a blind spot.
+///
+/// What it does NOT see, in the register this file uses: an item that is not
+/// introduced at column zero (indented inside a post-marker `mod`), and an item
+/// whose first token is outside [`ITEM_OPENERS`]. Both are under-detection and
+/// silent; both are bounded by the fact that the tree's production style puts
+/// items at column zero, and by the non-vacuity control below.
+#[test]
+fn no_production_item_follows_a_test_module_marker() {
+    let files = source_files();
+
+    let mut offenders: Vec<(String, usize, String)> = Vec::new();
+    let mut scanned_files = 0usize;
+
+    for file in &files {
+        let Some(marker) = test_region_start(file) else {
+            continue;
+        };
+        scanned_files += 1;
+        for (number, line) in &file.1 {
+            // The marker line itself opens the test region; it is not an
+            // offender, and neither is anything before it.
+            if *number <= marker {
+                continue;
+            }
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            if ITEM_OPENERS.iter().any(|token| line.starts_with(token)) {
+                offenders.push((file.0.clone(), *number, line.trim().to_string()));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a column-zero item declaration follows a file's `mod tests {{` marker. \
+         Every scan in this file skips from that marker to END OF FILE, so an \
+         item down there is invisible to guard six's terminal-write audit and to \
+         guard eight's construction-site audit — both would report green about a \
+         region they never read. Move the item ABOVE the marker (which also \
+         clears clippy's `items_after_test_module`), or, if a post-marker item is \
+         genuinely wanted, delete this assertion in the same commit and say what \
+         the guards are giving up. Offending lines:{}",
+        render(&offenders)
+    );
+
+    // Non-vacuity: an assertion over an empty set of files is satisfied by
+    // finding nothing, which is exactly the failure mode this whole test exists
+    // to close. If `TEST_REGION_MARKER` were ever re-spelled, every file would
+    // fall out of the scan and the emptiness above would hold forever.
+    assert!(
+        scanned_files >= 10,
+        "this tree has many files with in-module tests; only {scanned_files} \
+         carried a `{TEST_REGION_MARKER}` marker, so the scan is looking at \
+         almost nothing and its emptiness proves almost nothing"
+    );
+}
+
 /// Build a `SourceFile` from a path and its literal lines.
 fn synthetic_file(path: &str, lines: &[&str]) -> SourceFile {
     (
