@@ -307,6 +307,26 @@ fn detect_async_jobs(planning_dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Count directories matching the 999* pattern in .planning/phases/.
+/// These represent backlog items in GSD projects.
+pub fn count_backlog_items(planning_dir: &Path) -> u32 {
+    let phases_dir = planning_dir.join("phases");
+    std::fs::read_dir(&phases_dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.file_name()
+                        .to_str()
+                        .map(|n| n.starts_with("999"))
+                        .unwrap_or(false)
+                        && e.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                })
+                .count() as u32
+        })
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -523,24 +543,4 @@ mod tests {
         let state = parse_project_state(&td.path().join(".planning"));
         assert!(state.workstreams.is_empty());
     }
-}
-
-/// Count directories matching the 999* pattern in .planning/phases/.
-/// These represent backlog items in GSD projects.
-pub fn count_backlog_items(planning_dir: &Path) -> u32 {
-    let phases_dir = planning_dir.join("phases");
-    std::fs::read_dir(&phases_dir)
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.file_name()
-                        .to_str()
-                        .map(|n| n.starts_with("999"))
-                        .unwrap_or(false)
-                        && e.file_type().map(|t| t.is_dir()).unwrap_or(false)
-                })
-                .count() as u32
-        })
-        .unwrap_or(0)
 }

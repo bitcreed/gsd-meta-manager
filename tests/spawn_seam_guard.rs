@@ -1721,6 +1721,26 @@ fn the_free_string_field_parser_distinguishes_payloads_from_map_keys() {
 //    non-vacuity block below: a rename that emptied the scan trips
 //    `helper_writes`, the declaration count and the distinct-file count, so the
 //    guard can go blind only to a spelling ADDED beside a surviving one.
+// 4. The boundary of limit 1 excludes everything from the `mod tests {` marker
+//    to **END OF FILE** (`test_region_start(file).unwrap_or(usize::MAX)`, then
+//    `*number >= boundary -> continue`), not merely the test module. A
+//    production terminal write placed after a file's marker is not scanned.
+//    **Under-detection — silent**, and this limit was LIVE rather than
+//    theoretical: `src/state_reader/mod.rs` carried a production
+//    `pub fn count_backlog_items` 219 lines past its marker, invisible here
+//    while clippy's `items_after_test_module` reported it independently
+//    (review-WR-01). It is now BOUNDED by
+//    `no_production_item_follows_a_test_module_marker`, which fails loudly on
+//    any column-zero item after any file's marker — so the skipped region is
+//    provably empty rather than merely assumed to be.
+// 5. `enclosing_fn` attributes a line to the nearest PRECEDING `fn`, with no
+//    brace tracking. A terminal write sitting between the end of
+//    `fn finish_run(`'s body and the next declaration is attributed to
+//    `finish_run` and therefore allowlisted. **Under-detection — silent**, and
+//    it is named rather than fixed: a brace-tracking parser is out of
+//    proportion to the risk here. It is partially bounded by the tree-wide
+//    declaration count below, which fails if a second helper appears, and by
+//    limit 4's bound now that the post-marker region is known empty.
 //
 // This repository has already paid once for a guard that read as exact while
 // being quietly approximate. It is not paying again for one that claims a
