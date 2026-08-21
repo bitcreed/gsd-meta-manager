@@ -717,6 +717,17 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
     // real run refuses. A preview that refuses less than the run it previews is
     // previewing something the user cannot run (WR-09).
     //
+    // **The widening this ordering bought, named rather than left implicit
+    // (IN-03).** Because the parse now sits here, a malformed `--approved-plan`
+    // is refused on EVERY invocation — including a `--command` or
+    // `--target-phase` run, which has no plan for a token to approve and where
+    // the flag was previously never looked at. A well-formed but irrelevant
+    // token on such a run is accepted and then simply ignored. That is the
+    // intended trade: refusing a value that is not a token at all costs nothing
+    // and cannot surprise anyone, while a flag silently unread on three of four
+    // invocation shapes is how a user learns to trust a check that did not run.
+    // `src/cli.rs`'s help for the flag says the same thing.
+    //
     // **Malformation only, never absence.** `parse_approval_token` runs only when
     // the flag is present. An absent approval stays `None` and is refused far
     // below by `approve_plan` with [`DriveError::PlanApprovalRequired`], which
@@ -1061,12 +1072,35 @@ fn approve_plan(
     )
     .map_err(DriveError::PlanApprovalStale)?;
 
+    // **The model seam's route to the same corruption the argv seam refuses.**
+    //
+    // `legality` refuses an empty plan, so the last step is believed always
+    // present — and this line used to spell that belief as an unwrap-or-default,
+    // which is not a refusal but a *fabrication*: reached, it would write `""`
+    // into `ApprovedPlan.target_phase`, and the empty string already means
+    // "field absent" on the tolerant read path (D-30). That is the identical
+    // D-30 corruption `command_source` refuses on argv, arriving through the
+    // model seam instead — the same defect class, merely with a different
+    // provenance, which is why 21-PREMISES.md Premise 6 adjudicated it IN
+    // rather than letting the scoping bet that lost three times run a fourth
+    // time.
+    //
+    // It refuses with the SAME typed error `legality` raises for a stepless
+    // plan, so the refusal a user reads matches the invariant that was broken.
+    // Refused rather than `unwrap`ped, because a detached driver that panicked
+    // here would leave no terminal record at all.
+    //
+    // A step that IS present cannot carry a blank phase either: `legality`
+    // passes every step's `target_phase` through
+    // `journal::is_plain_path_component`, which since 21-13 refuses blank and
+    // control-carrying values.
+    let target_phase = run::plan_target_phase(plan)
+        .ok_or_else(|| DriveError::from(goal::GoalRefusal::empty_plan()))?
+        .to_string();
+
     Ok(journal::ApprovedPlan {
         steps,
-        // `legality` refuses an empty plan, so the last step is always present.
-        // Spelled out rather than `unwrap`ped because a detached driver that
-        // panicked here would leave no terminal record at all.
-        target_phase: run::plan_target_phase(plan).unwrap_or_default().to_string(),
+        target_phase,
         plan_digest,
         approval_digest: digest,
         approved_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),

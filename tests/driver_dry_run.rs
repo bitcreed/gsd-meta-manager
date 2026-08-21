@@ -129,6 +129,31 @@ fn repo() -> Option<TempDir> {
     Some(dir)
 }
 
+/// **The vacuity control for every `let Some(repo_dir) = repo() else { return };`
+/// guard in this file** (IN-04).
+///
+/// Those guards let a test skip gracefully where the sandbox forbids
+/// `git init`/`git commit`, which is right — a test must not fail for a reason
+/// that is not about the code. But a skip is indistinguishable from a pass in
+/// the summary line, so in an environment where `repo()` always returned `None`
+/// every proof in this file would report `ok` having asserted nothing at all.
+/// In a phase about guards that passed for the wrong reason, that is not a
+/// footnote.
+///
+/// This is the one named test that fails instead. If it is the only red in the
+/// file, the fixture is unavailable and nothing here proved anything; if it is
+/// green, every skip guard above was genuinely not taken.
+#[test]
+fn the_git_fixture_is_available() {
+    assert!(
+        repo().is_some(),
+        "`repo()` returned None, so every `let Some(repo_dir) = repo() else \
+         {{ return }}` guard in this file skipped its test and reported ok \
+         having asserted nothing. `git init` and `git commit` must work in the \
+         test sandbox for the proofs in this file to mean anything"
+    );
+}
+
 /// A one-entry, opted-in registry pointing at `root`.
 fn config_for(root: &Path) -> Config {
     let mut config = Config::new();

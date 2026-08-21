@@ -134,7 +134,8 @@ pub enum Commands {
         // decomposes nothing, because a preview spawns no process (D-23), so it
         // is not and cannot be where the plan is shown.
         /// The token printed for the plan you reviewed — `<plan>+<approval>` —
-        /// binding the approval to that plan AND to the disclosed files
+        /// binding the approval to that plan AND to the disclosed files.
+        /// Validated on every invocation; consulted only for a `--goal` run
         #[arg(long)]
         approved_plan: Option<String>,
         // The TUI supplies it so it knows what to look for afterwards (D-03).

@@ -502,13 +502,26 @@ pub enum DriveError {
         /// The id that was refused, verbatim.
         run_id: String,
     },
-    /// Neither `--command` nor `--target-phase` was supplied (CTRL-06).
+    /// None of `--command`, `--target-phase` or `--goal` names anything to do
+    /// (CTRL-06).
     ///
     /// A run with no command source has nothing to do. Until Phase 20 clap made
     /// this unrepresentable by requiring `--command`; the moment a second source
     /// existed, "exactly one of these two" stopped being something a parser can
     /// express and became a seam refusal — the same move, and for the same
     /// reason, as the `run_id` pair above.
+    ///
+    /// **This doc named only two sources and meant only absence; both halves
+    /// were false and the correction rides the commit that fixed them** (IN-01).
+    /// `--goal` became a third source in 21-07, and since 21-13 a source that is
+    /// *present but carries no visible instruction* resolves here too: a value
+    /// made entirely of whitespace, control characters or zero-width/format
+    /// characters is nothing to execute, renders as visually empty, and reads as
+    /// **field absent** in `run.json` on the tolerant read path (D-30) — so a
+    /// run started on one leaves a record that cannot be evidence of what ran.
+    /// The three degenerate arms were closed one per cycle (`Goal` 21-07,
+    /// `Command` 21-11, `Routed` 21-13) before the payload type made a blank
+    /// value unrepresentable.
     NoCommandSource,
     /// Both `--command` and `--target-phase` were supplied (CTRL-06).
     ///
@@ -718,8 +731,11 @@ impl fmt::Display for DriveError {
             Self::NoCommandSource => write!(
                 f,
                 "a run needs something to do: pass `--command <c>` to run one GSD \
-                 command, or `--target-phase <N>` to let the decision router choose \
-                 each command from observed project state"
+                 command, `--target-phase <N>` to let the decision router choose \
+                 each command from observed project state, or `--goal <text>` to \
+                 state the objective in plain language. A value made only of \
+                 whitespace or invisible characters counts as absent — it names \
+                 nothing to run, and recorded it would read as a missing field"
             ),
             Self::AmbiguousCommandSource => write!(
                 f,

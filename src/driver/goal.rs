@@ -563,6 +563,20 @@ impl GoalRefusal {
         }
     }
 
+    /// The empty-plan refusal, for the one seam outside this module that must
+    /// be able to raise it.
+    ///
+    /// [`legality`] refuses a stepless plan with `EmptyPlan`/[`FIELD_STEPS`].
+    /// `driver::approve_plan` needs the **identical** refusal: it reaches for
+    /// the plan's terminal step to fill `ApprovedPlan::target_phase`, and a plan
+    /// with no steps has no terminal step to reach for. A named constructor
+    /// rather than widening [`GoalRefusal::new`] — `new` stays private so the
+    /// bounding it performs on the offending value cannot be bypassed, and the
+    /// two seams cannot come to disagree about which refusal a stepless plan is.
+    pub(super) fn empty_plan() -> Self {
+        Self::new(GoalReason::EmptyPlan, FIELD_STEPS)
+    }
+
     /// Which refusal this is.
     pub fn reason(&self) -> GoalReason {
         self.reason
