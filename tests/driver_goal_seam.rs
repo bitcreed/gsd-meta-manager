@@ -1365,16 +1365,34 @@ const HOSTILE_PHASE_TOKENS: &[(&str, &str)] = &[
 #[test]
 fn a_phase_token_carrying_a_control_character_is_refused_by_name_rather_than_stored() {
     for (label, hostile) in HOSTILE_PHASE_TOKENS {
-        // **The premise, and it is what makes this test about the new check.**
-        // `journal::is_plain_path_component` rejects path separators and
-        // `.`/`..` and nothing else — it accepts every one of these. Without
-        // this line the assertion below would also pass against the unfixed
-        // build via the path-component arm it never actually reaches.
+        // **This premise was INVERTED in 21-13, and the correction rides the
+        // commit that falsified it.** It used to assert that
+        // `journal::is_plain_path_component` ACCEPTS every one of these tokens
+        // — true at the time, and the whole reason the goal layer needed a
+        // control-character bound of its own: the predicate rejected path
+        // separators and `.`/`..` and nothing else.
+        //
+        // 21-13 tightened the predicate to refuse any control-carrying value,
+        // because the same acceptance let `--run-id '   '` name a run directory
+        // made of spaces and let an embedded newline reach the dry-run render
+        // verbatim. So the control-character property is now defended at BOTH
+        // layers, and this fixture is refused by the first one it meets.
+        //
+        // **What that costs this test, stated rather than glossed:** for these
+        // four fixtures the goal layer's own control-character bound is now
+        // defence in depth rather than the sole control, so this test can no
+        // longer distinguish which layer refused. What it still pins uniquely
+        // is the two things below — that the refusal REUSES the existing reason
+        // instead of silently repairing the token into a different phase, and
+        // that the refusal reporting the control bytes does not itself render
+        // them (`GoalRefusal::new` bounds the offending value at construction).
+        // Neither is answered by the predicate.
         assert!(
-            gsd_meta_manager::journal::is_plain_path_component(hostile),
-            "the {label} fixture must be a token `is_plain_path_component` \
-             ACCEPTS, or this test proves nothing about the bound this task \
-             adds; got a token the old checker already rejected: {hostile:?}"
+            !gsd_meta_manager::journal::is_plain_path_component(hostile),
+            "since 21-13 the {label} fixture must be a token \
+             `is_plain_path_component` REFUSES — if it is accepted again the \
+             predicate has been loosened back to the shape that let an embedded \
+             newline reach the dry-run render: {hostile:?}"
         );
 
         let refusal = goal::legality(

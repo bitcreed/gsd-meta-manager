@@ -656,11 +656,21 @@ pub fn legality(
                 named_phase,
             ));
         }
-        // The checker above rejects path separators and `.`/`..`; it accepts
-        // `ESC`, `\n`, `\r` and every other control character, because a
-        // traversal check is not a rendering check. So a second refusal, and it
-        // **refuses rather than repairs**: a token bounding would alter is
-        // named, never truncated into a different phase.
+        // The checker above rejects path separators, `.`/`..`, blank values and
+        // — since 21-13 — control characters. **This comment used to say it
+        // accepted `ESC`, `\n`, `\r` and every other control character, which
+        // was true when the second refusal below was written and is the reason
+        // that refusal exists**; the correction rides the commit that falsified
+        // it. The predicate was tightened because the same acceptance let
+        // `--run-id '   '` name a run directory made of spaces and let an
+        // embedded newline reach the dry-run render verbatim.
+        //
+        // The refusal below is KEPT rather than deleted, now as defence in
+        // depth: `untrusted::bounded` judges renderability, not traversal, so
+        // it answers a question the predicate does not — and a value the
+        // predicate ever loosens on is still refused here. It **refuses rather
+        // than repairs** either way: a token bounding would alter is named,
+        // never truncated into a different phase.
         //
         // `PhaseNotPlainComponent` is reused deliberately and no `GoalReason`
         // arm is added — a token carrying a control character is not a plain

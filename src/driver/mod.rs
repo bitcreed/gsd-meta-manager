@@ -1520,6 +1520,69 @@ mod tests {
         );
     }
 
+    /// **The `--run-id` sibling of the blank-payload class.**
+    ///
+    /// `journal::is_plain_path_component` special-cased only the EMPTY string, so
+    /// `--run-id '   '` passed the seam and named a run directory made of spaces.
+    /// The predicate now refuses a blank value and a control-carrying one, and
+    /// this pins the refusal at `drive`'s own seam rather than only at the
+    /// predicate's unit tests.
+    ///
+    /// **An ordering fact worth stating, because a reader will otherwise expect
+    /// this test to cover `--target-phase` too:** a blank `--target-phase` is
+    /// refused by `command_source` as `NoCommandSource` **before**
+    /// `is_plain_path_component` is ever consulted, and that ordering is
+    /// deliberate — the tightened predicate is defence in depth for that flag,
+    /// not its primary control. The round-3 review had it the other way round,
+    /// citing this predicate as the reason `--target-phase` needed no check of
+    /// its own; the exemption that bought is what let round-4's Critical
+    /// through. Here, the run id, the predicate IS the only control.
+    #[tokio::test]
+    async fn a_blank_run_id_is_refused_without_touching_disk() {
+        for blank in ["   ", "\t", "\n  \n"] {
+            let root = tempfile::TempDir::new().expect("temp dir");
+            let config = opted_in(root.path());
+
+            let mut args = args("demo");
+            args.command = Some("/gsd:progress".to_string());
+            args.target_phase = None;
+            args.dry_run = false;
+            args.run_id = Some(blank.to_string());
+
+            let err = drive(args, &config)
+                .await
+                .expect_err("a run id made of nothing identifies no run");
+
+            assert!(
+                matches!(err, DriveError::RunIdInvalid { .. }),
+                "the refusal must be the typed run-id one — a blank id is not a \
+                 name, and a run directory made of spaces is not identifiable by \
+                 anyone reading the tree later. blank={blank:?} gave: {err:?}"
+            );
+            assert!(
+                !root.path().join(".planning/meta-manager").exists(),
+                "a refused run must have created NOTHING; blank={blank:?}"
+            );
+        }
+
+        // **The control arm, and it is asserted at the predicate rather than
+        // through `drive` — deliberately.** The run-id check sits BELOW the
+        // dry-run branch, because a preview creates no run to identify, so
+        // `dry_run: true` never reaches it and the arm would prove nothing;
+        // and `dry_run: false` with an id that passes is a REAL run, which an
+        // in-module test must never start. So the non-vacuity is taken one
+        // level down, at the seam's own predicate, where the shapes the tree
+        // actually uses are pinned in both directions.
+        for legitimate in ["2026-08-19T12-00-00Z-aaaa", "RID", "20"] {
+            assert!(
+                journal::is_plain_path_component(legitimate),
+                "a real run id must still pass the predicate — one that refused \
+                 every id would satisfy the loop above forever; {legitimate:?} \
+                 was refused"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_cap_that_would_disable_a_detector_is_refused_without_touching_disk() {
         for (max_steps, wall_clock_cap_secs) in [
@@ -1769,14 +1832,39 @@ mod tests {
 
     /// The payloads that carry no instruction at all.
     ///
-    /// Enumerated as a constant rather than inlined per assertion so that a fifth
-    /// blank shape (a vertical tab, a non-breaking space) is added in one place
-    /// and every consumer of the matrix gains it at once. Whitespace-only is the
-    /// predicate `str::trim` already answers, and the production guard is written
-    /// against `trim` for exactly that reason: the test and the code must agree
-    /// about what "blank" means or the enumeration is checking a different
-    /// property from the one the seam enforces.
-    const DEGENERATE: [&str; 4] = ["", "   ", "\t", "\n  \n"];
+    /// Enumerated as a constant rather than inlined per assertion so that a
+    /// seventh blank shape is added in one place and every consumer of the
+    /// matrix gains it at once.
+    ///
+    /// **The payload set and the production predicate are DELIBERATELY
+    /// different expressions of "blank", and the previous doc argued the exact
+    /// opposite.** It said the test and the code must agree about what blank
+    /// means, and wrote both against `str::trim` so they could not disagree —
+    /// which is a tautology, not a check (round-3 WR-03). An enumeration that
+    /// shares the guard's predicate structurally cannot contain a payload the
+    /// guard mishandles, so it can never falsify the thing it exists to check.
+    ///
+    /// These are therefore **literals, asserted by name**. `NonBlank::new`
+    /// refuses whitespace, control and zero-width/format characters; this array
+    /// names six concrete values and demands a refusal for each. The last two
+    /// are the demonstration: `U+200B` and `U+FEFF` both survive `trim`
+    /// untouched, so under the old coupling neither could ever have appeared
+    /// here. A production/test disagreement is now a named red rather than a
+    /// silent agreement.
+    const DEGENERATE: [&str; 6] = ["", "   ", "\t", "\n  \n", "\u{200b}", "\u{feff}"];
+
+    /// The expected `CommandSource` variant names, in ONE place (round-3 IN-02).
+    ///
+    /// Both consumers read this const rather than each spelling the list out:
+    /// the preview enumeration's per-variant sweep and the matrix's coverage
+    /// assertion. Duplicated literals were IN-02's finding — two lists that must
+    /// agree are two lists that can drift, and the one that drifts silently
+    /// narrows a sweep.
+    ///
+    /// It is anchored by [`variant_name`], whose match has no wildcard arm: a
+    /// fourth variant fails to compile there first, and then fails these
+    /// assertions **by name** rather than by count.
+    const ALL_VARIANT_NAMES: [&str; 3] = ["Command", "Routed", "Goal"];
 
     /// A **total** classification of [`CommandSource`], with no wildcard arm.
     ///
@@ -1801,20 +1889,40 @@ mod tests {
         }
     }
 
-    /// The first line of `rendered` that is a number, a dot and nothing else.
+    /// The first line of `rendered` that is a number, a dot, and nothing a
+    /// reader could see.
     ///
     /// The exact shape `build_report(project, "")` produced for a goal under
     /// CR-01, and for a blank `--command` under review-CR-02. **One detector
     /// shared by both tests below** rather than two copies: two places that answer
     /// the same question are two places that can disagree, which is the shape
     /// `CommandSource`'s own promotion was made to remove.
-    fn empty_numbered_entry(rendered: &str) -> Option<&str> {
+    ///
+    /// **Its judgment of "visibly empty" is spelled out here rather than
+    /// delegated, and that is the point of the rename** (round-3 WR-03). The
+    /// old name and the old `tail.trim().is_empty()` both borrowed production's
+    /// notion of blank, so the detector could only ever agree with the guard it
+    /// was checking. The character classes below are written independently: if
+    /// [`payload::NonBlank`] were ever loosened — dropping the zero-width range,
+    /// say — this detector would keep calling a `U+200B` entry visibly empty and
+    /// the matrix would go red. That disagreement is the whole value. Do not
+    /// replace this with a call to `NonBlank` or with `tail.trim()`.
+    fn visibly_empty_numbered_entry(rendered: &str) -> Option<&str> {
+        fn visible(text: &str) -> bool {
+            text.chars().any(|c| {
+                !(c.is_whitespace()
+                    || c.is_control()
+                    || matches!(
+                        c,
+                        '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}'
+                    ))
+            })
+        }
+
         rendered.lines().find(|line| {
             let trimmed = line.trim();
             trimmed.split_once('.').is_some_and(|(head, tail)| {
-                !head.is_empty()
-                    && head.chars().all(|c| c.is_ascii_digit())
-                    && tail.trim().is_empty()
+                !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()) && !visible(tail)
             })
         })
     }
@@ -1921,7 +2029,7 @@ mod tests {
         // passing if two of those entries had been the same variant. `variant_name`
         // is a `match` with no wildcard, so a fourth variant is a compile error
         // and a duplicated one is a count of 2 here.
-        for expected in ["Command", "Routed", "Goal"] {
+        for expected in ALL_VARIANT_NAMES {
             let present = sources
                 .iter()
                 .filter(|source| variant_name(source) == expected)
@@ -1941,12 +2049,12 @@ mod tests {
                 "every source renders the pinned commands section; {source:?} did \
                  not:\n{rendered}"
             );
-            let empty_entry = empty_numbered_entry(&rendered);
+            let empty_entry = visibly_empty_numbered_entry(&rendered);
             assert!(
                 empty_entry.is_none(),
-                "no preview may render an empty numbered entry — it reads as a \
-                 command the run would issue, and printing one for a source the \
-                 renderer did not recognise is exactly how CR-01 shipped. \
+                "no preview may render a visibly empty numbered entry — it reads \
+                 as a command the run would issue, and printing one for a source \
+                 the renderer did not recognise is exactly how CR-01 shipped. \
                  {source:?} produced {empty_entry:?} in:\n{rendered}"
             );
         }
@@ -1957,10 +2065,22 @@ mod tests {
     ///
     /// Every degenerate payload, in every argv position, driven through the
     /// **production resolver** [`command_source`] rather than through a
-    /// hand-constructed variant. Each cell must land in one of exactly two
-    /// acceptable places: a typed [`DriveError::NoCommandSource`] refusal, or an
-    /// `Ok` whose preview carries the pinned commands section and renders no
-    /// empty numbered entry.
+    /// hand-constructed variant.
+    ///
+    /// **The rule is UNIFORM and the exemption is gone** (round-4 CR-01). Every
+    /// [`DEGENERATE`] payload in every position is [`DriveError::NoCommandSource`]
+    /// — one nested loop, no `Ok` branch for a degenerate cell, no per-position
+    /// hand-written sweep. The shape this replaces offered each cell a
+    /// *disjunction* ("refused, OR previewed cleanly") and then re-asserted the
+    /// strict rule by name for two of the three columns, exempting
+    /// `--target-phase` in a comment on the stated ground that
+    /// `journal::is_plain_path_component` already refused it. **That ground was
+    /// false**: the predicate special-cased only the empty string and returned
+    /// `true` for `"   "`. So the disjunction accepted a clean preview of a blank
+    /// routed run, the by-name sweep did not cover the column, and the Critical
+    /// walked between them. A cell the mechanism cannot reach must fail the
+    /// build, not be explained away; an exemption is no longer something this
+    /// test's shape can express.
     ///
     /// Against the UNFIXED `command_source` this test FAILS: `--command ''`
     /// resolved to `Ok(CommandSource::Command(""))`, which `preview_text` routed
@@ -1994,6 +2114,18 @@ mod tests {
         ///
         /// A higher-ranked fn pointer rather than a boxed closure so the table is
         /// a `const`-shaped literal and the borrow is the payload's own.
+        ///
+        /// **The 3-tuple is the COLUMN axis's structural exhaustiveness, and it
+        /// is the mirror of what [`variant_name`] does for rows.** The return
+        /// type matches [`command_source`]'s arity exactly, so a fourth argv
+        /// parameter on the resolver breaks every builder in the table below at
+        /// COMPILE time — nobody can add an argv position without opening this
+        /// module and giving it a column. The rows are anchored the same way, by
+        /// a wildcard-free match; between them, neither axis can be silently
+        /// narrowed. This is the verifier's named recommendation, and it is the
+        /// answer to the limitation the paragraph above still states honestly: a
+        /// fourth argv *field* resolving to an EXISTING variant adds a column,
+        /// and adding a column is now the compile error.
         type PositionBuilder =
             for<'a> fn(&'a str) -> (Option<&'a str>, Option<&'a str>, Option<&'a str>);
 
@@ -2010,106 +2142,95 @@ mod tests {
         let mut resolved: Vec<&'static str> = Vec::new();
 
         for (position, realistic, build) in positions {
-            for payload in DEGENERATE.iter().copied().chain(std::iter::once(realistic)) {
+            // **The degenerate half: one rule, every cell, no branch.** Not a
+            // `match` offering an `Ok` arm — there is no acceptable `Ok` for a
+            // degenerate payload in any position, so the test's shape cannot
+            // express one.
+            for payload in DEGENERATE {
                 let (command, target_phase, goal) = build(payload);
+                let outcome = command_source(command, target_phase, goal);
 
-                match command_source(command, target_phase, goal) {
-                    // A run with nothing to do, refused at the seam. Free, typed,
-                    // and identical for a preview and for a real run.
-                    Err(DriveError::NoCommandSource) => {}
-                    Err(other) => panic!(
-                        "the only legal refusal in this matrix is NoCommandSource — \
-                         a degenerate payload in {position} must not be refused by \
-                         some other name, or the refusal a user reads stops \
-                         matching the thing they typed; payload {payload:?} gave \
-                         {other:?}"
-                    ),
-                    Ok(source) => {
-                        resolved.push(variant_name(&source));
-
-                        let rendered = preview_text(&project, &source);
-                        assert!(
-                            rendered.contains(dry_run::SECTION_COMMANDS),
-                            "every resolved source renders the pinned commands \
-                             section — a blank section reads as a missing one; \
-                             {position} with payload {payload:?} gave:\n{rendered}"
-                        );
-
-                        let empty_entry = empty_numbered_entry(&rendered);
-                        assert!(
-                            empty_entry.is_none(),
-                            "a numbered entry with nothing after the number reads \
-                             as a command the run would issue, beneath a header \
-                             that promises the COMPLETE and honest sequence — it \
-                             invites a user to authorise a run on a claim the tool \
-                             never checked (review-CR-02). {position} with payload \
-                             {payload:?} produced {empty_entry:?} in:\n{rendered}"
-                        );
-                    }
-                }
+                assert!(
+                    matches!(outcome, Err(DriveError::NoCommandSource)),
+                    "every degenerate payload in every argv position is refused \
+                     with NoCommandSource, uniformly and with no exemption — a \
+                     value carrying no visible instruction is a run with nothing \
+                     to do whichever flag carried it, and the three cycles this \
+                     matrix has now outlived each ended with one column quietly \
+                     excused. {position} with payload {payload:?} gave {outcome:?}"
+                );
             }
+
+            // **The realistic half**, which is also the non-vacuity control: a
+            // resolver that passed the loop above by refusing everything fails
+            // here.
+            let (command, target_phase, goal) = build(realistic);
+            let source = match command_source(command, target_phase, goal) {
+                Ok(source) => source,
+                Err(err) => panic!(
+                    "a realistic {position} payload {realistic:?} must still \
+                     resolve — a guard that refuses everything is not a guard; \
+                     got {err:?}"
+                ),
+            };
+            resolved.push(variant_name(&source));
+
+            let rendered = preview_text(&project, &source);
+            assert!(
+                rendered.contains(dry_run::SECTION_COMMANDS),
+                "every resolved source renders the pinned commands section — a \
+                 blank section reads as a missing one; {position} with payload \
+                 {realistic:?} gave:\n{rendered}"
+            );
+
+            let empty_entry = visibly_empty_numbered_entry(&rendered);
+            assert!(
+                empty_entry.is_none(),
+                "a numbered entry with nothing VISIBLE after the number reads as \
+                 a command the run would issue, beneath a header that promises \
+                 the COMPLETE and honest sequence — it invites a user to \
+                 authorise a run on a claim the tool never checked \
+                 (review-CR-02). {position} with payload {realistic:?} produced \
+                 {empty_entry:?} in:\n{rendered}"
+            );
         }
 
-        // Non-vacuity, first direction: the matrix must actually have produced
-        // every variant. A matrix that had quietly stopped covering one — or one
-        // where the new guard refused everything — would otherwise pass narrowly.
+        // Coverage, against the ONE spelling of the variant list (IN-02). Each
+        // position resolved exactly once, so a matrix that had quietly stopped
+        // exercising a command source fails here BY NAME.
+        assert_eq!(
+            resolved.len(),
+            ALL_VARIANT_NAMES.len(),
+            "one realistic resolution per argv position; got {resolved:?}"
+        );
         resolved.sort_unstable();
         resolved.dedup();
+        let mut expected = ALL_VARIANT_NAMES.to_vec();
+        expected.sort_unstable();
         assert_eq!(
-            resolved,
-            vec!["Command", "Goal", "Routed"],
-            "the `Ok` cells must cover exactly the variants `variant_name` \
-             classifies; anything else means the matrix stopped exercising a \
-             command source, or the emptiness guard refused one it should not"
+            resolved, expected,
+            "the resolved cells must cover exactly the variants `variant_name` \
+             classifies — the same const the preview enumeration reads, so the \
+             two cannot drift apart; anything else means the matrix stopped \
+             exercising a command source, or the payload type refused one it \
+             should not"
         );
 
-        // Non-vacuity, second direction: each position's realistic payload still
-        // resolves. A guard that passed by refusing everything would fail here.
-        assert!(
-            matches!(
-                command_source(Some("/gsd:progress"), None, None),
-                Ok(CommandSource::Command(_))
-            ),
-            "a real --command must still resolve"
-        );
-        assert!(
-            matches!(
-                command_source(None, Some("20"), None),
-                Ok(CommandSource::Routed(_))
-            ),
-            "a real --target-phase must still resolve"
-        );
-        assert!(
-            matches!(
-                command_source(None, None, Some("get phase 22 verified")),
-                Ok(CommandSource::Goal(_))
-            ),
-            "a real --goal must still resolve"
-        );
-
-        // The two positions whose degenerate payloads are refusals rather than
-        // clean previews, asserted by name rather than left to the disjunction
-        // above. The `--target-phase` column is deliberately absent: a blank
-        // phase is NOT a second emptiness bug here, because `drive` refuses a
-        // non-plain path component at its own seam
-        // (`journal::is_plain_path_component` returns false for the empty
-        // string), pinned by
-        // `a_target_phase_that_is_not_a_plain_path_component_is_refused_without_touching_disk`.
-        for payload in DEGENERATE {
-            assert!(
-                matches!(
-                    command_source(Some(payload), None, None),
-                    Err(DriveError::NoCommandSource)
-                ),
-                "a --command of {payload:?} is a run with nothing to instruct it"
-            );
-            assert!(
-                matches!(
-                    command_source(None, None, Some(payload)),
-                    Err(DriveError::NoCommandSource)
-                ),
-                "a --goal of {payload:?} is a run with nothing to decompose"
-            );
+        // **The blankness boundary, pinned on the OTHER side.** Zero visible
+        // characters is refused above; one visible character must resolve, in
+        // every position — otherwise the refusal is a length rule wearing an
+        // emptiness rule's name. `"x"` is padded with the exact whitespace and
+        // zero-width characters `DEGENERATE` is made of, so what is being
+        // pinned is *visibility*, not brevity.
+        for (position, _, build) in positions {
+            for payload in ["x", " x ", "\u{200b}x", "x\u{feff}"] {
+                let (command, target_phase, goal) = build(payload);
+                assert!(
+                    command_source(command, target_phase, goal).is_ok(),
+                    "one visible character is an instruction; {position} with \
+                     payload {payload:?} must resolve"
+                );
+            }
         }
     }
 }

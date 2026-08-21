@@ -239,8 +239,33 @@ pub fn runs_root(planning_dir: &Path) -> PathBuf {
 /// every new run), it follows symlinks (so a symlink planted by the driven
 /// agent decides the answer), and it cannot run on the `notify` callback
 /// thread. A token check has none of those properties.
+///
+/// **Two shapes it used to accept, and the correction rides the commit that
+/// falsified the old text** (per the `src/driver/dry_run.rs:78-83` precedent):
+///
+/// * **Whitespace-only.** Only the *empty* string was short-circuited, so
+///   `"   "` yielded exactly one [`Component::Normal`] whose text was the whole
+///   of the value and the predicate returned `true`. `--run-id '   '` therefore
+///   passed the seam and named a run directory made of spaces. Worse, the
+///   round-3 review cited this predicate as the reason a blank `--target-phase`
+///   needed no check of its own — a justification that was simply false, and
+///   the exemption it bought is what let round-4's Critical through.
+/// * **Embedded control characters.** `"a\nEVIL"` is one `Normal` component, so
+///   it passed, and the dry-run render then printed the newline verbatim inside
+///   what reads as a pasteable command line.
+///
+/// Both are now refused. Neither was ever a legitimate run id, alias, or phase
+/// name; every value the suite pins as acceptable (`"20"`, `"2.1"`, real
+/// timestamped run ids, registered aliases) still passes.
 pub fn is_plain_path_component(value: &str) -> bool {
-    if value.is_empty() {
+    // Blank rather than merely empty: a component made of spaces names nothing
+    // a reader could identify, and it reached a run directory.
+    if value.trim().is_empty() {
+        return false;
+    }
+    // A control character has no business in a path component, and one that
+    // reaches a rendered preview breaks the line the preview appears to be.
+    if value.chars().any(|c| c.is_control()) {
         return false;
     }
     let mut components = Path::new(value).components();
@@ -2673,6 +2698,20 @@ mod tests {
         assert!(is_plain_path_component("2026-07-28T14-03-11Z-a3f9"));
         assert!(is_plain_path_component("RID"));
 
+        // **Both directions, and the acceptances come first on purpose.** The
+        // predicate was tightened twice in this commit; a tightening that
+        // regressed a legitimate value would be a worse defect than the two it
+        // closes, so every shape the tree actually passes through this seam —
+        // a bare phase number, a decimal phase, a timestamped run id, a
+        // registered alias — is pinned as accepted.
+        for legitimate in ["20", "2.1", "2026-08-19T12-00-00Z-aaaa", "demo", "99"] {
+            assert!(
+                is_plain_path_component(legitimate),
+                "{legitimate:?} is a shape the tree passes through this seam and \
+                 must keep passing"
+            );
+        }
+
         for hostile in [
             "",
             ".",
@@ -2685,6 +2724,16 @@ mod tests {
             "./escaped",
             "escaped/",
             "a/../b",
+            // Whitespace-only: one `Component::Normal` whose text is the whole
+            // of the value, so it passed until this commit. `--run-id '   '`
+            // named a run directory made of spaces.
+            "   ",
+            "\t",
+            "\n  \n",
+            // A control character embedded in an otherwise plain component.
+            // `"a\nEVIL"` reached the dry-run render verbatim, breaking the line
+            // the preview appears to be.
+            "a\nEVIL",
         ] {
             assert!(
                 !is_plain_path_component(hostile),
