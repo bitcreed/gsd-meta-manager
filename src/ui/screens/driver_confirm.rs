@@ -503,8 +503,22 @@ pub(super) fn dispatch(ctx: &mut AppContext, action: Action, alias: &str) {
 /// file would make the TUI report a project as drivable while every run against
 /// it is refused by the driver. Reverting keeps the two in agreement, so the
 /// error message is the only thing the user has to act on.
+///
+/// **A revert restores; it never approves (WR-04).** The withdrawal direction
+/// puts back a *clone of the record the user already granted*, captured before
+/// anything is applied. It deliberately does not call
+/// [`registry::record_opt_in`] — see the comment at the revert itself for why
+/// that is a laundering rather than a restore.
 fn do_toggle_opt_in(ctx: &mut AppContext, alias: &str) {
     let was_opted_in = registry::is_opted_in(&ctx.config, alias);
+
+    // Captured BEFORE anything is applied, because after the toggle it is gone.
+    // `None` in the grant direction, where there is nothing to put back.
+    let previous = ctx
+        .config
+        .projects
+        .get(alias)
+        .and_then(|entry| entry.driver_opt_in.clone());
 
     let applied = if was_opted_in {
         registry::clear_opt_in(&mut ctx.config, alias)
@@ -518,15 +532,49 @@ fn do_toggle_opt_in(ctx: &mut AppContext, alias: &str) {
     }
 
     if let Err(e) = save_config(&ctx.config, &ctx.config_path) {
-        let reverted = if was_opted_in {
-            registry::record_opt_in(&mut ctx.config, alias)
+        // **The withdrawal revert is an assignment, not a construction, and that
+        // is not a violation of `record_opt_in`'s sole-constructor property
+        // (D-14) — it is what preserves it.** The value put back is a clone of a
+        // record the user constructed by opting in; nothing new comes into
+        // existence, so a `Some(record)` in a `config.json` is still proof of a
+        // deliberate user action, which is the claim `registry.rs:96-99` makes
+        // and which this call site must not become a counterexample to.
+        //
+        // Calling `record_opt_in` here instead — which is what this did — mints
+        // a record with a fresh `opted_in_at` and a fresh `current_prompt_inputs`
+        // snapshot. That approves whatever the disclosed files contain *right
+        // now*, with no disclosure shown and no user act: a project whose
+        // `CLAUDE.md` was rewritten under a `git pull` since the opt-in, and
+        // which the spawn gate would have refused with `PromptInputsDrifted`,
+        // comes back already approved and the next successful save persists it.
+        // That is exactly the drift plan 21-03's SHA-256 digests were added to
+        // catch (WR-04, T-21-10-02).
+        //
+        // The grant direction keeps `clear_opt_in`, which is correct and
+        // unchanged: withdrawing a record that never reached disk needs no prior
+        // value.
+        let restored = if was_opted_in {
+            match ctx.config.projects.get_mut(alias) {
+                Some(entry) => {
+                    entry.driver_opt_in = previous;
+                    true
+                }
+                // Only reachable if the alias vanished from the config between
+                // the toggle and here. Nothing in this process can do that —
+                // both `registry` calls above bail on an unknown alias before
+                // the save is attempted — but the note below is what a user
+                // would need if it ever became reachable, and deriving it from
+                // an outcome rather than asserting the outcome is what keeps it
+                // honest.
+                None => false,
+            }
         } else {
-            registry::clear_opt_in(&mut ctx.config, alias)
+            registry::clear_opt_in(&mut ctx.config, alias).is_ok()
         };
-        let note = if reverted.is_err() {
-            " (and the in-memory registry could not be restored)"
-        } else {
+        let note = if restored {
             ""
+        } else {
+            " (and the in-memory registry could not be restored)"
         };
         ctx.error_message = Some(format!("Failed to save config: {e}{note}"));
         ctx.needs_redraw = true;
