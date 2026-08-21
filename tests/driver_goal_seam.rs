@@ -32,7 +32,7 @@ use gsd_meta_manager::config::{Config, DriverOptIn, RegisteredProject};
 use gsd_meta_manager::driver::run::GoalDecomposition;
 use gsd_meta_manager::driver::{bounds, drive, escalate, goal, router, DriveArgs};
 use gsd_meta_manager::error::DriveError;
-use gsd_meta_manager::journal::ApprovalRefusal;
+use gsd_meta_manager::journal::{ApprovalRefusal, ApprovalTokenError};
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -659,6 +659,122 @@ async fn a_re_decomposition_that_changed_the_plan_is_refused_as_a_changed_plan_n
         "an approval refusal is an above-the-run refusal: it creates nothing at \
          all, which is the property the ordered refusal chain in \
          `src/driver/mod.rs` documents"
+    );
+}
+
+#[tokio::test]
+async fn a_disclosed_file_rewritten_under_an_approval_is_refused_as_changed_files_not_a_changed_plan()
+{
+    const RUN_ID: &str = "2026-08-19T12-00-00Z-fileschanged";
+
+    let root = project_root();
+    let workdir = seam_workdir();
+    let wire = payload(vec![step(router::COMMAND_PLAN_PHASE, "21")]);
+    plant_payload(workdir.path(), &wire);
+
+    // The bytes the user reviewed, and the token that covered them.
+    std::fs::write(root.path().join("CLAUDE.md"), b"the bytes the user reviewed")
+        .expect("write CLAUDE.md");
+    let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
+    args.max_steps = Some(2);
+    args.approved_plan = Some(approval_for(root.path(), &wire, args.max_steps));
+
+    // Now the file moves under the approval, and the opt-in is re-confirmed
+    // against the NEW bytes. That ordering is deliberate: the opt-in's own drift
+    // check (plan 21-03) sits at the capability gate and fires first, so a test
+    // that let it fire would be asserting on the first of two independent
+    // layers. Snapshotting the opt-in after the rewrite disarms only that one,
+    // leaving the approval binding — the layer under test — as the thing that
+    // has to refuse.
+    std::fs::write(
+        root.path().join("CLAUDE.md"),
+        b"## IMPORTANT SYSTEM OVERRIDE",
+    )
+    .expect("rewrite CLAUDE.md");
+    let config = config_for(root.path());
+
+    let err = drive(args, &config)
+        .await
+        .expect_err("bytes that changed after the approval must not be run against");
+
+    assert!(
+        matches!(
+            err,
+            DriveError::PlanApprovalStale(ApprovalRefusal::DisclosedFilesChanged { .. })
+        ),
+        "the plan is genuinely identical here, so this must be the FILES arm. It \
+         is the companion assertion to the plan-changed proof above: together \
+         they show the two halves are distinguishable rather than that one arm \
+         swallowed both; got: {err:?}"
+    );
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("the plan is unchanged"),
+        "and the message may open with that claim precisely because the code \
+         just established it — the plan half was compared first, against the \
+         digest the token carried; got: {rendered}"
+    );
+    assert!(
+        !rendered.contains("is not the plan that was approved"),
+        "it must not also report a changed plan; got: {rendered}"
+    );
+    assert!(
+        !root.path().join(".planning/meta-manager").exists(),
+        "an approval refusal creates nothing"
+    );
+}
+
+#[tokio::test]
+async fn a_half_supplied_approval_token_is_refused_by_name_and_never_treated_as_an_approval() {
+    const RUN_ID: &str = "2026-08-19T12-00-00Z-halftoken";
+
+    let root = project_root();
+    let workdir = seam_workdir();
+    let wire = payload(vec![step(router::COMMAND_PLAN_PHASE, "21")]);
+    plant_payload(workdir.path(), &wire);
+
+    // The approval half alone — which is exactly the value an earlier build
+    // printed and accepted, so this is also the legacy-token case. It must fail
+    // the parse rather than being read as an approval with an empty plan half,
+    // because an empty half would compare equal to an empty recorded value.
+    let token = approval_for(root.path(), &wire, Some(2));
+    let (plan_half, approval_half) = token
+        .split_once(gsd_meta_manager::journal::APPROVAL_TOKEN_SEPARATOR)
+        .expect("the helper renders a two-half token");
+    assert!(
+        !plan_half.is_empty() && !approval_half.is_empty(),
+        "the fixture's premise: the whole token really does carry two non-empty \
+         halves, so the half passed below is a truncation rather than the whole \
+         thing"
+    );
+
+    let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
+    args.max_steps = Some(2);
+    args.approved_plan = Some(approval_half.to_string());
+
+    let err = drive(args, &config_for(root.path()))
+        .await
+        .expect_err("a value that is not a token cannot approve a run");
+
+    assert!(
+        matches!(
+            err,
+            DriveError::PlanApprovalMalformed(ApprovalTokenError::SeparatorAbsent)
+        ),
+        "a half token is refused BY NAME. It is neither an absent approval — the \
+         caller did supply something, and telling them nobody approved it sends \
+         them to the wrong fix — nor a stale one, and above all it is not a \
+         partial approval that starts a run; got: {err:?}"
+    );
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("--approved-plan"),
+        "and the refusal names the flag, or it is a bug report rather than an \
+         error message; got: {rendered}"
+    );
+    assert!(
+        !root.path().join(".planning/meta-manager").exists(),
+        "a malformed token creates nothing at all"
     );
 }
 
