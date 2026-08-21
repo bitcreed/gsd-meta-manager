@@ -749,11 +749,30 @@ pub fn legality(
 ///
 /// The tree still has exactly **two** digest functions and gains no third; this
 /// is simply the one with an adversary, so it is the one that reaches for
-/// `sha256_digest`. A record carrying a legacy `fnv1a64:` plan digest is not
-/// migrated and needs no migration: the whole prefixed string is compared, so it
-/// re-checks as [`crate::journal::ApprovalRefusal::PlanChanged`] and fails
-/// closed. `tests/driver_goal_seam.rs::a_recorded_approval_carrying_a_legacy_
-/// fnv1a64_plan_digest_re_checks_as_stale` pins that.
+/// `sha256_digest`.
+///
+/// # A legacy `fnv1a64:` value needs no migration
+///
+/// Two facts, and both are greppable at the commit that ships this paragraph.
+///
+/// **First, there is no record path to migrate.** No recorded
+/// [`crate::journal::ApprovedPlan`] is ever deserialised and re-checked:
+/// `RunRecord::approved_plan` is written and never read back into
+/// [`crate::journal::recheck_approval`]. That predicate has exactly two
+/// production call sites, and neither reads a record off disk — `approve_plan`
+/// in `src/driver/mod.rs` compares the halves of a token parsed off argv **in
+/// the same invocation**, and the spawn gate in `src/driver/run.rs` passes the
+/// in-memory `ApprovedPlan` produced by the same run.
+///
+/// **Second, the legacy value a user could actually still be holding is a token
+/// on argv** — the single-digest value an earlier dev build printed — and it
+/// never reaches a digest comparison at all.
+/// [`crate::journal::parse_approval_token`] refuses it as
+/// `ApprovalTokenError::SeparatorAbsent` before any half is compared, because a
+/// value carrying one half is not half an approval. That route fails closed by
+/// name, and
+/// `tests/driver_goal_seam.rs::a_half_supplied_approval_token_is_refused_by_name_and_never_treated_as_an_approval`
+/// is the test that exercises it.
 ///
 /// # What the swap did not change
 ///
