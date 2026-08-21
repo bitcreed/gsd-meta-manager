@@ -2239,6 +2239,124 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // The approval TOKEN: one copy-pasteable value carrying both halves
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn an_approval_token_round_trips_its_two_halves_in_plan_then_approval_order() {
+        let plan = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let approval = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+
+        let token = render_approval_token(plan, approval);
+        assert!(
+            token.contains(APPROVAL_TOKEN_SEPARATOR),
+            "the rendered token must carry the separator the parse splits on; \
+             got: {token}"
+        );
+
+        let (parsed_plan, parsed_approval) = parse_approval_token(&token)
+            .expect("a token this module rendered must parse back");
+        assert_eq!(
+            parsed_plan, plan,
+            "the PLAN half comes first. Order is not a detail: the two halves are \
+             both `sha256:`-prefixed strings, so a reversed parse would compare \
+             the plan digest against the approval digest and report the wrong \
+             half as the one that moved"
+        );
+        assert_eq!(parsed_approval, approval, "and the approval half second");
+
+        // One producer, one consumer, and nothing in between: a caller that
+        // assembles a token by concatenation is a second spelling of this
+        // function, and two spellings are two things that can disagree.
+        assert_eq!(
+            token,
+            format!("{plan}{APPROVAL_TOKEN_SEPARATOR}{approval}"),
+            "the rendered shape is exactly the two halves joined by the \
+             separator; got: {token}"
+        );
+    }
+
+    #[test]
+    fn a_token_that_does_not_carry_both_halves_is_refused_rather_than_read_as_one() {
+        let half = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let other = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+
+        // **A legacy single-half value.** Before this became a two-half token,
+        // `--approved-plan` took the approval digest alone. Such a value must
+        // fail the parse rather than being read as a plan half with an empty
+        // approval half — an approval that cannot be parsed is an ABSENT
+        // approval, and the fail-closed direction is the only safe one.
+        assert_eq!(
+            parse_approval_token(half),
+            Err(ApprovalTokenError::SeparatorAbsent),
+            "a value carrying no separator is not half an approval; got: {:?}",
+            parse_approval_token(half)
+        );
+
+        // Three values concatenated must not be read as two.
+        let three = format!("{half}{APPROVAL_TOKEN_SEPARATOR}{other}{APPROVAL_TOKEN_SEPARATOR}{half}");
+        assert_eq!(
+            parse_approval_token(&three),
+            Err(ApprovalTokenError::SeparatorRepeated),
+            "got: {:?}",
+            parse_approval_token(&three)
+        );
+
+        // An empty half on either side, which is what a token truncated at a
+        // shell boundary or copied without one end looks like.
+        for truncated in [
+            format!("{APPROVAL_TOKEN_SEPARATOR}{other}"),
+            format!("{half}{APPROVAL_TOKEN_SEPARATOR}"),
+            APPROVAL_TOKEN_SEPARATOR.to_string(),
+        ] {
+            assert_eq!(
+                parse_approval_token(&truncated),
+                Err(ApprovalTokenError::HalfEmpty),
+                "an empty half is not an approval of anything; got: {:?} for \
+                 {truncated:?}",
+                parse_approval_token(&truncated)
+            );
+        }
+
+        // Nothing is trimmed. A value with surrounding whitespace is the
+        // caller's to fix; accepting it silently would mean two spellings of one
+        // approval, and the digests would then disagree about which is recorded.
+        let padded = format!(" {half}{APPROVAL_TOKEN_SEPARATOR}{other}");
+        assert_eq!(
+            parse_approval_token(&padded),
+            Ok((format!(" {half}"), other.to_string())),
+            "the parse splits and does not trim, so a padded half stays padded \
+             and fails the digest comparison by name rather than being quietly \
+             normalised into a different value"
+        );
+    }
+
+    #[test]
+    fn every_approval_token_refusal_names_the_flag_and_says_how_to_obtain_a_token() {
+        // No wildcard: a fourth arm added later has to be added here too, which
+        // is the moment the decision about its message is cheap.
+        for refusal in [
+            ApprovalTokenError::SeparatorAbsent,
+            ApprovalTokenError::SeparatorRepeated,
+            ApprovalTokenError::HalfEmpty,
+        ] {
+            let rendered = refusal.to_string();
+            assert!(
+                rendered.contains("--approved-plan"),
+                "a refusal a caller cannot act on is a bug report rather than an \
+                 error message, and the flag is half of the action; got: \
+                 {rendered}"
+            );
+            assert!(
+                rendered.contains("without"),
+                "and the other half is HOW to obtain a good token: by re-running \
+                 the same invocation WITHOUT the flag, which prints the plan and \
+                 the token that authorises it; got: {rendered}"
+            );
+        }
+    }
+
     #[test]
     fn the_three_new_run_record_fields_survive_a_round_trip_and_default_when_absent() {
         // A record written by a pre-Phase-21 binary has none of the three keys
