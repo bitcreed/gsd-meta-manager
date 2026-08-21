@@ -32,6 +32,7 @@ use gsd_meta_manager::config::{Config, DriverOptIn, RegisteredProject};
 use gsd_meta_manager::driver::run::GoalDecomposition;
 use gsd_meta_manager::driver::{bounds, drive, escalate, goal, router, DriveArgs};
 use gsd_meta_manager::error::DriveError;
+use gsd_meta_manager::journal::ApprovalRefusal;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -539,6 +540,122 @@ async fn a_seam_that_answers_with_nothing_parks_the_run_before_it_exists() {
 // ---------------------------------------------------------------------------
 // The approval, bound to the plan AND the bytes, re-checked at spawn
 // ---------------------------------------------------------------------------
+
+/// The token a user would copy, lifted out of the refusal that printed it.
+///
+/// **Extracted rather than recomputed, and that is the point of the tests that
+/// use it.** Recomputing the token in a test proves the test agrees with the
+/// helper; lifting it out of the rendered refusal proves the value the user is
+/// *shown* is the value the run then *checks*. Those are different claims, and
+/// only the second one is about the review flow.
+fn token_from_refusal(rendered: &str) -> String {
+    const FLAG: &str = "--approved-plan ";
+    let after = rendered
+        .split_once(FLAG)
+        .unwrap_or_else(|| {
+            panic!("the refusal must name `{FLAG}` and the token to pass; got: {rendered}")
+        })
+        .1;
+    let token: String = after.chars().take_while(|c| *c != '`').collect();
+    assert!(
+        !token.is_empty(),
+        "the refusal named the flag but printed no token after it; got: {rendered}"
+    );
+    token
+}
+
+#[tokio::test]
+async fn a_re_decomposition_that_changed_the_plan_is_refused_as_a_changed_plan_not_as_changed_files()
+{
+    const REVIEW_RUN_ID: &str = "2026-08-19T12-00-00Z-planchanged-review";
+    const RUN_ID: &str = "2026-08-19T12-00-00Z-planchanged";
+
+    let root = project_root();
+    let config = config_for(root.path());
+    let workdir = seam_workdir();
+
+    // **The review flow, exactly as a user performs it.** Run once with no
+    // token to obtain one, then re-run with it. The second run re-decomposes
+    // the goal through a non-deterministic model, so a different answer is the
+    // EXPECTED case rather than an exotic one — which is precisely why the
+    // refusal it produces has to name the right cause.
+    let reviewed = payload(vec![step(router::COMMAND_PLAN_PHASE, "21")]);
+    plant_payload(workdir.path(), &reviewed);
+
+    let mut review = goal_args(REVIEW_RUN_ID, workdir.path(), "get the goal layer verified");
+    review.max_steps = Some(2);
+    review.approved_plan = None;
+    let required = drive(review, &config)
+        .await
+        .expect_err("a goal run with no approval prints the plan and its token");
+    let token = token_from_refusal(&required.to_string());
+
+    // The model answers differently the second time: a two-step plan over the
+    // same roadmap, legal under the same cap.
+    let answered = payload(vec![
+        step(router::COMMAND_PLAN_PHASE, "20"),
+        step(router::COMMAND_PLAN_PHASE, "21"),
+    ]);
+    plant_payload(workdir.path(), &answered);
+
+    let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
+    args.max_steps = Some(2);
+    args.approved_plan = Some(token);
+
+    let err = drive(args, &config)
+        .await
+        .expect_err("a plan the approval never covered must not run");
+
+    assert!(
+        matches!(
+            err,
+            DriveError::PlanApprovalStale(ApprovalRefusal::PlanChanged { .. })
+        ),
+        "**this is the defect.** `approve_plan` used to compare the freshly \
+         observed plan digest against ITSELF, so `PlanChanged` was unreachable \
+         from production and every real mismatch fell through to \
+         `DisclosedFilesChanged`. Against that build this reads \
+         `DisclosedFilesChanged`, and the user is sent looking for a `git pull` \
+         that never happened; got: {err:?}"
+    );
+
+    // The message defect is half of WR-01, so the rendered bytes are asserted
+    // on as well as the variant: a user reads the sentence, not the enum.
+    let rendered = err.to_string();
+    assert!(
+        !rendered.contains("the plan is unchanged"),
+        "the refusal must not assert a fact the code just disproved — the plan \
+         is exactly what changed; got: {rendered}"
+    );
+    assert!(
+        rendered.contains("is not the plan that was approved"),
+        "and it must say so in the words the plan-changed arm owns; got: \
+         {rendered}"
+    );
+
+    // Both plan digests are named, so the refusal is diagnosable rather than
+    // merely correct. Recomputed here only to check the MESSAGE — the token
+    // above came from the refusal, which is the claim under test.
+    let approved_digest = goal::plan_digest(&plan_from(&reviewed));
+    let observed_digest = goal::plan_digest(&plan_from(&answered));
+    assert_ne!(
+        approved_digest, observed_digest,
+        "the fixture's premise: the two plans really do have different digests, \
+         or the assertion below cannot tell the arms apart"
+    );
+    assert!(
+        rendered.contains(&approved_digest) && rendered.contains(&observed_digest),
+        "the refusal must name the digest the approval covered AND the one \
+         observed now; got: {rendered}"
+    );
+
+    assert!(
+        !root.path().join(".planning/meta-manager").exists(),
+        "an approval refusal is an above-the-run refusal: it creates nothing at \
+         all, which is the property the ordered refusal chain in \
+         `src/driver/mod.rs` documents"
+    );
+}
 
 #[tokio::test]
 async fn a_goal_run_with_no_recorded_approval_refuses_and_says_the_approval_is_absent() {
