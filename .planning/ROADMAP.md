@@ -462,12 +462,28 @@ Plans:
 **Plans**: 10 plans — 6/6 executed in 6 waves; `21-VERIFICATION.md` scored 3/5 must-have truths (criterion 1 ✗ FAILED), so 4 gap-closure plans were added in 3 further waves
 
 Plans:
+**Wave 1**
 
 - [x] 21-01-PLAN.md — Tracer: the seam argv/env profile, the untrusted-content boundary, the structured plan type, and the OQ1 gate answered live (DRIVE-01, DRIVE-03, SAFE-07, SAFE-08)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [x] 21-02-PLAN.md — The fifth sibling taxonomy, an escalation cap resolved against the *resolved* step cap, and the journal table's fifth row (DRIVE-04)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [x] 21-03-PLAN.md — SHA-256 digests, the prompt-input disclosure with its residual-exposure statement, and drift re-confirmation at the gate (SAFE-07, DRIVE-03)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [x] 21-04-PLAN.md — The two seams wired: decomposition once above the loop as a moved capability, ambiguity at the router's no-rule branch, approval bound to plan *and* files (DRIVE-01, DRIVE-03, DRIVE-04)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
 - [x] 21-05-PLAN.md — The injection corpus: arrival proven before property, class by class, plus the matched `CLAUDE.md` suppression control pair (SAFE-07, SAFE-08)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
 - [x] 21-06-PLAN.md — The refusal record as evidence, no constructed command line, the cap park read off disk, and Phase 19's envelope shown firing independently (DRIVE-04, SAFE-08, SAFE-07)
 
 Gap closure (from `21-VERIFICATION.md`):
