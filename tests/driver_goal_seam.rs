@@ -190,12 +190,36 @@ fn step(command: &str, phase: &str) -> Value {
     })
 }
 
+/// The same step with a caller-chosen rationale, so a test can vary the one
+/// field the digest deliberately excludes and nothing else.
+fn step_with_rationale(command: &str, phase: &str, rationale: &str) -> Value {
+    serde_json::json!({
+        goal::FIELD_COMMAND: command,
+        goal::FIELD_PHASE: phase,
+        goal::FIELD_TERMINAL_STATE: goal::TERMINAL_VERIFICATION_PASSED,
+        goal::FIELD_RATIONALE: rationale,
+    })
+}
+
 fn payload(steps: Vec<Value>) -> Value {
     serde_json::json!({ goal::FIELD_STEPS: steps })
 }
 
 /// The roadmap phases the fixture project declares.
 const PHASES: &[&str] = &["20", "21"];
+
+/// The run's resolved step cap for a fixture that supplies no `--max-steps`.
+fn resolved_cap() -> u32 {
+    bounds::resolve(None, None)
+        .expect("the default bounds resolve")
+        .max_steps
+}
+
+/// A legal plan built the way the driver builds one: through the shipped
+/// `goal::legality`, never by constructing `PlanStep` values a test invented.
+fn plan_from(wire: &Value) -> goal::GoalPlan {
+    goal::legality(wire, PHASES, resolved_cap()).expect("the fixture plan is legal")
+}
 
 /// The approval digest a reviewer would be shown for `wire`, against `root`'s
 /// disclosed files as they stand right now.
@@ -764,5 +788,348 @@ async fn a_run_whose_step_cap_leaves_no_room_to_escalate_refuses_the_decompositi
             .max_steps,
         1,
         "the fixture's premise: the run really is bounded at one step"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The approval's PLAN half: collision-resistant, and legacy records fail closed
+// (CR-02)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_plan_half_of_an_approval_is_collision_resistant_rather_than_a_non_cryptographic_hash() {
+    let wire = payload(vec![
+        step(router::COMMAND_PLAN_PHASE, "20"),
+        step(router::COMMAND_EXECUTE_PHASE, "21"),
+    ]);
+    let plan = plan_from(&wire);
+    let digest = goal::plan_digest(&plan);
+
+    // --- shape -------------------------------------------------------------
+    let hex = digest.strip_prefix("sha256:").unwrap_or_else(|| {
+        panic!(
+            "the plan half of an approval must carry the `sha256:` prefix. The \
+             prefix is not decoration: it is what stops a legacy `fnv1a64:` \
+             record ever comparing equal to a freshly computed value. Got: \
+             {digest}"
+        )
+    });
+    assert_eq!(hex.len(), 64, "SHA-256 renders as 64 hex digits; got: {digest}");
+    assert!(
+        hex.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        "lowercase hex only, so two records of the same plan compare as strings \
+         without normalising; got: {digest}"
+    );
+    assert_eq!(
+        digest.chars().count(),
+        71,
+        "seven prefix characters plus sixty-four hex digits; got: {digest}"
+    );
+
+    // --- provenance --------------------------------------------------------
+    // The token vector the function builds, rebuilt here from the plan's own
+    // typed fields so this compares the two hashers over identical input.
+    let tokens: Vec<String> = plan
+        .steps
+        .iter()
+        .flat_map(|step| {
+            [
+                step.command.verb().to_string(),
+                step.target_phase.clone(),
+                step.terminal_state.as_str().to_string(),
+            ]
+        })
+        .collect();
+    assert_ne!(
+        digest,
+        gsd_meta_manager::journal::argv_digest(&tokens),
+        "equality here means the plan half of an approval has silently reverted \
+         to FNV-1a-64, whose own doc says it is not a security control. FNV \
+         second preimages are CONSTRUCTED rather than searched — multiplication \
+         by the FNV prime is invertible mod 2^64 — and the tokens hashed include \
+         a `target_phase` authored by whoever wrote the cloned repository's \
+         ROADMAP.md. Hashing that under `approval_digest`'s outer SHA-256 does \
+         not help: two colliding inner values produce byte-identical input to \
+         the outer hash, so the weak collision class survives intact"
+    );
+
+    // --- order sensitivity, unchanged by the hasher swap -------------------
+    let reversed = payload(vec![
+        step(router::COMMAND_EXECUTE_PHASE, "21"),
+        step(router::COMMAND_PLAN_PHASE, "20"),
+    ]);
+    assert_ne!(
+        digest,
+        goal::plan_digest(&plan_from(&reversed)),
+        "a plan is an ordered traversal, so the same steps in a different order \
+         are a different plan and must not share an approval"
+    );
+
+    // --- rationale exclusion, unchanged by the hasher swap -----------------
+    let reworded = payload(vec![
+        step_with_rationale(router::COMMAND_PLAN_PHASE, "20", "one wording"),
+        step_with_rationale(router::COMMAND_EXECUTE_PHASE, "21", "a different wording"),
+    ]);
+    assert_eq!(
+        digest,
+        goal::plan_digest(&plan_from(&reworded)),
+        "the rationale is prose no predicate reads; including it would expire a \
+         user's approval on a reworded explanation of an identical plan"
+    );
+}
+
+#[test]
+fn a_recorded_approval_carrying_a_legacy_fnv1a64_plan_digest_re_checks_as_stale() {
+    let wire = payload(vec![step(router::COMMAND_PLAN_PHASE, "21")]);
+    let fresh = goal::plan_digest(&plan_from(&wire));
+
+    // A record written by a build that hashed the plan half with FNV-1a-64.
+    // Nothing migrates it, and nothing needs to: the whole prefixed string is
+    // compared, so it fails closed.
+    let legacy = "fnv1a64:0123456789abcdef";
+    assert!(
+        fresh.starts_with("sha256:") && legacy.starts_with("fnv1a64:"),
+        "the fixture's premise: the two values really are in different formats. \
+         Against a build whose `plan_digest` is still FNV-1a-64 both carry the \
+         same prefix and the refusal below would be about a differing hash \
+         rather than about a format that fails closed. Got fresh: {fresh}"
+    );
+
+    let recorded = gsd_meta_manager::journal::ApprovedPlan {
+        steps: vec![format!(
+            "command={} phase=21 terminal={}",
+            router::COMMAND_PLAN_PHASE,
+            goal::TERMINAL_VERIFICATION_PASSED
+        )],
+        target_phase: "21".to_string(),
+        plan_digest: legacy.to_string(),
+        // The approval the user gave covered the LEGACY value, so the outer
+        // digest is self-consistent and the refusal below cannot be an artefact
+        // of a record this test built wrong.
+        approval_digest: gsd_meta_manager::journal::approval_digest(legacy, &[]),
+        approved_at: "2026-08-19T12:00:00Z".to_string(),
+        extra: Default::default(),
+    };
+
+    let refusal = gsd_meta_manager::journal::recheck_approval(Some(&recorded), &fresh, &[])
+        .expect_err(
+            "a legacy `fnv1a64:` record must never cover a freshly computed \
+             `sha256:` plan. Failing closed is the whole reason the digests \
+             carry prefixes rather than bare hex",
+        );
+
+    match refusal {
+        gsd_meta_manager::journal::ApprovalRefusal::PlanChanged { approved, observed } => {
+            assert_eq!(approved, legacy, "the refusal names the digest the approval covered");
+            assert_eq!(observed, fresh, "and the one observed now");
+        }
+        other => panic!(
+            "a legacy plan digest must re-check as PlanChanged — 'what was \
+             approved has changed' — rather than as an absent approval or a \
+             file-drift report; got: {other:?}"
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The model-selected phase token: bounded at construction, refused rather than
+// repaired, and sanitized before the reviewer's terminal (WR-05)
+// ---------------------------------------------------------------------------
+
+/// The hostile phase tokens, each a real terminal capability rather than a
+/// generic "bad character".
+///
+/// `\u{9b}` is the single-codepoint CSI and `\u{9d}` the single-codepoint OSC:
+/// each is a one-character spelling of an `ESC`-led introducer, so a check that
+/// only knows about `ESC` leaves the same capability reachable (WR-06).
+const HOSTILE_PHASE_TOKENS: &[(&str, &str)] = &[
+    ("ESC", "21\u{1b}[2K\u{1b}[1;32m ALL CHECKS PASSED"),
+    ("newline", "21\nphase 99: harmless"),
+    ("carriage return", "21\rVERIFIED"),
+    ("C1 CSI", "21\u{9b}2K"),
+];
+
+#[test]
+fn a_phase_token_carrying_a_control_character_is_refused_by_name_rather_than_stored() {
+    for (label, hostile) in HOSTILE_PHASE_TOKENS {
+        // **The premise, and it is what makes this test about the new check.**
+        // `journal::is_plain_path_component` rejects path separators and
+        // `.`/`..` and nothing else — it accepts every one of these. Without
+        // this line the assertion below would also pass against the unfixed
+        // build via the path-component arm it never actually reaches.
+        assert!(
+            gsd_meta_manager::journal::is_plain_path_component(hostile),
+            "the {label} fixture must be a token `is_plain_path_component` \
+             ACCEPTS, or this test proves nothing about the bound this task \
+             adds; got a token the old checker already rejected: {hostile:?}"
+        );
+
+        let refusal = goal::legality(
+            &payload(vec![step(router::COMMAND_PLAN_PHASE, hostile)]),
+            PHASES,
+            resolved_cap(),
+        )
+        .expect_err(&format!(
+            "a phase token carrying a {label} must be refused. Stored, it \
+             reaches the operator's terminal through \
+             `DriveError::PlanApprovalRequired` and the committed `run.json`; \
+             what actually stopped it before was `PHASE_ID`, a regex in \
+             `state_reader::roadmap_md` that the goal layer never mentions — \
+             the same reasoning `driver::run`'s escalation prompt already \
+             rejects"
+        ));
+
+        assert_eq!(
+            refusal.reason().as_str(),
+            goal::REASON_PHASE_NOT_PLAIN_COMPONENT,
+            "the {label} token reuses the existing reason rather than minting a \
+             new arm: a token carrying a control character is not a plain path \
+             component in any useful sense. Against a build that merely bounds \
+             the value without refusing it, this reads \
+             `{}` instead — the roadmap-membership arm, reached because the \
+             token was silently repaired into a different phase",
+            goal::REASON_PHASE_ABSENT_FROM_ROADMAP
+        );
+        assert!(
+            !refusal.offending().contains('\u{1b}')
+                && !refusal.offending().chars().any(char::is_control),
+            "and the refusal REPORTING the control bytes must not itself render \
+             them: `GoalRefusal::new` bounds the offending value at \
+             construction. Got: {:?}",
+            refusal.offending()
+        );
+    }
+}
+
+#[test]
+fn a_legal_phase_token_reaches_the_step_byte_identical_to_what_the_roadmap_declared() {
+    let plan = plan_from(&payload(vec![
+        step(router::COMMAND_PLAN_PHASE, "20"),
+        step(router::COMMAND_EXECUTE_PHASE, "21"),
+    ]));
+
+    let stored: Vec<&str> = plan
+        .steps
+        .iter()
+        .map(|step| step.target_phase.as_str())
+        .collect();
+    assert_eq!(
+        stored,
+        vec!["20", "21"],
+        "bounding must not silently CHANGE which phase the run drives toward. \
+         This value becomes `args.target_phase`, and therefore the map key into \
+         `ProjectState::phase_disk_statuses` and the input to \
+         `RouterAction::command_for` — a truncated token would drive the run \
+         toward a different phase than the plan the user approved named, which \
+         is worse than the defect being fixed. That is why `legality` refuses a \
+         token bounding would alter rather than storing the bounded form of it"
+    );
+}
+
+#[tokio::test]
+async fn a_hostile_roadmap_phase_token_is_refused_at_the_seam_the_run_actually_reaches() {
+    const RUN_ID: &str = "2026-08-19T12-00-00Z-hostilephase";
+
+    let root = project_root();
+    let workdir = seam_workdir();
+    let (_, hostile) = HOSTILE_PHASE_TOKENS[0];
+    plant_payload(
+        workdir.path(),
+        &payload(vec![step(router::COMMAND_PLAN_PHASE, hostile)]),
+    );
+
+    let err = drive(
+        goal_args(RUN_ID, workdir.path(), "get the goal layer verified"),
+        &config_for(root.path()),
+    )
+    .await
+    .expect_err("a plan naming an escape-bearing phase must not start a run");
+
+    assert!(matches!(err, DriveError::GoalRefused(_)), "got: {err:?}");
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains(goal::REASON_PHASE_NOT_PLAIN_COMPONENT),
+        "the end-to-end seam must refuse it as a phase that is not a plain \
+         component. Against the unfixed build the token survives the \
+         path-component check and is refused one arm later as absent from the \
+         roadmap — a refusal that would stop being reached the moment a hostile \
+         ROADMAP.md declared the token it also planted; got: {rendered}"
+    );
+    assert!(
+        !rendered.contains('\u{1b}'),
+        "and no ESC may reach the terminal of the person reading the refusal; \
+         got: {rendered:?}"
+    );
+    assert!(
+        !root.path().join(".planning/meta-manager").exists(),
+        "a run refused above the run creates nothing"
+    );
+}
+
+#[test]
+fn the_approval_refusal_cannot_repaint_the_terminal_of_the_person_about_to_approve() {
+    // Two steps, so the assertion below is also about the refusal still naming
+    // EVERY step rather than about it surviving with one.
+    let benign = format!(
+        "command={} phase=20 terminal={}",
+        router::COMMAND_PLAN_PHASE,
+        goal::TERMINAL_VERIFICATION_PASSED
+    );
+    let hostile = format!(
+        "command={} phase=21\u{1b}[2K\u{9b}1;32m terminal={}",
+        router::COMMAND_EXECUTE_PHASE,
+        goal::TERMINAL_VERIFICATION_PASSED
+    );
+    assert!(
+        hostile.contains('\u{1b}') && hostile.contains('\u{9b}'),
+        "the fixture's premise: the step really does carry both an ESC-led and \
+         a single-codepoint C1 introducer"
+    );
+
+    let rendered = DriveError::PlanApprovalRequired {
+        digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            .to_string(),
+        steps: vec![benign.clone(), hostile],
+    }
+    .to_string();
+
+    assert!(
+        !rendered.contains('\u{1b}'),
+        "an ESC reaching this string is a terminal-repaint capability handed to \
+         a hostile roadmap at the exact moment the operator is deciding whether \
+         to approve — it can erase the line, forge a green VERIFIED, or move the \
+         cursor over the plan it is asking about. Got: {rendered:?}"
+    );
+    assert!(
+        !rendered.contains('\u{9b}'),
+        "and C1 is not an afterthought: `U+009B` is the one-codepoint CSI, so \
+         stripping ESC alone leaves the same capability reachable by another \
+         spelling (WR-06). Got: {rendered:?}"
+    );
+
+    // Sanitizing must not eat the actionable half of the message.
+    assert!(
+        rendered.contains(&benign),
+        "the refusal must still name every step — the refusal IS the review \
+         surface DRIVE-03 requires; got: {rendered}"
+    );
+    assert!(
+        rendered.contains("phase=21") && rendered.contains(router::COMMAND_EXECUTE_PHASE),
+        "including the sanitized one, which is still readable as typed tokens; \
+         got: {rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "--approved-plan sha256:\
+             0000000000000000000000000000000000000000000000000000000000000000"
+        ),
+        "and it must still name the flag and the digest the caller must pass, \
+         or the refusal is a bug report rather than an error message; got: \
+         {rendered}"
+    );
+    assert!(
+        rendered.contains("  1. ") && rendered.contains("  2. "),
+        "the steps stay numbered, so a reviewer reads a plan rather than a \
+         run-on line; got: {rendered}"
     );
 }

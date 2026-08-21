@@ -11,6 +11,16 @@
 // small enums do not justify an error-derive dependency, and keeping the Cargo
 // surface to exactly the two crates plan 15-01 added (`process-wrap`, `uuid`)
 // is a deliberate line, not an oversight.
+//
+// That narrow dependency surface has exactly one deliberate exception inside
+// the crate: `DriveError::PlanApprovalRequired`'s `Display` reaches for
+// `crate::ui::screens::sanitize_render_line` (21-08, WR-05). It renders
+// model-selected tokens to the operator's terminal, so it needs the same
+// "make these bytes safe to paint" rule the TUI applies — and it SHARES that
+// rule rather than restating it, because two implementations of that rule are
+// two things that can disagree about what a C1 introducer is. `ui` is a
+// `pub mod` in `lib.rs`, so this is an in-crate reference and adds no
+// dependency.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -727,7 +737,26 @@ impl fmt::Display for DriveError {
                 steps
                     .iter()
                     .enumerate()
-                    .map(|(index, step)| format!("  {}. {step}", index + 1))
+                    // Each step is built from a model-selected `target_phase`
+                    // that consumed third-party repository content, and this
+                    // string goes straight to the operator's stdout at the
+                    // moment they are deciding whether to approve — the single
+                    // best moment to hand someone a terminal-repaint capability.
+                    //
+                    // This is the SECOND of two layers, not the only one:
+                    // `driver::goal::legality` bounds the token at construction
+                    // and refuses one that bounding would alter. Neither is
+                    // redundant. The bound is what keeps the value that reaches
+                    // `run.json` and the router clean; this is what keeps the
+                    // *rendering* safe, including for step strings a future
+                    // caller composes from somewhere else.
+                    .map(|(index, step)| {
+                        format!(
+                            "  {}. {}",
+                            index + 1,
+                            crate::ui::screens::sanitize_render_line(step)
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join("\n")
             ),
