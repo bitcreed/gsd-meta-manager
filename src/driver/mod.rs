@@ -1419,4 +1419,78 @@ mod tests {
              a missing one; got:\n{rendered}"
         );
     }
+
+    /// **The invariant a fourth command source has to be added to.**
+    ///
+    /// CR-01 was not a mistake in a branch; it was a third source added
+    /// *beside* two others without the preview being told. This walks every
+    /// `CommandSource` variant, renders each through `preview_text`, and asserts
+    /// of every rendering that it carries the pinned section and shows no empty
+    /// numbered entry.
+    ///
+    /// **The array literal is the mechanism.** It is written as an exhaustive
+    /// list of constructed variants rather than as a helper that generates them,
+    /// so a fifth arm on the enum is a change somebody has to make *here* — and
+    /// the `matches!` sweep below is what makes forgetting to extend the array a
+    /// failure rather than a silently narrower sweep.
+    #[test]
+    fn every_command_source_renders_a_preview_with_no_empty_numbered_command() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let project = previewable(root.path());
+
+        let sources = [
+            CommandSource::Command("/gsd:progress".to_string()),
+            CommandSource::Routed("20".to_string()),
+            CommandSource::Goal("get phase 22 verified".to_string()),
+        ];
+
+        // Non-vacuity, in the register `tests/spawn_seam_guard.rs` uses: an
+        // enumeration that had quietly stopped covering a variant would pass for
+        // the wrong reason. Every arm must be represented exactly once, and the
+        // `match` is what turns a new variant into a compile error here.
+        for expected in 0..sources.len() {
+            let present = sources
+                .iter()
+                .filter(|source| match source {
+                    CommandSource::Command(_) => expected == 0,
+                    CommandSource::Routed(_) => expected == 1,
+                    CommandSource::Goal(_) => expected == 2,
+                })
+                .count();
+            assert_eq!(
+                present, 1,
+                "each command source must appear exactly once in the enumeration; \
+                 variant {expected} appeared {present} times"
+            );
+        }
+
+        for source in &sources {
+            let rendered = preview_text(&project, source);
+
+            assert!(
+                rendered.contains(dry_run::SECTION_COMMANDS),
+                "every source renders the pinned commands section; {source:?} did \
+                 not:\n{rendered}"
+            );
+            let empty_entry = rendered.lines().find(|line| {
+                let trimmed = line.trim();
+                // `    N. ` with nothing after the number: the exact shape
+                // `build_report(project, "")` produced for a goal.
+                trimmed
+                    .split_once('.')
+                    .is_some_and(|(head, tail)| {
+                        !head.is_empty()
+                            && head.chars().all(|c| c.is_ascii_digit())
+                            && tail.trim().is_empty()
+                    })
+            });
+            assert!(
+                empty_entry.is_none(),
+                "no preview may render an empty numbered entry — it reads as a \
+                 command the run would issue, and printing one for a source the \
+                 renderer did not recognise is exactly how CR-01 shipped. \
+                 {source:?} produced {empty_entry:?} in:\n{rendered}"
+            );
+        }
+    }
 }

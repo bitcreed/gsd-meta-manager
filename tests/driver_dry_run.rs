@@ -31,6 +31,16 @@ const TRIPWIRE: &str = concat!(
 
 const ALIAS: &str = "preview";
 const COMMAND: &str = "/gsd:progress";
+/// The goal a user would actually state, in plain language (DRIVE-01).
+const GOAL: &str = "get phase 22 verified";
+
+/// The command-mode total, spelled out here rather than referenced.
+///
+/// A negative assertion that compared the renderer's output with a string the
+/// renderer produced could not detect the phrase's return, which is the whole
+/// point of pinning it. This is the exact text `PreviewScope::Complete` emits
+/// for a one-element list, and CR-01 emitted it for a goal.
+const COMMAND_MODE_TOTAL: &str = "1 command in the sequence:";
 /// The tracked file the repository is built with and then modifies.
 const TRACKED: &str = "tracked.txt";
 /// The untracked file `git diff --stat` will never mention.
@@ -237,6 +247,21 @@ fn routed_args(evidence: Option<&Path>) -> DriveArgs {
     }
 }
 
+/// The same invocation again, with a stated goal as the only command source.
+///
+/// This is DRIVE-01's headline invocation, and `21-VERIFICATION.md` records it
+/// as the one the suite never covered — which is how CR-01 reached a release:
+/// `--goal` became a legal source, the preview was never told, and no test
+/// looked at what the preview then printed.
+fn goal_args(evidence: Option<&Path>) -> DriveArgs {
+    DriveArgs {
+        command: None,
+        target_phase: None,
+        goal: Some(GOAL.to_string()),
+        ..args(evidence)
+    }
+}
+
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -272,6 +297,138 @@ async fn a_routed_dry_run_also_leaves_the_git_directory_byte_identical() {
     assert_eq!(
         listing_before, listing_after,
         "nor write an object or the index"
+    );
+}
+
+#[tokio::test]
+async fn a_goal_only_dry_run_also_leaves_the_git_directory_byte_identical() {
+    let Some(repo_dir) = repo() else {
+        return;
+    };
+    let root = repo_dir.path();
+
+    let (reflog_before, refs_before, listing_before) = git_fingerprint(root);
+    // The same vacuity guard its two siblings carry: a fingerprint that saw
+    // nothing compares equal to itself, and the comparison below would then
+    // prove nothing at all.
+    assert!(
+        !refs_before.trim().is_empty(),
+        "the fingerprint must actually see this repository's refs"
+    );
+    assert!(
+        listing_before.len() > 3,
+        "the walk must descend into .git; it saw {} files",
+        listing_before.len()
+    );
+
+    drive(goal_args(None), &config_for(root))
+        .await
+        .expect("a goal-only dry-run against an opted-in project succeeds");
+
+    let (reflog_after, refs_after, listing_after) = git_fingerprint(root);
+
+    assert_eq!(
+        reflog_before, reflog_after,
+        "a goal-only preview reads the working tree and git config to report \
+         blast radius — neither may move a ref (D-23, PITFALLS:520)"
+    );
+    assert_eq!(
+        refs_before, refs_after,
+        "nor update one without a reflog entry"
+    );
+    assert_eq!(
+        listing_before, listing_after,
+        "nor write an object or the index"
+    );
+}
+
+#[tokio::test]
+async fn a_goal_only_dry_run_spawns_no_agent() {
+    let Some(repo_dir) = repo() else {
+        return;
+    };
+    let root = repo_dir.path();
+    let evidence = root.join("tripwire-fired-goal");
+
+    // A goal-only preview is the one invocation where a spawn would be almost
+    // plausible — decomposing the goal is a model call, and a preview that made
+    // it would stop being a preview (D-23). The tripwire proves the absence
+    // rather than asserting it.
+    drive(goal_args(Some(&evidence)), &config_for(root))
+        .await
+        .expect("a goal-only dry-run succeeds");
+
+    assert!(
+        !evidence.exists(),
+        "the tripwire fired — a goal-only PREVIEW executed the agent program, \
+         which would make it a decomposition rather than a preview (D-23)"
+    );
+}
+
+#[test]
+fn a_goal_only_preview_names_the_goal_and_shows_no_command() {
+    let Some(repo_dir) = repo() else {
+        return;
+    };
+    let root = repo_dir.path();
+
+    let project = DrivableProject::for_testing_bypassing_opt_in(ALIAS, root);
+    let preview = dry_run::build_goal_report(&project, GOAL);
+    let rendered = dry_run::render_scoped(&preview);
+
+    assert!(
+        preview.report.commands.is_empty(),
+        "the goal path has NO command entry, not an empty one: the defect being \
+         closed rendered `vec![\"\"]` as a numbered line. Got {:?}",
+        preview.report.commands
+    );
+    assert!(
+        rendered.contains(dry_run::SECTION_COMMANDS),
+        "the pinned commands section still renders — a blank section reads as a \
+         missing one:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(GOAL),
+        "the preview must name the goal it is a preview OF:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("model consultation"),
+        "and must say WHY no command is shown — the plan does not exist yet, \
+         because a preview consults no model. An absent list with no reason \
+         reads as an oversight:\n{rendered}"
+    );
+}
+
+/// **The assertion whose absence is CR-01.**
+///
+/// `21-VERIFICATION.md` gap 1 names exactly this test as the one the suite
+/// owed: *"a test asserting the rendered text for `--goal --dry-run` never
+/// claims an empty command is the honest sequence"*. Against the shipped build
+/// both assertions below FAIL — the preview printed
+/// `1 command in the sequence:` and then a bare `1.`.
+#[test]
+fn a_goal_only_preview_never_claims_an_empty_command_is_the_honest_sequence() {
+    let Some(repo_dir) = repo() else {
+        return;
+    };
+    let root = repo_dir.path();
+
+    let project = DrivableProject::for_testing_bypassing_opt_in(ALIAS, root);
+    let rendered = dry_run::render_scoped(&dry_run::build_goal_report(&project, GOAL));
+
+    assert!(
+        !rendered.contains(COMMAND_MODE_TOTAL),
+        "`{COMMAND_MODE_TOTAL}` is a TOTAL, and nobody computed one — the goal \
+         has not been decomposed. Printing it beneath a header promising the \
+         complete and honest sequence invites the user to authorise a run on a \
+         claim the tool never checked, and `dry_run.rs`'s own standard is that a \
+         false total is worse than an absent one:\n{rendered}"
+    );
+    assert!(
+        !rendered.lines().any(|line| line.trim() == "1."),
+        "an empty numbered entry reads as a command the run would issue. A user \
+         reviewing this preview would see a run that issues one unnamed \
+         command, which is not what a goal-driven run does:\n{rendered}"
     );
 }
 

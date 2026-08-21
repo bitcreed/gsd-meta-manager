@@ -707,6 +707,13 @@ mod tests {
                 reason: "router_no_rule".to_string(),
                 detail: "Complete".to_string(),
             },
+            // Phase 21's arm, added here in the same commit as the arm itself:
+            // the four-section contract is PROVED for the new scope rather than
+            // assumed for it. A scope absent from this array is a scope whose
+            // layout is free to drift while the assertion still passes.
+            PreviewScope::GoalNotDecomposed {
+                goal: "get phase 22 verified".to_string(),
+            },
         ];
 
         for scope in &scopes {
