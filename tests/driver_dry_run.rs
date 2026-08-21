@@ -345,7 +345,7 @@ fn a_routed_preview_lists_the_routers_own_first_selection_and_nothing_after_it()
 
     let project = DrivableProject::for_testing_bypassing_opt_in(ALIAS, root);
     let preview = dry_run::build_routed_report(&project, "20");
-    let rendered = dry_run::render_routed(&preview);
+    let rendered = dry_run::render_scoped(&preview);
 
     // This fixture has no `.planning/` to corroborate phase 20, so the router
     // parks — which is itself the honest answer, and the preview says so rather

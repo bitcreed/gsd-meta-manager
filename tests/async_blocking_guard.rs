@@ -130,6 +130,12 @@ const BLOCKING_HELPERS: &[&str] = &[
     // silently stopped seeing the join-failure fallback it was written for.
     "preview_text(",
     "build_routed_report(",
+    // Phase 21's third report builder, and it makes the same two synchronous
+    // `git` calls its two siblings above do — `working_tree_stat` and
+    // `push_refspecs`, on the same foreground preview path. Named here in the
+    // commit that introduced it, because this list's own doc is explicit that a
+    // new synchronous seam nobody adds here stays invisible to the scanner.
+    "build_goal_report(",
     "establish_envelope(",
     "terminal_label(",
     "lock::acquire(",

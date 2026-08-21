@@ -81,12 +81,22 @@ pub use crate::envelope::advisory::SECTION_ENVELOPE;
 /// `--target-phase` put a run under the decision router. Under CONVENTIONS.md:75
 /// a change to this text is a breaking, user-visible output change, so the
 /// paired byte-offset ordering assertion moves with it.
+///
+/// **Corrected again in Phase 21, on the same terms and by the same precedent.**
+/// It said a run was *either* one supplied command *or* a routed sequence, and
+/// `--goal` made that a two-way statement about a three-way world — which is
+/// exactly how CR-01 shipped: a third source was added beside the other two and
+/// the preview was never told. The text now names all three, and says of the
+/// third that it shows no command **at all** rather than showing an empty one.
 pub const SECTION_COMMANDS: &str = "== GSD commands this run would issue ==\n\
-    A run is either one supplied --command or a routed sequence the decision\n\
-    router chooses per iteration. For a supplied command, the line below is the\n\
-    complete and honest sequence. For a routed run only the FIRST command can be\n\
-    shown: every command after it is chosen from state this preview does not\n\
-    produce, so the rest are not withheld — they do not exist yet.";
+    A run names one of three command sources: one supplied --command, a routed\n\
+    sequence the decision router chooses per iteration under --target-phase, or\n\
+    a --goal stated in plain language. For a supplied command, the line below is\n\
+    the complete and honest sequence. For a routed run only the FIRST command\n\
+    can be shown: every command after it is chosen from state this preview does\n\
+    not produce, so the rest are not withheld — they do not exist yet. For a\n\
+    stated goal NO command is shown at all, because the plan is a model\n\
+    consultation away and a preview makes none.";
 
 /// The diffstat header (**pinned contract** — see [`SECTION_REFSPECS`]).
 pub const SECTION_DIFFSTAT: &str = "== Working tree a commit would capture ==\n\
@@ -131,7 +141,7 @@ pub struct DryRunReport {
     /// **The vector alone therefore cannot say whether it is complete**, and a
     /// reader who assumed it could would draw exactly the wrong conclusion in
     /// routed mode. [`PreviewScope`] is what carries that, and it rides
-    /// [`RoutedPreview`] rather than this struct — see that type for why the
+    /// [`ScopedPreview`] rather than this struct — see that type for why the
     /// scope is not a field here.
     pub commands: Vec<String>,
     /// What a commit from the current working tree would capture.
@@ -160,16 +170,27 @@ impl DryRunReport {
     }
 }
 
-/// A routed run's preview: the report, plus what its command list is worth.
+/// A preview that carries a scope: the report, plus what its command list is
+/// worth.
 ///
 /// **A wrapper rather than a field on [`DryRunReport`], and the reason is that
 /// command mode has nothing to gain from the field.** A supplied `--command` is
 /// always [`PreviewScope::Complete`]; carrying a scope on every report would put
 /// a field on the common path whose value is constant there, and would oblige
-/// every existing constructor and caller to name it. Routed mode is the case
-/// with something to say, so routed mode is the type that says it.
+/// every existing constructor and caller to name it. **Command mode is the one
+/// constant-scope case; every other source carries a scope**, so every other
+/// source builds this type.
+///
+/// **Renamed from `RoutedPreview` in Phase 21, and the rename is the fix rather
+/// than a tidy-up.** The old name asserted that routed mode was the only case
+/// with something to say about its own completeness. `--goal` proved that false:
+/// a goal-only preview has a great deal to say and no command to say it about,
+/// and a type named for one of its two users is a type the next user is added
+/// *beside* rather than *through*. Adding beside is what shipped CR-01. **No
+/// deprecated alias is left behind** — a `pub use RoutedPreview` would compile
+/// and would reintroduce exactly the drift this removes.
 #[derive(Debug, Clone)]
-pub struct RoutedPreview {
+pub struct ScopedPreview {
     /// The report proper — same three outputs and same protection state.
     pub report: DryRunReport,
     /// What [`DryRunReport::commands`] is a complete answer to.
@@ -178,7 +199,7 @@ pub struct RoutedPreview {
 
 /// What a preview's command list is a complete answer to.
 ///
-/// **Three arms and no unclassified one**, for the same reason
+/// **Four arms and no unclassified one**, for the same reason
 /// `driver::run::Terminal` has three: the failure this replaces was a preview
 /// that could not say whether its list was the whole story, so "we did not say"
 /// must not be representable.
@@ -198,6 +219,25 @@ pub enum PreviewScope {
         /// One token naming what was observed. Never prose, never artifact
         /// content (SAFE-04, T-20-05).
         detail: String,
+    },
+    /// A stated goal, whose plan is a model call away.
+    ///
+    /// **The command list is empty because the sequence does not exist yet, not
+    /// because it was withheld** — and that distinction is the whole arm. A
+    /// preview spawns no process and consults no model (D-23), so the
+    /// decomposition that would turn this goal into an ordered plan has not
+    /// happened and cannot happen here. The rendered text says so, and says
+    /// where the plan *is* obtainable, rather than printing a total for a
+    /// sequence nobody has computed.
+    GoalNotDecomposed {
+        /// The stated goal, already through
+        /// [`untrusted::bounded`](super::untrusted::bounded).
+        ///
+        /// Bounded at construction rather than at render time, so there is no
+        /// path on which a raw value reaches the terminal: the goal also arrives
+        /// from the TUI's argv builder, and a control character in it would
+        /// repaint the operator's screen (T-21-07-02).
+        goal: String,
     },
 }
 
@@ -236,10 +276,10 @@ pub fn build_report(project: &DrivableProject, command: &str) -> DryRunReport {
 ///
 /// The commands vector gets the router's **first selection and nothing else**.
 /// Showing the real first command is honest precisely because
-/// [`RoutedPreview::scope`] beside it refuses to call it a sequence; showing
+/// [`ScopedPreview::scope`] beside it refuses to call it a sequence; showing
 /// nothing would withhold the one fact that *is* knowable, and padding the list
 /// with guesses is the failure the whole module exists to avoid.
-pub fn build_routed_report(project: &DrivableProject, target_phase: &str) -> RoutedPreview {
+pub fn build_routed_report(project: &DrivableProject, target_phase: &str) -> ScopedPreview {
     let state = crate::state_reader::parse_project_state(&project.root().join(".planning"));
 
     let (commands, scope) = match super::router::decide(&state, target_phase) {
@@ -267,7 +307,7 @@ pub fn build_routed_report(project: &DrivableProject, target_phase: &str) -> Rou
         super::router::Decision::GoalMet => (Vec::new(), PreviewScope::Complete),
     };
 
-    RoutedPreview {
+    ScopedPreview {
         report: DryRunReport {
             commands,
             diffstat: git_ops::working_tree_stat(project.root()),
@@ -275,6 +315,45 @@ pub fn build_routed_report(project: &DrivableProject, target_phase: &str) -> Rou
             protection: advisory::not_probed(),
         },
         scope,
+    }
+}
+
+/// Gather the preview for a run driving toward a stated `goal`.
+///
+/// **The commands vector is empty, and the emptiness is load-bearing.** The
+/// defect this constructor exists to close rendered `vec![""]` as a numbered
+/// entry beneath a header promising the complete and honest sequence; an empty
+/// numbered line reads as a command the run would issue. There is nothing to
+/// list here because a goal becomes an ordered plan only through a model
+/// consultation, and a preview spawns no process at all (D-23) — so the goal
+/// path must have no entry to render rather than an empty one.
+///
+/// **The other three sections are gathered exactly as its two siblings gather
+/// them**, and that is not padding: blast radius is knowable without knowing the
+/// commands, and it is precisely what the preview exists to show. A goal-only
+/// preview that showed nothing would be the hollow command-log PITFALLS:63
+/// warns about, inverted.
+///
+/// The goal is bounded through [`untrusted::bounded`](super::untrusted::bounded)
+/// **here**, at construction, so no path exists on which the raw value reaches a
+/// terminal. That is not paranoia about the operator: the same field is filled
+/// by the TUI's argv builder, and `bounded` is what strips the control
+/// characters a pasted value can carry (T-21-07-02).
+///
+/// Read-only and synchronous like its siblings: the same two `git` shell-outs,
+/// which is why `build_goal_report(` is named in
+/// `tests/async_blocking_guard.rs`'s `BLOCKING_HELPERS`.
+pub fn build_goal_report(project: &DrivableProject, goal: &str) -> ScopedPreview {
+    ScopedPreview {
+        report: DryRunReport {
+            commands: Vec::new(),
+            diffstat: git_ops::working_tree_stat(project.root()),
+            push: git_ops::push_refspecs(project.root()),
+            protection: advisory::not_probed(),
+        },
+        scope: PreviewScope::GoalNotDecomposed {
+            goal: super::untrusted::bounded(goal),
+        },
     }
 }
 
@@ -290,12 +369,12 @@ pub fn render(report: &DryRunReport) -> String {
     render_with_scope(report, &PreviewScope::Complete)
 }
 
-/// Render a routed preview, scope and all.
+/// Render a scoped preview — routed or goal-stated — scope and all.
 ///
 /// A separate entry point rather than an argument on [`render`], so the common
 /// path keeps its one-argument shape and no existing caller has to name a scope
 /// that is constant for it.
-pub fn render_routed(preview: &RoutedPreview) -> String {
+pub fn render_scoped(preview: &ScopedPreview) -> String {
     render_with_scope(&preview.report, &preview.scope)
 }
 
@@ -337,6 +416,27 @@ fn render_with_scope(report: &DryRunReport, scope: &PreviewScope) -> String {
                  the router would park ({reason}: {detail}) and the run would stop for\n  \
                  a human rather than choose."
             ));
+        }
+        PreviewScope::GoalNotDecomposed { goal } => {
+            // Three parts, in the register `FirstOfMany` and `WouldPark` set
+            // above: the limit, the reason for it in the same breath, and — for
+            // this arm alone — where the answer actually is. A false total is
+            // worse than an absent one, and an absent one with no reason reads
+            // as an oversight.
+            lines.push(
+                "  Stated goal: no command can be shown, and none is withheld. A goal\n  \
+                 becomes an ordered plan only through a model consultation, and a\n  \
+                 preview consults nothing and spawns no process — so the sequence does\n  \
+                 not exist yet rather than being hidden. To SEE the plan, run this same\n  \
+                 invocation without --dry-run: it decomposes the goal, then refuses\n  \
+                 before anything is created and prints the plan together with the\n  \
+                 --approved-plan digest that authorises exactly it."
+                    .to_string(),
+            );
+            // On its own line and prefixed, so a reader can tell the goal apart
+            // from a command at a glance — the numbered entries below are
+            // commands, and this deliberately is not one of them.
+            lines.push(format!("    goal: {goal}"));
         }
     }
     for (index, command) in report.commands.iter().enumerate() {
@@ -480,11 +580,11 @@ mod tests {
 
     #[test]
     fn a_routed_preview_shows_one_command_and_says_the_run_continues_past_it() {
-        let preview = RoutedPreview {
+        let preview = ScopedPreview {
             report: report(),
             scope: PreviewScope::FirstOfMany,
         };
-        let rendered = render_routed(&preview);
+        let rendered = render_scoped(&preview);
 
         assert_eq!(
             preview.report.commands.len(),
@@ -512,7 +612,7 @@ mod tests {
 
     #[test]
     fn a_routed_preview_that_would_park_names_the_reason_and_lists_no_command() {
-        let preview = RoutedPreview {
+        let preview = ScopedPreview {
             report: DryRunReport {
                 commands: Vec::new(),
                 ..report()
@@ -522,7 +622,7 @@ mod tests {
                 detail: "Complete".to_string(),
             },
         };
-        let rendered = render_routed(&preview);
+        let rendered = render_scoped(&preview);
 
         assert!(
             rendered.contains("no command would be issued"),
@@ -536,10 +636,69 @@ mod tests {
         );
     }
 
+    /// **CR-01 at the renderer**, in the register of
+    /// `a_routed_preview_shows_one_command_and_says_the_run_continues_past_it`
+    /// above: the limit, the reason for it, and the refusal to state a total the
+    /// preview did not compute.
+    ///
+    /// Against a build without the `GoalNotDecomposed` arm — the arm stashed, so
+    /// the goal scope fell to the `Complete` renderer — the last two assertions
+    /// FAIL: `Complete` prints `0 commands in the sequence:` for an empty vector,
+    /// and never prints the goal at all.
+    #[test]
+    fn a_goal_preview_names_the_goal_and_states_why_no_command_can_be_shown() {
+        let preview = ScopedPreview {
+            report: DryRunReport {
+                commands: Vec::new(),
+                ..report()
+            },
+            scope: PreviewScope::GoalNotDecomposed {
+                goal: "get phase 22 verified".to_string(),
+            },
+        };
+        let rendered = render_scoped(&preview);
+
+        assert!(
+            preview.report.commands.is_empty(),
+            "the goal path has NO entry to render, rather than an empty one — a \
+             `vec![\"\"]` rendered as `1. ` is the defect this arm closes"
+        );
+        assert!(
+            rendered.contains("get phase 22 verified"),
+            "the preview must name the goal it is a preview OF; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("model consultation"),
+            "and must say WHY there is no command: the plan does not exist yet \
+             because a preview consults no model. Without the reason, an absent \
+             command list reads as an oversight; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("without --dry-run"),
+            "and must say where the plan IS obtainable — a refusal that shows the \
+             plan and its --approved-plan digest — because a preview that only \
+             says 'not here' leaves the review DRIVE-03 requires with nowhere to \
+             happen; got:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("command in the sequence:")
+                && !rendered.contains("commands in the sequence:"),
+            "the command-mode total must NOT appear for a stated goal — neither \
+             `1 command in the sequence` nor `0 commands in the sequence` is a \
+             total anybody computed, and a false total is worse than an absent \
+             one; got:\n{rendered}"
+        );
+        assert!(
+            !rendered.lines().any(|line| line.trim() == "1."),
+            "and no empty numbered entry, which reads as a command the run would \
+             issue; got:\n{rendered}"
+        );
+    }
+
     #[test]
     fn every_scope_renders_the_four_pinned_sections_in_the_same_order() {
         // The ordering contract must hold for BOTH entry points. Pinning it only
-        // against `render` would leave `render_routed` free to grow a different
+        // against `render` would leave `render_scoped` free to grow a different
         // layout while the assertion still passed.
         let scopes = [
             PreviewScope::Complete,
@@ -551,7 +710,7 @@ mod tests {
         ];
 
         for scope in &scopes {
-            let rendered = render_routed(&RoutedPreview {
+            let rendered = render_scoped(&ScopedPreview {
                 report: report(),
                 scope: scope.clone(),
             });
@@ -591,6 +750,24 @@ mod tests {
             SECTION_COMMANDS.contains("FIRST"),
             "and the replacement must state the routed limit rather than being \
              merely vaguer than what it replaced"
+        );
+
+        // Phase 21's correction, asserted on the same terms. The text said a run
+        // was EITHER one supplied command OR a routed sequence, which `--goal`
+        // made a two-way statement about a three-way world — and a preview whose
+        // own header does not know a source exists is how that source comes to be
+        // rendered by the wrong branch (CR-01).
+        for source in ["--command", "--target-phase", "--goal"] {
+            assert!(
+                SECTION_COMMANDS.contains(source),
+                "the contract text must name all three command sources; it does \
+                 not mention `{source}`"
+            );
+        }
+        assert!(
+            SECTION_COMMANDS.contains("NO command is shown at all"),
+            "and it must say of a stated goal that NO command is shown — not \
+             merely omit the case, which is what let an empty one be shown instead"
         );
     }
 

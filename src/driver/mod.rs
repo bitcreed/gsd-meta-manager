@@ -292,12 +292,42 @@ fn platform_refusal(liveness_supported: bool, dry_run: bool) -> Option<DriveErro
     })
 }
 
-/// Whether the command sources a caller supplied name exactly one run.
+/// Which of the three legal command sources this invocation names.
 ///
-/// **Pure, and shaped as `Option<DriveError>` to match [`platform_refusal`]
-/// beside it:** the chain in [`drive`] reads as a sequence of refusals, and a
-/// function returning "the refusal, if any" reads the same way at the call site
-/// as the one above it.
+/// **A resolved value rather than three `Option`s re-matched at each consumer,
+/// and Phase 21 is what forced the promotion.** The old shape had every consumer
+/// re-derive the source from `(command, target_phase, goal)`, which meant adding
+/// a third source was something one could do *beside* the other two rather than
+/// *through* them: `--goal` became legal at the refusal and the preview was
+/// never told, so a goal-only `--dry-run` fell through to the command-mode
+/// renderer and printed an empty command as "the complete and honest sequence"
+/// (CR-01). Resolving once and matching exhaustively is what makes a fourth
+/// source a **compile error** at every consumer instead of a silent
+/// fall-through.
+///
+/// **Owned rather than borrowed**, because the value is moved into the
+/// `spawn_blocking` closure on the dry-run path and that requires `'static`.
+/// `Clone` because the inline join-failure fallback needs a second copy, and
+/// building it by re-resolving would be two places that can disagree about which
+/// source won.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CommandSource {
+    /// One supplied `--command`: the whole of what the run would issue.
+    Command(String),
+    /// A `--target-phase` the decision router drives toward, choosing each
+    /// iteration's command from what the previous one left on disk.
+    Routed(String),
+    /// A `--goal` stated in plain language, which decomposes into a plan above
+    /// the run and resolves *into* the routed model rather than being a fourth
+    /// execution model of its own.
+    Goal(String),
+}
+
+/// Resolve the one command source a caller named, or refuse.
+///
+/// **Pure**, and the refusals are unchanged from the `Option<DriveError>` shape
+/// this replaced; only the success case grew a value, because the callers below
+/// needed the source itself rather than merely its legality.
 ///
 /// Both directions are refused, and neither is pedantry:
 ///
@@ -321,16 +351,28 @@ fn platform_refusal(liveness_supported: bool, dry_run: bool) -> Option<DriveErro
 /// the `--target-phase` the loop would otherwise have been given directly. It is
 /// not a fourth execution model — it resolves *into* the routed one, above the
 /// run, before anything is created.
-fn command_source_refusal(
+///
+/// **Precedence is exactly what it was**: a supplied `command` wins, otherwise
+/// `target_phase`, otherwise a `goal` that is not whitespace-only, otherwise
+/// [`DriveError::NoCommandSource`]. Command-plus-phase is still
+/// [`DriveError::AmbiguousCommandSource`]; a goal beside either is recorded
+/// prose and must not turn a legal invocation into an ambiguous one.
+fn command_source(
     command: Option<&str>,
     target_phase: Option<&str>,
     goal: Option<&str>,
-) -> Option<DriveError> {
+) -> Result<CommandSource, DriveError> {
     match (command, target_phase) {
-        (Some(_), None) | (None, Some(_)) => None,
-        (None, None) if goal.is_some_and(|goal| !goal.trim().is_empty()) => None,
-        (None, None) => Some(DriveError::NoCommandSource),
-        (Some(_), Some(_)) => Some(DriveError::AmbiguousCommandSource),
+        (Some(_), Some(_)) => Err(DriveError::AmbiguousCommandSource),
+        (Some(command), None) => Ok(CommandSource::Command(command.to_string())),
+        (None, Some(target_phase)) => Ok(CommandSource::Routed(target_phase.to_string())),
+        (None, None) => match goal {
+            // The trim is what stops `--goal ' '` becoming a third command
+            // source that decomposes an empty string, which the seam would
+            // answer somehow and `legality` would then be asked to judge.
+            Some(goal) if !goal.trim().is_empty() => Ok(CommandSource::Goal(goal.to_string())),
+            _ => Err(DriveError::NoCommandSource),
+        },
     }
 }
 
@@ -357,26 +399,29 @@ pub const ROUTED_RECORD_MARKER: &str = "(routed: see the decided journal records
 
 /// The rendered preview for whichever execution model this invocation names.
 ///
-/// [`command_source_refusal`] has already established that exactly one of the
-/// two is present, so the last arm is unreachable; it is spelled out rather than
-/// `unwrap`ped because a preview is a foreground command and a panic here would
-/// tell the user nothing about what was wrong with their invocation.
+/// **The three modes make three different honesty claims, so they render
+/// through three entry points** rather than through one that would have to
+/// hedge: a supplied command is the complete sequence, a routed run shows the
+/// router's first selection with the fact that it continues stated plainly, and
+/// a stated goal shows no command at all because the plan does not exist until a
+/// model is consulted.
 ///
-/// **The two modes make different honesty claims, so they render through
-/// different entry points** rather than through one that would have to hedge:
-/// a supplied command is the complete sequence, and a routed run shows the
-/// router's first selection with the fact that it continues stated plainly.
-fn preview_text(
-    project: &DrivableProject,
-    command: Option<&str>,
-    target_phase: Option<&str>,
-) -> String {
-    match (command, target_phase) {
-        (Some(command), _) => dry_run::render(&dry_run::build_report(project, command)),
-        (None, Some(target_phase)) => {
-            dry_run::render_routed(&dry_run::build_routed_report(project, target_phase))
+/// The source is **resolved once** by [`command_source`], above, rather than
+/// re-derived here from the `Option`s on `args`. That is what makes the match
+/// exhaustive over a three-variant type with no fall-through arm — and it is the
+/// property, not a comment, that stops a fourth source being added beside these
+/// three without the preview learning about it.
+fn preview_text(project: &DrivableProject, source: &CommandSource) -> String {
+    match source {
+        CommandSource::Command(command) => {
+            dry_run::render(&dry_run::build_report(project, command))
         }
-        (None, None) => dry_run::render(&dry_run::build_report(project, "")),
+        CommandSource::Routed(target_phase) => {
+            dry_run::render_scoped(&dry_run::build_routed_report(project, target_phase))
+        }
+        CommandSource::Goal(goal) => {
+            dry_run::render_scoped(&dry_run::build_goal_report(project, goal))
+        }
     }
 }
 
@@ -391,7 +436,7 @@ fn preview_text(
 ///    property `tests/spawn_seam_guard.rs` can check while "every branch
 ///    remembers to gate" is not.
 /// 3. Refuse an invocation that is malformed **as an invocation**: no command
-///    source or two (`command_source_refusal`), a `--target-phase` that is not
+///    source or two (`command_source`), a `--target-phase` that is not
 ///    a single plain path component ([`DriveError::TargetPhaseInvalid`]), or
 ///    caps that cannot be honoured ([`bounds::resolve`] and, on the adjacent
 ///    line and against the step cap the first of them returned,
@@ -438,13 +483,15 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
 
     // A preview of nothing has nothing to show, and a preview of two
     // conflicting sources cannot say which it previewed.
-    if let Some(refusal) = command_source_refusal(
+    //
+    // **Resolved into a value here rather than merely checked**, so every
+    // consumer below reads the source one place decided instead of re-deriving
+    // it from three `Option`s. Re-deriving is how CR-01 happened.
+    let source = command_source(
         args.command.as_deref(),
         args.target_phase.as_deref(),
         args.goal.as_deref(),
-    ) {
-        return Err(refusal);
-    }
+    )?;
 
     // The same question about `--target-phase` the run id is asked below, at the
     // same seam and for the same reason (D-27, T-20-03). The value is used
@@ -542,19 +589,32 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
         // second one would mean a second `DrivableProject::from_registry` call
         // site — the exact uniqueness `tests/spawn_seam_guard.rs` exists to
         // check, and a property a comment cannot hold.
-        // The refusal above guarantees exactly one of the two is present, so the
-        // `Routed` arm is the only case where `command` is absent.
+        //
+        // The **resolved source** is cloned rather than the three `Option`s that
+        // produced it, so the closure and the fallback below preview the same
+        // mode by construction instead of by two agreeing re-derivations.
         //
         // **The mode is passed through rather than flattened to a string**, and
         // the pinned `dry_run::SECTION_COMMANDS` prose has been corrected to
         // match (research Pitfall 6). It used to say a routed sequence was a
         // single honest command; the preview now shows the router's own first
-        // selection and states plainly that the run continues past it.
-        let command = args.command.clone();
-        let target_phase = args.target_phase.clone();
+        // selection and states plainly that the run continues past it — and, as
+        // of Phase 21, says of a stated goal that no command can be shown at all.
+        //
+        // **The closure keeps its braced body** rather than collapsing to a
+        // one-line expression, and that is a guard property rather than a style
+        // preference: `tests/async_blocking_guard.rs` suppresses reporting from
+        // the line a `spawn_blocking` appears on until the brace depth it opened
+        // closes. A braced closure closes that scope before the `Err` arm, so the
+        // inline fallback below is still *reported* and still suppressed by the
+        // deliberate `("src/driver/mod.rs", "preview_text(")` allowlist entry. A
+        // one-line closure leaves the match block open instead, and the fallback
+        // becomes invisible to the scanner — the entry goes stale and the
+        // exemption stops being a decision anybody made.
+        let cloned_source = source.clone();
         let cloned = project.clone();
         let rendered = match tokio::task::spawn_blocking(move || {
-            preview_text(&cloned, command.as_deref(), target_phase.as_deref())
+            preview_text(&cloned, &cloned_source)
         })
         .await
         {
@@ -571,7 +631,7 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
                     panicked = err.is_panic(),
                     "the dry-run report task did not run to completion",
                 );
-                preview_text(&project, args.command.as_deref(), args.target_phase.as_deref())
+                preview_text(&project, &source)
             }
         };
         println!("{rendered}");
@@ -1054,8 +1114,8 @@ mod tests {
     fn a_run_with_no_command_source_at_all_is_refused_before_anything_is_created() {
         assert!(
             matches!(
-                command_source_refusal(None, None, None),
-                Some(DriveError::NoCommandSource)
+                command_source(None, None, None),
+                Err(DriveError::NoCommandSource)
             ),
             "clap used to make this unrepresentable by requiring --command. The \
              moment --target-phase became an alternative, 'exactly one of these' \
@@ -1069,8 +1129,8 @@ mod tests {
         // and `legality` would then be asked to judge.
         assert!(
             matches!(
-                command_source_refusal(None, None, Some("   ")),
-                Some(DriveError::NoCommandSource)
+                command_source(None, None, Some("   ")),
+                Err(DriveError::NoCommandSource)
             ),
             "a blank goal is not a command source"
         );
@@ -1084,10 +1144,13 @@ mod tests {
         // behaviour — a two-source refusal that knows nothing about goals — this
         // FAILS with `NoCommandSource`, and the run the requirement describes is
         // unrepresentable.
-        assert!(
-            command_source_refusal(None, None, Some("get phase 22 verified")).is_none(),
+        assert_eq!(
+            command_source(None, None, Some("get phase 22 verified")).ok(),
+            Some(CommandSource::Goal("get phase 22 verified".to_string())),
             "a stated goal alone must reach the decomposition rather than be \
-             refused as a run with nothing to do"
+             refused as a run with nothing to do — and it must resolve to the \
+             GOAL variant, because a goal that resolved to anything else is CR-01 \
+             again with a different spelling"
         );
     }
 
@@ -1095,8 +1158,8 @@ mod tests {
     fn a_run_naming_both_command_sources_is_refused_rather_than_resolved() {
         assert!(
             matches!(
-                command_source_refusal(Some("/gsd-progress"), Some("20"), None),
-                Some(DriveError::AmbiguousCommandSource)
+                command_source(Some("/gsd-progress"), Some("20"), None),
+                Err(DriveError::AmbiguousCommandSource)
             ),
             "a precedence rule would let one source win SILENTLY, and whichever it \
              was the run's terminal record would name a mode the caller did not \
@@ -1105,25 +1168,30 @@ mod tests {
              failure CTRL-06 exists to prevent"
         );
 
-        assert!(
-            command_source_refusal(Some("/gsd-progress"), None, None).is_none(),
+        assert_eq!(
+            command_source(Some("/gsd-progress"), None, None).ok(),
+            Some(CommandSource::Command("/gsd-progress".to_string())),
             "single-command mode must stay transparent"
         );
-        assert!(
-            command_source_refusal(None, Some("20"), None).is_none(),
+        assert_eq!(
+            command_source(None, Some("20"), None).ok(),
+            Some(CommandSource::Routed("20".to_string())),
             "routed mode must stay transparent"
         );
 
         // A goal supplied ALONGSIDE either source is recorded prose and nothing
         // more — both of those sources are already machine-checkable, so there
         // is nothing to decompose and no seam fires. A goal must not turn a
-        // legal invocation into an ambiguous one.
-        assert!(
-            command_source_refusal(Some("/gsd-progress"), None, Some("a goal")).is_none(),
+        // legal invocation into an ambiguous one, and it must not WIN over one
+        // either: precedence is command, then phase, then goal.
+        assert_eq!(
+            command_source(Some("/gsd-progress"), None, Some("a goal")).ok(),
+            Some(CommandSource::Command("/gsd-progress".to_string())),
             "a goal beside --command is recorded text, not a second source"
         );
-        assert!(
-            command_source_refusal(None, Some("20"), Some("a goal")).is_none(),
+        assert_eq!(
+            command_source(None, Some("20"), Some("a goal")).ok(),
+            Some(CommandSource::Routed("20".to_string())),
             "a goal beside --target-phase is recorded text, not a second source"
         );
     }
@@ -1324,10 +1392,10 @@ mod tests {
         let root = tempfile::TempDir::new().expect("temp dir");
         let project = previewable(root.path());
 
-        // The goal-only invocation, as `drive` reaches it today: neither
-        // `--command` nor `--target-phase`, because `--goal` is the source and
-        // `preview_text` has not been told that goals exist.
-        let rendered = preview_text(&project, None, None);
+        let rendered = preview_text(
+            &project,
+            &CommandSource::Goal("get phase 22 verified".into()),
+        );
 
         assert!(
             !rendered.contains("1 command in the sequence:"),
