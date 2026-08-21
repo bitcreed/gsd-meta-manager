@@ -80,9 +80,9 @@ interleave and corrupt each other.
 
 ### Autonomous Driver (DRIVE)
 
-- [x] **DRIVE-01**: A user states a goal once in natural language and the driver pursues it across multiple GSD commands without further input
+- [ ] **DRIVE-01**: A user states a goal once in natural language and the driver pursues it across multiple GSD commands without further input
 - [ ] **DRIVE-02**: The driver chooses the next GSD command from observed project state using deterministic rules, not a model call, for every case the rules cover
-- [x] **DRIVE-03**: The driver's goal is decomposed into a structured, machine-checkable plan that the user can review before the run starts
+- [ ] **DRIVE-03**: The driver's goal is decomposed into a structured, machine-checkable plan that the user can review before the run starts
 - [ ] **DRIVE-04**: The driver escalates to a model only for goal decomposition and for ambiguity the rules cannot resolve, with a per-run cap on such escalations
 - [ ] **DRIVE-05**: The driver parks and flags for a human when it encounters a GSD gate that requires human judgement
 - [ ] **DRIVE-06**: The driver reports a terminal outcome — goal met, parked, or halted — with the reason
@@ -161,9 +161,9 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-23.
 | STEER-01 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | STEER-02 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | STEER-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
-| DRIVE-01 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Complete |
+| DRIVE-01 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Gaps Found |
 | DRIVE-02 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
-| DRIVE-03 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Complete |
+| DRIVE-03 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Gaps Found |
 | DRIVE-04 | Phase 21: LLM Goal Layer & Prompt-Injection Hardening | Gaps Found |
 | DRIVE-05 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
 | DRIVE-06 | Phase 20: Deterministic Decision Router & Run Bounds | Pending |
