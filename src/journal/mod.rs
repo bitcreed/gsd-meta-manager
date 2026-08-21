@@ -834,13 +834,27 @@ pub struct ApprovedPlan {
     /// did.
     ///
     /// A record written before this became SHA-256 carries the legacy
-    /// `fnv1a64:` prefix. Nothing migrates it and nothing needs to:
-    /// [`recheck_approval`] compares the whole prefixed string, so the prefixes
-    /// differ, the record re-checks as [`ApprovalRefusal::PlanChanged`], and the
-    /// upgrade fails closed. That is what the prefixes are for, and
-    /// `tests/driver_goal_seam.rs::a_recorded_approval_carrying_a_legacy_
-    /// fnv1a64_plan_digest_re_checks_as_stale` proves it rather than leaving it
-    /// as a claim in this paragraph.
+    /// `fnv1a64:` prefix. Nothing migrates it and nothing needs to — but the
+    /// reason is **not** a re-check of this field, and saying otherwise would
+    /// invite a future author to build a control on a path production does not
+    /// take.
+    ///
+    /// **No recorded `ApprovedPlan` is ever deserialised and re-checked.**
+    /// `RunRecord::approved_plan` is written and never read back into
+    /// [`recheck_approval`], whose two production call sites both hold values
+    /// from the run in progress: `driver::approve_plan`, comparing the halves of
+    /// a token parsed off argv in the same invocation, and the spawn gate in
+    /// `src/driver/run.rs`, using the in-memory `ApprovedPlan` from that run.
+    /// This field is a durable record of what was approved; the prefix is what
+    /// keeps it legible once the hasher moves, not a migration control, because
+    /// there is no record path to migrate.
+    ///
+    /// The legacy value a user could actually still be holding is a **token on
+    /// argv**, and it fails closed by name well before any digest is compared:
+    /// [`parse_approval_token`] refuses a single-half value as
+    /// [`ApprovalTokenError::SeparatorAbsent`], and
+    /// `tests/driver_goal_seam.rs::a_half_supplied_approval_token_is_refused_by_name_and_never_treated_as_an_approval`
+    /// pins that.
     pub plan_digest: String,
     /// [`approval_digest`] over the plan digest and the disclosed prompt inputs
     /// as they stood when the approval was given.

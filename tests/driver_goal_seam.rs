@@ -1268,14 +1268,33 @@ fn the_plan_half_of_an_approval_is_collision_resistant_rather_than_a_non_cryptog
     );
 }
 
+/// The `recheck_approval` **predicate** refuses a legacy `fnv1a64:` plan digest.
+///
+/// **What this pins, said plainly, because the name it used to carry claimed
+/// more.** It builds an `ApprovedPlan` by hand and calls the predicate directly,
+/// so what it proves is the *comparison*: a legacy `fnv1a64:` value never covers
+/// a freshly computed `sha256:` one. It pins **no production route into that
+/// comparison**, and there is none to pin — production never feeds a
+/// deserialised record to `recheck_approval`. The predicate's two production
+/// call sites both hold values from the run in progress: `driver::approve_plan`
+/// compares the halves of a token parsed off argv in the same invocation, and
+/// the spawn gate in `src/driver/run.rs` uses the in-memory `ApprovedPlan` from
+/// that run.
+///
+/// The legacy value a user could actually still be holding is a token on argv,
+/// and
+/// `a_half_supplied_approval_token_is_refused_by_name_and_never_treated_as_an_approval`
+/// is the test that exercises *that* route. Both fail closed; they are different
+/// routes and this one is the predicate.
 #[test]
-fn a_recorded_approval_carrying_a_legacy_fnv1a64_plan_digest_re_checks_as_stale() {
+fn the_recheck_approval_predicate_refuses_a_legacy_fnv1a64_plan_digest() {
     let wire = payload(vec![step(router::COMMAND_PLAN_PHASE, "21")]);
     let fresh = goal::plan_digest(&plan_from(&wire));
 
-    // A record written by a build that hashed the plan half with FNV-1a-64.
-    // Nothing migrates it, and nothing needs to: the whole prefixed string is
-    // compared, so it fails closed.
+    // The plan half in the format a build that hashed it with FNV-1a-64 would
+    // have produced. Hand-built, because no production path deserialises one:
+    // what is under test below is the comparison, and it fails closed because
+    // the whole prefixed string is compared.
     let legacy = "fnv1a64:0123456789abcdef";
     assert!(
         fresh.starts_with("sha256:") && legacy.starts_with("fnv1a64:"),
