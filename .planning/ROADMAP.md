@@ -503,6 +503,16 @@ Gap closure, round 3 (from the re-verification in `21-VERIFICATION.md`, which fo
 
 - [x] 21-12-PLAN.md — review-WR-01 (guard six scans every `src/` file and its header names each remaining limit with the direction it fails in), the `CommandSource` single-construction-site guard 21-11's design depends on, and review-WR-03 (`plan_digest`'s doc names the refusal production actually produces for a legacy value) (DRIVE-04, SAFE-07, SAFE-08)
 
+Gap closure, round 4 (third consecutive cycle to introduce a new Critical while closing the last; premise validation in `21-PREMISES.md` found per-arm blankness validation BROKEN and the class is closed at the type level rather than patched a fourth time):
+
+**Wave 1**
+
+- [ ] 21-13-PLAN.md — Tracer: a blank `CommandSource` payload becomes unrepresentable — a `NonBlank` newtype in a nested `mod payload` (so even sibling code in `driver/mod.rs` cannot construct one), the degenerate matrix rebuilt uniform and exemption-free with its column axis tied to `command_source`'s arity, the `trim` tautology broken by an independent detector, `is_plain_path_component` tightened to refuse whitespace-only, and the blank `target_phase` route through the model seam refused typed (DRIVE-01, DRIVE-03)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 21-14-PLAN.md — The guard layer made honest: guard six's marker-to-EOF blind region converted from silent to loud by a tree-wide boundary self-check, guard eight given a limits block and `Self::`-qualified needles, `run.rs`'s colliding second `CommandSource` renamed `IterationSource` with a single-declaration assertion replacing the collision watchdog, and its `(None, None) => Fixed(String::new())` arm — which manufactured the exact blank value this phase refuses — returned as a typed `Err` (DRIVE-04, SAFE-07, SAFE-08)
+
 ### Phase 22: Container Execution Target
 
 **Goal**: A driven project can run inside a container on either runtime, indistinguishably from the host path
