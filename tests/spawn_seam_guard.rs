@@ -1688,27 +1688,82 @@ fn the_free_string_field_parser_distinguishes_payloads_from_map_keys() {
 // technique `DrivableProject::from_registry` and the decomposition capability
 // already use, and the reason the plan chose it over a comment.
 //
-// **Two stated over-approximations, rather than a claim of exactness.**
+// **The scan covers every file under `src/`, and the widening is review-WR-01.**
+// It used to be pinned to `src/driver/run.rs` alone by a single file constant,
+// which read as exact and was not: `JournalRun::finish` is a `pub fn` on a `pub
+// struct`, so a terminal write added from `src/driver/kill.rs`, `src/app.rs` or
+// any UI screen was outside this guard's view entirely — and it would have
+// written `escalations_used: null` on precisely the killed and failed-to-spawn
+// runs an operator opens an investigation with, with the guard green. That was a
+// SILENT UNDER-DETECTION, which is the opposite of the direction the paragraph
+// that used to sit here claimed for the guard as a whole. The sanctioned site is
+// now a declared `(file, fn)` pair on `TERMINAL_WRITE_ALLOWLIST`, in the register
+// `SPAWN_ALLOWLIST` and the seam-site guard already use.
+//
+// **What is still approximate, each named with the direction it fails in.** They
+// are listed one at a time rather than summarised, because a summary is exactly
+// how the old blanket claim came to cover a limit that was not true of it. No
+// claim is made about this guard's failure direction *as a whole*: it has two.
 //
 // 1. The production/test boundary is found by a LINE MARKER (`mod tests {` at
 //    column zero), not by parsing. A file that spelled its test module
-//    differently would be scanned in full and the guard would over-report.
+//    differently would be scanned in full, and its tests' own journal closes
+//    would be reported as production offenders. **Over-detection — loud**: the
+//    failure arrives as a named line a reader can look at.
 // 2. `executable_lines`'s comment filter handles LINE comments only (IN-03): a
-//    terminal write inside a `/* … */` block would be counted as executable.
+//    terminal write inside a `/* … */` block is counted as executable.
+//    **Over-detection — loud**, for the same reason.
+// 3. The scan matches TWO call spellings — the method call `.finish(` and the
+//    fully-qualified `JournalRun::finish(`. A third spelling nobody anticipated
+//    is not matched, and NO assertion fires when that happens. **Under-detection
+//    — silent.** This is the one limit here that fails the quiet way, and it is
+//    written down rather than left to be rediscovered. What bounds it is the
+//    non-vacuity block below: a rename that emptied the scan trips
+//    `helper_writes`, the declaration count and the distinct-file count, so the
+//    guard can go blind only to a spelling ADDED beside a surviving one.
 //
-// Both fail in the over-detection direction — loud, not silent — which is the
-// direction a guard may err in. They are written here because this repository
-// has already paid once for a guard that read as exact and was quietly
-// approximate.
+// This repository has already paid once for a guard that read as exact while
+// being quietly approximate. It is not paying again for one that claims a
+// failure direction it does not have.
 // ============================================================================
 
-/// The raw journal call that closes a run out, and the one helper allowed to
-/// make it.
+/// The two spellings a journal terminal write takes, and the one helper allowed
+/// to make one.
+///
+/// **Two needles rather than one, and `21-REVIEW.md` is why.** The method-call
+/// form was the only one matched, so `JournalRun::finish(&mut journal, label)` —
+/// legal Rust, identical effect — walked past the guard. A third spelling is
+/// still unmatched; limit 3 in the header above says so in those words rather
+/// than leaving it to be discovered.
 const TERMINAL_WRITE_CALL: &str = ".finish(";
+const TERMINAL_WRITE_UFCS_CALL: &str = "JournalRun::finish(";
 const TERMINAL_WRITE_HELPER: &str = "finish_run";
 
-/// The file whose production region must have exactly one terminal-write site.
-const TERMINAL_WRITE_HOME: &str = "src/driver/run.rs";
+/// Every `(file, enclosing fn)` pair under `src/` permitted to write a run's
+/// ending.
+///
+/// **This is a declared allowlist, not a habit** — `SPAWN_ALLOWLIST`'s rule
+/// (`:32-37`), applied to the other property this file audits by single call
+/// site. A `(file, fn)` pair rather than a bare path, for the reason the
+/// seam-site guard gives at `:1438-1441`: a per-file entry would forgive every
+/// function in that file, and the whole property is that ONE function closes a
+/// run out.
+///
+/// Adding an entry here is the deliberate edit that is the point. A second
+/// stamped helper is a second way to close a run out, and a run closed out
+/// somewhere nobody had to think about is a run whose consultation count is
+/// `null` on the record an operator is auditing (WR-02, DRIVE-04).
+const TERMINAL_WRITE_ALLOWLIST: &[(&str, &str)] = &[
+    // The one stamped helper: it sets `escalations_used` and then finishes the
+    // journal, in that order, so every terminal path in the driver inherits the
+    // stamp instead of having to remember it.
+    ("src/driver/run.rs", TERMINAL_WRITE_HELPER),
+];
+
+/// Whether `line` writes a run's ending, in either spelling the scan matches.
+fn writes_terminal(line: &str) -> bool {
+    line.contains(TERMINAL_WRITE_CALL) || line.contains(TERMINAL_WRITE_UFCS_CALL)
+}
 
 /// The line that opens an in-module test region, matched at column zero.
 const TEST_REGION_MARKER: &str = "mod tests {";
@@ -1725,151 +1780,314 @@ fn test_region_start(file: &SourceFile) -> Option<usize> {
         .map(|(number, _)| *number)
 }
 
+/// Every production terminal write under `src/`, as `(path, line, enclosing fn)`.
+///
+/// **The whole tree, one file at a time, each with its OWN production/test
+/// boundary.** A file with no column-zero test-region marker is scanned in full,
+/// which is the right answer for a file that has no in-module tests — the marker
+/// is how a file declares where its tests begin, and a file that declares none
+/// has none to exclude.
+///
+/// Shared with the control arm below, so what the control arm proves is what this
+/// guard actually runs rather than a second copy that can drift from it.
+fn terminal_write_hits(files: &[SourceFile]) -> Vec<(String, usize, Option<String>, String)> {
+    let mut hits = Vec::new();
+    for file in files {
+        let boundary = test_region_start(file).unwrap_or(usize::MAX);
+        for (number, line) in executable_lines(file) {
+            if *number >= boundary || !writes_terminal(line) {
+                continue;
+            }
+            hits.push((
+                file.0.clone(),
+                *number,
+                enclosing_fn(&file.1, *number),
+                line.trim().to_string(),
+            ));
+        }
+    }
+    hits
+}
+
 #[test]
 fn every_terminal_write_in_the_driver_run_goes_through_the_stamped_helper() {
     let files = source_files();
-    let home = files
-        .iter()
-        .find(|(path, _)| path == TERMINAL_WRITE_HOME)
-        .unwrap_or_else(|| panic!("{TERMINAL_WRITE_HOME} must exist"));
 
-    // The production region: everything above the in-module test module. Tests
-    // close journals of their own and are excluded BY CONSTRUCTION rather than
-    // by an allowlist somebody has to maintain.
-    let boundary = test_region_start(home).unwrap_or_else(|| {
-        panic!(
-            "{TERMINAL_WRITE_HOME} has no line beginning {TEST_REGION_MARKER:?} at \
-             column zero, so this guard cannot tell its production region from its \
-             tests and would scan the whole file. If the test module was renamed or \
-             moved, re-point TEST_REGION_MARKER in the same commit"
-        )
-    });
-
-    let mut offenders: Vec<(String, usize, String)> = Vec::new();
-    let mut helper_writes = 0usize;
-    for (number, line) in executable_lines(home) {
-        if *number >= boundary || !line.contains(TERMINAL_WRITE_CALL) {
-            continue;
-        }
-        match enclosing_fn(&home.1, *number).as_deref() {
-            Some(TERMINAL_WRITE_HELPER) => helper_writes += 1,
-            _ => offenders.push((home.0.clone(), *number, line.trim().to_string())),
-        }
+    // The boundary must survive in the allowlisted file SPECIFICALLY. Everywhere
+    // else a missing marker means "no in-module tests" and scanning in full is
+    // correct; here it would mean silently scanning `run.rs`'s own tests, which
+    // close journals of their own and would flood this guard with offenders.
+    for (path, _) in TERMINAL_WRITE_ALLOWLIST {
+        let home = files
+            .iter()
+            .find(|(candidate, _)| candidate == path)
+            .unwrap_or_else(|| panic!("{path} is on TERMINAL_WRITE_ALLOWLIST and must exist"));
+        test_region_start(home).unwrap_or_else(|| {
+            panic!(
+                "{path} has no line beginning {TEST_REGION_MARKER:?} at column zero, \
+                 so this guard cannot tell its production region from its tests and \
+                 would scan the whole file. If the test module was renamed or moved, \
+                 re-point TEST_REGION_MARKER in the same commit"
+            )
+        });
     }
 
+    let hits = terminal_write_hits(&files);
+
+    let allowed = |path: &str, enclosing: Option<&str>| -> bool {
+        enclosing.is_some_and(|name| {
+            TERMINAL_WRITE_ALLOWLIST
+                .iter()
+                .any(|(file, function)| *file == path && *function == name)
+        })
+    };
+
+    let offenders: Vec<(String, usize, String)> = hits
+        .iter()
+        .filter(|(path, _, enclosing, _)| !allowed(path, enclosing.as_deref()))
+        .map(|(path, number, _, line)| (path.clone(), *number, line.clone()))
+        .collect();
     assert!(
         offenders.is_empty(),
-        "a terminal write in {TERMINAL_WRITE_HOME}'s production region does not go \
-         through `{TERMINAL_WRITE_HELPER}`. That helper stamps the run's model \
-         consultation count before it finishes the journal, and it is the ONLY \
-         place a run's ending is written so that a new terminal path inherits the \
-         stamp rather than having to remember it. A bare `{TERMINAL_WRITE_CALL}` \
-         here writes `escalations_used: null` on a run that spent consultations, \
-         which reads identically to a record from a build that predates the \
-         counter — on exactly the killed and failed-to-spawn runs a reader is \
-         auditing (WR-02, DRIVE-04). Offending lines:{}",
+        "a terminal write in a production region under src/ does not go through \
+         `{TERMINAL_WRITE_HELPER}`. That helper stamps the run's model consultation \
+         count before it finishes the journal, and it is the ONLY place a run's \
+         ending is written so that a new terminal path inherits the stamp rather \
+         than having to remember it. A bare `{TERMINAL_WRITE_CALL}` — or the \
+         fully-qualified `{TERMINAL_WRITE_UFCS_CALL}` — writes `escalations_used: \
+         null` on a run that spent consultations, which reads identically to a \
+         record from a build that predates the counter, on exactly the killed and \
+         failed-to-spawn runs a reader is auditing (WR-02, DRIVE-04). \
+         `JournalRun::finish` is `pub` on a `pub struct`, so this is reachable from \
+         any module in the tree and not only from the driver. Offending lines:{}",
         render(&offenders)
     );
 
-    // Non-vacuity, in the register `source_files` already uses. A rename that
-    // emptied the scan would otherwise look exactly like a clean run.
+    // --- non-vacuity, re-tuned to the widened scope -------------------------
+    //
+    // A scan widened without re-tuning its control assertions passes for the old,
+    // narrow reason and has been widened in name only. Each assertion below is
+    // now a statement about the whole tree, except the one that is deliberately
+    // not — and that one says so.
+
+    let helper_writes = hits.len();
     assert_eq!(
         helper_writes, 1,
-        "the helper must contain exactly ONE terminal write, and the scan must \
-         have found it. {helper_writes} is either a helper that closes a run out \
-         twice or a scan that is checking nothing — if `{TERMINAL_WRITE_CALL}` \
-         was renamed, re-point TERMINAL_WRITE_CALL in the same commit"
+        "the tree must contain exactly ONE production terminal write, and the scan \
+         must have found it. {helper_writes} is either a second way to close a run \
+         out or a scan that is checking nothing — if the call was renamed, re-point \
+         `{TERMINAL_WRITE_CALL}` / `{TERMINAL_WRITE_UFCS_CALL}` in the same commit"
     );
 
-    let declarations: Vec<_> = executable_lines(home)
-        .filter(|(number, line)| {
-            *number < boundary && line.contains(&format!("fn {TERMINAL_WRITE_HELPER}("))
+    // The property WR-01 says was unchecked, stated directly: the whole tree
+    // contributes terminal writes from exactly one file. The old file-scoped scan
+    // could not make this assertion, because it had already assumed it.
+    let mut contributing: Vec<&String> = hits.iter().map(|(path, _, _, _)| path).collect();
+    contributing.sort();
+    contributing.dedup();
+    assert_eq!(
+        contributing.len(),
+        1,
+        "exactly one file under src/ may contribute a production terminal write. \
+         Found {contributing:?} — a second file closing runs out is the hole the \
+         old, file-scoped scan could not see"
+    );
+
+    // The allowlist must not be wider than the truth it describes — the seam-site
+    // guard's second direction (`:1501-1509`, T-20-17), applied here.
+    let stale: Vec<&(&str, &str)> = TERMINAL_WRITE_ALLOWLIST
+        .iter()
+        .filter(|(file, function)| {
+            !hits.iter().any(|(path, _, enclosing, _)| {
+                path == file && enclosing.as_deref() == Some(*function)
+            })
         })
         .collect();
+    assert!(
+        stale.is_empty(),
+        "an allowlisted terminal-write site no longer writes a run's ending, so the \
+         allowlist is now wider than the truth it describes. If the helper was \
+         removed or renamed on purpose, remove its entry in the same commit. \
+         Stale: {stale:?}"
+    );
+
+    // The declaration count is now TREE-WIDE, so a second stamped helper defined
+    // in another file is caught rather than being invisible for the same reason
+    // the writes themselves used to be.
+    let declaration = format!("fn {TERMINAL_WRITE_HELPER}(");
+    let mut declarations: Vec<(String, usize, String)> = Vec::new();
+    for file in &files {
+        let boundary = test_region_start(file).unwrap_or(usize::MAX);
+        for (number, line) in executable_lines(file) {
+            if *number < boundary && line.contains(&declaration) {
+                declarations.push((file.0.clone(), *number, line.trim().to_string()));
+            }
+        }
+    }
     assert_eq!(
         declarations.len(),
         1,
-        "there must be exactly one stamped terminal-write helper; a second is a \
-         second way to close a run out, and the whole property is that there is \
-         one. Found {}",
-        declarations.len()
+        "there must be exactly one stamped terminal-write helper anywhere under \
+         src/; a second is a second way to close a run out, and the whole property \
+         is that there is one. Found:{}",
+        render(&declarations)
     );
 
-    // And every path that USES it is inside the production region, so the count
-    // below is about production code rather than about tests.
-    let uses = executable_lines(home)
-        .filter(|(number, line)| {
-            *number < boundary
-                && line.contains(&format!("{TERMINAL_WRITE_HELPER}("))
-                && !line.contains(&format!("fn {TERMINAL_WRITE_HELPER}("))
-        })
-        .count();
-    assert!(
-        uses >= 4,
-        "the driver has four production terminal paths — the normal end, the \
-         terminate-signal shutdown, the startup kill and the spawn failure — and \
-         only {uses} call the stamped helper. A path that stopped calling it is a \
-         path that stopped recording the count"
-    );
+    // And the call count stays scoped to the allowlisted file ON PURPOSE: the four
+    // production terminal paths — the normal end, the terminate-signal shutdown,
+    // the startup kill and the spawn failure — all live in the driver's run
+    // module, so a tree-wide count here would weaken a number that is exact.
+    for (path, function) in TERMINAL_WRITE_ALLOWLIST {
+        if *function != TERMINAL_WRITE_HELPER {
+            continue;
+        }
+        let home = files
+            .iter()
+            .find(|(candidate, _)| candidate == path)
+            .unwrap_or_else(|| panic!("{path} must exist"));
+        let boundary = test_region_start(home).unwrap_or(usize::MAX);
+        let uses = executable_lines(home)
+            .filter(|(number, line)| {
+                *number < boundary
+                    && line.contains(&format!("{TERMINAL_WRITE_HELPER}("))
+                    && !line.contains(&format!("fn {TERMINAL_WRITE_HELPER}("))
+            })
+            .count();
+        assert!(
+            uses >= 4,
+            "the driver has four production terminal paths — the normal end, the \
+             terminate-signal shutdown, the startup kill and the spawn failure — \
+             and only {uses} in {path} call the stamped helper. A path that stopped \
+             calling it is a path that stopped recording the count"
+        );
+    }
+}
+
+/// Build a `SourceFile` from a path and its literal lines.
+fn synthetic_file(path: &str, lines: &[&str]) -> SourceFile {
+    (
+        path.to_string(),
+        lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| (index + 1, line.to_string()))
+            .collect(),
+    )
 }
 
 #[test]
 fn the_terminal_write_scanner_reports_a_bare_call_and_not_the_helpers_own() {
-    // Guard six's control arm, both directions in one test, over synthetic
-    // source rather than lines read from the tree — so it keeps proving the
-    // scanner works once, especially once, the tree is correct. An assertion on
-    // emptiness that no scanner could ever populate is the Phase-20 defect this
-    // repository has already paid for.
-    let lines: Vec<(usize, String)> = [
-        "fn finish_run(journal: &mut JournalRun, label: &str, used: u32) -> Result<()> {",
-        "    journal.set_escalations_used(used);",
-        "    journal.finish(label)",
-        "}",
-        "async fn shutdown_on_terminate(journal: &mut JournalRun) {",
-        "    if let Err(err) = journal.finish(&label) {",
-        "        warn!(\"could not close\");",
-        "    }",
-        "}",
-        "mod tests {",
-        "    fn a_test() { journal.finish(\"succeeded\").expect(\"finish\"); }",
-        "}",
-    ]
-    .iter()
-    .enumerate()
-    .map(|(index, line)| (index + 1, line.to_string()))
-    .collect();
-    let synthetic: SourceFile = ("src/synthetic.rs".to_string(), lines.clone());
+    // Guard six's control arm, every direction in one test, over synthetic source
+    // rather than lines read from the tree — so it keeps proving the scanner works
+    // once, especially once, the tree is correct. An assertion on emptiness that
+    // no scanner could ever populate is the Phase-20 defect this repository has
+    // already paid for.
+    //
+    // **Two synthetic files, and both halves of the widening.** The scan now
+    // covers every file under `src/` and matches two call spellings, so a control
+    // arm over one file and one spelling would go on passing for the reason the
+    // scan used to be narrow. The second file carries the UFCS spelling, which is
+    // the exact pair — another file, another spelling — the old guard was blind
+    // to on both counts.
+    let home = synthetic_file(
+        "src/driver/run.rs",
+        &[
+            "fn finish_run(journal: &mut JournalRun, label: &str, used: u32) -> Result<()> {",
+            "    journal.set_escalations_used(used);",
+            "    journal.finish(label)",
+            "}",
+            "async fn shutdown_on_terminate(journal: &mut JournalRun) {",
+            "    if let Err(err) = journal.finish(&label) {",
+            "        warn!(\"could not close\");",
+            "    }",
+            "}",
+            "mod tests {",
+            "    fn a_test() { journal.finish(\"succeeded\").expect(\"finish\"); }",
+            "}",
+        ],
+    );
+    // A second file, with NO test-region marker at all — scanned in full, which is
+    // correct for a file that declares no in-module tests, and which is how a
+    // terminal write in `src/app.rs` or a UI screen becomes visible.
+    let elsewhere = synthetic_file(
+        "src/elsewhere.rs",
+        &[
+            "fn tear_down(journal: &mut JournalRun) {",
+            "    // JournalRun::finish(journal, \"aborted\") — a comment, never a write",
+            "    let _ = JournalRun::finish(journal, \"aborted\");",
+            "}",
+        ],
+    );
 
-    let boundary = test_region_start(&synthetic)
+    let boundary = test_region_start(&home)
         .expect("the synthetic source declares a column-zero test module");
     assert_eq!(boundary, 10, "the production region ends at the test module");
+    assert!(
+        test_region_start(&elsewhere).is_none(),
+        "the second fixture must declare NO test region, or it is not exercising \
+         the scan-in-full path a file without in-module tests takes"
+    );
 
-    let attributed: Vec<(usize, Option<String>)> = executable_lines(&synthetic)
-        .filter(|(number, line)| *number < boundary && line.contains(TERMINAL_WRITE_CALL))
-        .map(|(number, _)| (*number, enclosing_fn(&lines, *number)))
-        .collect();
+    let attributed: Vec<(String, usize, Option<String>)> =
+        terminal_write_hits(&[home.clone(), elsewhere.clone()])
+            .into_iter()
+            .map(|(path, number, enclosing, _)| (path, number, enclosing))
+            .collect();
 
     assert_eq!(
         attributed,
         vec![
-            (3, Some(TERMINAL_WRITE_HELPER.to_string())),
-            (6, Some("shutdown_on_terminate".to_string())),
+            (
+                "src/driver/run.rs".to_string(),
+                3,
+                Some(TERMINAL_WRITE_HELPER.to_string())
+            ),
+            (
+                "src/driver/run.rs".to_string(),
+                6,
+                Some("shutdown_on_terminate".to_string())
+            ),
+            (
+                "src/elsewhere.rs".to_string(),
+                3,
+                Some("tear_down".to_string())
+            ),
         ],
-        "the scanner must attribute the helper's OWN write to the helper and a \
-         bare write elsewhere to the function that made it. A scanner that \
-         reported neither would satisfy the emptiness assertion above forever \
-         while auditing nothing; one that reported the helper's own write would \
-         make the property unsatisfiable"
+        "the scanner must attribute the helper's OWN write to the helper, a bare \
+         write elsewhere in the same file to the function that made it, and a \
+         UFCS write in a DIFFERENT file to that file's function. A scanner that \
+         reported none of them would satisfy the emptiness assertion above forever \
+         while auditing nothing; one that reported the helper's own write as an \
+         offender would make the property unsatisfiable; and one that missed \
+         either of the last two is the guard as it stood before WR-01"
     );
 
-    // And a write below the boundary is out of scope by design: the in-module
-    // tests close journals of their own, and forgiving them by name would be an
+    // A write below the boundary is out of scope by design: the in-module tests
+    // close journals of their own, and forgiving them by name would be an
     // allowlist where a region boundary is the honest answer.
     assert!(
-        executable_lines(&synthetic)
-            .any(|(number, line)| *number > boundary && line.contains(TERMINAL_WRITE_CALL)),
+        executable_lines(&home)
+            .any(|(number, line)| *number > boundary && writes_terminal(line)),
         "the synthetic fixture must contain a test-region write, or the boundary \
          is doing nothing here"
+    );
+    assert!(
+        !attributed
+            .iter()
+            .any(|(path, number, _)| path == "src/driver/run.rs" && *number > boundary),
+        "and the scanner must not report it"
+    );
+
+    // The comment line in the second fixture spells the UFCS needle exactly and
+    // must NOT be reported: limit 2 in the header above is about BLOCK comments,
+    // and a line comment is filtered. That is what lets this file's own prose name
+    // the spellings it forbids.
+    assert!(
+        !attributed
+            .iter()
+            .any(|(path, number, _)| path == "src/elsewhere.rs" && *number == 2),
+        "a line comment naming the UFCS spelling is not a write, or no guard in \
+         this file could document the token it matches on"
     );
 }
 
