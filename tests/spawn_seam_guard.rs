@@ -2132,3 +2132,169 @@ fn the_arrival_evidence_field_is_named_only_where_the_schema_declares_it() {
         render(&offenders)
     );
 }
+
+// ---------------------------------------------------------------------------
+// Guard eight: `CommandSource` is built in exactly one place
+// ---------------------------------------------------------------------------
+//
+// **This guard is the missing half of a design decision, not a new rule.**
+// `driver::command_source` validates a blank `--command` and refuses it, and the
+// renderer deliberately does NOT defend again — because two places answering one
+// question are two places that can disagree about the answer. That reduction is
+// sound only while `command_source` really is the single production constructor
+// of [`driver::CommandSource`]. Until now that was a grep result somebody ran
+// once; here it is a property a test enforces.
+//
+// **The needles are variant spellings rather than the bare type name, and the
+// reason is a live name collision.** `src/driver/run.rs:614` declares a SECOND,
+// unrelated `enum CommandSource` with variants `Fixed(String)` and
+// `Routed { target_phase }`. A scan for the bare type name would report that
+// enum's own construction and match sites as offenders, and the only way to
+// green the suite would be to allowlist `run.rs` — which would exempt the very
+// file whose collision made this delicate. So the needles are the three
+// fully-qualified variant spellings WITH an opening parenthesis:
+//
+// * `Command` and `Goal` do not exist on `run.rs`'s enum at all;
+// * `run.rs` writes its `Routed` as a STRUCT variant, so it is spelled with a
+//   brace and never with a parenthesis.
+//
+// Renaming one of the two types is the better long-term answer and is out of
+// scope here — `21-11-PLAN.md` records it as accepted debt. This guard is
+// written so the rename would make it SIMPLER rather than so that it depends on
+// the collision persisting: after a rename the needles still match exactly the
+// sites they match today.
+
+/// The three variant spellings, as they are written when built or matched.
+const COMMAND_SOURCE_VARIANTS: &[&str] = &[
+    "CommandSource::Command(",
+    "CommandSource::Routed(",
+    "CommandSource::Goal(",
+];
+
+/// The two production functions permitted to name a `CommandSource` variant.
+///
+/// **A declared `(file, fn)` allowlist**, the same shape `TERMINAL_WRITE_ALLOWLIST`
+/// and the seam-site guard use, and the shape `21-VERIFICATION.md` names as the
+/// model for this class of check.
+///
+/// Which is which, and why both are sanctioned:
+///
+/// * `command_source` **constructs** them. It is the single production
+///   constructor, and that is the whole property this guard exists to enforce.
+/// * `preview_text` **matches** them. Its arms name the variants as patterns
+///   rather than building them; the match is exhaustive with no wildcard, which
+///   is what makes a fourth source a compile error at every consumer.
+///
+/// No attempt is made to tell a construction from a pattern match textually. The
+/// distinction is not needed — both functions are allowlisted BY NAME, and an
+/// occurrence outside them is a finding whichever it is — and a heuristic that
+/// tried would be one more approximation this file would then have to document.
+const COMMAND_SOURCE_ALLOWLIST: &[(&str, &str)] = &[
+    ("src/driver/mod.rs", "command_source"),
+    ("src/driver/mod.rs", "preview_text"),
+];
+
+/// How many hits each allowlisted function must contribute: one per variant.
+const COMMAND_SOURCE_VARIANT_COUNT: usize = 3;
+
+#[test]
+fn every_command_source_variant_is_named_only_where_it_is_built_or_matched() {
+    let files = source_files();
+
+    // The same per-file production/test boundary guard six uses. In-module tests
+    // construct these variants freely and legitimately — `src/driver/mod.rs`'s own
+    // tests build all three — and they are excluded BY CONSTRUCTION rather than by
+    // an allowlist somebody has to maintain.
+    let mut hits: Vec<(String, usize, Option<String>, String)> = Vec::new();
+    for file in &files {
+        let boundary = test_region_start(file).unwrap_or(usize::MAX);
+        for (number, line) in executable_lines(file) {
+            if *number >= boundary
+                || !COMMAND_SOURCE_VARIANTS
+                    .iter()
+                    .any(|needle| line.contains(needle))
+            {
+                continue;
+            }
+            hits.push((
+                file.0.clone(),
+                *number,
+                enclosing_fn(&file.1, *number),
+                line.trim().to_string(),
+            ));
+        }
+    }
+
+    let offenders: Vec<(String, usize, String)> = hits
+        .iter()
+        .filter(|(path, _, enclosing, _)| {
+            !enclosing.as_deref().is_some_and(|name| {
+                COMMAND_SOURCE_ALLOWLIST
+                    .iter()
+                    .any(|(file, function)| *file == path && *function == name)
+            })
+        })
+        .map(|(path, number, _, line)| (path.clone(), *number, line.clone()))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "a production line names a `CommandSource` variant outside the two \
+         sanctioned functions. What a third site costs: `command_source` validates \
+         a blank `--command` and refuses it, and the renderer deliberately does NOT \
+         defend again, because two places answering one question are two places \
+         that can disagree. That reduction is sound ONLY while `command_source` is \
+         the single production constructor — a second construction site is \
+         review-CR-02 returning through a new spelling, with every behavioural test \
+         still green. If the new site is a legitimate consumer that matches rather \
+         than builds, add it to COMMAND_SOURCE_ALLOWLIST in the same commit and say \
+         which it is. Offending lines:{}",
+        render(&offenders)
+    );
+
+    // Both directions, in the register the seam-site guard establishes
+    // (`:1501-1509`, T-20-17): an allowlisted site that no longer names a variant
+    // means the allowlist is wider than the truth it describes.
+    //
+    // The count is also the non-vacuity assertion. Each function names all three
+    // variants — `command_source` builds one per arm, `preview_text` matches one
+    // per arm — so a needle that stopped matching, because of a rename or a
+    // reformat that split a line, is a FAILURE here rather than a silently empty
+    // scan that would satisfy the emptiness assertion above forever.
+    for (file, function) in COMMAND_SOURCE_ALLOWLIST {
+        let contributed = hits
+            .iter()
+            .filter(|(path, _, enclosing, _)| {
+                path == file && enclosing.as_deref() == Some(*function)
+            })
+            .count();
+        assert!(
+            contributed >= COMMAND_SOURCE_VARIANT_COUNT,
+            "{file}::{function} is allowlisted as a site that names all \
+             {COMMAND_SOURCE_VARIANT_COUNT} `CommandSource` variants, but the scan \
+             attributes only {contributed} lines to it. Either the allowlist is now \
+             wider than the truth it describes — the site stopped naming them, and \
+             the entry should go in the same commit — or a needle stopped matching \
+             and this guard is auditing less than it claims. Needles: \
+             {COMMAND_SOURCE_VARIANTS:?}"
+        );
+    }
+
+    // The name collision, asserted rather than assumed. `src/driver/run.rs`
+    // declares its OWN unrelated `enum CommandSource`; if these needles ever begin
+    // matching it, the argument above about `Fixed`/`Routed { .. }` has stopped
+    // being true and the needles — not the allowlist — are what must change.
+    let collided: Vec<(String, usize, String)> = hits
+        .iter()
+        .filter(|(path, _, _, _)| path == "src/driver/run.rs")
+        .map(|(path, number, _, line)| (path.clone(), *number, line.clone()))
+        .collect();
+    assert!(
+        collided.is_empty(),
+        "these needles matched `src/driver/run.rs`, which declares a SECOND, \
+         unrelated `enum CommandSource` whose variants are `Fixed(..)` and \
+         `Routed {{ .. }}`. Allowlisting that file would exempt the very file whose \
+         name collision made the needles delicate. Re-point \
+         COMMAND_SOURCE_VARIANTS, or rename one of the two enums. Matched:{}",
+        render(&collided)
+    );
+}
