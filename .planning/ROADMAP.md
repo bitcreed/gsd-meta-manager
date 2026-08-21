@@ -459,7 +459,7 @@ Plans:
   - **The vacuity hazard is the phase's sharpest risk (C-3):** the officially-recommended untrusted-content channel is accepted by this transport with exit 0 and never reaches the model, so an injection-corpus test built on it passes *vacuously*, forever. Every corpus assertion must prove arrival before it proves the property
 
 **Research**: done — `21-RESEARCH.md` (five live spikes; four CONTEXT.md decisions contradicted and corrected in `21-CONTEXT.md` § "Research Corrections")
-**Plans**: 12 plans — 10/10 executed (6/6 in 6 waves, then 4 gap-closure plans in 3 further waves); the re-verification scored 4/5 must-have truths (criterion 1 ✗ FAILED again, on two NEW Criticals introduced by the gap-closure diff itself), so 2 further gap-closure plans were added in 2 more waves
+**Plans**: 11/12 plans executed — 10/10 executed (6/6 in 6 waves, then 4 gap-closure plans in 3 further waves); the re-verification scored 4/5 must-have truths (criterion 1 ✗ FAILED again, on two NEW Criticals introduced by the gap-closure diff itself), so 2 further gap-closure plans were added in 2 more waves
 
 Plans:
 **Wave 1**
@@ -497,7 +497,7 @@ Gap closure, round 3 (from the re-verification in `21-VERIFICATION.md`, which fo
 
 **Wave 1**
 
-- [ ] 21-11-PLAN.md — Tracer: review-CR-02 (a blank `--command` refused at the seam that already refuses a blank `--goal`) and review-CR-01 (the approval token parsed in the pure-refusal group, above the dry-run branch and above the seam, so a typo costs zero consultations), guarded by a degenerate-payload × argv-position matrix driven through the production resolver with a compile-forced variant classifier (DRIVE-01, DRIVE-03)
+- [x] 21-11-PLAN.md — Tracer: review-CR-02 (a blank `--command` refused at the seam that already refuses a blank `--goal`) and review-CR-01 (the approval token parsed in the pure-refusal group, above the dry-run branch and above the seam, so a typo costs zero consultations), guarded by a degenerate-payload × argv-position matrix driven through the production resolver with a compile-forced variant classifier (DRIVE-01, DRIVE-03)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -561,7 +561,7 @@ Gap closure, round 3 (from the re-verification in `21-VERIFICATION.md`, which fo
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 8/8 | In Progress|  |
 | 20. Deterministic Decision Router & Run Bounds | 5/5 | In Progress|  |
-| 21. LLM Goal Layer & Prompt-Injection Hardening | 10/10 | In Progress|  |
+| 21. LLM Goal Layer & Prompt-Injection Hardening | 11/12 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
 
