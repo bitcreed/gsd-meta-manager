@@ -1157,6 +1157,57 @@ mod tests {
             ),
             "a blank goal is not a command source"
         );
+
+        // **review-CR-02: the same rule, at the same seam, for the sibling flag
+        // that never got it.** A command made of nothing is a run with nothing to
+        // instruct it. Unrefused it reached `dry_run::build_report` as an empty
+        // entry beneath a header promising the complete and honest sequence, and
+        // on a real run it reached `run.json`'s `gsd_command`, where the empty
+        // string already means "field absent" on the tolerant read path (D-30).
+        assert!(
+            matches!(
+                command_source(Some(""), None, None),
+                Err(DriveError::NoCommandSource)
+            ),
+            "an empty --command is not a command source"
+        );
+        assert!(
+            matches!(
+                command_source(Some("   "), None, None),
+                Err(DriveError::NoCommandSource)
+            ),
+            "a whitespace-only --command is not a command source"
+        );
+
+        // The threshold, pinned on BOTH sides so the refusal is a boundary rather
+        // than a heuristic: zero non-whitespace characters is refused, one is
+        // accepted.
+        assert!(
+            matches!(
+                command_source(Some(" "), None, None),
+                Err(DriveError::NoCommandSource)
+            ),
+            "one space is still zero non-whitespace characters"
+        );
+        assert_eq!(
+            command_source(Some("x"), None, None).ok(),
+            Some(CommandSource::Command("x".to_string())),
+            "one non-whitespace character is a command; a guard that refused this \
+             too would be refusing on length rather than on emptiness"
+        );
+
+        // **The arm a careless fix gets wrong.** A blank `--command` must not
+        // fall through and silently promote a goal that the documented precedence
+        // says LOSES to a supplied command — that is a run pursuing an objective
+        // the caller did not select.
+        assert!(
+            matches!(
+                command_source(Some(""), None, Some("a real goal")),
+                Err(DriveError::NoCommandSource)
+            ),
+            "a blank --command beside a --goal must be refused, never promoted \
+             into a Goal source the caller's precedence did not choose"
+        );
     }
 
     #[test]
@@ -1216,6 +1267,27 @@ mod tests {
             command_source(None, Some("20"), Some("a goal")).ok(),
             Some(CommandSource::Routed("20".to_string())),
             "a goal beside --target-phase is recorded text, not a second source"
+        );
+
+        // **Blankness must not demote an ambiguous invocation into a legal one.**
+        // Two sources were named; whichever won would be one the caller did not
+        // choose, and the emptiness guard added for review-CR-02 must not turn
+        // that into a routed run starting under a command line the caller
+        // believed named a single command (T-21-11-05).
+        assert!(
+            matches!(
+                command_source(Some(""), Some("20"), None),
+                Err(DriveError::AmbiguousCommandSource)
+            ),
+            "a blank --command beside a --target-phase is still the AMBIGUITY \
+             refusal — the ambiguity arm must keep matching first"
+        );
+        assert!(
+            matches!(
+                command_source(Some("   "), Some("20"), None),
+                Err(DriveError::AmbiguousCommandSource)
+            ),
+            "and the same for a whitespace-only one"
         );
     }
 
@@ -1398,6 +1470,58 @@ mod tests {
         DrivableProject::from_registry("demo", entry).expect("an opted-in real directory")
     }
 
+    /// The payloads that carry no instruction at all.
+    ///
+    /// Enumerated as a constant rather than inlined per assertion so that a fifth
+    /// blank shape (a vertical tab, a non-breaking space) is added in one place
+    /// and every consumer of the matrix gains it at once. Whitespace-only is the
+    /// predicate `str::trim` already answers, and the production guard is written
+    /// against `trim` for exactly that reason: the test and the code must agree
+    /// about what "blank" means or the enumeration is checking a different
+    /// property from the one the seam enforces.
+    const DEGENERATE: [&str; 4] = ["", "   ", "\t", "\n  \n"];
+
+    /// A **total** classification of [`CommandSource`], with no wildcard arm.
+    ///
+    /// **The absence of a wildcard is the mechanism, and it is the whole point of
+    /// this function existing at all.** A fourth `CommandSource` variant is a
+    /// compile error *here, in the test file*, which means nobody can add a
+    /// fourth command source without opening this module — which is precisely
+    /// what did not happen when `--goal` was added beside `--command` and
+    /// `--target-phase`, and CR-01 is what that cost.
+    ///
+    /// Deliberately **not** `std::mem::discriminant` and deliberately no new
+    /// derive: a hash-based or opaque identity would keep compiling when a fourth
+    /// variant appeared, and a mechanism that keeps compiling is not a mechanism.
+    /// The `&'static str` is what lets the coverage assertion below name the
+    /// variants it expects, so a matrix that quietly stopped producing one of
+    /// them fails by name rather than by count.
+    fn variant_name(source: &CommandSource) -> &'static str {
+        match source {
+            CommandSource::Command(_) => "Command",
+            CommandSource::Routed(_) => "Routed",
+            CommandSource::Goal(_) => "Goal",
+        }
+    }
+
+    /// The first line of `rendered` that is a number, a dot and nothing else.
+    ///
+    /// The exact shape `build_report(project, "")` produced for a goal under
+    /// CR-01, and for a blank `--command` under review-CR-02. **One detector
+    /// shared by both tests below** rather than two copies: two places that answer
+    /// the same question are two places that can disagree, which is the shape
+    /// `CommandSource`'s own promotion was made to remove.
+    fn empty_numbered_entry(rendered: &str) -> Option<&str> {
+        rendered.lines().find(|line| {
+            let trimmed = line.trim();
+            trimmed.split_once('.').is_some_and(|(head, tail)| {
+                !head.is_empty()
+                    && head.chars().all(|c| c.is_ascii_digit())
+                    && tail.trim().is_empty()
+            })
+        })
+    }
+
     /// **CR-01, as an assertion rather than as a review finding.**
     ///
     /// `--goal X --dry-run` used to fall through `preview_text`'s `(None, None)`
@@ -1454,8 +1578,21 @@ mod tests {
     /// **The array literal is the mechanism.** It is written as an exhaustive
     /// list of constructed variants rather than as a helper that generates them,
     /// so a fifth arm on the enum is a change somebody has to make *here* — and
-    /// the `matches!` sweep below is what makes forgetting to extend the array a
+    /// the per-variant sweep below is what makes forgetting to extend the array a
     /// failure rather than a silently narrower sweep.
+    ///
+    /// **This test carries REALISTIC payloads only, and that is deliberate now
+    /// rather than accidental.** As written by 21-07 it enumerated
+    /// `CommandSource::Command("/gsd:progress")` and nothing blanker, so it
+    /// passed vacuously against the one source that already had review-CR-02's
+    /// bug. The degenerate payloads are enumerated in
+    /// [`every_command_source_refuses_or_previews_cleanly_for_every_degenerate_payload`]
+    /// below instead, and they are enumerated *there* because that is where they
+    /// are production-reachable: on argv, through [`command_source`], which is
+    /// the single production constructor of this type. Defending the renderer
+    /// against a hand-constructed `CommandSource::Command(String::new())` would
+    /// be a second place answering a question the seam already answers, and two
+    /// such places are two places that can disagree.
     #[test]
     fn every_command_source_renders_a_preview_with_no_empty_numbered_command() {
         let root = tempfile::TempDir::new().expect("temp dir");
@@ -1469,21 +1606,24 @@ mod tests {
 
         // Non-vacuity, in the register `tests/spawn_seam_guard.rs` uses: an
         // enumeration that had quietly stopped covering a variant would pass for
-        // the wrong reason. Every arm must be represented exactly once, and the
-        // `match` is what turns a new variant into a compile error here.
-        for expected in 0..sources.len() {
+        // the wrong reason.
+        //
+        // **Keyed on the VARIANT rather than on the array index.** The sweep this
+        // replaced compared `expected == 0/1/2` against the array position, which
+        // is a per-position check wearing a per-variant check's name: it proved
+        // the array had three entries in a fixed order, and would have kept
+        // passing if two of those entries had been the same variant. `variant_name`
+        // is a `match` with no wildcard, so a fourth variant is a compile error
+        // and a duplicated one is a count of 2 here.
+        for expected in ["Command", "Routed", "Goal"] {
             let present = sources
                 .iter()
-                .filter(|source| match source {
-                    CommandSource::Command(_) => expected == 0,
-                    CommandSource::Routed(_) => expected == 1,
-                    CommandSource::Goal(_) => expected == 2,
-                })
+                .filter(|source| variant_name(source) == expected)
                 .count();
             assert_eq!(
                 present, 1,
                 "each command source must appear exactly once in the enumeration; \
-                 variant {expected} appeared {present} times"
+                 `{expected}` appeared {present} times"
             );
         }
 
@@ -1495,24 +1635,174 @@ mod tests {
                 "every source renders the pinned commands section; {source:?} did \
                  not:\n{rendered}"
             );
-            let empty_entry = rendered.lines().find(|line| {
-                let trimmed = line.trim();
-                // `    N. ` with nothing after the number: the exact shape
-                // `build_report(project, "")` produced for a goal.
-                trimmed
-                    .split_once('.')
-                    .is_some_and(|(head, tail)| {
-                        !head.is_empty()
-                            && head.chars().all(|c| c.is_ascii_digit())
-                            && tail.trim().is_empty()
-                    })
-            });
+            let empty_entry = empty_numbered_entry(&rendered);
             assert!(
                 empty_entry.is_none(),
                 "no preview may render an empty numbered entry — it reads as a \
                  command the run would issue, and printing one for a source the \
                  renderer did not recognise is exactly how CR-01 shipped. \
                  {source:?} produced {empty_entry:?} in:\n{rendered}"
+            );
+        }
+    }
+
+    /// **The enumeration that would have caught review-CR-02, and CR-01 before
+    /// it, without anybody having to pick the right payload.**
+    ///
+    /// Every degenerate payload, in every argv position, driven through the
+    /// **production resolver** [`command_source`] rather than through a
+    /// hand-constructed variant. Each cell must land in one of exactly two
+    /// acceptable places: a typed [`DriveError::NoCommandSource`] refusal, or an
+    /// `Ok` whose preview carries the pinned commands section and renders no
+    /// empty numbered entry.
+    ///
+    /// Against the UNFIXED `command_source` this test FAILS: `--command ''`
+    /// resolved to `Ok(CommandSource::Command(""))`, which `preview_text` routed
+    /// to `dry_run::build_report(project, "")`, which pushes the empty string
+    /// into `commands` and renders `1.` with nothing after the number beneath the
+    /// header promising *the complete and honest sequence*.
+    ///
+    /// **What this makes a compile-time certainty:** a fourth `CommandSource`
+    /// variant. [`variant_name`] has no wildcard arm, so adding one does not
+    /// build until somebody has opened this module and classified it.
+    ///
+    /// **What this makes a test-time certainty:** a degenerate payload reaching a
+    /// preview through any of the three argv positions. The enumeration axis is
+    /// payloads, not a curated list of variants, so it cannot be satisfied by
+    /// picking a payload that avoids the defect — which is exactly how its
+    /// predecessor passed.
+    ///
+    /// **What this does NOT catch, stated plainly rather than glossed:** a fourth
+    /// argv *field* that resolves to an **existing** variant — say a `--goal-file`
+    /// that becomes `CommandSource::Goal`. That adds a column this matrix does not
+    /// have, and the classifier does not fire because no variant was added. This
+    /// repository has already paid once for a guard that read as exact and was
+    /// quietly approximate; the sentence is here so this one is not read as more
+    /// than it is.
+    #[test]
+    fn every_command_source_refuses_or_previews_cleanly_for_every_degenerate_payload() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let project = previewable(root.path());
+
+        /// One argv position, as the triple `command_source` takes.
+        ///
+        /// A higher-ranked fn pointer rather than a boxed closure so the table is
+        /// a `const`-shaped literal and the borrow is the payload's own.
+        type PositionBuilder =
+            for<'a> fn(&'a str) -> (Option<&'a str>, Option<&'a str>, Option<&'a str>);
+
+        let positions: [(&str, &str, PositionBuilder); 3] = [
+            ("--command", "/gsd:progress", |payload| {
+                (Some(payload), None, None)
+            }),
+            ("--target-phase", "20", |payload| (None, Some(payload), None)),
+            ("--goal", "get phase 22 verified", |payload| {
+                (None, None, Some(payload))
+            }),
+        ];
+
+        let mut resolved: Vec<&'static str> = Vec::new();
+
+        for (position, realistic, build) in positions {
+            for payload in DEGENERATE.iter().copied().chain(std::iter::once(realistic)) {
+                let (command, target_phase, goal) = build(payload);
+
+                match command_source(command, target_phase, goal) {
+                    // A run with nothing to do, refused at the seam. Free, typed,
+                    // and identical for a preview and for a real run.
+                    Err(DriveError::NoCommandSource) => {}
+                    Err(other) => panic!(
+                        "the only legal refusal in this matrix is NoCommandSource — \
+                         a degenerate payload in {position} must not be refused by \
+                         some other name, or the refusal a user reads stops \
+                         matching the thing they typed; payload {payload:?} gave \
+                         {other:?}"
+                    ),
+                    Ok(source) => {
+                        resolved.push(variant_name(&source));
+
+                        let rendered = preview_text(&project, &source);
+                        assert!(
+                            rendered.contains(dry_run::SECTION_COMMANDS),
+                            "every resolved source renders the pinned commands \
+                             section — a blank section reads as a missing one; \
+                             {position} with payload {payload:?} gave:\n{rendered}"
+                        );
+
+                        let empty_entry = empty_numbered_entry(&rendered);
+                        assert!(
+                            empty_entry.is_none(),
+                            "a numbered entry with nothing after the number reads \
+                             as a command the run would issue, beneath a header \
+                             that promises the COMPLETE and honest sequence — it \
+                             invites a user to authorise a run on a claim the tool \
+                             never checked (review-CR-02). {position} with payload \
+                             {payload:?} produced {empty_entry:?} in:\n{rendered}"
+                        );
+                    }
+                }
+            }
+        }
+
+        // Non-vacuity, first direction: the matrix must actually have produced
+        // every variant. A matrix that had quietly stopped covering one — or one
+        // where the new guard refused everything — would otherwise pass narrowly.
+        resolved.sort_unstable();
+        resolved.dedup();
+        assert_eq!(
+            resolved,
+            vec!["Command", "Goal", "Routed"],
+            "the `Ok` cells must cover exactly the variants `variant_name` \
+             classifies; anything else means the matrix stopped exercising a \
+             command source, or the emptiness guard refused one it should not"
+        );
+
+        // Non-vacuity, second direction: each position's realistic payload still
+        // resolves. A guard that passed by refusing everything would fail here.
+        assert!(
+            matches!(
+                command_source(Some("/gsd:progress"), None, None),
+                Ok(CommandSource::Command(_))
+            ),
+            "a real --command must still resolve"
+        );
+        assert!(
+            matches!(
+                command_source(None, Some("20"), None),
+                Ok(CommandSource::Routed(_))
+            ),
+            "a real --target-phase must still resolve"
+        );
+        assert!(
+            matches!(
+                command_source(None, None, Some("get phase 22 verified")),
+                Ok(CommandSource::Goal(_))
+            ),
+            "a real --goal must still resolve"
+        );
+
+        // The two positions whose degenerate payloads are refusals rather than
+        // clean previews, asserted by name rather than left to the disjunction
+        // above. The `--target-phase` column is deliberately absent: a blank
+        // phase is NOT a second emptiness bug here, because `drive` refuses a
+        // non-plain path component at its own seam
+        // (`journal::is_plain_path_component` returns false for the empty
+        // string), pinned by
+        // `a_target_phase_that_is_not_a_plain_path_component_is_refused_without_touching_disk`.
+        for payload in DEGENERATE {
+            assert!(
+                matches!(
+                    command_source(Some(payload), None, None),
+                    Err(DriveError::NoCommandSource)
+                ),
+                "a --command of {payload:?} is a run with nothing to instruct it"
+            );
+            assert!(
+                matches!(
+                    command_source(None, None, Some(payload)),
+                    Err(DriveError::NoCommandSource)
+                ),
+                "a --goal of {payload:?} is a run with nothing to decompose"
             );
         }
     }
