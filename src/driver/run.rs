@@ -601,7 +601,7 @@ impl Terminal {
     }
 }
 
-/// Where each iteration's command comes from.
+/// Where each iteration's command comes from, **inside the run loop**.
 ///
 /// Two arms, mutually exclusive, refused at the seam in
 /// [`crate::driver::drive`] if a caller supplies both or neither. The split is
@@ -610,8 +610,20 @@ impl Terminal {
 /// capture, no bounds evaluation, no router call and no `observed`/`decided`
 /// record.
 ///
-/// [`Fixed`]: CommandSource::Fixed
-enum CommandSource {
+/// **This type was called `CommandSource` until 21-14, colliding with
+/// [`crate::driver::CommandSource`] — a genuinely different concept (argv
+/// resolution, above the run) wearing the same name.** 21-11 recorded the
+/// rename as accepted debt; the debt came due when the collision started
+/// shaping a guard. `tests/spawn_seam_guard.rs`'s guard eight had to spell its
+/// needles as parenthesis-suffixed variant names *purely* to avoid matching
+/// this enum, and carried a watchdog assertion to detect the day that stopped
+/// working — a guard whose needles are shaped by a name collision is one
+/// refactor away from silent blindness. After the rename the tree has exactly
+/// one `CommandSource`, the argv-resolution enum in `driver/mod.rs`, and guard
+/// eight asserts that single declaration instead of dodging by needle shape.
+///
+/// [`Fixed`]: IterationSource::Fixed
+enum IterationSource {
     /// One supplied command, one iteration.
     Fixed(String),
     /// A routed sequence driving toward a phase.
@@ -2590,16 +2602,46 @@ pub async fn execute_run(
     let mut echo_open = true;
 
     // Which of the two execution models this run is. `driver::drive` has already
-    // refused both-or-neither, so the last arm is unreachable; it is spelled out
-    // rather than `unwrap`ped because a detached driver that panicked here would
-    // leave a run directory with no terminal record, which is the signal D-12
-    // reserves for a genuine crash.
+    // refused both-or-neither, so the last arm is believed unreachable, and it is
+    // spelled out rather than `unwrap`ped because a detached driver that panicked
+    // here would leave a run directory with no terminal record, which is the
+    // signal D-12 reserves for a genuine crash.
+    //
+    // **The last arm used to construct `Fixed` around a freshly-made empty
+    // string, and that was the bug in the shape rather than in the behaviour.**
+    // As the "safe" fallback for a
+    // state believed unreachable it manufactured the EXACT value three
+    // gap-closure cycles were spent refusing: a blank command, at the spawn seam,
+    // with no refusal anywhere below it. Precisely because unreachable arms
+    // outlive the beliefs that make them unreachable — `execute_run` is `pub`,
+    // and a future direct caller is the worry the doc one screen up already names
+    // — it now refuses with the argv seam's own typed error instead. A caller who
+    // reaches this state inherits the refusal rather than the fabrication.
+    //
+    // Still no panic. And the refusal STAMPS THE RUN before returning, in the
+    // same shape as the spawn-failure arm below (`finish_run` then `return Err`):
+    // the journal is already open by this point, so a bare early return would
+    // leave a run directory with no terminal record — which is the D-12 crash
+    // signal, and manufacturing a false crash signal to avoid manufacturing a
+    // blank command would have been the same mistake in the other direction.
+    // "a run that started always has a terminal record, even when the thing it
+    // was started for never launched" (T-17-06) applies here too.
     let source = match (&args.command, &args.target_phase) {
-        (Some(command), _) => CommandSource::Fixed(command.clone()),
-        (None, Some(target_phase)) => CommandSource::Routed {
+        (Some(command), _) => IterationSource::Fixed(command.clone()),
+        (None, Some(target_phase)) => IterationSource::Routed {
             target_phase: target_phase.clone(),
         },
-        (None, None) => CommandSource::Fixed(String::new()),
+        (None, None) => {
+            if let Err(journal_err) =
+                finish_run(&mut run.journal, "no_command_source", budget.used())
+            {
+                tracing::warn!(
+                    detail = %format!("{journal_err:#}"),
+                    "could not close the journal after a run with no command source",
+                );
+            }
+            return Err(DriveError::NoCommandSource);
+        }
     };
 
     // `run_bounds` is the value resolved above, before the record was built —
@@ -2651,8 +2693,8 @@ pub async fn execute_run(
         // so its journal and its `run.json` are byte-for-byte what Phase 17
         // wrote.
         let command = match &source {
-            CommandSource::Fixed(command) => command.clone(),
-            CommandSource::Routed { target_phase } => {
+            IterationSource::Fixed(command) => command.clone(),
+            IterationSource::Routed { target_phase } => {
                 let snapshot = capture_snapshot(project.root()).await;
                 let observed = snapshot.project_state.clone();
                 bounds_state.observe(snapshot);
@@ -3268,8 +3310,8 @@ pub async fn execute_run(
         match &source {
             // One supplied command, one iteration. The break is what keeps
             // single-command mode exactly the run Phase 17 shipped.
-            CommandSource::Fixed(_) => break 'iterations,
-            CommandSource::Routed { .. } => {
+            IterationSource::Fixed(_) => break 'iterations,
+            IterationSource::Routed { .. } => {
                 // Recorded **after** the iteration ran, so the step count is
                 // completed steps rather than attempted ones and the
                 // command-repeat detector compares against a command that

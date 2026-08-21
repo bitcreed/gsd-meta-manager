@@ -2266,30 +2266,78 @@ fn the_arrival_evidence_field_is_named_only_where_the_schema_declares_it() {
 // of [`driver::CommandSource`]. Until now that was a grep result somebody ran
 // once; here it is a property a test enforces.
 //
-// **The needles are variant spellings rather than the bare type name, and the
-// reason is a live name collision.** `src/driver/run.rs:614` declares a SECOND,
-// unrelated `enum CommandSource` with variants `Fixed(String)` and
-// `Routed { target_phase }`. A scan for the bare type name would report that
-// enum's own construction and match sites as offenders, and the only way to
-// green the suite would be to allowlist `run.rs` — which would exempt the very
-// file whose collision made this delicate. So the needles are the three
-// fully-qualified variant spellings WITH an opening parenthesis:
+// **The name collision that shaped these needles is GONE, and that history is
+// worth keeping.** `src/driver/run.rs:614` used to declare a SECOND, unrelated
+// `enum CommandSource` (variants `Fixed(String)` and `Routed { target_phase }`).
+// A scan for the bare type name would have reported that enum's own sites as
+// offenders, and the only way to green the suite would have been to allowlist
+// `run.rs` — exempting the very file whose collision made this delicate. So the
+// needles were the fully-qualified variant spellings WITH an opening
+// parenthesis, chosen precisely because `Command`/`Goal` did not exist on the
+// other enum and its `Routed` was a struct variant spelled with a brace.
 //
-// * `Command` and `Goal` do not exist on `run.rs`'s enum at all;
-// * `run.rs` writes its `Routed` as a STRUCT variant, so it is spelled with a
-//   brace and never with a parenthesis.
+// 21-11 recorded the rename as accepted debt; 21-14 called it due, because a
+// guard whose needles are shaped by a name collision is one refactor away from
+// silent blindness. `run.rs`'s enum is now `IterationSource`, the tree declares
+// exactly one `CommandSource`, and this guard asserts that single declaration
+// (below) instead of carrying a watchdog for the day the dodge stopped working.
+// The parenthesis suffix is now kept for construction-vs-brace CLARITY rather
+// than for collision avoidance — it is no longer load-bearing.
 //
-// Renaming one of the two types is the better long-term answer and is out of
-// scope here — `21-11-PLAN.md` records it as accepted debt. This guard is
-// written so the rename would make it SIMPLER rather than so that it depends on
-// the collision persisting: after a rename the needles still match exactly the
-// sites they match today.
+// **What this scan cannot see, each named with the direction it fails in**,
+// in the register guard six above establishes. No claim is made about this
+// guard's failure direction as a whole; it has both.
+//
+// 1. A variant spelling nobody anticipated matches no needle, and no assertion
+//    fires when that happens. **Under-detection — silent.** Two things bound
+//    it: the per-function `contributed >= COMMAND_SOURCE_VARIANT_COUNT`
+//    non-vacuity below, which fails if a needle stops matching a site that
+//    still names all three; and the import assertion below, which makes the
+//    cheapest evasion (importing the variants so they can be written bare)
+//    loud. `Self::`-qualified construction WAS a live instance of this limit
+//    and is now matched rather than merely named.
+// 2. `enclosing_fn` finds the nearest preceding `fn` with no brace tracking, so
+//    a line sitting between the end of `command_source`'s body and the next
+//    declaration is attributed to `command_source` and allowlisted.
+//    **Under-detection — silent**, named rather than fixed: a brace-tracking
+//    parser is out of proportion here, exactly as in guard six's limit 5.
+// 3. The production/test boundary is the shared marker approximation, and it
+//    skips from the marker to END OF FILE. **Under-detection — silent**, and
+//    now bounded tree-wide by `no_production_item_follows_a_test_module_marker`,
+//    which proves the skipped region contains no items at all.
+// 4. `executable_lines` filters LINE comments only, so a variant named inside a
+//    `/* … */` block counts as executable. **Over-detection — loud**: the
+//    failure arrives as a named line a reader can look at.
+// 5. The three `Self::`-qualified needles name no TYPE, so they would also match
+//    an unrelated enum that happens to have a `Command`, `Routed` or `Goal`
+//    tuple variant and constructs it as `Self::` inside its own `impl`.
+//    **Over-detection — loud**, and deliberately accepted in that direction: a
+//    false offender is a line a reader dismisses in seconds, whereas the
+//    under-detection the needles close (a `Self::Command(` construction that no
+//    needle matched) is the silent kind. No such enum exists in the tree today —
+//    the scan currently attributes 6 hits, all in `src/driver/mod.rs`, 3 to
+//    `command_source` and 3 to `preview_text`, none via a `Self::` needle.
 
-/// The three variant spellings, as they are written when built or matched.
+/// The variant spellings, as they are written when built or matched.
+///
+/// **Six needles, not three**: the `Self::`-qualified forms join the
+/// type-qualified ones (review-WR-02, gap 1). `Self::Command(payload)` inside an
+/// `impl CommandSource` block is legal Rust with identical effect and matched no
+/// needle — the same hole the UFCS spelling opened in guard six, in a different
+/// guard. Adding them is safe only AFTER the rename: while `run.rs` declared its
+/// own `CommandSource`, a bare `Self::Routed(` could have matched that enum's
+/// sites instead.
+///
+/// The trailing parenthesis is now a readability convention (it distinguishes a
+/// tuple-variant construction from a struct-variant brace), not the collision
+/// dodge it originally was. See the header above.
 const COMMAND_SOURCE_VARIANTS: &[&str] = &[
     "CommandSource::Command(",
     "CommandSource::Routed(",
     "CommandSource::Goal(",
+    "Self::Command(",
+    "Self::Routed(",
+    "Self::Goal(",
 ];
 
 /// The two production functions permitted to name a `CommandSource` variant.
@@ -2400,22 +2448,78 @@ fn every_command_source_variant_is_named_only_where_it_is_built_or_matched() {
         );
     }
 
-    // The name collision, asserted rather than assumed. `src/driver/run.rs`
-    // declares its OWN unrelated `enum CommandSource`; if these needles ever begin
-    // matching it, the argument above about `Fixed`/`Routed { .. }` has stopped
-    // being true and the needles — not the allowlist — are what must change.
-    let collided: Vec<(String, usize, String)> = hits
+    // **One name, one type — the collision watchdog's replacement.** The old
+    // assertion here checked that the needles had not begun matching
+    // `src/driver/run.rs`'s second, unrelated `enum CommandSource`; it was a
+    // watchdog for a dodge. 21-14 removed the thing being dodged (that enum is
+    // now `IterationSource`), so the property can be asserted directly and
+    // positively: the tree declares `enum CommandSource` exactly once.
+    //
+    // A second declaration anywhere is a loud failure naming its file, because
+    // two types with one name is what made these needles delicate in the first
+    // place — and the fix is the rename, never an allowlist entry for the
+    // colliding file.
+    let declaration = "enum CommandSource";
+    let mut declarations: Vec<(String, usize, String)> = Vec::new();
+    for file in &files {
+        let boundary = test_region_start(file).unwrap_or(usize::MAX);
+        for (number, line) in executable_lines(file) {
+            if *number < boundary && line.contains(declaration) {
+                declarations.push((file.0.clone(), *number, line.trim().to_string()));
+            }
+        }
+    }
+    assert_eq!(
+        declarations.len(),
+        1,
+        "exactly one `enum CommandSource` may be declared under src/ — the \
+         argv-resolution enum in src/driver/mod.rs. A second type with the same \
+         name is the debt 21-11 accepted and 21-14 paid off: it forces every \
+         guard that scans for the name to dodge by needle shape, and a needle \
+         shaped by a collision goes blind one refactor later. Rename the new \
+         type; do not allowlist its file. Found:{}",
+        render(&declarations)
+    );
+
+    // And specifically that `run.rs`'s enum stayed renamed. The count above
+    // would also pass if mod.rs's declaration vanished and run.rs's returned,
+    // which is the one way to satisfy it while reintroducing the collision.
+    let run_rs_declares: Vec<&(String, usize, String)> = declarations
         .iter()
-        .filter(|(path, _, _, _)| path == "src/driver/run.rs")
-        .map(|(path, number, _, line)| (path.clone(), *number, line.clone()))
+        .filter(|(path, _, _)| path == "src/driver/run.rs")
         .collect();
     assert!(
-        collided.is_empty(),
-        "these needles matched `src/driver/run.rs`, which declares a SECOND, \
-         unrelated `enum CommandSource` whose variants are `Fixed(..)` and \
-         `Routed {{ .. }}`. Allowlisting that file would exempt the very file whose \
-         name collision made the needles delicate. Re-point \
-         COMMAND_SOURCE_VARIANTS, or rename one of the two enums. Matched:{}",
-        render(&collided)
+        run_rs_declares.is_empty(),
+        "src/driver/run.rs declares an `enum CommandSource` again. Its \
+         per-iteration enum is `IterationSource`; the argv-resolution enum lives \
+         in src/driver/mod.rs. Found: {run_rs_declares:?}"
+    );
+
+    // **The bare-spelling escape hatch, made loud (review-WR-02, gap 2).** Every
+    // needle above is qualified, so `use crate::driver::CommandSource::Command;`
+    // followed by a bare `Command(x)` would construct a variant that no needle
+    // matches and no assertion notices — silent under-detection, and the
+    // cheapest possible evasion of this entire guard. Importing the TYPE
+    // (`use ...::CommandSource;`) is fine and common; importing a VARIANT PATH
+    // is what this refuses.
+    let mut variant_imports: Vec<(String, usize, String)> = Vec::new();
+    for file in &files {
+        let boundary = test_region_start(file).unwrap_or(usize::MAX);
+        for (number, line) in executable_lines(file) {
+            let trimmed = line.trim_start();
+            if *number < boundary && trimmed.starts_with("use ") && line.contains("CommandSource::")
+            {
+                variant_imports.push((file.0.clone(), *number, line.trim().to_string()));
+            }
+        }
+    }
+    assert!(
+        variant_imports.is_empty(),
+        "a production line imports a `CommandSource` VARIANT path. Every needle \
+         this guard scans for is qualified, so an imported variant can be written \
+         bare — `Command(x)` — and construct a `CommandSource` that this guard \
+         never sees, which is review-CR-02 returning through a spelling nobody \
+         audits. Import the type, not its variants. Offending lines:{}",
+        render(&variant_imports)
     );
 }
