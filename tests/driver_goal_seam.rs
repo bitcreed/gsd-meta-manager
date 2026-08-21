@@ -776,6 +776,144 @@ async fn a_half_supplied_approval_token_is_refused_by_name_and_never_treated_as_
         !root.path().join(".planning/meta-manager").exists(),
         "a malformed token creates nothing at all"
     );
+
+    // **The one line that gives this test the ordering-detection `21-REVIEW.md`
+    // says it lacks.** It proved the refusal and could not see that a live model
+    // consultation had already been spent reaching it: the harness plants a
+    // payload, so the decomposition succeeded and only then was the parse
+    // reached. A refusal that costs a consultation is a refusal an attacker who
+    // can influence the launching command line — or a user with a fat finger —
+    // can bill to the run's budget for free (review-CR-01, T-21-11-03).
+    assert_eq!(
+        seam_spawns(workdir.path()),
+        0,
+        "a value that is not a token must be refused by a PURE string check, \
+         above the seam: zero spawns, read off the stand-in's own on-disk ledger"
+    );
+}
+
+/// **review-CR-01, as the reproduction `21-VERIFICATION.md` performed by hand.**
+///
+/// The verifier ran a real goal invocation with a garbage `--approved-plan` and
+/// watched it return `PlanApprovalMalformed(SeparatorAbsent)` **after exactly one
+/// seam spawn was recorded on disk**, then ran `--dry-run` with the same token
+/// and watched it exit `Ok(())` with a clean preview that never mentioned the
+/// token at all. Against that build the first arm below FAILS on the spawn count
+/// and the second FAILS on `expect_err`.
+///
+/// **A payload IS planted in every arm**, so the seam would answer if it were
+/// reached. That is what makes the zeroes a fact about ordering rather than about
+/// a fixture that could not have spawned — and the well-formed control arm, which
+/// must record exactly one spawn against its own workdir, is what makes the same
+/// point from the other direction.
+#[tokio::test]
+async fn a_malformed_approval_token_is_refused_before_the_seam_is_spawned_and_identically_in_preview(
+) {
+    const GARBAGE: &str = "total-garbage-no-separator";
+    const STATED_GOAL: &str = "get the goal layer verified";
+
+    let wire = payload(vec![step(router::COMMAND_PLAN_PHASE, "21")]);
+
+    // ---- Arm one: a real run. Zero spawns, not one. ----
+    {
+        const RUN_ID: &str = "2026-08-19T12-00-00Z-garbagereal";
+        let root = project_root();
+        let workdir = seam_workdir();
+        plant_payload(workdir.path(), &wire);
+
+        let mut args = goal_args(RUN_ID, workdir.path(), STATED_GOAL);
+        args.max_steps = Some(2);
+        args.approved_plan = Some(GARBAGE.to_string());
+
+        let err = drive(args, &config_for(root.path()))
+            .await
+            .expect_err("a value that is not a token cannot approve a run");
+
+        assert!(
+            matches!(
+                err,
+                DriveError::PlanApprovalMalformed(ApprovalTokenError::SeparatorAbsent)
+            ),
+            "refused by name; got: {err:?}"
+        );
+        assert_eq!(
+            seam_spawns(workdir.path()),
+            0,
+            "the refusal is a pure string check and must cost NO process spawn \
+             and NO model consultation out of the run's budget — this count was \
+             1 against the build that shipped (T-21-11-03)"
+        );
+        assert!(
+            !root.path().join(".planning/meta-manager").exists(),
+            "and it creates nothing at all"
+        );
+    }
+
+    // ---- Arm two: the preview, answering identically. ----
+    {
+        const RUN_ID: &str = "2026-08-19T12-00-00Z-garbagepreview";
+        let root = project_root();
+        let workdir = seam_workdir();
+        plant_payload(workdir.path(), &wire);
+
+        let mut args = goal_args(RUN_ID, workdir.path(), STATED_GOAL);
+        args.max_steps = Some(2);
+        args.approved_plan = Some(GARBAGE.to_string());
+        args.dry_run = true;
+
+        let err = drive(args, &config_for(root.path()))
+            .await
+            .expect_err("a preview must refuse exactly what the real run refuses");
+
+        assert!(
+            matches!(
+                err,
+                DriveError::PlanApprovalMalformed(ApprovalTokenError::SeparatorAbsent)
+            ),
+            "the SAME typed refusal, in the same words. A preview that refuses \
+             less than the run it previews is previewing something the user \
+             cannot run, and the person rehearsing a run on an unfamiliar \
+             repository is exactly the person a preview exists for (WR-09); \
+             got: {err:?}"
+        );
+        assert_eq!(
+            seam_spawns(workdir.path()),
+            0,
+            "a preview spawns nothing regardless (D-23), but the refusal is what \
+             this arm is about"
+        );
+        assert!(
+            !root.path().join(".planning/meta-manager").exists(),
+            "a preview creates no run directory"
+        );
+    }
+
+    // ---- Arm three: the control. Without it the zeroes prove nothing. ----
+    {
+        const RUN_ID: &str = "2026-08-19T12-00-00Z-garbagecontrol";
+        let root = project_root();
+        let workdir = seam_workdir();
+        plant_payload(workdir.path(), &wire);
+
+        let mut args = goal_args(RUN_ID, workdir.path(), STATED_GOAL);
+        args.max_steps = Some(2);
+        args.approved_plan = Some(approval_for(root.path(), &wire, Some(2)));
+
+        // The run's own outcome is not this test's subject — a well-formed token
+        // reaches the decomposition, which is the point. What matters is that
+        // the stand-in DID spawn for this workdir, so the two zeroes above are
+        // facts about ordering rather than about a stand-in that never runs.
+        let _ = drive(args, &config_for(root.path())).await;
+
+        assert_eq!(
+            seam_spawns(workdir.path()),
+            1,
+            "a well-formed token must still reach the seam and spend exactly the \
+             one consultation the decomposition legitimately needs — if this were \
+             0 the fixture would be incapable of spawning and the arms above \
+             would be vacuous"
+        );
+    }
 }
 
 #[tokio::test]
