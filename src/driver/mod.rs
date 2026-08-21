@@ -292,6 +292,79 @@ fn platform_refusal(liveness_supported: bool, dry_run: bool) -> Option<DriveErro
     })
 }
 
+/// The payload half of [`CommandSource`], made blank-proof **by type**.
+///
+/// **The private field IS the mechanism, and the NESTING is what makes it one.**
+/// Rust field privacy is scoped to the defining module *and its descendants*,
+/// never its ancestors. Declaring [`NonBlank`](payload::NonBlank) inside this
+/// nested module — rather than beside [`CommandSource`] at `driver`'s own top
+/// level — is precisely what stops the rest of `driver/mod.rs`, its
+/// `#[cfg(test)] mod tests` included, from fabricating a blank payload with a
+/// tuple-struct literal. Flattening this module back out would leave the type in
+/// place and the guarantee gone.
+///
+/// **Why a type rather than a fourth per-arm check.** Three consecutive
+/// gap-closure cycles each fixed one [`CommandSource`] arm's blankness and each
+/// left the next arm bare: `Goal` in 21-07, `Command` in 21-11, and `Routed`
+/// still unguarded when round-4 verification reproduced `--target-phase '   '`
+/// previewing cleanly at exit 0 and then, on a real run, creating `run.lock`, a
+/// run directory, `journal.jsonl` and a committed `run.json` carrying
+/// `"target_phase": "   "` — a value that reads as *field absent* on the tolerant
+/// read path (D-30), so the record stops being evidence of what ran. Every fix
+/// was correct and every *scope* was the defect (`21-PREMISES.md`, Premise 1).
+/// With a `String` payload each arm — and each FUTURE arm — has to independently
+/// remember the invariant, and the compiler enforces nothing. With this type the
+/// invariant is written **once**, in [`NonBlank::new`](payload::NonBlank::new),
+/// and a blank payload is unrepresentable because there is no other route in.
+///
+/// This is the type-level completion of [`CommandSource`]'s own argument, which
+/// already says that resolving once and matching exhaustively is what makes a
+/// fourth source a compile error at every consumer. That argument covered the
+/// *variant* half; this covers the *payload* half (round-4 CR-01).
+pub(crate) mod payload {
+    /// An argv payload carrying at least one character a reader could see.
+    ///
+    /// Built only by [`NonBlank::new`]; the field is private to this module, so
+    /// no ancestor of `driver::payload` — production code or test code — can
+    /// write past the constructor.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) struct NonBlank(String);
+
+    impl NonBlank {
+        /// `Some` when `raw` carries a visible instruction, `None` otherwise.
+        ///
+        /// **"Blank" means NO VISIBLE INSTRUCTION, deliberately wider than
+        /// `str::trim`** (D-13-2). Trimming answers only for whitespace, and a
+        /// payload of `U+200B` (zero-width space) or `U+FEFF` survives it while
+        /// rendering as visually empty and recording as field-absent — the same
+        /// corruption a run of spaces causes, spelled differently. Refused: the
+        /// empty string, and any value whose every character is whitespace, a
+        /// control character, or a zero-width/format character.
+        ///
+        /// An `Option` rather than a typed error, so the calling seam owns the
+        /// refusal it reports: `command_source` maps `None` onto
+        /// [`crate::error::DriveError::NoCommandSource`], which is already the
+        /// name for a run with nothing to do.
+        pub(crate) fn new(raw: &str) -> Option<Self> {
+            let visible = raw.chars().any(|c| {
+                !(c.is_whitespace()
+                    || c.is_control()
+                    || matches!(c, '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}'))
+            });
+            if visible {
+                Some(Self(raw.to_string()))
+            } else {
+                None
+            }
+        }
+
+        /// The payload as written, for the renderers and the record writers.
+        pub(crate) fn as_str(&self) -> &str {
+            &self.0
+        }
+    }
+}
+
 /// Which of the three legal command sources this invocation names.
 ///
 /// **A resolved value rather than three `Option`s re-matched at each consumer,
@@ -310,17 +383,23 @@ fn platform_refusal(liveness_supported: bool, dry_run: bool) -> Option<DriveErro
 /// `Clone` because the inline join-failure fallback needs a second copy, and
 /// building it by re-resolving would be two places that can disagree about which
 /// source won.
+///
+/// **Every payload is a [`payload::NonBlank`], not a `String`, and that is
+/// round-4's structural fix.** A `String` can hold `"   "`, so each arm had to
+/// remember the blankness rule independently and three consecutive cycles proved
+/// that one arm always forgets. The payload type carries the rule instead: see
+/// [`payload`] for what the private field buys and why the module is nested.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CommandSource {
     /// One supplied `--command`: the whole of what the run would issue.
-    Command(String),
+    Command(payload::NonBlank),
     /// A `--target-phase` the decision router drives toward, choosing each
     /// iteration's command from what the previous one left on disk.
-    Routed(String),
+    Routed(payload::NonBlank),
     /// A `--goal` stated in plain language, which decomposes into a plan above
     /// the run and resolves *into* the routed model rather than being a fourth
     /// execution model of its own.
-    Goal(String),
+    Goal(payload::NonBlank),
 }
 
 /// Resolve the one command source a caller named, or refuse.
@@ -352,23 +431,21 @@ pub(crate) enum CommandSource {
 /// not a fourth execution model — it resolves *into* the routed one, above the
 /// run, before anything is created.
 ///
-/// **Precedence is exactly what it was**: a supplied `command` **that is not
-/// whitespace-only** wins, otherwise `target_phase`, otherwise a `goal` that is
-/// not whitespace-only, otherwise [`DriveError::NoCommandSource`].
-/// Command-plus-phase is still [`DriveError::AmbiguousCommandSource`]; a goal
-/// beside either is recorded prose and must not turn a legal invocation into an
-/// ambiguous one.
+/// **Precedence is exactly what it was**: a supplied `command` **that carries a
+/// visible instruction** wins, otherwise such a `target_phase`, otherwise such a
+/// `goal`, otherwise [`DriveError::NoCommandSource`]. Command-plus-phase is still
+/// [`DriveError::AmbiguousCommandSource`]; a goal beside either is recorded prose
+/// and must not turn a legal invocation into an ambiguous one.
 ///
-/// **The `command` half of that sentence is review-CR-02, and it is new.** This
-/// function trimmed and refused a blank `--goal` from the day the goal arm was
-/// added, and applied no emptiness rule at all to `--command`: `Some("")` and
-/// `Some("   ")` resolved to `CommandSource::Command` unchanged. A resolved
-/// primary noun whose constructor admits a degenerate value is a promotion that
-/// moved the shape without moving the invariant, and both halves of what that
-/// cost were reproduced against the built binary. The refusal reuses
-/// [`DriveError::NoCommandSource`] rather than inventing a fourth variant,
-/// because a command made of nothing *is* a run with nothing to do — which is
-/// exactly what that variant already names.
+/// **Blankness is no longer this function's rule to remember, and that is
+/// round-4's fix.** Each `Ok` arm builds its variant through
+/// [`payload::NonBlank::new`], which is the single place the judgment lives; a
+/// `None` from it is [`DriveError::NoCommandSource`], because a source made of
+/// nothing *is* a run with nothing to do — exactly what that variant already
+/// names. Written per-arm instead, the rule was applied to `--goal` in 21-07 and
+/// to `--command` in 21-11 and forgotten for `--target-phase` both times, which
+/// is round-4 CR-01. The arms below cannot forget it: there is no way to
+/// construct the payload that skips the check.
 fn command_source(
     command: Option<&str>,
     target_phase: Option<&str>,
@@ -380,30 +457,45 @@ fn command_source(
         // the two won would be a mode the caller did not choose, with the other
         // mode's bounds left unenforced.
         (Some(_), Some(_)) => Err(DriveError::AmbiguousCommandSource),
-        // The trim is the same rule the goal arm below already applies, in the
-        // same register and for a stronger reason. A command made of nothing is
-        // nothing to do: unrefused it reaches `dry_run::build_report` as an empty
-        // entry rendered beneath a header promising *the complete and honest
-        // sequence*, which invites a user to authorise a run on a claim the tool
-        // never checked; and on a real run it reaches `run.json`'s `gsd_command`,
-        // where the empty string already means "field absent" on the tolerant
-        // read path ([`ROUTED_RECORD_MARKER`]'s own doc, D-30) — so the record
-        // cannot be used as evidence of what ran (review-CR-02).
-        (Some(command), None) if !command.trim().is_empty() => {
-            Ok(CommandSource::Command(command.to_string()))
-        }
+        // A source made of nothing is nothing to do. Unrefused, a `--command`
+        // reaches `dry_run::build_report` as an empty entry rendered beneath a
+        // header promising *the complete and honest sequence*, which invites a
+        // user to authorise a run on a claim the tool never checked; and on a
+        // real run it reaches `run.json`'s `gsd_command`, where the empty string
+        // already means "field absent" on the tolerant read path
+        // ([`ROUTED_RECORD_MARKER`]'s own doc, D-30) — so the record cannot be
+        // used as evidence of what ran (review-CR-02).
+        //
         // A supplied-but-blank command is refused rather than falling through to
         // `goal`. Falling through would silently promote a goal that the
         // precedence above says LOSES to a supplied command, giving a run whose
         // objective the caller did not select.
-        (Some(_), None) => Err(DriveError::NoCommandSource),
-        (None, Some(target_phase)) => Ok(CommandSource::Routed(target_phase.to_string())),
-        (None, None) => match goal {
-            // The trim is what stops `--goal ' '` becoming a third command
-            // source that decomposes an empty string, which the seam would
-            // answer somehow and `legality` would then be asked to judge.
-            Some(goal) if !goal.trim().is_empty() => Ok(CommandSource::Goal(goal.to_string())),
-            _ => Err(DriveError::NoCommandSource),
+        //
+        // Spelled as a `match` with the variant constructed inside it rather
+        // than as `.map(CommandSource::Command)`: `tests/spawn_seam_guard.rs`'s
+        // guard eight scans for the parenthesised variant spellings, and a
+        // point-free construction would silently stop matching its needles —
+        // the guard would keep passing while auditing less than it claims.
+        (Some(command), None) => match payload::NonBlank::new(command) {
+            Some(command) => Ok(CommandSource::Command(command)),
+            None => Err(DriveError::NoCommandSource),
+        },
+        // **The arm three cycles left bare.** It gains its refusal here as a
+        // consequence of the payload type rather than as a fourth remembered
+        // check — and the same demotion rule applies: a blank `--target-phase`
+        // is refused, never dropped through to a `goal` the precedence above
+        // says loses to it. `"   "` reached a rendered preview at exit 0 and a
+        // committed `run.json`'s `target_phase` before this (round-4 CR-01).
+        (None, Some(target_phase)) => match payload::NonBlank::new(target_phase) {
+            Some(target_phase) => Ok(CommandSource::Routed(target_phase)),
+            None => Err(DriveError::NoCommandSource),
+        },
+        // What stops `--goal ' '` becoming a third command source that
+        // decomposes an empty string, which the seam would answer somehow and
+        // `legality` would then be asked to judge.
+        (None, None) => match goal.and_then(payload::NonBlank::new) {
+            Some(goal) => Ok(CommandSource::Goal(goal)),
+            None => Err(DriveError::NoCommandSource),
         },
     }
 }
@@ -446,13 +538,13 @@ pub const ROUTED_RECORD_MARKER: &str = "(routed: see the decided journal records
 fn preview_text(project: &DrivableProject, source: &CommandSource) -> String {
     match source {
         CommandSource::Command(command) => {
-            dry_run::render(&dry_run::build_report(project, command))
+            dry_run::render(&dry_run::build_report(project, command.as_str()))
         }
         CommandSource::Routed(target_phase) => {
-            dry_run::render_scoped(&dry_run::build_routed_report(project, target_phase))
+            dry_run::render_scoped(&dry_run::build_routed_report(project, target_phase.as_str()))
         }
         CommandSource::Goal(goal) => {
-            dry_run::render_scoped(&dry_run::build_goal_report(project, goal))
+            dry_run::render_scoped(&dry_run::build_goal_report(project, goal.as_str()))
         }
     }
 }
@@ -1288,7 +1380,9 @@ mod tests {
         );
         assert_eq!(
             command_source(Some("x"), None, None).ok(),
-            Some(CommandSource::Command("x".to_string())),
+            Some(CommandSource::Command(
+                payload::NonBlank::new("x").expect("one visible character is a payload")
+            )),
             "one non-whitespace character is a command; a guard that refused this \
              too would be refusing on length rather than on emptiness"
         );
@@ -1317,7 +1411,10 @@ mod tests {
         // unrepresentable.
         assert_eq!(
             command_source(None, None, Some("get phase 22 verified")).ok(),
-            Some(CommandSource::Goal("get phase 22 verified".to_string())),
+            Some(CommandSource::Goal(
+                payload::NonBlank::new("get phase 22 verified")
+                    .expect("a realistic goal is a payload")
+            )),
             "a stated goal alone must reach the decomposition rather than be \
              refused as a run with nothing to do — and it must resolve to the \
              GOAL variant, because a goal that resolved to anything else is CR-01 \
@@ -1341,12 +1438,16 @@ mod tests {
 
         assert_eq!(
             command_source(Some("/gsd-progress"), None, None).ok(),
-            Some(CommandSource::Command("/gsd-progress".to_string())),
+            Some(CommandSource::Command(
+                payload::NonBlank::new("/gsd-progress").expect("a realistic command")
+            )),
             "single-command mode must stay transparent"
         );
         assert_eq!(
             command_source(None, Some("20"), None).ok(),
-            Some(CommandSource::Routed("20".to_string())),
+            Some(CommandSource::Routed(
+                payload::NonBlank::new("20").expect("a realistic target phase")
+            )),
             "routed mode must stay transparent"
         );
 
@@ -1357,12 +1458,16 @@ mod tests {
         // either: precedence is command, then phase, then goal.
         assert_eq!(
             command_source(Some("/gsd-progress"), None, Some("a goal")).ok(),
-            Some(CommandSource::Command("/gsd-progress".to_string())),
+            Some(CommandSource::Command(
+                payload::NonBlank::new("/gsd-progress").expect("a realistic command")
+            )),
             "a goal beside --command is recorded text, not a second source"
         );
         assert_eq!(
             command_source(None, Some("20"), Some("a goal")).ok(),
-            Some(CommandSource::Routed("20".to_string())),
+            Some(CommandSource::Routed(
+                payload::NonBlank::new("20").expect("a realistic target phase")
+            )),
             "a goal beside --target-phase is recorded text, not a second source"
         );
 
@@ -1733,7 +1838,10 @@ mod tests {
 
         let rendered = preview_text(
             &project,
-            &CommandSource::Goal("get phase 22 verified".into()),
+            &CommandSource::Goal(
+                payload::NonBlank::new("get phase 22 verified")
+                    .expect("a realistic goal is a payload"),
+            ),
         );
 
         assert!(
@@ -1791,9 +1899,15 @@ mod tests {
         let project = previewable(root.path());
 
         let sources = [
-            CommandSource::Command("/gsd:progress".to_string()),
-            CommandSource::Routed("20".to_string()),
-            CommandSource::Goal("get phase 22 verified".to_string()),
+            CommandSource::Command(
+                payload::NonBlank::new("/gsd:progress").expect("a realistic command"),
+            ),
+            CommandSource::Routed(
+                payload::NonBlank::new("20").expect("a realistic target phase"),
+            ),
+            CommandSource::Goal(
+                payload::NonBlank::new("get phase 22 verified").expect("a realistic goal"),
+            ),
         ];
 
         // Non-vacuity, in the register `tests/spawn_seam_guard.rs` uses: an
