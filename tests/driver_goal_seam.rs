@@ -930,3 +930,206 @@ fn a_recorded_approval_carrying_a_legacy_fnv1a64_plan_digest_re_checks_as_stale(
         ),
     }
 }
+
+// ---------------------------------------------------------------------------
+// The model-selected phase token: bounded at construction, refused rather than
+// repaired, and sanitized before the reviewer's terminal (WR-05)
+// ---------------------------------------------------------------------------
+
+/// The hostile phase tokens, each a real terminal capability rather than a
+/// generic "bad character".
+///
+/// `\u{9b}` is the single-codepoint CSI and `\u{9d}` the single-codepoint OSC:
+/// each is a one-character spelling of an `ESC`-led introducer, so a check that
+/// only knows about `ESC` leaves the same capability reachable (WR-06).
+const HOSTILE_PHASE_TOKENS: &[(&str, &str)] = &[
+    ("ESC", "21\u{1b}[2K\u{1b}[1;32m ALL CHECKS PASSED"),
+    ("newline", "21\nphase 99: harmless"),
+    ("carriage return", "21\rVERIFIED"),
+    ("C1 CSI", "21\u{9b}2K"),
+];
+
+#[test]
+fn a_phase_token_carrying_a_control_character_is_refused_by_name_rather_than_stored() {
+    for (label, hostile) in HOSTILE_PHASE_TOKENS {
+        // **The premise, and it is what makes this test about the new check.**
+        // `journal::is_plain_path_component` rejects path separators and
+        // `.`/`..` and nothing else — it accepts every one of these. Without
+        // this line the assertion below would also pass against the unfixed
+        // build via the path-component arm it never actually reaches.
+        assert!(
+            gsd_meta_manager::journal::is_plain_path_component(hostile),
+            "the {label} fixture must be a token `is_plain_path_component` \
+             ACCEPTS, or this test proves nothing about the bound this task \
+             adds; got a token the old checker already rejected: {hostile:?}"
+        );
+
+        let refusal = goal::legality(
+            &payload(vec![step(router::COMMAND_PLAN_PHASE, hostile)]),
+            PHASES,
+            resolved_cap(),
+        )
+        .expect_err(&format!(
+            "a phase token carrying a {label} must be refused. Stored, it \
+             reaches the operator's terminal through \
+             `DriveError::PlanApprovalRequired` and the committed `run.json`; \
+             what actually stopped it before was `PHASE_ID`, a regex in \
+             `state_reader::roadmap_md` that the goal layer never mentions — \
+             the same reasoning `driver::run`'s escalation prompt already \
+             rejects"
+        ));
+
+        assert_eq!(
+            refusal.reason().as_str(),
+            goal::REASON_PHASE_NOT_PLAIN_COMPONENT,
+            "the {label} token reuses the existing reason rather than minting a \
+             new arm: a token carrying a control character is not a plain path \
+             component in any useful sense. Against a build that merely bounds \
+             the value without refusing it, this reads \
+             `{}` instead — the roadmap-membership arm, reached because the \
+             token was silently repaired into a different phase",
+            goal::REASON_PHASE_ABSENT_FROM_ROADMAP
+        );
+        assert!(
+            !refusal.offending().contains('\u{1b}')
+                && !refusal.offending().chars().any(char::is_control),
+            "and the refusal REPORTING the control bytes must not itself render \
+             them: `GoalRefusal::new` bounds the offending value at \
+             construction. Got: {:?}",
+            refusal.offending()
+        );
+    }
+}
+
+#[test]
+fn a_legal_phase_token_reaches_the_step_byte_identical_to_what_the_roadmap_declared() {
+    let plan = plan_from(&payload(vec![
+        step(router::COMMAND_PLAN_PHASE, "20"),
+        step(router::COMMAND_EXECUTE_PHASE, "21"),
+    ]));
+
+    let stored: Vec<&str> = plan
+        .steps
+        .iter()
+        .map(|step| step.target_phase.as_str())
+        .collect();
+    assert_eq!(
+        stored,
+        vec!["20", "21"],
+        "bounding must not silently CHANGE which phase the run drives toward. \
+         This value becomes `args.target_phase`, and therefore the map key into \
+         `ProjectState::phase_disk_statuses` and the input to \
+         `RouterAction::command_for` — a truncated token would drive the run \
+         toward a different phase than the plan the user approved named, which \
+         is worse than the defect being fixed. That is why `legality` refuses a \
+         token bounding would alter rather than storing the bounded form of it"
+    );
+}
+
+#[tokio::test]
+async fn a_hostile_roadmap_phase_token_is_refused_at_the_seam_the_run_actually_reaches() {
+    const RUN_ID: &str = "2026-08-19T12-00-00Z-hostilephase";
+
+    let root = project_root();
+    let workdir = seam_workdir();
+    let (_, hostile) = HOSTILE_PHASE_TOKENS[0];
+    plant_payload(
+        workdir.path(),
+        &payload(vec![step(router::COMMAND_PLAN_PHASE, hostile)]),
+    );
+
+    let err = drive(
+        goal_args(RUN_ID, workdir.path(), "get the goal layer verified"),
+        &config_for(root.path()),
+    )
+    .await
+    .expect_err("a plan naming an escape-bearing phase must not start a run");
+
+    assert!(matches!(err, DriveError::GoalRefused(_)), "got: {err:?}");
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains(goal::REASON_PHASE_NOT_PLAIN_COMPONENT),
+        "the end-to-end seam must refuse it as a phase that is not a plain \
+         component. Against the unfixed build the token survives the \
+         path-component check and is refused one arm later as absent from the \
+         roadmap — a refusal that would stop being reached the moment a hostile \
+         ROADMAP.md declared the token it also planted; got: {rendered}"
+    );
+    assert!(
+        !rendered.contains('\u{1b}'),
+        "and no ESC may reach the terminal of the person reading the refusal; \
+         got: {rendered:?}"
+    );
+    assert!(
+        !root.path().join(".planning/meta-manager").exists(),
+        "a run refused above the run creates nothing"
+    );
+}
+
+#[test]
+fn the_approval_refusal_cannot_repaint_the_terminal_of_the_person_about_to_approve() {
+    // Two steps, so the assertion below is also about the refusal still naming
+    // EVERY step rather than about it surviving with one.
+    let benign = format!(
+        "command={} phase=20 terminal={}",
+        router::COMMAND_PLAN_PHASE,
+        goal::TERMINAL_VERIFICATION_PASSED
+    );
+    let hostile = format!(
+        "command={} phase=21\u{1b}[2K\u{9b}1;32m terminal={}",
+        router::COMMAND_EXECUTE_PHASE,
+        goal::TERMINAL_VERIFICATION_PASSED
+    );
+    assert!(
+        hostile.contains('\u{1b}') && hostile.contains('\u{9b}'),
+        "the fixture's premise: the step really does carry both an ESC-led and \
+         a single-codepoint C1 introducer"
+    );
+
+    let rendered = DriveError::PlanApprovalRequired {
+        digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            .to_string(),
+        steps: vec![benign.clone(), hostile],
+    }
+    .to_string();
+
+    assert!(
+        !rendered.contains('\u{1b}'),
+        "an ESC reaching this string is a terminal-repaint capability handed to \
+         a hostile roadmap at the exact moment the operator is deciding whether \
+         to approve — it can erase the line, forge a green VERIFIED, or move the \
+         cursor over the plan it is asking about. Got: {rendered:?}"
+    );
+    assert!(
+        !rendered.contains('\u{9b}'),
+        "and C1 is not an afterthought: `U+009B` is the one-codepoint CSI, so \
+         stripping ESC alone leaves the same capability reachable by another \
+         spelling (WR-06). Got: {rendered:?}"
+    );
+
+    // Sanitizing must not eat the actionable half of the message.
+    assert!(
+        rendered.contains(&benign),
+        "the refusal must still name every step — the refusal IS the review \
+         surface DRIVE-03 requires; got: {rendered}"
+    );
+    assert!(
+        rendered.contains("phase=21") && rendered.contains(router::COMMAND_EXECUTE_PHASE),
+        "including the sanitized one, which is still readable as typed tokens; \
+         got: {rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "--approved-plan sha256:\
+             0000000000000000000000000000000000000000000000000000000000000000"
+        ),
+        "and it must still name the flag and the digest the caller must pass, \
+         or the refusal is a bug report rather than an error message; got: \
+         {rendered}"
+    );
+    assert!(
+        rendered.contains("  1. ") && rendered.contains("  2. "),
+        "the steps stay numbered, so a reviewer reads a plan rather than a \
+         run-on line; got: {rendered}"
+    );
+}
