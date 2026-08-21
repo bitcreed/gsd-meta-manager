@@ -503,8 +503,22 @@ pub(super) fn dispatch(ctx: &mut AppContext, action: Action, alias: &str) {
 /// file would make the TUI report a project as drivable while every run against
 /// it is refused by the driver. Reverting keeps the two in agreement, so the
 /// error message is the only thing the user has to act on.
+///
+/// **A revert restores; it never approves (WR-04).** The withdrawal direction
+/// puts back a *clone of the record the user already granted*, captured before
+/// anything is applied. It deliberately does not call
+/// [`registry::record_opt_in`] — see the comment at the revert itself for why
+/// that is a laundering rather than a restore.
 fn do_toggle_opt_in(ctx: &mut AppContext, alias: &str) {
     let was_opted_in = registry::is_opted_in(&ctx.config, alias);
+
+    // Captured BEFORE anything is applied, because after the toggle it is gone.
+    // `None` in the grant direction, where there is nothing to put back.
+    let previous = ctx
+        .config
+        .projects
+        .get(alias)
+        .and_then(|entry| entry.driver_opt_in.clone());
 
     let applied = if was_opted_in {
         registry::clear_opt_in(&mut ctx.config, alias)
@@ -518,15 +532,49 @@ fn do_toggle_opt_in(ctx: &mut AppContext, alias: &str) {
     }
 
     if let Err(e) = save_config(&ctx.config, &ctx.config_path) {
-        let reverted = if was_opted_in {
-            registry::record_opt_in(&mut ctx.config, alias)
+        // **The withdrawal revert is an assignment, not a construction, and that
+        // is not a violation of `record_opt_in`'s sole-constructor property
+        // (D-14) — it is what preserves it.** The value put back is a clone of a
+        // record the user constructed by opting in; nothing new comes into
+        // existence, so a `Some(record)` in a `config.json` is still proof of a
+        // deliberate user action, which is the claim `registry.rs:96-99` makes
+        // and which this call site must not become a counterexample to.
+        //
+        // Calling `record_opt_in` here instead — which is what this did — mints
+        // a record with a fresh `opted_in_at` and a fresh `current_prompt_inputs`
+        // snapshot. That approves whatever the disclosed files contain *right
+        // now*, with no disclosure shown and no user act: a project whose
+        // `CLAUDE.md` was rewritten under a `git pull` since the opt-in, and
+        // which the spawn gate would have refused with `PromptInputsDrifted`,
+        // comes back already approved and the next successful save persists it.
+        // That is exactly the drift plan 21-03's SHA-256 digests were added to
+        // catch (WR-04, T-21-10-02).
+        //
+        // The grant direction keeps `clear_opt_in`, which is correct and
+        // unchanged: withdrawing a record that never reached disk needs no prior
+        // value.
+        let restored = if was_opted_in {
+            match ctx.config.projects.get_mut(alias) {
+                Some(entry) => {
+                    entry.driver_opt_in = previous;
+                    true
+                }
+                // Only reachable if the alias vanished from the config between
+                // the toggle and here. Nothing in this process can do that —
+                // both `registry` calls above bail on an unknown alias before
+                // the save is attempted — but the note below is what a user
+                // would need if it ever became reachable, and deriving it from
+                // an outcome rather than asserting the outcome is what keeps it
+                // honest.
+                None => false,
+            }
         } else {
-            registry::clear_opt_in(&mut ctx.config, alias)
+            registry::clear_opt_in(&mut ctx.config, alias).is_ok()
         };
-        let note = if reverted.is_err() {
-            " (and the in-memory registry could not be restored)"
-        } else {
+        let note = if restored {
             ""
+        } else {
+            " (and the in-memory registry could not be restored)"
         };
         ctx.error_message = Some(format!("Failed to save config: {e}{note}"));
         ctx.needs_redraw = true;
@@ -842,6 +890,210 @@ pub(crate) mod tests {
         );
         let saved = crate::config::load_config(&ctx.config_path).expect("load");
         assert!(saved.projects[ALIAS].driver_opt_in.is_none());
+    }
+
+    // ========================================================================
+    // A failed save reverts to what existed; it never approves (WR-04, SAFE-07)
+    //
+    // `registry::record_opt_in` is the ONLY function outside tests that
+    // constructs a `DriverOptIn`, and that uniqueness is what makes a
+    // `Some(record)` in a `config.json` proof of a deliberate user act (D-14).
+    // Calling it on the withdrawal-direction revert broke exactly that: it
+    // stamps a fresh `opted_in_at` and takes a fresh `current_prompt_inputs`
+    // snapshot, so a project whose `CLAUDE.md` was rewritten under a `git pull`
+    // — one the spawn gate would have refused with `PromptInputsDrifted` —
+    // came back with the NEW bytes already approved, with no disclosure shown
+    // and no user act, and the next successful save persisted it.
+    //
+    // The equality assertions below are what proves the sole constructor is no
+    // longer called on a revert: `record_opt_in` cannot reproduce a record it
+    // did not write, because it re-stamps the timestamp even when nothing on
+    // disk has moved.
+    // ========================================================================
+
+    /// A config path `save_config` cannot write.
+    ///
+    /// Its parent **component is a regular file**, so `create_dir_all` fails
+    /// with `NotADirectory` before a temp file is ever created. Deterministic
+    /// and portable, and deliberately not a read-only directory: a permission
+    /// bit does not stop a process running as root, which some CI does.
+    fn unwritable_config_path(root: &Path) -> std::path::PathBuf {
+        let blocker = root.join("not-a-directory");
+        std::fs::write(&blocker, b"a regular file standing where a directory must be")
+            .expect("the blocker is written");
+        blocker.join("config.json")
+    }
+
+    /// A record a user granted, at a moment and over a file set both
+    /// distinguishable from anything `record_opt_in` would mint from a temp
+    /// directory right now.
+    ///
+    /// That distinguishability is the whole assertion: an implementation that
+    /// re-minted the record would differ in `opted_in_at` even if the disclosed
+    /// files had not moved at all.
+    fn granted_record() -> crate::config::DriverOptIn {
+        crate::config::DriverOptIn {
+            opted_in_at: "2020-01-01T00:00:00Z".to_string(),
+            claude_md_digest: None,
+            prompt_inputs: two_inputs(),
+            extra: Default::default(),
+            branch_namespace: None,
+            credential: None,
+            pr_cap_per_24h: None,
+            pr_cap_per_run: None,
+        }
+    }
+
+    /// Put `record` on the fixture project, as a prior opt-in the user granted.
+    fn grant(ctx: &mut AppContext, record: crate::config::DriverOptIn) {
+        ctx.config
+            .projects
+            .get_mut(ALIAS)
+            .expect("the fixture project")
+            .driver_opt_in = Some(record);
+    }
+
+    /// Press `y` on the opt-in toggle, which is the only way a user reaches it.
+    fn toggle(ctx: &mut AppContext) {
+        let mut screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::ToggleOptIn);
+        screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, ctx);
+    }
+
+    #[test]
+    fn a_failed_save_after_a_withdrawal_restores_the_record_the_user_granted() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        ctx.config_path = unwritable_config_path(dir.path());
+
+        let granted = granted_record();
+        grant(&mut ctx, granted.clone());
+
+        toggle(&mut ctx);
+
+        let after = ctx.config.projects[ALIAS]
+            .driver_opt_in
+            .clone()
+            .expect("a withdrawal whose save failed must be rolled back in memory");
+        assert_eq!(
+            after, granted,
+            "the revert must restore the record that EXISTED, field for field — \
+             same opted_in_at, same prompt_inputs, same digests. Against the \
+             unfixed build this fails on `opted_in_at` alone, because the revert \
+             called `registry::record_opt_in`, which is a constructor rather than \
+             a restore: it mints a new approval covering whatever the disclosed \
+             files contain at that instant, with no disclosure shown and no user \
+             act (WR-04)"
+        );
+    }
+
+    #[test]
+    fn a_failed_save_after_a_withdrawal_does_not_rebaseline_a_drifted_disclosure() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        ctx.config_path = unwritable_config_path(dir.path());
+
+        // The drift the SHA-256 digests were added in plan 21-03 to catch: the
+        // approval covers bytes that are no longer the bytes on disk.
+        std::fs::write(
+            dir.path().join("CLAUDE.md"),
+            b"# rewritten under a git pull, after the user opted in\n",
+        )
+        .expect("the drifted file is written");
+
+        let granted = granted_record();
+        grant(&mut ctx, granted.clone());
+
+        // Non-vacuity, asserted BEFORE the act rather than inferred after: the
+        // recorded set and the on-disk set really do disagree, so "restored"
+        // and "re-baselined" are distinguishable outcomes here.
+        assert_ne!(
+            granted.prompt_inputs,
+            registry::current_prompt_inputs(dir.path()),
+            "precondition: the recorded digests must differ from what the files \
+             hash to now, or this test cannot tell a restore from a re-baseline"
+        );
+
+        toggle(&mut ctx);
+
+        let after = ctx.config.projects[ALIAS]
+            .driver_opt_in
+            .clone()
+            .expect("the withdrawal is rolled back");
+        assert_eq!(
+            after.prompt_inputs, granted.prompt_inputs,
+            "the restored record must still carry the OLD digests, so the spawn \
+             gate still refuses this project with PromptInputsDrifted. A revert \
+             that re-snapshots the files launders exactly the drift the digests \
+             exist to catch — and the next successful save persists the laundered \
+             approval (T-21-10-02)"
+        );
+        assert_ne!(
+            after.prompt_inputs,
+            registry::current_prompt_inputs(dir.path()),
+            "and it must not have adopted the new bytes"
+        );
+    }
+
+    #[test]
+    fn a_failed_save_after_a_grant_leaves_no_record_at_all() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        ctx.config_path = unwritable_config_path(dir.path());
+        assert!(
+            !registry::is_opted_in(&ctx.config, ALIAS),
+            "precondition: the fixture starts NOT opted in"
+        );
+
+        toggle(&mut ctx);
+
+        assert!(
+            ctx.config.projects[ALIAS].driver_opt_in.is_none(),
+            "`clear_opt_in` is the correct revert in this direction and is \
+             unchanged: withdrawing a record that never reached disk needs no \
+             prior value, and leaving one in memory would make the TUI report a \
+             project as drivable while the gate — which reads config.json in a \
+             different process — refuses every run against it"
+        );
+    }
+
+    #[test]
+    fn a_failed_save_names_the_save_failure_in_both_directions() {
+        for (direction, prior) in [
+            ("withdrawal", Some(granted_record())),
+            ("grant", None),
+        ] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (mut ctx, _rx) = ctx_with_project(dir.path());
+            ctx.config_path = unwritable_config_path(dir.path());
+            if let Some(record) = prior {
+                grant(&mut ctx, record);
+            }
+
+            toggle(&mut ctx);
+
+            let message = ctx
+                .error_message
+                .as_deref()
+                .unwrap_or_else(|| panic!("{direction}: the save failure must be visible"));
+            assert!(
+                message.starts_with("Failed to save config:"),
+                "{direction}: the message must name the SAVE as what failed — it \
+                 is the only thing the user can act on. Got: {message}"
+            );
+            assert!(
+                !message.contains("could not be restored"),
+                "{direction}: the in-memory registry WAS restored here, so the \
+                 note must not appear. It is reserved for an alias that vanished \
+                 from the config between the toggle and the revert, which no \
+                 caller can currently produce — `record_opt_in` and \
+                 `clear_opt_in` both bail on an unknown alias before the save is \
+                 attempted. Got: {message}"
+            );
+            assert!(
+                ctx.status_message.is_none(),
+                "{direction}: a failed save must not also report success"
+            );
+        }
     }
 
     #[test]
