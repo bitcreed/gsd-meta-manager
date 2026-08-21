@@ -352,19 +352,51 @@ pub(crate) enum CommandSource {
 /// not a fourth execution model — it resolves *into* the routed one, above the
 /// run, before anything is created.
 ///
-/// **Precedence is exactly what it was**: a supplied `command` wins, otherwise
-/// `target_phase`, otherwise a `goal` that is not whitespace-only, otherwise
-/// [`DriveError::NoCommandSource`]. Command-plus-phase is still
-/// [`DriveError::AmbiguousCommandSource`]; a goal beside either is recorded
-/// prose and must not turn a legal invocation into an ambiguous one.
+/// **Precedence is exactly what it was**: a supplied `command` **that is not
+/// whitespace-only** wins, otherwise `target_phase`, otherwise a `goal` that is
+/// not whitespace-only, otherwise [`DriveError::NoCommandSource`].
+/// Command-plus-phase is still [`DriveError::AmbiguousCommandSource`]; a goal
+/// beside either is recorded prose and must not turn a legal invocation into an
+/// ambiguous one.
+///
+/// **The `command` half of that sentence is review-CR-02, and it is new.** This
+/// function trimmed and refused a blank `--goal` from the day the goal arm was
+/// added, and applied no emptiness rule at all to `--command`: `Some("")` and
+/// `Some("   ")` resolved to `CommandSource::Command` unchanged. A resolved
+/// primary noun whose constructor admits a degenerate value is a promotion that
+/// moved the shape without moving the invariant, and both halves of what that
+/// cost were reproduced against the built binary. The refusal reuses
+/// [`DriveError::NoCommandSource`] rather than inventing a fourth variant,
+/// because a command made of nothing *is* a run with nothing to do — which is
+/// exactly what that variant already names.
 fn command_source(
     command: Option<&str>,
     target_phase: Option<&str>,
     goal: Option<&str>,
 ) -> Result<CommandSource, DriveError> {
     match (command, target_phase) {
+        // First, and it must STAY first. Two sources were named, and blankness
+        // must not demote an ambiguous invocation into a legal one: whichever of
+        // the two won would be a mode the caller did not choose, with the other
+        // mode's bounds left unenforced.
         (Some(_), Some(_)) => Err(DriveError::AmbiguousCommandSource),
-        (Some(command), None) => Ok(CommandSource::Command(command.to_string())),
+        // The trim is the same rule the goal arm below already applies, in the
+        // same register and for a stronger reason. A command made of nothing is
+        // nothing to do: unrefused it reaches `dry_run::build_report` as an empty
+        // entry rendered beneath a header promising *the complete and honest
+        // sequence*, which invites a user to authorise a run on a claim the tool
+        // never checked; and on a real run it reaches `run.json`'s `gsd_command`,
+        // where the empty string already means "field absent" on the tolerant
+        // read path ([`ROUTED_RECORD_MARKER`]'s own doc, D-30) — so the record
+        // cannot be used as evidence of what ran (review-CR-02).
+        (Some(command), None) if !command.trim().is_empty() => {
+            Ok(CommandSource::Command(command.to_string()))
+        }
+        // A supplied-but-blank command is refused rather than falling through to
+        // `goal`. Falling through would silently promote a goal that the
+        // precedence above says LOSES to a supplied command, giving a run whose
+        // objective the caller did not select.
+        (Some(_), None) => Err(DriveError::NoCommandSource),
         (None, Some(target_phase)) => Ok(CommandSource::Routed(target_phase.to_string())),
         (None, None) => match goal {
             // The trim is what stops `--goal ' '` becoming a third command
