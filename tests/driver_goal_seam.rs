@@ -190,12 +190,36 @@ fn step(command: &str, phase: &str) -> Value {
     })
 }
 
+/// The same step with a caller-chosen rationale, so a test can vary the one
+/// field the digest deliberately excludes and nothing else.
+fn step_with_rationale(command: &str, phase: &str, rationale: &str) -> Value {
+    serde_json::json!({
+        goal::FIELD_COMMAND: command,
+        goal::FIELD_PHASE: phase,
+        goal::FIELD_TERMINAL_STATE: goal::TERMINAL_VERIFICATION_PASSED,
+        goal::FIELD_RATIONALE: rationale,
+    })
+}
+
 fn payload(steps: Vec<Value>) -> Value {
     serde_json::json!({ goal::FIELD_STEPS: steps })
 }
 
 /// The roadmap phases the fixture project declares.
 const PHASES: &[&str] = &["20", "21"];
+
+/// The run's resolved step cap for a fixture that supplies no `--max-steps`.
+fn resolved_cap() -> u32 {
+    bounds::resolve(None, None)
+        .expect("the default bounds resolve")
+        .max_steps
+}
+
+/// A legal plan built the way the driver builds one: through the shipped
+/// `goal::legality`, never by constructing `PlanStep` values a test invented.
+fn plan_from(wire: &Value) -> goal::GoalPlan {
+    goal::legality(wire, PHASES, resolved_cap()).expect("the fixture plan is legal")
+}
 
 /// The approval digest a reviewer would be shown for `wire`, against `root`'s
 /// disclosed files as they stand right now.
@@ -765,4 +789,144 @@ async fn a_run_whose_step_cap_leaves_no_room_to_escalate_refuses_the_decompositi
         1,
         "the fixture's premise: the run really is bounded at one step"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The approval's PLAN half: collision-resistant, and legacy records fail closed
+// (CR-02)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_plan_half_of_an_approval_is_collision_resistant_rather_than_a_non_cryptographic_hash() {
+    let wire = payload(vec![
+        step(router::COMMAND_PLAN_PHASE, "20"),
+        step(router::COMMAND_EXECUTE_PHASE, "21"),
+    ]);
+    let plan = plan_from(&wire);
+    let digest = goal::plan_digest(&plan);
+
+    // --- shape -------------------------------------------------------------
+    let hex = digest.strip_prefix("sha256:").unwrap_or_else(|| {
+        panic!(
+            "the plan half of an approval must carry the `sha256:` prefix. The \
+             prefix is not decoration: it is what stops a legacy `fnv1a64:` \
+             record ever comparing equal to a freshly computed value. Got: \
+             {digest}"
+        )
+    });
+    assert_eq!(hex.len(), 64, "SHA-256 renders as 64 hex digits; got: {digest}");
+    assert!(
+        hex.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        "lowercase hex only, so two records of the same plan compare as strings \
+         without normalising; got: {digest}"
+    );
+    assert_eq!(
+        digest.chars().count(),
+        71,
+        "seven prefix characters plus sixty-four hex digits; got: {digest}"
+    );
+
+    // --- provenance --------------------------------------------------------
+    // The token vector the function builds, rebuilt here from the plan's own
+    // typed fields so this compares the two hashers over identical input.
+    let tokens: Vec<String> = plan
+        .steps
+        .iter()
+        .flat_map(|step| {
+            [
+                step.command.verb().to_string(),
+                step.target_phase.clone(),
+                step.terminal_state.as_str().to_string(),
+            ]
+        })
+        .collect();
+    assert_ne!(
+        digest,
+        gsd_meta_manager::journal::argv_digest(&tokens),
+        "equality here means the plan half of an approval has silently reverted \
+         to FNV-1a-64, whose own doc says it is not a security control. FNV \
+         second preimages are CONSTRUCTED rather than searched — multiplication \
+         by the FNV prime is invertible mod 2^64 — and the tokens hashed include \
+         a `target_phase` authored by whoever wrote the cloned repository's \
+         ROADMAP.md. Hashing that under `approval_digest`'s outer SHA-256 does \
+         not help: two colliding inner values produce byte-identical input to \
+         the outer hash, so the weak collision class survives intact"
+    );
+
+    // --- order sensitivity, unchanged by the hasher swap -------------------
+    let reversed = payload(vec![
+        step(router::COMMAND_EXECUTE_PHASE, "21"),
+        step(router::COMMAND_PLAN_PHASE, "20"),
+    ]);
+    assert_ne!(
+        digest,
+        goal::plan_digest(&plan_from(&reversed)),
+        "a plan is an ordered traversal, so the same steps in a different order \
+         are a different plan and must not share an approval"
+    );
+
+    // --- rationale exclusion, unchanged by the hasher swap -----------------
+    let reworded = payload(vec![
+        step_with_rationale(router::COMMAND_PLAN_PHASE, "20", "one wording"),
+        step_with_rationale(router::COMMAND_EXECUTE_PHASE, "21", "a different wording"),
+    ]);
+    assert_eq!(
+        digest,
+        goal::plan_digest(&plan_from(&reworded)),
+        "the rationale is prose no predicate reads; including it would expire a \
+         user's approval on a reworded explanation of an identical plan"
+    );
+}
+
+#[test]
+fn a_recorded_approval_carrying_a_legacy_fnv1a64_plan_digest_re_checks_as_stale() {
+    let wire = payload(vec![step(router::COMMAND_PLAN_PHASE, "21")]);
+    let fresh = goal::plan_digest(&plan_from(&wire));
+
+    // A record written by a build that hashed the plan half with FNV-1a-64.
+    // Nothing migrates it, and nothing needs to: the whole prefixed string is
+    // compared, so it fails closed.
+    let legacy = "fnv1a64:0123456789abcdef";
+    assert!(
+        fresh.starts_with("sha256:") && legacy.starts_with("fnv1a64:"),
+        "the fixture's premise: the two values really are in different formats. \
+         Against a build whose `plan_digest` is still FNV-1a-64 both carry the \
+         same prefix and the refusal below would be about a differing hash \
+         rather than about a format that fails closed. Got fresh: {fresh}"
+    );
+
+    let recorded = gsd_meta_manager::journal::ApprovedPlan {
+        steps: vec![format!(
+            "command={} phase=21 terminal={}",
+            router::COMMAND_PLAN_PHASE,
+            goal::TERMINAL_VERIFICATION_PASSED
+        )],
+        target_phase: "21".to_string(),
+        plan_digest: legacy.to_string(),
+        // The approval the user gave covered the LEGACY value, so the outer
+        // digest is self-consistent and the refusal below cannot be an artefact
+        // of a record this test built wrong.
+        approval_digest: gsd_meta_manager::journal::approval_digest(legacy, &[]),
+        approved_at: "2026-08-19T12:00:00Z".to_string(),
+        extra: Default::default(),
+    };
+
+    let refusal = gsd_meta_manager::journal::recheck_approval(Some(&recorded), &fresh, &[])
+        .expect_err(
+            "a legacy `fnv1a64:` record must never cover a freshly computed \
+             `sha256:` plan. Failing closed is the whole reason the digests \
+             carry prefixes rather than bare hex",
+        );
+
+    match refusal {
+        gsd_meta_manager::journal::ApprovalRefusal::PlanChanged { approved, observed } => {
+            assert_eq!(approved, legacy, "the refusal names the digest the approval covered");
+            assert_eq!(observed, fresh, "and the one observed now");
+        }
+        other => panic!(
+            "a legacy plan digest must re-check as PlanChanged — 'what was \
+             approved has changed' — rather than as an absent approval or a \
+             file-drift report; got: {other:?}"
+        ),
+    }
 }
