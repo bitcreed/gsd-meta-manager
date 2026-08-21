@@ -1,447 +1,555 @@
 ---
 phase: 21-llm-goal-layer-prompt-injection-hardening
-reviewed: 2026-08-21T03:35:00Z
+reviewed: 2026-08-21T19:05:00Z
+round: 3
 depth: standard
-diff_base: 9ca152173c4177476bd506ddf49509607ec9c331
-files_reviewed: 13
+diff_base: fad82eca2952a6673f277d2d5700193200bc05bd
+head: 36269d14a0a9f279ce0c6a9393ad33b7cf6ac3ef
+supersedes: "round 2 (this file's previous contents) is preserved in git at commit 92a4b4f"
+files_reviewed: 7
 files_reviewed_list:
-  - src/cli.rs
-  - src/driver/dry_run.rs
-  - src/driver/goal.rs
   - src/driver/mod.rs
-  - src/driver/run.rs
+  - src/driver/goal.rs
   - src/error.rs
   - src/journal/mod.rs
-  - src/ui/screens/driver_confirm.rs
-  - tests/async_blocking_guard.rs
-  - tests/driver_dry_run.rs
-  - tests/driver_goal_seam.rs
-  - tests/driver_refusal_record.rs
   - tests/spawn_seam_guard.rs
+  - tests/driver_goal_seam.rs
+  - tests/driver_dry_run.rs
 findings:
-  critical: 2
-  warning: 5
+  critical: 1
+  warning: 3
   info: 4
-  total: 11
+  total: 8
 status: issues_found
 ---
 
-# Phase 21 (gap closure): Code Review Report
+# Phase 21 (gap closure, round 3): Code Review Report
 
-**Reviewed:** 2026-08-21T03:35:00Z
+**Reviewed:** 2026-08-21T19:05:00Z
 **Depth:** standard
-**Diff base:** `9ca1521..HEAD`
-**Files Reviewed:** 13
+**Diff base:** `fad82ec..36269d1` (`src/`, `tests/` only)
+**Files Reviewed:** 7
 **Status:** issues_found
+
+> **Note on this file:** round 2's review is preserved in git at commit `92a4b4f`
+> (`docs(21): add code review report`). This file replaces it in the working tree.
 
 ## Summary
 
-The four gap-closure changes were traced against the code rather than the commit
-messages, and three of the four hold up under attack:
+The four commissioned findings are genuinely closed, and I checked each against
+the code rather than against the SUMMARYs:
 
-* `CommandSource` is genuinely exhaustive — `preview_text` has three arms, no
-  fall-through, and `--goal X --dry-run` now renders honestly (verified against
-  the built binary, not only against the tests). The TUI's second preview path
-  (`AppContext::schedule_dry_run_report`) is not a residue, because
-  `spawn::drive_argv` always emits `--command` and the TUI cannot produce a
-  goal-only invocation at all.
-* `plan_digest`'s move to `journal::sha256_digest` is real, and the `+` split in
-  `parse_approval_token` is genuinely unambiguous: both halves are
-  `sha256:`/`fnv1a64:` + lowercase hex, `+` is in neither alphabet, and all four
-  malformed shapes (absent / repeated / empty-left / empty-right) return a named
-  error rather than a half-approval.
-* `ApprovalRefusal::PlanChanged` is now reachable, and a files-only change still
-  lands on `DisclosedFilesChanged` — the recorded plan half genuinely arrives
-  from the caller's token.
-* `do_toggle_opt_in`'s restore is correct in **both** directions, not only the
-  one the fix targeted: `registry::is_opted_in` is exactly
-  `driver_opt_in.is_some()`, so `was_opted_in == false` implies `previous ==
-  None`, and `clear_opt_in` in that branch is equivalent to putting `previous`
-  back. The three new tests pin the withdrawal direction against a re-baseline.
-* `finish_run` is the single terminal-write site inside `src/driver/run.rs`, and
-  the spawn-failure path really does stamp `escalations_used` now — confirmed by
-  reading a `run.json` produced by a live spawn failure.
+* **review-CR-02 closed for `--command`.** `command_source` (`src/driver/mod.rs:392`)
+  now carries the `if !command.trim().is_empty()` guard, the ambiguity arm still
+  matches first (`:382`), and a blank command does not fall through to `--goal`
+  (`:399`). Reproduced against the built binary at HEAD: `--command '   ' --dry-run`
+  exits 1 with `NoCommandSource` and creates nothing.
+* **review-CR-01 closed.** `journal::parse_approval_token` appears on exactly one
+  executable line in production (`src/driver/mod.rs:644`), inside `drive`, above
+  `if args.dry_run` at `:649` and 180 lines above `decompose` at `:828`.
+  `approve_plan`'s signature no longer carries `args` (`:921-925`). The parse is
+  genuinely pure and genuinely total — `parse_approval_token`
+  (`src/journal/mod.rs:720-737`) opens nothing, spawns nothing, cannot panic on
+  third-party argv, and never echoes the offending value.
+* **The other three invocation-shape refusals are also pure**, so WR-09's
+  "answered identically whether or not the run is real" holds for all four:
+  `bounds::resolve` (`src/driver/bounds.rs:225-247`) and `escalate::resolve`
+  (`src/driver/escalate.rs:371-389`) are functions of their arguments;
+  `is_plain_path_component` touches no disk. The deliberate carve-out is intact:
+  an **absent** `--approved-plan` stays `None` (`src/driver/mod.rs:646`) and a
+  goal-only preview still renders.
+* **review-WR-03 closed and accurate.** I checked each greppable claim in the
+  rewritten `plan_digest` paragraph: `recheck_approval` has exactly two production
+  call sites (`src/driver/mod.rs:965`, `src/driver/run.rs:2322`); every read of
+  `RunRecord::approved_plan` outside the write is in a test module; and the test
+  the doc now names really does pass a separator-less single half and really does
+  get `SeparatorAbsent` (`tests/driver_goal_seam.rs:740-768`).
+* **The new integration assertions are not vacuous.** Each names a mutation that
+  turns it red: moving `recorded_approval` below `if args.dry_run` fails
+  `tests/driver_dry_run.rs:482-495` and both goal-seam arms; deleting the
+  `command_source` match guard fails `tests/driver_dry_run.rs:508-546`. The
+  seam-spawn control arm (`tests/driver_goal_seam.rs`, arm three, asserting `== 1`)
+  is what makes the two zeroes load-bearing, and it is present.
+* Guard six's widening is real: the scan iterates `source_files()` tree-wide, it
+  matches the UFCS spelling, and it gained a distinct-contributing-files assertion
+  and a stale-allowlist assertion. `cargo test --test spawn_seam_guard` — 25 passed.
 
-Two defects remain that the phase's own stated invariants claim to have closed,
-both reproduced against the built binary. Both are in `src/driver/mod.rs`'s
-ordered refusal chain — the file whose doc says an invocation malformed *as an
-invocation* is refused before anything else and identically for a preview and a
-real run.
+**But the recurrence happened again, in the same shape, in the one column the new
+matrix guard exempts by hand.** The centrepiece of this round is
+`every_command_source_refuses_or_previews_cleanly_for_every_degenerate_payload`
+(`src/driver/mod.rs:1875`), a degenerate-payload × argv-position matrix that
+claims to make a fourth recurrence a test-time certainty. Its `--target-phase`
+column is excluded from the by-name refusal sweep by a comment (`:1976-1983`)
+whose stated reason — *"`journal::is_plain_path_component` returns false for the
+empty string"* — is true for exactly **one** of the four payloads in `DEGENERATE`.
+`--target-phase '   '` is accepted end to end, creates a lock file, a run
+directory, a `journal.jsonl` and a `run.json` recording `target_phase: "   "`, and
+exits 0 — while the byte-identical `--command '   '` is refused for free. I
+reproduced all of it against the built binary at HEAD.
 
-`cargo test` is green (1018 unit + all integration suites). `cargo clippy
---all-targets -- -D warnings` fails on five pre-existing lints in files this diff
-does not touch (`src/browser.rs`, `src/project_creator.rs`,
-`src/state_reader/mod.rs`); not reported as a finding.
+Two further guard-accuracy defects: guard six's rewritten header still omits a
+*live* silent under-detection that clippy's own `items_after_test_module` lint
+already flags in this tree, and the new guard eight — the sibling added in the
+same round that was commissioned to stop guards over-claiming — names no
+limitation at all while claiming to have turned a grep result into an enforced
+property.
+
+**Build state.** `cargo build` clean. `cargo test --test spawn_seam_guard` 25
+passed. `cargo clippy --all-targets` reports exactly 5 warnings, all pre-existing
+in `src/browser.rs:131-133`, `src/project_creator.rs:146` and
+`src/state_reader/mod.rs:311` — I confirmed none of those files is in this
+round's diff, so they are **not** reported as findings (one of them is, however,
+cited as corroboration in WR-01). All count-bearing and presence-bearing checks
+in this review were run under `rtk proxy` or plain `rustc`/`python3`.
 
 ## Critical Issues
 
-### CR-01: A malformed `--approved-plan` token spawns an agent and spends a model consultation before it is refused, and `--dry-run` never refuses it at all
+### CR-01: The degenerate-payload matrix exempts its `--target-phase` column with a reason that is false for 3 of the 4 payloads it enumerates, and a whitespace-only `--target-phase` is accepted end to end where the identical `--command` is refused
 
-**File:** `src/driver/mod.rs:730-760`, `src/driver/mod.rs:825-830`, `src/error.rs:619-628`
+**Status: reproduced** — preview, real run and `run.json` all captured against
+`target/debug/gsd-meta-manager` built from HEAD (`36269d1`).
 
-**Issue:** `error.rs:626-627` states that `PlanApprovalMalformed` "is raised
-before any other approval work happens", and `approve_plan`'s body comment
-(`src/driver/mod.rs:824-826`) states "**Parsed first, before any of the work
-below.** A value that is not a token cannot approve anything, so nothing is
-computed on the strength of it." Both claims are true only *within*
-`approve_plan`. At the invocation level the order in `drive` is:
+**File:** `src/driver/mod.rs:1976-1983` (the false carve-out),
+`src/driver/mod.rs:400` (the `Routed` arm with no emptiness rule),
+`src/driver/mod.rs:559-565` (the seam claimed to refuse it),
+`src/driver/mod.rs:1674` (`DEGENERATE`), `src/journal/mod.rs:242-254`
 
-```
-730  let decomposed = ... decomposition.decompose(...).await?;   // spawns `claude`, spends 1 escalation
-757  let approved_plan = ... approve_plan(&project, &args, plan)?; // parse_approval_token happens HERE
-```
-
-So a token with a typo costs a full model consultation and a real process spawn
-into the driven repository before a pure string check refuses it. Reproduced
-against the built binary:
-
-```
-$ gsd-meta-manager --config cfg.json drive demo --goal 'g' --run-id r1 \
-    --approved-plan 'sha256:aa'
-Error: the goal-decomposition seam produced nothing usable ... (reason:
-escalation_output_unusable): the seam could not be spawned ...
-```
-
-The refusal reported is the *seam*, not the malformed token — the parse never
-ran. The same value passed with `--dry-run` exits **0** with a clean preview and
-no mention of the token at all:
-
-```
-$ gsd-meta-manager ... drive demo --goal 'g' --dry-run \
-    --approved-plan 'total-garbage-no-separator'
-DRY RUN — nothing below was executed. ...   (exit 0)
-```
-
-That is precisely the asymmetry `drive`'s own doc (step 3, and the WR-09 comment
-at `src/driver/mod.rs:470-477`) forbids: "each is answered identically whether or
-not the run is real and a preview that answered them differently would be
-previewing something the user cannot run." `tests/driver_dry_run.rs`'s
-`a_preview_refuses_exactly_what_the_real_run_would_refuse` covers
-`--target-phase` and `--max-steps` but not this flag.
-
-`tests/driver_goal_seam.rs::a_half_supplied_approval_token_is_refused_by_name_
-and_never_treated_as_an_approval` passes only because its harness plants a
-payload the seam returns, so the decomposition succeeds and the parse is reached.
-It cannot detect the ordering.
-
-**Fix:** Parse at the seam in `drive`, in the pure-refusal group above the
-dry-run branch, and pass the parsed halves down:
+**Issue.** The matrix test's closing sweep asserts by name that every payload in
+`DEGENERATE` is refused for `--command` and for `--goal`, and excludes
+`--target-phase` with this comment:
 
 ```rust
-// beside the --target-phase and bounds refusals, above `if args.dry_run`
-let recorded_approval = match args.approved_plan.as_deref() {
-    Some(raw) => Some(journal::parse_approval_token(raw).map_err(DriveError::PlanApprovalMalformed)?),
-    None => None,
-};
-...
-#[cfg(unix)]
-let approved_plan = match decomposed.as_ref() {
-    None => None,
-    Some(plan) => Some(approve_plan(&project, recorded_approval.as_ref(), &project_inputs, plan)?),
-};
+// The two positions whose degenerate payloads are refusals rather than
+// clean previews, asserted by name rather than left to the disjunction
+// above. The `--target-phase` column is deliberately absent: a blank
+// phase is NOT a second emptiness bug here, because `drive` refuses a
+// non-plain path component at its own seam
+// (`journal::is_plain_path_component` returns false for the empty
+// string), pinned by
+// `a_target_phase_that_is_not_a_plain_path_component_is_refused_without_touching_disk`.
 ```
 
-and delete the now-duplicated parse from `approve_plan` (its doc comment moves
-with it). Add an arm to
-`a_preview_refuses_exactly_what_the_real_run_would_refuse` for a malformed token,
-so the preview/real symmetry is pinned rather than asserted.
+Both halves of that justification are wrong:
 
-### CR-02: An empty or whitespace-only `--command` still renders `1 command in the sequence:` and a blank numbered entry, and records `gsd_command: ""` on a real run
+1. **`is_plain_path_component` returns `true` for three of the four payloads.**
+   `DEGENERATE` is `["", "   ", "\t", "\n  \n"]` (`:1674`). The predicate
+   (`src/journal/mod.rs:242-254`) short-circuits on `is_empty()` and otherwise
+   asks whether the value is a single `Component::Normal` equal to itself — which
+   every whitespace string is. Measured with the function's exact body compiled
+   standalone under `rustc`:
 
-**File:** `src/driver/mod.rs:360-377`, `src/driver/dry_run.rs:254-264`, `src/driver/dry_run.rs:395-401`, `src/driver/mod.rs:1459-1518`
+   ```
+   ""      -> false
+   "   "   -> true
+   "\t"    -> true
+   "\n  \n"-> true
+   " "     -> true
+   ```
 
-**Issue:** `command_source` trims and rejects a blank `--goal`
-(`src/driver/mod.rs:370-374`, with a comment explaining exactly why), but applies
-no such rule to `--command`: `Some("")` matches the `(Some(command), None)` arm
-and becomes `CommandSource::Command("")`. `preview_text` then routes it to
-`build_report(project, "")`, which pushes `vec![""]`
-(`src/driver/dry_run.rs:256`), and the `Complete` arm prints a total of 1
-(`src/driver/dry_run.rs:396-400`).
+2. **The test it cites pins only traversal.**
+   `a_target_phase_that_is_not_a_plain_path_component_is_refused_without_touching_disk`
+   (`src/driver/mod.rs:1392-1416`) sets exactly one value,
+   `"../../../../escaped"`. It says nothing about blankness.
 
-That is byte-for-byte the CR-01 output shape this gap closure exists to
-eliminate. Reproduced against the built binary:
+The matrix's `--target-phase` cells therefore land in the `Ok` branch, where the
+only assertions are "the preview carries `SECTION_COMMANDS`" and "renders no
+empty numbered entry". A routed preview of a nonexistent phase satisfies both —
+`build_routed_report` gets `Decision::Park`/`NoRule`, pushes no commands, and the
+`empty_numbered_entry` detector has nothing to find. **The guard written to make a
+fourth recurrence impossible passes for the wrong reason on one of its three
+columns**, which is the identical failure the round-2 `--command` enumeration had.
+
+**Reproduction (built binary at HEAD).** Preview — refused on one flag, rendered
+on its sibling:
 
 ```
+$ gsd-meta-manager drive demo --config cfg.json --command '   ' --dry-run
+Error: a run needs something to do: pass `--command <c>` ...              (exit 1)
+
+$ gsd-meta-manager drive demo --config cfg.json --target-phase '   ' --dry-run
+DRY RUN — nothing below was executed. ...
 == GSD commands this run would issue ==
-... For a supplied command, the line below is the complete and honest sequence. ...
-  1 command in the sequence:
-    1.
+  Routed run: no command would be issued. From the state on disk now,
+  the router would park (router_state_unverified:    ) and the run would stop for
+  a human rather than choose.                                             (exit 0)
 ```
 
-and with `--command '   '`:
+Real run — the artefacts the `--command` refusal exists to prevent, all created:
 
 ```
-  1 command in the sequence:
-    1.
+$ gsd-meta-manager drive demo --config cfg.json \
+    --target-phase '   ' --run-id 2026-08-21T00-00-00Z-blank --max-steps 2
+$ find proj/.planning -type f
+  proj/.planning/meta-manager/runs/run.lock
+  proj/.planning/meta-manager/runs/.gitignore
+  proj/.planning/meta-manager/runs/2026-08-21T00-00-00Z-blank/run.json
+  proj/.planning/meta-manager/runs/2026-08-21T00-00-00Z-blank/journal.jsonl
+$ jq '{target_phase, gsd_command, outcome}' .../run.json
+  { "target_phase": "   ",
+    "gsd_command": "(routed: see the decided journal records)",
+    "outcome": "parked:router_state_unverified" }
 ```
 
-The new invariant test at `src/driver/mod.rs:1459-1518`
-(`every_command_source_renders_a_preview_with_no_empty_numbered_command`) asserts
-"**no** preview may render an empty numbered entry", but its `sources` array
-carries only non-empty payloads, so the property it names is not the property it
-checks. Adding `CommandSource::Command(String::new())` to that array makes it
-fail today.
+**Why this is Critical and not a Warning.** The standard this round set for
+`--command ''` was preview honesty plus record integrity. Both are violated
+identically here: the preview prints a park reason built from a value that is
+nothing, and `run.json` records `target_phase: "   "` as evidence of what the run
+drove toward. And the consequence is strictly *worse* than the defect that was
+called Critical — the blank `--command` was refused before anything was created,
+whereas the blank `--target-phase` costs a lock file, a run directory, a journal
+and a committed run record for an invocation with nothing to do.
 
-The real-run consequence is worse than the preview one. Reproduced:
+Worth noting alongside it: the same seam also admits an embedded newline, which
+reaches the CLI preview unsanitised —
 
 ```
-$ gsd-meta-manager ... drive demo --command '' --run-id r-empty --claude-program /bin/true
-$ cat .planning/meta-manager/runs/r-empty/run.json
-  "gsd_command": "",
-  "escalations_used": 0,
-  "outcome": "spawn_failed"
+$ gsd-meta-manager drive demo --config cfg.json --target-phase "$(printf 'a\nEVIL')" --dry-run
+  the router would park (router_state_unverified: a
+EVIL) and the run would stop for
 ```
 
-An agent spawn is attempted with no instruction, a run directory is created, and
-`gsd_command` is written as `""` — which
-`ROUTED_RECORD_MARKER`'s own doc (`src/driver/mod.rs:393-397`) declares must
-never happen: *"`\"\"` already means 'field absent' on the tolerant read path
-(D-30)"*. `run_summary_from_value` reads it back through
-`string_field("gsd_command")`, which returns `""` for both absent and empty, so
-this run is indistinguishable in the run list from one written by a build with no
-such field.
+`src/driver/dry_run.rs` uses no `sanitize_render_line` (only the TUI does), and
+`RouterAction::command_for`'s doc (`src/driver/router.rs:362-366`) asserts that
+`phase` "was validated at the seam as a single plain path component ... so this
+interpolation cannot smuggle a flag, a second command or a path." That is
+**pre-existing**, predates this round's diff, and is reported here only as
+context for how much the carve-out comment is leaning on `is_plain_path_component`.
 
-**Fix:** Refuse a blank command at the same seam and in the same register as the
-blank goal:
+**Fix.** Three parts, all small, and the first two must ship together:
 
 ```rust
-match (command, target_phase) {
-    (Some(_), Some(_)) => Err(DriveError::AmbiguousCommandSource),
-    // A command made of nothing is nothing to do, exactly as `--goal ' '` is.
-    (Some(command), None) if !command.trim().is_empty() => {
-        Ok(CommandSource::Command(command.to_string()))
+// src/driver/mod.rs, command_source — the same rule the two siblings carry
+(None, Some(target_phase)) if !target_phase.trim().is_empty() => {
+    Ok(CommandSource::Routed(target_phase.to_string()))
+}
+(None, Some(_)) => Err(DriveError::NoCommandSource),
+```
+
+(Alternatively tighten `journal::is_plain_path_component` to reject a
+whitespace-only value — that also closes the `--run-id` sibling, which accepts
+`'   '` for the same reason — but then the matrix's `Err(other) => panic!` arm
+must be widened, because the refusal would be `TargetPhaseInvalid` rather than
+`NoCommandSource`.)
+
+Then delete the carve-out comment and put `--target-phase` into the by-name sweep
+alongside its two siblings:
+
+```rust
+for payload in DEGENERATE {
+    for (position, build) in [("--command", ...), ("--target-phase", ...), ("--goal", ...)] {
+        assert!(matches!(command_source(...), Err(DriveError::NoCommandSource)), ...);
     }
-    (Some(_), None) => Err(DriveError::NoCommandSource),
-    (None, Some(target_phase)) => Ok(CommandSource::Routed(target_phase.to_string())),
-    (None, None) => match goal { ... }
 }
 ```
 
-and add `CommandSource::Command(String::new())` plus
-`CommandSource::Command("   ".into())` to the enumeration in
-`every_command_source_renders_a_preview_with_no_empty_numbered_command`, so the
-invariant the test names is the invariant it holds. Note the `matches!` sweep in
-that test keys on index, so it needs re-shaping to a per-variant count rather
-than a per-position one.
+Third: add an arm to
+`a_target_phase_that_is_not_a_plain_path_component_is_refused_without_touching_disk`
+for `"   "`, so the test the comment cites actually pins what the comment claims
+it pins. Verify the fix by re-running the reproduction above — the real run must
+leave `.planning/meta-manager` absent.
 
 ## Warnings
 
-### WR-01: Guard six is scoped to one file while `JournalRun::finish` is `pub`, and its stated limits claim a failure direction it does not have
+### WR-01: Guard six's rewritten header still omits a live silent under-detection — production code after a file's `mod tests {` marker is skipped to EOF, and this tree has such code today
 
-**File:** `tests/spawn_seam_guard.rs:1673-1700`, `tests/spawn_seam_guard.rs:1707-1713`, `tests/spawn_seam_guard.rs:1723-1814`
+**Status: precondition reproduced** (marker and trailing production `fn` located
+and corroborated by clippy); the skip itself is a three-line read of the scanner.
 
-**Issue:** The guard header (lines 1687-1699) states two over-approximations and
-concludes "**Both fail in the over-detection direction — loud, not silent** —
-which is the direction a guard may err in." That characterisation is not true of
-the guard as a whole. `TERMINAL_WRITE_HOME` pins the scan to
-`src/driver/run.rs`, and `JournalRun::finish` is `pub`
-(`src/journal/mod.rs:1771`) on a `pub struct`. A terminal write added from
-`src/driver/kill.rs`, `src/driver/reconcile.rs`, `src/app.rs` or any UI screen is
-invisible to the guard — a *silent* under-detection, which is the direction the
-header says it does not have.
+**File:** `tests/spawn_seam_guard.rs:1703-1723` (the "what is still approximate"
+block), `tests/spawn_seam_guard.rs:1776-1781` (`test_region_start`),
+`tests/spawn_seam_guard.rs:1796-1799` (the skip), `src/state_reader/mod.rs:311`
+and `:530`
 
-A second unstated under-approximation: `TERMINAL_WRITE_CALL` is `".finish("`, so
-the UFCS form `JournalRun::finish(&mut journal, label)` is not matched.
+**Issue.** The header now lists three limits and, correctly, refuses to make a
+blanket claim about the guard's failure direction. Limit 1 reads:
 
-The control-arm test (`the_terminal_write_scanner_reports_a_bare_call_and_not_
-the_helpers_own`) verifies attribution inside one synthetic file; it cannot see
-either gap.
+> The production/test boundary is found by a LINE MARKER (`mod tests {` at column
+> zero), not by parsing. A file that spelled its test module differently would be
+> scanned in full, and its tests' own journal closes would be reported as
+> production offenders. **Over-detection — loud.**
 
-**Fix:** Either widen the scan to every file under `src/` with an explicit
-`(file, fn)` allowlist for `finish_run` — the shape guard one already uses for
-`from_registry` — or, at minimum, correct the header so the file scoping and the
-UFCS spelling are named as silent under-detections rather than folded into a
-"loud, not silent" claim. If the scan stays scoped, adding an assertion that
-`.finish(` appears in no other `src/` file at all is one line and closes the
-larger of the two.
+That names only one direction of the marker approximation. The other direction is
+the one that is live in this tree: `terminal_write_hits` computes
+`let boundary = test_region_start(file).unwrap_or(usize::MAX);` and then
+`if *number >= boundary { continue; }` — so **everything after the first
+column-zero `mod tests {` is skipped to end of file**, whether it is a test or
+not. `src/state_reader/mod.rs` puts `mod tests {` at line 311 of 547 and then
+declares a genuine production function afterwards:
 
-### WR-02: `registry::current_prompt_inputs` does blocking file I/O inside two `async fn` bodies and is not in `BLOCKING_HELPERS`
-
-**File:** `src/driver/mod.rs:833`, `src/driver/run.rs:2325`, `tests/async_blocking_guard.rs:124-161`
-
-**Issue:** `current_prompt_inputs` calls `file_digest`, which is
-`std::fs::read(...)` plus SHA-256 per disclosed file
-(`src/registry.rs:195-214`), for each of the five entries in
-`DISCLOSED_PROMPT_INPUTS`. It is called synchronously from `approve_plan`, which
-`async fn drive` calls inline (`src/driver/mod.rs:759`), and directly inside
-`async fn execute_run` at `src/driver/run.rs:2325` — neither behind
-`spawn_blocking`.
-
-`tests/async_blocking_guard.rs` reports green because the `fs::read(` sits
-one call deep inside `registry::file_digest`, and `current_prompt_inputs(` is not
-listed in `BLOCKING_HELPERS`. This is exactly the residue that list's own doc
-names ("A new synchronous seam that nobody adds here is still invisible"), and
-the same commit remembered to add `build_goal_report(` for the identical reason.
-The `execute_run` call predates this diff; the `approve_plan` call is on the path
-this gap closure reworked.
-
-Practical impact is small (five small reads on a foreground CLI invocation), but
-the guard reporting green on a seam it cannot see is the failure mode the file
-argues is worse than no guard.
-
-**Fix:** Add `"current_prompt_inputs("` to `BLOCKING_HELPERS` in the same commit,
-then either wrap both call sites in `spawn_blocking` or add the two
-`(file, marker)` entries to `ASYNC_BLOCKING_ALLOWLIST` with the one-line reason
-that convention requires.
-
-### WR-03: The "a legacy `fnv1a64:` record fails closed as `PlanChanged`" claim describes a path production cannot take
-
-**File:** `src/driver/goal.rs:750-757`, `src/journal/mod.rs:836-844`, `tests/driver_goal_seam.rs:1133-1181`
-
-**Issue:** Both docs assert that a **record** carrying a legacy `fnv1a64:` plan
-digest "re-checks as `ApprovalRefusal::PlanChanged` and fails closed", and name
-`a_recorded_approval_carrying_a_legacy_fnv1a64_plan_digest_re_checks_as_stale`
-as proof. Neither is a production path:
-
-* `ApprovedPlan` is only ever *constructed* in-process by `approve_plan` and
-  serialised into `run.json`. It is never deserialised and re-checked — grep
-  confirms the only reads of `RunRecord::approved_plan` are the round-trip test
-  at `src/journal/mod.rs:2560` and the `None` fixtures. So no recorded legacy
-  plan digest is ever fed to `recheck_approval`.
-* The value a user could actually still be holding is a legacy **token** — the
-  single-digest `--approved-plan` value an earlier build printed. That fails at
-  `parse_approval_token` with `ApprovalTokenError::SeparatorAbsent`, not with
-  `PlanChanged`.
-* The named test constructs an `ApprovedPlan` by hand and calls
-  `recheck_approval` directly, so it exercises the predicate rather than any
-  route into it.
-
-Both directions fail closed, so there is no security gap. The problem is that
-two docs claim a mechanism and a pinning test that do not correspond to reality,
-in a codebase whose stated rule is that a doc describing a build other than the
-current one "is worse than no doc — it is read as current."
-
-**Fix:** Reword both docs to say what actually fails closed: a *legacy single-half
-token* on argv is refused by `parse_approval_token` as `SeparatorAbsent`, and no
-recorded `ApprovedPlan` is ever re-read, so no migration is needed for a
-different reason than the one stated. Keep the `recheck_approval` unit test but
-rename it to say it pins the predicate rather than a record path.
-
-### WR-04: The spawn-gate re-check passes the same digest on both sides — a latent re-run of the defect WR-01 named
-
-**File:** `src/driver/run.rs:2304-2328`
-
-**Issue:** The gate calls
-
-```rust
-journal::recheck_approval(
-    Some((&approved.plan_digest, &approved.approval_digest)),
-    &approved.plan_digest,
-    &crate::registry::current_prompt_inputs(project.root()),
-)
+```
+src/state_reader/mod.rs:311:  mod tests {
+src/state_reader/mod.rs:530:  pub fn count_backlog_items(planning_dir: &Path) -> u32 {
 ```
 
-The recorded plan half and the observed plan half are the same `String`, so the
-first comparison in `recheck_approval` is a value against itself — structurally
-identical to the defect this cycle removed one call site up. The 17-line comment
-argues this is sound because the goal is decomposed exactly once above the run,
-which is true of the code today. But nothing enforces it: the argument lives in a
-comment, and `recheck_approval` now takes two loose `&str`s that make the
-tautological call trivially expressible. If any future change re-derives a plan
-between `drive` and `execute_run`, this silently reverts to a check that cannot
-fail while looking like one that can.
+`cargo clippy --all-targets` independently flags it: `warning: items after a test
+module --> src/state_reader/mod.rs:311:1`. Lines 311–547 of that file are
+invisible to guard six. Tree-wide the boundary excludes **27,280 of 72,706 lines
+under `src/` (37.5%)** across 58 of 74 files — correct for the test regions, but
+the header never says the exclusion runs to EOF or that a production item landing
+past a marker is silently exempt.
 
-**Fix:** Make the intent structural rather than commentary. Either split the
-predicate — a `recheck_disclosed_files(recorded_approval_digest, plan_digest,
-inputs)` for the spawn gate and the full two-half `recheck_approval` for
-`approve_plan` — or thread the token halves down into `execute_run` so the spawn
-gate compares the *caller's* recorded plan digest against the record's, and the
-comparison becomes real on both sides.
+Name the mutation the guard would not catch: add `journal.finish("aborted")` to a
+new production helper placed after line 311 of `src/state_reader/mod.rs`. Guard
+six stays green, and the run's `escalations_used` goes unstamped — which is
+exactly the property the guard exists to hold.
 
-### WR-05: `PlanStep::rationale` is bounded, stored, and read by nothing — the review surface it exists for prints only the triples it calls unreviewable
+Two lesser approximations are also unnamed, both silent:
+`enclosing_fn` (`tests/spawn_seam_guard.rs:1130-1136`) is a nearest-preceding-`fn`
+backward scan with **no brace tracking**, so any terminal write that lands between
+`fn finish_run(` and the next `fn` declaration in `src/driver/run.rs` is
+attributed to `finish_run` and allowlisted; and `collect`
+(`tests/spawn_seam_guard.rs:245-247`) drops an unreadable file with `continue`,
+so a file the scan cannot read is a silently empty contribution.
 
-**File:** `src/driver/goal.rs:143-150`, `src/driver/goal.rs:452-455`, `src/driver/goal.rs:697-721`, `src/driver/mod.rs:839-850`
+**Fix.** Add limit 4 to the header, in the register the other three now use:
 
-**Issue:** `FIELD_RATIONALE`'s doc says the field exists because "DRIVE-03
-requires the user to *review* the plan before it runs, and a list of
-`verb phase verification_passed` triples is reviewable only by someone who
-already knows the answer." The only review surface —
-`DriveError::PlanApprovalRequired` — is built from
-`format!("command={} phase={} terminal={}", ...)` at `src/driver/mod.rs:842-848`,
-which is exactly that list of triples. `ApprovedPlan::steps`' doc explicitly
-excludes the rationale from `run.json` too.
+```
+// 4. The boundary excludes everything from the marker to END OF FILE, not just
+//    the test module. A production item declared AFTER a file's `mod tests {`
+//    is invisible — `src/state_reader/mod.rs:530` is such an item today, and
+//    clippy's `items_after_test_module` already reports it. **Under-detection
+//    — silent.** What bounds it: nothing in this guard. Fixing the clippy lint
+//    in that file removes the only live instance.
+// 5. `enclosing_fn` finds the nearest PRECEDING `fn` and does not track braces,
+//    so a write between `fn finish_run(` and the next declaration is
+//    attributed to the helper and allowlisted. **Under-detection — silent.**
+```
 
-Grep confirms `PlanStep::rationale` has no production reader anywhere: the only
-non-test reference is the write at `src/driver/goal.rs:720`. So the field is
-effectively dead, and the DRIVE-03 review requirement is served by the surface
-its own doc calls insufficient.
+Cheaper still, and it closes limit 4 outright: assert in the guard that no file
+under `src/` has a top-level item after its marker (one `regex`-free line-scan),
+or simply move `count_backlog_items` above the test module and keep the
+invariant true by construction.
 
-**Fix:** Either render the rationale in the refusal (already sanitized end-to-end
-via `sanitize_render_line` on the step string — extending the `format!` is a
-one-line change and the bound at construction already covers it), or delete the
-field and the doc paragraph that justifies it. Keeping both is a stored,
-attacker-influenced string that nothing reads and a stated requirement nothing
-satisfies.
+### WR-02: Guard eight names no limitation at all while claiming to have turned a grep result into an enforced property — the same over-claiming shape as review-WR-01, in the guard added to close it
+
+**Status: inferred** (by reading the needles, the allowlist and `enclosing_fn`).
+No violating call site exists in the tree today — I checked: the only
+`CommandSource::` occurrences outside `src/driver/mod.rs` are `run.rs`'s unrelated
+enum.
+
+**File:** `tests/spawn_seam_guard.rs:2136-2165` (header),
+`tests/spawn_seam_guard.rs:2168-2172` (`COMMAND_SOURCE_VARIANTS`),
+`tests/spawn_seam_guard.rs:2208-2226` (the scan)
+
+**Issue.** The header states the property flatly — *"Until now that was a grep
+result somebody ran once; here it is a property a test enforces"* — and then
+documents only the name-collision reasoning. It never says what the scan cannot
+see. Guard six, twenty lines up the same file and rewritten in the same round,
+now names each of its limits with a direction, precisely because a generous
+self-description was review-WR-01. Guard eight was written to a lower standard in
+the same commit.
+
+What it actually enforces is *"no production line under `src/`, before that file's
+`mod tests {` marker, contains the literal `CommandSource::Command(`,
+`CommandSource::Routed(` or `CommandSource::Goal(` outside two named functions"*
+— which is narrower than "`command_source` is the single production constructor"
+in at least four ways, all silent:
+
+1. **`Self::Command(`.** An `impl CommandSource { fn from_argv(..) -> Self { Self::Command(..) } }`
+   is a second production constructor and matches no needle.
+2. **An imported variant.** `use crate::driver::CommandSource::Command;` then
+   `Command(x)` — same.
+3. **`enclosing_fn` has no brace tracking** (`:1130-1136`). Any variant-naming
+   line placed between `fn command_source` (`src/driver/mod.rs:372`) and
+   `fn preview_text` (`:446`) — a `const`, a free-standing block, a nested item —
+   is attributed to `command_source` and allowlisted.
+4. **It inherits WR-01's boundary blind spot**, since it copies the same
+   `test_region_start(file).unwrap_or(usize::MAX)` skip.
+
+The `contributed >= COMMAND_SOURCE_VARIANT_COUNT` check is a good non-vacuity
+control for a needle that stopped matching *inside the allowlisted functions*, but
+it says nothing about a new spelling appearing elsewhere.
+
+**Fix.** Add a limits block to guard eight's header modelled on guard six's, naming
+items 1–4 with the direction each fails in. Then close the cheapest one for real
+by adding two needles beside the three:
+
+```rust
+const COMMAND_SOURCE_VARIANTS: &[&str] = &[
+    "CommandSource::Command(", "CommandSource::Routed(", "CommandSource::Goal(",
+    // Self-qualified construction from inside an `impl CommandSource`.
+    "Self::Command(", "Self::Goal(",
+];
+```
+
+(`Self::Routed(` would collide with `run.rs`'s enum, which is itself worth
+recording as the reason the rename in `21-11-SUMMARY.md`'s "carried forward" note
+should be done.) Add a one-line assertion that no `use ...CommandSource::` import
+exists under `src/`, which makes item 2 loud instead of silent.
+
+### WR-03: The matrix's payload axis is bounded by the same `str::trim` predicate as the production guard, so it can only confirm the guard and never falsify it — `--command $'\u200b'` renders a visually empty numbered entry today
+
+**Status: reproduced** against the built binary at HEAD.
+
+**File:** `src/driver/mod.rs:1663-1674` (`DEGENERATE` and its doc),
+`src/driver/mod.rs:1706-1715` (`empty_numbered_entry`),
+`src/driver/mod.rs:392` (the production guard)
+
+**Issue.** `DEGENERATE`'s doc states the coupling as a virtue:
+
+> Whitespace-only is the predicate `str::trim` already answers, and the production
+> guard is written against `trim` for exactly that reason: the test and the code
+> must agree about what "blank" means or the enumeration is checking a different
+> property from the one the seam enforces.
+
+The consequence is the opposite of what is claimed: because the enumeration's
+notion of "blank" is *defined* by the same predicate the guard uses, the
+enumeration cannot contain a payload the guard mishandles. It is a tautology, not
+a check. `empty_numbered_entry` closes the loop — it decides "empty" with
+`tail.trim().is_empty()`, the same predicate again.
+
+A payload outside `char::is_whitespace` demonstrates it. U+200B ZERO WIDTH SPACE
+survives `trim`, so `command_source` resolves it, and the preview prints
+CR-02's exact shape under the exact header the whole cycle exists to make honest
+(shown through `cat -A`, `M-bM-^@M-^K` is the UTF-8 of U+200B):
+
+```
+$ gsd-meta-manager drive demo --config cfg.json --command $'\u200b' --dry-run
+...For a supplied command, the line below is the complete and honest sequence....
+  1 command in the sequence:$
+    1. M-bM-^@M-^K$
+```
+
+`empty_numbered_entry` cannot flag it, and on a real run the value is what gets
+spawned and what lands in `run.json`'s `gsd_command`. The `DEGENERATE` doc
+anticipates "a fifth blank shape (a vertical tab, a non-breaking space)" — both of
+those *are* `char::is_whitespace` and are already covered; the shapes that are
+not covered are exactly the ones the doc does not think of, because it is
+thinking in `trim`'s vocabulary.
+
+Exploitability is low: the operator supplies `--command` themselves, and the TUI's
+own path is guarded separately by `committed.starts_with('/')`
+(`src/ui/screens/driver_start.rs:223`). This is a Warning for the *guard-design*
+defect it demonstrates, not for the payload.
+
+**Fix.** Break the tautology by making the two predicates different, so the test
+can falsify the guard rather than restate it. Concretely, judge the *rendered*
+entry on visible width rather than on `trim`:
+
+```rust
+fn empty_numbered_entry(rendered: &str) -> Option<&str> {
+    rendered.lines().find(|line| {
+        let trimmed = line.trim();
+        trimmed.split_once('.').is_some_and(|(head, tail)| {
+            !head.is_empty()
+                && head.chars().all(|c| c.is_ascii_digit())
+                // Not `tail.trim()`: a payload the seam's `trim` does not strip
+                // still renders as nothing, and a detector that reused the
+                // seam's predicate could only ever agree with it.
+                && tail.chars().all(|c| c.is_whitespace() || c.is_control()
+                    || matches!(c, '\u{200b}'..='\u{200f}' | '\u{2060}' | '\u{feff}'))
+        })
+    })
+}
+```
+
+and add at least one non-`is_whitespace` blank to `DEGENERATE`
+(`"\u{200b}"`, `"\u{feff}"`). Whether the *production* seam should also reject
+them is a separate call — but the guard must be able to ask the question.
 
 ## Info
 
-### IN-01: The goal preview still says `--approved-plan` takes a "digest" after the flag became a two-half token
+### IN-01: `DriveError::NoCommandSource`'s message does not describe the case it is now most often raised for, and never mentions `--goal`
 
-**File:** `src/driver/dry_run.rs:426-435`
+**File:** `src/error.rs:718-723`, `src/driver/mod.rs:399`
 
-**Issue:** The `GoalNotDecomposed` prose ends "...prints the plan together with
-the `--approved-plan` **digest** that authorises exactly it." `src/cli.rs:136`,
-`src/error.rs:606-614` and `journal::render_approval_token` were all updated to
-say *token*; this string, which is inside a pinned-contract section, was not.
-Verified in the rendered output.
+**Issue.** Reusing `NoCommandSource` for a supplied-but-blank command was a
+deliberate key decision, but its rendered text is:
 
-**Fix:** `--approved-plan token that authorises exactly it`. The pinned-header
-test at `src/driver/dry_run.rs:758-776` is the natural place to assert the word.
+> a run needs something to do: pass `--command <c>` to run one GSD command, or
+> `--target-phase <N>` to let the decision router choose each command from
+> observed project state
 
-### IN-02: `ScopedPreview` lets `GoalNotDecomposed` carry a non-empty command list
+A user who typed `--command '   '` is told to pass `--command`. A user who typed
+`--goal '   '` — the pre-existing case — is told about two flags, neither of which
+is the one they used, and `--goal` is not named at all even though it has been a
+first-class command source since 21-07. Reproduced: that is the verbatim stderr
+from `--command '   '` against HEAD.
 
-**File:** `src/driver/dry_run.rs:186-242`, `src/driver/dry_run.rs:320-358`
+**Fix.** Extend the message to name all three sources and to say that a value made
+only of whitespace counts as absent — the refusal is otherwise a bug report rather
+than an error message, which is the standard the rest of this file holds.
 
-**Issue:** `ScopedPreview.report` and `.scope` are both `pub`, so
-`PreviewScope::GoalNotDecomposed { .. }` beside a non-empty `commands` vector is
-representable. `render_with_scope` would then print numbered command entries
-directly beneath the text "no command can be shown, and none is withheld." The
-emptiness is a property of `build_goal_report` only, not of the type — which is
-the same "add beside rather than through" shape the `CommandSource` promotion was
-made to remove.
+### IN-02: `variant_name`'s arms are duplicated as two hand-written string arrays, and one of them does not fail when a fourth variant appears
 
-**Fix:** Either move the scope inside `DryRunReport` behind a constructor that
-enforces the pairing, or add a `debug_assert!(report.commands.is_empty())` in the
-`GoalNotDecomposed` arm of `render_with_scope`.
+**File:** `src/driver/mod.rs:1691-1697`, `:1810`, `:1945-1946`
 
-### IN-03: `plan_target_phase(plan).unwrap_or_default()` silently yields an empty target phase
+**Issue.** The compile-forcing mechanism is real — I accept 21-11's E0004 evidence,
+and `variant_name` is a genuine wildcard-free `match`. But the two consumers each
+re-spell its arms as a literal: `for expected in ["Command", "Routed", "Goal"]`
+(`:1810`) and `assert_eq!(resolved, vec!["Command", "Goal", "Routed"])` (`:1946`).
+The second fails loudly if a fourth variant is reachable from an existing argv
+position (a new name appears in `resolved`). The first does not: after a fourth
+variant is added and `variant_name` extended, the `sources` array can stay at
+three entries and the loop over three names still passes — a per-variant check
+that has quietly stopped covering a variant, which is the exact criticism levelled
+at its index-keyed predecessor.
 
-**File:** `src/driver/mod.rs:878-881`
+**Fix.** Derive the expected set from one place, e.g. a
+`const ALL_VARIANT_NAMES: [&str; 3]` that `variant_name`'s own module doc points at
+and that a `debug_assert` ties to the match's arm count, or build the expectation
+from `sources.iter().map(variant_name)` and assert the *set* rather than iterating
+a literal.
 
-**Issue:** The comment correctly explains why this is not `unwrap()`, but
-`unwrap_or_default()` turns an empty plan into `target_phase: ""`, which becomes
-`args.target_phase = Some("")` and then a map key into
-`phase_disk_statuses` that matches nothing — a run that drives toward nothing
-while looking configured. The only thing preventing it is `legality`'s empty-plan
-refusal in a different module.
+### IN-03: The approval-token parse now fires on invocations where an approval is meaningless, and the asymmetry with a well-formed-but-irrelevant token is undocumented
 
-**Fix:** Return a typed refusal instead:
-`run::plan_target_phase(plan).ok_or(DriveError::…)?`, or reuse
-`DriveError::TargetPhaseInvalid { target_phase: String::new() }`.
+**File:** `src/driver/mod.rs:641-647`
 
-### IN-04: The zero-budget refusal says a budget of 0 "was already spent"
+**Issue.** `recorded_approval` is computed unconditionally, so
+`drive --command /gsd:progress --approved-plan garbage` is now refused with
+`PlanApprovalMalformed`, where before the move it was ignored (the value was only
+read inside `approve_plan`, which a command run never reaches). Meanwhile
+`--command /gsd:progress --approved-plan 'sha256:aa+sha256:bb'` is still accepted
+and silently discarded. Refusing malformation everywhere is defensible and is what
+WR-09 asks for, but the pairing — malformed is fatal, well-formed is ignored — is
+not stated anywhere, and `--approved-plan`'s clap help (`src/cli.rs`) still reads
+as though the flag only pertains to a goal run.
 
-**File:** `src/driver/run.rs:2001-2010`
+**Fix.** One sentence in the `recorded_approval` comment block naming the
+widening, and a clause in the clap help saying the flag is validated on every
+invocation but only consulted for a `--goal` run.
 
-**Issue:** With `--max-steps 1`, `escalate::resolve` reduces the default cap to
-`min(3, 0) = 0`, and the decomposition then refuses with (verified against the
-binary):
+### IN-04: The new `driver_dry_run` test inherits the silent `repo() -> None` skip
 
-```
-Error: ... (reason: escalation_cap_reached): the run's model-consultation budget
-of 0 was already spent before the goal could be decomposed.
-```
+**File:** `tests/driver_dry_run.rs:508-511`
 
-Nothing was spent — the budget was zero from the start, because the step cap left
-no room for one that could bind. A reader chasing "already spent" will look for a
-consultation that never happened.
+**Issue.** `a_blank_command_is_refused_in_preview_and_in_a_real_run` opens with
+`let Some(repo_dir) = repo() else { return; };`. In a sandbox where `git init` or
+`git commit` is unavailable, the test passes without executing a single assertion.
+This is the file's established pattern rather than something the round invented,
+but a review-CR-02 regression test that can pass by doing nothing is worth naming
+in a phase whose whole subject is checks that pass for the wrong reason.
 
-**Fix:** Branch the detail on `budget.cap() == 0`, e.g. *"this run's step cap of
-1 leaves no room for a model consultation that could bind, so the goal cannot be
-decomposed — raise `--max-steps`"*, which also names an action.
+**Fix.** Have `repo()` record its unavailability once and have a single
+`#[test] fn the_git_fixture_is_available()` assert it — so an environment that
+silently skips half the suite fails one named test instead of reporting green.
 
 ---
 
-_Reviewed: 2026-08-21T03:35:00Z_
+## Carried forward from round 2 — still open, out of this round's commissioned scope
+
+Not re-litigated here, and not counted in this report's totals. Recorded so the
+next verification does not read this file as "everything from round 2 is closed."
+Each re-checked against HEAD:
+
+* **round-2 WR-02** — `registry::current_prompt_inputs(` is still absent from
+  `BLOCKING_HELPERS` (`tests/async_blocking_guard.rs:124-144`) and is still called
+  synchronously from `approve_plan` (`src/driver/mod.rs:927`) and from
+  `async fn execute_run` (`src/driver/run.rs:2325`).
+* **round-2 WR-04** — the spawn gate still passes `&approved.plan_digest` on both
+  sides of `recheck_approval` (`src/driver/run.rs:2321-2328`); the argument that
+  this is sound still lives only in a comment.
+* **round-2 WR-05** — `PlanStep::rationale` still has no production reader.
+* **round-2 IN-01…IN-04** — the "digest" wording in the goal preview, the
+  representable `GoalNotDecomposed` + non-empty command list, the
+  `plan_target_phase(plan).unwrap_or_default()` empty target phase
+  (`src/driver/mod.rs:977` — note this is a *second* route to a blank
+  `target_phase`, and unlike CR-01's it bypasses the argv seam entirely), and the
+  zero-budget "was already spent" wording.
+
+---
+
+_Reviewed: 2026-08-21T19:05:00Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
+_Round 2 preserved at git commit 92a4b4f_
