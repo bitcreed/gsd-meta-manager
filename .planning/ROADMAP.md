@@ -459,7 +459,7 @@ Plans:
   - **The vacuity hazard is the phase's sharpest risk (C-3):** the officially-recommended untrusted-content channel is accepted by this transport with exit 0 and never reaches the model, so an injection-corpus test built on it passes *vacuously*, forever. Every corpus assertion must prove arrival before it proves the property
 
 **Research**: done — `21-RESEARCH.md` (five live spikes; four CONTEXT.md decisions contradicted and corrected in `21-CONTEXT.md` § "Research Corrections")
-**Plans**: 8/10 plans executed — 6/6 executed in 6 waves; `21-VERIFICATION.md` scored 3/5 must-have truths (criterion 1 ✗ FAILED), so 4 gap-closure plans were added in 3 further waves
+**Plans**: 9/10 plans executed — 6/6 executed in 6 waves; `21-VERIFICATION.md` scored 3/5 must-have truths (criterion 1 ✗ FAILED), so 4 gap-closure plans were added in 3 further waves
 
 Plans:
 **Wave 1**
@@ -490,7 +490,7 @@ Gap closure (from `21-VERIFICATION.md`):
 
 - [x] 21-07-PLAN.md — Gap 1 / CR-01, tracer: an honest goal-only dry-run — a fourth `PreviewScope`, a promoted `CommandSource` with no unreachable arm, and the regression tests the invocation never had (DRIVE-01, DRIVE-03)
 - [x] 21-08-PLAN.md — Gap 1 / CR-02 + WR-05: the approval's plan half becomes SHA-256, three false safety docs corrected, and the model-selected `target_phase` bounded at construction and sanitized before the terminal (DRIVE-03, SAFE-07)
-- [ ] 21-09-PLAN.md — Gap 2 / WR-01: `--approved-plan` carries both digest halves, so `PlanChanged` is reachable and the refusal stops reporting a file change that did not happen (DRIVE-01, DRIVE-03, SAFE-07)
+- [x] 21-09-PLAN.md — Gap 2 / WR-01: `--approved-plan` carries both digest halves, so `PlanChanged` is reachable and the refusal stops reporting a file change that did not happen (DRIVE-01, DRIVE-03, SAFE-07)
 - [ ] 21-10-PLAN.md — Secondary findings WR-02 + WR-04: one stamped terminal write behind a guard, and an opt-in revert that restores rather than re-baselines (DRIVE-04, SAFE-07)
 
 ### Phase 22: Container Execution Target
@@ -551,7 +551,7 @@ Gap closure (from `21-VERIFICATION.md`):
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 8/8 | In Progress|  |
 | 20. Deterministic Decision Router & Run Bounds | 5/5 | In Progress|  |
-| 21. LLM Goal Layer & Prompt-Injection Hardening | 8/10 | In Progress|  |
+| 21. LLM Goal Layer & Prompt-Injection Hardening | 9/10 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
 
