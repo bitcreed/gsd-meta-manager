@@ -941,6 +941,10 @@ fn establish_own_group() -> u32 {
 ///    `ended_at` (that absence *is* Phase 16's crash contract), a stopped one has
 ///    `ended_at` plus the killed outcome. `src/driver/reconcile.rs` reads exactly
 ///    that difference, so skipping it would make every stop look like a crash.
+///    It goes through [`finish_run`], so the record also names the model
+///    consultations the run spent — `escalations_used` arrives as an argument
+///    rather than being read here because the budget is owned by [`execute_run`],
+///    and a stopped goal-driven run has already spent one (WR-02).
 ///
 /// The outcome label comes from the outcome `cancel` actually returned rather
 /// than from a hard-coded `Killed`: the coordinator maps a cancelled run onto
@@ -953,10 +957,47 @@ fn establish_own_group() -> u32 {
 /// which happens after this returns, so the release lands after the last write
 /// rather than in the middle of it (D-20.2). An explicit unlock would be a second
 /// release path for one resource.
+/// Close a run out, with the consultations it spent (WR-02, DRIVE-04).
+///
+/// **The only place in this module's production region that writes a run's
+/// terminal label.** The stamp cannot be forgotten because there is nowhere else
+/// to write an ending from — and that is a property a test can check, where
+/// "every branch remembered" is not. `tests/spawn_seam_guard.rs` checks it, in
+/// the same single-call-site shape [`DrivableProject::from_registry`] and the
+/// goal-decomposition capability already use.
+///
+/// **Why it matters that no path may skip it.** `escalations_used`'s doc
+/// (`src/journal/mod.rs`) says the value is written unconditionally, so that a
+/// run which spent nothing records a zero a reader can tell apart from an absent
+/// field written by a build that predates the counter. Three paths used to
+/// reintroduce exactly that ambiguity — the terminate-signal shutdown, the
+/// startup kill and the spawn-failure arm — and a goal-driven run has always
+/// spent at least one consultation before any of them can fire, because the
+/// decomposition happens above [`execute_run`]. The runs that lost the count
+/// were the killed and failed-to-spawn ones an operator opens an investigation
+/// with.
+///
+/// The order is stamp then finish, and it is not interchangeable:
+/// [`JournalRun::set_escalations_used`] mutates the in-memory record and
+/// [`JournalRun::finish`] is what writes it, so a stamp afterwards would land on
+/// a record nothing writes again — `run.json` is written exactly twice (D-06).
+///
+/// It returns whatever `finish` returns, so every existing error handling at the
+/// four call sites stays exactly as it was.
+fn finish_run(
+    journal: &mut JournalRun,
+    label: &str,
+    escalations_used: u32,
+) -> anyhow::Result<()> {
+    journal.set_escalations_used(escalations_used);
+    journal.finish(label)
+}
+
 async fn shutdown_on_terminate(
     executor: &ClaudeExecutor,
     handle: &mut ExecutionHandle,
     journal: &mut JournalRun,
+    escalations_used: u32,
 ) {
     let outcome = executor.cancel(handle).await;
 
@@ -1002,7 +1043,7 @@ async fn shutdown_on_terminate(
         }
     };
 
-    if let Err(err) = journal.finish(&label) {
+    if let Err(err) = finish_run(journal, &label, escalations_used) {
         tracing::warn!(
             detail = %format!("{err:#}"),
             "could not close the journal after a terminate-signal shutdown",
@@ -1062,7 +1103,11 @@ async fn agent_gone_within(pid: u32, limit: Duration) -> bool {
 /// It reaches the group through [`kill::signal_group`] and never through a direct
 /// `rustix` call, so the "process group 0 is the caller's own group" refusal
 /// exists in exactly one place in the tree (D-08).
-async fn shutdown_during_startup(pgid_rx: &mut oneshot::Receiver<u32>, journal: &mut JournalRun) {
+async fn shutdown_during_startup(
+    pgid_rx: &mut oneshot::Receiver<u32>,
+    journal: &mut JournalRun,
+    escalations_used: u32,
+) {
     // A non-blocking read, and it has to be: by the time this body runs
     // `tokio::select!` has already dropped the `start` future, so nothing further
     // will ever be sent on this channel and an `.await` here would hang until the
@@ -1123,7 +1168,12 @@ async fn shutdown_during_startup(pgid_rx: &mut oneshot::Receiver<u32>, journal: 
     // wall-clock or idle breach was classified in the same pass. Here there is no
     // handle and no outcome: the run was stopped before one could exist, and
     // "killed" is the only truthful thing to write.
-    if let Err(err) = journal.finish("killed") {
+    //
+    // The COUNT, unlike the label, is not hard-coded and could not be: a
+    // goal-driven run was decomposed above `execute_run`, so it reaches this
+    // path having already spent a consultation. It arrives from the caller,
+    // where the budget is owned (WR-02).
+    if let Err(err) = finish_run(journal, "killed", escalations_used) {
         tracing::warn!(
             detail = %format!("{err:#}"),
             "could not close the journal after a startup terminate-signal shutdown",
@@ -2795,7 +2845,7 @@ pub async fn execute_run(
             biased;
 
             _ = term.recv() => {
-                shutdown_during_startup(&mut pgid_rx, &mut run.journal).await;
+                shutdown_during_startup(&mut pgid_rx, &mut run.journal, budget.used()).await;
                 // Returning drops `run` and with it the `RunLock` — the descriptor
                 // close IS the release (D-20.2). The terminal record was written by
                 // the call above, so nothing below runs and no second one follows.
@@ -2822,8 +2872,13 @@ pub async fn execute_run(
             Ok(handle) => handle,
             Err(err) => {
                 // A run that started always has a terminal record, even when the
-                // thing it was started for never launched (T-17-06).
-                if let Err(journal_err) = run.journal.finish("spawn_failed") {
+                // thing it was started for never launched (T-17-06) — and that
+                // record names the consultations the run spent, because a
+                // goal-driven run was decomposed before the spawn was even
+                // attempted (WR-02).
+                if let Err(journal_err) =
+                    finish_run(&mut run.journal, "spawn_failed", budget.used())
+                {
                     tracing::warn!(
                         detail = %format!("{journal_err:#}"),
                         "could not close the journal after a failed spawn",
@@ -2934,7 +2989,13 @@ pub async fn execute_run(
                 biased;
 
                 _ = term.recv() => {
-                    shutdown_on_terminate(&executor, &mut handle, &mut run.journal).await;
+                    shutdown_on_terminate(
+                        &executor,
+                        &mut handle,
+                        &mut run.journal,
+                        budget.used(),
+                    )
+                    .await;
                     // Returning here drops `run`, and with it the `RunLock` — the
                     // descriptor close IS the release (D-20.2). Nothing below this
                     // point runs, so the terminal record written by the call above
@@ -3026,6 +3087,7 @@ pub async fn execute_run(
                                                 &executor,
                                                 &mut handle,
                                                 &mut run.journal,
+                                                budget.used(),
                                             )
                                             .await;
                                             return Ok(());
@@ -3300,9 +3362,13 @@ pub async fn execute_run(
     // that consulted no model records a zero, which is a true statement about
     // it and one a reader can distinguish from an absent field written by a
     // build that predates the counter.
-    run.journal.set_escalations_used(budget.used());
-
-    run.journal.finish(&label).map_err(|err| DriveError::Journal {
+    //
+    // **The `set_escalations_used` line that used to sit here has not been
+    // removed — it moved INTO `finish_run`**, which is now the one place a
+    // terminal label is written from. It moved because three other production
+    // paths were closing runs out without it (WR-02), and a stamp every branch
+    // has to remember is a stamp a fourth branch will forget.
+    finish_run(&mut run.journal, &label, budget.used()).map_err(|err| DriveError::Journal {
         detail: format!("{err:#}"),
     })?;
 
@@ -3723,6 +3789,17 @@ mod tests {
 
     /// A started run in a temp project, for the terminal-label assertions.
     fn started_run(run_id: &str) -> (tempfile::TempDir, JournalRun) {
+        started_run_with_cap(run_id, 0)
+    }
+
+    /// The same, with a stated consultation cap.
+    ///
+    /// The escalation assertions need a **non-zero** cap: a record reading
+    /// `escalation_cap: 0` with `escalations_used: 1` is arithmetically odd, and
+    /// the read-back those tests exist to make possible should show the pairing a
+    /// real goal-driven run writes — a cap the run could spend against, and the
+    /// count it actually spent.
+    fn started_run_with_cap(run_id: &str, escalation_cap: u32) -> (tempfile::TempDir, JournalRun) {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let planning = dir.path().join(".planning");
         let record = make_run_record(
@@ -3735,7 +3812,7 @@ mod tests {
                 pgid: std::process::id(),
                 bounds: bounds::RunBounds::default(),
                 approved_plan: None,
-                escalation_cap: 0,
+                escalation_cap,
             },
         );
         let run = JournalRun::start(&planning, record).expect("the run starts");
@@ -4265,7 +4342,7 @@ mod tests {
     #[tokio::test]
     async fn a_terminate_signal_shutdown_records_the_consultations_the_run_spent() {
         const SPENT: u32 = 3;
-        let (dir, mut journal) = started_run("2026-08-20T00-00-00Z-term");
+        let (dir, mut journal) = started_run_with_cap("2026-08-20T00-00-00Z-term", 4);
         let run_json = journal.paths().run_json.clone();
 
         // A handle whose agent is not running, so `cancel` resolves immediately
@@ -4295,7 +4372,7 @@ mod tests {
     #[tokio::test]
     async fn a_startup_kill_records_the_consultations_the_run_spent() {
         const SPENT: u32 = 1;
-        let (dir, mut journal) = started_run("2026-08-20T00-00-00Z-startup");
+        let (dir, mut journal) = started_run_with_cap("2026-08-20T00-00-00Z-startup", 4);
         let run_json = journal.paths().run_json.clone();
 
         // The sender is dropped, so the non-blocking `try_recv` reports no agent
@@ -4327,7 +4404,7 @@ mod tests {
     #[test]
     fn a_spawn_failure_records_the_consultations_the_run_spent() {
         const SPENT: u32 = 2;
-        let (dir, mut journal) = started_run("2026-08-20T00-00-00Z-spawnfail");
+        let (dir, mut journal) = started_run_with_cap("2026-08-20T00-00-00Z-spawnfail", 4);
         let run_json = journal.paths().run_json.clone();
 
         // The spawn-failure arm is inline in `execute_run`'s iteration loop and
