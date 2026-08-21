@@ -459,7 +459,7 @@ Plans:
   - **The vacuity hazard is the phase's sharpest risk (C-3):** the officially-recommended untrusted-content channel is accepted by this transport with exit 0 and never reaches the model, so an injection-corpus test built on it passes *vacuously*, forever. Every corpus assertion must prove arrival before it proves the property
 
 **Research**: done — `21-RESEARCH.md` (five live spikes; four CONTEXT.md decisions contradicted and corrected in `21-CONTEXT.md` § "Research Corrections")
-**Plans**: 12/12 plans executed — 10/10 executed (6/6 in 6 waves, then 4 gap-closure plans in 3 further waves); the re-verification scored 4/5 must-have truths (criterion 1 ✗ FAILED again, on two NEW Criticals introduced by the gap-closure diff itself), so 2 further gap-closure plans were added in 2 more waves
+**Plans**: 14/14 plans executed — 10/10 executed (6/6 in 6 waves, then 4 gap-closure plans in 3 further waves); the re-verification scored 4/5 must-have truths (criterion 1 ✗ FAILED again, on two NEW Criticals introduced by the gap-closure diff itself), so 2 further gap-closure plans were added in 2 more waves
 
 Plans:
 **Wave 1**
@@ -507,11 +507,11 @@ Gap closure, round 4 (third consecutive cycle to introduce a new Critical while 
 
 **Wave 1**
 
-- [ ] 21-13-PLAN.md — Tracer: a blank `CommandSource` payload becomes unrepresentable — a `NonBlank` newtype in a nested `mod payload` (so even sibling code in `driver/mod.rs` cannot construct one), the degenerate matrix rebuilt uniform and exemption-free with its column axis tied to `command_source`'s arity, the `trim` tautology broken by an independent detector, `is_plain_path_component` tightened to refuse whitespace-only, and the blank `target_phase` route through the model seam refused typed (DRIVE-01, DRIVE-03)
+- [x] 21-13-PLAN.md — Tracer: a blank `CommandSource` payload becomes unrepresentable — a `NonBlank` newtype in a nested `mod payload` (so even sibling code in `driver/mod.rs` cannot construct one), the degenerate matrix rebuilt uniform and exemption-free with its column axis tied to `command_source`'s arity, the `trim` tautology broken by an independent detector, `is_plain_path_component` tightened to refuse whitespace-only, and the blank `target_phase` route through the model seam refused typed (DRIVE-01, DRIVE-03)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 21-14-PLAN.md — The guard layer made honest: guard six's marker-to-EOF blind region converted from silent to loud by a tree-wide boundary self-check, guard eight given a limits block and `Self::`-qualified needles, `run.rs`'s colliding second `CommandSource` renamed `IterationSource` with a single-declaration assertion replacing the collision watchdog, and its `(None, None) => Fixed(String::new())` arm — which manufactured the exact blank value this phase refuses — returned as a typed `Err` (DRIVE-04, SAFE-07, SAFE-08)
+- [x] 21-14-PLAN.md — The guard layer made honest: guard six's marker-to-EOF blind region converted from silent to loud by a tree-wide boundary self-check, guard eight given a limits block and `Self::`-qualified needles, `run.rs`'s colliding second `CommandSource` renamed `IterationSource` with a single-declaration assertion replacing the collision watchdog, and its `(None, None) => Fixed(String::new())` arm — which manufactured the exact blank value this phase refuses — returned as a typed `Err` (DRIVE-04, SAFE-07, SAFE-08)
 
 ### Phase 22: Container Execution Target
 
@@ -571,7 +571,7 @@ Gap closure, round 4 (third consecutive cycle to introduce a new Critical while 
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 8/8 | In Progress|  |
 | 20. Deterministic Decision Router & Run Bounds | 5/5 | In Progress|  |
-| 21. LLM Goal Layer & Prompt-Injection Hardening | 12/12 | In Progress|  |
+| 21. LLM Goal Layer & Prompt-Injection Hardening | 14/14 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
 
