@@ -669,25 +669,44 @@ pub fn legality(
     Ok(GoalPlan { steps })
 }
 
-/// A stable identity for one plan value.
+/// The identity of one plan value, as the **plan half of an approval**.
 ///
-/// Rendered in the `{prefix}:{hex}` shape [`crate::journal::argv_digest`]
-/// establishes, and computed **by** that function rather than by a third hasher
-/// written here — the tree has one identity digest and gains no second.
+/// Rendered in the `{prefix}:{hex}` shape the journal's digests establish, and
+/// computed through [`crate::journal::sha256_digest`].
 ///
-/// Plan 21-03 binds a recorded approval to this value, so it is declared here,
-/// beside the type whose identity it is, rather than at the approval site.
+/// # Why this is not [`crate::journal::argv_digest`]
 ///
-/// **It is not a security control, and 21-03 is where that becomes a problem.**
-/// `argv_digest` is FNV-1a 64 and its own doc says so in as many words. Against
-/// an adversary who wants an approved plan swapped for a different one, FNV-1a
-/// detects nothing. Binding an approval to it is honest only as drift detection.
-/// The `fnv1a64:` prefix is what makes the upgrade free when 21-03 takes it: a
-/// `sha256:`-prefixed sibling reads old values as legacy with no migration.
+/// **This value is an input to [`crate::journal::approval_digest`], so it is
+/// part of a security control rather than an identity fingerprint.** That is the
+/// whole difference between it and `argv_digest`, which answers "same command
+/// line?" for a human reading a `run.json` and has no adversary.
+///
+/// Composing them would not have worked. Hashing an FNV-1a-64 digest under
+/// `approval_digest`'s outer SHA-256 preserves FNV's collision class **exactly**:
+/// two colliding inner values produce byte-identical input to the outer hash, so
+/// the outer hash cannot tell them apart either. FNV-1a-64 second preimages are
+/// *constructed* rather than searched — multiplication by the FNV prime is
+/// invertible mod 2^64 — and one of the tokens hashed below is `target_phase`,
+/// which is a phase name authored by whoever wrote the cloned repository's
+/// `ROADMAP.md` and is therefore attacker-controlled under this phase's own
+/// threat model. An attacker who can author a phase name could construct a
+/// second plan sharing an approval digest with the one the user reviewed.
+///
+/// The tree still has exactly **two** digest functions and gains no third; this
+/// is simply the one with an adversary, so it is the one that reaches for
+/// `sha256_digest`. A record carrying a legacy `fnv1a64:` plan digest is not
+/// migrated and needs no migration: the whole prefixed string is compared, so it
+/// re-checks as [`crate::journal::ApprovalRefusal::PlanChanged`] and fails
+/// closed. `tests/driver_goal_seam.rs::a_recorded_approval_carrying_a_legacy_
+/// fnv1a64_plan_digest_re_checks_as_stale` pins that.
+///
+/// # What the swap did not change
 ///
 /// Order-sensitive by construction: the tokens are emitted per step in plan
 /// order, so two plans with the same steps in a different order are different
-/// plans — which they are, because a plan is an ordered traversal.
+/// plans — which they are, because a plan is an ordered traversal. And the
+/// `rationale` is still excluded, so an approval does not expire on a reworded
+/// explanation of an identical plan. Only the hasher moved.
 pub fn plan_digest(plan: &GoalPlan) -> String {
     let mut tokens = Vec::with_capacity(plan.steps.len() * 3);
     for step in &plan.steps {
@@ -698,7 +717,11 @@ pub fn plan_digest(plan: &GoalPlan) -> String {
         tokens.push(step.target_phase.clone());
         tokens.push(step.terminal_state.as_str().to_string());
     }
-    crate::journal::argv_digest(&tokens)
+    // The ASCII unit separator, which is what `argv_digest` joins with too: the
+    // token STREAM is unchanged by this function's move to SHA-256, so the only
+    // thing that moved is the hasher and a reader comparing the two can see
+    // that at a glance.
+    crate::journal::sha256_digest(tokens.join("\u{1f}").as_bytes())
 }
 
 #[cfg(test)]

@@ -623,13 +623,25 @@ pub const ABSENT_INPUT_DIGEST: &str = "absent";
 /// [`recheck_approval`] compares that first — so "the plan changed" and "the
 /// files changed" stay distinguishable to the person reading the refusal.
 ///
-/// **SHA-256, and that matters here specifically.** `argv_digest` is FNV-1a and
-/// its own doc says it is not a security control; an approval is exactly the
-/// affordance an adversary wants to defeat, so the outer digest is the
-/// collision-resistant one. The inner `plan_digest` remains FNV-1a drift
-/// detection, which is honest as long as it is not the only thing standing
-/// between an approval and a substituted plan — and it is not, because it is one
-/// of the inputs hashed here.
+/// **SHA-256 on BOTH halves, and the "both" is the load-bearing word.** An
+/// approval is exactly the affordance an adversary wants to defeat, so the outer
+/// digest is the collision-resistant one — but an outer SHA-256 does not rescue a
+/// weak inner digest, and an earlier version of this doc claimed it did.
+///
+/// That claim was wrong, and the reason it was wrong is worth keeping rather than
+/// deleting: **hashing a weak digest under a strong one preserves the weak
+/// digest's collision class exactly.** Two colliding inner values produce
+/// byte-identical input to the outer hash, so the outer hash cannot distinguish
+/// what the inner one already conflated. An inner FNV-1a-64 would have been a
+/// second-preimage the attacker *constructs* rather than searches — the FNV round
+/// is invertible mod 2^64 — over a token stream containing a `target_phase` that
+/// a hostile `ROADMAP.md` authors.
+///
+/// So all three digests here are SHA-256: the plan half via
+/// [`crate::driver::goal::plan_digest`], the file half via each
+/// [`crate::config::PromptInput`]'s recorded digest from
+/// `registry::current_prompt_inputs`, and the composition via this function.
+/// [`argv_digest`] is not in this composition at all.
 ///
 /// The file entries are **sorted**, so the digest is a fact about the disclosed
 /// *set* rather than about the order a particular build happened to enumerate
@@ -675,12 +687,25 @@ pub struct ApprovedPlan {
     /// toward. Never the first step's: a plan is an ordered traversal that may
     /// pass through prerequisites.
     pub target_phase: String,
-    /// `driver::goal::plan_digest` of the approved plan.
+    /// [`crate::driver::goal::plan_digest`] of the approved plan: a
+    /// `sha256:`-prefixed digest of its step tokens in plan order.
     ///
-    /// FNV-1a, and therefore drift detection rather than a control on its own.
-    /// It is recorded so a failed re-check can say *which half* changed; the
-    /// control is [`Self::approval_digest`], which hashes this value together
-    /// with the disclosed files under SHA-256.
+    /// **A control rather than a hint.** It is SHA-256, so an attacker who
+    /// authors a project's `ROADMAP.md` — and therefore the `target_phase`
+    /// tokens hashed into it — cannot construct a second plan that shares this
+    /// value with the one the user reviewed. It is recorded *separately* from
+    /// [`Self::approval_digest`] so a failed re-check can name **which half**
+    /// moved, the plan or the disclosed files, rather than only that something
+    /// did.
+    ///
+    /// A record written before this became SHA-256 carries the legacy
+    /// `fnv1a64:` prefix. Nothing migrates it and nothing needs to:
+    /// [`recheck_approval`] compares the whole prefixed string, so the prefixes
+    /// differ, the record re-checks as [`ApprovalRefusal::PlanChanged`], and the
+    /// upgrade fails closed. That is what the prefixes are for, and
+    /// `tests/driver_goal_seam.rs::a_recorded_approval_carrying_a_legacy_
+    /// fnv1a64_plan_digest_re_checks_as_stale` proves it rather than leaving it
+    /// as a claim in this paragraph.
     pub plan_digest: String,
     /// [`approval_digest`] over the plan digest and the disclosed prompt inputs
     /// as they stood when the approval was given.
