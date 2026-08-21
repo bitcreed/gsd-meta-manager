@@ -459,7 +459,7 @@ Plans:
   - **The vacuity hazard is the phase's sharpest risk (C-3):** the officially-recommended untrusted-content channel is accepted by this transport with exit 0 and never reaches the model, so an injection-corpus test built on it passes *vacuously*, forever. Every corpus assertion must prove arrival before it proves the property
 
 **Research**: done — `21-RESEARCH.md` (five live spikes; four CONTEXT.md decisions contradicted and corrected in `21-CONTEXT.md` § "Research Corrections")
-**Plans**: 10/10 plans executed — 6/6 executed in 6 waves; `21-VERIFICATION.md` scored 3/5 must-have truths (criterion 1 ✗ FAILED), so 4 gap-closure plans were added in 3 further waves
+**Plans**: 12 plans — 10/10 executed (6/6 in 6 waves, then 4 gap-closure plans in 3 further waves); the re-verification scored 4/5 must-have truths (criterion 1 ✗ FAILED again, on two NEW Criticals introduced by the gap-closure diff itself), so 2 further gap-closure plans were added in 2 more waves
 
 Plans:
 **Wave 1**
@@ -492,6 +492,16 @@ Gap closure (from `21-VERIFICATION.md`):
 - [x] 21-08-PLAN.md — Gap 1 / CR-02 + WR-05: the approval's plan half becomes SHA-256, three false safety docs corrected, and the model-selected `target_phase` bounded at construction and sanitized before the terminal (DRIVE-03, SAFE-07)
 - [x] 21-09-PLAN.md — Gap 2 / WR-01: `--approved-plan` carries both digest halves, so `PlanChanged` is reachable and the refusal stops reporting a file change that did not happen (DRIVE-01, DRIVE-03, SAFE-07)
 - [x] 21-10-PLAN.md — Secondary findings WR-02 + WR-04: one stamped terminal write behind a guard, and an opt-in revert that restores rather than re-baselines (DRIVE-04, SAFE-07)
+
+Gap closure, round 3 (from the re-verification in `21-VERIFICATION.md`, which found two NEW Criticals in the round-2 diff):
+
+**Wave 1**
+
+- [ ] 21-11-PLAN.md — Tracer: review-CR-02 (a blank `--command` refused at the seam that already refuses a blank `--goal`) and review-CR-01 (the approval token parsed in the pure-refusal group, above the dry-run branch and above the seam, so a typo costs zero consultations), guarded by a degenerate-payload × argv-position matrix driven through the production resolver with a compile-forced variant classifier (DRIVE-01, DRIVE-03)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 21-12-PLAN.md — review-WR-01 (guard six scans every `src/` file and its header names each remaining limit with the direction it fails in), the `CommandSource` single-construction-site guard 21-11's design depends on, and review-WR-03 (`plan_digest`'s doc names the refusal production actually produces for a legacy value) (DRIVE-04, SAFE-07, SAFE-08)
 
 ### Phase 22: Container Execution Target
 
