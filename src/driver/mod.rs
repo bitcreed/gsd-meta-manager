@@ -468,14 +468,20 @@ fn preview_text(project: &DrivableProject, source: &CommandSource) -> String {
 ///    property `tests/spawn_seam_guard.rs` can check while "every branch
 ///    remembers to gate" is not.
 /// 3. Refuse an invocation that is malformed **as an invocation**: no command
-///    source or two (`command_source`), a `--target-phase` that is not
-///    a single plain path component ([`DriveError::TargetPhaseInvalid`]), or
-///    caps that cannot be honoured ([`bounds::resolve`] and, on the adjacent
-///    line and against the step cap the first of them returned,
-///    [`escalate::resolve`]). All three sit **above**
-///    the dry-run branch, because each is answered identically whether or not
-///    the run is real and a preview that answered them differently would be
-///    previewing something the user cannot run (WR-09).
+///    source or two, or a `--command` made of nothing (`command_source`); a
+///    `--target-phase` that is not a single plain path component
+///    ([`DriveError::TargetPhaseInvalid`]); caps that cannot be honoured
+///    ([`bounds::resolve`] and, on the adjacent line and against the step cap the
+///    first of them returned, [`escalate::resolve`]); and an `--approved-plan`
+///    that is not a token at all ([`journal::parse_approval_token`],
+///    [`DriveError::PlanApprovalMalformed`]). All **four** sit **above** the
+///    dry-run branch, because each is answered identically whether or not the run
+///    is real and a preview that answered them differently would be previewing
+///    something the user cannot run (WR-09). Every one of them is **pure**: it
+///    opens no file and starts no process, so each is refused for free — which is
+///    the whole argument for the approval parse being here rather than below the
+///    decomposition seam, where a typo cost a live model consultation
+///    (review-CR-01).
 /// 4. Only then branch on anything else — including the dry-run branch plan
 ///    17-04 adds. **Gating before the preview branch is stricter than CTRL-03
 ///    requires, and it is deliberate:** one gate call site is mechanically
@@ -499,16 +505,26 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
 
     let project = DrivableProject::from_registry(&args.alias, entry)?;
 
-    // **The three refusals about WHAT WAS ASKED FOR, before the dry-run branch**
+    // **The four refusals about WHAT WAS ASKED FOR, before the dry-run branch**
     // — unlike the ones about *running*, which sit below it. The run-id and
     // platform refusals are about a run: a preview creates nothing to identify
     // and starts no process to stop, so neither is about anything a preview
-    // does. These three are about the invocation itself, they are answered
+    // does. These four are about the invocation itself, they are answered
     // identically whether or not the run is real, and a preview that answers
     // them differently is answering a different question from the one the user
     // asked (WR-09).
     //
-    // All three are pure and none creates anything on disk.
+    // In order: the command source (`command_source`), the `--target-phase`
+    // plain-component check, the two caps (`bounds::resolve` then
+    // `escalate::resolve`), and the `--approved-plan` token parse
+    // (`journal::parse_approval_token`). The fourth joined the group in 21-11;
+    // it used to sit inside `approve_plan`, below both the dry-run branch and the
+    // decomposition seam, which is review-CR-01.
+    //
+    // All four are pure and none creates anything on disk — no file is opened
+    // and no process is started — which is why each can be answered before the
+    // preview branch at no cost, and why a malformed token now costs zero seam
+    // spawns rather than one.
     //
     // Still after the capability gate, so `from_registry` keeps its single
     // production call site and an unregistered alias is refused first.
@@ -584,6 +600,51 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut budget =
         escalate::resolve(args.max_escalations, run_bounds.max_steps).map_err(DriveError::from)?;
+
+    // **The approval token, PARSED FIRST — before the dry-run branch, before the
+    // decomposition seam, and before anything is created (review-CR-01).**
+    //
+    // A value that is not a token cannot approve anything, so nothing may be
+    // computed on the strength of it and no path may treat a half-supplied value
+    // as a partial approval. This paragraph used to live inside `approve_plan`,
+    // where it was true of that function's body and false of the ordering that
+    // reached it: `drive` called `GoalDecomposition::decompose` — a real process
+    // spawn into the driven repository and a real model consultation out of
+    // `budget` — *before* `approve_plan` ran, so a typo in a token cost a live
+    // consultation before a pure string check refused it. A real run with a
+    // garbage token was reproduced returning `PlanApprovalMalformed` **after
+    // exactly one seam spawn was recorded on disk**.
+    //
+    // **Last of the invocation-shape refusals**, so the four above keep their
+    // documented order and an invocation malformed in two ways still reports the
+    // refusal it already reported.
+    //
+    // **Above the dry-run branch**, because the answer does not depend on whether
+    // the run is real: `--dry-run` returns at the branch below, so the preview
+    // never reached this parse at all and exited `Ok(())` on an invocation the
+    // real run refuses. A preview that refuses less than the run it previews is
+    // previewing something the user cannot run (WR-09).
+    //
+    // **Malformation only, never absence.** `parse_approval_token` runs only when
+    // the flag is present. An absent approval stays `None` and is refused far
+    // below by `approve_plan` with [`DriveError::PlanApprovalRequired`], which
+    // carries the token the reviewer copies back — a refusal that needs a plan to
+    // exist before it can be written. A goal-only preview has no plan, so there
+    // is nothing here to require an approval of.
+    //
+    // Unused on non-Unix, where `decomposed` and `approved_plan` are both
+    // hard-coded `None`; annotated rather than `#[cfg(unix)]`-gated, following
+    // `budget` above, because the refusal must be answered identically on every
+    // platform. A platform that silently accepted a malformed token until
+    // `dispatch` refused the run for an unrelated reason is precisely the
+    // asymmetry this move removes.
+    #[cfg_attr(not(unix), allow(unused_variables))]
+    let recorded_approval: Option<(String, String)> = match args.approved_plan.as_deref() {
+        Some(raw) => {
+            Some(journal::parse_approval_token(raw).map_err(DriveError::PlanApprovalMalformed)?)
+        }
+        None => None,
+    };
 
     if args.dry_run {
         // Positioned **after** the gate and **before** anything Unix-only, and
@@ -788,7 +849,11 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
     #[cfg(unix)]
     let approved_plan = match decomposed.as_ref() {
         None => None,
-        Some(plan) => Some(approve_plan(&project, &args, plan)?),
+        // The already-parsed halves are threaded down rather than re-read from
+        // argv: `approve_plan` no longer touches `args` at all, so there is no
+        // second parse that could disagree with the one above about whether the
+        // value was a token.
+        Some(plan) => Some(approve_plan(&project, recorded_approval.as_ref(), plan)?),
     };
     #[cfg(not(unix))]
     let approved_plan: Option<journal::ApprovedPlan> = None;
@@ -822,10 +887,17 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
 ///
 /// * **no `--approved-plan` at all** → [`DriveError::PlanApprovalRequired`],
 ///   carrying the token the user would approve, so the refusal is actionable in
-///   one step rather than being a bug report;
+///   one step rather than being a bug report. This one is raised *here*, because
+///   it needs a decomposed plan to name and a token to print, and neither exists
+///   before the seam has been consulted;
 /// * **a value that is not a token at all** → [`DriveError::PlanApprovalMalformed`],
-///   raised before anything else happens, because an approval that cannot be
-///   parsed is an absent approval and never a partial one;
+///   raised **by the caller**, in [`drive`]'s invocation-shape group above the
+///   dry-run branch and above the decomposition seam. This function is entered
+///   only with halves that have already parsed, and `recorded` carries them.
+///   That position is review-CR-01: the parse used to live in this body, which
+///   made the claim "before any of the work below" true of this function and
+///   false of the ordering that reached it — the seam had already spawned a
+///   process and spent a model consultation by the time a typo was refused;
 /// * **a token that covers a different plan** → the plan half changed;
 /// * **a token whose plan half matches and whose file half does not** → the
 ///   disclosed bytes changed under the approval.
@@ -848,19 +920,9 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
 #[cfg(unix)]
 fn approve_plan(
     project: &DrivableProject,
-    args: &DriveArgs,
+    recorded: Option<&(String, String)>,
     plan: &goal::GoalPlan,
 ) -> Result<journal::ApprovedPlan, DriveError> {
-    // **Parsed first, before any of the work below.** A value that is not a
-    // token cannot approve anything, so nothing is computed on the strength of
-    // it and no path treats a half-supplied value as a partial approval.
-    let recorded = match args.approved_plan.as_deref() {
-        Some(raw) => Some(
-            journal::parse_approval_token(raw).map_err(DriveError::PlanApprovalMalformed)?,
-        ),
-        None => None,
-    };
-
     let plan_digest = goal::plan_digest(plan);
     let prompt_inputs = crate::registry::current_prompt_inputs(project.root());
     let digest = journal::approval_digest(&plan_digest, &prompt_inputs);
@@ -882,6 +944,9 @@ fn approve_plan(
         .collect();
 
     let Some((recorded_plan_digest, recorded_approval_digest)) = recorded else {
+        // Absent, not malformed. A malformed value never reaches this function —
+        // it is refused in `drive` above — so this arm is unambiguously "nobody
+        // approved this", which is the statement the token below answers.
         // The token the reviewer copies back: one value carrying both halves,
         // rendered by the one function that joins them, so what the refusal
         // prints and what the flag accepts cannot drift apart.
@@ -898,7 +963,7 @@ fn approve_plan(
     // draw. One predicate, used here and again at the spawn gate, rather than an
     // equality written twice.
     journal::recheck_approval(
-        Some((&recorded_plan_digest, &recorded_approval_digest)),
+        Some((recorded_plan_digest, recorded_approval_digest)),
         &plan_digest,
         &prompt_inputs,
     )
