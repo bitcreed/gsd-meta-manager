@@ -2250,9 +2250,27 @@ pub async fn execute_run(
     // `recheck_approval` is the same predicate the first check used. One
     // predicate, two positions: an equality written twice is two things that can
     // disagree about what an approval covers.
+    //
+    // **What this gate can establish, and what it cannot.** It passes the
+    // record's own `plan_digest` on both sides, so the plan half compares equal
+    // here by construction — and unlike the check in `driver::drive`, that is
+    // sound rather than a tautology dressed as a check, because there is nothing
+    // for it to compare against. A goal is decomposed EXACTLY ONCE, above the
+    // run; no second model consultation happens between that check and this one,
+    // so the plan half provably cannot have moved in this window and there is no
+    // newly-observed value to weigh the approved one against.
+    //
+    // What this gate is therefore actually re-checking is the **disclosed
+    // files**, and that half is genuinely live: between the decomposition and
+    // the first agent there is a lock acquisition, a journal start and four
+    // envelope writes, and a `git pull` landing in that window really does
+    // rewrite the bytes the approval covered. The plan half's re-comparison here
+    // is a no-op the shared predicate carries along, not a second opinion — and
+    // saying otherwise would let a future reader build a control on a check
+    // nobody performs, which is the defect WR-01 named one call site up.
     if let Some(approved) = approved_plan.as_ref() {
         journal::recheck_approval(
-            Some(approved),
+            Some((&approved.plan_digest, &approved.approval_digest)),
             &approved.plan_digest,
             &crate::registry::current_prompt_inputs(project.root()),
         )

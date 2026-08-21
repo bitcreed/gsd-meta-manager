@@ -222,21 +222,26 @@ fn plan_from(wire: &Value) -> goal::GoalPlan {
     goal::legality(wire, PHASES, resolved_cap()).expect("the fixture plan is legal")
 }
 
-/// The approval digest a reviewer would be shown for `wire`, against `root`'s
-/// disclosed files as they stand right now.
+/// The approval TOKEN a reviewer would be shown for `wire`, against `root`'s
+/// disclosed files as they stand right now: both halves in one value.
 ///
-/// **Computed the way the driver computes it**, through the shipped
-/// `goal::legality`, `goal::plan_digest` and `journal::approval_digest`, so this
-/// helper cannot agree with a test while disagreeing with the run.
+/// **Composed the way the driver composes it**, through the shipped
+/// `goal::legality`, `goal::plan_digest`, `journal::approval_digest` and
+/// `journal::render_approval_token`, so this helper cannot agree with a test
+/// while disagreeing with the run — and so no test in this file assembles a
+/// token by string concatenation, which would be a second spelling of the
+/// renderer and therefore a second thing that can be wrong about the order.
 fn approval_for(root: &Path, wire: &Value, max_steps: Option<u32>) -> String {
     let cap = bounds::resolve(max_steps, None)
         .expect("the fixture's bounds resolve")
         .max_steps;
     let plan = goal::legality(wire, PHASES, cap).expect("the fixture plan is legal");
-    gsd_meta_manager::journal::approval_digest(
-        &goal::plan_digest(&plan),
+    let plan_digest = goal::plan_digest(&plan);
+    let approval_digest = gsd_meta_manager::journal::approval_digest(
+        &plan_digest,
         &gsd_meta_manager::registry::current_prompt_inputs(root),
-    )
+    );
+    gsd_meta_manager::journal::render_approval_token(&plan_digest, &approval_digest)
 }
 
 fn journal_records(root: &Path, run_id: &str) -> Vec<Value> {
@@ -812,8 +817,8 @@ async fn the_run_record_carries_the_approval_the_cap_and_the_count() {
 
     let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
     args.max_steps = Some(2);
-    let digest = approval_for(root.path(), &wire, args.max_steps);
-    args.approved_plan = Some(digest.clone());
+    let token = approval_for(root.path(), &wire, args.max_steps);
+    args.approved_plan = Some(token.clone());
 
     drive(args, &config_for(root.path()))
         .await
@@ -825,9 +830,23 @@ async fn the_run_record_carries_the_approval_the_cap_and_the_count() {
         serde_json::from_str(&std::fs::read_to_string(&paths.run_json).expect("run.json is readable"))
             .expect("run.json parses");
 
+    // The record keeps the two halves as separate fields — that is what lets a
+    // failed re-check name WHICH half moved — so the round trip back through the
+    // renderer is what says "this record is the token the user gave". A bare
+    // comparison against one field would pass while the other half was empty,
+    // which is precisely the shape WR-01's throwaway record had.
     assert_eq!(
-        record["approved_plan"]["approval_digest"], digest,
-        "the approval recorded on the run record is the one the user gave"
+        gsd_meta_manager::journal::render_approval_token(
+            record["approved_plan"]["plan_digest"]
+                .as_str()
+                .expect("the record carries a plan digest"),
+            record["approved_plan"]["approval_digest"]
+                .as_str()
+                .expect("the record carries an approval digest"),
+        ),
+        token,
+        "the approval recorded on the run record is the one the user gave, both \
+         halves of it"
     );
     assert_eq!(record["approved_plan"]["target_phase"], "21");
     assert_eq!(
@@ -1028,7 +1047,11 @@ fn a_recorded_approval_carrying_a_legacy_fnv1a64_plan_digest_re_checks_as_stale(
         extra: Default::default(),
     };
 
-    let refusal = gsd_meta_manager::journal::recheck_approval(Some(&recorded), &fresh, &[])
+    let refusal = gsd_meta_manager::journal::recheck_approval(
+        Some((&recorded.plan_digest, &recorded.approval_digest)),
+        &fresh,
+        &[],
+    )
         .expect_err(
             "a legacy `fnv1a64:` record must never cover a freshly computed \
              `sha256:` plan. Failing closed is the whole reason the digests \
@@ -1203,9 +1226,15 @@ fn the_approval_refusal_cannot_repaint_the_terminal_of_the_person_about_to_appro
          a single-codepoint C1 introducer"
     );
 
+    // The token composed through the shipped renderer, never by concatenation,
+    // so this test cannot agree with itself about a shape the run would not
+    // print.
+    let token = gsd_meta_manager::journal::render_approval_token(
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    );
     let rendered = DriveError::PlanApprovalRequired {
-        digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-            .to_string(),
+        token: token.clone(),
         steps: vec![benign.clone(), hostile],
     }
     .to_string();
@@ -1236,13 +1265,10 @@ fn the_approval_refusal_cannot_repaint_the_terminal_of_the_person_about_to_appro
          got: {rendered}"
     );
     assert!(
-        rendered.contains(
-            "--approved-plan sha256:\
-             0000000000000000000000000000000000000000000000000000000000000000"
-        ),
-        "and it must still name the flag and the digest the caller must pass, \
-         or the refusal is a bug report rather than an error message; got: \
-         {rendered}"
+        rendered.contains(&format!("--approved-plan {token}")),
+        "and it must still name the flag and the WHOLE token the caller must \
+         pass — both halves, not just the approval digest — or the refusal is a \
+         bug report rather than an error message; got: {rendered}"
     );
     assert!(
         rendered.contains("  1. ") && rendered.contains("  2. "),

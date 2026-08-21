@@ -824,10 +824,17 @@ async fn the_driver_keeps_the_goal_the_human_stated_against_an_agent_authored_ar
         .collect();
     let declared_refs: Vec<&str> = declared.iter().map(String::as_str).collect();
     let plan = goal::legality(&wire, &declared_refs, cap).expect("the fixture plan is legal");
-    let approved = journal::approval_digest(
-        &goal::plan_digest(&plan),
+    // **The token, composed through the shipped renderer.** Both halves in one
+    // value, joined where the production refusal joins them — a test that
+    // assembled it by concatenation would be a second spelling of
+    // `render_approval_token` and could agree with itself while disagreeing
+    // with the run.
+    let plan_digest = goal::plan_digest(&plan);
+    let approved_files = journal::approval_digest(
+        &plan_digest,
         &gsd_meta_manager::registry::current_prompt_inputs(root.path()),
     );
+    let approved = journal::render_approval_token(&plan_digest, &approved_files);
     args.approved_plan = Some(approved.clone());
 
     drive(args, &config_for(root.path()))
@@ -850,8 +857,18 @@ async fn the_driver_keeps_the_goal_the_human_stated_against_an_agent_authored_ar
             .contains(SELF_GOAL_DEMANDED),
         "the goal on the record carries the text the artifact demanded"
     );
+    // The record keeps the token's two halves as separate fields, so the round
+    // trip back through the renderer is what compares it to the value the human
+    // supplied — both halves of it, not one.
     assert_eq!(
-        record["approved_plan"]["approval_digest"],
+        Value::String(journal::render_approval_token(
+            record["approved_plan"]["plan_digest"]
+                .as_str()
+                .expect("the record carries a plan digest"),
+            record["approved_plan"]["approval_digest"]
+                .as_str()
+                .expect("the record carries an approval digest"),
+        )),
         Value::String(approved),
         "the approval on the record is byte-identical to the one the human gave: \
          a plan re-decomposed mid-run would carry a different digest"

@@ -920,7 +920,24 @@ impl std::fmt::Display for ApprovalRefusal {
     }
 }
 
-/// Whether `recorded` still covers the plan and the files that would run.
+/// Whether the recorded approval still covers the plan and the files that would
+/// run.
+///
+/// `recorded` is the approval's **two halves as the caller supplied them** —
+/// `(plan_digest, approval_digest)`, in that order, which is the order
+/// [`parse_approval_token`] returns them in. It takes the two digests rather
+/// than an [`ApprovedPlan`] because a comparison-only predicate has no business
+/// requiring a struct whose other three fields it never reads: the call site
+/// that had to build one filled them with empty strings, and one of the values
+/// it filled in was the plan digest of the plan under test — which made the
+/// first comparison below a value against itself.
+///
+/// **Where the recorded plan digest comes from is the whole of WR-01.** It
+/// arrives from the caller's token, so it is the digest the approval actually
+/// covered rather than one re-derived from the plan being judged. That is what
+/// makes [`ApprovalRefusal::PlanChanged`] reachable, and what makes
+/// [`ApprovalRefusal::DisclosedFilesChanged`]'s opening claim — that the plan is
+/// unchanged — a fact this function established rather than an assumption.
 ///
 /// **Pure, which is what makes both halves testable without a spawn.** The
 /// caller reads the current prompt inputs and hands them in; nothing here opens
@@ -930,25 +947,25 @@ impl std::fmt::Display for ApprovalRefusal {
 /// rather than reporting the combined mismatch a file change would also
 /// produce. Both refuse; the order is a legibility decision.
 pub fn recheck_approval(
-    recorded: Option<&ApprovedPlan>,
+    recorded: Option<(&str, &str)>,
     plan_digest: &str,
     prompt_inputs: &[crate::config::PromptInput],
 ) -> Result<(), ApprovalRefusal> {
-    let Some(recorded) = recorded else {
+    let Some((recorded_plan_digest, recorded_approval_digest)) = recorded else {
         return Err(ApprovalRefusal::Absent);
     };
 
-    if recorded.plan_digest != plan_digest {
+    if recorded_plan_digest != plan_digest {
         return Err(ApprovalRefusal::PlanChanged {
-            approved: recorded.plan_digest.clone(),
+            approved: recorded_plan_digest.to_string(),
             observed: plan_digest.to_string(),
         });
     }
 
     let observed = approval_digest(plan_digest, prompt_inputs);
-    if recorded.approval_digest != observed {
+    if recorded_approval_digest != observed {
         return Err(ApprovalRefusal::DisclosedFilesChanged {
-            approved: recorded.approval_digest.clone(),
+            approved: recorded_approval_digest.to_string(),
             observed,
         });
     }
@@ -2252,6 +2269,14 @@ mod tests {
             .collect()
     }
 
+    /// A recorded approval's two halves in the order `recheck_approval` reads
+    /// them — the order [`parse_approval_token`] hands them back in, so a test
+    /// cannot pass them the other way round while the production caller does
+    /// not.
+    fn halves(recorded: &ApprovedPlan) -> (&str, &str) {
+        (&recorded.plan_digest, &recorded.approval_digest)
+    }
+
     /// An approval covering `plan_digest` against `files`.
     fn approval(plan_digest: &str, files: &[crate::config::PromptInput]) -> ApprovedPlan {
         ApprovedPlan {
@@ -2346,7 +2371,7 @@ mod tests {
 
         // The same files, a different plan: a model asked the same question
         // twice may answer differently, and an approval covers one answer.
-        let refusal = recheck_approval(Some(&recorded), "fnv1a64:bbbbbbbbbbbbbbbb", &files)
+        let refusal = recheck_approval(Some(halves(&recorded)), "fnv1a64:bbbbbbbbbbbbbbbb", &files)
             .expect_err("a plan the approval never covered must not run");
         assert!(
             matches!(refusal, ApprovalRefusal::PlanChanged { .. }),
@@ -2355,7 +2380,7 @@ mod tests {
 
         // The control arm: unchanged, it passes — so the refusal above is about
         // the plan rather than about a check that refuses everything.
-        recheck_approval(Some(&recorded), "fnv1a64:aaaaaaaaaaaaaaaa", &files)
+        recheck_approval(Some(halves(&recorded)), "fnv1a64:aaaaaaaaaaaaaaaa", &files)
             .expect("an unchanged plan against unchanged files is approved");
     }
 
@@ -2370,7 +2395,7 @@ mod tests {
         let recorded = approval(plan, &inputs(&[("CLAUDE.md", Some("sha256:1111"))]));
 
         let rewritten = inputs(&[("CLAUDE.md", Some("sha256:2222"))]);
-        let refusal = recheck_approval(Some(&recorded), plan, &rewritten)
+        let refusal = recheck_approval(Some(halves(&recorded)), plan, &rewritten)
             .expect_err("bytes that changed after the approval must not be run against");
 
         assert!(

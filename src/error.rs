@@ -602,13 +602,30 @@ pub enum DriveError {
     /// message; this one shows what would run and the exact flag that authorises
     /// it.
     PlanApprovalRequired {
-        /// The approval digest for the plan just decomposed and the files as
-        /// they stand.
-        digest: String,
+        /// The approval token for the plan just decomposed and the files as
+        /// they stand: **both halves**, joined by
+        /// [`crate::journal::APPROVAL_TOKEN_SEPARATOR`] and rendered by
+        /// [`crate::journal::render_approval_token`].
+        ///
+        /// It carries the plan half as well as the file half because the plan
+        /// half is what the re-check has to compare *against*. A token naming
+        /// only the file half leaves the re-check re-deriving the approved plan
+        /// digest from the plan under test, which is a value against itself.
+        token: String,
         /// The plan's steps, as the typed `key=value` tokens the run record
         /// carries. Never a command line and never the model's prose.
         steps: Vec<String>,
     },
+    /// The `--approved-plan` value could not be read as a token at all.
+    ///
+    /// **Separate from [`Self::PlanApprovalStale`] and from
+    /// `ApprovalRefusal::Absent` on purpose.** "Nobody approved this", "what was
+    /// approved has changed" and "what you passed is not a token" are three
+    /// different statements to the person reading the refusal, and only the last
+    /// one is answered by re-transcribing a value. An approval that cannot be
+    /// parsed is an absent approval — never a partial one — so this is raised
+    /// before any other approval work happens.
+    PlanApprovalMalformed(crate::journal::ApprovalTokenError),
     /// A recorded approval no longer covers what would run (research Q4).
     ///
     /// The taxonomy is [`crate::journal::ApprovalRefusal`] and this variant
@@ -726,12 +743,12 @@ impl fmt::Display for DriveError {
                  bounded seam becomes an unbounded one",
                 reason.as_str()
             ),
-            Self::PlanApprovalRequired { digest, steps } => write!(
+            Self::PlanApprovalRequired { token, steps } => write!(
                 f,
                 "this run states a goal but records no approval for the plan it \
                  was decomposed into, and approval is an explicit act rather than \
                  something inferred from silence. The plan is:\n{}\n\nIf that is \
-                 what you want run, re-run with `--approved-plan {digest}`, which \
+                 what you want run, re-run with `--approved-plan {token}`, which \
                  binds the approval to this plan AND to the disclosed files whose \
                  bytes reach a prompt. Both are re-checked at spawn",
                 steps
@@ -760,6 +777,10 @@ impl fmt::Display for DriveError {
                     .collect::<Vec<_>>()
                     .join("\n")
             ),
+            // Delegated rather than wrapped in a sentence, exactly as
+            // `BoundsRefused`, `EscalationRefused` and `PlanApprovalStale` are:
+            // the taxonomy's own message already names the flag and the action.
+            Self::PlanApprovalMalformed(err) => write!(f, "{err}"),
             Self::PlanApprovalStale(refusal) => write!(f, "{refusal}"),
             Self::OptIn(err) => write!(f, "{err}"),
             Self::Lock(err) => write!(f, "{err}"),
@@ -804,7 +825,9 @@ impl std::error::Error for DriveError {
             | Self::GoalSeamUnusable { .. }
             // `ApprovalRefusal` is the same shape once more: a classification of
             // two digests, not a failure that wrapped an error.
+            // `ApprovalTokenError` likewise classifies an argv value's shape.
             | Self::PlanApprovalRequired { .. }
+            | Self::PlanApprovalMalformed(_)
             | Self::PlanApprovalStale(_)
             | Self::Journal { .. }
             | Self::EnvelopeAssertionFailed { .. } => None,
