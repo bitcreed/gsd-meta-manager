@@ -1287,4 +1287,68 @@ mod tests {
             .await
             .expect("a cap one below the step cap binds, so the preview renders");
     }
+
+    /// A `DrivableProject` for the preview tests, built through the **production**
+    /// constructor.
+    ///
+    /// Never `for_testing_bypassing_opt_in`: `tests/spawn_seam_guard.rs` requires
+    /// that identifier to appear on exactly one executable line under `src/` —
+    /// its own definition — and the guard's line filter drops comments but not
+    /// `#[cfg(test)]` modules, so an in-source test that used the hatch would
+    /// break the audit rather than the audit catching a real bypass. Going
+    /// through `from_registry` with a genuine opt-in is the same route
+    /// `dry_run.rs`'s own in-module test takes.
+    fn previewable(root: &std::path::Path) -> DrivableProject {
+        let config = opted_in(root);
+        let entry = config
+            .projects
+            .get("demo")
+            .expect("the fixture registers `demo`");
+        DrivableProject::from_registry("demo", entry).expect("an opted-in real directory")
+    }
+
+    /// **CR-01, as an assertion rather than as a review finding.**
+    ///
+    /// `--goal X --dry-run` used to fall through `preview_text`'s `(None, None)`
+    /// arm to `build_report(project, "")`, which renders `commands: vec![""]`
+    /// under `PreviewScope::Complete` — a `1 command in the sequence:` total and
+    /// an empty numbered entry, printed beneath a header promising *the complete
+    /// and honest sequence*. Against that build this test FAILS on the first
+    /// assertion.
+    ///
+    /// It calls `preview_text` rather than only the renderer on purpose: CR-01
+    /// was a **wiring** defect, and a renderer-only test would have passed
+    /// against the broken tree.
+    #[test]
+    fn a_goal_only_preview_never_claims_an_empty_command_is_the_honest_sequence() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let project = previewable(root.path());
+
+        // The goal-only invocation, as `drive` reaches it today: neither
+        // `--command` nor `--target-phase`, because `--goal` is the source and
+        // `preview_text` has not been told that goals exist.
+        let rendered = preview_text(&project, None, None);
+
+        assert!(
+            !rendered.contains("1 command in the sequence:"),
+            "a goal has not been decomposed yet, so there is no total to state — \
+             and `1 command in the sequence` beneath a header promising the \
+             COMPLETE and honest sequence invites a user to authorise a run on a \
+             claim the tool never checked; got:\n{rendered}"
+        );
+        assert!(
+            !rendered.lines().any(|line| line.trim() == "1."),
+            "an empty numbered entry reads as a command the run would issue; \
+             got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("get phase 22 verified"),
+            "the preview must name the goal it is a preview OF; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(dry_run::SECTION_COMMANDS),
+            "the pinned commands section still renders — a blank section reads as \
+             a missing one; got:\n{rendered}"
+        );
+    }
 }
