@@ -1483,6 +1483,101 @@ mod tests {
             .expect("a cap one below the step cap binds, so the preview renders");
     }
 
+    /// **review-CR-01, as an assertion rather than as a review finding.**
+    ///
+    /// `--dry-run` returned above the whole decompose/approve region, so
+    /// `journal::parse_approval_token` was never reached on the preview path at
+    /// all: a preview carrying a garbage `--approved-plan` exited `Ok(())` with a
+    /// clean preview and no mention of the token, while the *same* invocation run
+    /// for real was refused. Against that build this test FAILS on the first
+    /// assertion — `drive` returns `Ok(())`.
+    ///
+    /// A preview that refuses LESS than the run it previews is previewing
+    /// something the user cannot run (WR-09), and the person rehearsing a run on
+    /// an unfamiliar repository is exactly the person a preview exists for.
+    #[tokio::test]
+    async fn a_malformed_approval_token_is_refused_in_a_preview_exactly_as_a_real_run_would_be() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let config = opted_in(root.path());
+
+        let mut args = args("demo");
+        args.command = None;
+        args.goal = Some("get phase 22 verified".to_string());
+        args.dry_run = true;
+        args.approved_plan = Some("total-garbage-no-separator".to_string());
+
+        let err = drive(args, &config).await.expect_err(
+            "a value that is not a token cannot approve anything, and a preview \
+             must answer that identically to the run it previews",
+        );
+
+        assert!(
+            matches!(
+                err,
+                DriveError::PlanApprovalMalformed(journal::ApprovalTokenError::SeparatorAbsent)
+            ),
+            "the refusal must name WHICH malformation, so the user knows to add \
+             the separator rather than to go looking for a changed plan; got: {err:?}"
+        );
+        assert!(
+            !root.path().join(".planning/meta-manager").exists(),
+            "the refusal is a pure string check above everything that creates \
+             anything, so nothing may be left behind"
+        );
+    }
+
+    /// The control arm for the test above, and the arm a careless fix breaks.
+    ///
+    /// **Absence is not malformation.** A goal-only preview has no plan yet, so
+    /// there is nothing for an approval to cover;
+    /// [`DriveError::PlanApprovalRequired`] is raised inside `approve_plan`,
+    /// after a plan exists, and it carries the token the user copies back. A
+    /// refusal moved up here would refuse every goal-only preview — the one
+    /// output that explains what the user is being asked to approve.
+    #[tokio::test]
+    async fn an_absent_approval_is_not_refused_above_the_dry_run_branch() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let config = opted_in(root.path());
+
+        let mut args = args("demo");
+        args.command = None;
+        args.goal = Some("get phase 22 verified".to_string());
+        args.dry_run = true;
+        args.approved_plan = None;
+
+        drive(args, &config).await.expect(
+            "absence is a question about a plan that does not exist yet; \
+             malformation is a question about a string on argv, and only the \
+             second is answerable here",
+        );
+    }
+
+    /// The new refusal joins the invocation-shape group **last**, so an
+    /// invocation malformed in two ways still reports the refusal it already
+    /// reported. Re-ordering an existing refusal would change the message a user
+    /// has already learned to read.
+    #[tokio::test]
+    async fn the_target_phase_refusal_keeps_its_position_above_the_approval_parse() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let config = opted_in(root.path());
+
+        let mut args = args("demo");
+        args.command = None;
+        args.target_phase = Some("../../../escaped".to_string());
+        args.approved_plan = Some("total-garbage-no-separator".to_string());
+        args.run_id = Some("2026-08-19T12-00-00Z-aaaa".to_string());
+
+        let err = drive(args, &config)
+            .await
+            .expect_err("an invocation malformed in two ways is still refused");
+
+        assert!(
+            matches!(err, DriveError::TargetPhaseInvalid { .. }),
+            "the target-phase refusal is older and sits above the approval parse; \
+             got: {err:?}"
+        );
+    }
+
     /// A `DrivableProject` for the preview tests, built through the **production**
     /// constructor.
     ///
