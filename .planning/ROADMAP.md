@@ -513,6 +513,16 @@ Gap closure, round 4 (third consecutive cycle to introduce a new Critical while 
 
 - [x] 21-14-PLAN.md — The guard layer made honest: guard six's marker-to-EOF blind region converted from silent to loud by a tree-wide boundary self-check, guard eight given a limits block and `Self::`-qualified needles, `run.rs`'s colliding second `CommandSource` renamed `IterationSource` with a single-declaration assertion replacing the collision watchdog, and its `(None, None) => Fixed(String::new())` arm — which manufactured the exact blank value this phase refuses — returned as a typed `Err` (DRIVE-04, SAFE-07, SAFE-08)
 
+Gap closure, round 5 (round 4's `NonBlank` mechanism survived direct attack and regressed nothing — the first clean cycle — but was scoped to 3 of `DriveArgs`' 6 argv-derived string fields, and all three new Criticals landed in the other 3; the enumeration moves from human to compiler):
+
+**Wave 1**
+
+- [ ] 21-15-PLAN.md — Tracer: `DriveArgs` itself becomes the domain — all six argv string fields typed `payload::NonBlank` behind one parse boundary whose exhaustive destructure with no `..` makes a seventh field a compile error until classified; both `(None,None) => String::new()` arms in `run.rs` become unrepresentable and the source resolves above every disk write (CR-01); one production predicate `text::carries_visible_content` replaces the two disagreeing definitions of blank, composed with — not replacing — the traversal and control-char checks (CR-02); `RunRecord.goal` written from `Option<NonBlank>` so `""` provably means absent (IN-01) (DRIVE-01, DRIVE-03)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 21-16-PLAN.md — The type-reading guard four cycles never had: guard nine asserts `DriveArgs` declares no bare `String` argv field, self-tested by a planted synthetic defect; `ITEM_OPENERS` gains `"pub("` with the backwards header bound deleted and planted-offender controls, the boundary scan extracted as a shared fn both the live assertion and its control call while keeping the `scanned_files >= 10` non-vacuity floor; and round-4's two violated prohibitions become standing assertions, with both plans required to audit their own prohibitions against their own diff (DRIVE-04, SAFE-07, SAFE-08)
+
 ### Phase 22: Container Execution Target
 
 **Goal**: A driven project can run inside a container on either runtime, indistinguishably from the host path
