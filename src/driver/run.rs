@@ -3592,6 +3592,110 @@ mod tests {
         }
     }
 
+    /// A registry entry carrying a genuine driver opt-in, for the one test in
+    /// this module that needs a [`DrivableProject`].
+    ///
+    /// It goes through the **production** constructor
+    /// [`DrivableProject::from_registry`], never
+    /// `for_testing_bypassing_opt_in`: `tests/spawn_seam_guard.rs` requires that
+    /// identifier to appear on exactly one executable line under `src/` — its
+    /// own definition — and the guard's line filter drops comments but not
+    /// `#[cfg(test)]` modules, so an in-source test that used the hatch would
+    /// break the audit rather than the audit catching a real bypass. This is the
+    /// same route `src/driver/mod.rs`'s own `previewable` fixture takes.
+    fn opted_in_entry(root: &std::path::Path) -> RegisteredProject {
+        std::fs::create_dir_all(root.join(".planning")).expect("scratch .planning");
+        RegisteredProject {
+            path: root.to_path_buf(),
+            added: "2026-07-29T12:00:00Z".to_string(),
+            driver_opt_in: Some(crate::config::DriverOptIn {
+                opted_in_at: "2026-07-29T11:59:00Z".to_string(),
+                claude_md_digest: None,
+                prompt_inputs: crate::registry::current_prompt_inputs(root),
+                extra: Default::default(),
+                branch_namespace: None,
+                credential: None,
+                pr_cap_per_24h: None,
+                pr_cap_per_run: None,
+            }),
+            extra: Default::default(),
+        }
+    }
+
+    /// Every path under `root`, with the bytes of any `run.json` among them.
+    ///
+    /// The failure message is the evidence, so it names the corrupt FIELD rather
+    /// than only the directory that should not exist: "a run directory survived"
+    /// and "a committed record says the run issued the absent command" are
+    /// different findings, and only the second is CR-01.
+    fn surviving_artifacts(root: &std::path::Path) -> String {
+        fn walk(path: &std::path::Path, into: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(path) else {
+                return;
+            };
+            for entry in entries.filter_map(Result::ok) {
+                let child = entry.path();
+                if child.is_dir() {
+                    into.push(format!("  {}/", child.display()));
+                    walk(&child, into);
+                } else {
+                    let body = std::fs::read_to_string(&child).unwrap_or_default();
+                    into.push(format!("  {}: {body}", child.display()));
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(root, &mut found);
+        found.join("\n")
+    }
+
+    /// **CR-01, as an assertion rather than as a verification finding.**
+    ///
+    /// [`execute_run`] is `pub`. A direct caller bypasses every refusal
+    /// [`crate::driver::drive`] makes above it, and pass 5 reproduced what that
+    /// cost: called with `command: None, target_phase: None, goal: None`, this
+    /// function returned `Err(NoCommandSource)` — *and left `run.json` on disk
+    /// carrying `"gsd_command": ""`*, plus a run directory and a four-record
+    /// journal. The refusal fired 129 lines after `JournalRun::start`, so the
+    /// empty string that already means **field absent** on the tolerant read path
+    /// (D-30) had already been committed into the field that says what ran.
+    ///
+    /// Against that build this test FAILS on the nothing-created assertion: the
+    /// typed error is correct and the disk is corrupt.
+    #[tokio::test]
+    async fn a_run_with_no_command_source_writes_nothing_before_refusing() {
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let entry = opted_in_entry(root.path());
+        let project =
+            DrivableProject::from_registry("demo", &entry).expect("an opted-in real directory");
+
+        let mut args = args();
+        args.command = None;
+        args.target_phase = None;
+        args.goal = None;
+
+        let budget = escalate::resolve(None, 5).expect("a cap of 5 steps admits the default");
+
+        let err = execute_run(project, &args, &entry, None, budget)
+            .await
+            .expect_err("a run with nothing executable must be refused");
+
+        assert!(
+            matches!(err, DriveError::NoCommandSource),
+            "the refusal must be the argv seam's own typed one, got: {err:?}"
+        );
+        let runs_root = root.path().join(".planning/meta-manager");
+        assert!(
+            !runs_root.exists(),
+            "a refused run must have created NOTHING — no run directory, no \
+             run.json, no journal.jsonl. A refusal that fires AFTER \
+             `JournalRun::start` has already committed `\"gsd_command\": \"\"` into \
+             the record that says what ran, and `\"\"` is the field-absent \
+             sentinel (D-30), so the record stops being evidence. Found:\n{}",
+            surviving_artifacts(&runs_root)
+        );
+    }
+
     // ========================================================================
     // The goal-decomposition capability
     // ========================================================================
