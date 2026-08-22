@@ -19,11 +19,26 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use gsd_meta_manager::config::{Config, DriverOptIn, RegisteredProject};
-use gsd_meta_manager::driver::{drive, dry_run, DriveArgs};
+use gsd_meta_manager::driver::{drive, dry_run, DriveArgs, RawDriveArgs};
 use gsd_meta_manager::error::DriveError;
 use gsd_meta_manager::executor::DrivableProject;
 use gsd_meta_manager::journal::ApprovalTokenError;
 use tempfile::TempDir;
+
+/// A visible argv payload for the fixtures below.
+///
+/// `DriveArgs`'s argv-derived fields are `payload::NonBlank`, whose field is
+/// private: there is exactly one route in and it refuses a value carrying
+/// nothing a reader could see. It `expect`s rather than returning the
+/// constructor's `Option` directly, so a fixture whose own literal turned out to
+/// be invisible fails loudly here instead of silently becoming an ABSENT flag —
+/// which would quietly convert a test of "blank is refused" into a test of
+/// "nothing was supplied".
+fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
+    gsd_meta_manager::driver::payload::NonBlank::new(raw)
+        .expect("a visible test literal is a payload")
+}
+
 
 const TRIPWIRE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -178,11 +193,34 @@ fn config_for(root: &Path) -> Config {
     config
 }
 
+/// The RAW dry-run invocation, before the parse boundary has judged it.
+///
+/// It exists so the two retargeted blank-payload tests below can hand
+/// `DriveArgs::from_argv` a payload the judged type cannot hold.
+fn raw_args(evidence: Option<&Path>) -> RawDriveArgs {
+    RawDriveArgs {
+        alias: ALIAS.to_string(),
+        command: Some(COMMAND.to_string()),
+        target_phase: None,
+        max_steps: None,
+        wall_clock_cap_secs: None,
+        max_escalations: None,
+        approved_plan: None,
+        run_id: None,
+        dry_run: true,
+        goal: None,
+        claude_program: evidence.map(|_| PathBuf::from(TRIPWIRE)),
+        claude_args: evidence
+            .map(|path| vec![OsString::from(path)])
+            .unwrap_or_default(),
+    }
+}
+
 /// Dry-run arguments, optionally pointed at the tripwire with an evidence path.
 fn args(evidence: Option<&Path>) -> DriveArgs {
     DriveArgs {
-        alias: ALIAS.to_string(),
-        command: Some(COMMAND.to_string()),
+        alias: nonblank(ALIAS),
+        command: Some(nonblank(COMMAND)),
         target_phase: None,
         max_steps: None,
         wall_clock_cap_secs: None,
@@ -268,7 +306,7 @@ fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, u64, u64)>) {
 fn routed_args(evidence: Option<&Path>) -> DriveArgs {
     DriveArgs {
         command: None,
-        target_phase: Some("20".to_string()),
+        target_phase: Some(nonblank("20")),
         ..args(evidence)
     }
 }
@@ -283,7 +321,7 @@ fn goal_args(evidence: Option<&Path>) -> DriveArgs {
     DriveArgs {
         command: None,
         target_phase: None,
-        goal: Some(GOAL.to_string()),
+        goal: Some(nonblank(GOAL)),
         ..args(evidence)
     }
 }
@@ -473,7 +511,7 @@ async fn a_preview_refuses_exactly_what_the_real_run_would_refuse() {
     // rendered `../../../escaped` verbatim into something that reads as a
     // pasteable command line.
     let mut escaped = routed_args(None);
-    escaped.target_phase = Some("../../../escaped".to_string());
+    escaped.target_phase = Some(nonblank("../../../escaped"));
     let refusal = drive(escaped, &config)
         .await
         .expect_err("a preview must refuse a target phase that is not a plain path component");
@@ -505,7 +543,7 @@ async fn a_preview_refuses_exactly_what_the_real_run_would_refuse() {
     // run for real was refused, after a model consultation had already been
     // spent reaching the refusal.
     let mut garbage_token = goal_args(None);
-    garbage_token.approved_plan = Some("total-garbage-no-separator".to_string());
+    garbage_token.approved_plan = Some(nonblank("total-garbage-no-separator"));
     let refusal = drive(garbage_token, &config)
         .await
         .expect_err("a preview must refuse a value that is not an approval token");
@@ -545,16 +583,44 @@ async fn a_blank_command_is_refused_in_preview_and_in_a_real_run() {
     let config = config_for(root);
     let evidence = root.join("tripwire-fired-blank-command");
 
+    // **RETARGETED to the parse boundary in 21-15, and the retarget is the
+    // point.** This loop used to build a `DriveArgs` carrying a blank
+    // `--command` and drive it, on both paths, asserting the two answered
+    // identically. `DriveArgs::command` is now an `Option<payload::NonBlank>`, so
+    // that value cannot be built: the refusal happens at
+    // `DriveArgs::from_argv`, above `drive` entirely.
+    //
+    // **The preview/real symmetry the old shape exercised at RUNTIME is now a
+    // construction-time fact.** `from_argv` cannot consult `dry_run` — it fires
+    // before a `DriveArgs` exists for `dry_run` to be read off — so a preview
+    // that refused less than the run it previews is no longer a bug this test
+    // watches for but a state the code cannot reach. Both raw records are
+    // nonetheless asserted, because that is the claim a reader wants checked
+    // rather than inferred.
+    //
+    // **The payload list stays this file's own, and the reason is a real
+    // limitation worth naming.** `crate::test_support::DEGENERATE` — the shared
+    // const every in-crate blank-shape pin now reads — is `#[cfg(test)]`, so it
+    // does not exist in the compiled library and an integration test (a separate
+    // crate) cannot reach it. Copying its six values here by hand would be
+    // exactly the three-of-six hand copy pass 5 caught. The EXHAUSTIVE sweep of
+    // all six shapes across all seven argv positions therefore lives in-crate,
+    // in `driver::tests::every_argv_position_refuses_every_degenerate_payload_at_the_parse_boundary`;
+    // what this test adds is the end-to-end path through `drive`'s own callers,
+    // over the shapes it has always covered.
     for blank in ["", "   "] {
         for dry_run in [true, false] {
-            let mut blank_args = args(Some(&evidence));
-            blank_args.command = Some(blank.to_string());
-            blank_args.dry_run = dry_run;
+            let mut raw = raw_args(Some(&evidence));
+            raw.command = Some(blank.to_string());
+            raw.dry_run = dry_run;
 
-            let refusal = drive(blank_args, &config).await.expect_err(
-                "a command made of nothing is a run with nothing to instruct it, \
-                 on both paths",
-            );
+            let refusal = DriveArgs::from_argv(raw).err().unwrap_or_else(|| {
+                panic!(
+                    "a command made of nothing is a run with nothing to instruct \
+                     it, on both paths. blank={blank:?} dry_run={dry_run} was \
+                     ACCEPTED"
+                )
+            });
             assert!(
                 matches!(refusal, DriveError::NoCommandSource),
                 "the refusal must be the SAME typed variant on both paths — a \
@@ -632,17 +698,23 @@ async fn a_blank_target_phase_is_refused_in_preview_and_in_a_real_run() {
     // `"   "` leads deliberately: it is the payload the round-4 verification
     // reproduced previewing cleanly at exit 0 and creating a run record, so the
     // tracer's red arm names the Critical rather than the older `""` refusal.
+    // RETARGETED to the parse boundary in 21-15, for the reason its sibling
+    // above records in full — including why the payload list stays this file's
+    // own rather than becoming the shared const.
     for blank in ["   ", "\t", "\n  \n", ""] {
         for dry_run in [true, false] {
-            let mut blank_args = args(Some(&evidence));
-            blank_args.command = None;
-            blank_args.target_phase = Some(blank.to_string());
-            blank_args.dry_run = dry_run;
+            let mut raw = raw_args(Some(&evidence));
+            raw.command = None;
+            raw.target_phase = Some(blank.to_string());
+            raw.dry_run = dry_run;
 
-            let refusal = drive(blank_args, &config).await.expect_err(
-                "a target phase made of nothing names no phase to drive toward, \
-                 on both paths",
-            );
+            let refusal = DriveArgs::from_argv(raw).err().unwrap_or_else(|| {
+                panic!(
+                    "a target phase made of nothing names no phase to drive \
+                     toward, on both paths. blank={blank:?} dry_run={dry_run} \
+                     was ACCEPTED"
+                )
+            });
             assert!(
                 matches!(refusal, DriveError::NoCommandSource),
                 "the refusal must be the SAME typed variant on both paths, and it \

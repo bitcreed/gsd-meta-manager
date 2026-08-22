@@ -34,6 +34,21 @@ use gsd_meta_manager::error::DriveError;
 use gsd_meta_manager::journal::{writer, RunRecord};
 use tempfile::TempDir;
 
+/// A visible argv payload for the fixtures below.
+///
+/// `DriveArgs`'s argv-derived fields are `payload::NonBlank`, whose field is
+/// private: there is exactly one route in and it refuses a value carrying
+/// nothing a reader could see. It `expect`s rather than returning the
+/// constructor's `Option` directly, so a fixture whose own literal turned out to
+/// be invisible fails loudly here instead of silently becoming an ABSENT flag —
+/// which would quietly convert a test of "blank is refused" into a test of
+/// "nothing was supplied".
+fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
+    gsd_meta_manager::driver::payload::NonBlank::new(raw)
+        .expect("a visible test literal is a payload")
+}
+
+
 const ALIAS: &str = "victim";
 const COMMAND: &str = "/gsd-progress";
 const PLAIN_RUN_ID: &str = "2026-07-29T21-40-02Z-3f2a";
@@ -136,14 +151,14 @@ fn footprint(root: &Path) -> BTreeSet<PathBuf> {
 
 fn drive_args(run_id: &str) -> DriveArgs {
     DriveArgs {
-        alias: ALIAS.to_string(),
-        command: Some(COMMAND.to_string()),
+        alias: nonblank(ALIAS),
+        command: Some(nonblank(COMMAND)),
         target_phase: None,
         max_steps: None,
         wall_clock_cap_secs: None,
         max_escalations: None,
         approved_plan: None,
-        run_id: Some(run_id.to_string()),
+        run_id: Some(nonblank(run_id)),
         dry_run: false,
         goal: None,
         // Deliberately absent. A refused run must never reach a spawn, so a

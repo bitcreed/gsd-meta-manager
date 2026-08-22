@@ -32,6 +32,21 @@ use gsd_meta_manager::driver::{bounds, drive, router, DriveArgs};
 use serde_json::Value;
 use tempfile::TempDir;
 
+/// A visible argv payload for the fixtures below.
+///
+/// `DriveArgs`'s argv-derived fields are `payload::NonBlank`, whose field is
+/// private: there is exactly one route in and it refuses a value carrying
+/// nothing a reader could see. It `expect`s rather than returning the
+/// constructor's `Option` directly, so a fixture whose own literal turned out to
+/// be invisible fails loudly here instead of silently becoming an ABSENT flag —
+/// which would quietly convert a test of "blank is refused" into a test of
+/// "nothing was supplied".
+fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
+    gsd_meta_manager::driver::payload::NonBlank::new(raw)
+        .expect("a visible test literal is a payload")
+}
+
+
 const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-claude.sh");
 
 /// The clean-success capture named in `tests/fixtures/transcripts/README.md`.
@@ -158,16 +173,16 @@ fn config_for(root: &Path) -> Config {
 /// A routed `DriveArgs` pointed at the transcript-replaying stand-in.
 fn routed_args(run_id: &str, max_steps: Option<u32>) -> DriveArgs {
     DriveArgs {
-        alias: ALIAS.to_string(),
+        alias: nonblank(ALIAS),
         command: None,
-        target_phase: Some(TARGET_PHASE.to_string()),
+        target_phase: Some(nonblank(TARGET_PHASE)),
         max_steps,
         wall_clock_cap_secs: None,
         max_escalations: None,
         approved_plan: None,
-        run_id: Some(run_id.to_string()),
+        run_id: Some(nonblank(run_id)),
         dry_run: false,
-        goal: Some("drive phase 20 forward".to_string()),
+        goal: Some(nonblank("drive phase 20 forward")),
         claude_program: Some(FAKE_CLAUDE.into()),
         claude_args: vec![OsString::from(CLEAN_BASELINE), OsString::from("0")],
     }
@@ -560,7 +575,7 @@ async fn single_command_mode_is_untouched_by_the_iteration_loop() {
     let config = config_for(root.path());
 
     let mut args = routed_args(RUN_ID, None);
-    args.command = Some("/gsd-progress".to_string());
+    args.command = Some(nonblank("/gsd-progress"));
     args.target_phase = None;
 
     drive(args, &config)

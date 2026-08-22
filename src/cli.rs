@@ -71,6 +71,18 @@ pub enum Commands {
         /// Phase number to drive toward, e.g. `20`; excludes --command
         #[arg(long)]
         target_phase: Option<String>,
+        // **The fields above are the RAW side of a parse boundary, and they stay
+        // raw on purpose** (21-15). Clap parses a command line; it does not
+        // judge payloads. Every string flag on this subcommand crosses into the
+        // driver through `driver::RawDriveArgs` and
+        // `driver::DriveArgs::from_argv`, which is the one place a value
+        // carrying nothing a reader could see is refused — with that position's
+        // own typed error, before `drive` is entered and therefore before any
+        // file, lock, journal or run directory can exist, identically for
+        // `--dry-run` and a real run. Adding a `value_parser` here would be a
+        // second judge of the same property on one of the several paths that
+        // build a `DriveArgs`.
+        //
         // The two run bounds a caller may override. Both are refused at the
         // seam rather than by a `value_parser`, so the refusal reaches every
         // path that can build a `DriveArgs` and not only this one.
@@ -153,6 +165,15 @@ pub enum Commands {
         // the TUI's argv builder, and from `writer::read_active_run` — a
         // validator wired to this one flag would guard the one path that is
         // already the least interesting (D-27, WR-02).
+        //
+        // **Blankness specifically moved UP in 21-15, and this comment is
+        // corrected in the commit that moved it.** A supplied `--run-id`
+        // carrying nothing visible is now refused at
+        // `driver::DriveArgs::from_argv`, the parse boundary between this raw
+        // clap struct and the driver's own type, with `RunIdInvalid` — before
+        // `drive` is entered at all. `is_plain_path_component` still answers the
+        // STRUCTURAL half (traversal, separators, embedded control characters)
+        // at the seam, and it still governs values that never came from argv.
         /// Run id to record this run under; required unless `--dry-run`
         #[arg(long)]
         run_id: Option<String>,

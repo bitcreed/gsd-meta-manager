@@ -61,6 +61,21 @@ use gsd_meta_manager::state_reader::parse_project_state;
 use serde_json::Value;
 use tempfile::TempDir;
 
+/// A visible argv payload for the fixtures below.
+///
+/// `DriveArgs`'s argv-derived fields are `payload::NonBlank`, whose field is
+/// private: there is exactly one route in and it refuses a value carrying
+/// nothing a reader could see. It `expect`s rather than returning the
+/// constructor's `Option` directly, so a fixture whose own literal turned out to
+/// be invisible fails loudly here instead of silently becoming an ABSENT flag —
+/// which would quietly convert a test of "blank is refused" into a test of
+/// "nothing was supplied".
+fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
+    gsd_meta_manager::driver::payload::NonBlank::new(raw)
+        .expect("a visible test literal is a payload")
+}
+
+
 /// This file's own text, for the completeness guard.
 const OWN_SOURCE: &str = include_str!("driver_refusal_record.rs");
 
@@ -317,14 +332,14 @@ fn agent_spawns(workdir: &Path) -> Vec<String> {
 /// and the whole escalation budget belongs to the ambiguity seam.
 fn routed_args(run_id: &str, workdir: &Path) -> DriveArgs {
     DriveArgs {
-        alias: ALIAS.to_string(),
+        alias: nonblank(ALIAS),
         command: None,
-        target_phase: Some(TARGET.to_string()),
+        target_phase: Some(nonblank(TARGET)),
         max_steps: Some(4),
         wall_clock_cap_secs: None,
         max_escalations: Some(1),
         approved_plan: None,
-        run_id: Some(run_id.to_string()),
+        run_id: Some(nonblank(run_id)),
         dry_run: false,
         goal: None,
         claude_program: Some(SEAM_CLAUDE.into()),
@@ -624,7 +639,7 @@ async fn parked_label_prefix() -> String {
     let mut args = routed_args(RUN, workdir.path());
     // A phase the roadmap does not declare parks under Phase 20's
     // `router_state_unverified`, inside the loop and on disk.
-    args.target_phase = Some("99".to_string());
+    args.target_phase = Some(nonblank("99"));
 
     drive(args, &config_for(root.path()))
         .await
@@ -810,7 +825,7 @@ async fn the_driver_keeps_the_goal_the_human_stated_against_an_agent_authored_ar
 
     let mut args = routed_args(RUN_ID, workdir.path());
     args.target_phase = None;
-    args.goal = Some(HUMAN_GOAL.to_string());
+    args.goal = Some(nonblank(HUMAN_GOAL));
     args.max_steps = Some(2);
 
     // The approval the human gave, computed the way the driver computes it.
@@ -835,7 +850,7 @@ async fn the_driver_keeps_the_goal_the_human_stated_against_an_agent_authored_ar
         &gsd_meta_manager::registry::current_prompt_inputs(root.path()),
     );
     let approved = journal::render_approval_token(&plan_digest, &approved_files);
-    args.approved_plan = Some(approved.clone());
+    args.approved_plan = Some(nonblank(&approved));
 
     drive(args, &config_for(root.path()))
         .await

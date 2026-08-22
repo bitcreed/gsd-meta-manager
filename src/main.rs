@@ -6,7 +6,7 @@ use gsd_meta_manager::watcher::FileWatcher;
 use clap::Parser;
 use gsd_meta_manager::cli::{Cli, Commands, EnvelopeAction};
 use gsd_meta_manager::config::{load_config, save_config, Config};
-use gsd_meta_manager::driver::{drive, DriveArgs};
+use gsd_meta_manager::driver::{drive, DriveArgs, RawDriveArgs};
 use event::EventBus;
 use gsd_meta_manager::main_loop::{
     pump, ExecEvent, PumpOutcome, EXEC_BATCH, EXEC_CHANNEL_CAPACITY,
@@ -105,7 +105,16 @@ async fn main() -> anyhow::Result<()> {
             // arm below, which is the whole of "the driver never touches
             // ratatui" — no new mechanism, just the position in this match.
             let config = load_config(&config_path)?;
-            let args = DriveArgs {
+            // **The parse boundary, and it is the ONLY route from argv into a
+            // `DriveArgs`.** Clap's fields are raw `String`s — clap parses a
+            // command line, it does not judge payloads — so `RawDriveArgs` is
+            // what crosses, and `DriveArgs::from_argv` is what judges. A value
+            // carrying nothing visible is refused HERE, before `drive` is
+            // entered and therefore before any file, lock, journal or run
+            // directory can exist, identically for `--dry-run` and a real run
+            // because the refusal fires before a `DriveArgs` exists for
+            // `dry_run` to be read off.
+            let raw = RawDriveArgs {
                 alias,
                 command,
                 target_phase,
@@ -120,6 +129,16 @@ async fn main() -> anyhow::Result<()> {
                 claude_program,
                 #[cfg(debug_assertions)]
                 claude_args,
+            };
+            let args = match DriveArgs::from_argv(raw) {
+                Ok(args) => args,
+                Err(err) => {
+                    // The same house shape the `drive` refusal below uses:
+                    // user-facing refusals in this binary print and exit, they
+                    // do not bubble as an anyhow chain.
+                    eprintln!("Error: {}", err);
+                    std::process::exit(1);
+                }
             };
             if let Err(err) = drive(args, &config).await {
                 // The `Add` arm's house shape: user-facing refusals in this

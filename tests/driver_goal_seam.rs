@@ -30,11 +30,26 @@ use std::path::Path;
 
 use gsd_meta_manager::config::{Config, DriverOptIn, RegisteredProject};
 use gsd_meta_manager::driver::run::GoalDecomposition;
-use gsd_meta_manager::driver::{bounds, drive, escalate, goal, router, DriveArgs};
+use gsd_meta_manager::driver::{bounds, drive, escalate, goal, router, DriveArgs, RawDriveArgs};
 use gsd_meta_manager::error::DriveError;
 use gsd_meta_manager::journal::{ApprovalRefusal, ApprovalTokenError};
 use serde_json::Value;
 use tempfile::TempDir;
+
+/// A visible argv payload for the fixtures below.
+///
+/// `DriveArgs`'s argv-derived fields are `payload::NonBlank`, whose field is
+/// private: there is exactly one route in and it refuses a value carrying
+/// nothing a reader could see. It `expect`s rather than returning the
+/// constructor's `Option` directly, so a fixture whose own literal turned out to
+/// be invisible fails loudly here instead of silently becoming an ABSENT flag —
+/// which would quietly convert a test of "blank is refused" into a test of
+/// "nothing was supplied".
+fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
+    gsd_meta_manager::driver::payload::NonBlank::new(raw)
+        .expect("a visible test literal is a payload")
+}
+
 
 /// The seam-aware stand-in. It answers a seam spawn from a caller-supplied
 /// payload, replays a transcript for everything else, and leaves evidence of
@@ -160,9 +175,13 @@ fn seam_stdin(workdir: &Path) -> String {
     out
 }
 
-/// A goal-only `DriveArgs` pointed at the seam-aware stand-in.
-fn goal_args(run_id: &str, workdir: &Path, stated_goal: &str) -> DriveArgs {
-    DriveArgs {
+/// The RAW goal-only invocation, before the parse boundary has judged it.
+///
+/// It exists so a test can hand `DriveArgs::from_argv` a payload the judged type
+/// cannot hold — a blank `--goal`, say — and assert the refusal. `goal_args`
+/// below is this record put through the boundary.
+fn raw_goal_args(run_id: &str, workdir: &Path, stated_goal: &str) -> RawDriveArgs {
+    RawDriveArgs {
         alias: ALIAS.to_string(),
         command: None,
         target_phase: None,
@@ -179,6 +198,15 @@ fn goal_args(run_id: &str, workdir: &Path, stated_goal: &str) -> DriveArgs {
             OsString::from(CLEAN_BASELINE),
         ],
     }
+}
+
+/// A goal-only `DriveArgs` pointed at the seam-aware stand-in.
+///
+/// Built through the **production** parse boundary rather than by a struct
+/// literal, so the fixtures exercise the same conversion `src/main.rs` performs.
+fn goal_args(run_id: &str, workdir: &Path, stated_goal: &str) -> DriveArgs {
+    DriveArgs::from_argv(raw_goal_args(run_id, workdir, stated_goal))
+        .expect("the fixture invocation is well-formed")
 }
 
 /// One well-formed wire step.
@@ -266,7 +294,7 @@ fn the_decomposition_capability_exists_only_for_an_invocation_that_supplies_a_go
     // `--command` is already machine-checkable, so a goal beside it is recorded
     // prose and there is nothing to decompose.
     let mut with_command = goal_args("r", workdir.path(), "get phase 21 verified");
-    with_command.command = Some("/gsd-progress".to_string());
+    with_command.command = Some(nonblank("/gsd-progress"));
     assert!(
         GoalDecomposition::from_argv_goal(&with_command).is_none(),
         "a goal supplied beside --command must not open a model seam: the \
@@ -277,7 +305,7 @@ fn the_decomposition_capability_exists_only_for_an_invocation_that_supplies_a_go
     // `--target-phase` is Phase 20's goal primitive and is likewise already
     // machine-checkable.
     let mut with_target = goal_args("r", workdir.path(), "get phase 21 verified");
-    with_target.target_phase = Some("21".to_string());
+    with_target.target_phase = Some(nonblank("21"));
     assert!(
         GoalDecomposition::from_argv_goal(&with_target).is_none(),
         "a goal supplied beside --target-phase must not open a model seam"
@@ -294,18 +322,31 @@ fn the_decomposition_capability_exists_only_for_an_invocation_that_supplies_a_go
          trusted input and mangling it would change what was asked for"
     );
 
-    // A blank goal is nothing to do, and must not become an empty prompt.
-    let blank = goal_args("r", workdir.path(), "   \t ");
-    assert!(
-        GoalDecomposition::from_argv_goal(&blank).is_none(),
-        "a whitespace-only goal is not a goal; decomposing it would ask the \
-         model to invent one"
-    );
+    // **A blank goal is nothing to do, and it is now UNREPRESENTABLE here
+    // rather than filtered here** (21-15). This row used to build
+    // `goal_args(.., "   \t ")` and assert the capability declined it, which
+    // meant a blank goal travelled all the way into a `DriveArgs` and was caught
+    // by an `is_empty` branch inside `from_argv_goal`. `DriveArgs::goal` is now
+    // an `Option<payload::NonBlank>`: there is no such value to build, and the
+    // refusal happens at the parse boundary before a `DriveArgs` exists. The
+    // assertion moves with the code rather than being deleted — this is the same
+    // fact, checked one layer earlier and for every degenerate shape rather than
+    // for the one this test happened to spell.
+    for blank in ["", "   \t ", "\u{200b}", "\u{feff}"] {
+        assert!(
+            matches!(
+                DriveArgs::from_argv(raw_goal_args("r", workdir.path(), blank)),
+                Err(DriveError::NoCommandSource)
+            ),
+            "a goal carrying nothing visible is not a goal; decomposing it would \
+             ask the model to invent one. blank={blank:?}"
+        );
+    }
 
     // And an invocation with no goal at all is every Phase 20 run.
-    let mut none = goal_args("r", workdir.path(), "");
+    let mut none = goal_args("r", workdir.path(), "a goal that is then removed");
     none.goal = None;
-    none.target_phase = Some("21".to_string());
+    none.target_phase = Some(nonblank("21"));
     assert!(GoalDecomposition::from_argv_goal(&none).is_none());
 }
 
@@ -395,7 +436,7 @@ async fn a_stated_goal_becomes_a_recorded_plan_and_the_run_drives_its_terminal_p
     // could not decompose at all. The run then halts on this cap rather than
     // driving an agent for the length of the test.
     args.max_steps = Some(2);
-    args.approved_plan = Some(approval_for(root.path(), &wire, args.max_steps));
+    args.approved_plan = Some(nonblank(&approval_for(root.path(), &wire, args.max_steps)));
 
     drive(args, &config_for(root.path()))
         .await
@@ -473,7 +514,7 @@ async fn the_decomposition_seam_is_shown_no_bytes_read_from_a_project_file() {
 
     let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
     args.max_steps = Some(2);
-    args.approved_plan = Some(approval_for(root.path(), &wire, args.max_steps));
+    args.approved_plan = Some(nonblank(&approval_for(root.path(), &wire, args.max_steps)));
     drive(args, &config_for(root.path()))
         .await
         .expect("a legal plan starts the run");
@@ -605,7 +646,7 @@ async fn a_re_decomposition_that_changed_the_plan_is_refused_as_a_changed_plan_n
 
     let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
     args.max_steps = Some(2);
-    args.approved_plan = Some(token);
+    args.approved_plan = Some(nonblank(&token));
 
     let err = drive(args, &config)
         .await
@@ -677,7 +718,7 @@ async fn a_disclosed_file_rewritten_under_an_approval_is_refused_as_changed_file
         .expect("write CLAUDE.md");
     let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
     args.max_steps = Some(2);
-    args.approved_plan = Some(approval_for(root.path(), &wire, args.max_steps));
+    args.approved_plan = Some(nonblank(&approval_for(root.path(), &wire, args.max_steps)));
 
     // Now the file moves under the approval, and the opt-in is re-confirmed
     // against the NEW bytes. That ordering is deliberate: the opt-in's own drift
@@ -750,7 +791,7 @@ async fn a_half_supplied_approval_token_is_refused_by_name_and_never_treated_as_
 
     let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
     args.max_steps = Some(2);
-    args.approved_plan = Some(approval_half.to_string());
+    args.approved_plan = Some(nonblank(approval_half));
 
     let err = drive(args, &config_for(root.path()))
         .await
@@ -823,7 +864,7 @@ async fn a_malformed_approval_token_is_refused_before_the_seam_is_spawned_and_id
 
         let mut args = goal_args(RUN_ID, workdir.path(), STATED_GOAL);
         args.max_steps = Some(2);
-        args.approved_plan = Some(GARBAGE.to_string());
+        args.approved_plan = Some(nonblank(GARBAGE));
 
         let err = drive(args, &config_for(root.path()))
             .await
@@ -858,7 +899,7 @@ async fn a_malformed_approval_token_is_refused_before_the_seam_is_spawned_and_id
 
         let mut args = goal_args(RUN_ID, workdir.path(), STATED_GOAL);
         args.max_steps = Some(2);
-        args.approved_plan = Some(GARBAGE.to_string());
+        args.approved_plan = Some(nonblank(GARBAGE));
         args.dry_run = true;
 
         let err = drive(args, &config_for(root.path()))
@@ -897,7 +938,7 @@ async fn a_malformed_approval_token_is_refused_before_the_seam_is_spawned_and_id
 
         let mut args = goal_args(RUN_ID, workdir.path(), STATED_GOAL);
         args.max_steps = Some(2);
-        args.approved_plan = Some(approval_for(root.path(), &wire, Some(2)));
+        args.approved_plan = Some(nonblank(&approval_for(root.path(), &wire, Some(2))));
 
         // The run's own outcome is not this test's subject — a well-formed token
         // reaches the decomposition, which is the point. What matters is that
@@ -990,7 +1031,7 @@ async fn an_approval_bound_to_a_different_plan_refuses_the_run() {
 
     let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
     args.max_steps = Some(2);
-    args.approved_plan = Some(approval_for(root.path(), &approved, args.max_steps));
+    args.approved_plan = Some(nonblank(&approval_for(root.path(), &approved, args.max_steps)));
 
     let err = drive(args, &config_for(root.path()))
         .await
@@ -1022,7 +1063,7 @@ async fn an_approval_whose_disclosed_bytes_moved_refuses_the_run_though_the_plan
 
     let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
     args.max_steps = Some(2);
-    args.approved_plan = Some(approval_for(root.path(), &wire, args.max_steps));
+    args.approved_plan = Some(nonblank(&approval_for(root.path(), &wire, args.max_steps)));
 
     // Now the file changes underneath — a `git pull` the user never read. This
     // tool drives other people's cloned repositories, so this is the ordinary
@@ -1072,7 +1113,7 @@ async fn the_run_record_carries_the_approval_the_cap_and_the_count() {
     let mut args = goal_args(RUN_ID, workdir.path(), "get the goal layer verified");
     args.max_steps = Some(2);
     let token = approval_for(root.path(), &wire, args.max_steps);
-    args.approved_plan = Some(token.clone());
+    args.approved_plan = Some(nonblank(&token));
 
     drive(args, &config_for(root.path()))
         .await

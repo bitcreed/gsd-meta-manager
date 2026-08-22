@@ -50,6 +50,21 @@ use gsd_meta_manager::journal::reader::{self, JournalRecord};
 use gsd_meta_manager::journal::writer;
 use tempfile::TempDir;
 
+/// A visible argv payload for the fixtures below.
+///
+/// `DriveArgs`'s argv-derived fields are `payload::NonBlank`, whose field is
+/// private: there is exactly one route in and it refuses a value carrying
+/// nothing a reader could see. It `expect`s rather than returning the
+/// constructor's `Option` directly, so a fixture whose own literal turned out to
+/// be invisible fails loudly here instead of silently becoming an ABSENT flag —
+/// which would quietly convert a test of "blank is refused" into a test of
+/// "nothing was supplied".
+fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
+    gsd_meta_manager::driver::payload::NonBlank::new(raw)
+        .expect("a visible test literal is a payload")
+}
+
+
 /// The multi-turn stand-in. `fake-claude-echo.sh` emits its only `result` after
 /// stdin EOF, which cannot close a D-11 loop: the driver waits for a turn
 /// boundary before closing stdin, and that stand-in waits for the close before
@@ -168,16 +183,16 @@ fn drive_args(stdin_log: &Path) -> DriveArgs {
 /// The same, against a named stand-in.
 fn drive_args_with(program: &str, stdin_log: &Path) -> DriveArgs {
     DriveArgs {
-        alias: ALIAS.to_string(),
-        command: Some(COMMAND.to_string()),
+        alias: nonblank(ALIAS),
+        command: Some(nonblank(COMMAND)),
         target_phase: None,
         max_steps: None,
         wall_clock_cap_secs: None,
         max_escalations: None,
         approved_plan: None,
-        run_id: Some(RUN_ID.to_string()),
+        run_id: Some(nonblank(RUN_ID)),
         dry_run: false,
-        goal: Some(GOAL.to_string()),
+        goal: Some(nonblank(GOAL)),
         claude_program: Some(PathBuf::from(program)),
         claude_args: vec![
             OsString::from(CAPABILITIES),

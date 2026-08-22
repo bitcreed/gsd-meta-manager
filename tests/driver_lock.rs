@@ -31,6 +31,21 @@ use gsd_meta_manager::driver::{drive, DriveArgs};
 use gsd_meta_manager::error::{DriveError, LockError};
 use tempfile::TempDir;
 
+/// A visible argv payload for the fixtures below.
+///
+/// `DriveArgs`'s argv-derived fields are `payload::NonBlank`, whose field is
+/// private: there is exactly one route in and it refuses a value carrying
+/// nothing a reader could see. It `expect`s rather than returning the
+/// constructor's `Option` directly, so a fixture whose own literal turned out to
+/// be invisible fails loudly here instead of silently becoming an ABSENT flag —
+/// which would quietly convert a test of "blank is refused" into a test of
+/// "nothing was supplied".
+fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
+    gsd_meta_manager::driver::payload::NonBlank::new(raw)
+        .expect("a visible test literal is a payload")
+}
+
+
 /// The paced stand-in, whose three leading arguments control how long it stays
 /// alive. It is what holds the first run open while the second attempts.
 const FAKE_SLOW: &str = concat!(
@@ -112,14 +127,14 @@ fn config_for(root: &Path) -> Config {
 /// Drive arguments pointed at the paced stand-in.
 fn args(run_id: &str, heartbeats: &str, interval: &str) -> DriveArgs {
     DriveArgs {
-        alias: ALIAS.to_string(),
-        command: Some("/gsd-progress".to_string()),
+        alias: nonblank(ALIAS),
+        command: Some(nonblank("/gsd-progress")),
         target_phase: None,
         max_steps: None,
         wall_clock_cap_secs: None,
         max_escalations: None,
         approved_plan: None,
-        run_id: Some(run_id.to_string()),
+        run_id: Some(nonblank(run_id)),
         dry_run: false,
         goal: None,
         claude_program: Some(FAKE_SLOW.into()),

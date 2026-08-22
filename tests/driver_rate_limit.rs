@@ -33,6 +33,21 @@ use gsd_meta_manager::driver::{drive, rate_limit, DriveArgs};
 use serde_json::Value;
 use tempfile::TempDir;
 
+/// A visible argv payload for the fixtures below.
+///
+/// `DriveArgs`'s argv-derived fields are `payload::NonBlank`, whose field is
+/// private: there is exactly one route in and it refuses a value carrying
+/// nothing a reader could see. It `expect`s rather than returning the
+/// constructor's `Option` directly, so a fixture whose own literal turned out to
+/// be invisible fails loudly here instead of silently becoming an ABSENT flag —
+/// which would quietly convert a test of "blank is refused" into a test of
+/// "nothing was supplied".
+fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
+    gsd_meta_manager::driver::payload::NonBlank::new(raw)
+        .expect("a visible test literal is a payload")
+}
+
+
 const FAKE_CLAUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-claude.sh");
 
 /// The committed clean-success capture, used as the scaffolding every built
@@ -245,16 +260,16 @@ fn config_for(root: &Path) -> Config {
 /// A routed `DriveArgs` replaying `transcript` and exiting `exit_code`.
 fn routed_args(run_id: &str, transcript: &Path, exit_code: &str) -> DriveArgs {
     DriveArgs {
-        alias: ALIAS.to_string(),
+        alias: nonblank(ALIAS),
         command: None,
-        target_phase: Some(TARGET_PHASE.to_string()),
+        target_phase: Some(nonblank(TARGET_PHASE)),
         max_steps: Some(ROOMY_STEP_CAP),
         wall_clock_cap_secs: None,
         max_escalations: None,
         approved_plan: None,
-        run_id: Some(run_id.to_string()),
+        run_id: Some(nonblank(run_id)),
         dry_run: false,
-        goal: Some("drive phase 20 forward".to_string()),
+        goal: Some(nonblank("drive phase 20 forward")),
         claude_program: Some(FAKE_CLAUDE.into()),
         claude_args: vec![
             OsString::from(transcript.as_os_str()),
@@ -926,7 +941,7 @@ async fn an_allowed_quota_event_parks_nothing_and_the_run_completes_normally() {
     let transcript = transcript_file(&scratch, "allowed.ndjson", CLEAN_BASELINE);
 
     let mut args = routed_args(RUN_ID, &transcript, "0");
-    args.command = Some("/gsd-progress".to_string());
+    args.command = Some(nonblank("/gsd-progress"));
     args.target_phase = None;
 
     drive(args, &config)

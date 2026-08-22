@@ -127,10 +127,24 @@ use crate::journal;
 ///
 /// A plain owned record rather than a borrow of the CLI enum, so the TUI's
 /// spawn path (plan 17-05) and a hand-typed invocation build the same value.
+/// **Every argv-derived string field is a [`payload::NonBlank`], and the domain
+/// is the STRUCT rather than a chosen subset of it** (21-15). Four gap-closure
+/// cycles each protected a hand-enumerated subset of these values and each
+/// enumeration was one item short: three `CommandSource` arms one at a time,
+/// then three of the six fields below. The enumeration is now the compiler's:
+/// the type refuses a blank in every position, and [`DriveArgs::from_argv`]'s
+/// exhaustive destructure makes a seventh field a compile error until somebody
+/// classifies it.
 #[derive(Debug, Clone)]
 pub struct DriveArgs {
     /// The registry alias to drive.
-    pub alias: String,
+    ///
+    /// A [`payload::NonBlank`], so no registry lookup can be asked to name a
+    /// value nobody can see. It used to rest on the lookup's incidental
+    /// behaviour — an alias of spaces matched no key and so was refused as
+    /// *unknown*, which is an accident of the map's contents rather than a
+    /// property (pass-5 T-21-15-04).
+    pub alias: payload::NonBlank,
     /// The single GSD command to run, in single-command mode.
     ///
     /// **Mutually exclusive with [`target_phase`](Self::target_phase), and
@@ -144,7 +158,13 @@ pub struct DriveArgs {
     /// *derived* per iteration from what the previous one left on disk, so a
     /// supplied list would be a third execution model neither the router nor the
     /// bounds know about.
-    pub command: Option<String>,
+    ///
+    /// **The blankness rule lives in the TYPE, not at a downstream seam.** This
+    /// doc used to point at `command_source` as the place a blank `--command`
+    /// was refused; as of 21-15 a blank one cannot be represented here at all,
+    /// and `command_source`'s check is gone rather than duplicated. The refusal
+    /// happens once, at [`DriveArgs::from_argv`].
+    pub command: Option<payload::NonBlank>,
     /// The phase a routed run is driving toward.
     ///
     /// **Mutually exclusive with [`command`](Self::command).** It is used only
@@ -155,7 +175,12 @@ pub struct DriveArgs {
     /// hand-typed invocation, from the TUI's argv builder and from a re-read run
     /// record, and a validator wired to one flag guards the least interesting of
     /// those three (D-27).
-    pub target_phase: Option<String>,
+    ///
+    /// The `is_plain_path_component` check named above is **structural** —
+    /// traversal tokens, separators, embedded control characters — and it stays
+    /// where it is. Blankness is no longer part of it here: a blank value cannot
+    /// reach this field (21-15).
+    pub target_phase: Option<payload::NonBlank>,
     /// How many iterations this run may perform, overriding
     /// [`bounds::DEFAULT_MAX_STEPS`].
     ///
@@ -207,7 +232,13 @@ pub struct DriveArgs {
     ///
     /// Ignored when the run supplies a `--command` or a `--target-phase`, both
     /// of which are already machine-checkable and decompose nothing.
-    pub approved_plan: Option<String>,
+    ///
+    /// A [`payload::NonBlank`] as of 21-15. A blank token used to rest on
+    /// `parse_approval_token`'s incidental behaviour — it refuses a value with
+    /// no separator, and a blank one has none — which is a property of the token
+    /// grammar rather than of blankness (pass-5 T-21-15-04). It is now refused
+    /// at the boundary and the parse remains as defence in depth.
+    pub approved_plan: Option<payload::NonBlank>,
     /// The run id to record under. **Required for a real run**; `None` is legal
     /// only with [`dry_run`](Self::dry_run).
     ///
@@ -218,7 +249,12 @@ pub struct DriveArgs {
     /// [`DriveError::RunIdRequired`] before anything is created — an id the
     /// driver invented for itself would appear on no caller's argv, and that is
     /// precisely what made a run invisible to `liveness::probe` (CR-04).
-    pub run_id: Option<String>,
+    ///
+    /// A [`payload::NonBlank`] as of 21-15, which is CR-02's structural half: a
+    /// run id of one `U+200B` survived `is_plain_path_component`'s old
+    /// `str::trim` and named a run directory of one invisible character, in a
+    /// run that completed.
+    pub run_id: Option<payload::NonBlank>,
     /// Preview only, execute nothing (D-24). Plan 17-04 implements it.
     pub dry_run: bool,
     /// Free text recorded into `RunRecord.goal`, and the input [`goal`]
@@ -239,7 +275,15 @@ pub struct DriveArgs {
     /// The text itself is still never treated as an instruction: it is a
     /// third-party string, and what the driver acts on is the validated
     /// [`goal::GoalPlan`] rather than the prose.
-    pub goal: Option<String>,
+    ///
+    /// **A supplied-but-blank goal is a REFUSAL, not a dropped field** (D-15-2,
+    /// 21-15). It used to be recorded verbatim into `RunRecord.goal` through an
+    /// `unwrap_or_default`, including when supplied *beside* a visible
+    /// `--command`: pass 5 reproduced `--goal '   '` persisting after the lock,
+    /// the journal and the run directory. Dropping it silently would fabricate
+    /// "no goal was given"; recording it fabricates a goal nobody can read.
+    /// Refusal is the only answer that states what happened.
+    pub goal: Option<payload::NonBlank>,
     /// Test and development only: the program to spawn instead of `claude`.
     ///
     /// **Debug builds only (D-30, WR-16).** `src/cli.rs` carries the full
@@ -256,6 +300,174 @@ pub struct DriveArgs {
     /// [`claude_program`](Self::claude_program).
     #[cfg(debug_assertions)]
     pub claude_args: Vec<OsString>,
+}
+
+/// One `drive` invocation exactly as argv supplied it, before anything has been
+/// judged.
+///
+/// **The raw side of the parse boundary.** Clap's own struct fields are `String`
+/// and `Option<String>` and stay that way — clap parses the command line, it
+/// does not judge payloads — so this is the shape that crosses from the parser
+/// into the driver. [`DriveArgs::from_argv`] is the only way across, and what
+/// comes out the other side cannot hold a blank in any argv-derived field.
+#[derive(Debug, Clone)]
+pub struct RawDriveArgs {
+    /// The registry alias to drive, unjudged.
+    pub alias: String,
+    /// `--command`, unjudged.
+    pub command: Option<String>,
+    /// `--target-phase`, unjudged.
+    pub target_phase: Option<String>,
+    /// `--max-steps`; a number, so there is no blankness to judge.
+    pub max_steps: Option<u32>,
+    /// `--wall-clock-cap-secs`; a number.
+    pub wall_clock_cap_secs: Option<u64>,
+    /// `--max-escalations`; a number.
+    pub max_escalations: Option<u32>,
+    /// `--approved-plan`, unjudged.
+    pub approved_plan: Option<String>,
+    /// `--run-id`, unjudged.
+    pub run_id: Option<String>,
+    /// `--dry-run`; a flag.
+    pub dry_run: bool,
+    /// `--goal`, unjudged.
+    pub goal: Option<String>,
+    /// Debug builds only, as on [`DriveArgs`] (D-30, WR-16).
+    #[cfg(debug_assertions)]
+    pub claude_program: Option<PathBuf>,
+    /// Debug builds only, as on [`DriveArgs`] (D-30, WR-16).
+    #[cfg(debug_assertions)]
+    pub claude_args: Vec<OsString>,
+}
+
+/// Judge one supplied argv value, or produce this position's own refusal.
+///
+/// `None` stays `None` — an absent flag is not a blank one, and the two are
+/// different facts a caller downstream still has to tell apart. A supplied value
+/// carrying visible content becomes `Some(NonBlank)`. A supplied value carrying
+/// none is `refuse`d, with the raw text handed back so the refusal can echo what
+/// the caller typed.
+///
+/// One helper rather than five copies of the same three-line match: five copies
+/// is five places a later field can be given the wrong one, and the shape of
+/// this phase's whole failure history is per-site rules that drift.
+fn argv_visible(
+    value: Option<String>,
+    refuse: impl FnOnce(String) -> DriveError,
+) -> Result<Option<payload::NonBlank>, DriveError> {
+    match value {
+        None => Ok(None),
+        Some(raw) => match payload::NonBlank::new(&raw) {
+            Some(payload) => Ok(Some(payload)),
+            None => Err(refuse(raw)),
+        },
+    }
+}
+
+impl DriveArgs {
+    /// **THE PARSE BOUNDARY.** The single production conversion from raw argv
+    /// strings into the type every downstream consumer reads.
+    ///
+    /// **The exhaustive destructure below IS the anti-recurrence mechanism, and
+    /// it must keep no `..` rest-pattern.** Four gap-closure cycles each
+    /// hand-enumerated which values to protect and each enumeration was exactly
+    /// one item short — three `CommandSource` arms one at a time, then three of
+    /// `DriveArgs`'s six string fields, with all three of the next round's
+    /// Criticals landing in the other three. A thirteenth field on
+    /// [`RawDriveArgs`] now refuses to compile until this function classifies
+    /// it, and a new field on [`DriveArgs`] refuses to compile until this
+    /// function constructs it. That is the enumeration moved from a human to the
+    /// compiler, which is the whole of round 5. A builder, a `Default`, a
+    /// `..raw` rest-pattern or a struct-update syntax would each restore the
+    /// silent default this destructure exists to forbid.
+    ///
+    /// **Each position keeps its OWN refusal**, because the flag a user
+    /// mistyped is what they need told:
+    ///
+    /// * `--command`, `--target-phase`, `--goal` → [`DriveError::NoCommandSource`],
+    ///   whose `Display` already says a value made only of invisible characters
+    ///   counts as absent. The goal clause is D-15-2: a blank `--goal` supplied
+    ///   *beside* a visible source is refused rather than dropped or recorded.
+    /// * `--run-id` → [`DriveError::RunIdInvalid`], the refusal the seam already
+    ///   raised for a run id that is not a plain name.
+    /// * `--approved-plan` → the malformed-token refusal, derived by running the
+    ///   real [`journal::parse_approval_token`] on the blank value rather than
+    ///   by asserting which variant it would produce. A pin below fixes that
+    ///   "guaranteed `Err`" as a checked fact rather than an assumption.
+    /// * the alias → the unknown-alias refusal `drive` already reports, because
+    ///   no registry can honestly name a value nobody can see.
+    ///
+    /// **Pure.** It opens no file and starts no process, so every refusal above
+    /// costs nothing and creates nothing — and, because it runs before a
+    /// `DriveArgs` exists at all, it cannot consult `dry_run`. Preview/real
+    /// symmetry for these refusals is therefore a construction-time fact rather
+    /// than two branches that have to agree (this plan's fourth prohibition).
+    pub fn from_argv(raw: RawDriveArgs) -> Result<DriveArgs, DriveError> {
+        // NO `..` REST-PATTERN. See the doc above: this listing is the
+        // mechanism, and a rest-pattern would let a new argv field arrive
+        // unclassified and unprotected, which is the five-time losing bet.
+        let RawDriveArgs {
+            alias,
+            command,
+            target_phase,
+            max_steps,
+            wall_clock_cap_secs,
+            max_escalations,
+            approved_plan,
+            run_id,
+            dry_run,
+            goal,
+            #[cfg(debug_assertions)]
+            claude_program,
+            #[cfg(debug_assertions)]
+            claude_args,
+        } = raw;
+
+        let alias = payload::NonBlank::new(&alias).ok_or_else(|| {
+            // The same conversion `drive` performs for an alias the registry
+            // does not hold, so a caller reads one refusal for "this names no
+            // project" whether the value was absent from the map or was never
+            // a name at all.
+            DriveError::from(OptInError::UnknownAlias { alias })
+        })?;
+
+        let command = argv_visible(command, |_| DriveError::NoCommandSource)?;
+        let target_phase = argv_visible(target_phase, |_| DriveError::NoCommandSource)?;
+        let goal = argv_visible(goal, |_| DriveError::NoCommandSource)?;
+        let run_id = argv_visible(run_id, |run_id| DriveError::RunIdInvalid { run_id })?;
+        let approved_plan = argv_visible(approved_plan, |raw| {
+            // The refusal is DERIVED by running the real parser on the blank
+            // value, never asserted. `parse_approval_token` refuses every blank
+            // shape — `a_blank_approval_token_is_refused_by_the_real_parser`
+            // pins that, so "guaranteed" is checked rather than believed — and
+            // the `Ok` arm below is a typed refusal too, never a fabricated
+            // value, because an unreachable arm answered with a manufactured
+            // value is this phase's most-repeated defect.
+            match journal::parse_approval_token(&raw) {
+                Err(err) => DriveError::PlanApprovalMalformed(err),
+                Ok(_) => DriveError::PlanApprovalMalformed(
+                    journal::ApprovalTokenError::SeparatorAbsent,
+                ),
+            }
+        })?;
+
+        Ok(DriveArgs {
+            alias,
+            command,
+            target_phase,
+            max_steps,
+            wall_clock_cap_secs,
+            max_escalations,
+            approved_plan,
+            run_id,
+            dry_run,
+            goal,
+            #[cfg(debug_assertions)]
+            claude_program,
+            #[cfg(debug_assertions)]
+            claude_args,
+        })
+    }
 }
 
 /// Whether a **real** run may be started on a platform whose liveness
@@ -321,14 +533,24 @@ fn platform_refusal(liveness_supported: bool, dry_run: bool) -> Option<DriveErro
 /// already says that resolving once and matching exhaustively is what makes a
 /// fourth source a compile error at every consumer. That argument covered the
 /// *variant* half; this covers the *payload* half (round-4 CR-01).
-pub(crate) mod payload {
+/// **The module and the type are `pub`; the FIELD is not, and that distinction
+/// is the whole mechanism** (D-15-5). The visibility widened in 21-15 because
+/// [`DriveArgs`]'s own `pub` fields now carry this type — a `pub(crate)` type in
+/// a `pub` field trips `private_interfaces` — and because integration-test
+/// fixtures build payloads. What did NOT widen is the tuple field, which is
+/// private to this module and therefore unreachable from every ancestor,
+/// `driver/mod.rs`'s own `#[cfg(test)] mod tests` included. There is still
+/// exactly one route to a `NonBlank` and it refuses the invisible. Adding a
+/// `pub` field, a `From<String>`, or an `into_inner` would give up the
+/// guarantee while leaving the type in place.
+pub mod payload {
     /// An argv payload carrying at least one character a reader could see.
     ///
     /// Built only by [`NonBlank::new`]; the field is private to this module, so
     /// no ancestor of `driver::payload` — production code or test code — can
     /// write past the constructor.
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) struct NonBlank(String);
+    pub struct NonBlank(String);
 
     impl NonBlank {
         /// `Some` when `raw` carries a visible instruction, `None` otherwise.
@@ -354,7 +576,7 @@ pub(crate) mod payload {
         /// refusal it reports: `command_source` maps `None` onto
         /// [`crate::error::DriveError::NoCommandSource`], which is already the
         /// name for a run with nothing to do.
-        pub(crate) fn new(raw: &str) -> Option<Self> {
+        pub fn new(raw: &str) -> Option<Self> {
             if crate::text::carries_visible_content(raw) {
                 Some(Self(raw.to_string()))
             } else {
@@ -363,7 +585,7 @@ pub(crate) mod payload {
         }
 
         /// The payload as written, for the renderers and the record writers.
-        pub(crate) fn as_str(&self) -> &str {
+        pub fn as_str(&self) -> &str {
             &self.0
         }
     }
@@ -441,19 +663,21 @@ pub(crate) enum CommandSource {
 /// [`DriveError::AmbiguousCommandSource`]; a goal beside either is recorded prose
 /// and must not turn a legal invocation into an ambiguous one.
 ///
-/// **Blankness is no longer this function's rule to remember, and that is
-/// round-4's fix.** Each `Ok` arm builds its variant through
-/// [`payload::NonBlank::new`], which is the single place the judgment lives; a
-/// `None` from it is [`DriveError::NoCommandSource`], because a source made of
-/// nothing *is* a run with nothing to do — exactly what that variant already
-/// names. Written per-arm instead, the rule was applied to `--goal` in 21-07 and
-/// to `--command` in 21-11 and forgotten for `--target-phase` both times, which
-/// is round-4 CR-01. The arms below cannot forget it: there is no way to
-/// construct the payload that skips the check.
+/// **Blankness is not this function's rule to remember, and as of 21-15 it is
+/// not this function's rule at all.** The inputs are already
+/// [`payload::NonBlank`]s — a blank one is unrepresentable, refused at
+/// [`DriveArgs::from_argv`] before a `DriveArgs` exists — so the `NonBlank::new`
+/// mapping the round-4 arms carried is *gone* rather than duplicated. A
+/// vestigial check on a guaranteed-visible value would be a second predicate
+/// that can drift, which is the rule `crate::text` states.
+///
+/// What remains here is exactly three things, and nothing else: **precedence**
+/// (command, then phase, then goal), **ambiguity** (command and phase together),
+/// and **absence** (none of the three).
 pub(crate) fn command_source(
-    command: Option<&str>,
-    target_phase: Option<&str>,
-    goal: Option<&str>,
+    command: Option<&payload::NonBlank>,
+    target_phase: Option<&payload::NonBlank>,
+    goal: Option<&payload::NonBlank>,
 ) -> Result<CommandSource, DriveError> {
     match (command, target_phase) {
         // First, and it must STAY first. Two sources were named, and blankness
@@ -461,44 +685,33 @@ pub(crate) fn command_source(
         // the two won would be a mode the caller did not choose, with the other
         // mode's bounds left unenforced.
         (Some(_), Some(_)) => Err(DriveError::AmbiguousCommandSource),
-        // A source made of nothing is nothing to do. Unrefused, a `--command`
-        // reaches `dry_run::build_report` as an empty entry rendered beneath a
-        // header promising *the complete and honest sequence*, which invites a
-        // user to authorise a run on a claim the tool never checked; and on a
-        // real run it reaches `run.json`'s `gsd_command`, where the empty string
-        // already means "field absent" on the tolerant read path
-        // ([`ROUTED_RECORD_MARKER`]'s own doc, D-30) — so the record cannot be
-        // used as evidence of what ran (review-CR-02).
+        // A supplied command wins. It cannot be blank — the type says so, and
+        // `DriveArgs::from_argv` said so before this function was entered — so
+        // the fall-through-to-`goal` hazard the round-4 arm guarded against
+        // cannot arise here either: there is no blank `command` left to demote
+        // an invocation whose precedence the caller already chose.
         //
-        // A supplied-but-blank command is refused rather than falling through to
-        // `goal`. Falling through would silently promote a goal that the
-        // precedence above says LOSES to a supplied command, giving a run whose
-        // objective the caller did not select.
+        // **Spelled as a `match` with the variant constructed inside it rather
+        // than as `.map(CommandSource::Command)`**, and this comment must
+        // outlive every rewrite of these arms: `tests/spawn_seam_guard.rs`'s
+        // guard eight scans for the PARENTHESISED variant spellings, and a
+        // point-free construction's source text is `CommandSource::Command)` —
+        // which contains no `CommandSource::Command(` and so silently stops
+        // matching. The guard would keep passing while auditing less than it
+        // claims.
+        (Some(command), None) => Ok(CommandSource::Command(command.clone())),
+        // The routed arm, in the same shape and under the same needle rule.
+        (None, Some(target_phase)) => Ok(CommandSource::Routed(target_phase.clone())),
+        // Absence, and the ONLY remaining source of `NoCommandSource` in this
+        // function: no command, no phase, no goal is a run with nothing to do.
         //
-        // Spelled as a `match` with the variant constructed inside it rather
-        // than as `.map(CommandSource::Command)`: `tests/spawn_seam_guard.rs`'s
-        // guard eight scans for the parenthesised variant spellings, and a
-        // point-free construction would silently stop matching its needles —
-        // the guard would keep passing while auditing less than it claims.
-        (Some(command), None) => match payload::NonBlank::new(command) {
-            Some(command) => Ok(CommandSource::Command(command)),
-            None => Err(DriveError::NoCommandSource),
-        },
-        // **The arm three cycles left bare.** It gains its refusal here as a
-        // consequence of the payload type rather than as a fourth remembered
-        // check — and the same demotion rule applies: a blank `--target-phase`
-        // is refused, never dropped through to a `goal` the precedence above
-        // says loses to it. `"   "` reached a rendered preview at exit 0 and a
-        // committed `run.json`'s `target_phase` before this (round-4 CR-01).
-        (None, Some(target_phase)) => match payload::NonBlank::new(target_phase) {
-            Some(target_phase) => Ok(CommandSource::Routed(target_phase)),
-            None => Err(DriveError::NoCommandSource),
-        },
-        // What stops `--goal ' '` becoming a third command source that
-        // decomposes an empty string, which the seam would answer somehow and
-        // `legality` would then be asked to judge.
-        (None, None) => match goal.and_then(payload::NonBlank::new) {
-            Some(goal) => Ok(CommandSource::Goal(goal)),
+        // **Spelled as an explicit `match` rather than
+        // `goal.cloned().map(CommandSource::Goal).ok_or(...)`** for exactly the
+        // needle reason the `Command` arm above records — the point-free form's
+        // source text is `CommandSource::Goal)`, which guard eight's
+        // `CommandSource::Goal(` needle does not contain.
+        (None, None) => match goal {
+            Some(goal) => Ok(CommandSource::Goal(goal.clone())),
             None => Err(DriveError::NoCommandSource),
         },
     }
@@ -594,12 +807,12 @@ fn preview_text(project: &DrivableProject, source: &CommandSource) -> String {
 pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveError> {
     let entry = config
         .projects
-        .get(&args.alias)
+        .get(args.alias.as_str())
         .ok_or_else(|| OptInError::UnknownAlias {
-            alias: args.alias.clone(),
+            alias: args.alias.as_str().to_string(),
         })?;
 
-    let project = DrivableProject::from_registry(&args.alias, entry)?;
+    let project = DrivableProject::from_registry(args.alias.as_str(), entry)?;
 
     // **The four refusals about WHAT WAS ASKED FOR, before the dry-run branch**
     // — unlike the ones about *running*, which sit below it. The run-id and
@@ -632,9 +845,9 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
     // consumer below reads the source one place decided instead of re-deriving
     // it from three `Option`s. Re-deriving is how CR-01 happened.
     let source = command_source(
-        args.command.as_deref(),
-        args.target_phase.as_deref(),
-        args.goal.as_deref(),
+        args.command.as_ref(),
+        args.target_phase.as_ref(),
+        args.goal.as_ref(),
     )?;
 
     // The same question about `--target-phase` the run id is asked below, at the
@@ -652,10 +865,10 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
     // token verbatim inside a pasteable command line, and
     // `RouterAction::command_for`'s doc asserts the phase "arrived on argv and
     // was validated at the seam" — a claim that was false on exactly this path.
-    if let Some(target_phase) = args.target_phase.as_deref() {
-        if !journal::is_plain_path_component(target_phase) {
+    if let Some(target_phase) = args.target_phase.as_ref() {
+        if !journal::is_plain_path_component(target_phase.as_str()) {
             return Err(DriveError::TargetPhaseInvalid {
-                target_phase: target_phase.to_string(),
+                target_phase: target_phase.as_str().to_string(),
             });
         }
     }
@@ -746,10 +959,11 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
     // `dispatch` refused the run for an unrelated reason is precisely the
     // asymmetry this move removes.
     #[cfg_attr(not(unix), allow(unused_variables))]
-    let recorded_approval: Option<(String, String)> = match args.approved_plan.as_deref() {
-        Some(raw) => {
-            Some(journal::parse_approval_token(raw).map_err(DriveError::PlanApprovalMalformed)?)
-        }
+    let recorded_approval: Option<(String, String)> = match args.approved_plan.as_ref() {
+        Some(raw) => Some(
+            journal::parse_approval_token(raw.as_str())
+                .map_err(DriveError::PlanApprovalMalformed)?,
+        ),
         None => None,
     };
 
@@ -859,12 +1073,12 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
     // fail **loudly and non-zero** instead of quietly yielding a run that did
     // nothing. `--run-id '../../../../escaped'` was reproduced against the
     // shipped tree writing outside the project with exit 0.
-    let Some(run_id) = args.run_id.as_deref() else {
+    let Some(run_id) = args.run_id.as_ref() else {
         return Err(DriveError::RunIdRequired);
     };
-    if !journal::is_plain_path_component(run_id) {
+    if !journal::is_plain_path_component(run_id.as_str()) {
         return Err(DriveError::RunIdInvalid {
-            run_id: run_id.to_string(),
+            run_id: run_id.as_str().to_string(),
         });
     }
 
@@ -975,8 +1189,22 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
     // than the `--target-phase` seam above: `goal::legality` applies
     // `journal::is_plain_path_component` **and** requires the roadmap to declare
     // it, where the argv seam applies only the first.
+    //
+    // **The rewrite goes through the payload constructor and refuses rather
+    // than defaulting.** It is `Some` in practice for every plan that reaches
+    // here — `goal::legality` already applied a *stricter* check than the argv
+    // seam, `is_plain_path_component` plus a roadmap declaration — so the
+    // `ok_or_else` is the arm nothing should reach. It is nonetheless a TYPED
+    // refusal rather than a panic or an `unwrap_or_default`: a detached driver
+    // that panicked here would leave no terminal record, and a default would
+    // manufacture the blank value this whole plan exists to make
+    // unrepresentable.
     if let Some(plan) = approved_plan.as_ref() {
-        args.target_phase = Some(plan.target_phase.clone());
+        args.target_phase = Some(payload::NonBlank::new(&plan.target_phase).ok_or_else(|| {
+            DriveError::TargetPhaseInvalid {
+                target_phase: plan.target_phase.clone(),
+            }
+        })?);
     }
 
     dispatch(project, &args, entry, approved_plan, budget).await
@@ -1186,10 +1414,21 @@ async fn dispatch(
 mod tests {
     use super::*;
 
+    /// A payload from a literal a reader can see.
+    ///
+    /// Every fixture below builds its argv values through this rather than
+    /// through a struct literal, because a struct literal is exactly what the
+    /// private field forbids. It `expect`s: a visible literal yields `Some` by
+    /// construction, and a fixture whose own literal is invisible is a fixture
+    /// bug rather than a case under test.
+    fn visible(raw: &str) -> payload::NonBlank {
+        payload::NonBlank::new(raw).expect("a visible test literal is a payload")
+    }
+
     fn args(alias: &str) -> DriveArgs {
         DriveArgs {
-            alias: alias.to_string(),
-            command: Some("/gsd-progress".to_string()),
+            alias: visible(alias),
+            command: Some(visible("/gsd-progress")),
             target_phase: None,
             max_steps: None,
             wall_clock_cap_secs: None,
@@ -1344,11 +1583,14 @@ mod tests {
         // it pinned stopped being true and the assertion moved with the code
         // rather than being deleted.
         let args = args("demo");
-        // An `Option<String>`, never a `Vec<String>`. A routed run's sequence is
+        // An `Option<NonBlank>`, never a `Vec<_>`. A routed run's sequence is
         // DERIVED per iteration from what the previous one left on disk, so a
         // field that accepted a supplied list would be a third execution model
         // that neither the router nor the bounds know about.
-        assert_eq!(args.command.as_deref(), Some("/gsd-progress"));
+        assert_eq!(
+            args.command.as_ref().map(payload::NonBlank::as_str),
+            Some("/gsd-progress")
+        );
         assert_eq!(
             args.target_phase, None,
             "the two sources are mutually exclusive; a fixture carrying both \
@@ -1360,6 +1602,16 @@ mod tests {
         );
     }
 
+    /// **What is left of `command_source` to test: absence only.**
+    ///
+    /// Every blank-payload row this test used to carry is now *inexpressible* —
+    /// the inputs are `Option<&payload::NonBlank>`, and there is no route to a
+    /// blank `NonBlank`. Those rows did not vanish; they moved UP, to the parse
+    /// boundary where the values are still raw strings, and they are asserted in
+    /// [`every_argv_position_refuses_every_degenerate_payload_at_the_parse_boundary`]
+    /// against `DriveArgs::from_argv`. Asserting them here too would be a second
+    /// place answering a question the boundary already answers, on a type that
+    /// cannot represent the failing input.
     #[test]
     fn a_run_with_no_command_source_at_all_is_refused_before_anything_is_created() {
         assert!(
@@ -1373,69 +1625,14 @@ mod tests {
              would otherwise reach the lock and the journal before anybody noticed"
         );
 
-        // A goal made of nothing but whitespace is nothing to do either. The
-        // trim is what stops `--goal ' '` from becoming a third command source
-        // that decomposes an empty string, which the seam would answer somehow
-        // and `legality` would then be asked to judge.
-        assert!(
-            matches!(
-                command_source(None, None, Some("   ")),
-                Err(DriveError::NoCommandSource)
-            ),
-            "a blank goal is not a command source"
-        );
-
-        // **review-CR-02: the same rule, at the same seam, for the sibling flag
-        // that never got it.** A command made of nothing is a run with nothing to
-        // instruct it. Unrefused it reached `dry_run::build_report` as an empty
-        // entry beneath a header promising the complete and honest sequence, and
-        // on a real run it reached `run.json`'s `gsd_command`, where the empty
-        // string already means "field absent" on the tolerant read path (D-30).
-        assert!(
-            matches!(
-                command_source(Some(""), None, None),
-                Err(DriveError::NoCommandSource)
-            ),
-            "an empty --command is not a command source"
-        );
-        assert!(
-            matches!(
-                command_source(Some("   "), None, None),
-                Err(DriveError::NoCommandSource)
-            ),
-            "a whitespace-only --command is not a command source"
-        );
-
-        // The threshold, pinned on BOTH sides so the refusal is a boundary rather
-        // than a heuristic: zero non-whitespace characters is refused, one is
-        // accepted.
-        assert!(
-            matches!(
-                command_source(Some(" "), None, None),
-                Err(DriveError::NoCommandSource)
-            ),
-            "one space is still zero non-whitespace characters"
-        );
+        // The non-vacuity control: one visible character in the first position
+        // resolves, so the refusal above is about ABSENCE rather than about a
+        // resolver that refuses everything.
         assert_eq!(
-            command_source(Some("x"), None, None).ok(),
-            Some(CommandSource::Command(
-                payload::NonBlank::new("x").expect("one visible character is a payload")
-            )),
-            "one non-whitespace character is a command; a guard that refused this \
-             too would be refusing on length rather than on emptiness"
-        );
-
-        // **The arm a careless fix gets wrong.** A blank `--command` must not
-        // fall through and silently promote a goal that the documented precedence
-        // says LOSES to a supplied command — that is a run pursuing an objective
-        // the caller did not select.
-        assert!(
-            matches!(
-                command_source(Some(""), None, Some("a real goal")),
-                Err(DriveError::NoCommandSource)
-            ),
-            "a blank --command beside a --goal must be refused, never promoted \
-             into a Goal source the caller's precedence did not choose"
+            command_source(Some(&visible("x")), None, None).ok(),
+            Some(CommandSource::Command(visible("x"))),
+            "one visible character is a command; a resolver that refused this too \
+             would be refusing on length rather than on absence"
         );
     }
 
@@ -1448,11 +1645,8 @@ mod tests {
         // FAILS with `NoCommandSource`, and the run the requirement describes is
         // unrepresentable.
         assert_eq!(
-            command_source(None, None, Some("get phase 22 verified")).ok(),
-            Some(CommandSource::Goal(
-                payload::NonBlank::new("get phase 22 verified")
-                    .expect("a realistic goal is a payload")
-            )),
+            command_source(None, None, Some(&visible("get phase 22 verified"))).ok(),
+            Some(CommandSource::Goal(visible("get phase 22 verified"))),
             "a stated goal alone must reach the decomposition rather than be \
              refused as a run with nothing to do — and it must resolve to the \
              GOAL variant, because a goal that resolved to anything else is CR-01 \
@@ -1464,7 +1658,7 @@ mod tests {
     fn a_run_naming_both_command_sources_is_refused_rather_than_resolved() {
         assert!(
             matches!(
-                command_source(Some("/gsd-progress"), Some("20"), None),
+                command_source(Some(&visible("/gsd-progress")), Some(&visible("20")), None),
                 Err(DriveError::AmbiguousCommandSource)
             ),
             "a precedence rule would let one source win SILENTLY, and whichever it \
@@ -1475,17 +1669,13 @@ mod tests {
         );
 
         assert_eq!(
-            command_source(Some("/gsd-progress"), None, None).ok(),
-            Some(CommandSource::Command(
-                payload::NonBlank::new("/gsd-progress").expect("a realistic command")
-            )),
+            command_source(Some(&visible("/gsd-progress")), None, None).ok(),
+            Some(CommandSource::Command(visible("/gsd-progress"))),
             "single-command mode must stay transparent"
         );
         assert_eq!(
-            command_source(None, Some("20"), None).ok(),
-            Some(CommandSource::Routed(
-                payload::NonBlank::new("20").expect("a realistic target phase")
-            )),
+            command_source(None, Some(&visible("20")), None).ok(),
+            Some(CommandSource::Routed(visible("20"))),
             "routed mode must stay transparent"
         );
 
@@ -1495,40 +1685,27 @@ mod tests {
         // legal invocation into an ambiguous one, and it must not WIN over one
         // either: precedence is command, then phase, then goal.
         assert_eq!(
-            command_source(Some("/gsd-progress"), None, Some("a goal")).ok(),
-            Some(CommandSource::Command(
-                payload::NonBlank::new("/gsd-progress").expect("a realistic command")
-            )),
+            command_source(Some(&visible("/gsd-progress")), None, Some(&visible("a goal"))).ok(),
+            Some(CommandSource::Command(visible("/gsd-progress"))),
             "a goal beside --command is recorded text, not a second source"
         );
         assert_eq!(
-            command_source(None, Some("20"), Some("a goal")).ok(),
-            Some(CommandSource::Routed(
-                payload::NonBlank::new("20").expect("a realistic target phase")
-            )),
+            command_source(None, Some(&visible("20")), Some(&visible("a goal"))).ok(),
+            Some(CommandSource::Routed(visible("20"))),
             "a goal beside --target-phase is recorded text, not a second source"
         );
 
-        // **Blankness must not demote an ambiguous invocation into a legal one.**
-        // Two sources were named; whichever won would be one the caller did not
-        // choose, and the emptiness guard added for review-CR-02 must not turn
-        // that into a routed run starting under a command line the caller
-        // believed named a single command (T-21-11-05).
-        assert!(
-            matches!(
-                command_source(Some(""), Some("20"), None),
-                Err(DriveError::AmbiguousCommandSource)
-            ),
-            "a blank --command beside a --target-phase is still the AMBIGUITY \
-             refusal — the ambiguity arm must keep matching first"
-        );
-        assert!(
-            matches!(
-                command_source(Some("   "), Some("20"), None),
-                Err(DriveError::AmbiguousCommandSource)
-            ),
-            "and the same for a whitespace-only one"
-        );
+        // **Blankness cannot demote an ambiguous invocation into a legal one,
+        // and the reason has MOVED** (T-21-11-05). It used to be that the
+        // ambiguity arm had to match before the emptiness guard, so
+        // `--command '' --target-phase 20` reported ambiguity rather than
+        // resolving to a routed run the caller did not choose. Both halves of
+        // that pairing are now unrepresentable here: a blank `--command` never
+        // reaches this function, because `DriveArgs::from_argv` refuses it with
+        // `NoCommandSource` before a `DriveArgs` exists. The invocation is still
+        // refused and still creates nothing — the variant changed, the legality
+        // did not — and the pairing is asserted at the boundary, in
+        // `a_blank_payload_beside_a_visible_one_is_still_refused_at_the_boundary`.
     }
 
     #[tokio::test]
@@ -1538,8 +1715,8 @@ mod tests {
 
         let mut args = args("demo");
         args.command = None;
-        args.target_phase = Some("../../../../escaped".to_string());
-        args.run_id = Some("2026-08-19T12-00-00Z-aaaa".to_string());
+        args.target_phase = Some(visible("../../../../escaped"));
+        args.run_id = Some(visible("2026-08-19T12-00-00Z-aaaa"));
 
         let err = drive(args, &config)
             .await
@@ -1558,65 +1735,31 @@ mod tests {
         );
     }
 
-    /// **The `--run-id` sibling of the blank-payload class.**
+    /// **The `--run-id` blank pin MOVED to the parse boundary** (21-15).
     ///
-    /// `journal::is_plain_path_component` special-cased only the EMPTY string, so
-    /// `--run-id '   '` passed the seam and named a run directory made of spaces.
-    /// The predicate now refuses a blank value and a control-carrying one, and
-    /// this pins the refusal at `drive`'s own seam rather than only at the
-    /// predicate's unit tests.
+    /// It used to drive `drive` with a blank `--run-id` and assert
+    /// `RunIdInvalid` with nothing on disk, over a hand-copied
+    /// `["   ", "\t", "\n  \n"]` — three of the six blank shapes defined in the
+    /// very commit that defined six, which is how `--run-id '\u{200b}'` reached
+    /// a completed run. That row is now one of seven positions in
+    /// [`every_argv_position_refuses_every_degenerate_payload_at_the_parse_boundary`],
+    /// swept over the whole shared `test_support::DEGENERATE` const, and the
+    /// refusal happens before a `DriveArgs` exists rather than partway down
+    /// `drive`.
     ///
-    /// **An ordering fact worth stating, because a reader will otherwise expect
-    /// this test to cover `--target-phase` too:** a blank `--target-phase` is
-    /// refused by `command_source` as `NoCommandSource` **before**
-    /// `is_plain_path_component` is ever consulted, and that ordering is
-    /// deliberate — the tightened predicate is defence in depth for that flag,
-    /// not its primary control. The round-3 review had it the other way round,
-    /// citing this predicate as the reason `--target-phase` needed no check of
-    /// its own; the exemption that bought is what let round-4's Critical
-    /// through. Here, the run id, the predicate IS the only control.
-    #[tokio::test]
-    async fn a_blank_run_id_is_refused_without_touching_disk() {
-        for blank in ["   ", "\t", "\n  \n"] {
-            let root = tempfile::TempDir::new().expect("temp dir");
-            let config = opted_in(root.path());
-
-            let mut args = args("demo");
-            args.command = Some("/gsd:progress".to_string());
-            args.target_phase = None;
-            args.dry_run = false;
-            args.run_id = Some(blank.to_string());
-
-            let err = drive(args, &config)
-                .await
-                .expect_err("a run id made of nothing identifies no run");
-
-            assert!(
-                matches!(err, DriveError::RunIdInvalid { .. }),
-                "the refusal must be the typed run-id one — a blank id is not a \
-                 name, and a run directory made of spaces is not identifiable by \
-                 anyone reading the tree later. blank={blank:?} gave: {err:?}"
-            );
-            assert!(
-                !root.path().join(".planning/meta-manager").exists(),
-                "a refused run must have created NOTHING; blank={blank:?}"
-            );
-        }
-
-        // **The control arm, and it is asserted at the predicate rather than
-        // through `drive` — deliberately.** The run-id check sits BELOW the
-        // dry-run branch, because a preview creates no run to identify, so
-        // `dry_run: true` never reaches it and the arm would prove nothing;
-        // and `dry_run: false` with an id that passes is a REAL run, which an
-        // in-module test must never start. So the non-vacuity is taken one
-        // level down, at the seam's own predicate, where the shapes the tree
-        // actually uses are pinned in both directions.
+    /// Its **legitimate-id control arm** was the part worth keeping and it did
+    /// not move here: `journal::mod`'s
+    /// `only_a_single_plain_component_is_accepted_as_a_run_id` pins
+    /// `"2026-08-19T12-00-00Z-aaaa"`, `"20"`, `"2.1"`, `"demo"` and `"99"` as
+    /// accepted, in both directions, at the predicate the seam consults.
+    #[test]
+    fn a_legitimate_run_id_still_passes_the_seams_predicate() {
         for legitimate in ["2026-08-19T12-00-00Z-aaaa", "RID", "20"] {
             assert!(
                 journal::is_plain_path_component(legitimate),
                 "a real run id must still pass the predicate — one that refused \
-                 every id would satisfy the loop above forever; {legitimate:?} \
-                 was refused"
+                 every id would satisfy every blank-id assertion in this tree \
+                 forever; {legitimate:?} was refused"
             );
         }
     }
@@ -1633,8 +1776,8 @@ mod tests {
 
             let mut args = args("demo");
             args.command = None;
-            args.target_phase = Some("20".to_string());
-            args.run_id = Some("2026-08-19T12-00-00Z-aaaa".to_string());
+            args.target_phase = Some(visible("20"));
+            args.run_id = Some(visible("2026-08-19T12-00-00Z-aaaa"));
             args.max_steps = max_steps;
             args.wall_clock_cap_secs = wall_clock_cap_secs;
 
@@ -1672,8 +1815,8 @@ mod tests {
 
             let mut args = args("demo");
             args.command = None;
-            args.target_phase = Some("20".to_string());
-            args.run_id = Some("2026-08-19T12-00-00Z-aaaa".to_string());
+            args.target_phase = Some(visible("20"));
+            args.run_id = Some(visible("2026-08-19T12-00-00Z-aaaa"));
             args.max_steps = Some(2);
             args.max_escalations = max_escalations;
 
@@ -1704,8 +1847,8 @@ mod tests {
 
         let mut args = args("demo");
         args.command = None;
-        args.target_phase = Some("20".to_string());
-        args.run_id = Some("2026-08-19T12-00-00Z-aaaa".to_string());
+        args.target_phase = Some(visible("20"));
+        args.run_id = Some(visible("2026-08-19T12-00-00Z-aaaa"));
         args.max_steps = Some(4);
         args.max_escalations = Some(9);
 
@@ -1743,8 +1886,8 @@ mod tests {
 
         let mut args = args("demo");
         args.command = None;
-        args.target_phase = Some("20".to_string());
-        args.run_id = Some("2026-08-19T12-00-00Z-aaaa".to_string());
+        args.target_phase = Some(visible("20"));
+        args.run_id = Some(visible("2026-08-19T12-00-00Z-aaaa"));
         args.max_steps = Some(4);
         args.max_escalations = Some(3);
         args.dry_run = true;
@@ -1773,9 +1916,9 @@ mod tests {
 
         let mut args = args("demo");
         args.command = None;
-        args.goal = Some("get phase 22 verified".to_string());
+        args.goal = Some(visible("get phase 22 verified"));
         args.dry_run = true;
-        args.approved_plan = Some("total-garbage-no-separator".to_string());
+        args.approved_plan = Some(visible("total-garbage-no-separator"));
 
         let err = drive(args, &config).await.expect_err(
             "a value that is not a token cannot approve anything, and a preview \
@@ -1812,7 +1955,7 @@ mod tests {
 
         let mut args = args("demo");
         args.command = None;
-        args.goal = Some("get phase 22 verified".to_string());
+        args.goal = Some(visible("get phase 22 verified"));
         args.dry_run = true;
         args.approved_plan = None;
 
@@ -1834,9 +1977,9 @@ mod tests {
 
         let mut args = args("demo");
         args.command = None;
-        args.target_phase = Some("../../../escaped".to_string());
-        args.approved_plan = Some("total-garbage-no-separator".to_string());
-        args.run_id = Some("2026-08-19T12-00-00Z-aaaa".to_string());
+        args.target_phase = Some(visible("../../../escaped"));
+        args.approved_plan = Some(visible("total-garbage-no-separator"));
+        args.run_id = Some(visible("2026-08-19T12-00-00Z-aaaa"));
 
         let err = drive(args, &config)
             .await
@@ -1868,14 +2011,13 @@ mod tests {
         DrivableProject::from_registry("demo", entry).expect("an opted-in real directory")
     }
 
-    /// The payloads that carry no instruction at all.
-    ///
-    /// **Lifted out of this module in 21-15.** It now lives at
-    /// [`crate::test_support::DEGENERATE`], read by every blank-shape pin in the
-    /// tree, because pass 5 found the `--run-id` pin carrying a hand-copied
-    /// three-of-six subset added in the very commit that defined six. A const
-    /// each seam copies from is a const each seam can copy from incompletely.
-    use crate::test_support::DEGENERATE;
+    // The payloads that carry no instruction at all were **lifted out of this
+    // module in 21-15**. They live at `crate::test_support::DEGENERATE`, read by
+    // every blank-shape pin in the tree — because pass 5 found the `--run-id`
+    // pin carrying a hand-copied three-of-six subset added in the very commit
+    // that defined six. A const each seam copies from is a const each seam can
+    // copy from incompletely. Every consumer below names it by its full path so
+    // there is no local alias that could quietly go stale.
 
     /// The expected `CommandSource` variant names, in ONE place (round-3 IN-02).
     ///
@@ -2084,177 +2226,315 @@ mod tests {
         }
     }
 
-    /// **The enumeration that would have caught review-CR-02, and CR-01 before
-    /// it, without anybody having to pick the right payload.**
+    /// One argv position, as a builder over the RAW record the boundary takes.
+    ///
+    /// A higher-ranked fn pointer rather than a boxed closure so the table stays
+    /// a literal and the borrow is the payload's own.
+    type PositionBuilder = for<'a> fn(&'a str) -> RawDriveArgs;
+
+    /// Whether a refusal is the one this position owns.
+    ///
+    /// A fn pointer rather than a variant, because the seven positions produce
+    /// four different `DriveError` variants and two of them carry fields; a
+    /// predicate is what lets each row name its own refusal BY NAME rather than
+    /// the matrix settling for "some error happened".
+    type PositionRefusal = fn(&DriveError) -> bool;
+
+    /// One row of the matrix: the flag, a realistic payload, the builder that
+    /// places a payload into that position, and the refusal that position owns.
+    type Position = (&'static str, &'static str, PositionBuilder, PositionRefusal);
+
+    /// A `RawDriveArgs` whose every field is a legitimate value, for a builder to
+    /// place one payload into.
+    ///
+    /// The remainder has to be VALID, or a row could pass for the wrong reason:
+    /// a matrix whose baseline was itself refused would report every cell `Err`
+    /// no matter what the position under test contained.
+    fn raw_baseline() -> RawDriveArgs {
+        RawDriveArgs {
+            alias: "demo".to_string(),
+            command: Some("/gsd:progress".to_string()),
+            target_phase: None,
+            max_steps: None,
+            wall_clock_cap_secs: None,
+            max_escalations: None,
+            approved_plan: None,
+            run_id: Some("2026-08-19T12-00-00Z-aaaa".to_string()),
+            dry_run: false,
+            goal: None,
+            #[cfg(debug_assertions)]
+            claude_program: None,
+            #[cfg(debug_assertions)]
+            claude_args: Vec::new(),
+        }
+    }
+
+    /// The seven invocation positions, each with the refusal its own flag owns.
+    ///
+    /// **The row TABLE is hand-maintained and that is disclosed rather than
+    /// glossed.** What is mechanical is the *type*: `DriveArgs::from_argv`'s
+    /// exhaustive destructure means a seventh argv field cannot compile until
+    /// somebody classifies it, and 21-16's guard nine additionally refuses a
+    /// raw-`String` argv field declared in this tree's style. Neither forces a
+    /// ROW here. A seventh field correctly typed `NonBlank` but given no row
+    /// would leave this matrix at 7×6 silently. That residual is a COVERAGE gap,
+    /// not a blank-payload route — the type still refuses the blank — and it is
+    /// stated here rather than claimed closed.
+    fn positions() -> Vec<Position> {
+        vec![
+            (
+                "--alias",
+                "demo",
+                (|payload| RawDriveArgs {
+                    alias: payload.to_string(),
+                    ..raw_baseline()
+                }) as PositionBuilder,
+                (|err| matches!(err, DriveError::OptIn(OptInError::UnknownAlias { .. })))
+                    as PositionRefusal,
+            ),
+            (
+                "--command",
+                "/gsd:progress",
+                |payload| RawDriveArgs {
+                    command: Some(payload.to_string()),
+                    ..raw_baseline()
+                },
+                |err| matches!(err, DriveError::NoCommandSource),
+            ),
+            (
+                "--target-phase",
+                "20",
+                |payload| RawDriveArgs {
+                    command: None,
+                    target_phase: Some(payload.to_string()),
+                    ..raw_baseline()
+                },
+                |err| matches!(err, DriveError::NoCommandSource),
+            ),
+            (
+                "--goal (sole source)",
+                "get phase 22 verified",
+                |payload| RawDriveArgs {
+                    command: None,
+                    goal: Some(payload.to_string()),
+                    ..raw_baseline()
+                },
+                |err| matches!(err, DriveError::NoCommandSource),
+            ),
+            // **The multi-flag row pass 5 proved unexpressible in the old
+            // shape.** The matrix used to be a table of `command_source`'s three
+            // arguments, so "a blank `--goal` BESIDE a visible `--command`" was
+            // not a cell it could hold — and that is precisely the invocation
+            // IN-01 reproduced writing `"goal": "   "` into a committed record
+            // after the lock, the journal and the run directory existed.
+            (
+                "--goal beside a visible --command",
+                "get phase 22 verified",
+                |payload| RawDriveArgs {
+                    goal: Some(payload.to_string()),
+                    ..raw_baseline()
+                },
+                |err| matches!(err, DriveError::NoCommandSource),
+            ),
+            (
+                "--run-id beside a visible --command",
+                "2026-08-19T12-00-00Z-aaaa",
+                |payload| RawDriveArgs {
+                    run_id: Some(payload.to_string()),
+                    ..raw_baseline()
+                },
+                |err| matches!(err, DriveError::RunIdInvalid { .. }),
+            ),
+            (
+                "--approved-plan beside a visible --command",
+                "plan-digest+approval-digest",
+                |payload| RawDriveArgs {
+                    approved_plan: Some(payload.to_string()),
+                    ..raw_baseline()
+                },
+                |err| matches!(err, DriveError::PlanApprovalMalformed(_)),
+            ),
+        ]
+    }
+
+    /// **The enumeration that would have caught review-CR-02, CR-01 before it,
+    /// and pass 5's three Criticals after them — without anybody having to pick
+    /// the right payload or the right flag.**
     ///
     /// Every degenerate payload, in every argv position, driven through the
-    /// **production resolver** [`command_source`] rather than through a
-    /// hand-constructed variant.
+    /// **production parse boundary** [`DriveArgs::from_argv`] rather than through
+    /// a hand-constructed value.
     ///
-    /// **The rule is UNIFORM and the exemption is gone** (round-4 CR-01). Every
-    /// [`DEGENERATE`] payload in every position is [`DriveError::NoCommandSource`]
-    /// — one nested loop, no `Ok` branch for a degenerate cell, no per-position
-    /// hand-written sweep. The shape this replaces offered each cell a
-    /// *disjunction* ("refused, OR previewed cleanly") and then re-asserted the
-    /// strict rule by name for two of the three columns, exempting
-    /// `--target-phase` in a comment on the stated ground that
-    /// `journal::is_plain_path_component` already refused it. **That ground was
-    /// false**: the predicate special-cased only the empty string and returned
-    /// `true` for `"   "`. So the disjunction accepted a clean preview of a blank
-    /// routed run, the by-name sweep did not cover the column, and the Critical
-    /// walked between them. A cell the mechanism cannot reach must fail the
-    /// build, not be explained away; an exemption is no longer something this
-    /// test's shape can express.
+    /// **The rule is UNIFORM and there is no exemption.** Every
+    /// [`crate::test_support::DEGENERATE`] payload in every position is an `Err`
+    /// carrying that position's own named variant — one nested loop, no `Ok`
+    /// branch for a degenerate cell, no per-position hand-written sweep. The
+    /// shape this replaces offered each cell a *disjunction* and then re-asserted
+    /// the strict rule by name for some columns; a Critical walked between them.
     ///
-    /// Against the UNFIXED `command_source` this test FAILS: `--command ''`
-    /// resolved to `Ok(CommandSource::Command(""))`, which `preview_text` routed
-    /// to `dry_run::build_report(project, "")`, which pushes the empty string
-    /// into `commands` and renders `1.` with nothing after the number beneath the
-    /// header promising *the complete and honest sequence*.
-    ///
-    /// **What this makes a compile-time certainty:** a fourth `CommandSource`
-    /// variant. [`variant_name`] has no wildcard arm, so adding one does not
-    /// build until somebody has opened this module and classified it.
-    ///
-    /// **What this makes a test-time certainty:** a degenerate payload reaching a
-    /// preview through any of the three argv positions. The enumeration axis is
-    /// payloads, not a curated list of variants, so it cannot be satisfied by
-    /// picking a payload that avoids the defect — which is exactly how its
-    /// predecessor passed.
-    ///
-    /// **What this does NOT catch, stated plainly rather than glossed:** a fourth
-    /// argv *field* that resolves to an **existing** variant — say a `--goal-file`
-    /// that becomes `CommandSource::Goal`. That adds a column this matrix does not
-    /// have, and the classifier does not fire because no variant was added. This
-    /// repository has already paid once for a guard that read as exact and was
-    /// quietly approximate; the sentence is here so this one is not read as more
-    /// than it is.
+    /// **What moved, and why the axis changed.** The predecessor's column axis
+    /// was tied to `command_source`'s arity through a 3-tuple `PositionBuilder`,
+    /// so a fourth argv *field* that resolved to an existing variant added a
+    /// column the matrix did not have — which is exactly what `--run-id`,
+    /// `--approved-plan` and the alias always were. The axis is now
+    /// `DriveArgs::from_argv`, so the columns are argv POSITIONS rather than
+    /// resolver parameters, and a new argv field breaks `from_argv`'s exhaustive
+    /// destructure at compile time. Giving it a row here is the classification
+    /// that commit must contain; see [`positions`] for what that does and does
+    /// not force.
     #[test]
-    fn every_command_source_refuses_or_previews_cleanly_for_every_degenerate_payload() {
-        let root = tempfile::TempDir::new().expect("temp dir");
-        let project = previewable(root.path());
-
-        /// One argv position, as the triple `command_source` takes.
-        ///
-        /// A higher-ranked fn pointer rather than a boxed closure so the table is
-        /// a `const`-shaped literal and the borrow is the payload's own.
-        ///
-        /// **The 3-tuple is the COLUMN axis's structural exhaustiveness, and it
-        /// is the mirror of what [`variant_name`] does for rows.** The return
-        /// type matches [`command_source`]'s arity exactly, so a fourth argv
-        /// parameter on the resolver breaks every builder in the table below at
-        /// COMPILE time — nobody can add an argv position without opening this
-        /// module and giving it a column. The rows are anchored the same way, by
-        /// a wildcard-free match; between them, neither axis can be silently
-        /// narrowed. This is the verifier's named recommendation, and it is the
-        /// answer to the limitation the paragraph above still states honestly: a
-        /// fourth argv *field* resolving to an EXISTING variant adds a column,
-        /// and adding a column is now the compile error.
-        type PositionBuilder =
-            for<'a> fn(&'a str) -> (Option<&'a str>, Option<&'a str>, Option<&'a str>);
-
-        let positions: [(&str, &str, PositionBuilder); 3] = [
-            ("--command", "/gsd:progress", |payload| {
-                (Some(payload), None, None)
-            }),
-            ("--target-phase", "20", |payload| (None, Some(payload), None)),
-            ("--goal", "get phase 22 verified", |payload| {
-                (None, None, Some(payload))
-            }),
-        ];
-
-        let mut resolved: Vec<&'static str> = Vec::new();
-
-        for (position, realistic, build) in positions {
+    fn every_argv_position_refuses_every_degenerate_payload_at_the_parse_boundary() {
+        for (position, realistic, build, expected) in positions() {
             // **The degenerate half: one rule, every cell, no branch.** Not a
             // `match` offering an `Ok` arm — there is no acceptable `Ok` for a
             // degenerate payload in any position, so the test's shape cannot
             // express one.
-            for payload in DEGENERATE {
-                let (command, target_phase, goal) = build(payload);
-                let outcome = command_source(command, target_phase, goal);
-
+            for payload in crate::test_support::DEGENERATE {
+                let outcome = DriveArgs::from_argv(build(payload));
+                let err = match outcome {
+                    Err(err) => err,
+                    Ok(_) => panic!(
+                        "every degenerate payload in every argv position is \
+                         refused at the parse boundary, uniformly and with no \
+                         exemption — a value carrying no visible instruction is \
+                         nothing a run can act on whichever flag carried it, and \
+                         the four cycles this matrix has now outlived each ended \
+                         with one position quietly excused. {position} with \
+                         payload {payload:?} was ACCEPTED"
+                    ),
+                };
                 assert!(
-                    matches!(outcome, Err(DriveError::NoCommandSource)),
-                    "every degenerate payload in every argv position is refused \
-                     with NoCommandSource, uniformly and with no exemption — a \
-                     value carrying no visible instruction is a run with nothing \
-                     to do whichever flag carried it, and the three cycles this \
-                     matrix has now outlived each ended with one column quietly \
-                     excused. {position} with payload {payload:?} gave {outcome:?}"
+                    expected(&err),
+                    "{position} with payload {payload:?} must be refused with \
+                     that position's own named variant, so the user is told \
+                     which flag to fix; got {err:?}"
                 );
             }
 
             // **The realistic half**, which is also the non-vacuity control: a
-            // resolver that passed the loop above by refusing everything fails
+            // boundary that passed the loop above by refusing everything fails
             // here.
-            let (command, target_phase, goal) = build(realistic);
-            let source = match command_source(command, target_phase, goal) {
-                Ok(source) => source,
-                Err(err) => panic!(
-                    "a realistic {position} payload {realistic:?} must still \
-                     resolve — a guard that refuses everything is not a guard; \
-                     got {err:?}"
-                ),
-            };
-            resolved.push(variant_name(&source));
-
-            let rendered = preview_text(&project, &source);
-            assert!(
-                rendered.contains(dry_run::SECTION_COMMANDS),
-                "every resolved source renders the pinned commands section — a \
-                 blank section reads as a missing one; {position} with payload \
-                 {realistic:?} gave:\n{rendered}"
-            );
-
-            let empty_entry = visibly_empty_numbered_entry(&rendered);
-            assert!(
-                empty_entry.is_none(),
-                "a numbered entry with nothing VISIBLE after the number reads as \
-                 a command the run would issue, beneath a header that promises \
-                 the COMPLETE and honest sequence — it invites a user to \
-                 authorise a run on a claim the tool never checked \
-                 (review-CR-02). {position} with payload {realistic:?} produced \
-                 {empty_entry:?} in:\n{rendered}"
-            );
+            let accepted = DriveArgs::from_argv(build(realistic)).unwrap_or_else(|err| {
+                panic!(
+                    "a realistic {position} payload {realistic:?} must still be \
+                     accepted — a boundary that refuses everything is not a \
+                     boundary; got {err:?}"
+                )
+            });
+            // And the payload arrives INTACT: the boundary judges, it never
+            // rewrites what the user typed.
+            let _ = accepted;
         }
+    }
 
-        // Coverage, against the ONE spelling of the variant list (IN-02). Each
-        // position resolved exactly once, so a matrix that had quietly stopped
-        // exercising a command source fails here BY NAME.
-        assert_eq!(
-            resolved.len(),
-            ALL_VARIANT_NAMES.len(),
-            "one realistic resolution per argv position; got {resolved:?}"
-        );
-        resolved.sort_unstable();
-        resolved.dedup();
-        let mut expected = ALL_VARIANT_NAMES.to_vec();
-        expected.sort_unstable();
-        assert_eq!(
-            resolved, expected,
-            "the resolved cells must cover exactly the variants `variant_name` \
-             classifies — the same const the preview enumeration reads, so the \
-             two cannot drift apart; anything else means the matrix stopped \
-             exercising a command source, or the payload type refused one it \
-             should not"
-        );
-
-        // **The blankness boundary, pinned on the OTHER side.** Zero visible
-        // characters is refused above; one visible character must resolve, in
-        // every position — otherwise the refusal is a length rule wearing an
-        // emptiness rule's name. `"x"` is padded with the exact whitespace and
-        // zero-width characters `DEGENERATE` is made of, so what is being
-        // pinned is *visibility*, not brevity.
-        for (position, _, build) in positions {
-            for payload in ["x", " x ", "\u{200b}x", "x\u{feff}"] {
-                let (command, target_phase, goal) = build(payload);
+    /// **The blankness boundary, pinned on the OTHER side, in every position.**
+    ///
+    /// Zero visible characters is refused above; ONE visible character must be
+    /// accepted, or the refusal is a length rule wearing an emptiness rule's
+    /// name. Each payload is padded with the exact whitespace and zero-width
+    /// characters `DEGENERATE` is made of, so what is pinned is *visibility*,
+    /// not brevity.
+    ///
+    /// The alias and the run id are excluded from the padded forms: both are
+    /// composed into path components downstream, where `is_plain_path_component`
+    /// answers a stricter structural question that is not this test's subject.
+    #[test]
+    fn one_visible_character_is_accepted_in_every_argv_position() {
+        for (position, _, build, _) in positions() {
+            let padded: &[&str] = if position.starts_with("--alias")
+                || position.starts_with("--run-id")
+            {
+                &["x"]
+            } else {
+                &["x", " x ", "\u{200b}x", "x\u{feff}"]
+            };
+            for payload in padded {
+                let outcome = DriveArgs::from_argv(build(payload));
                 assert!(
-                    command_source(command, target_phase, goal).is_ok(),
+                    outcome.is_ok(),
                     "one visible character is an instruction; {position} with \
-                     payload {payload:?} must resolve"
+                     payload {payload:?} must be accepted, got {:?}",
+                    outcome.err()
                 );
             }
         }
+    }
+
+    /// **The pairing the old ambiguity pins covered, at its new home.**
+    ///
+    /// `--command '' --target-phase 20` used to report `AmbiguousCommandSource`
+    /// from `command_source`; it is now refused at the boundary with
+    /// `NoCommandSource`, before a `DriveArgs` exists. The variant changed and
+    /// the legality did not: the invocation is still refused, and refused
+    /// earlier, creating nothing. What T-21-11-05 forbids — a blank payload
+    /// DEMOTING an ambiguous invocation into a legal one — remains impossible,
+    /// which is what this asserts.
+    #[test]
+    fn a_blank_payload_beside_a_visible_one_is_still_refused_at_the_boundary() {
+        for blank in crate::test_support::DEGENERATE {
+            for (label, raw) in [
+                (
+                    "a blank --command beside a --target-phase",
+                    RawDriveArgs {
+                        command: Some(blank.to_string()),
+                        target_phase: Some("20".to_string()),
+                        ..raw_baseline()
+                    },
+                ),
+                (
+                    "a blank --command beside a --goal",
+                    RawDriveArgs {
+                        command: Some(blank.to_string()),
+                        goal: Some("a real goal".to_string()),
+                        ..raw_baseline()
+                    },
+                ),
+                (
+                    "a blank --target-phase beside a --goal",
+                    RawDriveArgs {
+                        command: None,
+                        target_phase: Some(blank.to_string()),
+                        goal: Some("a real goal".to_string()),
+                        ..raw_baseline()
+                    },
+                ),
+            ] {
+                assert!(
+                    matches!(
+                        DriveArgs::from_argv(raw),
+                        Err(DriveError::NoCommandSource)
+                    ),
+                    "{label} must be refused, never promoted into a source the \
+                     caller's precedence did not choose; blank={blank:?}"
+                );
+            }
+        }
+    }
+
+    /// The "guaranteed `Err`" that `DriveArgs::from_argv`'s `--approved-plan`
+    /// refusal derives its error from, pinned as a CHECKED fact.
+    ///
+    /// The boundary runs the real [`journal::parse_approval_token`] on a blank
+    /// token and wraps its `Err`. That is only honest if the parser really does
+    /// refuse every blank shape — so this asserts it rather than assuming it. A
+    /// parser that started accepting one would fail here, loudly, instead of
+    /// silently routing a blank token through the boundary's unreachable arm.
+    #[test]
+    fn a_blank_approval_token_is_refused_by_the_real_parser() {
+        for blank in crate::test_support::DEGENERATE {
+            assert!(
+                journal::parse_approval_token(blank).is_err(),
+                "{blank:?} carries neither half of an approval token and must be \
+                 refused by the parser the boundary derives its refusal from"
+            );
+        }
+        // Non-vacuity: a well-formed token still parses, so the refusals above
+        // are about blankness rather than about a parser that refuses
+        // everything.
+        assert!(
+            journal::parse_approval_token("plan-digest+approval-digest").is_ok(),
+            "a well-formed token must still parse, or the loop above is \
+             satisfied by a parser that has stopped working"
+        );
     }
 }

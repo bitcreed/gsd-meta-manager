@@ -33,6 +33,21 @@ use gsd_meta_manager::error::DriveError;
 use gsd_meta_manager::journal::{self, reader, JournalEvent, JournalRun, RunPaths, RunRecord};
 use tempfile::TempDir;
 
+/// A visible argv payload for the fixtures below.
+///
+/// `DriveArgs`'s argv-derived fields are `payload::NonBlank`, whose field is
+/// private: there is exactly one route in and it refuses a value carrying
+/// nothing a reader could see. It `expect`s rather than returning the
+/// constructor's `Option` directly, so a fixture whose own literal turned out to
+/// be invisible fails loudly here instead of silently becoming an ABSENT flag —
+/// which would quietly convert a test of "blank is refused" into a test of
+/// "nothing was supplied".
+fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
+    gsd_meta_manager::driver::payload::NonBlank::new(raw)
+        .expect("a visible test literal is a payload")
+}
+
+
 /// The binary under test, resolved by cargo for this integration target.
 const BIN: &str = env!("CARGO_BIN_EXE_gsd-meta-manager");
 
@@ -427,14 +442,14 @@ fn an_alias_that_can_have_no_envelope_is_refused_by_the_ordered_chain() {
     );
 
     let args = DriveArgs {
-        alias: "../escaped".to_string(),
-        command: Some("/gsd-progress".to_string()),
+        alias: nonblank("../escaped"),
+        command: Some(nonblank("/gsd-progress")),
         target_phase: None,
         max_steps: None,
         wall_clock_cap_secs: None,
         max_escalations: None,
         approved_plan: None,
-        run_id: Some("hostile1".to_string()),
+        run_id: Some(nonblank("hostile1")),
         dry_run: false,
         goal: None,
         #[cfg(debug_assertions)]

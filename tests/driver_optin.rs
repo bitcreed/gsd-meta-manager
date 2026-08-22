@@ -34,6 +34,21 @@ use gsd_meta_manager::registry;
 use gsd_meta_manager::state_reader::git_ops;
 use tempfile::TempDir;
 
+/// A visible argv payload for the fixtures below.
+///
+/// `DriveArgs`'s argv-derived fields are `payload::NonBlank`, whose field is
+/// private: there is exactly one route in and it refuses a value carrying
+/// nothing a reader could see. It `expect`s rather than returning the
+/// constructor's `Option` directly, so a fixture whose own literal turned out to
+/// be invisible fails loudly here instead of silently becoming an ABSENT flag —
+/// which would quietly convert a test of "blank is refused" into a test of
+/// "nothing was supplied".
+fn nonblank(raw: &str) -> gsd_meta_manager::driver::payload::NonBlank {
+    gsd_meta_manager::driver::payload::NonBlank::new(raw)
+        .expect("a visible test literal is a payload")
+}
+
+
 /// The stand-in that records its own `$PWD` before emitting a single stream
 /// byte. Checked in by plan 17-01 for exactly this test.
 const FAKE_CWD: &str = concat!(
@@ -234,14 +249,14 @@ fn config_for(a: &Path, b: &Path, opted_in: &str) -> Config {
 /// Drive arguments pointed at the cwd-recording stand-in.
 fn drive_args(alias: &str, sentinel: &Path) -> DriveArgs {
     DriveArgs {
-        alias: alias.to_string(),
-        command: Some("/gsd-progress".to_string()),
+        alias: nonblank(alias),
+        command: Some(nonblank("/gsd-progress")),
         target_phase: None,
         max_steps: None,
         wall_clock_cap_secs: None,
         max_escalations: None,
         approved_plan: None,
-        run_id: Some(RUN_ID.to_string()),
+        run_id: Some(nonblank(RUN_ID)),
         dry_run: false,
         goal: None,
         claude_program: Some(FAKE_CWD.into()),

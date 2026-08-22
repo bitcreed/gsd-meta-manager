@@ -804,7 +804,17 @@ fn make_run_record(
 ) -> RunRecord {
     RunRecord {
         run_id,
-        goal: args.goal.clone().unwrap_or_default(),
+        // `""` now provably means ABSENT (D-30), because a supplied-but-blank
+        // goal cannot reach this line: the field is `Option<NonBlank>` and
+        // `DriveArgs::from_argv` refused the blank before a `DriveArgs` existed.
+        // This used to be `args.goal.clone().unwrap_or_default()` over an
+        // `Option<String>`, which wrote a blank goal verbatim — pass 5
+        // reproduced `--goal '   '` persisting into a committed record (IN-01).
+        goal: args
+            .goal
+            .as_ref()
+            .map(|goal| goal.as_str().to_owned())
+            .unwrap_or_default(),
         // The approval, recorded at write ONE — before any agent is spawned,
         // which is what makes it evidence that the approval preceded the work
         // rather than a note added afterwards.
@@ -823,7 +833,12 @@ fn make_run_record(
         gsd_command: recorded_command(source),
         // The routed run's identity, in a field whose type says what it is
         // rather than smuggled into one whose name says command.
-        target_phase: args.target_phase.clone(),
+        // Same shape, same guarantee: `None` is absent, and a `Some` carries
+        // visible content by construction.
+        target_phase: args
+            .target_phase
+            .as_ref()
+            .map(|phase| phase.as_str().to_owned()),
         // **The resolved caps, never the constants.** This is the whole of what
         // the field is for: a reader answering "what was this run allowed to
         // do?" must not have to work out which binary produced the record and
@@ -1997,10 +2012,16 @@ impl GoalDecomposition {
         if args.command.is_some() || args.target_phase.is_some() {
             return None;
         }
-        let goal = args.goal.as_deref()?.trim();
-        if goal.is_empty() {
-            return None;
-        }
+        // **The `is_empty` branch this used to carry is DELETED.** It guarded a
+        // state the field's type now makes unrepresentable: `args.goal` is an
+        // `Option<NonBlank>`, so a `Some` carries visible content by
+        // construction and a blank one was refused at
+        // `DriveArgs::from_argv` before a `DriveArgs` existed. A vestigial check
+        // on a guaranteed-visible value would be a second predicate that can
+        // drift from the one in `crate::text` — the exact shape of the defect
+        // this round closes. The trim stays: it shapes the goal handed to the
+        // seam, it does not decide legality.
+        let goal = args.goal.as_ref()?.as_str().trim();
         Some(Self {
             goal: goal.to_string(),
         })
@@ -2419,9 +2440,9 @@ pub async fn execute_run(
     // options here. Re-deriving is how CR-01 happened, and a second derivation
     // is a second thing that can disagree about which source won.
     let argv_source = command_source(
-        args.command.as_deref(),
-        args.target_phase.as_deref(),
-        args.goal.as_deref(),
+        args.command.as_ref(),
+        args.target_phase.as_ref(),
+        args.goal.as_ref(),
     )?;
     let source = iteration_source(&argv_source)?;
 
@@ -2442,7 +2463,11 @@ pub async fn execute_run(
     //
     // It is read **before** the envelope is established rather than after, so a
     // run that has no id costs no generated file: the cheaper refusal goes first.
-    let run_id = args.run_id.clone().ok_or(DriveError::RunIdRequired)?;
+    let run_id = args
+        .run_id
+        .as_ref()
+        .map(|id| id.as_str().to_string())
+        .ok_or(DriveError::RunIdRequired)?;
 
     // **The envelope, established once, before the executor is constructed.**
     //
@@ -3629,16 +3654,25 @@ mod tests {
     use crate::driver::liveness::process_group as kernel_process_group;
 
     /// A `DriveArgs` carrying nothing this module's own assertions vary.
+    /// A payload from a literal a reader can see.
+    ///
+    /// `expect`s rather than returning the constructor's `Option`, so a fixture
+    /// whose own literal turned out to be invisible fails loudly instead of
+    /// silently becoming an ABSENT flag.
+    fn visible(raw: &str) -> crate::driver::payload::NonBlank {
+        crate::driver::payload::NonBlank::new(raw).expect("a visible test literal is a payload")
+    }
+
     fn args() -> DriveArgs {
         DriveArgs {
-            alias: "demo".to_string(),
-            command: Some("/gsd-progress".to_string()),
+            alias: visible("demo"),
+            command: Some(visible("/gsd-progress")),
             target_phase: None,
             max_steps: None,
             wall_clock_cap_secs: None,
             max_escalations: None,
             approved_plan: None,
-            run_id: Some("2026-07-29T12-00-00Z-aaaa".to_string()),
+            run_id: Some(visible("2026-07-29T12-00-00Z-aaaa")),
             dry_run: false,
             goal: None,
             #[cfg(debug_assertions)]
