@@ -41,8 +41,23 @@ async fn main() -> anyhow::Result<()> {
                     .unwrap_or("unnamed")
                     .to_string()
             });
+            // The argv-to-identity conversion, before any function that could
+            // create or answer for an identity runs (D-17-2). A derived alias
+            // goes through the same judgment as a typed one, which is why the
+            // hint names the explicit-alias form.
+            let alias = match gsd_meta_manager::registry::Alias::new(&alias) {
+                Ok(alias) => alias,
+                Err(refusal) => {
+                    eprintln!("Error: {refusal}");
+                    eprintln!(
+                        "Provide an explicit alias: gsd-meta-manager add {} <alias>",
+                        canonical_path.display()
+                    );
+                    std::process::exit(1);
+                }
+            };
             let config = load_config(&config_path)?;
-            if config.projects.contains_key(&alias) {
+            if config.projects.contains_key(alias.as_str()) {
                 eprintln!(
                     "Error: alias '{}' already exists. Provide an explicit alias: gsd-manager add {} <alias>",
                     alias,
@@ -55,6 +70,17 @@ async fn main() -> anyhow::Result<()> {
             save_config(&config, &config_path)?;
             println!("Added project '{}' at {}", alias, canonical_path.display());
         }
+        // **The ONE deliberately-raw alias consumer (D-17-3), recorded loudly
+        // rather than left to be discovered as an oversight.** Removal is a
+        // membership-checked lookup that CREATES NOTHING, and it is the recovery
+        // path for exactly the entries this build's registration refusals
+        // orphan: pass 6 measured that an older build did register invisible and
+        // look-alike aliases, and those rows are still in `config.json` and
+        // still rendered by `list`. A removal that could not name what an older
+        // build registered would make a bad entry permanent — itself a
+        // WR-06-class falsehood generator ("Project not found" about an entry
+        // `list` prints). Classified `raw-by-design` in guard ten's table with
+        // this reason.
         Some(Commands::Remove { alias }) => {
             let mut config = load_config(&config_path)?;
             remove_project(&mut config, &alias)?;
@@ -260,13 +286,18 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             EnvelopeAction::Scan { alias, root } => {
-                if !gsd_meta_manager::journal::is_plain_path_component(&alias) {
-                    eprintln!(
-                        "Error: alias {alias:?} is not a plain path component, so no \
-                         envelope sanctions a scan for it"
-                    );
-                    std::process::exit(1);
-                }
+                // Was a manual `is_plain_path_component` check — a fifth site
+                // spelling the alias judgment for itself. `Alias::new` is that
+                // judgment, and it also refuses the look-alike shapes the bare
+                // predicate accepted before D-17-1.
+                let alias = match gsd_meta_manager::registry::Alias::new(&alias) {
+                    Ok(alias) => alias,
+                    Err(refusal) => {
+                        eprintln!("Error: {refusal}");
+                        eprintln!("No envelope sanctions a scan for it.");
+                        std::process::exit(1);
+                    }
+                };
                 let report = gsd_meta_manager::envelope::scan::scan_with_external(
                     &root,
                     gsd_meta_manager::envelope::scan::ScanLimits::default(),

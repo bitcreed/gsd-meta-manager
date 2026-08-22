@@ -1154,9 +1154,19 @@ impl App {
                 error,
             } => {
                 if success {
-                    // Register the new project
+                    // Register the new project — through the same alias
+                    // judgment as every other registration route (D-17-2).
+                    let judged = match registry::Alias::new(&alias) {
+                        Ok(judged) => judged,
+                        Err(refusal) => {
+                            self.ctx.error_message =
+                                Some(format!("Failed to register: {}", refusal));
+                            self.needs_redraw = true;
+                            return;
+                        }
+                    };
                     if let Err(e) =
-                        registry::add_project_unchecked(&mut self.ctx.config, &alias, &path)
+                        registry::add_project_unchecked(&mut self.ctx.config, &judged, &path)
                     {
                         self.ctx.error_message = Some(format!("Failed to register: {}", e));
                         self.needs_redraw = true;

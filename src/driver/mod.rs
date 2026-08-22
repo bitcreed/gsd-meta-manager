@@ -394,8 +394,13 @@ impl DriveArgs {
     ///   real [`journal::parse_approval_token`] on the blank value rather than
     ///   by asserting which variant it would produce. A pin below fixes that
     ///   "guaranteed `Err`" as a checked fact rather than an assumption.
-    /// * the alias → the unknown-alias refusal `drive` already reports, because
-    ///   no registry can honestly name a value nobody can see.
+    /// * the alias → [`DriveError::AliasNotVisible`]. **This line used to say
+    ///   "the unknown-alias refusal `drive` already reports, because no registry
+    ///   can honestly name a value nobody can see", and that was false**: pass 6
+    ///   measured that an invisible alias CAN be registered by an older build,
+    ///   so the borrowed message narrated the registry's contents rather than
+    ///   the value's shape (WR-06, D-17-4). The correction rides the commit that
+    ///   falsifies it.
     ///
     /// **Pure.** It opens no file and starts no process, so every refusal above
     /// costs nothing and creates nothing — and, because it runs before a
@@ -423,13 +428,16 @@ impl DriveArgs {
             claude_args,
         } = raw;
 
-        let alias = payload::NonBlank::new(&alias).ok_or_else(|| {
-            // The same conversion `drive` performs for an alias the registry
-            // does not hold, so a caller reads one refusal for "this names no
-            // project" whether the value was absent from the map or was never
-            // a name at all.
-            DriveError::from(OptInError::UnknownAlias { alias })
-        })?;
+        // **This used to borrow `OptInError::UnknownAlias`, and the borrowed
+        // sentence was false** (WR-06, D-17-4). Its message reads "no project
+        // is registered under the alias `…`" — a claim about durable state that
+        // this pure, file-free boundary has not checked and cannot know. Pass 6
+        // measured that an invisible alias CAN be registered by an older build,
+        // which makes the claim not merely unproven but wrong. The correction
+        // rides the commit that falsifies it: same site, same purity, same
+        // ordering, a refusal that describes the value instead of the registry.
+        let alias = payload::NonBlank::new(&alias)
+            .ok_or(DriveError::AliasNotVisible { alias })?;
 
         let command = argv_visible(command, |_| DriveError::NoCommandSource)?;
         let target_phase = argv_visible(target_phase, |_| DriveError::NoCommandSource)?;
@@ -2408,8 +2416,10 @@ mod tests {
                     alias: payload.to_string(),
                     ..raw_baseline()
                 }) as PositionBuilder,
-                (|err| matches!(err, DriveError::OptIn(OptInError::UnknownAlias { .. })))
-                    as PositionRefusal,
+                // Corrected in 21-17 from `OptIn(UnknownAlias)`: a blankness
+                // refusal must not assert that no project is registered under
+                // the value, because pass 6 measured that one can be (WR-06).
+                (|err| matches!(err, DriveError::AliasNotVisible { .. })) as PositionRefusal,
             ),
             (
                 "--command",

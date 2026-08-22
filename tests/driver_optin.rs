@@ -238,8 +238,10 @@ fn isolate_envelope_root() {
 fn config_for(a: &Path, b: &Path, opted_in: &str) -> Config {
     isolate_envelope_root();
     let mut config = Config::new();
-    registry::add_project(&mut config, "a", a).expect("project a registers");
-    registry::add_project(&mut config, "b", b).expect("project b registers");
+    let alias_a = registry::Alias::new("a").expect("a visible test alias");
+    let alias_b = registry::Alias::new("b").expect("a visible test alias");
+    registry::add_project(&mut config, &alias_a, a).expect("project a registers");
+    registry::add_project(&mut config, &alias_b, b).expect("project b registers");
     // Through the single construction site, never by building the record here:
     // a test that hand-rolls the opt-in is not testing the gate the user meets.
     registry::record_opt_in(&mut config, opted_in).expect("the opt-in records");

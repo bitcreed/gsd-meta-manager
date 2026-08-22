@@ -502,6 +502,22 @@ pub enum DriveError {
         /// The id that was refused, verbatim.
         run_id: String,
     },
+    /// `--alias` is present but carries no visible name (D-17-4).
+    ///
+    /// **This variant exists because the borrowed one asserted a falsehood**
+    /// (WR-06). `from_argv` used to map a blank `--alias` onto
+    /// [`OptInError::UnknownAlias`], whose message reads "no project is
+    /// registered under the alias `…`" — and pass 6 measured that an invisible
+    /// alias *can* be registered by an older build, so the sentence was a claim
+    /// about durable state that the refusal had not checked and could not know.
+    /// A refusal about a value's shape must not narrate the registry's contents.
+    ///
+    /// The boundary, the purity and the ordering are unchanged: this fires at
+    /// the same seam, before any file is created. Only the claim is corrected.
+    AliasNotVisible {
+        /// The value that was refused, verbatim.
+        alias: String,
+    },
     /// None of `--command`, `--target-phase` or `--goal` names anything to do
     /// (CTRL-06).
     ///
@@ -728,6 +744,15 @@ impl fmt::Display for DriveError {
                  .planning/meta-manager/runs/; it may not contain a path separator, \
                  `..`, or a leading `/`"
             ),
+            // True whether or not an invisible alias is sitting in someone's
+            // config.json — which is exactly what the borrowed `UnknownAlias`
+            // message was not (WR-06).
+            Self::AliasNotVisible { alias } => write!(
+                f,
+                "the supplied alias {alias:?} carries no visible name, so it \
+                 cannot identify any project. Pass the alias as it appears in \
+                 `gsd-meta-manager list`"
+            ),
             Self::NoCommandSource => write!(
                 f,
                 "a run needs something to do: pass `--command <c>` to run one GSD \
@@ -839,6 +864,7 @@ impl std::error::Error for DriveError {
             Self::UnsupportedPlatform { .. }
             | Self::RunIdRequired
             | Self::RunIdInvalid { .. }
+            | Self::AliasNotVisible { .. }
             | Self::NoCommandSource
             | Self::AmbiguousCommandSource
             | Self::TargetPhaseInvalid { .. }

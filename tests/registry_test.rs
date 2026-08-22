@@ -5,8 +5,16 @@ use std::path::PathBuf;
 // Import the library's modules
 use gsd_meta_manager::config::{load_config, save_config, Config, CONFIG_SCHEMA_VERSION};
 use gsd_meta_manager::registry::{
-    add_project, clear_opt_in, is_opted_in, list_projects, record_opt_in, remove_project,
+    add_project, clear_opt_in, is_opted_in, list_projects, record_opt_in, remove_project, Alias,
+    AliasRefusal,
 };
+
+/// A fixture alias, judged the way a real one is. Since 21-17 the registration
+/// functions take a `registry::Alias`, so a test cannot hand them a value the
+/// production entry points would have refused (D-17-2).
+fn visible(raw: &str) -> Alias {
+    Alias::new(raw).expect("a visible test alias")
+}
 
 #[test]
 fn add_project_with_valid_alias_and_planning_dir_succeeds() {
@@ -14,7 +22,7 @@ fn add_project_with_valid_alias_and_planning_dir_succeeds() {
     temp.child(".planning").create_dir_all().unwrap();
 
     let mut config = Config::new();
-    let result = add_project(&mut config, "myapp", temp.path());
+    let result = add_project(&mut config, &visible("myapp"), temp.path());
     assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
     assert!(config.projects.contains_key("myapp"));
     assert_eq!(config.projects["myapp"].path, temp.path());
@@ -26,9 +34,9 @@ fn add_project_with_duplicate_alias_returns_error() {
     temp.child(".planning").create_dir_all().unwrap();
 
     let mut config = Config::new();
-    add_project(&mut config, "myapp", temp.path()).unwrap();
+    add_project(&mut config, &visible("myapp"), temp.path()).unwrap();
 
-    let result = add_project(&mut config, "myapp", temp.path());
+    let result = add_project(&mut config, &visible("myapp"), temp.path());
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
     assert!(
@@ -38,35 +46,71 @@ fn add_project_with_duplicate_alias_returns_error() {
     );
 }
 
+/// **The refusal MOVED rather than disappeared, and it moved earlier** (D-17-2).
+///
+/// This test used to hand `add_project` a raw `""` and read its `bail!`. Since
+/// 21-17 a blank string cannot be turned into a `registry::Alias` at all, so it
+/// cannot reach the registration signature — which is the point of the newtype:
+/// the value is judged where it enters, not where it lands.
 #[test]
-fn add_project_with_empty_alias_returns_error() {
-    let temp = TempDir::new().unwrap();
-    temp.child(".planning").create_dir_all().unwrap();
-
-    let mut config = Config::new();
-    let result = add_project(&mut config, "", temp.path());
-    assert!(result.is_err());
-    let err_msg = result.unwrap_err().to_string();
+fn an_empty_alias_cannot_be_constructed_so_it_never_reaches_registration() {
+    let refusal = Alias::new("").expect_err("an empty alias is not a name");
     assert!(
-        err_msg.contains("cannot be empty"),
-        "Expected 'cannot be empty' in error, got: {}",
-        err_msg
+        matches!(refusal, AliasRefusal::NotVisible),
+        "got {refusal:?}"
+    );
+    assert!(
+        refusal.to_string().contains("visible"),
+        "the message must say what is wrong with the value, got: {refusal}"
     );
 }
 
+/// The whitespace rule, likewise moved to the constructor. It is kept as a
+/// separate clause from blankness because it is STRICTER than the
+/// path-component question: `"my app"` is a fine directory name and a bad thing
+/// to type at a shell.
 #[test]
-fn add_project_with_whitespace_alias_returns_error() {
+fn a_whitespace_carrying_alias_cannot_be_constructed_either() {
+    let refusal = Alias::new("my app").expect_err("an alias may not contain whitespace");
+    assert!(
+        matches!(refusal, AliasRefusal::Whitespace),
+        "got {refusal:?}"
+    );
+    assert!(
+        refusal.to_string().contains("whitespace"),
+        "Expected 'whitespace' in error, got: {refusal}"
+    );
+}
+
+/// End to end, through the real registration path: two aliases that render
+/// identically cannot both name a project.
+///
+/// Consumes the shared fixture shape rather than hand-spelling the pairs —
+/// reachable from an integration crate since 21-17 dropped `test_support`'s
+/// `#[cfg(test)]` gate (D-17-5).
+#[test]
+fn a_look_alike_alias_cannot_join_its_visible_twin_in_the_registry() {
     let temp = TempDir::new().unwrap();
     temp.child(".planning").create_dir_all().unwrap();
 
     let mut config = Config::new();
-    let result = add_project(&mut config, "my app", temp.path());
-    assert!(result.is_err());
-    let err_msg = result.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("whitespace"),
-        "Expected 'whitespace' in error, got: {}",
-        err_msg
+    add_project(&mut config, &visible("demo"), temp.path()).expect("the visible twin registers");
+
+    for (visible_member, look_alike) in gsd_meta_manager::test_support::LOOK_ALIKE_PAIRS {
+        let refusal = Alias::new(look_alike).expect_err(
+            "an alias that renders exactly like its twin must not be constructible",
+        );
+        assert!(
+            matches!(refusal, AliasRefusal::InvisibleFormatting { .. }),
+            "{look_alike:?} renders as {visible_member:?}; the refusal must name \
+             that harm, got {refusal:?}"
+        );
+    }
+
+    assert_eq!(
+        config.projects.len(),
+        1,
+        "exactly one project may exist for a name that renders one way"
     );
 }
 
@@ -76,7 +120,7 @@ fn add_project_with_path_missing_planning_returns_error() {
     // No .planning/ directory created
 
     let mut config = Config::new();
-    let result = add_project(&mut config, "myapp", temp.path());
+    let result = add_project(&mut config, &visible("myapp"), temp.path());
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
     assert!(
@@ -90,7 +134,7 @@ fn add_project_with_path_missing_planning_returns_error() {
 fn add_project_with_nonexistent_path_returns_error() {
     let mut config = Config::new();
     let fake_path = PathBuf::from("/nonexistent/path/to/project");
-    let result = add_project(&mut config, "myapp", &fake_path);
+    let result = add_project(&mut config, &visible("myapp"), &fake_path);
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
     assert!(
@@ -106,7 +150,7 @@ fn remove_project_with_existing_alias_succeeds() {
     temp.child(".planning").create_dir_all().unwrap();
 
     let mut config = Config::new();
-    add_project(&mut config, "myapp", temp.path()).unwrap();
+    add_project(&mut config, &visible("myapp"), temp.path()).unwrap();
 
     let result = remove_project(&mut config, "myapp");
     assert!(result.is_ok());
@@ -130,7 +174,7 @@ fn save_config_then_load_config_roundtrips() {
     project_temp.child(".planning").create_dir_all().unwrap();
 
     let mut config = Config::new();
-    add_project(&mut config, "roundtrip", project_temp.path()).unwrap();
+    add_project(&mut config, &visible("roundtrip"), project_temp.path()).unwrap();
 
     // Save and reload
     save_config(&config, &config_path).unwrap();
@@ -157,7 +201,7 @@ fn a_round_trip_through_save_and_load_preserves_an_opt_in_record() {
         .unwrap();
 
     let mut config = Config::new();
-    add_project(&mut config, "opted", project_temp.path()).unwrap();
+    add_project(&mut config, &visible("opted"), project_temp.path()).unwrap();
     record_opt_in(&mut config, "opted").unwrap();
     let recorded = config.projects["opted"].driver_opt_in.clone().unwrap();
 
@@ -200,8 +244,8 @@ fn list_projects_returns_sorted_by_alias() {
     temp_b.child(".planning").create_dir_all().unwrap();
 
     let mut config = Config::new();
-    add_project(&mut config, "zulu", temp_a.path()).unwrap();
-    add_project(&mut config, "alpha", temp_b.path()).unwrap();
+    add_project(&mut config, &visible("zulu"), temp_a.path()).unwrap();
+    add_project(&mut config, &visible("alpha"), temp_b.path()).unwrap();
 
     let projects = list_projects(&config);
     assert_eq!(projects.len(), 2);

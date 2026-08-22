@@ -165,7 +165,20 @@ impl AddProjectScreen {
 fn do_add_project(ctx: &mut AppContext, alias: &str, path: &Path) {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
-    match registry::add_project(&mut ctx.config, alias, &canonical) {
+    // The TUI registration path gets the SAME refusal as the CLI, with the same
+    // message (D-17-2). A screen that admitted an alias the command line refuses
+    // would be the second registration route, which is how a fourth predicate
+    // came to exist in the first place.
+    let judged = match registry::Alias::new(alias) {
+        Ok(judged) => judged,
+        Err(refusal) => {
+            ctx.error_message = Some(refusal.to_string());
+            ctx.needs_redraw = true;
+            return;
+        }
+    };
+
+    match registry::add_project(&mut ctx.config, &judged, &canonical) {
         Ok(()) => {
             if let Err(e) = save_config(&ctx.config, &ctx.config_path) {
                 ctx.error_message = Some(format!("Failed to save config: {}", e));

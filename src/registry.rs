@@ -4,20 +4,141 @@ use anyhow::{bail, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// Add a project to the registry with the given alias and path.
-/// Validates that:
-/// - alias is non-empty and contains no whitespace
-/// - alias is unique in the config
-/// - path exists on disk
-/// - path contains a `.planning/` directory
-pub fn add_project(config: &mut Config, alias: &str, path: &Path) -> Result<()> {
-    if alias.is_empty() {
-        bail!("Alias cannot be empty");
+/// A string that has been judged fit to be a registry key.
+///
+/// **Registration is closed at the ENTRY, not at the seam** (D-17-2). Before
+/// this type existed, `add_project` carried its own `is_empty` +
+/// `contains(char::is_whitespace)` pair — a **fourth** spelling of "is this a
+/// name?", beside `text::carries_visible_content`,
+/// `journal::is_plain_path_component` and `driver::payload::NonBlank`. Pass 6
+/// measured what that cost: `add_project("demo")` and `add_project("demo\u{200b}")`
+/// both returned `Ok`, so two aliases that render identically named two
+/// different projects, two opt-ins and two envelope roots.
+///
+/// The private field plus a single fallible constructor makes an unjudged alias
+/// **unrepresentable** at the registration functions' signatures, the same move
+/// [`crate::driver::payload::NonBlank`] makes at the argv boundary. The
+/// constructor judges nothing itself: every clause delegates, so there is no
+/// fourth spelling left to drift.
+///
+/// **The invariant, in one sentence: an `Alias` always satisfies
+/// [`crate::journal::is_plain_path_component`]**, so every alias this build
+/// admits into `config.json` can name its own envelope root. Clauses 1 and 2
+/// exist only to give the two most likely refusals their own honest message —
+/// the final clause is what carries the invariant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Alias(String);
+
+/// Why a candidate alias is not one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AliasRefusal {
+    /// Nothing in it can be seen.
+    NotVisible,
+    /// It carries a character that renders as nothing, so it is
+    /// indistinguishable on screen from an alias that does not.
+    InvisibleFormatting {
+        /// The candidate, verbatim.
+        alias: String,
+    },
+    /// It carries whitespace.
+    Whitespace,
+    /// It could not name a directory of its own.
+    NotPlainComponent {
+        /// The candidate, verbatim.
+        alias: String,
+    },
+}
+
+impl std::fmt::Display for AliasRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotVisible => write!(
+                f,
+                "an alias must carry a visible name — this one is made entirely \
+                 of whitespace, control or zero-width characters, so nothing in \
+                 the project list would identify it"
+            ),
+            Self::InvisibleFormatting { alias } => write!(
+                f,
+                "the alias {alias:?} carries a character that renders as \
+                 nothing, so on screen it is indistinguishable from an alias \
+                 that does not. Two aliases that render identically would name \
+                 two different projects, two separate driver opt-ins and two \
+                 separate envelope roots — and nothing in the interface would \
+                 show you which one you were acting on. Choose an alias whose \
+                 written form is what you see"
+            ),
+            Self::Whitespace => write!(f, "an alias may not contain whitespace"),
+            Self::NotPlainComponent { alias } => write!(
+                f,
+                "the alias {alias:?} is not a single plain directory name, so it \
+                 could never name its own envelope root; it may not contain a \
+                 path separator, `..`, a leading `/`, or an embedded control \
+                 character"
+            ),
+        }
+    }
+}
+
+impl Alias {
+    /// Judge a candidate alias, delegating every clause.
+    ///
+    /// **This function judges nothing itself, on purpose.** Four independent
+    /// spellings of "is this a name?" is how `add_project` came to accept a
+    /// value the envelope seam refuses. The order is chosen so the most
+    /// specific true statement is the one the user reads.
+    pub fn new(raw: &str) -> Result<Self, AliasRefusal> {
+        // 1. Emptiness, by the one production spelling of it.
+        if !crate::text::carries_visible_content(raw) {
+            return Err(AliasRefusal::NotVisible);
+        }
+        // 2. Identity — a DIFFERENT question from 1, and the one that lost.
+        //    `"demo\u{200b}"` passes clause 1 by construction.
+        if crate::text::carries_invisible_formatting(raw) {
+            return Err(AliasRefusal::InvisibleFormatting {
+                alias: raw.to_string(),
+            });
+        }
+        // 3. The one rule kept from the deleted predicate, and it is kept
+        //    because it is STRICTER than the path-component question below:
+        //    `"my app"` is a perfectly good directory name and a bad alias to
+        //    type at a shell. This is a usability rule, not a blankness
+        //    judgment — clause 1 is the blankness judgment.
+        if raw.contains(char::is_whitespace) {
+            return Err(AliasRefusal::Whitespace);
+        }
+        // 4. The clause that carries the invariant: separators, `..`,
+        //    traversal tokens, embedded control characters. An alias that
+        //    cannot name an envelope root must not become a registry key —
+        //    that mismatch is WR-06's falsehood generator.
+        if !crate::journal::is_plain_path_component(raw) {
+            return Err(AliasRefusal::NotPlainComponent {
+                alias: raw.to_string(),
+            });
+        }
+        Ok(Self(raw.to_string()))
     }
 
-    if alias.contains(char::is_whitespace) {
-        bail!("Alias cannot contain whitespace");
+    /// The judged alias.
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
+}
+
+impl std::fmt::Display for Alias {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Add a project to the registry with the given alias and path.
+/// Validates that:
+/// - alias is unique in the config (the alias itself was judged by
+///   [`Alias::new`] — this function no longer carries a predicate of its own)
+/// - path exists on disk
+/// - path contains a `.planning/` directory
+pub fn add_project(config: &mut Config, alias: &Alias, path: &Path) -> Result<()> {
+    let alias = alias.as_str();
 
     if config.projects.contains_key(alias) {
         bail!("Alias already exists");
@@ -60,15 +181,10 @@ pub fn add_project(config: &mut Config, alias: &str, path: &Path) -> Result<()> 
 
 /// Add a project to the registry without checking for `.planning/` directory.
 /// Used for freshly created projects that don't yet have a `.planning/` folder.
-/// Validates alias is non-empty, has no whitespace, and is unique.
-pub fn add_project_unchecked(config: &mut Config, alias: &str, path: &Path) -> Result<()> {
-    if alias.is_empty() {
-        bail!("Alias cannot be empty");
-    }
-
-    if alias.contains(char::is_whitespace) {
-        bail!("Alias cannot contain whitespace");
-    }
+/// "Unchecked" refers to the `.planning/` directory only: the alias is judged by
+/// [`Alias::new`] before it can reach this signature.
+pub fn add_project_unchecked(config: &mut Config, alias: &Alias, path: &Path) -> Result<()> {
+    let alias = alias.as_str();
 
     if config.projects.contains_key(alias) {
         bail!("Alias already exists");
@@ -431,6 +547,24 @@ pub fn auto_register_from_sessions(
         let base = derive_alias(&canonical);
         let alias = unique_alias(config, &base);
 
+        // The derived alias goes through the same judgment as a typed one
+        // (D-17-2). A discovered folder whose NAME carries format characters —
+        // real for some scripts — is skipped here and registers only under an
+        // alias the user chooses explicitly; auto-registration must not be the
+        // one route that admits a key the envelope seam would refuse.
+        let alias = match Alias::new(&alias) {
+            Ok(alias) => alias,
+            Err(refusal) => {
+                tracing::warn!(
+                    alias = %alias,
+                    path = %canonical.display(),
+                    error = %refusal,
+                    "auto-register: alias refused",
+                );
+                continue;
+            }
+        };
+
         if let Err(e) = add_project(config, &alias, &canonical) {
             tracing::warn!(
                 alias = %alias,
@@ -440,6 +574,7 @@ pub fn auto_register_from_sessions(
             );
             continue;
         }
+        let alias = alias.as_str().to_string();
         added.push((alias, canonical));
     }
 
@@ -466,6 +601,90 @@ mod tests {
         Config::new()
     }
 
+    /// A fixture alias, judged the way a real one is.
+    fn visible(raw: &str) -> Alias {
+        Alias::new(raw).expect("a visible test alias")
+    }
+
+    /// Two aliases that render identically cannot both name a project.
+    ///
+    /// **The pass-6 CR-01 registry half, which is the genuinely new surface.**
+    /// Measured against the unfixed tree: `add_project("demo")` → `Ok`,
+    /// `add_project("demo\u{200b}")` → `Ok`, two entries in `config.json`, two
+    /// driver opt-ins, two envelope roots, one rendering. The refusal now lands
+    /// at the constructor, so the second call cannot be made at all.
+    #[test]
+    fn registering_a_look_alike_beside_its_visible_twin_is_refused() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".planning")).unwrap();
+        let mut config = empty_config();
+
+        add_project(&mut config, &visible("demo"), dir.path()).expect("the visible twin registers");
+
+        let refused = Alias::new("demo\u{200b}").expect_err(
+            "an alias that renders exactly like `demo` must not be constructible, or a \
+             second project can exist that no reader can tell from the first",
+        );
+        assert!(
+            matches!(refused, AliasRefusal::InvisibleFormatting { .. }),
+            "the refusal must name the look-alike harm rather than borrowing a \
+             blankness message: got {refused:?}"
+        );
+        assert_eq!(
+            config.projects.len(),
+            1,
+            "exactly one project may exist for a name that renders one way"
+        );
+
+        // Every look-alike member, and every wholly-blank shape, refused
+        // through the ONE constructor — no hand-picked subset.
+        for (visible_member, look_alike) in crate::test_support::LOOK_ALIKE_PAIRS {
+            assert!(
+                Alias::new(visible_member).is_ok(),
+                "{visible_member:?} must remain registrable — the refusal is \
+                 about the invisible bytes, not about the pair"
+            );
+            assert!(
+                Alias::new(look_alike).is_err(),
+                "{look_alike:?} renders exactly as {visible_member:?} and must \
+                 not become a registry key"
+            );
+        }
+        for blank in crate::test_support::DEGENERATE {
+            assert!(
+                Alias::new(blank).is_err(),
+                "{blank:?} carries no visible name and must not become a \
+                 registry key"
+            );
+        }
+
+        // The accepting direction, so the constructor is not a predicate that
+        // refuses everything.
+        for legitimate in ["demo", "myproj-2", "a.b"] {
+            assert!(
+                Alias::new(legitimate).is_ok(),
+                "{legitimate:?} is a shape the tool registers and must keep \
+                 being registrable"
+            );
+        }
+    }
+
+    /// The invariant, asserted rather than documented: an `Alias` can always
+    /// name its own envelope root. A registration that admitted a value the
+    /// envelope seam refuses is WR-06's falsehood generator.
+    #[test]
+    fn every_constructible_alias_can_name_its_own_envelope_root() {
+        for legitimate in ["demo", "myproj-2", "a.b", "20", "RID"] {
+            let alias = Alias::new(legitimate).expect("a registrable alias");
+            assert!(
+                crate::envelope::envelope_dir_in(Path::new("/data/envelope"), alias.as_str())
+                    .is_some(),
+                "{legitimate:?} registers, so it must be able to name its \
+                 envelope root — registration must never be looser than the seam"
+            );
+        }
+    }
+
     #[test]
     fn auto_register_adds_new_gsd_project() {
         let dir = tempdir().unwrap();
@@ -487,7 +706,7 @@ mod tests {
         std::fs::create_dir(dir.path().join(".planning")).unwrap();
         let canonical = dir.path().canonicalize().unwrap();
         let mut config = empty_config();
-        add_project(&mut config, "existing", &canonical).unwrap();
+        add_project(&mut config, &visible("existing"), &canonical).unwrap();
         let sessions = vec![make_session(canonical.clone())];
 
         let added = auto_register_from_sessions(&mut config, &sessions);
@@ -537,7 +756,7 @@ mod tests {
 
         let mut config = empty_config();
         // Pre-register the first one under its natural alias.
-        add_project(&mut config, "myproj", &path_a.canonicalize().unwrap()).unwrap();
+        add_project(&mut config, &visible("myproj"), &path_a.canonicalize().unwrap()).unwrap();
 
         let sessions = vec![make_session(path_b)];
         let added = auto_register_from_sessions(&mut config, &sessions);
@@ -554,7 +773,7 @@ mod tests {
         std::fs::create_dir(dir.path().join(".planning")).unwrap();
         std::fs::write(dir.path().join("CLAUDE.md"), "# Project\n").unwrap();
         let mut config = empty_config();
-        add_project(&mut config, "opted", dir.path()).unwrap();
+        add_project(&mut config, &visible("opted"), dir.path()).unwrap();
 
         assert!(
             !is_opted_in(&config, "opted"),
@@ -629,7 +848,7 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::create_dir(dir.path().join(".planning")).unwrap();
         let mut config = empty_config();
-        add_project(&mut config, "opted", dir.path()).unwrap();
+        add_project(&mut config, &visible("opted"), dir.path()).unwrap();
         record_opt_in(&mut config, "opted").unwrap();
 
         clear_opt_in(&mut config, "opted").unwrap();
