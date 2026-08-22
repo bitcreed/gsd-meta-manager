@@ -3095,3 +3095,215 @@ fn the_degenerate_payload_set_is_spelled_in_exactly_one_place() {
         render(&offenders)
     );
 }
+
+// ---------------------------------------------------------------------------
+// Guard ten: every argv alias entry point is classified
+//
+// **What this guard measures, and what it cannot.** Pass 6 closed the payload
+// question for `DriveArgs` — `from_argv`'s no-`..` destructure forces a seventh
+// argv field to be classified, and guard nine refuses a raw-`String` payload
+// type. Nothing did the same for `Commands`/`EnvelopeAction`: eight subcommand
+// variants carry an `alias` field, each one an argv-to-identity conversion, and
+// a NINTH subcommand could add a ninth unnoticed. This census makes growth
+// break a count, so a human has to classify the new arm before the suite goes
+// green again.
+//
+// **Limits, in guard six's register, with directions.**
+//
+// 1. **The scan matches two exact declaration spellings** — a trimmed line of
+//    exactly `alias: String,` or `alias: Option<String>,` (enum-variant fields
+//    carry no `pub`). A field RENAMED (`project: String,`) or given an aliased
+//    type is invisible to it: **under-detection, silent**. It is bounded only
+//    in the other direction — a removed or respelled EXISTING field breaks the
+//    exact-count assertion **loudly**, so the eight rows below cannot rot
+//    unnoticed even though a ninth under a new name could hide.
+// 2. **The JUDGE column is hand-maintained prose.** The census forces a human
+//    to write a row; it cannot verify that the named judge does what the row
+//    says. That verification lives in each judge's own pinned tests, and they
+//    are named so this claim is checkable rather than asserted:
+//    `registry::tests::registering_a_look_alike_beside_its_visible_twin_is_refused`
+//    and `every_constructible_alias_can_name_its_own_envelope_root` for
+//    `Alias::new`; `driver::tests::every_argv_position_refuses_every_degenerate_payload_at_the_parse_boundary`
+//    for `NonBlank` at `from_argv`;
+//    `journal::tests::a_look_alike_identity_never_resolves_beside_its_visible_twin`
+//    for the seam predicate.
+//
+// No claim beyond these two.
+// ---------------------------------------------------------------------------
+
+/// The file whose alias-carrying variants this census bounds.
+const ARGV_ALIAS_HOME: &str = "src/cli.rs";
+
+/// Every argv entry point that carries an alias, with the judge that converts
+/// it into an identity.
+///
+/// A row per variant. `BY DECISION` marks the one deliberately-raw consumer;
+/// every other row names a constructor.
+const ARGV_ALIAS_ENTRY_POINTS: [(&str, &str); 8] = [
+    (
+        "Commands::Add",
+        "registry::Alias::new in the Add arm (registration refusal)",
+    ),
+    (
+        "Commands::Remove",
+        "raw lookup key BY DECISION D-17-3 — recovery path for entries an older \
+         build registered; creates nothing; membership-checked",
+    ),
+    (
+        "Commands::Drive",
+        "payload::NonBlank at DriveArgs::from_argv (visibility); identity at the \
+         seams via is_plain_path_component",
+    ),
+    (
+        "EnvelopeAction::PrePush",
+        "registry::Alias::new in the arm; fail-closed exit 1",
+    ),
+    (
+        "EnvelopeAction::PreCommit",
+        "registry::Alias::new in the arm; fail-closed exit 1",
+    ),
+    (
+        "EnvelopeAction::Askpass",
+        "registry::Alias::new in the arm; fail-closed, no credential emitted",
+    ),
+    (
+        "EnvelopeAction::Guard",
+        "registry::Alias::new in the arm; fail-closed exit 2 denies",
+    ),
+    (
+        "EnvelopeAction::Scan",
+        "registry::Alias::new in the arm (replaced the manual predicate check)",
+    ),
+];
+
+/// Every line in `lines` that declares an argv alias field.
+///
+/// Extracted so the live assertion and the planted-ninth control consume the
+/// SAME code path — a control that re-implemented the scan would witness only
+/// its own agreement with itself.
+fn argv_alias_fields(lines: &[(usize, String)]) -> Vec<(usize, String)> {
+    lines
+        .iter()
+        .filter(|(_, line)| {
+            let trimmed = line.trim();
+            trimmed == "alias: String," || trimmed == "alias: Option<String>,"
+        })
+        .cloned()
+        .collect()
+}
+
+/// **The control arm, first in reading order.** A census whose scanner could
+/// never see growth is the tautology this repository has paid for repeatedly.
+/// A synthetic body carrying the eight real spellings plus one planted ninth
+/// must report nine, through the same extracted fn the live assertion uses.
+#[test]
+fn the_alias_census_reports_a_planted_ninth_field() {
+    let planted = synthetic_file(
+        ARGV_ALIAS_HOME,
+        &[
+            "pub enum Commands {",
+            "    Add {",
+            "        path: PathBuf,",
+            "        alias: Option<String>,",
+            "    },",
+            "    Remove {",
+            "        alias: String,",
+            "    },",
+            "    Drive {",
+            "        alias: String,",
+            "        dry_run: bool,",
+            "    },",
+            "}",
+            "pub enum EnvelopeAction {",
+            "    PrePush {",
+            "        alias: String,",
+            "    },",
+            "    PreCommit {",
+            "        alias: String,",
+            "    },",
+            "    Askpass {",
+            "        alias: String,",
+            "    },",
+            "    Guard {",
+            "        alias: String,",
+            "    },",
+            "    Scan {",
+            "        alias: String,",
+            "    },",
+            "    /// The planted ninth: a new subcommand carrying an alias.",
+            "    Adopt {",
+            "        alias: String,",
+            "    },",
+            "}",
+        ],
+    );
+
+    assert_eq!(
+        argv_alias_fields(&planted.1).len(),
+        ARGV_ALIAS_ENTRY_POINTS.len() + 1,
+        "a ninth subcommand carrying an alias must be REPORTED by the same \
+         function the live assertion consumes — otherwise the census is an \
+         assertion about a number nothing could ever change. Got: {:?}",
+        argv_alias_fields(&planted.1)
+    );
+
+    // The other direction, so the count above is about the planted field rather
+    // than about a scanner that flags everything: a variant carrying no alias
+    // reports nothing.
+    let clean = synthetic_file(
+        ARGV_ALIAS_HOME,
+        &[
+            "pub enum Commands {",
+            "    List,",
+            "    Status {",
+            "        verbose: bool,",
+            "        label: String,",
+            "    },",
+            "}",
+        ],
+    );
+    assert!(
+        argv_alias_fields(&clean.1).is_empty(),
+        "a body declaring no argv alias must report nothing; got {:?}",
+        argv_alias_fields(&clean.1)
+    );
+}
+
+#[test]
+fn every_argv_alias_field_is_classified() {
+    let files = source_files();
+    let home = files
+        .iter()
+        .find(|(path, _)| path == ARGV_ALIAS_HOME)
+        .unwrap_or_else(|| panic!("{ARGV_ALIAS_HOME} must exist"));
+
+    let declared = argv_alias_fields(&home.1);
+
+    // EXACT, not `>=`: growth and shrinkage both have to be classified, and a
+    // floor would let a ninth field slide in under it.
+    assert_eq!(
+        declared.len(),
+        ARGV_ALIAS_ENTRY_POINTS.len(),
+        "the number of argv alias fields in {ARGV_ALIAS_HOME} changed. A new \
+         subcommand carrying an alias is a new argv-to-identity conversion: give \
+         it a judge (`registry::Alias::new`, or a recorded raw-by-design decision \
+         with its reason), add its row to ARGV_ALIAS_ENTRY_POINTS, and pin its \
+         refusal. The count is the tripwire; the table is the record. Declared: \
+         {declared:?}"
+    );
+
+    for (variant, judge) in ARGV_ALIAS_ENTRY_POINTS {
+        assert!(
+            !judge.trim().is_empty(),
+            "{variant} carries no judge — an unclassified row defeats the census"
+        );
+        assert!(
+            judge.contains("Alias::new")
+                || judge.contains("NonBlank")
+                || judge.contains("BY DECISION"),
+            "{variant}'s judge must name a constructor (`Alias::new`, `NonBlank`) \
+             or be an explicitly recorded raw-by-design decision (`BY DECISION`). \
+             Got: {judge:?}"
+        );
+    }
+}
