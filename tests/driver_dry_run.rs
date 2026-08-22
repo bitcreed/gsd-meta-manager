@@ -598,17 +598,15 @@ async fn a_blank_command_is_refused_in_preview_and_in_a_real_run() {
     // nonetheless asserted, because that is the claim a reader wants checked
     // rather than inferred.
     //
-    // **The payload list stays this file's own, and the reason is a real
-    // limitation worth naming.** `crate::test_support::DEGENERATE` — the shared
-    // const every in-crate blank-shape pin now reads — is `#[cfg(test)]`, so it
-    // does not exist in the compiled library and an integration test (a separate
-    // crate) cannot reach it. Copying its six values here by hand would be
-    // exactly the three-of-six hand copy pass 5 caught. The EXHAUSTIVE sweep of
-    // all six shapes across all seven argv positions therefore lives in-crate,
-    // in `driver::tests::every_argv_position_refuses_every_degenerate_payload_at_the_parse_boundary`;
-    // what this test adds is the end-to-end path through `drive`'s own callers,
-    // over the shapes it has always covered.
-    for blank in ["", "   "] {
+    // **The in-place disclosure this block used to carry is RETIRED, and the
+    // correction rides the commit that falsifies it.** It said the payload list
+    // had to stay this file's own because `test_support::DEGENERATE` was
+    // `#[cfg(test)]` and therefore unreachable from an integration crate. That
+    // was true when it was written and stopped being true in 21-17, which
+    // dropped the cfg gate (D-17-5) precisely so these three hand-picked subsets
+    // could consume the const. Two of six is exactly the hand copy pass 5
+    // caught, and it is now six of six without anybody remembering to widen it.
+    for blank in gsd_meta_manager::test_support::DEGENERATE {
         for dry_run in [true, false] {
             let mut raw = raw_args(Some(&evidence));
             raw.command = Some(blank.to_string());
@@ -698,10 +696,12 @@ async fn a_blank_target_phase_is_refused_in_preview_and_in_a_real_run() {
     // `"   "` leads deliberately: it is the payload the round-4 verification
     // reproduced previewing cleanly at exit 0 and creating a run record, so the
     // tracer's red arm names the Critical rather than the older `""` refusal.
-    // RETARGETED to the parse boundary in 21-15, for the reason its sibling
-    // above records in full — including why the payload list stays this file's
-    // own rather than becoming the shared const.
-    for blank in ["   ", "\t", "\n  \n", ""] {
+    // RETARGETED to the parse boundary in 21-15. The payload list is the shared
+    // const since 21-17 dropped its cfg gate; see the sibling above for the
+    // retired in-place disclosure. `"   "` is still in the set — it is the
+    // payload the round-4 verification reproduced — it simply is no longer
+    // hand-picked, and the two zero-width shapes now ride along.
+    for blank in gsd_meta_manager::test_support::DEGENERATE {
         for dry_run in [true, false] {
             let mut raw = raw_args(Some(&evidence));
             raw.command = None;

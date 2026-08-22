@@ -2072,17 +2072,33 @@ mod tests {
     /// or a variant produced by no argv position, left the coverage assertion
     /// green with a whole variant unexercised.
     ///
-    /// This closes it. The array is written out explicitly — no wildcard, no
-    /// loop, no generated payload — so a fourth variant is a compile error HERE
-    /// too, in two ways: the array's declared length and the missing
-    /// construction. The pin below then compares these names against
-    /// `ALL_VARIANT_NAMES` as sets, so a const that did not grow with the enum is
-    /// a red **by name** rather than a silently narrower sweep.
+    /// **This doc used to claim a fourth variant is "a compile error HERE too,
+    /// in two ways: the array's declared length and the missing construction".
+    /// That was false, and the correction rides the commit that falsifies it**
+    /// (D-18-1, pass-6 WR-01). The verifier built a fourth variant, added its
+    /// single arm to `variant_name`, and measured this pin PASSING with the
+    /// variant unswept and **zero** compile errors. An array literal of
+    /// constructed values carries no exhaustiveness obligation: nothing in Rust
+    /// requires a `[T; N]` to mention every variant of `T`, and the declared
+    /// length only forces the author of a fourth ENTRY to update it — not the
+    /// author of a fourth VARIANT to add one.
     ///
-    /// Stated honestly: the compile errors force CONSTRUCTION of a fourth
-    /// variant; the set equality is what then forces the const to grow. The
-    /// compile-time half lives in the two wildcard-free fns; the by-name half
-    /// lives in the pin.
+    /// **What is actually measured, and by what.** The only compile-time anchor
+    /// on `CommandSource`'s arity is [`variant_name`]'s wildcard-free match. It
+    /// forces CLASSIFICATION — somebody must open this module and name the new
+    /// variant — and that is all it forces. It does not force sweep growth.
+    /// The set equality in the pin below is a runtime check between two lists
+    /// that must agree; it catches a const that went stale relative to what this
+    /// function builds, which is a real and different thing.
+    ///
+    /// **The residual, named rather than papered over.** A fourth variant
+    /// classified in `variant_name` but never constructed here passes this pin
+    /// with the variant unswept by the matrix's coverage assertion. What catches
+    /// that is nothing mechanical — it is the reviewer reading this sentence,
+    /// which is why the sentence is here. A `named(source)` destructuring helper
+    /// would not change it: that too forces classification, not collection
+    /// growth, and a second mechanism that overpromises is the exact defect
+    /// class this round closes.
     fn one_of_each() -> [(&'static str, CommandSource); 3] {
         [
             ("Command", CommandSource::Command(visible("x"))),
@@ -2100,9 +2116,11 @@ mod tests {
             ALL_VARIANT_NAMES.len(),
             "`ALL_VARIANT_NAMES` has {} entries and `one_of_each` builds {} \
              variants. A fourth `CommandSource` variant is a compile error in \
-             `variant_name` and in `one_of_each`; once somebody has classified it \
-             in both, the const has to grow too, and this is where forgetting \
-             that is caught.",
+             `variant_name` ALONE — pass 6 measured that constructing values in \
+             `one_of_each` carries no exhaustiveness obligation, so a variant \
+             classified there and built nowhere passes this pin unswept. What \
+             this assertion catches is the const and this function DISAGREEING; \
+             the residual is named in `one_of_each`'s doc.",
             ALL_VARIANT_NAMES.len(),
             built.len()
         );
@@ -2564,19 +2582,32 @@ mod tests {
     /// characters `DEGENERATE` is made of, so what is pinned is *visibility*,
     /// not brevity.
     ///
-    /// The alias and the run id are excluded from the padded forms: both are
-    /// composed into path components downstream, where `is_plain_path_component`
-    /// answers a stricter structural question that is not this test's subject.
+    /// **The `--alias`/`--run-id` exemption is DELETED and the rationale that
+    /// carried it was false** (D-18-3, pass-6 IN-01). It read: "both are composed
+    /// into path components downstream, where `is_plain_path_component` answers a
+    /// stricter structural question that is not this test's subject." The verifier
+    /// measured that `from_argv` never calls `is_plain_path_component` — for
+    /// either field — so the sentence justified a narrowing with a fact about a
+    /// function this boundary does not invoke. That is the cycle-3 defect
+    /// recurring inside the acceptance matrix, and hand-picked exemptions are how
+    /// five rounds each left one shape uncovered. All SEVEN positions now take all
+    /// FOUR padded payloads.
+    ///
+    /// **What is true instead.** `from_argv` judges VISIBILITY. One visible
+    /// character is an instruction in every position, `--alias` and `--run-id`
+    /// included, and this boundary accepts a padded look-alike in those positions
+    /// **by design** — a `NonBlank` says something can be seen, not that the bytes
+    /// name exactly one thing. The identity question is answered DOWNSTREAM, at
+    /// the seams: `journal::is_plain_path_component` at the run-id and
+    /// target-phase seams (since 21-17's D-17-1 clause) and `registry::Alias::new`
+    /// at registration, each pinned with `test_support::LOOK_ALIKE_PAIRS` in its
+    /// own suite. The drive-level consequence, stated so it is not discovered: a
+    /// look-alike `--run-id` passes THIS boundary and is refused by `drive` at the
+    /// seam, before anything is created.
     #[test]
     fn one_visible_character_is_accepted_in_every_argv_position() {
         for (position, _, build, _) in positions() {
-            let padded: &[&str] = if position.starts_with("--alias")
-                || position.starts_with("--run-id")
-            {
-                &["x"]
-            } else {
-                &["x", " x ", "\u{200b}x", "x\u{feff}"]
-            };
+            let padded: &[&str] = &["x", " x ", "\u{200b}x", "x\u{feff}"];
             for payload in padded {
                 let outcome = DriveArgs::from_argv(build(payload));
                 assert!(

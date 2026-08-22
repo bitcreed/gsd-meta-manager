@@ -332,7 +332,12 @@ fn the_decomposition_capability_exists_only_for_an_invocation_that_supplies_a_go
     // assertion moves with the code rather than being deleted — this is the same
     // fact, checked one layer earlier and for every degenerate shape rather than
     // for the one this test happened to spell.
-    for blank in ["", "   \t ", "\u{200b}", "\u{feff}"] {
+    // The list is `test_support::DEGENERATE` since 21-17 dropped its cfg gate:
+    // four hand-picked shapes became all six, and every one of the six is a
+    // valid fixture for this assertion — each carries nothing visible, so each
+    // must reach `NoCommandSource` at the parse boundary. No exception, so no
+    // filter.
+    for blank in gsd_meta_manager::test_support::DEGENERATE {
         assert!(
             matches!(
                 DriveArgs::from_argv(raw_goal_args("r", workdir.path(), blank)),
@@ -1567,14 +1572,16 @@ fn an_over_length_phase_token_is_refused_by_the_bound_not_truncated_into_a_phase
     // the state every HOSTILE_PHASE_TOKENS fixture is in.
     assert!(
         gsd_meta_manager::journal::is_plain_path_component(&token),
-        "the fixture must PASS the first layer, or this test is re-testing the          predicate instead of the bound it exists for"
+        "the fixture must PASS the first layer, or this test is re-testing \
+         the predicate instead of the bound it exists for"
     );
     // And it must be a token the bound genuinely acts on: if `bounded` left it
     // alone, the refusal below could only come from somewhere else.
     assert_ne!(
         gsd_meta_manager::driver::untrusted::bounded(&token),
         token,
-        "the fixture must be a token `untrusted::bounded` would shorten, or the          second layer is not the one under test"
+        "the fixture must be a token `untrusted::bounded` would shorten, or \
+         the second layer is not the one under test"
     );
 
     let refusal = goal::legality(
@@ -1583,13 +1590,21 @@ fn an_over_length_phase_token_is_refused_by_the_bound_not_truncated_into_a_phase
         resolved_cap(),
     )
     .expect_err(
-        "a phase token the bound would have to shorten must be REFUSED.          Truncated instead, it becomes a different phase token — and the          roadmap-membership check downstream would then decide on a value the          model never named, which is repairing a model's answer rather than          refusing it (SAFE-08)",
+        "a phase token the bound would have to shorten must be REFUSED. \
+         Truncated instead, it becomes a different phase token — and the \
+         roadmap-membership check downstream would then decide on a value the \
+         model never named, which is repairing a model's answer rather than \
+         refusing it (SAFE-08)",
     );
 
     assert_eq!(
         refusal.reason().as_str(),
         goal::REASON_PHASE_NOT_PLAIN_COMPONENT,
-        "the over-length token REUSES the existing reason — the goal.rs comment's          documented choice, no new `GoalReason` arm. Against a build that          truncates instead of refusing, this reads `{}`: the roadmap-membership          arm, reached because the token was silently repaired into a phase the          model did not choose",
+        "the over-length token REUSES the existing reason — the goal.rs \
+         comment's documented choice, no new `GoalReason` arm. Against a \
+         build that truncates instead of refusing, this reads `{}`: the \
+         roadmap-membership arm, reached because the token was silently \
+         repaired into a phase the model did not choose",
         goal::REASON_PHASE_ABSENT_FROM_ROADMAP
     );
 

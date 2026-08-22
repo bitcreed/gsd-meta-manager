@@ -22,6 +22,14 @@ use std::path::{Path, PathBuf};
 /// cwd-independent — the idiom `tests/executor_lifecycle.rs:26-29` already uses.
 const SRC_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
 
+/// The integration-test root, walked by the tree-wide scans only.
+///
+/// Added in round 6: the `DEGENERATE` uniqueness guard claimed a TREE-WIDE
+/// property while scanning `src/` alone, and pass 6 found three hand-copied
+/// subsets sitting in `tests/` the whole time (WR-04). A guard whose message
+/// overclaims its scan is the inheritance vector this round closes.
+const TESTS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests");
+
 /// The identifier that bypasses the opt-in gate, and the one file allowed to
 /// mention it.
 const ESCAPE_HATCH: &str = "for_testing_bypassing_opt_in";
@@ -224,6 +232,32 @@ fn source_files() -> Vec<SourceFile> {
         !out.is_empty(),
         "the audit walked {SRC_ROOT} and found no Rust source at all, which means \
          it is auditing nothing"
+    );
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Every `*.rs` file under `src/` AND `tests/`, sorted by path.
+///
+/// For the scans whose property is genuinely tree-wide. Kept separate from
+/// [`source_files`] rather than replacing it: most guards in this file are
+/// deliberately about PRODUCTION code, and widening them wholesale would change
+/// what they assert.
+fn source_and_test_files() -> Vec<SourceFile> {
+    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut out = Vec::new();
+    collect(Path::new(SRC_ROOT), &base, &mut out);
+    collect(Path::new(TESTS_ROOT), &base, &mut out);
+    assert!(
+        out.iter().any(|(path, _)| path.starts_with("src/")),
+        "the tree-wide walk found no production source, so it is auditing less \
+         than it claims"
+    );
+    assert!(
+        out.iter().any(|(path, _)| path.starts_with("tests/")),
+        "the tree-wide walk found no integration test source at all. That is \
+         exactly the shape of the overclaim this walk exists to fix — a scan \
+         that reports clean because it never looked."
     );
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
@@ -2011,7 +2045,7 @@ const ITEM_OPENERS: &[&str] = &[
     "#[",
 ];
 
-/// **The bound guard six's limit 4 names, and guard eight's limit 3.**
+/// **The bound guard six's limit 4 names, and guard eight's limit 4.**
 ///
 /// Both guards find a file's production/test boundary with a column-zero
 /// `mod tests {` marker and then skip **from the marker to END OF FILE**
@@ -2129,11 +2163,18 @@ fn the_boundary_self_check_sees_restricted_visibility_items() {
             (5, "pub(crate) fn smuggled() {}".to_string()),
             (6, "pub(super) const X: u8 = 0;".to_string()),
         ],
-        "the scan must report BOTH restricted-visibility items planted after the          marker. `pub fn above_the_marker` is before it and is not an offender;          the INDENTED item on the last line is limit 1 — silent under-detection,          named in the header rather than fixed, and asserted here so the limit is          a measured fact rather than a guess. Got: {offenders:?}"
+        "the scan must report BOTH restricted-visibility items planted after \
+         the marker. `pub fn above_the_marker` is before it and is not an \
+         offender; the INDENTED item on the last line is limit 1 — silent \
+         under-detection, named in the header rather than fixed, and asserted \
+         here so the limit is a measured fact rather than a guess. Got: \
+         {offenders:?}"
     );
     assert_eq!(
         scanned_files, 1,
-        "the planted file declares a marker, so the scan must count it — the          count is the live assertion's only non-vacuity floor and this proves it          is computed rather than defaulted"
+        "the planted file declares a marker, so the scan must count it — the \
+         count is the live assertion's only non-vacuity floor and this proves \
+         it is computed rather than defaulted"
     );
 }
 
@@ -2392,26 +2433,26 @@ fn the_arrival_evidence_field_is_named_only_where_the_schema_declares_it() {
 //    fourth line naming any variant, which 21-15 did: a needle could then go
 //    blind and the count would still clear 3. Counting DISTINCT needles cannot
 //    be satisfied by a site that grew.
-// 6. The three `Self::`-qualified needles may legitimately match ZERO sites,
+// 2. The three `Self::`-qualified needles may legitimately match ZERO sites,
 //    and are therefore excluded from the per-needle floor (D-16-3). They exist
 //    to CATCH an evasion spelling, not to be used: demanding that each match
 //    something would demand writing the pattern this guard forbids.
 //    **Under-detection — silent** for that spelling specifically, bounded by
 //    the type-qualified triple, which any real construction site must also
 //    name.
-// 2. `enclosing_fn` finds the nearest preceding `fn` with no brace tracking, so
+// 3. `enclosing_fn` finds the nearest preceding `fn` with no brace tracking, so
 //    a line sitting between the end of `command_source`'s body and the next
 //    declaration is attributed to `command_source` and allowlisted.
 //    **Under-detection — silent**, named rather than fixed: a brace-tracking
 //    parser is out of proportion here, exactly as in guard six's limit 5.
-// 3. The production/test boundary is the shared marker approximation, and it
+// 4. The production/test boundary is the shared marker approximation, and it
 //    skips from the marker to END OF FILE. **Under-detection — silent**, and
 //    now bounded tree-wide by `no_production_item_follows_a_test_module_marker`,
 //    which proves the skipped region contains no items at all.
-// 4. `executable_lines` filters LINE comments only, so a variant named inside a
+// 5. `executable_lines` filters LINE comments only, so a variant named inside a
 //    `/* … */` block counts as executable. **Over-detection — loud**: the
 //    failure arrives as a named line a reader can look at.
-// 5. The three `Self::`-qualified needles name no TYPE, so they would also match
+// 6. The three `Self::`-qualified needles name no TYPE, so they would also match
 //    an unrelated enum that happens to have a `Command`, `Routed` or `Goal`
 //    tuple variant and constructs it as `Self::` inside its own `impl`.
 //    **Over-detection — loud**, and deliberately accepted in that direction: a
@@ -3276,7 +3317,8 @@ fn drive_args_declares_no_raw_argv_string_field() {
         field_lines.len() >= 10,
         "the scan saw only {} field declarations in `DriveArgs`, so its emptiness \
          proves almost nothing — the struct carries twelve. Either the extraction \
-         broke or the declaration style moved (limit 2).",
+         broke or the declaration style moved — which is what these floors DO \
+         bound; a single added field is caught by the offender scan, not here.",
         field_lines.len()
     );
     let protected = field_lines
@@ -3397,7 +3439,17 @@ const MANUFACTURED_BLANK: &str = "=> String::new()";
 ///
 /// Distinctive because no ordinary string literal contains it: a hit outside
 /// `src/test_support.rs` is a hand-copied `DEGENERATE` subset.
-const DEGENERATE_WITNESS: &str = r#""\n  \n""#;
+/// **Assembled at RUNTIME from two halves, following `REJECT_HEAD`/`REJECT_TAIL`
+/// in this same file.** Once the uniqueness scan was widened to `tests/` in
+/// round 6 it began walking this file too, and a witness spelled out as one
+/// literal made the guard report ITSELF. The halves are meaningless apart.
+const DEGENERATE_WITNESS_HEAD: &str = r#""\n "#;
+const DEGENERATE_WITNESS_TAIL: &str = r#" \n""#;
+
+/// [`DEGENERATE_WITNESS_HEAD`] and [`DEGENERATE_WITNESS_TAIL`], joined.
+fn degenerate_witness() -> String {
+    format!("{DEGENERATE_WITNESS_HEAD}{DEGENERATE_WITNESS_TAIL}")
+}
 
 /// The one file that may spell [`DEGENERATE_WITNESS`].
 const DEGENERATE_HOME: &str = "src/test_support.rs";
@@ -3447,10 +3499,27 @@ fn no_match_arm_in_the_driver_manufactures_a_blank_value() {
     );
 }
 
+/// The shared blank-shape const is spelled in exactly one place, TREE-WIDE.
+///
+/// **This scan used to walk `src/` alone while its message said "tree-wide", and
+/// three hand-copied subsets sat in `tests/` the whole time** (pass-6 WR-04):
+/// `driver_dry_run.rs` carried two of six and four of six, `driver_goal_seam.rs`
+/// four of six. The scan now walks `tests/` as well, which is what makes the
+/// message true; the three subsets consume the const, which is what makes the
+/// scan pass. Both halves landed together, because widening the scan without
+/// converting the subsets would only have moved the dishonesty into a failing
+/// test, and converting them without widening the scan would have left the
+/// overclaim standing.
+///
+/// Reachable only because 21-17 dropped `test_support`'s `#[cfg(test)]` gate
+/// (D-17-5): before that an integration crate could not name the const at all,
+/// which is the limitation the retired in-place disclosures in those two files
+/// recorded honestly at the time.
 #[test]
 fn the_degenerate_payload_set_is_spelled_in_exactly_one_place() {
-    let files = source_files();
-    let hits = executable_hits(&files, DEGENERATE_WITNESS);
+    let files = source_and_test_files();
+    let witness = degenerate_witness();
+    let hits = executable_hits(&files, &witness);
 
     let home_hits = hits.iter().filter(|(path, _, _)| path == DEGENERATE_HOME).count();
     assert_eq!(
