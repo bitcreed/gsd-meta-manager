@@ -752,7 +752,12 @@ fn goal_lines(goal: &str, inner_width: u16) -> Vec<Line<'static>> {
     const PREFIX: &str = "  goal: ";
     const CONTINUATION: &str = "        ";
 
-    if goal.trim().is_empty() {
+    // The one production spelling of blankness, not a `trim` of this renderer's
+    // own. This surface renders values re-read from run records, which this
+    // build's parse boundary never saw: a goal of zero-width characters survives
+    // `str::trim` and used to render as a blank line wearing a goal's label —
+    // which reads as a goal the user simply cannot see rather than as no goal.
+    if !crate::text::carries_visible_content(goal) {
         return vec![Line::from(vec![
             Span::styled(PREFIX, label_style()),
             Span::styled(GOAL_NONE_GIVEN, muted_style()),
@@ -2020,11 +2025,20 @@ mod tests {
 
     #[test]
     fn an_absent_goal_renders_the_pinned_copy_and_nothing_else() {
-        for empty in ["", "   ", "\n\t "] {
+        // The shared blank-shape set rather than a hand-picked list, so the
+        // zero-width shapes `str::trim` cannot see are covered here too: this
+        // surface renders values re-read from run records, which this build's
+        // parse boundary never saw, and a goal of one `U+200B` used to render as
+        // a blank line wearing a goal's label.
+        for empty in crate::test_support::DEGENERATE
+            .iter()
+            .chain(["\n\t "].iter())
+            .copied()
+        {
             let rendered: String = goal_lines(empty, 80).iter().map(text).collect();
             assert!(
                 rendered.contains(GOAL_NONE_GIVEN),
-                "an absent goal must say so: {rendered:?}"
+                "an absent goal must say so; {empty:?} gave: {rendered:?}"
             );
         }
         // A goal that WAS given is never replaced by the placeholder.

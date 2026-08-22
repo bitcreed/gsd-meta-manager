@@ -95,15 +95,20 @@ pub fn parse_filter(input: &str) -> (String, FilterColumn) {
 /// goal renders `(none given)`, while a recorded empty goal renders as a blank
 /// line that looks like a goal the reader simply cannot see.
 ///
-/// Emptiness is tested on the **trimmed** text while the value returned is the
-/// **untrimmed** original. A goal of three spaces is no goal; a goal that was
-/// given is stored verbatim and never paraphrased, so nothing here rewrites what
-/// the user typed (FEATURES table stakes, D-23).
+/// Emptiness is judged by [`crate::text::carries_visible_content`] — the one
+/// production spelling — while the value returned is the **untrimmed** original.
+/// A goal of three spaces is no goal, and neither is a goal of zero-width
+/// characters: this used to test `!text.trim().is_empty()`, which accepts
+/// `U+200B` and `U+FEFF`, so a goal read back from an OLD record made only of
+/// those rendered as a blank line wearing a goal's label rather than as
+/// `(none given)`. A goal that WAS given is stored verbatim and never
+/// paraphrased, so nothing here rewrites what the user typed (FEATURES table
+/// stakes, D-23).
 ///
 /// Pure, which is what makes the branch that matters testable without spawning a
 /// driver (S6).
 pub fn goal_or_none(goal: Option<&str>) -> Option<&str> {
-    goal.filter(|text| !text.trim().is_empty())
+    goal.filter(|text| crate::text::carries_visible_content(text))
 }
 
 /// Project one journal record into a live-output line, or `None` if it belongs
@@ -3832,6 +3837,18 @@ mod tests {
             None,
             "a buffer of spaces is no goal either"
         );
+        // **The shapes `str::trim` cannot see**, which is what this predicate
+        // used to be written against. A goal of one zero-width space rendered as
+        // a blank line wearing a goal's label — which reads as a goal the user
+        // cannot see, rather than as no goal. The whole shared set, so a seventh
+        // blank shape arrives here without anybody copying it.
+        for blank in crate::test_support::DEGENERATE {
+            assert_eq!(
+                goal_or_none(Some(blank)),
+                None,
+                "{blank:?} carries no visible goal"
+            );
+        }
         assert_eq!(
             goal_or_none(Some("ship the driver tab")),
             Some("ship the driver tab"),

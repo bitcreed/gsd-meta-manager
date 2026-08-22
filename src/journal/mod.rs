@@ -253,18 +253,33 @@ pub fn runs_root(planning_dir: &Path) -> PathBuf {
 /// * **Embedded control characters.** `"a\nEVIL"` is one `Normal` component, so
 ///   it passed, and the dry-run render then printed the newline verbatim inside
 ///   what reads as a pasteable command line.
+/// * **Zero-width and format characters only**, which `str::trim` cannot see. A
+///   value of one `U+200B` passed every check above and was reproduced end to
+///   end by pass 5: a **complete run** whose directory name was one invisible
+///   character, and two visually identical registry aliases resolving to two
+///   different envelope paths. The blank half of this predicate now delegates to
+///   [`crate::text::carries_visible_content`] — the one production spelling of
+///   the judgment — instead of carrying a second, weaker one of its own. Refused
+///   as of that commit; the correction rides it.
 ///
-/// Both are now refused. Neither was ever a legitimate run id, alias, or phase
+/// All three are now refused. None was ever a legitimate run id, alias, or phase
 /// name; every value the suite pins as acceptable (`"20"`, `"2.1"`, real
 /// timestamped run ids, registered aliases) still passes.
 pub fn is_plain_path_component(value: &str) -> bool {
-    // Blank rather than merely empty: a component made of spaces names nothing
-    // a reader could identify, and it reached a run directory.
-    if value.trim().is_empty() {
+    // Blank rather than merely empty, and judged by the ONE production spelling
+    // of blankness rather than by a `trim` of this function's own. A component
+    // with nothing visible in it names nothing a reader could identify, and it
+    // reached a run directory.
+    if !crate::text::carries_visible_content(value) {
         return false;
     }
     // A control character has no business in a path component, and one that
     // reaches a rendered preview breaks the line the preview appears to be.
+    //
+    // **This is a SEPARATE question from the one above and is kept.** Visibility
+    // asks whether anything can be seen at all; this asks whether a control
+    // character is EMBEDDED in otherwise-visible text — `"a\nEVIL"` carries
+    // plenty of visible content and is still not a name.
     if value.chars().any(|c| c.is_control()) {
         return false;
     }
@@ -2712,8 +2727,17 @@ mod tests {
             );
         }
 
-        for hostile in [
-            "",
+        // **The blank half consumes the SHARED const, and the structural half
+        // stays literal.** Pass 5 found this pin carrying a hand-copied
+        // `["   ", "\t", "\n  \n"]` — three of the six blank shapes defined in
+        // the very commit that defined six — so the two zero-width shapes were
+        // never asserted at the one seam where they were reachable end to end,
+        // and `--run-id '\u{200b}'` drove a complete run. Every blank-shape pin
+        // in the tree now reads `test_support::DEGENERATE`, so a seventh shape
+        // lands here without anybody remembering to copy it. The traversal,
+        // separator and embedded-control hostiles below are NOT blank shapes and
+        // stay written out.
+        let structural_hostiles = [
             ".",
             "..",
             "../escaped",
@@ -2724,17 +2748,19 @@ mod tests {
             "./escaped",
             "escaped/",
             "a/../b",
-            // Whitespace-only: one `Component::Normal` whose text is the whole
-            // of the value, so it passed until this commit. `--run-id '   '`
-            // named a run directory made of spaces.
-            "   ",
-            "\t",
-            "\n  \n",
             // A control character embedded in an otherwise plain component.
             // `"a\nEVIL"` reached the dry-run render verbatim, breaking the line
-            // the preview appears to be.
+            // the preview appears to be. It carries plenty of VISIBLE content,
+            // so it is refused by the control-character half rather than by the
+            // blankness half — which is why that half is composed with the
+            // shared predicate rather than replaced by it.
             "a\nEVIL",
-        ] {
+        ];
+        for hostile in crate::test_support::DEGENERATE
+            .iter()
+            .chain(structural_hostiles.iter())
+            .copied()
+        {
             assert!(
                 !is_plain_path_component(hostile),
                 "{hostile:?} must not be accepted as a run id"

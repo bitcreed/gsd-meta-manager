@@ -341,17 +341,21 @@ pub(crate) mod payload {
         /// empty string, and any value whose every character is whitespace, a
         /// control character, or a zero-width/format character.
         ///
+        /// **The judgment is DELEGATED to [`crate::text::carries_visible_content`]
+        /// and is not spelled here.** It used to be an inline character-class
+        /// closure, which made this the second production spelling of blankness
+        /// beside `journal::is_plain_path_component`'s `str::trim` — and pass 5
+        /// reproduced the two disagreeing about `U+200B` end to end. The
+        /// invariant this type carries is *enforcement*, which is the private
+        /// field; the *definition* of blank belongs in one module that every
+        /// judge of it reads.
+        ///
         /// An `Option` rather than a typed error, so the calling seam owns the
         /// refusal it reports: `command_source` maps `None` onto
         /// [`crate::error::DriveError::NoCommandSource`], which is already the
         /// name for a run with nothing to do.
         pub(crate) fn new(raw: &str) -> Option<Self> {
-            let visible = raw.chars().any(|c| {
-                !(c.is_whitespace()
-                    || c.is_control()
-                    || matches!(c, '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}'))
-            });
-            if visible {
+            if crate::text::carries_visible_content(raw) {
                 Some(Self(raw.to_string()))
             } else {
                 None
@@ -1866,26 +1870,12 @@ mod tests {
 
     /// The payloads that carry no instruction at all.
     ///
-    /// Enumerated as a constant rather than inlined per assertion so that a
-    /// seventh blank shape is added in one place and every consumer of the
-    /// matrix gains it at once.
-    ///
-    /// **The payload set and the production predicate are DELIBERATELY
-    /// different expressions of "blank", and the previous doc argued the exact
-    /// opposite.** It said the test and the code must agree about what blank
-    /// means, and wrote both against `str::trim` so they could not disagree —
-    /// which is a tautology, not a check (round-3 WR-03). An enumeration that
-    /// shares the guard's predicate structurally cannot contain a payload the
-    /// guard mishandles, so it can never falsify the thing it exists to check.
-    ///
-    /// These are therefore **literals, asserted by name**. `NonBlank::new`
-    /// refuses whitespace, control and zero-width/format characters; this array
-    /// names six concrete values and demands a refusal for each. The last two
-    /// are the demonstration: `U+200B` and `U+FEFF` both survive `trim`
-    /// untouched, so under the old coupling neither could ever have appeared
-    /// here. A production/test disagreement is now a named red rather than a
-    /// silent agreement.
-    const DEGENERATE: [&str; 6] = ["", "   ", "\t", "\n  \n", "\u{200b}", "\u{feff}"];
+    /// **Lifted out of this module in 21-15.** It now lives at
+    /// [`crate::test_support::DEGENERATE`], read by every blank-shape pin in the
+    /// tree, because pass 5 found the `--run-id` pin carrying a hand-copied
+    /// three-of-six subset added in the very commit that defined six. A const
+    /// each seam copies from is a const each seam can copy from incompletely.
+    use crate::test_support::DEGENERATE;
 
     /// The expected `CommandSource` variant names, in ONE place (round-3 IN-02).
     ///

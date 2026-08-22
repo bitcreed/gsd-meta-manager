@@ -16,5 +16,9 @@ pub mod registry;
 pub mod session_detector;
 pub mod state_reader;
 pub mod terminal_switch;
+/// Fixtures shared by the crate's in-module tests; never compiled into a release.
+#[cfg(test)]
+pub mod test_support;
+pub mod text;
 pub mod ui;
 pub mod watcher;
