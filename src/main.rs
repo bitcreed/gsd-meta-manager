@@ -13,6 +13,38 @@ use gsd_meta_manager::main_loop::{
 };
 use gsd_meta_manager::registry::{add_project, list_projects, remove_project};
 
+/// Judge an alias arriving on an envelope re-entry, or fail closed with
+/// `refusal_code` after naming the way out.
+///
+/// **T-21-17-07, the consequence D-17-1/D-17-2 create and this function is the
+/// route out of.** Pass 6 measured that an older build DID register invisible
+/// and look-alike aliases. Those entries are still in `config.json`, `list`
+/// still renders them, and the hook stubs installed for them still pass their
+/// alias on re-entry — but this build no longer admits the value. The refusal is
+/// correct (the tool genuinely cannot tell which project the value names), and
+/// on its own it is a dead end: the user meets it as a bare `exit 1` on
+/// `git push` for a project that worked yesterday. So the message names the
+/// recovery route, which is `remove` — deliberately left raw for exactly this
+/// (D-17-3) — followed by a re-add under a visible alias.
+///
+/// It emits no credential and echoes no payload beyond the alias itself, so the
+/// askpass arm's redaction contract holds through it.
+fn judged_alias_or_exit(raw: &str, refusal_code: i32) -> gsd_meta_manager::registry::Alias {
+    match gsd_meta_manager::registry::Alias::new(raw) {
+        Ok(alias) => alias,
+        Err(refusal) => {
+            eprintln!("Error: {refusal}");
+            eprintln!(
+                "This alias was accepted by an older build and no longer names a valid \
+                 identity, so this hook refuses rather than guessing which project it \
+                 means. To recover: `gsd-meta-manager remove <alias>` (removal still \
+                 accepts it), then re-add the project under a visible alias."
+            );
+            std::process::exit(refusal_code);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing subscriber with file appender before anything else
@@ -178,8 +210,19 @@ async fn main() -> anyhow::Result<()> {
         // git hook's stdout and stderr belong to the pushing git process; a
         // terminal put into raw mode by ratatui on the way past would corrupt
         // the very output that carries the refusal.
+        //
+        // **The envelope re-entry arms judge their alias and FAIL CLOSED**
+        // (D-17-2, T-21-17-07). The generated hook stubs pass the alias they
+        // were installed with; a stub installed by an older build can carry a
+        // value this build no longer admits, and the honest answer to "I cannot
+        // tell which project this names" is each arm's existing refusal exit
+        // code — 1 for the hooks and askpass, 2 for the guard — never a pass.
+        // Each refusal NAMES THE RECOVERY ROUTE, because the first user to meet
+        // this meets it as `exit 1` on `git push`, and a refusal a user cannot
+        // act on is a bug report rather than an error message.
         Some(Commands::Envelope { action }) => match action {
             EnvelopeAction::PrePush { alias, hook_path } => {
+                let alias = judged_alias_or_exit(&alias, 1);
                 let stdin = std::io::stdin();
                 // git runs a hook with the working directory at the top of the
                 // worktree, which is what makes the scan's root and the path
@@ -211,6 +254,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             EnvelopeAction::PreCommit { alias, hook_path } => {
+                let alias = judged_alias_or_exit(&alias, 1);
                 let repo_root = match std::env::current_dir() {
                     Ok(dir) => dir,
                     Err(err) => {
@@ -238,6 +282,10 @@ async fn main() -> anyhow::Result<()> {
                 host,
                 prompt,
             } => {
+                // Fail-closed emits NO credential, which is the redaction
+                // contract: the hint may name the recovery command, and names
+                // nothing else.
+                let alias = judged_alias_or_exit(&alias, 1);
                 // The credential goes to stdout and the refusal goes to stderr,
                 // both inside the handler — nothing is printed here, because a
                 // second print site is a second place a secret could be echoed.
@@ -262,6 +310,8 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             EnvelopeAction::Guard { alias } => {
+                // Exit 2 is this arm's deny, so its fail-closed code is 2.
+                let alias = judged_alias_or_exit(&alias, 2);
                 // Before `tui::init()` for the same reason the hook arms are:
                 // this process's stdout carries the permission decision the
                 // agent CLI reads, and a terminal put into raw mode on the way

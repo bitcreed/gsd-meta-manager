@@ -283,11 +283,17 @@ pub fn assert_provenance_in(root: &Path, alias: &str, invoked_from: &Path) -> an
 ///    the verification step suppressed, which the `pre-commit` hook by
 ///    construction never saw.
 pub fn pre_push(
-    alias: &str,
+    alias: &crate::registry::Alias,
     stdin: impl BufRead,
     invoked_from: &Path,
     repo_root: &Path,
 ) -> anyhow::Result<i32> {
+    // Re-entry judges the alias it is handed (D-17-2): the generated stub's
+    // argv is unchanged, but the binary it re-enters now insists the value can
+    // still name an identity. The conversion happens in `main.rs`'s arm, which
+    // fails closed with this hook's own exit code; by the time control is here
+    // the value has been judged.
+    let alias = alias.as_str();
     // A provenance mismatch is an envelope assertion that failed, and it is a
     // refusal like any other — so it parks like any other. Without this, the one
     // refusal that fires when the hook itself has been relocated would be the
@@ -340,7 +346,13 @@ pub fn pre_push(
 /// exits zero with empty output for a genuinely empty index, and this cannot
 /// tell that apart from a failed read; the safe reading of the ambiguity is the
 /// one that blocks, and an empty commit is not a thing a driven run needs.
-pub fn pre_commit(alias: &str, invoked_from: &Path, repo_root: &Path) -> anyhow::Result<i32> {
+pub fn pre_commit(
+    alias: &crate::registry::Alias,
+    invoked_from: &Path,
+    repo_root: &Path,
+) -> anyhow::Result<i32> {
+    // See `pre_push`: judged in `main.rs`'s arm, unwrapped here.
+    let alias = alias.as_str();
     // Same reason as [`pre_push`]'s: a refusal that leaves no trace is the one
     // failure a later reader cannot audit (T-19-56).
     assert_provenance(alias, invoked_from).inspect_err(|_| {
@@ -757,7 +769,11 @@ pub struct GuardRequest {
 /// control into an approval authority, auto-approving commands the user's own
 /// permission rules would otherwise have prompted for. Staying silent leaves
 /// the ordinary permission flow exactly where it was.
-pub fn guard(alias: &str, stdin: impl std::io::Read) -> anyhow::Result<i32> {
+pub fn guard(alias: &crate::registry::Alias, stdin: impl std::io::Read) -> anyhow::Result<i32> {
+    // See `pre_push`: judged in `main.rs`'s arm, unwrapped here. `guard_in`
+    // keeps `&str` — it is the explicit-roots variant the suite drives directly,
+    // and it creates nothing.
+    let alias = alias.as_str();
     let root = super::envelope_root().ok_or_else(|| {
         // The guard's own refusal-before-a-verdict. It parks for the same reason
         // every other refusal does: an unrecorded refusal is one a later reader

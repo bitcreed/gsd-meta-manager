@@ -732,7 +732,11 @@ pub fn askpass_into<W: Write>(
 }
 
 /// [`askpass_into`] against the registry at the default path.
-pub fn askpass(alias: &str, prompt: &str, configured_remote_host: &str) -> anyhow::Result<i32> {
+pub fn askpass(
+    alias: &crate::registry::Alias,
+    prompt: &str,
+    configured_remote_host: &str,
+) -> anyhow::Result<i32> {
     askpass_with_config(
         &crate::config::Config::default_path(),
         alias,
@@ -751,16 +755,15 @@ pub fn askpass(alias: &str, prompt: &str, configured_remote_host: &str) -> anyho
 /// project does not ship things in.
 pub fn askpass_with_config(
     config_path: &Path,
-    alias: &str,
+    alias: &crate::registry::Alias,
     prompt: &str,
     configured_remote_host: &str,
 ) -> anyhow::Result<i32> {
-    if !crate::journal::is_plain_path_component(alias) {
-        return Err(anyhow!(
-            "alias {alias:?} is not a plain path component, so no envelope sanctions \
-             a credential for it"
-        ));
-    }
+    // The manual `is_plain_path_component` bail this replaced was a per-site
+    // spelling of a judgment the type now carries (D-17-2): an `Alias` satisfies
+    // that predicate by construction, and `main.rs`'s Askpass arm fails closed —
+    // redacted stderr, exit 1, no credential emitted — before reaching here.
+    let alias = alias.as_str();
     let config = crate::config::load_config(config_path)?;
     let source = config
         .projects

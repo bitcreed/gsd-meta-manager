@@ -205,6 +205,19 @@ pub fn envelope_dir(alias: &str) -> Option<PathBuf> {
 /// invisible formatting**, so two aliases that render identically can no longer
 /// name two envelope roots (and, through them, two credential scopes) — the harm
 /// pass 5 named and pass 6 reproduced.
+///
+/// **This function keeps `&str` + `Option` deliberately, and the deviation is
+/// recorded rather than left to be read as an oversight (D-17-6).** The pass-6
+/// verifier's remediation list proposed replacing it with a signature taking the
+/// validated `registry::Alias`. It is not taken, for two reasons that point the
+/// same way. First, the `Option` return **is** the WR-02 mechanism: it conscripts
+/// the compiler into making every one of the seven internal callers (config keys,
+/// `DriveArgs`, cred, hooks, ledger) decide what to do about an alias it cannot
+/// use — an infallible newtype-taking variant would delete that enumeration.
+/// Second, the harm is already closed at this seam by the D-17-1 clause above,
+/// and the argv-side bound lives at `Alias::new` in the entry arms; swapping a
+/// deliberately fallible seam for an infallible one would remove a defence layer
+/// in order to add a redundant one.
 pub fn envelope_dir_in(root: &Path, alias: &str) -> Option<PathBuf> {
     if !crate::journal::is_plain_path_component(alias) {
         return None;
