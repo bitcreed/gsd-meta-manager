@@ -2055,6 +2055,77 @@ mod tests {
         }
     }
 
+    /// Every [`CommandSource`] variant, constructed once, paired with its name.
+    ///
+    /// **The SECOND anchor direction for [`ALL_VARIANT_NAMES`]** (pass-5 warning
+    /// 4). [`variant_name`] anchors the const from one side: a fourth variant
+    /// fails to compile there, so nobody can add one without opening this module.
+    /// It does not anchor the other side — a const that had quietly gone stale,
+    /// or a variant produced by no argv position, left the coverage assertion
+    /// green with a whole variant unexercised.
+    ///
+    /// This closes it. The array is written out explicitly — no wildcard, no
+    /// loop, no generated payload — so a fourth variant is a compile error HERE
+    /// too, in two ways: the array's declared length and the missing
+    /// construction. The pin below then compares these names against
+    /// `ALL_VARIANT_NAMES` as sets, so a const that did not grow with the enum is
+    /// a red **by name** rather than a silently narrower sweep.
+    ///
+    /// Stated honestly: the compile errors force CONSTRUCTION of a fourth
+    /// variant; the set equality is what then forces the const to grow. The
+    /// compile-time half lives in the two wildcard-free fns; the by-name half
+    /// lives in the pin.
+    fn one_of_each() -> [(&'static str, CommandSource); 3] {
+        [
+            ("Command", CommandSource::Command(visible("x"))),
+            ("Routed", CommandSource::Routed(visible("x"))),
+            ("Goal", CommandSource::Goal(visible("x"))),
+        ]
+    }
+
+    #[test]
+    fn all_variant_names_matches_the_variant_set_in_both_directions() {
+        let built = one_of_each();
+
+        assert_eq!(
+            built.len(),
+            ALL_VARIANT_NAMES.len(),
+            "`ALL_VARIANT_NAMES` has {} entries and `one_of_each` builds {} \
+             variants. A fourth `CommandSource` variant is a compile error in \
+             `variant_name` and in `one_of_each`; once somebody has classified it \
+             in both, the const has to grow too, and this is where forgetting \
+             that is caught.",
+            ALL_VARIANT_NAMES.len(),
+            built.len()
+        );
+
+        // The label each entry carries must be the one `variant_name` derives
+        // from the value beside it, or the pairing is decorative.
+        for (label, source) in &built {
+            assert_eq!(
+                variant_name(source),
+                *label,
+                "`one_of_each` pairs {label:?} with a value `variant_name` calls \
+                 {:?}; the pairing is what makes the set comparison below mean \
+                 anything",
+                variant_name(source)
+            );
+        }
+
+        let mut names: Vec<&str> = built.iter().map(|(name, _)| *name).collect();
+        names.sort_unstable();
+        let mut expected = ALL_VARIANT_NAMES.to_vec();
+        expected.sort_unstable();
+        assert_eq!(
+            names, expected,
+            "the variants `one_of_each` constructs and the names \
+             `ALL_VARIANT_NAMES` lists must be the same set. They are read by \
+             different consumers — the preview enumeration and the matrix's \
+             coverage assertion — and two lists that must agree are two lists \
+             that can drift."
+        );
+    }
+
     /// The first line of `rendered` that is a number, a dot, and nothing a
     /// reader could see.
     ///
@@ -2065,14 +2136,27 @@ mod tests {
     /// `CommandSource`'s own promotion was made to remove.
     ///
     /// **Its judgment of "visibly empty" is spelled out here rather than
-    /// delegated, and that is the point of the rename** (round-3 WR-03). The
-    /// old name and the old `tail.trim().is_empty()` both borrowed production's
-    /// notion of blank, so the detector could only ever agree with the guard it
-    /// was checking. The character classes below are written independently: if
-    /// [`payload::NonBlank`] were ever loosened — dropping the zero-width range,
-    /// say — this detector would keep calling a `U+200B` entry visibly empty and
-    /// the matrix would go red. That disagreement is the whole value. Do not
-    /// replace this with a call to `NonBlank` or with `tail.trim()`.
+    /// delegated to [`crate::text::carries_visible_content`], and the reason is
+    /// narrower than the old doc claimed** (pass-5 WR-02). The old text credited
+    /// this detector with breaking the trim tautology round-3 WR-03 found. It
+    /// does not: the tautology is broken by the LITERAL
+    /// [`crate::test_support::DEGENERATE`] array, which names six concrete
+    /// payloads and demands a refusal for each — an enumeration written
+    /// independently of the predicate can contain a value the predicate
+    /// mishandles, which is exactly what `U+200B` and `U+FEFF` demonstrate. No
+    /// degenerate payload ever reaches this detector at all, because every one of
+    /// them is refused at the parse boundary before anything renders.
+    ///
+    /// What this detector is genuinely for is the **realistic** half: a renderer
+    /// that printed an invisible numbered entry beneath a *visible* payload. Its
+    /// independently-written character classes matter there — if
+    /// [`payload::NonBlank`] were ever loosened to admit a zero-width payload,
+    /// this detector would still judge a `U+200B` entry visibly empty and the
+    /// matrix would go red — and the
+    /// direct pins in
+    /// [`the_visibly_empty_detector_is_falsifiable_on_its_own`] make that claim
+    /// checkable rather than asserted. Do not replace this with a call to
+    /// `carries_visible_content` or with `tail.trim()`.
     fn visibly_empty_numbered_entry(rendered: &str) -> Option<&str> {
         fn visible(text: &str) -> bool {
             text.chars().any(|c| {
@@ -2091,6 +2175,41 @@ mod tests {
                 !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()) && !visible(tail)
             })
         })
+    }
+
+    /// **The detector, falsifiable on its own** (pass-5 WR-02).
+    ///
+    /// Every other consumer of [`visibly_empty_numbered_entry`] asserts it finds
+    /// NOTHING, which a detector that had stopped working would satisfy forever —
+    /// the shape this phase has now paid for three times. These four pins are the
+    /// other direction: two entries it must report, two it must not.
+    #[test]
+    fn the_visibly_empty_detector_is_falsifiable_on_its_own() {
+        assert_eq!(
+            visibly_empty_numbered_entry("1. \u{200b}"),
+            Some("1. \u{200b}"),
+            "a numbered entry whose tail is one zero-width space is visibly \
+             empty — it reads to a user as a command the run would issue, with \
+             nothing after the number"
+        );
+        assert_eq!(
+            visibly_empty_numbered_entry("1. \u{feff}\u{2060}"),
+            Some("1. \u{feff}\u{2060}"),
+            "and the same for a tail of a byte-order mark and a word joiner — \
+             both survive `str::trim` untouched, which is why this detector \
+             spells its own character classes"
+        );
+        assert_eq!(
+            visibly_empty_numbered_entry("1. x"),
+            None,
+            "a numbered entry with a visible command is not visibly empty; a \
+             detector that reported this would make the matrix unsatisfiable"
+        );
+        assert_eq!(
+            visibly_empty_numbered_entry("no numbered entry here"),
+            None,
+            "and a line that is not a numbered entry at all is not one"
+        );
     }
 
     /// **CR-01, as an assertion rather than as a review finding.**

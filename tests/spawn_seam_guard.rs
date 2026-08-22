@@ -2377,12 +2377,28 @@ fn the_arrival_evidence_field_is_named_only_where_the_schema_declares_it() {
 //
 // 1. A variant spelling nobody anticipated matches no needle, and no assertion
 //    fires when that happens. **Under-detection — silent.** Two things bound
-//    it: the per-function `contributed >= COMMAND_SOURCE_VARIANT_COUNT`
-//    non-vacuity below, which fails if a needle stops matching a site that
-//    still names all three; and the import assertion below, which makes the
+//    it: the PER-NEEDLE non-vacuity below — each of the three type-qualified
+//    needles must match at least one allowlisted line tree-wide, and each
+//    allowlisted site must be matched by all three — so a needle that goes
+//    blind is a named failure; and the import assertion below, which makes the
 //    cheapest evasion (importing the variants so they can be written bare)
 //    loud. `Self::`-qualified construction WAS a live instance of this limit
 //    and is now matched rather than merely named.
+//
+//    **This replaced a LINE COUNT, and the replacement is the point** (pass-5
+//    warning 3). The bound used to be `contributed >= 3` per allowlisted
+//    function — three attributed lines, on the reasoning that each site names
+//    three variants one per line. That stops biting the moment a site grows a
+//    fourth line naming any variant, which 21-15 did: a needle could then go
+//    blind and the count would still clear 3. Counting DISTINCT needles cannot
+//    be satisfied by a site that grew.
+// 6. The three `Self::`-qualified needles may legitimately match ZERO sites,
+//    and are therefore excluded from the per-needle floor (D-16-3). They exist
+//    to CATCH an evasion spelling, not to be used: demanding that each match
+//    something would demand writing the pattern this guard forbids.
+//    **Under-detection — silent** for that spelling specifically, bounded by
+//    the type-qualified triple, which any real construction site must also
+//    name.
 // 2. `enclosing_fn` finds the nearest preceding `fn` with no brace tracking, so
 //    a line sitting between the end of `command_source`'s body and the next
 //    declaration is attributed to `command_source` and allowlisted.
@@ -2402,8 +2418,9 @@ fn the_arrival_evidence_field_is_named_only_where_the_schema_declares_it() {
 //    false offender is a line a reader dismisses in seconds, whereas the
 //    under-detection the needles close (a `Self::Command(` construction that no
 //    needle matched) is the silent kind. No such enum exists in the tree today —
-//    the scan currently attributes 6 hits, all in `src/driver/mod.rs`, 3 to
-//    `command_source` and 3 to `preview_text`, none via a `Self::` needle.
+//    the scan attributes its hits to `command_source` and `preview_text` in
+//    `src/driver/mod.rs` and to `iteration_source` in `src/driver/run.rs`, none
+//    via a `Self::` needle.
 
 /// The variant spellings, as they are written when built or matched.
 ///
@@ -2425,6 +2442,19 @@ const COMMAND_SOURCE_VARIANTS: &[&str] = &[
     "Self::Command(",
     "Self::Routed(",
     "Self::Goal(",
+];
+
+/// The three needles that any real construction or match site MUST name.
+///
+/// A subset of [`COMMAND_SOURCE_VARIANTS`], and the subset the non-vacuity
+/// floors below are taken over. The `Self::`-qualified siblings are deliberately
+/// out: they exist to CATCH an evasion spelling rather than to be used, so
+/// requiring each to match would require writing the pattern this guard forbids
+/// (D-16-3).
+const COMMAND_SOURCE_TYPE_QUALIFIED: &[&str] = &[
+    "CommandSource::Command(",
+    "CommandSource::Routed(",
+    "CommandSource::Goal(",
 ];
 
 /// The two production functions permitted to name a `CommandSource` variant.
@@ -2518,26 +2548,49 @@ fn every_command_source_variant_is_named_only_where_it_is_built_or_matched() {
     // (`:1501-1509`, T-20-17): an allowlisted site that no longer names a variant
     // means the allowlist is wider than the truth it describes.
     //
-    // The count is also the non-vacuity assertion. Each function names all three
-    // variants — `command_source` builds one per arm, `preview_text` matches one
-    // per arm — so a needle that stopped matching, because of a rename or a
-    // reformat that split a line, is a FAILURE here rather than a silently empty
-    // scan that would satisfy the emptiness assertion above forever.
+    // **DISTINCT NEEDLES, not attributed lines** (pass-5 warning 3). This used to
+    // count lines — `contributed >= 3` per site, on the reasoning that each site
+    // names three variants one per line — and that bound stops biting the moment
+    // a site grows a fourth line naming any variant, which 21-15 did. A needle
+    // could then go blind and the count would still clear three. Each site must
+    // be matched by all THREE type-qualified needles, and each needle must match
+    // somewhere: neither can be satisfied by a site that merely got longer.
     for (file, function) in COMMAND_SOURCE_ALLOWLIST {
-        let contributed = hits
+        let matched: Vec<&&str> = COMMAND_SOURCE_TYPE_QUALIFIED
             .iter()
-            .filter(|(path, _, enclosing, _)| {
-                path == file && enclosing.as_deref() == Some(*function)
+            .filter(|needle| {
+                hits.iter().any(|(path, _, enclosing, line)| {
+                    path == file
+                        && enclosing.as_deref() == Some(*function)
+                        && line.contains(**needle)
+                })
             })
-            .count();
-        assert!(
-            contributed >= COMMAND_SOURCE_VARIANT_COUNT,
+            .collect();
+        assert_eq!(
+            matched.len(),
+            COMMAND_SOURCE_TYPE_QUALIFIED.len(),
             "{file}::{function} is allowlisted as a site that names all \
-             {COMMAND_SOURCE_VARIANT_COUNT} `CommandSource` variants, but the scan \
-             attributes only {contributed} lines to it. Either the allowlist is now \
-             wider than the truth it describes — the site stopped naming them, and \
-             the entry should go in the same commit — or a needle stopped matching \
-             and this guard is auditing less than it claims. Needles: \
+             {COMMAND_SOURCE_VARIANT_COUNT} `CommandSource` variants, but only \
+             {matched:?} of {COMMAND_SOURCE_TYPE_QUALIFIED:?} match a line \
+             attributed to it. Either the allowlist is now wider than the truth \
+             it describes — the site stopped naming them, and the entry should go \
+             in the same commit — or a needle stopped matching and this guard is \
+             auditing less than it claims."
+        );
+    }
+
+    // And the same property from the needle's side: a needle matching nothing
+    // ANYWHERE is a needle that has gone blind, whatever the per-site counts say.
+    // The `Self::`-qualified needles are excluded by D-16-3 — they exist to catch
+    // an evasion spelling, and demanding a match would demand writing the pattern
+    // this guard forbids.
+    for needle in COMMAND_SOURCE_TYPE_QUALIFIED {
+        let matches = hits.iter().filter(|(_, _, _, line)| line.contains(needle)).count();
+        assert!(
+            matches >= 1,
+            "the needle {needle:?} matches no production line at all. A needle \
+             that matches nothing audits nothing, and every emptiness assertion \
+             it participates in above holds for the wrong reason. Needles: \
              {COMMAND_SOURCE_VARIANTS:?}"
         );
     }
@@ -2940,5 +2993,105 @@ fn no_type_alias_hides_a_string_from_guard_nine() {
          the alias or teach `raw_string_argv_fields` to resolve it, in the same \
          commit. Found:{}",
         render(&aliases)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Declared-prohibition needles: a prohibition that is enforced, not trusted
+// ---------------------------------------------------------------------------
+//
+// **Round 4 declared both prohibitions below and shipped violations of both, in
+// the very files its own plans edited.** That is the process finding pass 5
+// recorded, and the answer is not a third sentence: a prohibition nobody can
+// mechanically check is a prohibition nobody checked. Both are cheap to assert,
+// so both are asserted.
+
+/// The manufactured-blank spelling: an unreachable match arm answered with a
+/// fabricated value rather than a typed refusal.
+const MANUFACTURED_BLANK: &str = "=> String::new()";
+
+/// The blank-shape payload set's most distinctive member, as source text.
+///
+/// Distinctive because no ordinary string literal contains it: a hit outside
+/// `src/test_support.rs` is a hand-copied `DEGENERATE` subset.
+const DEGENERATE_WITNESS: &str = r#""\n  \n""#;
+
+/// The one file that may spell [`DEGENERATE_WITNESS`].
+const DEGENERATE_HOME: &str = "src/test_support.rs";
+
+#[test]
+fn no_match_arm_in_the_driver_manufactures_a_blank_value() {
+    let files = source_files();
+    let driver: Vec<SourceFile> = files
+        .iter()
+        .filter(|(path, _)| path == "src/driver/run.rs" || path == "src/driver/mod.rs")
+        .cloned()
+        .collect();
+    assert_eq!(
+        driver.len(),
+        2,
+        "both driver files must be in the scan, or its emptiness is a fact about \
+         the file list rather than about the tree"
+    );
+
+    let offenders = executable_hits(&driver, MANUFACTURED_BLANK);
+    assert!(
+        offenders.is_empty(),
+        "a match arm answers an unreachable state by manufacturing an empty \
+         string. `\"\"` already means FIELD ABSENT on the tolerant read path \
+         (D-30), so a fabricated blank written into a record is corrupt evidence \
+         rather than a safe default — and unreachable arms outlive the beliefs \
+         that make them unreachable, which pass 5 reproduced: a committed \
+         `run.json` carrying `\"gsd_command\": \"\"` from a direct call to the \
+         `pub` `execute_run`. An unreachable state is answered with a typed \
+         refusal. Round 4 wrote this prohibition and shipped two violations of it \
+         in the file that declared it, which is why it is now a test. Offending \
+         lines:{}",
+        render(&offenders)
+    );
+
+    // **The positive control, so the zero above is not vacuous.** `String::new()`
+    // itself is legitimate outside a match arm — `run.json`'s
+    // `claude_code_version` is constructed empty at write one, because the value
+    // is genuinely not known yet — so a scanner that had stopped matching
+    // anything at all would report the same clean zero as a clean tree.
+    let bare = executable_hits(&driver, "String::new()");
+    assert!(
+        !bare.is_empty(),
+        "the scan found no `String::new()` at all in the two driver files, so the \
+         emptiness above is a statement about the scanner rather than about the \
+         tree"
+    );
+}
+
+#[test]
+fn the_degenerate_payload_set_is_spelled_in_exactly_one_place() {
+    let files = source_files();
+    let hits = executable_hits(&files, DEGENERATE_WITNESS);
+
+    let home_hits = hits.iter().filter(|(path, _, _)| path == DEGENERATE_HOME).count();
+    assert_eq!(
+        home_hits, 1,
+        "the shared `DEGENERATE` const must be spelled exactly once in \
+         {DEGENERATE_HOME}; found {home_hits}. Zero means this scan is looking at \
+         nothing and its uniqueness claim is vacuous."
+    );
+
+    let offenders: Vec<(String, usize, String)> = hits
+        .iter()
+        .filter(|(path, _, _)| path != DEGENERATE_HOME)
+        .cloned()
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "a blank-shape payload list is spelled outside {DEGENERATE_HOME}. Every \
+         blank-shape pin consumes `test_support::DEGENERATE`, because a const each \
+         seam copies from is a const each seam can copy from INCOMPLETELY — pass 5 \
+         found the `--run-id` pin carrying three of the six shapes, added in the \
+         very commit that defined six, so the two zero-width shapes were never \
+         asserted at the one seam where they were reachable end to end and \
+         `--run-id '\\u{{200b}}'` drove a complete run. Consume the const. \
+         Offending lines:{}",
+        render(&offenders)
     );
 }

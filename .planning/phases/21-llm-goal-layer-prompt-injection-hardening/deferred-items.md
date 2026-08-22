@@ -38,6 +38,17 @@ they run before any terminal write by construction — the crash test asserts
 synchronisation change to a live-process probe rather than a one-line
 correction. Carry into the next phase's backlog.
 
+**Update (2026-08-22, round 5): the honest whole-suite gate is
+`--test-threads=2` with `--no-fail-fast`, and the `--test-threads=1` note above
+is STALE.** The round-5 orchestrator re-measured the two `driver_reattach`
+tests against the **untouched** base in a throwaway worktree, five consecutive
+runs: FAIL / FAIL / FAIL / ok / ok. They flake identically with no round-5
+change in the tree, so a failure there is not a regression signal and must not
+be chased — and equally must not be allowed to mask a real one, which is what
+`--no-fail-fast` is for. Every gate in `21-15` and `21-16` is measured as
+`rtk proxy cargo test --workspace --no-fail-fast -- --test-threads=2`. Round 5's
+own runs did not see either test fail.
+
 **Update (2026-08-21, round 4): `driver_reattach` is now flakier than recorded
 above, and its documented mitigation no longer works.** Under
 `--test-threads=4` it fails intermittently in whole-suite runs; under
@@ -76,3 +87,37 @@ round 4, and none should be read as fixed.
 | Item | Location | Disposition |
 |---|---|---|
 | `plan_target_phase(plan).unwrap_or_default()` writing a blank `target_phase` | `src/driver/mod.rs` (`approve_plan`) | **Adjudicated IN and closed.** Same defect class as the criterion-1 failures — a blank value reaching a persisted record, where `""` already means field-absent (D-30) — merely arriving through the model seam instead of argv. Excluding it would have repeated the exact scoping bet that lost three times. `approve_plan` now refuses with the same typed error `goal::legality` raises for a stepless plan. |
+
+---
+
+# Round-5 adjudications (2026-08-22)
+
+What round 5 (`21-15`, `21-16`) deliberately did **not** do, each with its
+reason. Recorded here rather than dropped, so nothing leaves the phase
+silently.
+
+## OUT — by design, not by omission
+
+| Item | Location | Reason declined |
+|---|---|---|
+| `RawDriveArgs` keeps raw `String` fields | `src/driver/mod.rs` | It **is** the raw side of the parse boundary — the shape argv supplies before anything has judged it. Typing it `NonBlank` would mean the judgment happened somewhere else, which is the thing the boundary exists to prevent. Guard nine reads `DriveArgs` only, and asserts by name that its extraction never reached `RawDriveArgs`. |
+| `RunRecord`'s serde fields stay `String` | `src/journal/mod.rs` | Records are **tolerant-read wire types** (D-30): a record written by a newer build must survive a round trip through this struct rather than being rejected or pruned. Validation belongs at the seams that WRITE the record, which is where 21-15 put it — `RunRecord.goal` and `.target_phase` are now written from `Option<NonBlank>`, so `""` on disk provably means absent. Typing the wire struct would turn a forward-compatible reader into a validator and break the tolerant read path. |
+| The matrix row table is hand-maintained | `src/driver/mod.rs` (`positions()`) | `from_argv`'s exhaustive destructure and guard nine together bound the **type** of a seventh argv field — it cannot compile unclassified, and a raw `String` in the tree's declaration style is a loud red — but neither forces a matrix **row**. A seventh field correctly typed `NonBlank` with no row leaves the matrix at 7x6 silently. That is a coverage residual, not a blank-payload route (the type still refuses the blank), and it is disclosed at `positions()`'s own doc and in `21-15`'s truth 6 rather than claimed closed. |
+| `test_support::DEGENERATE` is unreachable from integration tests | `src/test_support.rs` | The module is `#[cfg(test)]`, so it does not exist in the compiled library and a separate test crate cannot consume it. The exhaustive six-shape sweep therefore lives in-crate (the 7x6 matrix, the journal pin, the `goal_or_none` and `goal_lines` pins, `text.rs`'s own pins); the two retargeted `tests/driver_dry_run.rs` tests keep the payload lists they already had rather than gaining a hand copy, which would itself be the prohibited pattern. Making the module unconditionally `pub` (one `const`, no runtime cost) is the clean fix if a later round wants integration-side coverage of all six shapes. |
+
+## Still OUT — the three round-4 deferrals, unchanged
+
+Round 4 declined these with recorded reasons and round 5 does not revisit them.
+None is closed; none should be read as fixed.
+
+| Item | Location | Reason still declined |
+|---|---|---|
+| `registry::current_prompt_inputs` absent from `BLOCKING_HELPERS` | `tests/async_blocking_guard.rs:124-144` | Async-hygiene (synchronous disk reads under an `async fn`), not the failing criterion's class. The fix forces production `spawn_blocking` rewiring in `approve_plan` and `execute_run` — real scope, zero bearing on ROADMAP criterion 1. |
+| The spawn-gate plan-half argument lives in a comment rather than in a checked property | `src/driver/run.rs` (spawn gate) | The comment states plainly that the plan half is a no-op there and why that is sound (decompose-once). Converting a sound, honestly-documented argument into a checked property is hardening, not gap closure. |
+| Dead `PlanStep::rationale` | `src/driver/goal.rs` | No production reader. A cosmetic dead field with no security or honesty bearing. |
+
+## IN — closed by round 5
+
+| Item | Location | Disposition |
+|---|---|---|
+| `goal.rs`'s length-bound refusal had zero live coverage | `src/driver/goal.rs`, `tests/driver_goal_seam.rs` | **Closed by 21-16 Task 4.** 21-13's predicate tightening left every `HOSTILE_PHASE_TOKENS` fixture refused at the first layer, so the second refusal — reachable only by a control-free over-length token — was never exercised. A defence-in-depth layer with zero coverage is a layer nobody notices breaking. |
