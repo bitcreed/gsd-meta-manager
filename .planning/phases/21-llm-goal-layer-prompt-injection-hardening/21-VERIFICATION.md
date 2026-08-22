@@ -1,6 +1,6 @@
 ---
 phase: 21-llm-goal-layer-prompt-injection-hardening
-verified: 2026-08-21T19:00:22Z
+verified: 2026-08-22T01:40:00Z
 status: gaps_found
 score: 4/5 must-haves verified
 behavior_unverified: 0
@@ -9,316 +9,469 @@ re_verification:
   previous_status: gaps_found
   previous_score: 4/5
   gaps_closed:
-    - "round-3-diff review-CR-02 (blank/whitespace --command not refused): command_source now carries `if !command.trim().is_empty()` on the Command arm; confirmed live at HEAD."
-    - "round-3-diff review-CR-01 (approval token parsed after decomposition, and skipped entirely on --dry-run): parse_approval_token now runs at src/driver/mod.rs:644, above `if args.dry_run` at :649 and ~180 lines above `decompose`; confirmed live at HEAD, and confirmed the ordering fix by direct code read."
-    - "round-2 WR-01 (guard six's header falsely claimed both its named approximations 'fail loud, not silent' as a blanket property): header rewritten to enumerate limits individually; the specific over/under-detection mischaracterization from round 2 is gone (though round 3's review found the rewritten header omits a DIFFERENT, still-live silent gap — see gaps below, this is not the same finding)."
-    - "round-2 WR-03 (plan_digest doc named a legacy-record re-check path production cannot take): doc corrected in both src/driver/goal.rs and src/journal/mod.rs (the second copy was undocumented in the plan but found and fixed); confirmed by grep that recheck_approval's two production call sites match what the doc now claims."
+    - "pass-4 gap 1 (the `Routed` arm carried no blankness check): CLOSED and structurally so. All three `CommandSource` variants now carry `payload::NonBlank` (src/driver/mod.rs:395/398/402); the field is private to a NESTED `pub(crate) mod payload` (:324, struct :331) with exactly one constructor and no `From`/`Deref`/`AsRef`/`into_inner`/serde. A blank payload is unrepresentable inside the type, not merely rejected by a remembered guard. Confirmed by direct read; I found no construction route past the constructor."
+    - "pass-4 gap 2 (the matrix hand-exempted the `--target-phase` column with a false justification): CLOSED. The matrix at src/driver/mod.rs:2178-2196 is one uniform nested loop over 3 argv positions x 6 DEGENERATE payloads = 18 cells, every one asserted `Err(NoCommandSource)`. No `Ok` branch, no exemption comment. The column axis is tied to `command_source`'s arity at COMPILE time through `PositionBuilder`'s 3-tuple (:2163). Confirmed by direct read of the loop body."
+    - "pass-4 gap 3 (the `--target-phase '   '` test pin was missing): CLOSED. `tests/driver_dry_run.rs:624 a_blank_target_phase_is_refused_in_preview_and_in_a_real_run` exists and passes; driver_dry_run is 15/15."
+    - "pass-4 gap 4 (the trim tautology: DEGENERATE and the detector both keyed on production's own `trim`): CLOSED at the array level. `DEGENERATE` (:1888) now holds six literals including `\\u{200b}` and `\\u{feff}`, which `trim` cannot reach; `NonBlank::new`'s predicate is whitespace + control + zero-width/format, and the matrix genuinely refuses all six. (The DETECTOR half is a different story — see gaps: it is never fed a degenerate payload.)"
+    - "pass-4 gap 5 (guard six's header omitted a live marker-to-EOF blind region): CLOSED, and closed better than asked. The header now names limits 4 and 5, and a new assertion `no_production_item_follows_a_test_module_marker` (tests/spawn_seam_guard.rs:2036) makes the blind region's emptiness a build failure. The live offender is gone: `src/state_reader/mod.rs` now has `pub fn count_backlog_items` at :312 ABOVE `mod tests` at :331 (was :530 vs :311). `cargo clippy --all-targets` went 5 -> 4 warnings; `items_after_test_module` is cleared. All three facts self-measured."
+    - "pass-4 gap 6 (guard eight named no limitations at all): CLOSED. Guard eight now carries a five-item numbered limits block (tests/spawn_seam_guard.rs:2287-2300+), each limit with its failure direction, and closes two gaps for real: `Self::`-qualified needles and a variant-import assertion. Confirmed by direct read."
+    - "pass-4 gap 7 (`.planning/REQUIREMENTS.md` had DRIVE-01/DRIVE-03 prematurely marked Complete): CLOSED. At HEAD all five phase-21 requirements read `[ ]` in the checklist (lines 62, 63, 83, 85, 86) and `Gaps Found` in the traceability table (lines 152, 153, 164, 166, 167) — now internally consistent, which they were not before. Confirmed by `git log -- .planning/REQUIREMENTS.md`: the last touch is `0c4f712` (the pass-4 verification commit), and neither 21-13 nor 21-14 flipped a requirement, honouring both plans' own process prohibition."
+    - "round-4 named debt: the colliding `enum CommandSource` in src/driver/run.rs is renamed `IterationSource`; exactly one `enum CommandSource` is declared under src/. Guard eight asserts the single declaration rather than dodging the collision by needle shape."
   gaps_remaining:
-    - "Criterion 1 fails a THIRD consecutive verification cycle. This round's own gap-closure diff (21-11, 21-12) introduced a new Critical of the identical family as the two it closed — round-3 code review's CR-01: a whitespace-only --target-phase is accepted end to end (preview renders cleanly at exit 0; a real run creates a lock file, a run directory, a journal, and a run.json recording target_phase: \"   \") where the byte-identical value is refused for free on --command and --goal. I independently reproduced this against the built binary/library at HEAD, not merely read it in the review."
-  regressions:
-    - "REQUIREMENTS.md: DRIVE-01 and DRIVE-03 were marked [x]/Complete in commit 760d71f (21-11's own completion commit), while criterion 1 — the ROADMAP success criterion both requirements trace to — was still failing at the time of that commit (the round-3 review that found the still-open CR-01 was committed one commit later, at d4874ec, against the same tree). This is the identical premature-marking mistake commit 828d7cc had to revert earlier in this same phase. Not reverted this time; still wrong at HEAD."
+    - "Criterion 1 fails a FOURTH consecutive verification cycle — but for the first time the root cause is NOT inside the mechanism the previous round built. The `NonBlank` type-level fix HELD under attack. All three of this pass's reproduced defects sit OUTSIDE its domain: `DriveArgs` carries six argv-derived string fields (`alias`, `command`, `target_phase`, `approved_plan`, `run_id`, `goal`) and round 4 converted exactly the three that `CommandSource` happens to have variants for. The three it did not convert are where the new Criticals are."
+  regressions: []
 gaps:
   - truth: "A user states a goal in plain language and gets back a structured, machine-checkable plan to review before anything runs (ROADMAP criterion 1)"
     status: failed
-    reason: "The two mechanisms named by the last two verification cycles (blank --command, approval-token ordering) are now genuinely fixed and independently reconfirmed. But the anti-recurrence mechanism this round was specifically commissioned to build — a degenerate-payload matrix run through the production CommandSource resolver, meant to make a fourth recurrence of this defect class a test-time certainty — was applied to only two of the resolver's three variants (Command, Goal) and explicitly, by name, exempted the third (Routed / --target-phase) with a justification that is mathematically wrong for 3 of its own 4 enumerated payloads. The result is the third consecutive cycle in which closing the previous cycle's honesty/integrity defect reintroduced a defect of the same family, in the same file, in the same round."
+    reason: "21-13-PLAN.md declares as its FIRST must_haves truth, traced to DRIVE-01 and DRIVE-03: `An argv payload that carries no visible instruction ... is refused with DriveError::NoCommandSource in EVERY argv position (--command, --target-phase, --goal), before any file, lock, journal, or run directory is created`. I falsified that by direct observation on the PUBLIC entry point `driver::drive`. It also declares a `verification: backstop` truth: `No run.json written by this build carries target_phase or gsd_command as an empty or whitespace-only string`. I falsified that by direct observation too. Three distinct reproductions below, each of the same class this phase has now failed four times — an unvalidated no-visible-instruction value reaching a persisted record where the empty string already means `field absent` (D-30). What has changed is the LOCATION: not a fourth forgotten arm inside `command_source`, but three argv strings that never enter `command_source` at all."
     artifacts:
-      - path: "src/driver/mod.rs"
-        issue: "`command_source`'s `(None, Some(target_phase)) => Ok(CommandSource::Routed(target_phase.to_string()))` arm (~:400) carries no emptiness/blankness check, unlike its `Command` sibling three lines above it (which gained `if !command.trim().is_empty()` this round) and its `Goal` sibling below it (which has carried the check since 21-07). I reproduced this independently, not from the review: a standalone `#[tokio::test]` built on the project's own `tests/driver_dry_run.rs` fixtures, calling `drive()` with `target_phase: Some(\"   \".to_string())`, `dry_run: true` returned `Ok(())` and rendered `the router would park (router_state_unverified:    ) and the run would stop for` under the same 'complete and honest sequence' preview header. The same call with `dry_run: false` returned `Ok(())` and created `.planning/meta-manager/runs/run.lock`, `.gitignore`, a run directory, `journal.jsonl`, and `run.json` — for an invocation whose command was three space characters. (Reproduction test written and run against HEAD, then deleted; not committed.)"
-      - path: "src/driver/mod.rs"
-        issue: "The regression test written specifically to make this defect class impossible — `every_command_source_refuses_or_previews_cleanly_for_every_degenerate_payload` (~:1875-2000) — explicitly excludes `--target-phase` from its by-name refusal sweep (~:1976-1995: only `--command` and `--goal` are looped over `DEGENERATE`) via a comment claiming `journal::is_plain_path_component` 'returns false for the empty string' as justification. I confirmed by reading `is_plain_path_component` (`src/journal/mod.rs:242-254`): it returns `false` only for the empty string; for `\"   \"`, `\"\\t\"`, and `\"\\n  \\n\"` — 3 of the 4 entries in the test's own `DEGENERATE` array — it returns `true`, because every whitespace string is a single `Component::Normal` equal to itself. The cited test (`a_target_phase_that_is_not_a_plain_path_component_is_refused_without_touching_disk`) pins exactly one value, `\"../../../../escaped\"`, and says nothing about blankness. The exemption comment's stated reason is true for 1 of the 4 payloads it is invoked to justify."
+      - path: "src/driver/run.rs"
+        issue: "REPRODUCED (upgrading 21-REVIEW.md CR-01 from `inferred` to observed). `recorded_command` (:839-849) and `digested_command_fragment` (:867-872) both still spell `(None, None) => String::new()`, carrying the identical justification comment 21-14 declared refuted and removed from the third such arm 75 lines below. `recorded_command`'s value becomes `RunRecord.gsd_command` (:779). The ordering is fatal and I confirmed there is no earlier guard: I extracted lines 2261-2455 of `execute_run` (195 lines) and grepped them — ZERO `return Err`, and the only `?` sites are plan-approval staleness, `RunIdRequired` and `bounds::resolve`. So `make_run_record` at :2448 -> `JournalRun::start` writes run.json at :2514 -> the new `NoCommandSource` refusal fires at :2643. I called `pub async fn execute_run` directly (via `DrivableProject::for_testing_bypassing_opt_in`, a real fixture project, `escalate::resolve(None, 5)`) with `command: None, target_phase: None`. Result: `Err(NoCommandSource)` — AND on disk, run.json containing `\"gsd_command\": \"\"` and `\"goal\": \"\"`, plus a run directory and a 4-record journal.jsonl. The refusal 21-14 added is downstream of the corruption it was commissioned to prevent. This directly violates 21-14's own prohibition: `MUST NOT manufacture a sentinel or blank value as the 'safe' arm of an unreachable match` — violated twice, in the file the plan edited, in the commit that declared it."
+      - path: "src/journal/mod.rs"
+        issue: "REPRODUCED END TO END (21-REVIEW.md CR-02, and worse than the review showed). `is_plain_path_component` (:260-263) judges blankness with `value.trim().is_empty()`, while `payload::NonBlank::new` (:348-359 of driver/mod.rs) judges it as whitespace + control + zero-width/format. Two definitions of `blank`, shipped in the same commit, disagreeing. Measured against the real library: `is_plain_path_component(\"\\u{200b}\") = true`, `(\"\\u{feff}\") = true`, `(\"\\u{2060}\") = true`, `(\"   \") = false` — and `U+200B is_whitespace=false is_control=false`, so `char::is_whitespace`/`is_control` genuinely cannot see them. The review stopped at the predicate; I drove it through `driver::drive`. `drive(--command '/gsd:progress' --run-id '\\u{200b}')` returned `Ok(())` and COMPLETED A FULL RUN: the runs directory now contains an entry whose entire name is one zero-width character, with `run.json` recording `run_id: \"\\u{200b}\"` and `outcome: \"succeeded_no_changes\"`. A successful, persisted, terminal run record that no human can name, read back, or distinguish from a sibling run called `abc` vs `abc\\u{200b}`. Blast radius is 7 production call sites, not one: `--run-id` (driver/mod.rs:861, journal/mod.rs:314, journal/writer.rs:491), registry aliases (main.rs:244, envelope/mod.rs:204, envelope/cred.rs:758) and the goal-seam phase token (goal.rs:667). The narrowed pin at driver/mod.rs:1576 loops `[\"   \", \"\\t\", \"\\n  \\n\"]` — three of `DEGENERATE`'s six — in the same commit that added the other three, violating 21-13's own prohibition: `MUST NOT exempt any cell of an anti-recurrence enumeration by comment or hand-picked list`."
+      - path: "src/driver/run.rs"
+        issue: "REPRODUCED (21-REVIEW.md IN-01, which I grade materially higher than Info because it falsifies a named must_have truth on the public path). `make_run_record` writes `goal: args.goal.clone().unwrap_or_default()` (:763) — the raw argv string, never validated. `command_source`'s `(Some, None)` and `(None, Some(_))` arms structurally never touch `goal`, and the matrix's `PositionBuilder` only ever builds ONE-flag tuples, so the two-flag cell is a shape the anti-recurrence mechanism cannot express. Driven through `drive()` for three payloads, preview and real run, each returning `Ok(())`: `--command '/gsd:progress' --goal '   '` -> run.json `goal: \"   \"`; `--goal '\\u{200b}'` -> `goal: \"\\u{200b}\"`; `--goal '\\u{feff}'` -> `goal: \"\\u{feff}\"`. All three created the lock, the run directory, the journal and run.json — i.e. the `before any file, lock, journal, or run directory is created` clause is false for `--goal` whenever another source is present. Compounding it, `src/ui/screens/driver.rs:755`'s `goal_lines` gates on `goal.trim().is_empty()`, so a `\\u{200b}` goal takes the NON-empty branch and the TUI renders `goal: ` with a label and nothing after it — the surface asserting a goal was stated while showing none. The comment at driver/mod.rs:465-467 cites D-30 by name (`the empty string already means field absent ... so the record cannot be used as evidence of what ran`) roughly 300 lines from the `unwrap_or_default()` that produces exactly that value."
     missing:
-      - "Add the same `if !target_phase.trim().is_empty()` guard to the Routed arm that the Command arm just gained, with a sibling `(None, Some(_)) => Err(DriveError::NoCommandSource)` refusal arm — the exact fix 21-REVIEW.md already specifies at src/driver/mod.rs's command_source."
-      - "Delete the false exemption comment and put --target-phase into the matrix's by-name sweep alongside --command and --goal, so all three positions are asserted refused for every DEGENERATE payload."
-      - "Add a `\"   \"` arm to `a_target_phase_that_is_not_a_plain_path_component_is_refused_without_touching_disk` so the test the exemption comment cited actually pins what the comment claimed it pins."
-      - "Given this is the third cycle in which the anti-recurrence mechanism was scoped too narrowly rather than absent, the next plan should derive the matrix's column set from `variant_name`'s match arms (or an equivalent exhaustive source) rather than a hand-written list of argv positions, so a column cannot be silently omitted the way --target-phase was this round — the same shape of fix `variant_name`'s no-wildcard match already applied to the row axis."
-  - truth: "The new guard/doc machinery this round's plans built to prevent recurrence is itself accurate about what it does and does not check"
+      - "Convert the argv-derived string set by TYPE, not by hand. `DriveArgs` (src/driver/mod.rs:131) has exactly six string-bearing argv fields: `alias`, `command`, `target_phase`, `approved_plan`, `run_id`, `goal` (plus debug-only `claude_program`/`claude_args`). Round 4 converted 3 of 6 — precisely the three `CommandSource` has variants for. Validate at the parse boundary so `DriveArgs` itself cannot hold a blank; then `execute_run` has nothing blank to re-derive, both `String::new()` arms become unrepresentable rather than patched, and `--run-id`/`--goal` are covered by construction rather than by a fourth remembered check."
+      - "ONE blankness predicate. Promote the visibility judgment out of `mod payload` into a shared `pub fn carries_no_visible_content` and have `NonBlank::new`, `journal::is_plain_path_component` (:263), `run::from_argv_goal` (:1945), `ui::screens::driver::goal_lines` (:755) and `app::goal_or_none` (:106) all call it. The tree currently holds 19 `trim().is_empty()` sites under `src/`; the five above are the ones judging a user-supplied payload. Keep `visibly_empty_numbered_entry` deliberately separate — that one is the oracle and MUST be able to disagree."
+      - "Lift `DEGENERATE` to a shared test const that every blank-shape pin consumes (driver/mod.rs:1576 and journal/mod.rs:2715 currently hand-copy narrower subsets), so a seventh blank shape lands in every seam's pin at once."
+      - "Hoist the `(None, None)` refusal in `execute_run` above `make_run_record` at :2448 as the minimal fix, and add the guard-suite needle the plan got two lines too narrow: `String::new()` may not appear as a match-arm value in run.rs's argv-derived record builders (the plan asserted `grep -c 'Fixed(String::new())' -> 0`, which both surviving arms pass)."
+      - "Give the matrix a multi-flag row. Its `PositionBuilder` 3-tuple makes the COLUMN axis structurally exhaustive over argv arity, but every row it builds sets exactly one `Some`; the `(Some(command), _, Some(blank_goal))` cell that broke this round is unexpressible in its current shape."
+  - truth: "The guard and doc machinery this round built or rewrote is itself accurate about what it does and does not check"
     status: partial
-    reason: "Three guard-accuracy defects in the round's own new machinery, all independently confirmed by direct code reading rather than accepted on the review's word. None is independently exploitable today (no live call site reaches any of the three), and closing them is what stops the NEXT reviewer from having to rediscover them by hand rather than being told."
+    reason: "Four confirmed accuracy defects in round 4's own new machinery, all independently reproduced or read rather than accepted on 21-REVIEW.md's word. None is independently exploitable today; each is what stops the NEXT reviewer having to rediscover it by hand. The most important is WR-01, because it is a guard header overclaiming its reach for the THIRD consecutive round."
     artifacts:
       - path: "tests/spawn_seam_guard.rs"
-        issue: "Guard six's rewritten header (~:1691-1723) now correctly refuses to make a blanket claim about the guard's failure direction and names three specific limits — an improvement over the round-2 header this replaces. But it still omits a fourth, LIVE limit: `terminal_write_hits` computes `test_region_start(file).unwrap_or(usize::MAX)` and skips every line at or past that boundary to end of file, not just the test module. I confirmed `src/state_reader/mod.rs` has `mod tests {` at line 311 and a genuine production function, `pub fn count_backlog_items`, at line 530 — invisible to the guard — and that `cargo clippy --all-targets` independently flags this exact file with `items_after_test_module`. A `journal.finish(...)` call added to any new production helper placed after line 311 of that file would go unstamped with the guard staying green."
-      - path: "tests/spawn_seam_guard.rs"
-        issue: "Guard eight (`every_command_source_variant_is_named_only_where_it_is_built_or_matched`, ~:2136-2226), added this round specifically to close the gap that let the round-3-diff CR-02 defect through, names no limitation of its own at all — unlike guard six, rewritten in the same round to name each of its limits individually. I confirmed by reading `enclosing_fn` (`:1130-1136`): it is a nearest-preceding-`fn` backward scan with no brace tracking, so a variant-naming line placed between `fn command_source` and the next `fn` declaration would be silently attributed to `command_source` and allowlisted; and that the three needles (`CommandSource::Command(`, `CommandSource::Routed(`, `CommandSource::Goal(`) do not match `Self::Command(` from inside an `impl CommandSource` block or an imported bare-name construction. No such site exists in the tree today (confirmed by grep), so this is not exploitable, but the header makes no claim it could be checked against."
+        issue: "REPRODUCED. The new boundary self-check's `ITEM_OPENERS` (:1991-2005) contains `\"pub \"` but not `\"pub(\"`, and `line.starts_with(\"pub \")` cannot match `pub(crate) fn ...`. I counted the tree: `grep -rn '^pub(crate) \\|^pub(super) ' src/` gives exactly 51 column-zero items structurally invisible to the assertion. The header (:2074-2078) claims `the only way a skipped region can be trusted is if it is empty, so this asserts exactly that` and bounds its residual gap with `the tree's production style puts items at column zero` — which is the wrong bound, because the 51 offenders ARE at column zero. `count_backlog_items` was caught only because it happened to be spelled bare `pub fn`. I separately confirmed the gap is latent not live: a scan for post-marker `pub(crate)`/`pub(super)` items across all of src/ returns 0 today. This matters more than a normal token-list gap because `clippy --lib -D warnings` (the designated gate) does NOT catch post-marker items — `items_after_test_module` needs `--all-targets`, explicitly not the gate — so this assertion is the only enforcement."
       - path: "src/driver/mod.rs"
-        issue: "`DEGENERATE` (the payload array) and `empty_numbered_entry` (the detector) both define 'blank' with the exact same `str::trim`-based predicate the production guard (`command_source`) uses, and the array's own doc names this coupling as a deliberate virtue ('the test and the code must agree about what blank means'). I confirmed this makes the matrix unable to falsify the guard it is meant to check: a payload outside `char::is_whitespace` — e.g. U+200B ZERO WIDTH SPACE — survives `trim`, so `command_source` resolves it as a real command, and `empty_numbered_entry`'s own `tail.trim().is_empty()` cannot flag the resulting numbered entry as empty. Confirmed by direct code reading of `DEGENERATE` (`:1674`), `empty_numbered_entry` (`:1706-1715`), and the Command arm's guard (`:392`) — all three genuinely share one predicate. Not independently reproduced by spawning the binary with a zero-width-space argument (the review reports having done so and I did not re-run that specific reproduction), but the code-level claim — that the enumeration cannot contain a payload the guard mishandles because both are defined by the same function — is a direct, verifiable reading of the three cited functions and holds."
+        issue: "CONFIRMED by call-site enumeration. `visibly_empty_numbered_entry` (:1944) has exactly two call sites, :2086 and :2220, and both sit in the REALISTIC half of their loops, fed `\"/gsd:progress\"`, `\"20\"`, `\"get phase 22 verified\"`. The degenerate loop asserts `Err(NoCommandSource)` at :2188 BEFORE anything is rendered, so no degenerate payload can ever reach the detector. Its doc (:1936-1943) says `if payload::NonBlank were ever loosened ... this detector would keep calling a U+200B entry visibly empty and the matrix would go red. That disagreement is the whole value.` The conclusion is right and the named mechanism is wrong: a loosened `NonBlank` reddens the matrix at :2188's literal assertion, and the detector is never invoked. The trim tautology IS broken — by the literal `DEGENERATE` array, not by the detector. The detector's widened character classes are dead weight wearing the credit."
+      - path: "tests/spawn_seam_guard.rs"
+        issue: "CONFIRMED by reading. Guard eight's limit 1 claims an unanticipated variant spelling is `bounded by the per-function contributed >= COMMAND_SOURCE_VARIANT_COUNT non-vacuity below, which fails if a needle stops matching a site that still names all three` (:2286-2291). The assertion at :2433-2449 counts LINES attributed to the function, not DISTINCT NEEDLES matched. A function contributing four lines through two needles satisfies `>= 3` while a third needle has gone blind. The arithmetic is 3-and-3 today so the bound happens to bite; it stops biting the moment `command_source` grows a fourth construction line — which the fix for criterion 1 above is likely to do."
+      - path: "src/driver/mod.rs"
+        issue: "CONFIRMED by reading. `ALL_VARIANT_NAMES` (:1901) is a hand-maintained `[&str; 3]`. 21-13's must_haves claims `column-to-variant coverage is asserted against the single ALL_VARIANT_NAMES const that variant_name's wildcard-free match anchors`. The anchoring is one-directional: a fourth `CommandSource` variant is a compile error in `variant_name` (:1918), which forces classification — but nothing forces extending the const. If the new variant is produced by no argv position, `resolved` holds three names, `expected` holds three names, and the matrix stays green with a whole variant unexercised. The COLUMN axis is genuinely structural (`PositionBuilder`'s 3-tuple, :2163, is a compile error on a fourth argv parameter). The ROW axis is not. That is the `list a human must remember to extend` shape, one level up from the exemption this round removed."
+      - path: "tests/driver_goal_seam.rs"
+        issue: "CONFIRMED by reading (21-REVIEW.md WR-05, adjudicating 21-13's own deviation claim H). Inverting the falsified pin at :1368-1395 was the RIGHT call and recording it in place is the right house behaviour — but the executor undersold the cost. All four `HOSTILE_PHASE_TOKENS` (:1358-1363) carry C0/C1 control characters (`\\u{1b}`, `\\n`, `\\r`, `\\u{9b}`), so since 21-13 tightened `is_plain_path_component` every one is refused at src/driver/goal.rs:667 and nothing in the suite reaches the second refusal at :697. That branch is not dead — `untrusted::bounded` still truncates above 200 chars — but a defence-in-depth layer with zero coverage is a layer nobody will notice breaking."
     missing:
-      - "Add a fourth named limit to guard six's header (the round-3 review's suggested wording is ready to use verbatim) stating the boundary excludes everything to end-of-file, not just the test module, and note nothing in the guard bounds it."
-      - "Add a limits block to guard eight's header naming the Self::-qualified construction gap, the imported-variant gap, and the enclosing_fn brace-tracking gap; optionally close the cheapest of the three by adding `Self::Command(` / `Self::Goal(` needles."
-      - "Break the DEGENERATE/empty_numbered_entry tautology by judging the rendered numbered entry on a broader blank-character set (control chars, zero-width spaces, BOM) than the production `trim` predicate uses, so the matrix can disagree with the guard rather than only ever agree with it, and add at least one non-is_whitespace payload (\\u{200b} or \\u{feff}) to DEGENERATE."
-  - truth: "REQUIREMENTS.md accurately reflects verified requirement status for this phase"
-    status: partial
-    reason: "DRIVE-01 and DRIVE-03 were marked [x]/Complete in the same commit (760d71f) that closed 21-11, while the round-3 code review committed one commit later (d4874ec) against the identical tree found a new Critical that breaks exactly the ROADMAP criterion (criterion 1) both requirements trace to. This repeats, inside the same phase, the exact premature-completion mistake that an earlier commit (828d7cc) had to revert. Not self-caused by 21-11/21-12's code — a documentation/process gap, not a code defect — but it means REQUIREMENTS.md is currently wrong at HEAD in the same direction and for the same underlying reason as before."
-    artifacts:
-      - path: ".planning/REQUIREMENTS.md"
-        issue: "Lines ~83, ~85 (checklist) and ~164, ~166 (traceability table): DRIVE-01 and DRIVE-03 read [x]/Complete. Confirmed by `git show 760d71f -- .planning/REQUIREMENTS.md` that this flip happened in 21-11's own completion commit, and by re-deriving criterion 1's status in this report that it is still ✗ FAILED at HEAD."
-    missing:
-      - "Revert DRIVE-01 and DRIVE-03 to [ ]/Pending (or Gaps Found, matching DRIVE-04/SAFE-07/SAFE-08's current marking) until a verification pass records criterion 1 as ✓ VERIFIED — a plan-completion commit is not the place a requirement's status is authoritatively decided; that has been this phase's own stated norm in every prior gap-closure summary."
-deferred: []
+      - "Add `\"pub(\"` to `ITEM_OPENERS` and correct limit 4's bound sentence: the residual gap is an INDENTED item inside a post-marker `mod`, not `a first token outside the list`."
+      - "Either correct `visibly_empty_numbered_entry`'s doc to name the mechanism that actually falsifies (the literal array), or give the detector a direct unit test — `assert!(visibly_empty_numbered_entry(\"1. \\u{200b}\").is_some())` and `(\"1. x\").is_none()` — which is cheap and makes the doc's claim true."
+      - "Change guard eight's non-vacuity to assert PER-NEEDLE coverage rather than a line count."
+      - "Tie `ALL_VARIANT_NAMES`'s length to the variant set through a wildcard-free `one_of_each()` so a fourth variant is a compile error there too, not only in `variant_name`."
+      - "Add the one fixture that still reaches goal.rs:697 — a control-free phase token longer than `MAX_UNTRUSTED_FIELD_CHARS` (200)."
+deferred:
+  - truth: "`registry::current_prompt_inputs` absent from `tests/async_blocking_guard.rs`'s BLOCKING_HELPERS"
+    addressed_in: "Backlog (adjudicated OUT in deferred-items.md, round-4 adjudications)"
+    evidence: "Async-hygiene class, not criterion 1's class; the fix forces production spawn_blocking rewiring in approve_plan and execute_run. Recorded with reason, not dropped."
+  - truth: "The spawn-gate plan-half argument lives in a comment rather than a checked property"
+    addressed_in: "Backlog (adjudicated OUT in deferred-items.md)"
+    evidence: "The comment now states plainly that the plan half is a no-op and why that is sound; converting a sound, honestly-documented argument into a checked property is hardening, not gap closure."
+  - truth: "Dead `PlanStep::rationale` field in src/driver/goal.rs"
+    addressed_in: "Backlog (adjudicated OUT in deferred-items.md)"
+    evidence: "No production reader; cosmetic dead field with no security or honesty bearing."
+  - truth: "`tests/driver_reattach.rs` and `tests/envelope_tracer.rs` flake under parallel execution"
+    addressed_in: "Next phase backlog (deferred-items.md, priority raised in round 4)"
+    evidence: "Confirmed pre-existing against the unmodified base 6eb1d49 in a throwaway worktree; the untouched baseline flakes worse than the round-4 tree. Not a round-4 regression and not counted as a gap."
 behavior_unverified_items: []
+coincidental_reliance_items:
+  - truth: "A blank `--alias` and a blank `--approved-plan` do not reach a persisted record"
+    reason: undeclared-precondition
+    harden: "Neither field is protected; both are incidentally refused by a DIFFERENT mechanism — `alias` by the registry lookup returning UnknownAlias, `approved_plan` by `parse_approval_token` failing to parse. Nothing in the phase's artifacts guarantees either. They are the two remaining unconverted `DriveArgs` string fields and belong in the same sweep, not left resting on a lookup's incidental behaviour. Note `is_plain_path_component` — which DOES govern registry aliases at main.rs:244 — accepts `\\u{200b}`, so two visually identical aliases resolve to two different envelope and credential paths."
 human_verification: []
 ---
 
 # Phase 21: LLM Goal Layer & Prompt-Injection Hardening Verification Report
 
 **Phase Goal:** A user states a goal once and the run pursues it, with the model confined to two narrow, bounded, hardened seams
-**Verified:** 2026-08-21T19:00:22Z
+**Verified:** 2026-08-22T01:40:00Z
 **Status:** gaps_found
-**Re-verification:** Yes — after gap closure (third cycle; fourth verification pass)
+**Re-verification:** Yes — after gap closure (fourth cycle; fifth verification pass)
 
 ## Goal Achievement
 
-This is the **fourth** verification pass and the **third** gap-closure cycle for
-this phase. The pattern across all three cycles is the finding, not incidental
-to it:
+This is the **fifth** verification pass and the **fourth** gap-closure cycle.
+For the first time in this phase, **the mechanism the previous round built held
+under attack** — and the phase still fails criterion 1. Those two facts are not
+in tension, and separating them is the whole point of this report.
 
-| Cycle | What closed | What the SAME cycle's own diff broke |
+| Cycle | What closed | What the SAME cycle's diff broke |
 |---|---|---|
-| 1 → 2 (plans 21-07..21-10) | round-2 CR-01 (false honest-sequence claim for `--goal --dry-run`), CR-02 (invertible FNV digest), WR-01 (unreachable `PlanChanged`), WR-05 (unbounded `target_phase`) | round-3-diff CR-01 (approval token parsed after decomposition, skipped on `--dry-run`), CR-02 (blank `--command` not refused) — found by round-2 code review (`92a4b4f`), confirmed independently by pass-3 verification |
-| 2 → 3 (plans 21-11, 21-12) | round-3-diff CR-01, CR-02 (both genuinely closed — confirmed below), plus round-2 WR-01/WR-03 doc-accuracy items | round-4-diff CR-01: a whitespace-only `--target-phase` accepted end to end — found by round-3 code review (`d4874ec`), confirmed independently **in this report** |
+| 1 → 2 (21-07..21-10) | round-2 CR-01/CR-02, WR-01, WR-05 | blank `--command`; approval token parsed after a live model consultation |
+| 2 → 3 (21-11, 21-12) | both of the above | blank `--target-phase` accepted end to end (the `Routed` arm) |
+| 3 → 4 (21-13, 21-14) | the `Routed` arm, the matrix exemption, the trim tautology, both guard headers, the REQUIREMENTS.md marking | **blank `--run-id`, blank `--goal` beside a source, blank `gsd_command` in a committed `run.json`** |
 
-**Both closures in the most recent cycle are genuinely closed**, verified by
-direct code reading and by a standalone reproduction test written against HEAD
-and then deleted (not by trusting `21-11-SUMMARY.md`'s or `21-12-SUMMARY.md`'s
-claims). **But criterion 1 still fails**, for a third distinct reason in three
-consecutive cycles: the anti-recurrence mechanism this round built — the
-degenerate-payload matrix and the no-wildcard `variant_name` classifier — is
-real and does what it claims for the two `CommandSource` variants it was
-applied to (`Command`, `Goal`). It was never applied to the third
-(`Routed`/`--target-phase`), which was instead exempted by a comment whose
-central factual claim is wrong for 3 of the 4 payloads it cites. **The
-mechanism works; its coverage was scoped to two of three variants it exists to
-cover, and the one it skipped is the one that broke.**
+The first three rows are one story: an arm forgot the check, the fix added the
+check to that arm, and the next arm forgot it. The fourth row is a **different**
+story, and the difference is the finding.
+
+### Did the `NonBlank` mechanism work? Yes — completely, within its domain.
+
+I attacked it and could not break it, which matches what the round-4 reviewer
+reports. `pub(crate) mod payload` is genuinely nested (`src/driver/mod.rs:324`),
+`struct NonBlank(String)`'s field is private to that module (`:331`), the single
+`impl` carries exactly `new` and `as_str`, and there is no `From`, `Deref`,
+`AsRef`, `Into`, `into_inner` or serde derive to rebuild one from the `&str`
+`as_str` hands back. All three `CommandSource` variants carry it. The matrix at
+`:2178-2196` is one uniform nested loop — 3 argv positions × 6 `DEGENERATE`
+payloads = **18 cells, every one asserted `Err(NoCommandSource)`**, with no `Ok`
+branch, no by-name per-column sweep and no exemption comment anywhere in it. The
+blankness boundary is pinned on the other side too (`"x"`, `" x "`,
+`"\u{200b}x"`, `"x\u{feff}"` all resolve), so the refusal is a visibility rule
+and not a length rule wearing its name. The column axis is a **compile-time**
+constraint via `PositionBuilder`'s 3-tuple.
+
+**Every value that passes through `command_source` is now blank-proof by
+construction.** That is a real, durable, type-level guarantee and it is the
+first thing in four cycles that did not regress.
+
+### So why does criterion 1 still fail? Because the domain is smaller than the class.
+
+`DriveArgs` (`src/driver/mod.rs:131`) carries **six** argv-derived string
+fields:
+
+| Field | Converted to `NonBlank` in round 4? | Status at HEAD |
+|---|---|---|
+| `command` | ✓ yes | protected |
+| `target_phase` | ✓ yes | protected |
+| `goal` | ✓ **only when it is the sole source** | ✗ **blank value persisted when supplied beside `--command`/`--target-phase`** |
+| `run_id` | ✗ no | ✗ **`\u{200b}` accepted; a full run completes with an invisible name** |
+| `alias` | ✗ no | incidentally refused by the registry lookup — not protected |
+| `approved_plan` | ✗ no | incidentally refused by token parsing — not protected |
+
+Round 4 converted **three of six** — precisely the three that `CommandSource`
+happens to have variants for. All three of this pass's reproduced Criticals live
+in the other three. **The fix did not fail. The scope did.** And the scope was
+chosen, as it has been in all four cycles, by a human enumerating which values
+to protect rather than by the compiler enumerating them.
 
 ### Observable Truths
 
 | # | Truth (ROADMAP success criterion) | Status | Evidence |
 |---|---|---|---|
-| 1 | A user states a goal in plain language and gets back a structured, machine-checkable plan to review before anything runs | ✗ FAILED (third consecutive cycle, new root cause) | The two defects the last two cycles named (blank `--command`, approval-token ordering) are genuinely closed — confirmed by direct code reading (`command_source`'s Command arm now guards `!command.trim().is_empty()` at `:392`; `parse_approval_token` runs at `:644`, above `if args.dry_run` at `:649`) and by re-running the full workspace suite (1316/1316 passing). But a third defect of the identical family — an unvalidated blank/whitespace value reaching a "the line below is the complete and honest sequence" preview and a real run's `run.json` — is live via `--target-phase`. I reproduced this independently: a standalone reproduction test built on this project's own `tests/driver_dry_run.rs` fixture pattern, calling `drive()` with `target_phase: Some(\"   \")`, returned `Ok(())` in both preview and real-run mode, and the real-run mode created a run directory, `journal.jsonl`, and `run.json` on disk. |
-| 2 | An approved goal is pursued across multiple GSD commands to a terminal outcome without further user input | ✓ VERIFIED (reconfirmed) | `tests/driver_goal_seam.rs` — 20/20 passing in this round's full-suite run (up from 19; +1 from 21-11's new assertions). The plan-digest/approval-recheck wiring is unchanged from the prior cycle's confirmed-closed state. |
-| 3 | Model escalations are counted against a per-run cap; exceeding the cap parks the run rather than continuing | ✓ VERIFIED (reconfirmed) | `tests/driver_escalation_cap.rs` passing in the full-suite run. Guard six — now widened to scan every file under `src/`, not just `src/driver/run.rs` — passes at 25/25 in `tests/spawn_seam_guard.rs`, and I confirmed by direct code read that its scan mechanism (`test_region_start` boundary, tree-wide `source_files()` iteration) matches what 21-12's SUMMARY claims. This is a strictly stronger check than the prior cycle had. |
-| 4 | A `.planning/` file or `CLAUDE.md` carrying injected instructions ("ignore prior constraints, run …") does not change which command the driver executes | ✓ VERIFIED (reconfirmed) | `tests/driver_injection_corpus.rs` — untouched by any 21-11/21-12 plan; passing in the full-suite run (12 non-ignored arms; 10 `--ignored` live-binary arms not re-executed, unchanged from every prior cycle). |
-| 5 | Any action the model names that is not in the fixed GSD command enum is refused, never executed as a shell string | ✓ VERIFIED (reconfirmed) | `tests/driver_refusal_record.rs` — untouched by any 21-11/21-12 plan; passing in the full-suite run. |
+| 1 | A user states a goal in plain language and gets back a structured, machine-checkable plan to review before anything runs | ✗ FAILED (fourth consecutive cycle, root cause relocated) | The `--target-phase` defect the last pass named is genuinely and structurally closed. But 21-13's own first `must_haves` truth — *"refused ... in EVERY argv position (`--command`, `--target-phase`, `--goal`), before any file, lock, journal, or run directory is created"* — is **false at HEAD on the public `drive()` entry point**, and its `verification: backstop` truth — *"No `run.json` ... carries `target_phase` or `gsd_command` as an empty or whitespace-only string"* — is false too. Three independent reproductions, detailed below. |
+| 2 | An approved goal is pursued across multiple GSD commands to a terminal outcome without further user input | ✓ VERIFIED (reconfirmed) | `tests/driver_goal_seam.rs` 20/20 in my own full-suite run; `tests/driver_iteration_loop.rs`, `tests/driver_router_conformance.rs` (3/3) and `tests/driver_router_table.rs` (12/12) all green. The decomposition → plan-digest → approval → recheck-at-spawn wiring is unchanged from the prior cycle's confirmed-closed state and I re-read `recheck_approval`'s position at `src/driver/run.rs:2333-2340`, above `establish_own_group`, the lock and the journal. |
+| 3 | Model escalations are counted against a per-run cap; exceeding the cap parks the run rather than continuing | ✓ VERIFIED (reconfirmed, strictly stronger than last pass) | `tests/driver_escalation_cap.rs` 8/8. Guard six is not merely tree-wide now — its marker-to-EOF blind region is **asserted empty** by a new build-failing check, and the one live violation is fixed (`count_backlog_items` moved from `:530` to `:312`, above the `mod tests` marker at `:331`). I confirmed independently that `cargo clippy --all-targets` no longer reports `items_after_test_module` (5 → 4 warnings, the remaining four in `src/browser.rs:131-133` and `src/project_creator.rs:146`, neither file opened this round). |
+| 4 | A `.planning/` file or `CLAUDE.md` carrying injected instructions ("ignore prior constraints, run …") does not change which command the driver executes | ✓ VERIFIED (reconfirmed) | `tests/driver_injection_corpus.rs` 12 passed / 10 `--ignored` live-binary arms, untouched by 21-13 or 21-14 (confirmed: neither file appears in `git diff 6eb1d49..HEAD --name-only`). Guard seven (`FIELD_OBSERVED_MARKERS` named only where the schema declares it) passes inside the 26/26 `spawn_seam_guard` run. |
+| 5 | Any action the model names that is not in the fixed GSD command enum is refused, never executed as a shell string | ✓ VERIFIED (reconfirmed) | `tests/driver_refusal_record.rs` 9/9; `tests/driver_model_seam.rs` 4 passed / 3 ignored. Untouched by this round's diff. I additionally confirmed a model-supplied phase token of `\u{200b}` — which survives `is_plain_path_component` (CR-02) — is still refused at `src/driver/goal.rs:704` by roadmap membership, so CR-02 does **not** reach this criterion. |
 
 **Score:** 4/5 truths verified (0 present-but-behavior-unverified)
 
 ### Independent Reproduction (not taken from 21-REVIEW.md)
 
-I wrote and ran a standalone reproduction test (`tests/zzz_verify_repro_target_phase.rs`)
-directly against `drive()` at HEAD (`d4874ec`), built on the same fixture
-pattern `tests/driver_dry_run.rs` already establishes (a real git repo, an
-opted-in registry entry, the tripwire spawn-evidence pattern). Deleted
-afterward and never committed.
+The round-4 review labelled CR-01 **inferred** and CR-02 **reproduced**. I held
+it to that distinction and went further on both. Three throwaway integration
+tests, written against HEAD (`c7bcafb`), run, and deleted — `git status` is
+clean of them.
 
-**Preview (`--target-phase '   '`, `dry_run: true`):**
-
-```
-RESULT: Ok(())
-...rendered output included:...
-  Routed run: no command would be issued. From the state on disk now,
-  the router would park (router_state_unverified:    ) and the run would stop for
-  a human rather than choose.
-```
-
-**Real run (`--target-phase '   '`, `dry_run: false`):**
+**1. CR-01 — UPGRADED from inferred to REPRODUCED.** Called `pub async fn
+execute_run` directly with `command: None, target_phase: None`:
 
 ```
-RESULT: Ok(())
-.planning/meta-manager exists = true
-artifacts created:
-  <root>/.planning/meta-manager/runs/run.lock
-  <root>/.planning/meta-manager/runs/.gitignore
-  <root>/.planning/meta-manager/runs/2026-08-21T00-00-00Z-blank/run.json
-  <root>/.planning/meta-manager/runs/2026-08-21T00-00-00Z-blank/journal.jsonl
+RESULT: Err(NoCommandSource)
+run.json exists = true
+run.json = {
+  "run_id": "2026-08-21T00-00-00Z-cr01",
+  "goal": "",
+  "gsd_command": "",
+  ...
+  "outcome": "no_command_source"
+}
+gsd_command field = Some(String(""))
+journal exists = true   (4 records: run_started, 2 diagnostics, run_ended)
 ```
 
-This matches 21-REVIEW.md's round-3 CR-01 reproduction against the CLI binary
-almost verbatim (same rendered `router_state_unverified:    ` phrase, same
-artifact set), obtained independently through the library API rather than the
-CLI, against a byte-identical whitespace payload.
+The typed refusal 21-14 added does fire — **after** `run.json`, the run
+directory and the journal are already on disk carrying the exact empty string
+D-30 reserves for "field absent". I confirmed no earlier guard exists by
+extracting `execute_run`'s first 195 lines (`:2261-2455`) to a file and grepping
+it: **zero** `return Err`, and the only `?` sites are plan-approval staleness,
+`RunIdRequired` and `bounds::resolve`.
 
-I also independently confirmed, by direct code reading rather than by running
-the review's own reproduction commands:
+**2. CR-02 — REPRODUCED, and end-to-end rather than at the predicate.** First
+the predicate split, measured against the real library:
 
-- `is_plain_path_component` (`src/journal/mod.rs:242-254`) returns `false`
-  only for the empty string; every other string in `DEGENERATE` (`"   "`,
-  `"\t"`, `"\n  \n"`) is a single `Component::Normal` equal to itself and so
-  returns `true` — confirmed by reading the function body against each of the
-  four literal payloads by hand, not by compiling a standalone probe.
-- The matrix test's `--target-phase` exemption (`src/driver/mod.rs:1976-1983`)
-  loops `DEGENERATE` only for `--command` and `--goal` (confirmed by reading
-  the loop body at ~:1982-1995) — `--target-phase` never appears in the
-  by-name sweep at all.
-- `parse_approval_token` sits on exactly one executable line in production
-  (`src/driver/mod.rs:644`), above `if args.dry_run` (`:649`) — confirmed by
-  direct read, matching both 21-11-SUMMARY.md's and 21-REVIEW.md's claims.
-- Guard six's boundary-skip mechanism (`test_region_start(file).unwrap_or(usize::MAX)`,
-  then `if *number >= boundary { continue; }`) is exactly as described;
-  `src/state_reader/mod.rs` has `mod tests {` at line 311 and a production
-  `pub fn count_backlog_items` at line 530, past the boundary — confirmed by
-  direct `grep`/`sed` read, and independently corroborated by
-  `cargo clippy --all-targets` flagging `items_after_test_module` at that
-  exact file and line.
+```
+is_plain_path_component("\u{200b}")             = true
+is_plain_path_component("\u{feff}")             = true
+is_plain_path_component("\u{2060}")             = true
+is_plain_path_component("   ")                  = false
+is_plain_path_component("a\nb")                 = false
+run_paths(root, U+200B).is_some()               = true
+U+200B is_whitespace=false is_control=false
+U+FEFF is_whitespace=false is_control=false
+```
+
+Then through the public `drive()`, which the review did not do:
+
+```
+drive(--command '/gsd:progress' --run-id '\u{200b}')  ->  Ok(())
+runs dir entries:
+  "run.lock"
+  "\u{200b}"   (chars: ['\u{200b}'])
+      run.json run_id  = Some(String("\u{200b}"))
+      run.json outcome = Some(String("succeeded_no_changes"))
+  ".gitignore"
+```
+
+A complete, successful, terminal run record whose directory name is one
+invisible character. Nothing on disk or on screen names that run.
+
+**3. IN-01 — REPRODUCED on the public path** (the review rated this Info; I
+grade it higher because it falsifies a named `must_haves` truth):
+
+```
+[whitespace] PREVIEW Ok(())  REAL Ok(())  run.json goal = Some(String("   "))
+[zero-width] PREVIEW Ok(())  REAL Ok(())  run.json goal = Some(String("\u{200b}"))
+[bom]        PREVIEW Ok(())  REAL Ok(())  run.json goal = Some(String("\u{feff}"))
+```
+
+Each created the lock, the run directory, `journal.jsonl` and `run.json` — so
+the "before any file, lock, journal, or run directory is created" clause is
+false for `--goal` whenever another source is present. `make_run_record` writes
+`goal: args.goal.clone().unwrap_or_default()` (`src/driver/run.rs:763`), raw.
+`command_source`'s `(Some, None)` and `(None, Some(_))` arms never touch `goal`,
+and the matrix's `PositionBuilder` only ever builds one-flag tuples — the cell
+is **unexpressible** in the anti-recurrence mechanism's current shape.
+
+I also confirmed, by direct reading rather than by re-running the review's
+commands:
+
+- `recorded_command` at `:839-849` and `digested_command_fragment` at `:867-872`
+  both still carry `(None, None) => String::new()` with the identical refuted
+  comment; `git log` confirms `0dcac4e` removed only the third such arm.
+- `ITEM_OPENERS` (`tests/spawn_seam_guard.rs:1991`) has `"pub "` and not
+  `"pub("`; `grep -rn '^pub(crate) \|^pub(super) ' src/` returns exactly **51**.
+  A scan for post-marker instances of that spelling returns **0** today, so the
+  gap is latent rather than live.
+- `visibly_empty_numbered_entry`'s only two call sites (`:2086`, `:2220`) both
+  sit in the realistic half of their loops.
+- `ALL_VARIANT_NAMES` (`:1901`) is a hand-maintained `[&str; 3]`.
+- All four `HOSTILE_PHASE_TOKENS` carry control characters, so none reaches
+  `src/driver/goal.rs:697` any more.
+- `.planning/REQUIREMENTS.md`'s last touch is `0c4f712` — neither 21-13 nor
+  21-14 flipped a requirement. The pass-4 process regression is closed.
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |---|---|---|---|
-| `src/driver/mod.rs` (`command_source`, Command arm) | Blank/whitespace `--command` refused | ✓ VERIFIED | `if !command.trim().is_empty()` guard present at `:392`, sibling `(Some(_), None) => Err(NoCommandSource)` at `:399`. Confirmed by direct read and by the full-suite pass. |
-| `src/driver/mod.rs` (`command_source`, Routed arm) | Blank/whitespace `--target-phase` refused | ✗ MISSING | No emptiness guard on `(None, Some(target_phase)) => Ok(CommandSource::Routed(...))`. This is the direct cause of round-4-diff CR-01, reproduced independently above. |
-| `src/driver/mod.rs` (`drive`, `recorded_approval`) | Token parsed as a pure invocation-shape refusal, above decomposition and above `--dry-run` | ✓ VERIFIED | Confirmed at `:644`, above `:649` (`if args.dry_run`) and ~180 lines above `decompose`. Genuinely closed. |
-| `tests/spawn_seam_guard.rs` (guard six) | Terminal-write single-call-site property, checked tree-wide with an honest header | ⚠️ VERIFIED but header incomplete | Scan genuinely widened to all of `src/` (confirmed: 25/25 passing, and by reading the scan's `source_files()` iteration). Header names three limits accurately but omits a fourth, live one (marker-to-EOF skip; `src/state_reader/mod.rs:530` is invisible to it today). |
-| `tests/spawn_seam_guard.rs` (guard eight, new) | `CommandSource`'s single production construction site, checked with an honest header | ⚠️ VERIFIED but header absent | The check itself is real (confirmed by reading the needle list and allowlist) and passes. Its header states the property but names none of its own limitations, unlike its sibling guard six in the same file and the same round. |
-| `src/driver/mod.rs` (degenerate-payload matrix) | Anti-recurrence mechanism covering every `CommandSource` variant | ✗ INCOMPLETE | Covers `Command` and `Goal` genuinely (confirmed: both loop over all 4 `DEGENERATE` payloads and assert `NoCommandSource`). `Routed` is explicitly exempted with a false justification, confirmed by direct read of `is_plain_path_component` against each payload. |
-| `.planning/REQUIREMENTS.md` | Accurate requirement status matching phase-21 verification history | ✗ STALE/WRONG | DRIVE-01, DRIVE-03 marked Complete in the same commit that closed 21-11, one commit before the review that found criterion 1 was still broken. Repeats the mistake `828d7cc` reverted earlier in this phase. |
+| `src/driver/mod.rs` (`mod payload` / `NonBlank`) | Blank payload unrepresentable by type | ✓ VERIFIED | Nested module `:324`, private field `:331`, one `impl` at `:333` with exactly `new`/`as_str`, derives `Debug, Clone, PartialEq, Eq` only. No escape route found. |
+| `src/driver/mod.rs` (`command_source`, all 3 arms) | Every variant carries `NonBlank`; no arm forgets | ✓ VERIFIED | `:479`, `:489`, `:496` — each arm matches on `NonBlank::new` and maps `None` to `NoCommandSource`. The class fix, not a fourth per-arm trim. |
+| `src/driver/mod.rs` (degenerate matrix) | Uniform, exemption-free, structurally exhaustive columns | ✓ VERIFIED (columns) / ⚠️ INCOMPLETE (rows, multi-flag) | 18 cells, uniform, no exemption. Column axis is a compile error on a fourth argv parameter. Row axis rests on a hand-maintained const, and multi-flag combinations are unexpressible. |
+| `src/journal/mod.rs` (`is_plain_path_component`) | One definition of "blank", agreeing with the argv seam | ✗ CONTRADICTORY | `trim`-based; accepts `\u{200b}`, `\u{feff}`, `\u{2060}` that `NonBlank` refuses. Two definitions, same commit, 7 production call sites. |
+| `src/driver/run.rs` (`recorded_command`, `digested_command_fragment`) | No manufactured blank in an unreachable arm | ✗ PRESENT (violates 21-14's own prohibition) | Both still `(None, None) => String::new()`; `recorded_command`'s value reaches a committed `run.json`. Reproduced. |
+| `src/driver/run.rs` (`make_run_record`, `goal` field) | Goal validated before it is persisted | ✗ UNVALIDATED | `args.goal.clone().unwrap_or_default()` at `:763`. Reproduced for three payloads. |
+| `src/driver/run.rs` (`IterationSource`) | Colliding enum renamed; exactly one `enum CommandSource` under `src/` | ✓ VERIFIED | Rename complete; guard eight asserts the single declaration rather than dodging by needle shape. |
+| `src/state_reader/mod.rs` (`count_backlog_items`) | Above the `mod tests` marker; file clean under `items_after_test_module` | ✓ VERIFIED | `pub fn` at `:312`, marker at `:331`. Clippy `--all-targets` 5 → 4, self-measured. |
+| `tests/spawn_seam_guard.rs` (boundary self-check) | Blind region provably empty | ⚠️ VERIFIED but overclaiming | The check is real, is a build failure, and caught the one live offender. Its `ITEM_OPENERS` cannot see the tree's 51 `pub(crate)`/`pub(super)` items, while the header calls the region "provably empty". |
+| `tests/spawn_seam_guard.rs` (guard six header, limits 4/5) | Each limit named with its failure direction | ✓ VERIFIED | Both limits present, in the one-at-a-time register, with directions. The pass-4 finding is closed. |
+| `tests/spawn_seam_guard.rs` (guard eight limits block) | Names what the scan cannot see | ⚠️ VERIFIED but one bound is weaker than stated | Five numbered limits with directions — a real improvement on "no limits at all". Limit 1's non-vacuity bound counts lines, not distinct needles. |
+| `src/driver/mod.rs` (`visibly_empty_numbered_entry`) | Independent oracle that can falsify the guard | ⚠️ ORPHANED in effect | Written independently, but structurally unreachable by any degenerate payload. The tautology is broken by the literal array, not by this detector. |
+| `.planning/REQUIREMENTS.md` | Accurate, internally consistent requirement status | ✓ VERIFIED (pass-4 regression closed) | All five phase-21 requirements read `[ ]` / `Gaps Found`; the checklist and traceability table now agree, which they did not before. |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 |---|---|---|---|---|
-| `src/driver/mod.rs` (`command_source`, Routed arm) | `src/driver/dry_run.rs` (routed preview render) | A blank/whitespace `--target-phase` is refused before it can be rendered as a park reason or written to `run.json` | ✗ NOT WIRED | The value flows unchecked into `router_state_unverified:` text and into `run.json`'s `target_phase` field. round-4-diff CR-01. |
-| `src/driver/mod.rs` (matrix test) | `src/driver/mod.rs` (`command_source`, all three arms) | Every `CommandSource` variant's degenerate payloads are checked by name | ⚠️ PARTIAL | Wired for `Command` and `Goal`; `Routed` is explicitly excluded by a false-premise comment. |
-| `src/driver/mod.rs` (`drive`) | `src/journal/mod.rs` (`parse_approval_token`) | Validated as a pure invocation-shape refusal, above decomposition and above `--dry-run` | ✓ WIRED | Confirmed; genuinely closed this round. |
-| `tests/spawn_seam_guard.rs` (guard six) | every `src/` file's terminal writes | Single call site provable tree-wide | ✓ WIRED (scope), ⚠️ header incomplete | The scan itself is genuinely tree-wide now; its self-description of remaining limits omits one that is live. |
-| `.planning/REQUIREMENTS.md` (DRIVE-01, DRIVE-03) | Verification history for criterion 1 | Requirement status reflects the latest verification's finding | ✗ NOT WIRED | Marked Complete while criterion 1 is (and, at the time of that commit, was about to be shown to still be) failing. |
+| `DriveArgs.command` / `.target_phase` / `.goal` (sole source) | `CommandSource` | `payload::NonBlank::new` — the one place blankness is judged | ✓ WIRED | All three arms; 18/18 matrix cells; boundary pinned both sides. |
+| `DriveArgs.goal` (beside another source) | `RunRecord.goal` | Validated before it is persisted | ✗ NOT WIRED | `unwrap_or_default()` at `run.rs:763`; `command_source` never sees it. Reproduced for `"   "`, `\u{200b}`, `\u{feff}`. |
+| `DriveArgs.run_id` | `journal::run_paths` / run directory name | One blankness predicate shared with the argv seam | ✗ NOT WIRED | `is_plain_path_component`'s `trim` accepts what `NonBlank` refuses. Full run completes with an invisible directory name. |
+| `execute_run` | `RunRecord.gsd_command` | `(None, None)` refused before anything is written | ✗ NOT WIRED | Refusal at `:2643` is downstream of `JournalRun::start` at `:2514`. Reproduced: `gsd_command: ""` on disk. |
+| `payload::NonBlank::new` | `journal::is_plain_path_component` | One shared visibility predicate | ✗ NOT WIRED | Two independent predicates that disagree, shipped in the same commit. |
+| `tests/spawn_seam_guard.rs` (boundary self-check) | every post-marker item under `src/` | `ITEM_OPENERS` token list | ⚠️ PARTIAL | Blind to 51 column-zero `pub(crate)`/`pub(super)` items; 0 live offenders today. |
+| `src/driver/mod.rs` (matrix) | `command_source` (all variants) | Every degenerate payload × every argv position | ✓ WIRED (single-flag) / ⚠️ PARTIAL (multi-flag) | The exemption is gone. The shape cannot express a two-flag row. |
 
-### Requirements Coverage
+### Data-Flow Trace (Level 4)
 
-| Requirement | Source Plan(s) | Description | Status | Evidence |
+| Artifact | Data Variable | Source | Produces Real Data | Status |
 |---|---|---|---|---|
-| DRIVE-01 | 21-01, 21-04, 21-07, 21-09, 21-11 | User states a goal once, driver pursues it without further input | ⚠️ PARTIAL (unchanged disposition, new cause) | Multi-command pursuit (criterion 2) is verified. "Review before anything runs" is again undermined — this time by a defect the anti-recurrence mechanism's own coverage gap let through, in the `--target-phase` seam rather than `--command`/`--goal`. |
-| DRIVE-03 | 21-01, 21-03, 21-04, 21-07, 21-08, 21-09, 21-11 | Goal decomposed into structured, machine-checkable, reviewable plan | ✗ BLOCKED (unchanged disposition, new cause) | Same root cause as DRIVE-01 above: the honest-preview and validated-before-anything-runs guarantees are broken for the routed source. |
-| DRIVE-04 | 21-02, 21-04, 21-06, 21-10, 21-12 | Model escalation capped per run, exceeding it parks | ✓ SATISFIED | Criterion 3 verified; guard six's widening this round is a strictly stronger check than before, reconfirmed. |
-| SAFE-07 | 21-01, 21-03, 21-05, 21-06, 21-08, 21-10, 21-12 | `.planning/` content passed inside an explicit untrusted boundary, never concatenated into instructions | ✓ SATISFIED | Criterion 4 verified. Doc-accuracy defects in this round's new guards (WR-01, WR-02, WR-03 below) do not touch the untrusted-boundary mechanism itself. |
-| SAFE-08 | 21-01, 21-05, 21-06, 21-12 | Model's action constrained to fixed enum; free-form shell strings never executed | ✓ SATISFIED | Criterion 5 verified, untouched by this cycle's plans. |
-
-**No orphaned requirements.** The union of `requirements:` declared across all
-twelve plans (21-01 through 21-12) is exactly {DRIVE-01, DRIVE-03, DRIVE-04,
-SAFE-07, SAFE-08}, matching REQUIREMENTS.md's phase-21 mapping and the ROADMAP
-phase-21 `Requirements:` line.
-
-**REQUIREMENTS.md is currently WRONG, not merely stale**, and this is recorded
-as a gap (see frontmatter and the artifact table above) rather than left as an
-observation: DRIVE-01 and DRIVE-03 read `[x]`/Complete at HEAD, marked in
-21-11's own completion commit (`760d71f`), one commit before the round-3 review
-(`d4874ec`) that found criterion 1 still broken against the identical tree.
-DRIVE-04, SAFE-07 and SAFE-08 correctly read Gaps Found in the checklist
-(inconsistent with their own traceability-table rows, which read Complete —
-a pre-existing minor inconsistency this report does not attempt to resolve,
-since it predates this round and both readings agree on "not yet the phase's
-overall passed state"). This report does not edit REQUIREMENTS.md; per the
-phase's own established norm (stated in the prior two verification reports),
-that edit belongs to whichever step next processes a `passed` verification —
-but DRIVE-01/DRIVE-03's current Complete marking should be reverted before
-then, not carried forward silently.
-
-### Anti-Patterns Found
-
-| File | Line | Pattern | Severity | Impact |
-|---|---|---|---|---|
-| `src/driver/mod.rs` | `~:400` | `command_source`'s `Routed` arm has no emptiness check, unlike both its siblings (`Command` gained one this round; `Goal` has had one since 21-07) | 🛑 Blocker | Direct cause of round-4-diff CR-01; reproduced independently. |
-| `src/driver/mod.rs` | `:1976-1983` | The degenerate-payload matrix's `--target-phase` exemption comment claims `is_plain_path_component` returns false for the empty string as though that covers all four `DEGENERATE` payloads; it is true for exactly 1 of 4 | 🛑 Blocker | The regression test written specifically to prevent a third recurrence does not cover the variant that recurred. |
-| `.planning/REQUIREMENTS.md` | `~83, ~85, ~164, ~166` | DRIVE-01 and DRIVE-03 marked Complete one commit before the review that found criterion 1 still broken | ⚠️ Warning | Repeats a mistake this phase already had to revert once (`828d7cc`); process/documentation defect, not a code defect. |
-| `tests/spawn_seam_guard.rs` | `~1691-1723` (guard six header) | Names three approximation limits individually and accurately but omits a fourth, live one (marker-to-EOF skip; corroborated by clippy at `src/state_reader/mod.rs:311/530`) | ⚠️ Warning | round-3-diff WR-01. No live exploit today via the terminal-write property specifically, but the header underclaims relative to what the scan actually misses. |
-| `tests/spawn_seam_guard.rs` | `~2136-2226` (guard eight) | Names no limitation of its own at all, in the same file and round where guard six was rewritten specifically to stop doing that | ⚠️ Warning | round-3-diff WR-02. No live violating call site exists today. |
-| `src/driver/mod.rs` | `:1663-1674`, `:1706-1715` | `DEGENERATE` and `empty_numbered_entry` both key on the exact `str::trim` predicate the production guard uses, so the matrix can only confirm the guard, never falsify it | ⚠️ Warning | round-3-diff WR-03. Low exploitability (operator-supplied value; TUI path guarded separately), but it is a guard-design defect in the very mechanism meant to stop this phase's recurring failure mode. |
-| `src/driver/mod.rs` | `:400` (pre-existing, carried forward, not new) | `plan_target_phase(plan).unwrap_or_default()` is a second route to a blank `target_phase` that bypasses the argv seam entirely | ℹ️ Info | Named by round-2 review IN-01…04, re-confirmed still open by round-3 review, out of this round's commissioned scope. Not independently re-verified in this pass beyond confirming it is still cited as open. |
-
-No unreferenced `TBD`/`FIXME`/`XXX` debt markers were introduced in this
-round's diff (`fad82ec..d4874ec`, `src/` and `tests/` only) — confirmed by
-`git diff` piped through `rtk proxy grep`.
+| `run.json` | `gsd_command` | `recorded_command(args)` → `(None, None) => String::new()` | ✗ | ✗ DISCONNECTED — reproduced as `""` on disk |
+| `run.json` | `goal` | `args.goal.clone().unwrap_or_default()` | ✗ for blank/zero-width payloads | ✗ HOLLOW — reproduced as `"   "`, `"\u{200b}"`, `"\u{feff}"` |
+| `run.json` / run directory | `run_id` | `is_plain_path_component` gate only | ✗ for zero-width payloads | ✗ HOLLOW — reproduced as an invisible directory name |
+| `run.json` | `target_phase` | `args.target_phase` via `CommandSource::Routed(NonBlank)` | ✓ | ✓ FLOWING — this is the value the last pass failed on; it is genuinely fixed |
+| TUI driver screen | `goal` line | `goal_lines(goal)` gated on `goal.trim().is_empty()` | ✗ for zero-width | ⚠️ STATIC — a `\u{200b}` goal takes the non-empty branch and renders a label with nothing after it |
 
 ### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 |---|---|---|---|
-| Whole-suite regression | `rtk proxy cargo test --workspace -- --test-threads=4` | **1316 passed, 0 failed** across 35 binaries (self-run, not taken from any SUMMARY) | ✓ PASS |
-| `cargo build --all-targets` | — | clean | ✓ PASS |
-| `cargo clippy --lib -- -D warnings` | — | clean | ✓ PASS |
-| `cargo clippy --all-targets` (unfiltered severity check) | — | 5 warnings, all pre-existing and outside this round's diff (`src/browser.rs`, `src/project_creator.rs`, `src/state_reader/mod.rs:311` — the last independently corroborates round-3-diff WR-01) | ✓ PASS (info only) |
-| Independent reproduction: whitespace `--target-phase`, preview | standalone `drive()` call against a fresh fixture, not committed | `Ok(())`, renders `router_state_unverified:    ` under the honest-sequence-style header | ✗ CONFIRMS round-4-diff CR-01 |
-| Independent reproduction: whitespace `--target-phase`, real run | standalone `drive()` call against a fresh fixture, not committed | `Ok(())`; `run.lock`, run directory, `journal.jsonl`, `run.json` all created | ✗ CONFIRMS round-4-diff CR-01 |
-| `is_plain_path_component` payload-by-payload read | direct code inspection of `src/journal/mod.rs:242-254` against `DEGENERATE`'s four literals | `""` → false; `"   "`, `"\t"`, `"\n  \n"` → true | ✗ CONFIRMS the exemption comment's justification is wrong for 3/4 payloads |
-| `parse_approval_token` single-call-site claim | direct code read of `src/driver/mod.rs` | Exactly one executable-line hit, at `:644`, above `:649` | ✓ CONFIRMS round-3-diff CR-01 genuinely closed |
-| Guard six tree-wide scan claim | direct code read + `git diff` of the widened `TERMINAL_WRITE_ALLOWLIST` mechanism | Matches 21-12-SUMMARY.md's description | ✓ CONFIRMS |
-| `mod tests` boundary skip on `src/state_reader/mod.rs` | direct line read (`:311`, `:530`) + `cargo clippy --all-targets` | Marker at 311, production fn at 530, clippy independently flags it | ✓ CONFIRMS round-3-diff WR-01 |
-| REQUIREMENTS.md premature marking | `git show 760d71f -- .planning/REQUIREMENTS.md` | DRIVE-01/DRIVE-03 flipped to Complete in 21-11's own completion commit | ✗ CONFIRMS regression |
+| Whole-suite regression | `rtk proxy cargo test --workspace --no-fail-fast -- --test-threads=2` | **1320 passed, 0 failed, 13 ignored** across 35 binaries (self-run, once, not taken from any SUMMARY) | ✓ PASS |
+| Build | `rtk proxy cargo build --all-targets` | exit 0, 0 warnings | ✓ PASS |
+| Gate lint | `rtk proxy cargo clippy --lib -- -D warnings` | exit 0 | ✓ PASS |
+| Unfiltered severity | `rtk proxy cargo clippy --all-targets` | 4 warnings, all pre-existing (`src/browser.rs:131-133`, `src/project_creator.rs:146`); `items_after_test_module` cleared | ✓ PASS (info) |
+| Guard suite | within the full run | `spawn_seam_guard` 26/26 | ✓ PASS |
+| Criterion-2 seam | within the full run | `driver_goal_seam` 20/20 | ✓ PASS |
+| Criterion-4 corpus | within the full run | `driver_injection_corpus` 12 passed / 10 ignored | ✓ PASS |
+| **CR-01 reproduction** | direct `execute_run(command: None, target_phase: None)` against a real fixture | `Err(NoCommandSource)` **and** `run.json` with `gsd_command: ""`, `goal: ""`, plus run dir + journal | ✗ CONFIRMS CR-01 (upgrades it from *inferred*) |
+| **CR-02 predicate split** | `is_plain_path_component` / `run_paths` against the real library | `\u{200b}`, `\u{feff}`, `\u{2060}` → `true`; `"   "` → `false` | ✗ CONFIRMS CR-02 |
+| **CR-02 end-to-end** | `drive(--command '/gsd:progress' --run-id '\u{200b}')` | `Ok(())`; run directory named `"\u{200b}"`, `run.json` `outcome: succeeded_no_changes` | ✗ CONFIRMS CR-02 (beyond what the review showed) |
+| **IN-01 end-to-end** | `drive(--command '/gsd:progress' --goal '<blank>')` ×3 payloads, preview + real | all `Ok(())`; `run.json` `goal` = `"   "` / `"\u{200b}"` / `"\u{feff}"` | ✗ CONFIRMS IN-01 |
+| `pub(crate)` blindness | `grep -rn '^pub(crate) \|^pub(super) ' src/` + post-marker scan | 51 invisible items tree-wide; 0 currently past a marker | ⚠️ CONFIRMS WR-01 (latent) |
+| Debt markers in the round-4 diff | `git diff 6eb1d49..HEAD -- src/ tests/` (1659 lines) piped to grep | 0 `TBD`/`FIXME`/`XXX`; control needle `NonBlank` → 26 hits, so the grep is non-vacuous | ✓ PASS |
+| `driver_reattach` flake | per orchestrator's throwaway-worktree run of base `6eb1d49` (5×: F,F,F,ok,ok) | pre-existing, not a regression; green in my own `--test-threads=2` run | ✓ NOT A GAP |
+
+> Every count- or presence-bearing check above was run under `rtk proxy`, and
+> each negative grep carries a positive control needle. A vacuous grep is the
+> exact failure class this phase keeps re-shipping; two of them appear in this
+> table with their controls stated.
 
 ### Probe Execution
 
 Not applicable — this phase is not a migration/tooling phase and declares no
 `scripts/*/tests/probe-*.sh`.
 
+### Requirements Coverage
+
+| Requirement | Source Plan(s) | Description | Status | Evidence |
+|---|---|---|---|---|
+| DRIVE-01 | 21-01, 21-04, 21-07, 21-09, 21-11, 21-13 | User states a goal once, driver pursues it without further input | ⚠️ PARTIAL | Multi-command pursuit (criterion 2) is verified and reconfirmed. "Reviewable before anything runs" fails again — this time because `--goal` beside another source is persisted unvalidated after the lock, journal and run directory exist. |
+| DRIVE-03 | 21-01, 21-03, 21-04, 21-07, 21-08, 21-09, 21-11, 21-13 | Goal decomposed into a structured, machine-checkable, reviewable plan | ✗ BLOCKED | Same root cause. The decomposition itself is sound; the record that is supposed to be evidence of it is not. |
+| DRIVE-04 | 21-02, 21-04, 21-06, 21-10, 21-12, 21-14 | Model escalation capped per run, exceeding it parks | ✓ SATISFIED | Criterion 3 verified; guard six is now self-checking over its own blind region, a strictly stronger control than the previous pass had. |
+| SAFE-07 | 21-01, 21-03, 21-05, 21-06, 21-08, 21-10, 21-12, 21-14 | `.planning/` content passed inside an explicit untrusted boundary | ✓ SATISFIED | Criterion 4 verified; corpus untouched by this round's diff and passing with its arrival-before-influence assertions. |
+| SAFE-08 | 21-01, 21-05, 21-06, 21-12, 21-14 | Model's action constrained to a fixed enum; free-form shell strings never executed | ✓ SATISFIED | Criterion 5 verified. I additionally confirmed CR-02's zero-width hole does not reach this seam: a `\u{200b}` phase token from the model survives `is_plain_path_component` but is refused by roadmap membership at `src/driver/goal.rs:704`. |
+
+**No orphaned requirements.** The union of `requirements:` declared across all
+fourteen plans (21-01 … 21-14) is exactly {DRIVE-01, DRIVE-03, DRIVE-04,
+SAFE-07, SAFE-08}, matching REQUIREMENTS.md's phase-21 mapping and the ROADMAP
+phase-21 `Requirements:` line. `.planning/REQUIREMENTS.md` is **correct at
+HEAD** — the pass-4 premature-marking regression is closed and both plans
+honoured their own `MUST NOT flip a requirement` prohibition.
+
+### Anti-Patterns Found
+
+| File | Line | Pattern | Severity | Impact |
+|---|---|---|---|---|
+| `src/driver/run.rs` | `:848`, `:871` | `(None, None) => String::new()` — a manufactured blank as the "safe" arm of an unreachable match, twice, carrying the comment the same plan declared refuted | 🛑 Blocker | Violates 21-14's own prohibition verbatim. One copy reaches a committed `run.json`. Reproduced. |
+| `src/driver/run.rs` | `:763` | `args.goal.clone().unwrap_or_default()` — raw argv into a persisted record | 🛑 Blocker | Falsifies 21-13's first `must_haves` truth on the public path. Reproduced for three payloads. |
+| `src/journal/mod.rs` | `:263` | `value.trim().is_empty()` as "blank" while the sibling seam uses a wider visibility rule | 🛑 Blocker | Two disagreeing definitions in one commit; 7 production call sites; a full run completes with an invisible name. Reproduced end to end. |
+| `src/driver/mod.rs` | `:1576` | The `--run-id` blankness pin loops `["   ", "\t", "\n  \n"]` — three of `DEGENERATE`'s six — in the commit that added the other three | 🛑 Blocker | Violates 21-13's own prohibition against hand-picked anti-recurrence lists. It is the fourth instance of the phase's signature defect, one level up. |
+| `tests/spawn_seam_guard.rs` | `:1991-2005`, header `:2074-2078` | `ITEM_OPENERS` cannot match `pub(crate) `/`pub(super) ` (51 such items) while the header claims the region is "provably empty" and bounds the gap with "items are at column zero" — the offenders *are* at column zero | ⚠️ Warning | A guard header overclaiming its reach for the **third consecutive round**. 0 live offenders today. |
+| `src/driver/mod.rs` | `:1936-1943`, `:2086`, `:2220` | `visibly_empty_numbered_entry`'s doc names a falsification mechanism it does not have; the detector is structurally unreachable by any degenerate payload | ⚠️ Warning | The tautology is genuinely broken — by the literal array. The detector wears credit it did not earn. |
+| `tests/spawn_seam_guard.rs` | `:2433-2449`, claim at `:2286-2291` | Guard eight's non-vacuity counts attributed lines, not distinct needles | ⚠️ Warning | The bound bites today only because the arithmetic is 3-and-3; it stops the moment `command_source` grows a fourth construction line, which the criterion-1 fix likely adds. |
+| `src/driver/mod.rs` | `:1901` | `ALL_VARIANT_NAMES` is a hand-maintained `[&str; 3]`; the anchoring to `variant_name` is one-directional | ⚠️ Warning | The column axis is structural; the row axis is a list a human must remember to extend — the shape this round removed one level down. |
+| `tests/driver_goal_seam.rs` | `:1358-1395` | The inverted pin left `src/driver/goal.rs:697` reachable but with zero coverage | ⚠️ Warning | The deviation was recorded correctly and in place; the cost was undersold. |
+| `src/ui/screens/driver.rs` | `:755` | `goal.trim().is_empty()` — a fifth blankness expression, on the surface that renders the user's own words | ℹ️ Info | A `\u{200b}` goal renders as a label with nothing after it. Folds into CR-02's one-predicate fix. |
+| `src/driver/run.rs` | `:1945` | `from_argv_goal`'s `goal.trim()` — a fourth blankness expression | ℹ️ Info | Defence in depth, harmless today. Folds into the same fix. |
+
+No unreferenced `TBD`/`FIXME`/`XXX` debt markers were introduced in this round's
+diff (`6eb1d49..c7bcafb`, `src/` and `tests/`, 1659 lines) — confirmed with a
+positive control needle (`NonBlank`, 26 hits) so the negative result is not
+vacuous.
+
 ### Human Verification Required
 
-None required for a status determination. All findings in this report are
-code-level, objectively confirmed defects — independently reproduced or
-independently read against the built binary/library at HEAD — rather than
-judgment calls.
+None. Every finding in this report is a code-level fact, independently
+reproduced against the built library at HEAD or read directly from the source —
+not a judgment call and not taken from any SUMMARY or from `21-REVIEW.md`.
 
 ### Gaps Summary
 
-**Genuinely closed this cycle**, reconfirmed by direct code reading and a
-fresh full-suite run rather than by trusting `21-11-SUMMARY.md` or
-`21-12-SUMMARY.md`: the blank-`--command` refusal, the approval-token's move
-into the pure-refusal group above both decomposition and the `--dry-run`
-branch, guard six's tree-wide widening, and the `plan_digest` legacy-record
-doc correction (in both copies, not just the one the plan named).
+**What genuinely closed this cycle** — all seven pass-4 gaps, reconfirmed by
+direct reading and a self-run suite rather than by trusting `21-13-SUMMARY.md`
+or `21-14-SUMMARY.md`: the `Routed` arm (closed structurally, not by a fourth
+trim), the matrix's `--target-phase` exemption, the missing test pin, the
+`trim` tautology (at the array level), guard six's fourth limit (closed *and*
+converted into a build-failing self-check with the live offender relocated),
+guard eight's absent limits block, and `.planning/REQUIREMENTS.md`'s premature
+marking. The `enum CommandSource` collision named as debt in round 3 is also
+retired. **That is the largest genuine closure in this phase's history, and
+none of it regressed.**
 
-**Criterion 1 fails for a third consecutive cycle.** This is not a new class
-of defect — it is the third instance of the *same* class (an unvalidated
-blank/whitespace value reaching an "honest sequence" preview and a real
-run's persisted record) landing on a third distinct `CommandSource` variant
-each time: `Goal` (cycle 1), `Command` (cycle 2), `Routed`/`--target-phase`
-(cycle 3, this pass). Each cycle's fix has been correct and narrow; each
-cycle's regression test has covered exactly the variant that cycle fixed and
-no other. **The anti-recurrence mechanism this round built is not broken —
-it is real, and it does what it claims for the two variants it covers.** It
-was scoped to `Command` and `Goal` and explicitly, by name, exempted
-`Routed`, with a justification that is arithmetically wrong for 3 of the 4
-payloads it was invoked to justify. That is a scoping decision that turned
-out wrong, not a mechanism that failed under test — which changes what the
-next round should do: not "add another point fix and another point test,"
-which is the bet this phase has now lost three times, but "make the existing
-mechanism's coverage exhaustive over the type it already classifies
-exhaustively" — derive the matrix's column set from the same `variant_name`
-match this round used to make the row axis exhaustive, so a variant cannot be
-silently exempted from the sweep the way `Routed` was this round.
+**Criterion 1 fails a fourth time — and the failure has moved.** The first
+three cycles each failed inside `command_source`: `Goal`, then `Command`, then
+`Routed`. Round 4 attacked the class rather than the arm and **it worked**. I
+tried to construct a blank `CommandSource` and could not; the matrix covers
+18/18 cells with no exemption; the column axis is enforced by the compiler.
+Nothing this pass found is inside that domain.
 
-Two further Warning-level findings, both confirmed by direct code reading,
-land in the guards this round newly added or rewrote: guard six's otherwise
-much-improved header still omits a live silent gap (a production item placed
-after a file's `mod tests {` marker is invisible to the terminal-write scan —
-`src/state_reader/mod.rs:530` is such an item today, independently
-corroborated by clippy); and guard eight, added this round specifically in
-response to the last cycle's over-claiming criticism, itself names no
-limitation at all. Separately, the matrix's own payload/detector pair is
-tautological — both are keyed on the identical `trim` predicate the
-production guard uses, so the matrix can confirm the guard but structurally
-cannot falsify it.
+What this pass found is that **`NonBlank`'s domain is `CommandSource`, and the
+class is `DriveArgs`**. Six argv-derived strings; three converted; three not.
+The three unconverted ones are where all three reproduced Criticals live:
 
-**A regression not caused by this round's code, but by its process:**
-`.planning/REQUIREMENTS.md` had DRIVE-01 and DRIVE-03 marked Complete in
-21-11's own completion commit — one commit before the code review that found
-criterion 1 was still broken against that same tree. This phase has already
-had to revert an identical premature-completion marking once (`828d7cc`); it
-was not caught before it happened again.
+1. `--run-id '\u{200b}'` drives a **complete, successful, persisted run** whose
+   directory name and `run_id` are one invisible character, because the seam
+   that governs it defines "blank" as `trim` while the seam next door defines it
+   as visibility. Two definitions, one commit, 7 call sites.
+2. `--goal '   '` supplied beside `--command` is written verbatim into
+   `run.json` **after** the lock, the run directory and the journal exist —
+   falsifying 21-13's own first `must_haves` truth, which names `--goal`
+   explicitly and says "before any file, lock, journal, or run directory is
+   created".
+3. `execute_run`'s two surviving `String::new()` arms put the D-30 field-absent
+   sentinel into a committed `run.json`'s `gsd_command`, with the typed refusal
+   21-14 added firing 129 lines too late — violating 21-14's own prohibition in
+   the commit that declared it.
 
-**Recommendation:** route back through `/gsd-plan-phase --gaps` for a fourth
-gap-closure plan, scoped to close round-4-diff CR-01 (the `Routed`-arm
-emptiness check, the matrix's `--target-phase` inclusion, and the corrected
-test pin — all three already spelled out concretely in `21-REVIEW.md`'s
-CR-01 fix section) **and, in the same plan, to make the matrix's coverage
-structurally exhaustive rather than adding a third hand-picked column** —
-otherwise a fourth cycle scoped the same way as the last three is the same
-bet that has now lost three times in a row. The three Warning-level guard
-findings (WR-01, WR-02, WR-03) are cheap, are in the exact files the plan
-will already have open, and directly bear on why this keeps recurring — they
-should ride the same plan rather than be deferred again. Also correct
-`.planning/REQUIREMENTS.md`'s DRIVE-01/DRIVE-03 marking back to Pending (or
-Gaps Found, matching its three siblings) in that plan or before it, so the
-next verification is not the second one to have to point this out.
+Each is the phase's signature defect: a no-visible-instruction value reaching a
+persisted record that is supposed to be evidence. And in two of the three cases
+the defect is a **hand-narrowed enumeration** — `["   ", "\t", "\n  \n"]` where
+`DEGENERATE` has six; three fields converted where `DriveArgs` has six — which
+is the precise thing both plans wrote prohibitions against.
+
+Four Warning-level findings land in the round's own guard machinery. The one
+that matters is `ITEM_OPENERS`: a guard header claiming a region is "provably
+empty" while its token list is blind to the tree's dominant visibility spelling
+(51 items), and bounding its own gap with an argument ("items are at column
+zero") that is exactly backwards. **That is a guard overclaiming its reach for
+the third consecutive round**, in the round commissioned to stop guards
+overclaiming their reach.
+
+### Recommendation
+
+**Do not scope round 5 to CR-01 and CR-02.** A plan scoped to the two newest
+defects would be the fifth instance of a bet that has now lost four times, and
+the reason it keeps losing is visible in the data: **every cycle has enumerated
+by hand which values to protect, and every hand-enumeration has been exactly one
+item short.** The values were arms (three times), and now they are fields. The
+next hand-enumeration will be short too.
+
+The good news is that this round proved the *mechanism* is right — the type-level
+fix held under attack, which is the first non-regression in four cycles. The
+remaining work is a **bounded, enumerable sweep**, and it is bounded by the
+compiler rather than by a human:
+
+1. **Make `DriveArgs` the domain.** It is a single struct with a finite,
+   compiler-visible field list: six argv-derived strings, three already
+   converted. Validate at the parse boundary so `DriveArgs` cannot *hold* a
+   blank. This is what makes the sweep provably complete: `execute_run` then has
+   nothing blank to re-derive (both `String::new()` arms become unrepresentable
+   rather than patched or reordered), `--run-id` and `--goal` are covered by
+   construction, and `alias`/`approved_plan` stop resting on the incidental
+   behaviour of a registry lookup and a token parser.
+2. **Prove the sweep complete with a guard that reads the type, not a list.**
+   Assert `DriveArgs` declares no bare `String`/`Option<String>` argv field. A
+   seventh field then cannot be added without a deliberate decision, the same
+   way `PositionBuilder`'s 3-tuple already makes a fourth argv parameter a
+   compile error. This is the structural replacement for the hand-list, and it
+   is the one thing four cycles have never had.
+3. **One blankness predicate.** A shared `carries_no_visible_content` called by
+   `NonBlank::new`, `is_plain_path_component`, `from_argv_goal`, `goal_lines`
+   and `goal_or_none`. Five sites, all identified above; keep
+   `visibly_empty_numbered_entry` deliberately separate — that one is the oracle
+   and must be able to disagree.
+4. **Lift `DEGENERATE` to a shared test const** every seam's pin consumes, so a
+   seventh blank shape lands everywhere at once and `["   ", "\t", "\n  \n"]`
+   cannot happen again.
+5. **Give the matrix a multi-flag row**, since the cell that broke this round is
+   currently unexpressible in its shape.
+
+The five guard-accuracy Warnings are cheap, sit in files the plan will already
+have open, and bear directly on why this recurs — they should ride the same
+plan rather than be deferred a third time. In particular, add `"pub("` to
+`ITEM_OPENERS` and fix limit 4's bound sentence: a guard that overclaims is how
+a verifier gets told a region is clean when it is merely unchecked, and this
+phase cannot afford a fourth instance of that.
+
+**One process note.** Round 4 is the first cycle whose plans wrote explicit
+`prohibitions` against the exact mistakes that then shipped inside them — hand-picked
+enumerations (21-13) and manufactured blanks in unreachable arms (21-14). The
+prohibitions were correctly written and correctly aimed; nothing in the pipeline
+*checked* them against the diff before completion. Both are mechanically
+checkable (`grep` for `String::new()` as a match-arm value in the record
+builders; assert every blank-shape pin consumes the shared const). Round 5
+should turn those two prohibitions into assertions in the same commit that
+closes them, so the next round's declared prohibitions are enforced rather than
+merely declared.
 
 ---
 
-_Verified: 2026-08-21T19:00:22Z_
+_Verified: 2026-08-22T01:40:00Z_
 _Verifier: Claude (gsd-verifier)_
