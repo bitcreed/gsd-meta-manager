@@ -2691,25 +2691,68 @@ fn every_command_source_variant_is_named_only_where_it_is_built_or_matched() {
 // dutifully copied across the destructure compiles fine and reintroduces the
 // whole defect class. That is what this scan refuses.
 //
-// **What this scan cannot see, each named with the direction it fails in**, in
-// the register guard six establishes. This guard has both directions.
+// **What this scan SEES, what it does NOT, and what the floors actually bound.**
+// Rewritten in round 6 because pass 6 measured the previous version of this
+// block certifying bounds that no committed control measured — the inheritance
+// vector this phase has now paid for four times. Every claim below names the
+// control that goes red without it.
+//
+// **SEEN** — each with a planted-defect arm in
+// `the_raw_argv_field_scanner_sees_every_measured_silent_spelling`, all of which
+// exercise the SAME extracted fns the live assertion consumes:
+//
+// * `pub(crate)` / `pub(super)` field openers. That is the exact spelling
+//   `ITEM_OPENERS` was widened for four commits later in this same file, and
+//   pass 6 measured guard nine silent on both.
+// * The str-family payload spellings — `Box<str>`, `Cow<'_, str>`,
+//   `&'static str`, `&str` — none of which contains the `String` token.
+// * `OsString`, **deny-by-default over the whole scanned body**: any field whose
+//   type names it is reported unless its NAME is on the two-entry suppress-only
+//   allowlist `OSSTRING_ALLOWED`. A seventh argv field carries a new name by
+//   definition, so it is bound without anyone pre-listing it. The
+//   false-positive direction has its own arm (`Vec<OsString>` and
+//   `Option<PathBuf>` on the allowlisted names, asserted NOT reported), and the
+//   allowlist's integrity is pinned in the live assertion against the real
+//   declarations, so an entry cannot be silently repurposed.
+// * Trailing `//` comments in BOTH positions — last field (the declaration never
+//   terminated in `,`, so it was buffered and dropped) and mid-struct (the
+//   buffer swallowed the FOLLOWING declaration, so the offender was
+//   misattributed and the next field was never judged at all). Attribution is
+//   asserted, not merely the count.
+// * A declaration still buffered when the body ends, which is now flushed and
+//   judged rather than dropped.
+//
+// **SILENT, with direction** — all under-detection, each bounded by its own
+// assertion rather than by this sentence:
 //
 // 1. A field whose type hides behind a local `type` alias for `String` — say
-//    `type Alias = String; pub alias: Alias,` — matches no needle.
-//    **Under-detection — silent.** Bounded by the fact that the tree declares no
-//    such alias today, which this guard asserts on its own line rather than
-//    assuming: `type .* = String` under `src/driver/` must be zero.
-// 2. The field-line heuristic requires this tree's `pub <name>:` declaration
-//    style. A field written in a different style — no `pub`, or a macro-expanded
-//    declaration — is skipped. **Under-detection — silent.** Bounded by the
-//    non-vacuity floor below: the scan must see at least 10 field declarations
-//    and at least 6 of them must name `NonBlank`, so a heuristic that stopped
-//    matching fails loudly rather than reporting a clean empty set.
+//    `type Alias = String; pub alias: Alias,` — matches no token.
+//    **Under-detection, silent.** Bounded by
+//    `no_type_alias_hides_a_string_from_guard_nine`, which asserts on its own
+//    line that `type .* = String` under `src/driver/` is zero.
+// 2. A **macro-expanded** field declaration never appears in the source text at
+//    all. **Under-detection, silent, and bounded by nothing in this file** —
+//    stated rather than mitigated, because no textual scan can see it. What
+//    bounds it is `from_argv`'s no-`..` destructure, which a macro-declared
+//    field must still be named in.
 // 3. The struct-body extraction is column-zero brace based, like every other
 //    scan in this file. **Over- and under-detection**, per the shared marker
 //    approximation; cross-referenced to
 //    `no_production_item_follows_a_test_module_marker`, which bounds the related
-//    region gap.
+//    region gap. The extraction's own control asserts by name that the region
+//    never reached `RawDriveArgs`.
+//
+// **What the FLOORS bound, stated as measured rather than as hoped.** The
+// `>=10 field-declaration` and `>=6 NonBlank` assertions catch **extraction
+// breakage and wholesale declaration-style drift** — a scanner that stopped
+// matching this tree's style fails loudly instead of reporting a clean empty
+// set. They provably do **NOT** catch a single added field: pass 6 measured
+// `field_lines=12 protected=6 -> PASSES` with a planted `pub(crate)` offender
+// sitting in the body, and that exact input is now the floor probe inside the
+// control test. **The OFFENDER SCAN is what catches an added field**, which is
+// why its blind spellings were the whole of the gap. Since round 6 the scan and
+// the floor share one `is_field_opener`, so they cannot disagree about what a
+// field declaration is the way pass 6 measured them disagreeing.
 //
 // The scan reads `DriveArgs` **only**. `RawDriveArgs` sits a few lines away and
 // legitimately holds `String`s — it IS the raw side of the parse boundary, the
@@ -2737,7 +2780,12 @@ fn raw_string_argv_fields(lines: &[(usize, String)]) -> Vec<(usize, String)> {
         if trimmed.starts_with("///") || trimmed.starts_with("//") || trimmed.starts_with("#[") {
             continue;
         }
-        let (start, mut joined) = match pending.take() {
+        // The trailing-comment strip happens BEFORE the `,` test, which is what
+        // makes a commented declaration terminate. Without it the comment kept
+        // the text from ending in `,`, so a last field was buffered and dropped
+        // and a mid-struct one swallowed the next declaration whole.
+        let trimmed = without_trailing_comment(trimmed);
+        let (start, joined) = match pending.take() {
             Some((start, acc)) => (start, format!("{acc} {trimmed}")),
             None => {
                 if !is_field_opener(trimmed) || !trimmed.contains(':') {
@@ -2750,15 +2798,34 @@ fn raw_string_argv_fields(lines: &[(usize, String)]) -> Vec<(usize, String)> {
             pending = Some((start, joined));
             continue;
         }
-        joined = joined.trim().to_string();
-        let Some((_, type_text)) = joined.split_once(':') else {
-            continue;
-        };
-        if names_bare_string(type_text) {
-            out.push((start, joined));
-        }
+        judge_declaration(start, joined, &mut out);
+    }
+    // **Flush.** A declaration still buffered when the body ends is a real
+    // declaration — the last-field case — and dropping it is silent
+    // under-detection of exactly the shape a seventh field would take.
+    if let Some((start, joined)) = pending.take() {
+        judge_declaration(start, joined, &mut out);
     }
     out
+}
+
+/// Judge one joined declaration and push it if it carries a raw argv payload.
+fn judge_declaration(start: usize, joined: String, out: &mut Vec<(usize, String)>) {
+    let joined = joined.trim().to_string();
+    let Some((_, type_text)) = joined.split_once(':') else {
+        return;
+    };
+    // Deny-by-default on `OsString`, suppressed only by NAME (D-18-2).
+    if names_token(type_text, "OsString") {
+        let name = declared_field_name(&joined);
+        if !OSSTRING_ALLOWED.contains(&name) {
+            out.push((start, joined));
+        }
+        return;
+    }
+    if names_string_payload(type_text) {
+        out.push((start, joined));
+    }
 }
 
 /// Every `(line number, line)` between `pub struct DriveArgs {` and the
@@ -2781,18 +2848,18 @@ fn drive_args_body(lines: &[(usize, String)]) -> Vec<(usize, String)> {
     body
 }
 
-/// Whether `text` names `String` as a whole word.
+/// Whether `text` names `token` as a whole word.
 ///
-/// Word-boundary semantics, so `OsString` and `PathBuf` do not match while
-/// `String`, `Option<String>` and `Vec<String>` do. A substring test would
-/// report `claude_args: Vec<OsString>` as an offender and make the property
-/// unsatisfiable.
-fn names_bare_string(text: &str) -> bool {
+/// Word-boundary semantics, so `OsString` does not match the `String` token
+/// (the byte before is `s`, an identifier byte) and `PathBuf` matches nothing.
+/// A substring test would report `claude_args: Vec<OsString>` as a `String`
+/// offender and make the property unsatisfiable.
+fn names_token(text: &str, token: &str) -> bool {
     let bytes = text.as_bytes();
     let mut from = 0usize;
-    while let Some(found) = text[from..].find("String") {
+    while let Some(found) = text[from..].find(token) {
         let start = from + found;
-        let end = start + "String".len();
+        let end = start + token.len();
         let before_ok = start == 0 || !is_ident_byte(bytes[start - 1]);
         let after_ok = end == bytes.len() || !is_ident_byte(bytes[end]);
         if before_ok && after_ok {
@@ -2801,6 +2868,73 @@ fn names_bare_string(text: &str) -> bool {
         from = end;
     }
     false
+}
+
+/// Whether `text` names `String` as a whole word. Kept under its own name
+/// because [`no_type_alias_hides_a_string_from_guard_nine`] asks exactly this
+/// narrower question about `type` aliases.
+fn names_bare_string(text: &str) -> bool {
+    names_token(text, "String")
+}
+
+/// Whether `text` names a string PAYLOAD type in any of its spellings.
+///
+/// **Widened from `names_bare_string` because a `String` wearing a coat is the
+/// same defect.** `Box<str>`, `Cow<'_, str>`, `&'static str` and `&str` all
+/// carry unvalidated argv text and none of them contains the `String` token;
+/// pass 6 measured all four silent. The `str` token covers every one of them —
+/// it appears as a whole word inside `Box<str>` and not inside `OsString`,
+/// where the neighbouring bytes are identifier bytes.
+///
+/// `OsString` is deliberately NOT folded in here: it is judged by name in
+/// [`judge_declaration`], deny-by-default against [`OSSTRING_ALLOWED`], because
+/// two fields legitimately carry it.
+fn names_string_payload(text: &str) -> bool {
+    names_token(text, "String") || names_token(text, "str")
+}
+
+/// The only field NAMES permitted to carry an `OsString` in `DriveArgs`.
+///
+/// **A suppress-only allowlist, and the direction is the decision (D-18-2).**
+/// `OsString` is the type argv actually arrives in, so a payload field respelled
+/// `OsString` is the same defect wearing the platform type — but `claude_args`
+/// legitimately holds argv as `Vec<OsString>`. The rule is therefore
+/// deny-by-default over the whole scanned body, suppressed BY NAME for these
+/// two, rather than a protected-name rule: the threat this guard exists for is a
+/// SEVENTH argv field, which by definition carries a name no pre-written list
+/// contains, so a by-name protection rule would cover no case the threat model
+/// names.
+///
+/// This list can only SUPPRESS, never widen. A new legitimate OsString-carrying
+/// field goes RED until a human adds its name — over-reporting, loud, the safe
+/// direction. And it cannot be silently repurposed: the live assertion pins each
+/// entry to its legitimate type in the real body.
+const OSSTRING_ALLOWED: [&str; 2] = ["claude_args", "claude_program"];
+
+/// The field name a declaration declares — the last identifier before the `:`.
+fn declared_field_name(joined: &str) -> &str {
+    joined
+        .split_once(':')
+        .map(|(left, _)| left)
+        .unwrap_or(joined)
+        .split_whitespace()
+        .next_back()
+        .unwrap_or("")
+}
+
+/// Strip a trailing `// …` comment from a declaration line.
+///
+/// **Pass 6 measured both positions broken.** As the LAST field the comment kept
+/// the joined text from ever ending in `,`, so the declaration was buffered and
+/// dropped; MID-STRUCT the buffer swallowed the FOLLOWING declaration into its
+/// text, so the offender was misattributed and the next field was never judged
+/// at all. A simple split on `//` suffices here: these are declaration lines,
+/// and the loop has already skipped comment-only lines.
+fn without_trailing_comment(text: &str) -> &str {
+    match text.split_once("//") {
+        Some((code, _)) => code.trim_end(),
+        None => text,
+    }
 }
 
 fn is_ident_byte(byte: u8) -> bool {
@@ -2815,7 +2949,7 @@ fn is_ident_byte(byte: u8) -> bool {
 /// `pub(crate)` offender in the body — two filters, one property, and the gap
 /// between them was the whole of WR-02's floor half.
 fn is_field_opener(trimmed: &str) -> bool {
-    trimmed.starts_with("pub ")
+    trimmed.starts_with("pub ") || trimmed.starts_with("pub(")
 }
 
 /// **The control arm, and it runs FIRST in this file's reading order for a
@@ -2946,7 +3080,6 @@ fn the_raw_argv_field_scanner_reports_a_planted_string_field() {
 ///  right: 1
 /// ```
 #[test]
-#[ignore = "red: pass-6 WR-02 reproduction; un-ignored in the fix commit"]
 fn the_raw_argv_field_scanner_sees_every_measured_silent_spelling() {
     /// One planted declaration inside an otherwise clean `DriveArgs`.
     fn planted_with(lines: &[&str]) -> Vec<(usize, String)> {
@@ -3095,7 +3228,10 @@ fn the_raw_argv_field_scanner_sees_every_measured_silent_spelling() {
     let floor_visible = full_plus_one
         .1
         .iter()
-        .filter(|(_, line)| is_field_opener(line.trim()))
+        .filter(|(_, line)| {
+            let trimmed = line.trim();
+            is_field_opener(trimmed) && trimmed.contains(':')
+        })
         .count();
     assert_eq!(
         floor_visible, 13,
@@ -3154,6 +3290,39 @@ fn drive_args_declares_no_raw_argv_string_field() {
          approved_plan, run_id, goal — must carry the payload type; a field that \
          lost it is the five-time losing bet reopening."
     );
+
+    // **The allowlist's own integrity, pinned against the REAL body.**
+    // `OSSTRING_ALLOWED` suppresses the `OsString` deny-by-default rule for two
+    // NAMES. Nothing in that mechanism alone stops someone respelling one of
+    // those fields into a payload carrier and inheriting the suppression for
+    // free — so each allowlisted name is pinned here to the type it legitimately
+    // declares. Respelling either breaks this loudly, in the live run, against
+    // the real declarations rather than against a fixture.
+    for (name, expected_type) in [
+        ("claude_args", "Vec<OsString>"),
+        ("claude_program", "Option<PathBuf>"),
+    ] {
+        let declaration = field_lines
+            .iter()
+            .find(|(_, line)| declared_field_name(line.trim()) == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "`{name}` is on OSSTRING_ALLOWED but is not declared in \
+                     `DriveArgs` at all. An allowlist entry for a field that does \
+                     not exist is a suppression waiting for a future field to \
+                     inherit — drop the entry or restore the field."
+                )
+            });
+        assert!(
+            declaration.1.contains(expected_type),
+            "`{name}` is on OSSTRING_ALLOWED because it legitimately carries \
+             `{expected_type}`. Its declaration now reads {:?}. The allowlist can \
+             only SUPPRESS, and it must not be silently repurposed for a payload \
+             field: either restore the type or take the name off the allowlist \
+             and let the deny-by-default rule judge it.",
+            declaration.1.trim()
+        );
+    }
 
     let offenders = raw_string_argv_fields(&home.1);
     let rendered: Vec<(String, usize, String)> = offenders
