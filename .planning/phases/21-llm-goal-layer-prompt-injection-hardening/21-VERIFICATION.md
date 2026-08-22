@@ -1,317 +1,405 @@
 ---
 phase: 21-llm-goal-layer-prompt-injection-hardening
-verified: 2026-08-22T01:40:00Z
+verified: 2026-08-22T18:21:16Z
+head: 5b24022
 status: gaps_found
-score: 4/5 must-haves verified
+score: 15/19 must-haves verified (5/5 ROADMAP success criteria)
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
   previous_status: gaps_found
   previous_score: 4/5
   gaps_closed:
-    - "pass-4 gap 1 (the `Routed` arm carried no blankness check): CLOSED and structurally so. All three `CommandSource` variants now carry `payload::NonBlank` (src/driver/mod.rs:395/398/402); the field is private to a NESTED `pub(crate) mod payload` (:324, struct :331) with exactly one constructor and no `From`/`Deref`/`AsRef`/`into_inner`/serde. A blank payload is unrepresentable inside the type, not merely rejected by a remembered guard. Confirmed by direct read; I found no construction route past the constructor."
-    - "pass-4 gap 2 (the matrix hand-exempted the `--target-phase` column with a false justification): CLOSED. The matrix at src/driver/mod.rs:2178-2196 is one uniform nested loop over 3 argv positions x 6 DEGENERATE payloads = 18 cells, every one asserted `Err(NoCommandSource)`. No `Ok` branch, no exemption comment. The column axis is tied to `command_source`'s arity at COMPILE time through `PositionBuilder`'s 3-tuple (:2163). Confirmed by direct read of the loop body."
-    - "pass-4 gap 3 (the `--target-phase '   '` test pin was missing): CLOSED. `tests/driver_dry_run.rs:624 a_blank_target_phase_is_refused_in_preview_and_in_a_real_run` exists and passes; driver_dry_run is 15/15."
-    - "pass-4 gap 4 (the trim tautology: DEGENERATE and the detector both keyed on production's own `trim`): CLOSED at the array level. `DEGENERATE` (:1888) now holds six literals including `\\u{200b}` and `\\u{feff}`, which `trim` cannot reach; `NonBlank::new`'s predicate is whitespace + control + zero-width/format, and the matrix genuinely refuses all six. (The DETECTOR half is a different story — see gaps: it is never fed a degenerate payload.)"
-    - "pass-4 gap 5 (guard six's header omitted a live marker-to-EOF blind region): CLOSED, and closed better than asked. The header now names limits 4 and 5, and a new assertion `no_production_item_follows_a_test_module_marker` (tests/spawn_seam_guard.rs:2036) makes the blind region's emptiness a build failure. The live offender is gone: `src/state_reader/mod.rs` now has `pub fn count_backlog_items` at :312 ABOVE `mod tests` at :331 (was :530 vs :311). `cargo clippy --all-targets` went 5 -> 4 warnings; `items_after_test_module` is cleared. All three facts self-measured."
-    - "pass-4 gap 6 (guard eight named no limitations at all): CLOSED. Guard eight now carries a five-item numbered limits block (tests/spawn_seam_guard.rs:2287-2300+), each limit with its failure direction, and closes two gaps for real: `Self::`-qualified needles and a variant-import assertion. Confirmed by direct read."
-    - "pass-4 gap 7 (`.planning/REQUIREMENTS.md` had DRIVE-01/DRIVE-03 prematurely marked Complete): CLOSED. At HEAD all five phase-21 requirements read `[ ]` in the checklist (lines 62, 63, 83, 85, 86) and `Gaps Found` in the traceability table (lines 152, 153, 164, 166, 167) — now internally consistent, which they were not before. Confirmed by `git log -- .planning/REQUIREMENTS.md`: the last touch is `0c4f712` (the pass-4 verification commit), and neither 21-13 nor 21-14 flipped a requirement, honouring both plans' own process prohibition."
-    - "round-4 named debt: the colliding `enum CommandSource` in src/driver/run.rs is renamed `IterationSource`; exactly one `enum CommandSource` is declared under src/. Guard eight asserts the single declaration rather than dodging the collision by needle shape."
+    - "pass-5 CR-01 (`execute_run` returned `Err(NoCommandSource)` AFTER committing `run.json` with `\"gsd_command\": \"\"`, a run directory and a 4-record journal): CLOSED, and closed structurally. `command_source` + `iteration_source` resolve at `src/driver/run.rs:2442-2447`; `establish_own_group` is :2449, `establish_envelope` :2493, the lock :2609, `JournalRun::start` :2626. I read the ordering off the file rather than off the SUMMARY. Both `(None, None) => String::new()` arms are GONE — `recorded_command` (:910-915) and `digested_command_fragment` (:938-943) are now total over `IterationSource`'s two variants, so there is no empty case for a fabricated value to answer. Self-measured: `grep -n '=> String::new()' src/driver/run.rs src/driver/mod.rs` -> 0 hits (exit 1); the 4 surviving tree-wide hits are off argv/record paths (I opened two of the four: `archive.rs:154` is kebab->Title display conversion, `executor/outcome.rs:485` is inside a `#[cfg(test)]` envelope builder)."
+    - "pass-5 IN-01 (`--goal '   '` beside `--command` persisted verbatim into a committed `run.json` after the lock, journal and run directory existed): CLOSED. `make_run_record` writes `goal` from `args.goal.as_ref().map(NonBlank::as_str)` (`run.rs:813-817`); `unwrap_or_default()` over `Option<String>` is gone. The multi-flag cell pass 5 called unexpressible now exists as a matrix row (`--goal beside a visible --command`, `src/driver/mod.rs:2449`) and is asserted `Err(NoCommandSource)` for all six `DEGENERATE` shapes."
+    - "pass-5 CR-02, the WHOLLY-invisible half: CLOSED. `is_plain_path_component` (`src/journal/mod.rs:268-294`) now delegates its blank half to `text::carries_visible_content` while KEEPING its own `is_control()` refusal and `Component::Normal` traversal check — I read all three halves. Measured against the built library: `is_plain_path_component(\"\\u{200b}\") = false`, `(\"   \") = false`; `envelope_dir_in(root, \"\\u{200b}\") = None`; `DriveArgs::from_argv(run_id = \"\\u{200b}\")` -> `Err(RunIdInvalid)`. Pass 5's reproduction — a complete run whose directory name was one invisible character — no longer runs. (The LOOK-ALIKE half of the same sentence is not closed; see gaps.)"
+    - "The enumeration moved from human to compiler for `DriveArgs`. All six argv-derived string fields are `payload::NonBlank`/`Option<payload::NonBlank>` — I extracted the struct body and read every field. `DriveArgs::from_argv` (`:405-469`) destructures all twelve `RawDriveArgs` fields by name with NO `..` rest-pattern and reconstructs all twelve, so a seventh field cannot compile unclassified. `NonBlank`'s privacy was not widened: `src/driver/mod.rs:546-592`, private tuple field, exactly `new` + `as_str`, derives `Debug, Clone, PartialEq, Eq`, no `From`, no `into_inner`, no serde, no `Deref`/`AsRef`. I looked for an escape hatch and found none."
+    - "pass-5 warning 1 (`ITEM_OPENERS` blind to `pub(crate)`/`pub(super)`, header bounding the gap backwards): CLOSED. `\"pub(\"` is in the list (`tests/spawn_seam_guard.rs:1993-1997`) with the 51-instance measurement recorded beside it; the backwards sentence is deleted; `the_boundary_self_check_sees_restricted_visibility_items` plants both spellings after a marker and asserts the SAME `post_marker_offenders` fn the live assertion consumes reports them. The `scanned_files >= 10` non-vacuity floor survived the extraction (:2167) and the control asserts `scanned_files == 1` (:2135)."
+    - "pass-5 warning 2 (`visibly_empty_numbered_entry`'s doc credited itself with breaking the trim tautology): CLOSED and corrected honestly. The doc now says plainly that the tautology is broken by the LITERAL `DEGENERATE` array and that no degenerate payload reaches this detector at all; four direct pins exist at `src/driver/mod.rs:2189-2209` (two must-report, two must-not), so the residual claim is checkable."
+    - "pass-5 warning 3 (guard eight's non-vacuity counted attributed LINES, so the 3-and-3 arithmetic stopped biting on the first added line): CLOSED. The floor now counts DISTINCT NEEDLES — each type-qualified needle must match tree-wide, and each allowlisted site must be matched by all three (`tests/spawn_seam_guard.rs:2587`, limits text :2380-2396). The replacement is named in the limits block with the reason."
+    - "pass-5 warning 5 (`src/driver/goal.rs`'s length-bound refusal had zero suite coverage after 21-13 tightened the predicate): CLOSED. `tests/driver_goal_seam.rs` carries the control-free over-length fixture again with three assertions (`<= MAX + marker`, `!=` the raw token, `ends_with(TRUNCATION_MARKER)`); the binary is 21 passed, up from 20."
+    - "pass-5's `coincidental_reliance_items` half about `DriveArgs`: CLOSED. `alias` and `approved_plan` no longer rest on a registry lookup's and a token parser's incidental behaviour — both are `NonBlank` and refused at the boundary with their own named variants, and `a_blank_approval_token_is_refused_by_the_real_parser` pins the derived refusal as a checked fact rather than an assumption."
+    - "Process: `.planning/REQUIREMENTS.md` was not touched by either round-5 plan. `git log -- .planning/REQUIREMENTS.md` still shows `0c4f712` as the last commit; all five phase-21 requirements read `[ ]` (lines 62, 63, 83, 85, 86) and `Gaps Found` (152, 153, 164, 166, 167). Third round running with the prohibition honoured."
   gaps_remaining:
-    - "Criterion 1 fails a FOURTH consecutive verification cycle — but for the first time the root cause is NOT inside the mechanism the previous round built. The `NonBlank` type-level fix HELD under attack. All three of this pass's reproduced defects sit OUTSIDE its domain: `DriveArgs` carries six argv-derived string fields (`alias`, `command`, `target_phase`, `approved_plan`, `run_id`, `goal`) and round 4 converted exactly the three that `CommandSource` happens to have variants for. The three it did not convert are where the new Criticals are."
+    - "Criterion 1 is VERIFIED for the first time in this phase — the class that failed it four consecutive times (an argv payload carrying no visible instruction reaching a persisted record) is closed by construction, and I attacked it and could not break it. The phase still fails, on TWO gaps that are NOT that class: (a) the identity/nameability of argv-derived aliases and run ids, where the round claimed a mitigation it provably could not deliver, and (b) the round's own two anti-recurrence mechanisms, both of which constrain materially less than their docs and their plan truths assert."
   regressions: []
 gaps:
-  - truth: "A user states a goal in plain language and gets back a structured, machine-checkable plan to review before anything runs (ROADMAP criterion 1)"
+  - truth: "Exactly ONE production spelling of the invisibility judgment governs every argv-derived identity, so two visually identical aliases can no longer resolve to two different envelope paths (21-15 must_haves truths 4 and 5; threat T-21-15-02, severity high, disposition mitigate)"
     status: failed
-    reason: "21-13-PLAN.md declares as its FIRST must_haves truth, traced to DRIVE-01 and DRIVE-03: `An argv payload that carries no visible instruction ... is refused with DriveError::NoCommandSource in EVERY argv position (--command, --target-phase, --goal), before any file, lock, journal, or run directory is created`. I falsified that by direct observation on the PUBLIC entry point `driver::drive`. It also declares a `verification: backstop` truth: `No run.json written by this build carries target_phase or gsd_command as an empty or whitespace-only string`. I falsified that by direct observation too. Three distinct reproductions below, each of the same class this phase has now failed four times — an unvalidated no-visible-instruction value reaching a persisted record where the empty string already means `field absent` (D-30). What has changed is the LOCATION: not a fourth forgotten arm inside `command_source`, but three argv strings that never enter `command_source` at all."
+    reason: "REPRODUCED against the built library at HEAD, in two independent halves that the round conflated. Truth 5 says the look-alike harm is closed; it is not, and the mitigation as designed could never have closed it. Truth 4 says one production spelling exists; a fourth lives on a command the unification never opened. Neither half is criterion 1's blank-payload class — this is a *naming* property, which is why criterion 1 passes and this fails."
     artifacts:
-      - path: "src/driver/run.rs"
-        issue: "REPRODUCED (upgrading 21-REVIEW.md CR-01 from `inferred` to observed). `recorded_command` (:839-849) and `digested_command_fragment` (:867-872) both still spell `(None, None) => String::new()`, carrying the identical justification comment 21-14 declared refuted and removed from the third such arm 75 lines below. `recorded_command`'s value becomes `RunRecord.gsd_command` (:779). The ordering is fatal and I confirmed there is no earlier guard: I extracted lines 2261-2455 of `execute_run` (195 lines) and grepped them — ZERO `return Err`, and the only `?` sites are plan-approval staleness, `RunIdRequired` and `bounds::resolve`. So `make_run_record` at :2448 -> `JournalRun::start` writes run.json at :2514 -> the new `NoCommandSource` refusal fires at :2643. I called `pub async fn execute_run` directly (via `DrivableProject::for_testing_bypassing_opt_in`, a real fixture project, `escalate::resolve(None, 5)`) with `command: None, target_phase: None`. Result: `Err(NoCommandSource)` — AND on disk, run.json containing `\"gsd_command\": \"\"` and `\"goal\": \"\"`, plus a run directory and a 4-record journal.jsonl. The refusal 21-14 added is downstream of the corruption it was commissioned to prevent. This directly violates 21-14's own prohibition: `MUST NOT manufacture a sentinel or blank value as the 'safe' arm of an unreachable match` — violated twice, in the file the plan edited, in the commit that declared it."
+      - path: "src/registry.rs"
+        issue: "REPRODUCED (21-REVIEW.md CR-01, confirmed independently at library level; the reviewer's binary-level transcript is consistent with what I measured). `add_project` (:13-20) and `add_project_unchecked` (:64-71) judge alias blankness with `alias.is_empty()` plus `alias.contains(char::is_whitespace)` — a FOURTH production predicate, on the `gsd-meta-manager add <path> <alias>` argv path, untouched by 21-15's unification. `U+200B` is neither empty nor whitespace (measured: `is_whitespace=false is_control=false`). Measured directly against the real `add_project`: registering an alias of ONE `U+200B` returns `Ok`; the key lands in `config.projects` and `list` renders it as a blank ALIAS column. This is a genuinely NEW surface — a different subcommand, not a sixth instance of the `DriveArgs` miss."
       - path: "src/journal/mod.rs"
-        issue: "REPRODUCED END TO END (21-REVIEW.md CR-02, and worse than the review showed). `is_plain_path_component` (:260-263) judges blankness with `value.trim().is_empty()`, while `payload::NonBlank::new` (:348-359 of driver/mod.rs) judges it as whitespace + control + zero-width/format. Two definitions of `blank`, shipped in the same commit, disagreeing. Measured against the real library: `is_plain_path_component(\"\\u{200b}\") = true`, `(\"\\u{feff}\") = true`, `(\"\\u{2060}\") = true`, `(\"   \") = false` — and `U+200B is_whitespace=false is_control=false`, so `char::is_whitespace`/`is_control` genuinely cannot see them. The review stopped at the predicate; I drove it through `driver::drive`. `drive(--command '/gsd:progress' --run-id '\\u{200b}')` returned `Ok(())` and COMPLETED A FULL RUN: the runs directory now contains an entry whose entire name is one zero-width character, with `run.json` recording `run_id: \"\\u{200b}\"` and `outcome: \"succeeded_no_changes\"`. A successful, persisted, terminal run record that no human can name, read back, or distinguish from a sibling run called `abc` vs `abc\\u{200b}`. Blast radius is 7 production call sites, not one: `--run-id` (driver/mod.rs:861, journal/mod.rs:314, journal/writer.rs:491), registry aliases (main.rs:244, envelope/mod.rs:204, envelope/cred.rs:758) and the goal-seam phase token (goal.rs:667). The narrowed pin at driver/mod.rs:1576 loops `[\"   \", \"\\t\", \"\\n  \\n\"]` — three of `DEGENERATE`'s six — in the same commit that added the other three, violating 21-13's own prohibition: `MUST NOT exempt any cell of an anti-recurrence enumeration by comment or hand-picked list`."
-      - path: "src/driver/run.rs"
-        issue: "REPRODUCED (21-REVIEW.md IN-01, which I grade materially higher than Info because it falsifies a named must_have truth on the public path). `make_run_record` writes `goal: args.goal.clone().unwrap_or_default()` (:763) — the raw argv string, never validated. `command_source`'s `(Some, None)` and `(None, Some(_))` arms structurally never touch `goal`, and the matrix's `PositionBuilder` only ever builds ONE-flag tuples, so the two-flag cell is a shape the anti-recurrence mechanism cannot express. Driven through `drive()` for three payloads, preview and real run, each returning `Ok(())`: `--command '/gsd:progress' --goal '   '` -> run.json `goal: \"   \"`; `--goal '\\u{200b}'` -> `goal: \"\\u{200b}\"`; `--goal '\\u{feff}'` -> `goal: \"\\u{feff}\"`. All three created the lock, the run directory, the journal and run.json — i.e. the `before any file, lock, journal, or run directory is created` clause is false for `--goal` whenever another source is present. Compounding it, `src/ui/screens/driver.rs:755`'s `goal_lines` gates on `goal.trim().is_empty()`, so a `\\u{200b}` goal takes the NON-empty branch and the TUI renders `goal: ` with a label and nothing after it — the surface asserting a goal was stated while showing none. The comment at driver/mod.rs:465-467 cites D-30 by name (`the empty string already means field absent ... so the record cannot be used as evidence of what ran`) roughly 300 lines from the `unwrap_or_default()` that produces exactly that value."
+        issue: "REPRODUCED (21-REVIEW.md WR-05), and this half is NOT a new surface — pass 5 named it verbatim in its own `coincidental_reliance_items` (\"`is_plain_path_component` ... accepts `\\u{200b}`, so two visually identical aliases resolve to two different envelope and credential paths\"), and 21-15 truth 5 claimed it closed. `is_plain_path_component` (:268-294) refuses a value that is WHOLLY invisible and accepts one with an EMBEDDED invisible, because `carries_visible_content` asks 'is any character visible?' and a look-alike has plenty. Measured: `is_plain_path_component` returns `true` for `\"demo\\u{200b}\"`, `\"de\\u{200b}mo\"` and `\"demo\\u{feff}\"`. Driven through the production seams: `add_project(\"demo\", projA)` and `add_project(\"demo\\u{200b}\", projB)` both `Ok` -> two keys, two projects; `envelope_dir_in(root, \"demo\")` -> `<root>/demo` and `envelope_dir_in(root, \"demo\\u{200b}\")` -> `<root>/demo\\u{200b}` — TWO ENVELOPE ROOTS for two aliases that render identically, which is the exact harm T-21-15-02 describes and 21-15 truth 5 declares removed. The same predicate governs `--run-id`: `DriveArgs::from_argv(run_id = \"aaaa\\u{200b}\")` -> `Ok`, and `run_paths(planning, \"…-aaaa\")` / `run_paths(planning, \"…-aaaa\\u{200b}\")` are two distinct directories. That is pass 5's own sentence — 'a persisted terminal run record no human can distinguish from a sibling run called abc vs abc\\u{200b}' — still true. Blast radius unchanged at seven call sites: `--run-id` (driver/mod.rs, journal/mod.rs:329, journal/writer.rs:491), registry aliases (main.rs, envelope/mod.rs:204, envelope/cred.rs:758) and the model-supplied phase token (goal.rs:667)."
+      - path: "src/cli.rs"
+        issue: "THE BOUND, stated as a fact rather than as advice. `Commands` and `EnvelopeAction` declare EIGHT argv-derived alias fields — `Add:30` (`Option<String>`), `Remove:35`, `Drive:50`, `PrePush:306`, `PreCommit:319`, `Askpass:337`, `Guard:361`, `Scan:371` — and exactly ONE of the eight (`Drive`) passes through `DriveArgs::from_argv`. The class round 5 closed is `DriveArgs`; the class that remains open is `Commands`, and `Commands` is itself a compiler-enumerable Rust enum, so the same move that worked for `DriveArgs` applies without invention."
+      - path: "src/driver/mod.rs"
+        issue: "CONFIRMED by reading (21-REVIEW.md WR-06), a round-attributable message regression. D-15-4 hoisted the supplied-but-blank alias refusal above the registry lookup (`from_argv:426-432`) and reuses `OptInError::UnknownAlias`, whose Display is `no project is registered under the alias `{alias}`` (`src/error.rs:328`). An alias of one `U+200B` CAN be registered (see above), so `list` shows it and `drive` says it is not registered. The refusal states a falsehood about durable state, which is the class this phase exists to close. Before the hoist the value reached the lookup, matched, and produced the truthful opt-in refusal."
     missing:
-      - "Convert the argv-derived string set by TYPE, not by hand. `DriveArgs` (src/driver/mod.rs:131) has exactly six string-bearing argv fields: `alias`, `command`, `target_phase`, `approved_plan`, `run_id`, `goal` (plus debug-only `claude_program`/`claude_args`). Round 4 converted 3 of 6 — precisely the three `CommandSource` has variants for. Validate at the parse boundary so `DriveArgs` itself cannot hold a blank; then `execute_run` has nothing blank to re-derive, both `String::new()` arms become unrepresentable rather than patched, and `--run-id`/`--goal` are covered by construction rather than by a fourth remembered check."
-      - "ONE blankness predicate. Promote the visibility judgment out of `mod payload` into a shared `pub fn carries_no_visible_content` and have `NonBlank::new`, `journal::is_plain_path_component` (:263), `run::from_argv_goal` (:1945), `ui::screens::driver::goal_lines` (:755) and `app::goal_or_none` (:106) all call it. The tree currently holds 19 `trim().is_empty()` sites under `src/`; the five above are the ones judging a user-supplied payload. Keep `visibly_empty_numbered_entry` deliberately separate — that one is the oracle and MUST be able to disagree."
-      - "Lift `DEGENERATE` to a shared test const that every blank-shape pin consumes (driver/mod.rs:1576 and journal/mod.rs:2715 currently hand-copy narrower subsets), so a seventh blank shape lands in every seam's pin at once."
-      - "Hoist the `(None, None)` refusal in `execute_run` above `make_run_record` at :2448 as the minimal fix, and add the guard-suite needle the plan got two lines too narrow: `String::new()` may not appear as a match-arm value in run.rs's argv-derived record builders (the plan asserted `grep -c 'Fixed(String::new())' -> 0`, which both surviving arms pass)."
-      - "Give the matrix a multi-flag row. Its `PositionBuilder` 3-tuple makes the COLUMN axis structurally exhaustive over argv arity, but every row it builds sets exactly one `Some`; the `(Some(command), _, Some(blank_goal))` cell that broke this round is unexpressible in its current shape."
-  - truth: "The guard and doc machinery this round built or rewrote is itself accurate about what it does and does not check"
-    status: partial
-    reason: "Four confirmed accuracy defects in round 4's own new machinery, all independently reproduced or read rather than accepted on 21-REVIEW.md's word. None is independently exploitable today; each is what stops the NEXT reviewer having to rediscover it by hand. The most important is WR-01, because it is a guard header overclaiming its reach for the THIRD consecutive round."
+      - "Add the missing CLAUSE, not another consumer. Routing `registry::add_project` through `text::carries_visible_content` closes only the wholly-invisible alias; both look-alikes carry a visible `d` and would still register. What closes the look-alike half is a second shared judgment beside the first — `text::carries_invisible_formatting(value)` over `'\\u{200b}'..='\\u{200f}' | '\\u{2060}'..='\\u{2064}' | '\\u{feff}'` — consumed by `is_plain_path_component` (after its `is_control()` refusal) and by both registry entry points. That is one clause in one module and it closes the run-id, alias, envelope, credential and phase-token halves in the same change. Verify nothing legitimate regresses against the existing acceptance list (`\"20\"`, `\"2.1\"`, `\"2026-08-19T12-00-00Z-aaaa\"`, `\"demo\"`, `\"99\"`) — none contains a format character."
+      - "Make `Commands` the domain the way 21-15 made `DriveArgs` the domain, and prove it the same way. Eight argv alias fields, one protected. The provable bound is a parse boundary over the raw clap enum with an exhaustive no-`..` destructure per variant, yielding a validated alias newtype that `add_project`, `remove_project`, `envelope_dir_in`, `askpass_with_config` and the four hook re-entry points take instead of `&str`. Then the compiler enumerates the entry points, exactly as `from_argv` now enumerates the fields — and a ninth subcommand cannot be added unclassified."
+      - "Give `add` the look-alike refusal at REGISTRATION, with a message that says why (`two aliases that render identically would name two different projects, two opt-ins and two envelope roots`). Downstream refusal is not enough: `envelope_dir_in` already returns `None` for a wholly-invisible alias and the entry still sits in `config.json`, which is what produces WR-06."
+      - "Give the boundary its own refusal instead of borrowing `UnknownAlias` — e.g. `DriveError::AliasNotVisible { alias }` — so a refusal about a value that carries no name stops asserting a falsehood about the registry's contents. Entries already in a user's config need this even after registration is closed."
+      - "Pin the look-alike pair (`\"demo\"`, `\"demo\\u{200b}\"`) as a two-value fixture in the journal's both-directions test and in a registry test, since `DEGENERATE`'s six shapes are all WHOLLY invisible and structurally cannot express this case — the same shape-of-fixture blindness that let the round's matrix pass while the harm stayed open."
+  - truth: "The two anti-recurrence mechanisms round 5 built constrain what their docs and their plan truths say they constrain (21-16 must_haves truths 1 and 4; 21-16 prohibition 1)"
+    status: failed
+    reason: "Both mechanisms are materially weaker than documented, both reproduced by me in standalone programs rather than taken from 21-REVIEW.md, and 21-16-SUMMARY.md's own prohibition-audit table certifies prohibition 1 as PASS while naming the bound I measured not to bind. This is the FOURTH consecutive round in which a newly built guard's header overclaims its reach, and the SECOND consecutive round in which a plan ships a violation of a prohibition it wrote itself. It matters more than the individual Critical: these are the artifacts a sixth reader will trust instead of re-deriving."
     artifacts:
-      - path: "tests/spawn_seam_guard.rs"
-        issue: "REPRODUCED. The new boundary self-check's `ITEM_OPENERS` (:1991-2005) contains `\"pub \"` but not `\"pub(\"`, and `line.starts_with(\"pub \")` cannot match `pub(crate) fn ...`. I counted the tree: `grep -rn '^pub(crate) \\|^pub(super) ' src/` gives exactly 51 column-zero items structurally invisible to the assertion. The header (:2074-2078) claims `the only way a skipped region can be trusted is if it is empty, so this asserts exactly that` and bounds its residual gap with `the tree's production style puts items at column zero` — which is the wrong bound, because the 51 offenders ARE at column zero. `count_backlog_items` was caught only because it happened to be spelled bare `pub fn`. I separately confirmed the gap is latent not live: a scan for post-marker `pub(crate)`/`pub(super)` items across all of src/ returns 0 today. This matters more than a normal token-list gap because `clippy --lib -D warnings` (the designated gate) does NOT catch post-marker items — `items_after_test_module` needs `--all-targets`, explicitly not the gate — so this assertion is the only enforcement."
       - path: "src/driver/mod.rs"
-        issue: "CONFIRMED by call-site enumeration. `visibly_empty_numbered_entry` (:1944) has exactly two call sites, :2086 and :2220, and both sit in the REALISTIC half of their loops, fed `\"/gsd:progress\"`, `\"20\"`, `\"get phase 22 verified\"`. The degenerate loop asserts `Err(NoCommandSource)` at :2188 BEFORE anything is rendered, so no degenerate payload can ever reach the detector. Its doc (:1936-1943) says `if payload::NonBlank were ever loosened ... this detector would keep calling a U+200B entry visibly empty and the matrix would go red. That disagreement is the whole value.` The conclusion is right and the named mechanism is wrong: a loosened `NonBlank` reddens the matrix at :2188's literal assertion, and the detector is never invoked. The trim tautology IS broken — by the literal `DEGENERATE` array, not by the detector. The detector's widened character classes are dead weight wearing the credit."
+        issue: "REPRODUCED (21-REVIEW.md WR-01) with a standalone `rustc` program mirroring the shipped shape. `one_of_each() -> [(&'static str, CommandSource); 3]` (:2078-2084) is an array literal of three constructed values. Constructing values of an enum carries NO exhaustiveness obligation, and an array of declared length 3 holding 3 entries constrains nothing about the enum's arity. Its doc (:2067-2072) says a fourth variant 'is a compile error HERE too, in two ways: the array's declared length and the missing construction', and 21-16 truth 4 says 'a compile error in TWO places (`variant_name`, `one_of_each`)'. Neither is true; only `variant_name`'s wildcard-free match errors. Measured output with a fourth variant `Resumed` added and `variant_name`'s single arm fixed: `all_variant_names_matches_the_variant_set_in_both_directions: PASSES` — `built.len() == ALL_VARIANT_NAMES.len() == 3`, the sorted name sets are equal, and the matrix's coverage assertion sweeps three of four. That is pass-5 warning 4 verbatim, recurring INSIDE the test written to close it. The only residual signal is a `dead_code` warning, which appears solely while the new variant is constructed nowhere in production — i.e. it disappears the moment the variant is real."
       - path: "tests/spawn_seam_guard.rs"
-        issue: "CONFIRMED by reading. Guard eight's limit 1 claims an unanticipated variant spelling is `bounded by the per-function contributed >= COMMAND_SOURCE_VARIANT_COUNT non-vacuity below, which fails if a needle stops matching a site that still names all three` (:2286-2291). The assertion at :2433-2449 counts LINES attributed to the function, not DISTINCT NEEDLES matched. A function contributing four lines through two needles satisfies `>= 3` while a third needle has gone blind. The arithmetic is 3-and-3 today so the bound happens to bite; it stops biting the moment `command_source` grows a fourth construction line — which the fix for criterion 1 above is likely to do."
+        issue: "REPRODUCED (21-REVIEW.md WR-02). I extracted `raw_string_argv_fields`, `drive_args_body` and `names_bare_string` VERBATIM from :2727-2808 into a scratch binary and fed it planted declarations. Nine of nine rows match the reviewer's table: `pub goal_file: String,` and `pub goal_file: Option<String>,` reported; `pub(crate)`, `pub(super)`, `Option<Box<str>>`, `Option<Cow<'static, str>>`, `Option<&'static str>`, `Option<OsString>` and a LAST field carrying a trailing `// comment` all SILENT. A mid-struct trailing comment is worse than silent — it reports the field but swallows the next declaration line into the joined text (`\"pub goal_file: Option<String>, // seventh pub dry_run: bool,\"`), so attribution is wrong there too. THREE distinct problems: (1) `!trimmed.starts_with(\"pub \")` at :2743 cannot see `pub(` — the EXACT spelling `ITEM_OPENERS` was widened for in commit `2eefa73`, four commits later, in the SAME FILE, with a comment calling it 'the tree's DOMINANT restricted-visibility style, 51 items at column zero'. One guard in this file learned the lesson this round; the guard added in the same round did not. (2) `names_bare_string` only knows the token `String`; `Box<str>`, `Cow<str>` and `&'static str` all hold `\"\"`, and `OsString` is not hypothetical — `DriveArgs` ALREADY carries `claude_args: Vec<OsString>` and `OsString` is the type argv actually arrives in. None of the four is named in the limits block. (3) The floor provably does not bind: fed a full twelve-field `DriveArgs` body plus one extra `pub(crate) goal_file: Option<String>`, I measured `offenders=[] field_lines=12 protected=6 -> PASSES (silent)`. 21-16 truth 1 asserts that the declaration-style gap is 'bounded by the >= 10-field / >= 6-`NonBlank` non-vacuity floor'; it is not."
+      - path: ".planning/phases/21-llm-goal-layer-prompt-injection-hardening/21-16-SUMMARY.md"
+        issue: "CONFIRMED by reading against my own measurements. The prohibition audit (:251-256) records prohibition 1 ('MUST NOT let any guard header claim more than its scan performs') as PASS, and the detail table (:264) states guard nine's limit 2 is 'Bounded by the `>= 10` field-lines and `>= 6` NonBlank floors inside the live assertion'. I measured that bound not binding. The audit is a genuine process improvement over round 4 — round 4 wrote prohibitions and never checked them — but a self-audit that certifies a bound nobody measured is the same failure one layer up. The one useful contrast is 21-15-SUMMARY.md residual 1, which DISCLOSED its own prohibition-2 scope gap and asked for adjudication; that is the register the guard-nine audit should have been written in."
+      - path: "tests/spawn_seam_guard.rs"
+        issue: "CONFIRMED by grep (21-REVIEW.md WR-04), and materially softer than the review grades it. `the_degenerate_payload_set_is_spelled_in_exactly_one_place` (:3067-3097) scans `src/` only via `source_files()`, while three hand-picked blank subsets live in `tests/`: `driver_dry_run.rs:611` `[\"\", \"   \"]` (2 of 6), `driver_dry_run.rs:704` `[\"   \", \"\\t\", \"\\n  \\n\", \"\"]` (4 of 6) and `driver_goal_seam.rs:335` `[\"\", \"   \\t \", \"\\u{200b}\", \"\\u{feff}\"]` (a DIFFERENT 4 of 6). Its failure message claims tree-wide uniqueness. BUT: `src/lib.rs:19-21` gates `pub mod test_support` behind `#[cfg(test)]`, so an integration crate genuinely cannot reach `DEGENERATE`, the executor disclosed exactly this in place at `driver_dry_run.rs:602-610` and in `deferred-items.md` BEFORE the review raised it, and the exhaustive 7x6 sweep does live in-crate and passes. This is a message that overclaims its scan's scope, not a hole. The one-word fix (drop the `#[cfg(test)]`) is available."
       - path: "src/driver/mod.rs"
-        issue: "CONFIRMED by reading. `ALL_VARIANT_NAMES` (:1901) is a hand-maintained `[&str; 3]`. 21-13's must_haves claims `column-to-variant coverage is asserted against the single ALL_VARIANT_NAMES const that variant_name's wildcard-free match anchors`. The anchoring is one-directional: a fourth `CommandSource` variant is a compile error in `variant_name` (:1918), which forces classification — but nothing forces extending the const. If the new variant is produced by no argv position, `resolved` holds three names, `expected` holds three names, and the matrix stays green with a whole variant unexercised. The COLUMN axis is genuinely structural (`PositionBuilder`'s 3-tuple, :2163, is a compile error on a fourth argv parameter). The ROW axis is not. That is the `list a human must remember to extend` shape, one level up from the exemption this round removed."
-      - path: "tests/driver_goal_seam.rs"
-        issue: "CONFIRMED by reading (21-REVIEW.md WR-05, adjudicating 21-13's own deviation claim H). Inverting the falsified pin at :1368-1395 was the RIGHT call and recording it in place is the right house behaviour — but the executor undersold the cost. All four `HOSTILE_PHASE_TOKENS` (:1358-1363) carry C0/C1 control characters (`\\u{1b}`, `\\n`, `\\r`, `\\u{9b}`), so since 21-13 tightened `is_plain_path_component` every one is refused at src/driver/goal.rs:667 and nothing in the suite reaches the second refusal at :697. That branch is not dead — `untrusted::bounded` still truncates above 200 chars — but a defence-in-depth layer with zero coverage is a layer nobody will notice breaking."
+        issue: "CONFIRMED by reading and by direct measurement (21-REVIEW.md IN-01, which I grade Warning rather than Info). `one_visible_character_is_accepted_in_every_argv_position` (:2560-2580) narrows `--alias` and `--run-id` to `&[\"x\"]` on the reasoning that both 'are composed into path components downstream, where `is_plain_path_component` answers a stricter structural question that is not this test's subject'. The function under test is `DriveArgs::from_argv`, which never calls `is_plain_path_component` for either field — `NonBlank::new` is the only judge. I measured the rationale false: `from_argv(run_id = \"aaaa\\u{200b}\")` -> `Ok`. So the exemption costs two of seven columns of coverage for a reason that does not bear on the assertion — structurally the cycle-3 defect ('the matrix hand-exempted a column on a comment true for 1 of 4 payloads') recurring in the acceptance matrix. It cannot hide a refusal failure, which is why it is a Warning and not a Blocker."
     missing:
-      - "Add `\"pub(\"` to `ITEM_OPENERS` and correct limit 4's bound sentence: the residual gap is an INDENTED item inside a post-marker `mod`, not `a first token outside the list`."
-      - "Either correct `visibly_empty_numbered_entry`'s doc to name the mechanism that actually falsifies (the literal array), or give the detector a direct unit test — `assert!(visibly_empty_numbered_entry(\"1. \\u{200b}\").is_some())` and `(\"1. x\").is_none()` — which is cheap and makes the doc's claim true."
-      - "Change guard eight's non-vacuity to assert PER-NEEDLE coverage rather than a line count."
-      - "Tie `ALL_VARIANT_NAMES`'s length to the variant set through a wildcard-free `one_of_each()` so a fourth variant is a compile error there too, not only in `variant_name`."
-      - "Add the one fixture that still reaches goal.rs:697 — a control-free phase token longer than `MAX_UNTRUSTED_FIELD_CHARS` (200)."
+      - "Stop `one_of_each` claiming a compile error it does not produce. Either delete the claim from the doc and from the plan truth, or make the pairing exhaustive by DESTRUCTURING (a `named(source)` helper whose wildcard-free `match` errors on a fourth variant) — noting honestly that even that forces classification, not growth of the collection. The only real anchor is a `const ARITY` derived from a wildcard-free match, or accepting the residual and naming it."
+      - "Guard nine, three small fixes with controls: `(trimmed.starts_with(\"pub \") || trimmed.starts_with(\"pub(\"))` at :2743 AND at the floor's own filter :2921; widen `names_bare_string` to `String`/`str` with `OsStr` handled by field NAME rather than by type exemption; strip a trailing `// …` before the `ends_with(',')` test and flush `pending` when the body ends. Then add control arms for `pub(crate)`, `Option<Box<str>>` and the trailing-comment shape beside the planted-field control at :2817 — each new claim a measured fact, which is the standard this file's other guards already meet."
+      - "Rewrite guard nine's limits block to name the four silent type spellings and the visibility spelling, and to say what the floor actually bounds. As shipped, limit 2 cites a floor that does not bind for a single added field, and `Box<str>`/`Cow<str>`/`&'static str`/`OsString` are unnamed."
+      - "Correct 21-16 truth 4 and truth 1 in the record. A verification that accepted them would hand round 6 two mechanisms it believes are compile-enforced and are not — which is exactly how the previous five rounds each inherited one wrong assumption."
+      - "Delete the `--alias`/`--run-id` narrowing at `src/driver/mod.rs:2563-2566` and sweep all seven columns with all four padded payloads."
+      - "Either drop `#[cfg(test)]` from `pub mod test_support` (one const, no runtime cost) and have the three `tests/` pins consume `DEGENERATE`, or narrow the guard's name and message to `src/` and give it a limits block. A guard that reports green about a region it never read is the mechanism this round exists to remove."
 deferred:
   - truth: "`registry::current_prompt_inputs` absent from `tests/async_blocking_guard.rs`'s BLOCKING_HELPERS"
-    addressed_in: "Backlog (adjudicated OUT in deferred-items.md, round-4 adjudications)"
-    evidence: "Async-hygiene class, not criterion 1's class; the fix forces production spawn_blocking rewiring in approve_plan and execute_run. Recorded with reason, not dropped."
+    addressed_in: "Backlog (adjudicated OUT in deferred-items.md, unchanged across rounds 4 and 5)"
+    evidence: "Async-hygiene class, not criterion 1's class; the fix forces production `spawn_blocking` rewiring in `approve_plan` and `execute_run`."
   - truth: "The spawn-gate plan-half argument lives in a comment rather than a checked property"
     addressed_in: "Backlog (adjudicated OUT in deferred-items.md)"
-    evidence: "The comment now states plainly that the plan half is a no-op and why that is sound; converting a sound, honestly-documented argument into a checked property is hardening, not gap closure."
+    evidence: "The comment states plainly that the plan half is a no-op and why that is sound; converting a sound, honestly-documented argument into a checked property is hardening, not gap closure."
   - truth: "Dead `PlanStep::rationale` field in src/driver/goal.rs"
     addressed_in: "Backlog (adjudicated OUT in deferred-items.md)"
     evidence: "No production reader; cosmetic dead field with no security or honesty bearing."
   - truth: "`tests/driver_reattach.rs` and `tests/envelope_tracer.rs` flake under parallel execution"
-    addressed_in: "Next phase backlog (deferred-items.md, priority raised in round 4)"
-    evidence: "Confirmed pre-existing against the unmodified base 6eb1d49 in a throwaway worktree; the untouched baseline flakes worse than the round-4 tree. Not a round-4 regression and not counted as a gap."
+    addressed_in: "Next phase backlog (deferred-items.md)"
+    evidence: "Documented pre-existing flakes (a write-then-exec `ExecutableFileBusy` race and a run-record NotFound); confirmed against the unmodified base in round 4 and green in the orchestrator's round-5 full run. Not a round-5 regression."
+  - truth: "The degenerate matrix's ROW table stays hand-maintained (`positions()`)"
+    addressed_in: "Disclosed residual, not a gap (deferred-items.md 'OUT — by design')"
+    evidence: "`from_argv`'s exhaustive destructure bounds the TYPE of a seventh argv field; neither it nor guard nine forces a matrix row. A correctly-typed seventh field with no row leaves the matrix at 7x6 silently. That is a coverage residual, not a blank-payload route, and 21-15 truth 6 discloses it in those words rather than claiming closure. I verified the disclosure is accurate."
 behavior_unverified_items: []
 coincidental_reliance_items:
-  - truth: "A blank `--alias` and a blank `--approved-plan` do not reach a persisted record"
+  - truth: "A seventh argv field cannot be added to `DriveArgs` in a restricted-visibility spelling"
+    reason: fixture-only
+    harden: "Guard nine is silent on `pub(crate)`/`pub(super)` (measured). What actually prevents such a field today is that THIRTEEN integration-test files construct `DriveArgs { … }` literally (`driver_dry_run`, `driver_escalation_cap`, `driver_goal_seam`, `driver_inbox`, `driver_iteration_loop`, `driver_lock`, `driver_optin`, `driver_rate_limit`, `driver_refusal_record`, `driver_tracer`, `envelope_wiring`, `journal_run_paths`, `spawn_seam_guard`), so a non-`pub` field breaks them at compile time. That is an accident of where the fixtures live, not a property of the design, and it evaporates the day those fixtures move in-crate or adopt a constructor. Fix guard nine's opener test rather than resting on it."
+  - truth: "`--target-phase` cannot carry an embedded invisible character into a phase-disk-status lookup"
     reason: undeclared-precondition
-    harden: "Neither field is protected; both are incidentally refused by a DIFFERENT mechanism — `alias` by the registry lookup returning UnknownAlias, `approved_plan` by `parse_approval_token` failing to parse. Nothing in the phase's artifacts guarantees either. They are the two remaining unconverted `DriveArgs` string fields and belong in the same sweep, not left resting on a lookup's incidental behaviour. Note `is_plain_path_component` — which DOES govern registry aliases at main.rs:244 — accepts `\\u{200b}`, so two visually identical aliases resolve to two different envelope and credential paths."
+    harden: "`target_phase` is `NonBlank` (blank refused) and is separately checked with `is_plain_path_component` at the seam — but that predicate accepts embedded zero-width (measured). What keeps a look-alike phase token harmless is roadmap membership: `src/driver/goal.rs:704` refuses a token the roadmap does not declare, and no roadmap declares one with a `U+200B`. That is a property of today's roadmap contents, not of the value's validation. It is why criterion 5 is unaffected by the gap above, and it should be stated as a precondition rather than relied on silently."
 human_verification: []
 ---
 
 # Phase 21: LLM Goal Layer & Prompt-Injection Hardening Verification Report
 
 **Phase Goal:** A user states a goal once and the run pursues it, with the model confined to two narrow, bounded, hardened seams
-**Verified:** 2026-08-22T01:40:00Z
+**Verified:** 2026-08-22T18:21:16Z
+**HEAD:** `5b24022`
 **Status:** gaps_found
-**Re-verification:** Yes — after gap closure (fourth cycle; fifth verification pass)
+**Re-verification:** Yes — sixth verification pass, after the fifth gap-closure cycle
 
 ## Goal Achievement
 
-This is the **fifth** verification pass and the **fourth** gap-closure cycle.
-For the first time in this phase, **the mechanism the previous round built held
-under attack** — and the phase still fails criterion 1. Those two facts are not
-in tension, and separating them is the whole point of this report.
+**Criterion 1 passes for the first time in this phase.** After four consecutive
+cycles failing on the same class — an argv payload carrying no visible
+instruction reaching a persisted record that is supposed to be evidence — I
+attacked that class from every angle I could construct and could not break it.
+That is the headline, and it is real.
 
-| Cycle | What closed | What the SAME cycle's diff broke |
+**The phase still fails**, on two gaps that are *not* that class. Separating
+them is the whole point of this report, because the previous five rounds each
+inherited a wrong assumption from the round before, and the two things most
+likely to be inherited wrong this time are (a) that "the fifth Critical is a
+brand-new surface" and (b) that "the enumeration is now owned by the compiler."
+Neither is fully true.
+
+| Cycle | What closed | What the SAME cycle's diff left open |
 |---|---|---|
-| 1 → 2 (21-07..21-10) | round-2 CR-01/CR-02, WR-01, WR-05 | blank `--command`; approval token parsed after a live model consultation |
-| 2 → 3 (21-11, 21-12) | both of the above | blank `--target-phase` accepted end to end (the `Routed` arm) |
-| 3 → 4 (21-13, 21-14) | the `Routed` arm, the matrix exemption, the trim tautology, both guard headers, the REQUIREMENTS.md marking | **blank `--run-id`, blank `--goal` beside a source, blank `gsd_command` in a committed `run.json`** |
+| 1 → 2 | round-2 CR-01/CR-02, WR-01, WR-05 | blank `--command`; approval token parsed after a live consultation |
+| 2 → 3 | both | blank `--target-phase` (the `Routed` arm) |
+| 3 → 4 | the `Routed` arm, the matrix exemption, the trim tautology | blank `--run-id`, blank `--goal` beside a source, blank `gsd_command` on disk |
+| 4 → 5 | `NonBlank` held; scope was 3 of `DriveArgs`' 6 fields | the other three fields |
+| **5 → 6** | **all three pass-5 Criticals, four of five pass-5 warnings, the `DriveArgs` domain** | **the look-alike (embedded-invisible) half of the SAME sentence pass 5 wrote; a fourth predicate on a different subcommand; both new anti-recurrence mechanisms overclaiming** |
 
-The first three rows are one story: an arm forgot the check, the fix added the
-check to that arm, and the next arm forgot it. The fourth row is a **different**
-story, and the difference is the finding.
+### Judgment 1 — Did round 5 close what it was scoped to close? Mostly yes, and the exception is not what the review says it is.
 
-### Did the `NonBlank` mechanism work? Yes — completely, within its domain.
+**Yes, and precisely:**
 
-I attacked it and could not break it, which matches what the round-4 reviewer
-reports. `pub(crate) mod payload` is genuinely nested (`src/driver/mod.rs:324`),
-`struct NonBlank(String)`'s field is private to that module (`:331`), the single
-`impl` carries exactly `new` and `as_str`, and there is no `From`, `Deref`,
-`AsRef`, `Into`, `into_inner` or serde derive to rebuild one from the `&str`
-`as_str` hands back. All three `CommandSource` variants carry it. The matrix at
-`:2178-2196` is one uniform nested loop — 3 argv positions × 6 `DEGENERATE`
-payloads = **18 cells, every one asserted `Err(NoCommandSource)`**, with no `Ok`
-branch, no by-name per-column sweep and no exemption comment anywhere in it. The
-blankness boundary is pinned on the other side too (`"x"`, `" x "`,
-`"\u{200b}x"`, `"x\u{feff}"` all resolve), so the refusal is a visibility rule
-and not a length rule wearing its name. The column axis is a **compile-time**
-constraint via `PositionBuilder`'s 3-tuple.
+- **pass-5 CR-01** (`execute_run` corrupting `run.json` before refusing) is closed
+  *structurally*, not by reordering. The source resolves once at `run.rs:2442-2447`;
+  `establish_own_group` (:2449), the envelope (:2493), the lock (:2609) and
+  `JournalRun::start` (:2626) are all below it. Both `(None, None) => String::new()`
+  arms are **deleted as unrepresentable** — `recorded_command` and
+  `digested_command_fragment` are total over `IterationSource`'s two variants, so
+  there is no empty case for a fabricated value to answer. Self-measured:
+  `grep -n '=> String::new()' src/driver/run.rs src/driver/mod.rs` → 0 hits.
+- **pass-5 IN-01** (`--goal '   '` beside `--command` persisted) is closed:
+  `RunRecord.goal` is written from `Option<NonBlank>` and the multi-flag cell that
+  pass 5 called *unexpressible* is now a matrix row asserted `Err` for all six shapes.
+- **pass-5 CR-02's wholly-invisible half** is closed and I re-measured it:
+  `--run-id '\u{200b}'` → `Err(RunIdInvalid)`; `envelope_dir_in(root, "\u{200b}")` → `None`.
+- **Four of five pass-5 warnings** are closed, and two of them are closed *better
+  than asked*: `ITEM_OPENERS` gained `"pub("` **plus** a planted-offender control
+  calling the same extracted fn, and guard eight's line count became a per-needle
+  floor with the reason recorded in its limits block.
+- **The compiler-owned enumeration is real *for `DriveArgs`*.** All six argv string
+  fields are `NonBlank`; `from_argv` destructures all twelve raw fields by name with
+  **no `..`** and reconstructs all twelve; `NonBlank`'s privacy was not widened
+  (private tuple field, exactly `new`/`as_str`, no `From`, `into_inner`, serde,
+  `Deref` or `AsRef`). I looked for an escape hatch and found none.
 
-**Every value that passes through `command_source` is now blank-proof by
-construction.** That is a real, durable, type-level guarantee and it is the
-first thing in four cycles that did not regress.
+**The exception, stated more precisely than 21-REVIEW.md states it.** The review
+frames CR-01 as one finding on a new surface. It is **two findings**, and only
+one of them is new:
 
-### So why does criterion 1 still fail? Because the domain is smaller than the class.
+1. **`registry.rs`'s fourth predicate is genuinely a new surface.** `add_project`
+   judges alias blankness with `is_empty()` + `contains(char::is_whitespace)`, on
+   the `add` subcommand, which nobody had named in five rounds. An alias of one
+   `U+200B` registers.
+2. **The look-alike half is NOT a new surface. It is the fifth instance of the
+   same signature.** Pass 5 wrote, in its own `coincidental_reliance_items`:
+   *"`is_plain_path_component` … accepts `\u{200b}`, so two visually identical
+   aliases resolve to two different envelope and credential paths."* 21-15 truth 5
+   answered that sentence by claiming it closed. It did not. `carries_visible_content`
+   asks *"is any character visible?"*, so it refuses `"\u{200b}"` and accepts
+   `"demo\u{200b}"`. **The unification closed exactly the shapes pass 5 had
+   *reproduced*, and left the shape pass 5 had only *named* — one shape short of
+   the class, for the fifth time.** `DEGENERATE`'s six payloads are all *wholly*
+   invisible, so the 7×6 matrix structurally cannot express the look-alike case and
+   went green over it.
 
-`DriveArgs` (`src/driver/mod.rs:131`) carries **six** argv-derived string
-fields:
+That distinction determines round 6's shape. The `add`-path predicate says
+"extend the domain to every argv entry point." The look-alike half says something
+else and more uncomfortable: **the mechanism is right, the domain is now right,
+and the *predicate's content* was still chosen by hand from the reproduced
+instances.** Both need fixing, and they are different fixes — one is a parse
+boundary, the other is a single missing clause.
 
-| Field | Converted to `NonBlank` in round 4? | Status at HEAD |
-|---|---|---|
-| `command` | ✓ yes | protected |
-| `target_phase` | ✓ yes | protected |
-| `goal` | ✓ **only when it is the sole source** | ✗ **blank value persisted when supplied beside `--command`/`--target-phase`** |
-| `run_id` | ✗ no | ✗ **`\u{200b}` accepted; a full run completes with an invisible name** |
-| `alias` | ✗ no | incidentally refused by the registry lookup — not protected |
-| `approved_plan` | ✗ no | incidentally refused by token parsing — not protected |
+### Judgment 2 — Are WR-01 and WR-02 genuinely weaker than their docs claim? Yes, both, reproduced independently. This is the more important finding.
 
-Round 4 converted **three of six** — precisely the three that `CommandSource`
-happens to have variants for. All three of this pass's reproduced Criticals live
-in the other three. **The fix did not fail. The scope did.** And the scope was
-chosen, as it has been in all four cycles, by a human enumerating which values
-to protect rather than by the compiler enumerating them.
+I did not take either on the reviewer's word.
+
+**`one_of_each` constrains nothing.** I built a standalone `rustc` program with a
+fourth `CommandSource` variant and `variant_name`'s single forced arm added,
+leaving `one_of_each` exactly as shipped. Output:
+
+```
+all_variant_names_matches_the_variant_set_in_both_directions: PASSES
+  ...with a FOURTH variant `Resumed` constructed nowhere and swept nowhere.
+```
+
+An array literal of declared length 3 holding 3 entries has no relationship to an
+enum's arity; *constructing* values carries no exhaustiveness obligation. The fn's
+doc claims a compile error "in two ways"; 21-16 truth 4 claims it "in TWO places."
+Both are false. **This is pass-5 warning 4 recurring inside the test written to
+close it** — and the residual `dead_code` warning is no safety net, because it
+appears only while the new variant is constructed nowhere in production, i.e. it
+vanishes the moment the variant is real.
+
+**Guard nine is blind to spellings `DriveArgs` already uses.** I extracted
+`raw_string_argv_fields`, `drive_args_body` and `names_bare_string` verbatim into
+a scratch binary and fed them planted declarations:
+
+| Planted field | Guard nine |
+|---|---|
+| `pub goal_file: String,` | reported |
+| `pub goal_file: Option<String>,` | reported |
+| `pub(crate) goal_file: Option<String>,` | **SILENT** |
+| `pub(super) goal_file: Option<String>,` | **SILENT** |
+| `pub goal_file: Option<Box<str>>,` | **SILENT** |
+| `pub goal_file: Option<Cow<'static, str>>,` | **SILENT** |
+| `pub goal_file: Option<&'static str>,` | **SILENT** |
+| `pub goal_file: Option<OsString>,` | **SILENT** |
+| `pub goal_file: Option<String>, // seventh` (last field) | **SILENT** |
+| same, mid-struct | reported, but **swallows the next field line** |
+
+```
+FLOOR: offenders=[] field_lines=12 protected=6 -> verdict: PASSES (silent)
+```
+
+Three things make this worse than a normal token-list gap:
+
+- `pub(` is the **exact spelling `ITEM_OPENERS` was widened for in commit `2eefa73`,
+  four commits later, in the same file**, with a comment recording 51 column-zero
+  instances as "the tree's DOMINANT restricted-visibility style." One guard in this
+  file learned the lesson this round; the guard added in the same round did not.
+- `OsString` is not hypothetical — **`DriveArgs` already carries
+  `claude_args: Vec<OsString>`**, and `OsString` is the type argv actually arrives in.
+- 21-16 truth 1 asserts the declaration-style gap is "bounded by the ≥ 10-field /
+  ≥ 6-`NonBlank` non-vacuity floor," and `21-16-SUMMARY.md:264` repeats that in a
+  table certifying prohibition 1 as PASS. **I measured that bound not binding.**
+
+**So yes — the round's structural claims are overstated, and I agree that matters
+more than the individual Critical.** With one important qualification that keeps
+this honest: the *compile-side* half of the `DriveArgs` bound is genuinely real. I
+read `from_argv`'s destructure and confirmed there is no `..`, so a seventh argv
+field cannot compile unclassified regardless of guard nine. What guard nine adds
+— *and what it does not currently deliver* — is the assurance that the
+classification uses a payload TYPE. A seventh field spelled
+`pub(crate) goal_file: Option<Box<str>>` would be handled by the destructure and
+completely unprotected, silently. And what prevents that today is not guard nine
+but the accident that thirteen integration-test crates build `DriveArgs { … }`
+literally, which is coincidental reliance of exactly the kind pass 5 flagged.
+
+### Judgment 3 — Five cycles, five new Criticals. The surface has moved, and it is now provably boundable.
+
+Rounds 2–4 each missed a sibling *arm* in the same function. Round 5 missed a
+sibling *field*. Round 6's finding splits in two, and the split is the answer:
+
+**(a) A different command path — and this one IS bounded by the compiler already,
+if anyone reads it.** `src/cli.rs` declares **eight** argv-derived alias fields
+across `Commands` and `EnvelopeAction`: `Add:30`, `Remove:35`, `Drive:50`,
+`PrePush:306`, `PreCommit:319`, `Askpass:337`, `Guard:361`, `Scan:371`.
+**Exactly one of the eight** — `Drive` — passes through `DriveArgs::from_argv`.
+So the remaining work is *not* an open-ended "harden every entry point"; it is a
+finite eight-row table on a Rust enum the compiler can enumerate. The provable
+move is the same one 21-15 already proved works: a parse boundary over the raw
+clap enum with an exhaustive per-variant destructure and **no `..`**, yielding a
+validated alias newtype that `add_project`, `remove_project`, `envelope_dir_in`,
+`askpass_with_config` and the four hook re-entry points take instead of `&str`.
+A ninth subcommand then cannot be added unclassified, exactly as a seventh
+`DriveArgs` field cannot. **That is the mechanism extending, and it will work.**
+
+**(b) Something structural is still wrong, and it is not the domain — it is how
+the predicate's *content* gets chosen.** Every round has fixed exactly the shapes
+the previous round *reproduced*, and every round the class contained one more
+shape that had only been *named*. Round 5 is the cleanest example yet: pass 5's
+report contains the sentence describing the look-alike harm, 21-15 wrote a truth
+claiming to close it, the fix could not close it, the matrix could not express it,
+and the SUMMARY's coverage table recorded it as closed. `DEGENERATE`'s six values
+are all wholly invisible; there is no fixture shape in the tree that pairs two
+values which differ in bytes and agree on screen.
+
+The structural fix is small and specific: **`DEGENERATE` is an enumeration of
+"carries nothing," and the tree has no enumeration of "carries something
+different from what it renders."** Add `LOOK_ALIKE_PAIRS: [(&str, &str); N]` beside
+it (`("demo", "demo\u{200b}")`, `("abc", "a\u{200b}bc")`, `("x", "x\u{feff}")`), give
+`text::carries_invisible_formatting` the clause, and make every seam that turns a
+value into an *identity* — path component, registry key, envelope root, credential
+scope — assert that no two members of a pair resolve to different things. That is
+one const, one predicate clause and one property, and it covers the run-id, alias,
+envelope, credential and phase-token halves at once.
+
+Round 6 should do **both**: extend the mechanism to `Commands` (bounded, eight
+rows, provable) *and* close the predicate-content gap (one clause, one fixture
+shape). Neither alone finishes the phase.
 
 ### Observable Truths
 
-| # | Truth (ROADMAP success criterion) | Status | Evidence |
+#### ROADMAP success criteria (the contract)
+
+| # | Truth | Status | Evidence |
 |---|---|---|---|
-| 1 | A user states a goal in plain language and gets back a structured, machine-checkable plan to review before anything runs | ✗ FAILED (fourth consecutive cycle, root cause relocated) | The `--target-phase` defect the last pass named is genuinely and structurally closed. But 21-13's own first `must_haves` truth — *"refused ... in EVERY argv position (`--command`, `--target-phase`, `--goal`), before any file, lock, journal, or run directory is created"* — is **false at HEAD on the public `drive()` entry point**, and its `verification: backstop` truth — *"No `run.json` ... carries `target_phase` or `gsd_command` as an empty or whitespace-only string"* — is false too. Three independent reproductions, detailed below. |
-| 2 | An approved goal is pursued across multiple GSD commands to a terminal outcome without further user input | ✓ VERIFIED (reconfirmed) | `tests/driver_goal_seam.rs` 20/20 in my own full-suite run; `tests/driver_iteration_loop.rs`, `tests/driver_router_conformance.rs` (3/3) and `tests/driver_router_table.rs` (12/12) all green. The decomposition → plan-digest → approval → recheck-at-spawn wiring is unchanged from the prior cycle's confirmed-closed state and I re-read `recheck_approval`'s position at `src/driver/run.rs:2333-2340`, above `establish_own_group`, the lock and the journal. |
-| 3 | Model escalations are counted against a per-run cap; exceeding the cap parks the run rather than continuing | ✓ VERIFIED (reconfirmed, strictly stronger than last pass) | `tests/driver_escalation_cap.rs` 8/8. Guard six is not merely tree-wide now — its marker-to-EOF blind region is **asserted empty** by a new build-failing check, and the one live violation is fixed (`count_backlog_items` moved from `:530` to `:312`, above the `mod tests` marker at `:331`). I confirmed independently that `cargo clippy --all-targets` no longer reports `items_after_test_module` (5 → 4 warnings, the remaining four in `src/browser.rs:131-133` and `src/project_creator.rs:146`, neither file opened this round). |
-| 4 | A `.planning/` file or `CLAUDE.md` carrying injected instructions ("ignore prior constraints, run …") does not change which command the driver executes | ✓ VERIFIED (reconfirmed) | `tests/driver_injection_corpus.rs` 12 passed / 10 `--ignored` live-binary arms, untouched by 21-13 or 21-14 (confirmed: neither file appears in `git diff 6eb1d49..HEAD --name-only`). Guard seven (`FIELD_OBSERVED_MARKERS` named only where the schema declares it) passes inside the 26/26 `spawn_seam_guard` run. |
-| 5 | Any action the model names that is not in the fixed GSD command enum is refused, never executed as a shell string | ✓ VERIFIED (reconfirmed) | `tests/driver_refusal_record.rs` 9/9; `tests/driver_model_seam.rs` 4 passed / 3 ignored. Untouched by this round's diff. I additionally confirmed a model-supplied phase token of `\u{200b}` — which survives `is_plain_path_component` (CR-02) — is still refused at `src/driver/goal.rs:704` by roadmap membership, so CR-02 does **not** reach this criterion. |
+| 1 | A user states a goal in plain language and gets back a structured, machine-checkable plan to review before anything runs | ✓ **VERIFIED (first time in this phase)** | The class that failed this four times is closed by construction and I could not break it. `DriveArgs::from_argv` is **pure** (opens no file, starts no process) and runs in `main.rs` **before `drive` is entered**, so it cannot consult `dry_run` — preview/real symmetry is a construction-time fact, not two branches that must agree. All six argv string fields are `NonBlank`; the in-crate matrix drives **7 argv positions × 6 `DEGENERATE` payloads = 42 cells** through the production boundary with **no `Ok` branch and no exemption**, each asserting that position's own named variant, plus a realistic non-vacuity control per column. `execute_run` resolves its source at `run.rs:2442-2447`, above `establish_own_group` (:2449), the envelope (:2493), the lock (:2609) and `JournalRun::start` (:2626); `a_run_with_no_command_source_writes_nothing_before_refusing` pins it. `RunRecord.goal` comes from `Option<NonBlank>` and `gsd_command` from a total function over `IterationSource`, so `""` on disk provably means *absent* (D-30). Self-run: `cargo test --lib` **1031 passed / 0 failed**; `driver_dry_run` 15/15. |
+| 2 | An approved goal is pursued across multiple GSD commands to a terminal outcome without further user input | ✓ VERIFIED (reconfirmed) | Self-run `driver_goal_seam` **21 passed / 0 failed** (up from 20 — the restored length-bound fixture). `recheck_approval` sits at `run.rs:2410-2415`, above the source resolution and therefore above every write. Decomposition → plan-digest → approval → recheck-at-spawn unchanged and green. |
+| 3 | Model escalations are counted against a per-run cap; exceeding the cap parks the run rather than continuing | ✓ VERIFIED (reconfirmed) | Self-run `driver_escalation_cap` **8 passed / 0 failed** — both directions (a cap at or above the *resolved* step cap refused at the seam; a cap below it accepted) and the typed park reason on the journal. Guard six's marker-to-EOF blind region is still asserted empty, now by openers that can actually see the tree's 51 `pub(crate)`/`pub(super)` items. `clippy --all-targets` reports **4** warnings, all pre-existing (`src/browser.rs:131-133`, `src/project_creator.rs:146`); `items_after_test_module` remains cleared. |
+| 4 | A `.planning/` file or `CLAUDE.md` carrying injected instructions does not change which command the driver executes | ✓ VERIFIED (reconfirmed) | Self-run `driver_injection_corpus` **12 passed / 10 ignored**, arrival-before-influence assertions intact. Guard seven (`FIELD_OBSERVED_MARKERS` named only where the schema declares it) passes inside my own `spawn_seam_guard` run (32/32). |
+| 5 | Any action the model names that is not in the fixed GSD command enum is refused, never executed as a shell string | ✓ VERIFIED (reconfirmed) | Self-run `driver_refusal_record` **9/9**, `driver_model_seam` **4 passed / 3 ignored**. I checked whether this pass's gap reaches this seam and it does **not**: a look-alike phase token survives `is_plain_path_component`, but `src/driver/goal.rs:704`'s roadmap-membership check refuses it. That is recorded as coincidental reliance (a fact about today's roadmap contents), not as a defect here. |
 
-**Score:** 4/5 truths verified (0 present-but-behavior-unverified)
+**ROADMAP score: 5/5.**
 
-### Independent Reproduction (not taken from 21-REVIEW.md)
+#### Round-5 plan must-have truths (what the round contracted to deliver)
 
-The round-4 review labelled CR-01 **inferred** and CR-02 **reproduced**. I held
-it to that distinction and went further on both. Three throwaway integration
-tests, written against HEAD (`c7bcafb`), run, and deleted — `git status` is
-clean of them.
+| # | Truth (source) | Status | Evidence |
+|---|---|---|---|
+| 6 | `DriveArgs` is the domain — all six argv string fields `NonBlank` (21-15 t1) | ✓ VERIFIED | Struct body read field by field: `alias`, `command`, `target_phase`, `approved_plan`, `run_id`, `goal` all `NonBlank`/`Option<NonBlank>`. |
+| 7 | A blank in ANY of the six positions is refused at `from_argv` before `drive` (21-15 t2) | ✓ VERIFIED | 7 positions × 6 payloads, each with its own named variant (`NoCommandSource`, `RunIdInvalid`, `PlanApprovalMalformed`, `UnknownAlias`); the `--approved-plan` refusal is *derived* by running the real parser and that derivation is itself pinned. |
+| 8 | `execute_run` resolves once above every write; the record builders are total (21-15 t3) | ✓ VERIFIED | Line ordering read directly; both `String::new()` arms gone; `iteration_source` has three arms and `Goal(_) => Err(NoCommandSource)` — no `_`, no manufactured value. |
+| 9 | Exactly ONE production spelling of the invisibility judgment (21-15 t4) | ✗ **FAILED** | `src/registry.rs:14-20` and `:65-71` are a fourth, weaker judge on the `add` path. Reproduced. |
+| 10 | `is_plain_path_component` refuses the invisible; the same predicate governs registry aliases; two visually identical aliases can no longer resolve to two different envelope paths (21-15 t5) | ✗ **FAILED** | Wholly-invisible half closed. Look-alike half reproduced end to end: two envelope roots, two projects, two run directories. |
+| 11 | The matrix is 7 positions × the full shared `DEGENERATE`, uniform, no exemption (21-15 t6) | ✓ VERIFIED | Read the loop body: one nested loop, no `Ok` arm, no exemption comment. (The *acceptance* matrix does carry a hand-exemption — Warning, below.) |
+| 12 | A blank `goal` can no longer be persisted (21-15 t7) | ✓ VERIFIED | `run.rs:813-817`. |
+| 13 | **backstop** — no `run.json` carries `goal`/`gsd_command`/`run_id`/`target_phase` as a non-empty value without visible content, and `gsd_command` is never `""` (21-15) | ✓ VERIFIED | Behavioural evidence, not presence: `a_run_with_no_command_source_writes_nothing_before_refusing` passes (nothing on disk after a refusal) and the 42-cell boundary matrix passes. `gsd_command` cannot be `""` because its producer is total over two variants. A look-alike `run_id` **does** carry visible content, so this truth as worded is not falsified by gap 1. |
+| 14 | Guard nine reads the TYPE; its silent gaps are named in its limits block and bounded by the ≥ 10 / ≥ 6 floor (21-16 t1) | ✗ **FAILED** | Floor measured non-binding; five spellings silent, four of them unnamed. |
+| 15 | `ITEM_OPENERS` sees `pub(crate)`/`pub(super)`; the backwards bound deleted; a control proves it (21-16 t2) | ✓ VERIFIED | `"pub("` present at `:1993-1997` with the 51-instance measurement; `the_boundary_self_check_sees_restricted_visibility_items` passes; `scanned_files >= 10` floor survived the extraction (:2167) with the control asserting `== 1` (:2135). |
+| 16 | Guard eight's non-vacuity counts DISTINCT NEEDLES (21-16 t3) | ✓ VERIFIED | Per-needle loop at `:2587`; limits text records the replacement and why the line count stopped biting. |
+| 17 | `one_of_each` makes a fourth variant a compile error in TWO places (21-16 t4) | ✗ **FAILED** | Reproduced with standalone `rustc`: zero compile errors, pin passes, variant unswept. |
+| 18 | `visibly_empty_numbered_entry` earns its doc; direct pins make it falsifiable (21-16 t5) | ✓ VERIFIED | Doc corrected to credit the literal array; four direct pins at `:2189-2209`. |
+| 19 | `goal.rs`'s length-bound refusal has live coverage again (21-16 t6) | ✓ VERIFIED | Over-length control-free fixture restored with the strengthened `!=` and `ends_with(TRUNCATION_MARKER)` assertions; `driver_goal_seam` 21/21. |
 
-**1. CR-01 — UPGRADED from inferred to REPRODUCED.** Called `pub async fn
-execute_run` directly with `command: None, target_phase: None`:
+*(21-16's four probe-authored truths restate ROADMAP criteria 3 and 4 and are
+scored there rather than double-counted.)*
 
-```
-RESULT: Err(NoCommandSource)
-run.json exists = true
-run.json = {
-  "run_id": "2026-08-21T00-00-00Z-cr01",
-  "goal": "",
-  "gsd_command": "",
-  ...
-  "outcome": "no_command_source"
-}
-gsd_command field = Some(String(""))
-journal exists = true   (4 records: run_started, 2 diagnostics, run_ended)
-```
-
-The typed refusal 21-14 added does fire — **after** `run.json`, the run
-directory and the journal are already on disk carrying the exact empty string
-D-30 reserves for "field absent". I confirmed no earlier guard exists by
-extracting `execute_run`'s first 195 lines (`:2261-2455`) to a file and grepping
-it: **zero** `return Err`, and the only `?` sites are plan-approval staleness,
-`RunIdRequired` and `bounds::resolve`.
-
-**2. CR-02 — REPRODUCED, and end-to-end rather than at the predicate.** First
-the predicate split, measured against the real library:
-
-```
-is_plain_path_component("\u{200b}")             = true
-is_plain_path_component("\u{feff}")             = true
-is_plain_path_component("\u{2060}")             = true
-is_plain_path_component("   ")                  = false
-is_plain_path_component("a\nb")                 = false
-run_paths(root, U+200B).is_some()               = true
-U+200B is_whitespace=false is_control=false
-U+FEFF is_whitespace=false is_control=false
-```
-
-Then through the public `drive()`, which the review did not do:
-
-```
-drive(--command '/gsd:progress' --run-id '\u{200b}')  ->  Ok(())
-runs dir entries:
-  "run.lock"
-  "\u{200b}"   (chars: ['\u{200b}'])
-      run.json run_id  = Some(String("\u{200b}"))
-      run.json outcome = Some(String("succeeded_no_changes"))
-  ".gitignore"
-```
-
-A complete, successful, terminal run record whose directory name is one
-invisible character. Nothing on disk or on screen names that run.
-
-**3. IN-01 — REPRODUCED on the public path** (the review rated this Info; I
-grade it higher because it falsifies a named `must_haves` truth):
-
-```
-[whitespace] PREVIEW Ok(())  REAL Ok(())  run.json goal = Some(String("   "))
-[zero-width] PREVIEW Ok(())  REAL Ok(())  run.json goal = Some(String("\u{200b}"))
-[bom]        PREVIEW Ok(())  REAL Ok(())  run.json goal = Some(String("\u{feff}"))
-```
-
-Each created the lock, the run directory, `journal.jsonl` and `run.json` — so
-the "before any file, lock, journal, or run directory is created" clause is
-false for `--goal` whenever another source is present. `make_run_record` writes
-`goal: args.goal.clone().unwrap_or_default()` (`src/driver/run.rs:763`), raw.
-`command_source`'s `(Some, None)` and `(None, Some(_))` arms never touch `goal`,
-and the matrix's `PositionBuilder` only ever builds one-flag tuples — the cell
-is **unexpressible** in the anti-recurrence mechanism's current shape.
-
-I also confirmed, by direct reading rather than by re-running the review's
-commands:
-
-- `recorded_command` at `:839-849` and `digested_command_fragment` at `:867-872`
-  both still carry `(None, None) => String::new()` with the identical refuted
-  comment; `git log` confirms `0dcac4e` removed only the third such arm.
-- `ITEM_OPENERS` (`tests/spawn_seam_guard.rs:1991`) has `"pub "` and not
-  `"pub("`; `grep -rn '^pub(crate) \|^pub(super) ' src/` returns exactly **51**.
-  A scan for post-marker instances of that spelling returns **0** today, so the
-  gap is latent rather than live.
-- `visibly_empty_numbered_entry`'s only two call sites (`:2086`, `:2220`) both
-  sit in the realistic half of their loops.
-- `ALL_VARIANT_NAMES` (`:1901`) is a hand-maintained `[&str; 3]`.
-- All four `HOSTILE_PHASE_TOKENS` carry control characters, so none reaches
-  `src/driver/goal.rs:697` any more.
-- `.planning/REQUIREMENTS.md`'s last touch is `0c4f712` — neither 21-13 nor
-  21-14 flipped a requirement. The pass-4 process regression is closed.
+**Score: 15/19 must-haves verified (5/5 ROADMAP success criteria); 0 present-but-behavior-unverified.**
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |---|---|---|---|
-| `src/driver/mod.rs` (`mod payload` / `NonBlank`) | Blank payload unrepresentable by type | ✓ VERIFIED | Nested module `:324`, private field `:331`, one `impl` at `:333` with exactly `new`/`as_str`, derives `Debug, Clone, PartialEq, Eq` only. No escape route found. |
-| `src/driver/mod.rs` (`command_source`, all 3 arms) | Every variant carries `NonBlank`; no arm forgets | ✓ VERIFIED | `:479`, `:489`, `:496` — each arm matches on `NonBlank::new` and maps `None` to `NoCommandSource`. The class fix, not a fourth per-arm trim. |
-| `src/driver/mod.rs` (degenerate matrix) | Uniform, exemption-free, structurally exhaustive columns | ✓ VERIFIED (columns) / ⚠️ INCOMPLETE (rows, multi-flag) | 18 cells, uniform, no exemption. Column axis is a compile error on a fourth argv parameter. Row axis rests on a hand-maintained const, and multi-flag combinations are unexpressible. |
-| `src/journal/mod.rs` (`is_plain_path_component`) | One definition of "blank", agreeing with the argv seam | ✗ CONTRADICTORY | `trim`-based; accepts `\u{200b}`, `\u{feff}`, `\u{2060}` that `NonBlank` refuses. Two definitions, same commit, 7 production call sites. |
-| `src/driver/run.rs` (`recorded_command`, `digested_command_fragment`) | No manufactured blank in an unreachable arm | ✗ PRESENT (violates 21-14's own prohibition) | Both still `(None, None) => String::new()`; `recorded_command`'s value reaches a committed `run.json`. Reproduced. |
-| `src/driver/run.rs` (`make_run_record`, `goal` field) | Goal validated before it is persisted | ✗ UNVALIDATED | `args.goal.clone().unwrap_or_default()` at `:763`. Reproduced for three payloads. |
-| `src/driver/run.rs` (`IterationSource`) | Colliding enum renamed; exactly one `enum CommandSource` under `src/` | ✓ VERIFIED | Rename complete; guard eight asserts the single declaration rather than dodging by needle shape. |
-| `src/state_reader/mod.rs` (`count_backlog_items`) | Above the `mod tests` marker; file clean under `items_after_test_module` | ✓ VERIFIED | `pub fn` at `:312`, marker at `:331`. Clippy `--all-targets` 5 → 4, self-measured. |
-| `tests/spawn_seam_guard.rs` (boundary self-check) | Blind region provably empty | ⚠️ VERIFIED but overclaiming | The check is real, is a build failure, and caught the one live offender. Its `ITEM_OPENERS` cannot see the tree's 51 `pub(crate)`/`pub(super)` items, while the header calls the region "provably empty". |
-| `tests/spawn_seam_guard.rs` (guard six header, limits 4/5) | Each limit named with its failure direction | ✓ VERIFIED | Both limits present, in the one-at-a-time register, with directions. The pass-4 finding is closed. |
-| `tests/spawn_seam_guard.rs` (guard eight limits block) | Names what the scan cannot see | ⚠️ VERIFIED but one bound is weaker than stated | Five numbered limits with directions — a real improvement on "no limits at all". Limit 1's non-vacuity bound counts lines, not distinct needles. |
-| `src/driver/mod.rs` (`visibly_empty_numbered_entry`) | Independent oracle that can falsify the guard | ⚠️ ORPHANED in effect | Written independently, but structurally unreachable by any degenerate payload. The tautology is broken by the literal array, not by this detector. |
-| `.planning/REQUIREMENTS.md` | Accurate, internally consistent requirement status | ✓ VERIFIED (pass-4 regression closed) | All five phase-21 requirements read `[ ]` / `Gaps Found`; the checklist and traceability table now agree, which they did not before. |
+| `src/driver/mod.rs` (`DriveArgs`) | All six argv string fields `NonBlank` | ✓ VERIFIED | Read field by field; 0 bare `String`/`Option<String>` in the body. |
+| `src/driver/mod.rs` (`from_argv`) | One parse boundary, exhaustive destructure, no `..` | ✓ VERIFIED | `:409-424` destructures twelve fields by name; `:454-469` reconstructs twelve. Pure — no file, no process. |
+| `src/driver/mod.rs` (`mod payload` / `NonBlank`) | Privacy not widened | ✓ VERIFIED | `:546-592`, private tuple field, exactly `new`/`as_str`, no `From`/`into_inner`/serde/`Deref`/`AsRef`. |
+| `src/driver/mod.rs` (7×6 refusal matrix) | Uniform, exemption-free | ✓ VERIFIED | 7 positions incl. the multi-flag row; no `Ok` branch. |
+| `src/driver/mod.rs` (padded acceptance matrix) | All seven columns swept | ⚠️ HAND-EXEMPTED | `:2563-2566` narrows `--alias`/`--run-id` to `["x"]` on a rationale about `is_plain_path_component`, which `from_argv` never calls for either field. Measured false. |
+| `src/driver/mod.rs` (`one_of_each`) | Second compile-time anchor for `ALL_VARIANT_NAMES` | ✗ CONSTRAINS NOTHING | Reproduced: no compile error, pin green with a variant unswept. |
+| `src/driver/run.rs` (`execute_run`) | Source resolved above every write | ✓ VERIFIED | :2442 < :2449 < :2493 < :2609 < :2626. |
+| `src/driver/run.rs` (`recorded_command`, `digested_command_fragment`) | Total over `IterationSource`, no manufactured blank | ✓ VERIFIED | :910-915, :938-943; 0 `=> String::new()` in either driver file. |
+| `src/driver/run.rs` (`make_run_record.goal`) | Written from `Option<NonBlank>` | ✓ VERIFIED | :813-817. |
+| `src/text.rs` (`carries_visible_content`) | The one production visibility predicate | ⚠️ PRESENT, INCOMPLETE | It is the one predicate for *emptiness*; it has **no clause for embedded invisibles**, which is the missing half. Four consumers confirmed by grep (`NonBlank::new`, `is_plain_path_component`, `app::goal_or_none`, `ui::screens::driver::goal_lines`). Both-directions unit pins present. |
+| `src/journal/mod.rs` (`is_plain_path_component`) | One definition of blank, composed with the structural halves | ⚠️ HALF-CLOSED | Delegates the blank half; keeps `is_control()` (:283) and `Component::Normal` + single-component + `name == value` (:286-293) — I verified neither was dropped. Accepts `"demo\u{200b}"`. |
+| `src/registry.rs` (`add_project`, `add_project_unchecked`) | Alias blankness judged by the shared predicate | ✗ FOURTH PREDICATE | `is_empty()` + `contains(char::is_whitespace)`, unchanged; a `U+200B` alias registers. |
+| `src/test_support.rs` (`DEGENERATE`) | The one shared blank-shape const | ✓ VERIFIED (with a named residual) | Six literals incl. `\u{200b}`/`\u{feff}`, deliberately *not* derived from the predicate. `#[cfg(test)]`, so integration crates cannot consume it — disclosed in place and in `deferred-items.md`. **All six are wholly invisible; no look-alike fixture shape exists anywhere in the tree.** |
+| `tests/spawn_seam_guard.rs` (guard nine) | `DriveArgs` declares no raw argv `String` field | ⚠️ ASSERTS TRUE, REACH OVERCLAIMED | The assertion passes and the planted-field control is real. Blind to `pub(`, `Box<str>`, `Cow<str>`, `&'static str`, `OsString`, and a trailing `//`; floor measured non-binding. |
+| `tests/spawn_seam_guard.rs` (`ITEM_OPENERS` / `post_marker_offenders`) | Blind region provably empty, with a self-test | ✓ VERIFIED | Pass-5 warning 1 closed properly — the wrong sentence deleted, the right control added, the floor carried through the extraction. |
+| `tests/spawn_seam_guard.rs` (`…spelled_in_exactly_one_place`) | Prohibition 2 enforceable | ⚠️ SCAN NARROWER THAN ITS MESSAGE | `src/` only; three hand-picked subsets in `tests/`. Mitigated by the `#[cfg(test)]` fact, the in-place disclosure, and the in-crate exhaustive sweep. |
+| `src/driver/run.rs` (`a_run_with_no_command_source_writes_nothing_before_refusing`) | The CR-01 property as an assertion | ⚠️ ASSERTION NARROWER THAN THE PROPERTY | Asserts only `.planning/meta-manager`. `establish_envelope` writes to `GSD_MM_ENVELOPE_ROOT`/`dirs::data_local_dir()`, outside the project root by construction, so moving the resolution back below `:2493` would keep this test green. The property holds at HEAD (ordering read directly); the *test* cannot see half of it. |
+| `.planning/REQUIREMENTS.md` | Accurate, internally consistent, untouched by the round | ✓ VERIFIED | Last touch `0c4f712`; all five read `[ ]` / `Gaps Found`. |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 |---|---|---|---|---|
-| `DriveArgs.command` / `.target_phase` / `.goal` (sole source) | `CommandSource` | `payload::NonBlank::new` — the one place blankness is judged | ✓ WIRED | All three arms; 18/18 matrix cells; boundary pinned both sides. |
-| `DriveArgs.goal` (beside another source) | `RunRecord.goal` | Validated before it is persisted | ✗ NOT WIRED | `unwrap_or_default()` at `run.rs:763`; `command_source` never sees it. Reproduced for `"   "`, `\u{200b}`, `\u{feff}`. |
-| `DriveArgs.run_id` | `journal::run_paths` / run directory name | One blankness predicate shared with the argv seam | ✗ NOT WIRED | `is_plain_path_component`'s `trim` accepts what `NonBlank` refuses. Full run completes with an invisible directory name. |
-| `execute_run` | `RunRecord.gsd_command` | `(None, None)` refused before anything is written | ✗ NOT WIRED | Refusal at `:2643` is downstream of `JournalRun::start` at `:2514`. Reproduced: `gsd_command: ""` on disk. |
-| `payload::NonBlank::new` | `journal::is_plain_path_component` | One shared visibility predicate | ✗ NOT WIRED | Two independent predicates that disagree, shipped in the same commit. |
-| `tests/spawn_seam_guard.rs` (boundary self-check) | every post-marker item under `src/` | `ITEM_OPENERS` token list | ⚠️ PARTIAL | Blind to 51 column-zero `pub(crate)`/`pub(super)` items; 0 live offenders today. |
-| `src/driver/mod.rs` (matrix) | `command_source` (all variants) | Every degenerate payload × every argv position | ✓ WIRED (single-flag) / ⚠️ PARTIAL (multi-flag) | The exemption is gone. The shape cannot express a two-flag row. |
+| `main.rs` (Drive arm) | `DriveArgs::from_argv` | The single production conversion from raw argv to `NonBlank` | ✓ WIRED | Print-and-exit refusal before `drive`; `RawDriveArgs` is the only crossing shape. |
+| `payload::NonBlank::new` | `text::carries_visible_content` | Delegation, not re-implementation | ✓ WIRED | `mod.rs:580`. |
+| `journal::is_plain_path_component` | `text::carries_visible_content` | The blank half shared; control/traversal halves its own | ✓ WIRED | `journal/mod.rs:273`; both other halves verified present. |
+| `app::goal_or_none` / `ui::screens::driver::goal_lines` | `text::carries_visible_content` | The render-side judgment | ✓ WIRED | `app.rs:111`, `ui/screens/driver.rs:760`. |
+| `registry::add_project` | `text::carries_visible_content` | The alias registration judgment | ✗ **NOT WIRED** | A fourth predicate; reproduced. |
+| `is_plain_path_component` | a look-alike refusal | An invisible-formatting clause | ✗ **NOT WIRED** | No such clause exists anywhere in production. |
+| `execute_run` | `iteration_source` | Source resolved once above the first write | ✓ WIRED | Ordering read directly; corroborated by the reviewer's independent envelope-mtime observation. |
+| `tests/spawn_seam_guard.rs` (guard nine) | `DriveArgs` declaration | `ITEM_OPENERS`-style token match on field lines | ⚠️ PARTIAL | Reported for `pub `; silent for `pub(`, and for four non-`String` string types. |
+| `one_of_each` | `ALL_VARIANT_NAMES` | A compile-forced pairing | ✗ **NOT WIRED** | No compile-time relationship exists. |
+| `tests/driver_goal_seam.rs` (over-length fixture) | `goal.rs`'s `untrusted::bounded` refusal | A control-free 201-char token | ✓ WIRED | Three assertions incl. `ends_with(TRUNCATION_MARKER)`. |
 
 ### Data-Flow Trace (Level 4)
 
 | Artifact | Data Variable | Source | Produces Real Data | Status |
 |---|---|---|---|---|
-| `run.json` | `gsd_command` | `recorded_command(args)` → `(None, None) => String::new()` | ✗ | ✗ DISCONNECTED — reproduced as `""` on disk |
-| `run.json` | `goal` | `args.goal.clone().unwrap_or_default()` | ✗ for blank/zero-width payloads | ✗ HOLLOW — reproduced as `"   "`, `"\u{200b}"`, `"\u{feff}"` |
-| `run.json` / run directory | `run_id` | `is_plain_path_component` gate only | ✗ for zero-width payloads | ✗ HOLLOW — reproduced as an invisible directory name |
-| `run.json` | `target_phase` | `args.target_phase` via `CommandSource::Routed(NonBlank)` | ✓ | ✓ FLOWING — this is the value the last pass failed on; it is genuinely fixed |
-| TUI driver screen | `goal` line | `goal_lines(goal)` gated on `goal.trim().is_empty()` | ✗ for zero-width | ⚠️ STATIC — a `\u{200b}` goal takes the non-empty branch and renders a label with nothing after it |
+| `run.json` | `gsd_command` | `recorded_command(&IterationSource)`, total over two variants | ✓ | ✓ FLOWING — pass-5's `""` reproduction no longer runs |
+| `run.json` | `goal` | `args.goal.as_ref().map(NonBlank::as_str)` | ✓ | ✓ FLOWING — pass-5's `"   "`/`\u{200b}` reproductions no longer run |
+| `run.json` / run directory | `run_id` | `NonBlank` + `is_plain_path_component` | ⚠️ | ⚠️ AMBIGUOUS — wholly-invisible refused; **`"…-aaaa"` and `"…-aaaa\u{200b}"` both accepted, two directories, one rendering** |
+| `config.json` | registry key (alias) | `registry::add_project`'s own predicate | ✗ | ✗ DISCONNECTED — a `U+200B`-only key registers; look-alike keys register as distinct |
+| `<envelope>/<alias>/` | envelope root | `envelope_dir_in` → `is_plain_path_component` | ⚠️ | ⚠️ AMBIGUOUS — `None` for wholly-invisible (good); **two roots for two look-alike aliases** (measured) |
+| `run.json` | `target_phase` | `Option<NonBlank>` + structural check at the seam | ✓ | ✓ FLOWING |
+| TUI driver screen | `goal` line | `goal_lines` → `carries_visible_content` | ✓ | ✓ FLOWING — pass-5's label-with-nothing-after-it is fixed |
 
 ### Behavioral Spot-Checks
 
+Every count- or presence-bearing check ran under `rtk proxy`; each negative grep
+carries a positive control.
+
 | Behavior | Command | Result | Status |
 |---|---|---|---|
-| Whole-suite regression | `rtk proxy cargo test --workspace --no-fail-fast -- --test-threads=2` | **1320 passed, 0 failed, 13 ignored** across 35 binaries (self-run, once, not taken from any SUMMARY) | ✓ PASS |
-| Build | `rtk proxy cargo build --all-targets` | exit 0, 0 warnings | ✓ PASS |
-| Gate lint | `rtk proxy cargo clippy --lib -- -D warnings` | exit 0 | ✓ PASS |
-| Unfiltered severity | `rtk proxy cargo clippy --all-targets` | 4 warnings, all pre-existing (`src/browser.rs:131-133`, `src/project_creator.rs:146`); `items_after_test_module` cleared | ✓ PASS (info) |
-| Guard suite | within the full run | `spawn_seam_guard` 26/26 | ✓ PASS |
-| Criterion-2 seam | within the full run | `driver_goal_seam` 20/20 | ✓ PASS |
-| Criterion-4 corpus | within the full run | `driver_injection_corpus` 12 passed / 10 ignored | ✓ PASS |
-| **CR-01 reproduction** | direct `execute_run(command: None, target_phase: None)` against a real fixture | `Err(NoCommandSource)` **and** `run.json` with `gsd_command: ""`, `goal: ""`, plus run dir + journal | ✗ CONFIRMS CR-01 (upgrades it from *inferred*) |
-| **CR-02 predicate split** | `is_plain_path_component` / `run_paths` against the real library | `\u{200b}`, `\u{feff}`, `\u{2060}` → `true`; `"   "` → `false` | ✗ CONFIRMS CR-02 |
-| **CR-02 end-to-end** | `drive(--command '/gsd:progress' --run-id '\u{200b}')` | `Ok(())`; run directory named `"\u{200b}"`, `run.json` `outcome: succeeded_no_changes` | ✗ CONFIRMS CR-02 (beyond what the review showed) |
-| **IN-01 end-to-end** | `drive(--command '/gsd:progress' --goal '<blank>')` ×3 payloads, preview + real | all `Ok(())`; `run.json` `goal` = `"   "` / `"\u{200b}"` / `"\u{feff}"` | ✗ CONFIRMS IN-01 |
-| `pub(crate)` blindness | `grep -rn '^pub(crate) \|^pub(super) ' src/` + post-marker scan | 51 invisible items tree-wide; 0 currently past a marker | ⚠️ CONFIRMS WR-01 (latent) |
-| Debt markers in the round-4 diff | `git diff 6eb1d49..HEAD -- src/ tests/` (1659 lines) piped to grep | 0 `TBD`/`FIXME`/`XXX`; control needle `NonBlank` → 26 hits, so the grep is non-vacuous | ✓ PASS |
-| `driver_reattach` flake | per orchestrator's throwaway-worktree run of base `6eb1d49` (5×: F,F,F,ok,ok) | pre-existing, not a regression; green in my own `--test-threads=2` run | ✓ NOT A GAP |
+| In-crate suite (matrix, predicates, record builders, tracer) | `cargo test --lib -- --test-threads=2` | **1031 passed, 0 failed** | ✓ PASS |
+| Guard suite | `cargo test --test spawn_seam_guard` | **32 passed, 0 failed** | ✓ PASS |
+| Criterion-bearing binaries | `cargo test --test driver_escalation_cap --test driver_injection_corpus --test driver_refusal_record --test driver_goal_seam --test driver_dry_run --test driver_model_seam` | 8 / 12(+10 ign) / 9 / **21** / 15 / 4(+3 ign) — all 0 failed | ✓ PASS |
+| Gate lint | `cargo clippy --lib -- -D warnings` | exit 0 | ✓ PASS |
+| Unfiltered severity | `cargo clippy --all-targets` | **4** warnings, all pre-existing (`browser.rs:131-133`, `project_creator.rs:146`) | ✓ PASS (info) |
+| Prohibition 1 (21-15), mechanical | `grep -n '=> String::new()' src/driver/run.rs src/driver/mod.rs` | **0 hits** (exit 1); tree-wide 4, two opened and confirmed off argv/record paths | ✓ PASS |
+| **CR-01 (registry) reproduction** | `registry::add_project` against a real `Config` + fixtures | `add_project("\u{200b}")` → **Ok**; `add_project("demo")` and `add_project("demo\u{200b}")` → **both Ok, two keys, two projects** | ✗ CONFIRMS CR-01 |
+| **Look-alike envelope roots** | `envelope::envelope_dir_in` | `demo` → `<root>/demo`; `demo\u{200b}` → `<root>/demo\u{200b}`; `\u{200b}` → `None` | ✗ CONFIRMS WR-05 / falsifies 21-15 t5 |
+| **Look-alike run directories** | `journal::run_paths` | `"…-aaaa"` and `"…-aaaa\u{200b}"` → two distinct dirs | ✗ CONFIRMS WR-05 |
+| **`from_argv` accepts a look-alike run id** | `DriveArgs::from_argv` | `"aaaa"` → Ok; `"aaaa\u{200b}"` → **Ok**; `"\u{200b}"` → `Err(RunIdInvalid)` | ✗ CONFIRMS WR-05 / IN-01 rationale false |
+| **Predicate split, both directions** | `is_plain_path_component` / `carries_visible_content` | `"demo\u{200b}"`, `"de\u{200b}mo"`, `"demo\u{feff}"` → true; `"\u{200b}"`, `"   "` → false | ✗ CONFIRMS the wholly/embedded split |
+| **WR-01 reproduction** | standalone `rustc`, four-variant enum, `one_of_each` as shipped | pin **PASSES** with the fourth variant unswept; **zero** compile errors | ✗ CONFIRMS WR-01 |
+| **WR-02 reproduction** | guard-nine fns extracted verbatim, 10 planted declarations | 6 SILENT, 1 misattributed, floor `field_lines=12 protected=6` → **PASSES (silent)** | ✗ CONFIRMS WR-02 |
+| WR-04 | `grep -rn 'for blank in \[' tests/` | 3 hand-picked subsets, no two the same | ⚠️ CONFIRMS WR-04 (disclosed) |
+| Guard-nine coincidental bound | `grep -rl '[^w]DriveArgs {' tests/*.rs \| wc -l` | **13** integration files construct `DriveArgs` literally | ⚠️ coincidental reliance |
+| Argv alias entry points | `grep -c 'alias: String\|alias: Option<String>' src/cli.rs` | **8**, of which 1 routes through `from_argv` | ℹ️ the bound for round 6 |
+| Debt markers in the round-5 diff | `git diff 199d334..HEAD -- src/ tests/ \| grep -E '^\+.*(TBD\|FIXME\|XXX)'` and `(TODO\|HACK\|PLACEHOLDER)` | **0** and **0**; control needle `NonBlank` → **101** hits, so neither zero is vacuous | ✓ PASS |
+| Documented flakes | `driver_reattach`, `envelope_tracer` | Not exercised in my targeted runs; green in the orchestrator's full run | ✓ NOT A GAP |
 
-> Every count- or presence-bearing check above was run under `rtk proxy`, and
-> each negative grep carries a positive control needle. A vacuous grep is the
-> exact failure class this phase keeps re-shipping; two of them appear in this
-> table with their controls stated.
+Every scratch artifact I created was removed: `git status` shows only the
+pre-existing untracked `.gsd/` and `.planning/milestone.lock`.
 
 ### Probe Execution
 
@@ -320,158 +408,159 @@ Not applicable — this phase is not a migration/tooling phase and declares no
 
 ### Requirements Coverage
 
-| Requirement | Source Plan(s) | Description | Status | Evidence |
+| Requirement | Source Plans | Description | Status | Evidence |
 |---|---|---|---|---|
-| DRIVE-01 | 21-01, 21-04, 21-07, 21-09, 21-11, 21-13 | User states a goal once, driver pursues it without further input | ⚠️ PARTIAL | Multi-command pursuit (criterion 2) is verified and reconfirmed. "Reviewable before anything runs" fails again — this time because `--goal` beside another source is persisted unvalidated after the lock, journal and run directory exist. |
-| DRIVE-03 | 21-01, 21-03, 21-04, 21-07, 21-08, 21-09, 21-11, 21-13 | Goal decomposed into a structured, machine-checkable, reviewable plan | ✗ BLOCKED | Same root cause. The decomposition itself is sound; the record that is supposed to be evidence of it is not. |
-| DRIVE-04 | 21-02, 21-04, 21-06, 21-10, 21-12, 21-14 | Model escalation capped per run, exceeding it parks | ✓ SATISFIED | Criterion 3 verified; guard six is now self-checking over its own blind region, a strictly stronger control than the previous pass had. |
-| SAFE-07 | 21-01, 21-03, 21-05, 21-06, 21-08, 21-10, 21-12, 21-14 | `.planning/` content passed inside an explicit untrusted boundary | ✓ SATISFIED | Criterion 4 verified; corpus untouched by this round's diff and passing with its arrival-before-influence assertions. |
-| SAFE-08 | 21-01, 21-05, 21-06, 21-12, 21-14 | Model's action constrained to a fixed enum; free-form shell strings never executed | ✓ SATISFIED | Criterion 5 verified. I additionally confirmed CR-02's zero-width hole does not reach this seam: a `\u{200b}` phase token from the model survives `is_plain_path_component` but is refused by roadmap membership at `src/driver/goal.rs:704`. |
+| DRIVE-01 | 21-01, 04, 07, 09, 11, 13, 15 | User states a goal once; driver pursues it without further input | ⚠️ PARTIAL | Criteria 1 and 2 both verified — the requirement's *behaviour* is satisfied. Held back only by the alias-identity gap: the value that selects *which project* the goal is pursued against can name two projects that render identically. |
+| DRIVE-03 | 21-01, 03, 04, 07, 08, 09, 11, 13, 15 | Goal decomposed into a structured, machine-checkable, reviewable plan | ✓ SATISFIED | Criterion 1 verified; decomposition refuses rather than repairs; the record that is evidence of it can no longer carry a blank in `goal`, `gsd_command`, `run_id` or `target_phase`. |
+| DRIVE-04 | 21-02, 04, 06, 10, 12, 14, 16 | Escalation capped per run; exceeding it parks | ✓ SATISFIED | Criterion 3 verified; both cap directions pinned and green in my own run. |
+| SAFE-07 | 21-01, 03, 05, 06, 08, 10, 12, 14, 16 | `.planning/` content passed inside an explicit untrusted boundary | ✓ SATISFIED | Criterion 4 verified; arrival-before-influence assertions intact and non-vacuous. |
+| SAFE-08 | 21-01, 05, 06, 12, 14, 16 | Model's action constrained to a fixed enum; no free-form shell strings | ✓ SATISFIED | Criterion 5 verified; I checked and this pass's gap does not reach this seam (roadmap membership refuses a look-alike phase token) — recorded as a precondition, not a guarantee. |
 
-**No orphaned requirements.** The union of `requirements:` declared across all
-fourteen plans (21-01 … 21-14) is exactly {DRIVE-01, DRIVE-03, DRIVE-04,
-SAFE-07, SAFE-08}, matching REQUIREMENTS.md's phase-21 mapping and the ROADMAP
-phase-21 `Requirements:` line. `.planning/REQUIREMENTS.md` is **correct at
-HEAD** — the pass-4 premature-marking regression is closed and both plans
-honoured their own `MUST NOT flip a requirement` prohibition.
+**No orphaned requirements.** The union of `requirements:` across all sixteen
+plans is exactly {DRIVE-01, DRIVE-03, DRIVE-04, SAFE-07, SAFE-08}, matching
+REQUIREMENTS.md's phase-21 mapping and the ROADMAP `Requirements:` line.
 
 ### Anti-Patterns Found
 
 | File | Line | Pattern | Severity | Impact |
 |---|---|---|---|---|
-| `src/driver/run.rs` | `:848`, `:871` | `(None, None) => String::new()` — a manufactured blank as the "safe" arm of an unreachable match, twice, carrying the comment the same plan declared refuted | 🛑 Blocker | Violates 21-14's own prohibition verbatim. One copy reaches a committed `run.json`. Reproduced. |
-| `src/driver/run.rs` | `:763` | `args.goal.clone().unwrap_or_default()` — raw argv into a persisted record | 🛑 Blocker | Falsifies 21-13's first `must_haves` truth on the public path. Reproduced for three payloads. |
-| `src/journal/mod.rs` | `:263` | `value.trim().is_empty()` as "blank" while the sibling seam uses a wider visibility rule | 🛑 Blocker | Two disagreeing definitions in one commit; 7 production call sites; a full run completes with an invisible name. Reproduced end to end. |
-| `src/driver/mod.rs` | `:1576` | The `--run-id` blankness pin loops `["   ", "\t", "\n  \n"]` — three of `DEGENERATE`'s six — in the commit that added the other three | 🛑 Blocker | Violates 21-13's own prohibition against hand-picked anti-recurrence lists. It is the fourth instance of the phase's signature defect, one level up. |
-| `tests/spawn_seam_guard.rs` | `:1991-2005`, header `:2074-2078` | `ITEM_OPENERS` cannot match `pub(crate) `/`pub(super) ` (51 such items) while the header claims the region is "provably empty" and bounds the gap with "items are at column zero" — the offenders *are* at column zero | ⚠️ Warning | A guard header overclaiming its reach for the **third consecutive round**. 0 live offenders today. |
-| `src/driver/mod.rs` | `:1936-1943`, `:2086`, `:2220` | `visibly_empty_numbered_entry`'s doc names a falsification mechanism it does not have; the detector is structurally unreachable by any degenerate payload | ⚠️ Warning | The tautology is genuinely broken — by the literal array. The detector wears credit it did not earn. |
-| `tests/spawn_seam_guard.rs` | `:2433-2449`, claim at `:2286-2291` | Guard eight's non-vacuity counts attributed lines, not distinct needles | ⚠️ Warning | The bound bites today only because the arithmetic is 3-and-3; it stops the moment `command_source` grows a fourth construction line, which the criterion-1 fix likely adds. |
-| `src/driver/mod.rs` | `:1901` | `ALL_VARIANT_NAMES` is a hand-maintained `[&str; 3]`; the anchoring to `variant_name` is one-directional | ⚠️ Warning | The column axis is structural; the row axis is a list a human must remember to extend — the shape this round removed one level down. |
-| `tests/driver_goal_seam.rs` | `:1358-1395` | The inverted pin left `src/driver/goal.rs:697` reachable but with zero coverage | ⚠️ Warning | The deviation was recorded correctly and in place; the cost was undersold. |
-| `src/ui/screens/driver.rs` | `:755` | `goal.trim().is_empty()` — a fifth blankness expression, on the surface that renders the user's own words | ℹ️ Info | A `\u{200b}` goal renders as a label with nothing after it. Folds into CR-02's one-predicate fix. |
-| `src/driver/run.rs` | `:1945` | `from_argv_goal`'s `goal.trim()` — a fourth blankness expression | ℹ️ Info | Defence in depth, harmless today. Folds into the same fix. |
+| `src/registry.rs` | `:14-20`, `:65-71` | A fourth production spelling of blankness (`is_empty()` + `is_whitespace`) on the `add` argv path | 🛑 Blocker | Falsifies 21-15 truth 4. A `U+200B` alias registers; `list` renders a blank ALIAS column. Reproduced. |
+| `src/journal/mod.rs` | `:268-294` | The shared predicate has no clause for *embedded* invisibles, so a value that renders identically to another is a different identity | 🛑 Blocker | Falsifies 21-15 truth 5 verbatim; leaves T-21-15-02 (high/mitigate) half mitigated across seven call sites. Reproduced to two envelope roots and two run directories. |
+| `src/driver/mod.rs` | `:2078-2084`, doc `:2067-2072` | `one_of_each` claims two compile errors and produces none | 🛑 Blocker (to 21-16 t4) | Pass-5 warning 4 recurring inside the test written to close it. Reproduced with `rustc`. |
+| `tests/spawn_seam_guard.rs` | `:2743`, `:2749`, `:2790-2804`, `:2918-2924`, limits `:2694-2712` | Guard nine blind to `pub(`, `Box<str>`, `Cow<str>`, `&'static str`, `OsString` and a trailing `//`; its stated floor does not bind | 🛑 Blocker (to 21-16 t1) | `pub(` is the exact spelling the sibling guard in the same file was widened for four commits later. Four spellings unnamed in the limits block. Reproduced. |
+| `.planning/…/21-16-SUMMARY.md` | `:253`, `:264` | Prohibition audit certifies PASS while citing a bound measured not to bind | ⚠️ Warning | A self-audit that certifies an unmeasured bound. The register 21-15-SUMMARY residual 1 used — disclose and ask — is the right one. |
+| `src/driver/run.rs` | `:3788-3797` | The CR-01 tracer asserts only `.planning/meta-manager`; the envelope half of the property is outside the project root by construction | ⚠️ Warning | Moving the source resolution back below `:2493` — the exact regression the fix prevents — leaves this test green while every `cargo test --lib` writes into the developer's real data directory. 21-15-SUMMARY residual 4 saw the interaction and did not turn it into an assertion. |
+| `tests/spawn_seam_guard.rs` | `:3067-3097` | Prohibition-2 guard scans `src/` while its message claims tree-wide uniqueness; three different hand-picked subsets live in `tests/` | ⚠️ Warning | Coverage, not a hole — `test_support` is `#[cfg(test)]`, the residual was disclosed in place first, and the exhaustive sweep is in-crate. The overclaiming *message* is the defect. |
+| `src/driver/mod.rs` | `:2563-2566` | The acceptance matrix hand-exempts `--alias` and `--run-id` on a rationale about a function `from_argv` never calls | ⚠️ Warning | Structurally the cycle-3 defect recurring. I measured the rationale false. Costs two of seven columns; cannot hide a refusal failure. |
+| `src/driver/mod.rs` | `:426-432` + `src/error.rs:328` | A refusal that borrows `UnknownAlias` states a falsehood about the registry when the alias *is* registered | ⚠️ Warning | Round-attributable to D-15-4. A refusal that misdescribes durable state is this phase's own subject. |
+| `tests/spawn_seam_guard.rs` | `:2380-2423` | Guard eight's limits block numbered 1, 6, 2, 3, 4, 5 | ℹ️ Info | Cosmetic, but this block is the artifact prohibition 1 asks a reader to audit. |
+| `tests/driver_goal_seam.rs`, `tests/spawn_seam_guard.rs` | `:1514`+, `:2132`, `:2136` | Assertion messages lost `\` continuations and embed 8–10 space runs | ℹ️ Info | Confirmed by reading (e.g. `"must be REFUSED.          Truncated instead…"`). These are the messages a future reviewer reads when a guard fires. |
 
-No unreferenced `TBD`/`FIXME`/`XXX` debt markers were introduced in this round's
-diff (`6eb1d49..c7bcafb`, `src/` and `tests/`, 1659 lines) — confirmed with a
-positive control needle (`NonBlank`, 26 hits) so the negative result is not
-vacuous.
+**No unreferenced debt markers were introduced.** `git diff 199d334..HEAD -- src/ tests/`
+adds zero `TBD`/`FIXME`/`XXX` and zero `TODO`/`HACK`/`PLACEHOLDER`; the control
+needle `NonBlank` returns 101 hits, so neither zero is vacuous.
 
 ### Human Verification Required
 
-None. Every finding in this report is a code-level fact, independently
-reproduced against the built library at HEAD or read directly from the source —
-not a judgment call and not taken from any SUMMARY or from `21-REVIEW.md`.
+None. Every finding above is a code-level fact — reproduced against the built
+library at HEAD, measured with a standalone `rustc` program, or read directly
+from the source. Nothing is taken from a SUMMARY or from `21-REVIEW.md`.
+
+### On the process note the reviewer escalated
+
+**I agree that no assertion was lost, and I checked rather than accepted it.** I
+read the `ITEM_OPENERS` header and comment (`:1986-2053`) against the property it
+is supposed to state: it still names both remaining silent gaps with their
+failure directions, still records that gap 2 was live at column zero with 51
+instances, and still points at the control that bounds it. Only the literal
+sentence the acceptance criterion grepped for is paraphrased. Same for the
+`scanned_files >= 10` floor, which I confirmed survives the extraction with the
+control asserting `== 1`.
+
+**And I agree the criterion shape should not recur, for a reason worth naming
+beyond the one the reviewer gives.** `grep -c "<sentence of prose>" == 0` makes
+source *text* the artifact under test. The executor's only compliant move is to
+edit prose — and this round the executor did that honestly and disclosed it. But
+the failure mode is not that an assertion gets lost; it is that a criterion of
+that shape *passes* while the underlying property is false. Guard nine is the
+proof: its three literal-grep criteria all read the specified numbers, its limits
+block was rewritten, the SUMMARY's audit table quoted it — and the guard is blind
+to five spellings and its stated floor does not bind. **Every prose-level
+acceptance criterion in round 5 passed; both structural claims they were meant to
+certify are false.** Future plans should assert behaviour with a control that
+plants the defect, which is precisely what the `ITEM_OPENERS` half of this round
+did correctly and the guard-nine half did not.
 
 ### Gaps Summary
 
-**What genuinely closed this cycle** — all seven pass-4 gaps, reconfirmed by
-direct reading and a self-run suite rather than by trusting `21-13-SUMMARY.md`
-or `21-14-SUMMARY.md`: the `Routed` arm (closed structurally, not by a fourth
-trim), the matrix's `--target-phase` exemption, the missing test pin, the
-`trim` tautology (at the array level), guard six's fourth limit (closed *and*
-converted into a build-failing self-check with the live offender relocated),
-guard eight's absent limits block, and `.planning/REQUIREMENTS.md`'s premature
-marking. The `enum CommandSource` collision named as debt in round 3 is also
-retired. **That is the largest genuine closure in this phase's history, and
-none of it regressed.**
+**What genuinely closed** — verified by direct reading and my own runs, not by
+trusting either SUMMARY: all three pass-5 Criticals (CR-01 structurally, IN-01 by
+type, CR-02's wholly-invisible half), four of five pass-5 warnings, the
+`DriveArgs` domain with a real no-`..` parse boundary, the `NonBlank` privacy
+anchor re-attacked and unbroken, both `String::new()` arms deleted as
+unrepresentable, the multi-flag matrix row, the restored length-bound fixture,
+and REQUIREMENTS.md left alone for the third round running. **Criterion 1 passes
+for the first time in six passes.** That is the largest genuine closure this
+phase has had.
 
-**Criterion 1 fails a fourth time — and the failure has moved.** The first
-three cycles each failed inside `command_source`: `Goal`, then `Command`, then
-`Routed`. Round 4 attacked the class rather than the arm and **it worked**. I
-tried to construct a blank `CommandSource` and could not; the matrix covers
-18/18 cells with no exemption; the column axis is enforced by the compiler.
-Nothing this pass found is inside that domain.
+**Two gaps remain, and neither is criterion 1's class.**
 
-What this pass found is that **`NonBlank`'s domain is `CommandSource`, and the
-class is `DriveArgs`**. Six argv-derived strings; three converted; three not.
-The three unconverted ones are where all three reproduced Criticals live:
+**Gap 1 — the naming property.** Two halves that the round conflated and that
+need different fixes. `registry::add_project` is a genuinely new surface: a
+fourth predicate on the `add` subcommand, which nobody had named in five rounds.
+But the look-alike half is *not* new — pass 5 wrote the sentence, 21-15 truth 5
+claimed to close it, and the fix could not, because `carries_visible_content` asks
+"is anything visible?" and `demo\u{200b}` has plenty. I measured two envelope
+roots, two registry keys and two run directories for values that render as one.
+**The fix chose exactly the shapes pass 5 had reproduced and skipped the shape
+pass 5 had only named** — one shape short of the class, for the fifth time, in a
+matrix whose six payloads are structurally incapable of expressing the miss.
 
-1. `--run-id '\u{200b}'` drives a **complete, successful, persisted run** whose
-   directory name and `run_id` are one invisible character, because the seam
-   that governs it defines "blank" as `trim` while the seam next door defines it
-   as visibility. Two definitions, one commit, 7 call sites.
-2. `--goal '   '` supplied beside `--command` is written verbatim into
-   `run.json` **after** the lock, the run directory and the journal exist —
-   falsifying 21-13's own first `must_haves` truth, which names `--goal`
-   explicitly and says "before any file, lock, journal, or run directory is
-   created".
-3. `execute_run`'s two surviving `String::new()` arms put the D-30 field-absent
-   sentinel into a committed `run.json`'s `gsd_command`, with the typed refusal
-   21-14 added firing 129 lines too late — violating 21-14's own prohibition in
-   the commit that declared it.
-
-Each is the phase's signature defect: a no-visible-instruction value reaching a
-persisted record that is supposed to be evidence. And in two of the three cases
-the defect is a **hand-narrowed enumeration** — `["   ", "\t", "\n  \n"]` where
-`DEGENERATE` has six; three fields converted where `DriveArgs` has six — which
-is the precise thing both plans wrote prohibitions against.
-
-Four Warning-level findings land in the round's own guard machinery. The one
-that matters is `ITEM_OPENERS`: a guard header claiming a region is "provably
-empty" while its token list is blind to the tree's dominant visibility spelling
-(51 items), and bounding its own gap with an argument ("items are at column
-zero") that is exactly backwards. **That is a guard overclaiming its reach for
-the third consecutive round**, in the round commissioned to stop guards
-overclaiming their reach.
+**Gap 2 — the anti-recurrence machinery.** Both mechanisms built this round to
+end the cycle are weaker than their own docs, their plan truths and their
+SUMMARY's audit table say. `one_of_each` produces no compile error at all;
+guard nine is silent on five spellings including one `DriveArgs` already carries
+and one the sibling guard in the same file was widened for four commits later,
+and its stated non-vacuity floor provably does not bind. **This is the fourth
+consecutive round with an overclaiming guard header and the second consecutive
+round in which a plan shipped a violation of a prohibition it wrote itself.** It
+matters more than gap 1, because these are the artifacts round 6 will trust
+instead of re-deriving — and the compile-side half of the `DriveArgs` bound
+(`from_argv`'s destructure) is real, so a reader who conflates the two will
+believe a seventh field is type-protected when only its *classification* is
+forced.
 
 ### Recommendation
 
-**Do not scope round 5 to CR-01 and CR-02.** A plan scoped to the two newest
-defects would be the fifth instance of a bet that has now lost four times, and
-the reason it keeps losing is visible in the data: **every cycle has enumerated
-by hand which values to protect, and every hand-enumeration has been exactly one
-item short.** The values were arms (three times), and now they are fields. The
-next hand-enumeration will be short too.
+**Round 6 should do two things, and they are different in kind. Do both.**
 
-The good news is that this round proved the *mechanism* is right — the type-level
-fix held under attack, which is the first non-regression in four cycles. The
-remaining work is a **bounded, enumerable sweep**, and it is bounded by the
-compiler rather than by a human:
+**1. Extend the mechanism — the domain is `Commands`, and it is eight rows.**
+`src/cli.rs` declares eight argv-derived alias fields; exactly one routes through
+`DriveArgs::from_argv`. This is not open-ended hardening; it is the same move
+21-15 already proved works, applied to an enum the compiler enumerates. A parse
+boundary over the raw clap enum with an exhaustive per-variant destructure and no
+`..`, yielding a validated alias newtype that `add_project`, `remove_project`,
+`envelope_dir_in`, `askpass_with_config` and the four hook re-entry points take
+instead of `&str`. Then a ninth subcommand cannot be added unclassified.
 
-1. **Make `DriveArgs` the domain.** It is a single struct with a finite,
-   compiler-visible field list: six argv-derived strings, three already
-   converted. Validate at the parse boundary so `DriveArgs` cannot *hold* a
-   blank. This is what makes the sweep provably complete: `execute_run` then has
-   nothing blank to re-derive (both `String::new()` arms become unrepresentable
-   rather than patched or reordered), `--run-id` and `--goal` are covered by
-   construction, and `alias`/`approved_plan` stop resting on the incidental
-   behaviour of a registry lookup and a token parser.
-2. **Prove the sweep complete with a guard that reads the type, not a list.**
-   Assert `DriveArgs` declares no bare `String`/`Option<String>` argv field. A
-   seventh field then cannot be added without a deliberate decision, the same
-   way `PositionBuilder`'s 3-tuple already makes a fourth argv parameter a
-   compile error. This is the structural replacement for the hand-list, and it
-   is the one thing four cycles have never had.
-3. **One blankness predicate.** A shared `carries_no_visible_content` called by
-   `NonBlank::new`, `is_plain_path_component`, `from_argv_goal`, `goal_lines`
-   and `goal_or_none`. Five sites, all identified above; keep
-   `visibly_empty_numbered_entry` deliberately separate — that one is the oracle
-   and must be able to disagree.
-4. **Lift `DEGENERATE` to a shared test const** every seam's pin consumes, so a
-   seventh blank shape lands everywhere at once and `["   ", "\t", "\n  \n"]`
-   cannot happen again.
-5. **Give the matrix a multi-flag row**, since the cell that broke this round is
-   currently unexpressible in its shape.
+**2. Close the predicate-content gap — one clause and one missing fixture shape.**
+`text::carries_invisible_formatting` beside `carries_visible_content`, consumed by
+`is_plain_path_component` (after its `is_control()` refusal) and by both registry
+entry points. And add the fixture shape the tree has never had:
+`LOOK_ALIKE_PAIRS: [(&str, &str); N]` beside `DEGENERATE` — `("demo", "demo\u{200b}")`,
+`("abc", "a\u{200b}bc")`, `("x", "x\u{feff}")` — asserted at every seam that turns a
+value into an identity. `DEGENERATE` enumerates "carries nothing"; nothing in the
+tree enumerates "carries something different from what it renders," which is why
+a 42-cell matrix went green over the harm.
 
-The five guard-accuracy Warnings are cheap, sit in files the plan will already
-have open, and bear directly on why this recurs — they should ride the same
-plan rather than be deferred a third time. In particular, add `"pub("` to
-`ITEM_OPENERS` and fix limit 4's bound sentence: a guard that overclaims is how
-a verifier gets told a region is clean when it is merely unchecked, and this
-phase cannot afford a fourth instance of that.
+**3. Fix the machinery in the same commits, not in a follow-up.** Delete
+`one_of_each`'s false compile-error claim (or make the pairing exhaustive by
+destructuring and say honestly what that does and does not force). Add `"pub("`
+to guard nine's opener test in both places, widen `names_bare_string` to
+`String`/`str` with `OsStr` handled by field name, strip a trailing `//` before
+the comma test and flush `pending` at the body's end — each with a control arm
+beside the existing planted-field control. Rewrite guard nine's limits block to
+name the four silent type spellings and to say what the floor actually bounds.
+These sit in files round 6 will already have open, and they bear directly on why
+this recurs.
 
-**One process note.** Round 4 is the first cycle whose plans wrote explicit
-`prohibitions` against the exact mistakes that then shipped inside them — hand-picked
-enumerations (21-13) and manufactured blanks in unreachable arms (21-14). The
-prohibitions were correctly written and correctly aimed; nothing in the pipeline
-*checked* them against the diff before completion. Both are mechanically
-checkable (`grep` for `String::new()` as a match-arm value in the record
-builders; assert every blank-shape pin consumes the shared const). Round 5
-should turn those two prohibitions into assertions in the same commit that
-closes them, so the next round's declared prohibitions are enforced rather than
-merely declared.
+**4. Change the shape of the acceptance criteria.** Every prose-grep criterion
+this round passed; both structural claims they were meant to certify are false.
+Assert behaviour with a control that plants the defect — the `ITEM_OPENERS` half
+of this round is the model, and the guard-nine half is the counter-example, in
+the same file, from the same plan.
+
+**One thing to carry forward without re-litigating.** The `NonBlank` type-level
+mechanism has now survived two consecutive rounds of direct attack, and
+`from_argv`'s no-`..` destructure is a genuine compile-time bound. The design is
+right. What has failed five times is never the mechanism — it is that the *set*
+the mechanism is pointed at, and now the *content of the predicate* it enforces,
+keep being chosen from the instances the last reviewer happened to reproduce. The
+two recommendations above are the two remaining places that choice is still being
+made by hand, and both are enumerable by the compiler.
 
 ---
 
-_Verified: 2026-08-22T01:40:00Z_
-_Verifier: Claude (gsd-verifier)_
+_Verified: 2026-08-22T18:21:16Z_
+_Verifier: Claude (gsd-verifier), adversarial stance_
+_HEAD `5b24022` · sixth verification pass · pass 5 preserved at `7c72339`_
