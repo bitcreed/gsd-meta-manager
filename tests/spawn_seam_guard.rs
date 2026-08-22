@@ -1990,6 +1990,12 @@ fn every_terminal_write_in_the_driver_run_goes_through_the_stamped_helper() {
 /// zero introduces the item on the following line.
 const ITEM_OPENERS: &[&str] = &[
     "pub ",
+    // `line.starts_with("pub ")` cannot match `pub(crate) fn` or `pub(super) fn`
+    // — the tree's DOMINANT restricted-visibility spelling, with 51 such items at
+    // column zero. The old header claimed they were covered by a bound about
+    // where the tree declares its items, which was backwards: all 51 sit at
+    // column zero already and the scan simply could not see them (pass-5 WR-01).
+    "pub(",
     "fn ",
     "async ",
     "const ",
@@ -2027,19 +2033,46 @@ const ITEM_OPENERS: &[&str] = &[
 /// means deleting this assertion **consciously**, in a commit that says why,
 /// rather than discovering years later that a guard had a blind spot.
 ///
-/// What it does NOT see, in the register this file uses: an item that is not
-/// introduced at column zero (indented inside a post-marker `mod`), and an item
-/// whose first token is outside [`ITEM_OPENERS`]. Both are under-detection and
-/// silent; both are bounded by the fact that the tree's production style puts
-/// items at column zero, and by the non-vacuity control below.
-#[test]
-fn no_production_item_follows_a_test_module_marker() {
-    let files = source_files();
-
+/// **What it does NOT see, in the register this file uses.** Two shapes, both
+/// under-detection and both silent:
+///
+/// 1. An item that is INDENTED — nested inside a post-marker `mod`, say — rather
+///    than introduced at column zero.
+/// 2. An item whose first token is outside [`ITEM_OPENERS`].
+///
+/// The previous version of this paragraph bounded both by asserting where the
+/// tree declares its items, which is not a bound on either: gap 2 was live and at
+/// column zero when that sentence was written — 51 `pub(crate) ` and `pub(super) `
+/// items that `starts_with("pub ")` could not match — while the header called the
+/// skipped region "provably empty" (pass-5 WR-01, the third consecutive round to
+/// ship an overclaiming header). What bounds the two remaining gaps is the
+/// scanned-files non-vacuity floor below plus the
+/// synthetic control beside this test, which plants a `pub(crate) fn` and a
+/// `pub(super) const` after a marker and demands that **the same collection
+/// function this assertion calls** reports them. A sentence is not a bound; a
+/// control that plants an offender and fails when it is missed is.
+/// Every column-zero item declaration that follows a file's `mod tests {`
+/// marker, **and the number of files the scan actually looked at**.
+///
+/// **One function, two consumers, and the pairing in the return type is
+/// load-bearing.** The live assertion below and the planted-offender control
+/// beside it both call this, so the control is a witness for the scan that runs
+/// rather than for a re-implementation that could only ever agree with itself —
+/// which is the "green about a region it never read" shape this whole test
+/// exists to close.
+///
+/// `scanned_files` is returned alongside the offenders because it is the live
+/// assertion's ONLY non-vacuity floor: if [`TEST_REGION_MARKER`] were ever
+/// re-spelled, every file would fall out of the scan, the offender list would be
+/// empty forever, and the emptiness claim would hold for exactly the wrong
+/// reason. An extraction that returned only the offenders would delete that
+/// protection while leaving the live assertion passing — it would pass
+/// *precisely when* the floor was gone.
+fn post_marker_offenders(files: &[SourceFile]) -> (Vec<(String, usize, String)>, usize) {
     let mut offenders: Vec<(String, usize, String)> = Vec::new();
     let mut scanned_files = 0usize;
 
-    for file in &files {
+    for file in files {
         let Some(marker) = test_region_start(file) else {
             continue;
         };
@@ -2059,6 +2092,57 @@ fn no_production_item_follows_a_test_module_marker() {
         }
     }
 
+    (offenders, scanned_files)
+}
+
+/// **The control arm: a planted post-marker item must be REPORTED.**
+///
+/// It calls [`post_marker_offenders`] — the same function
+/// [`no_production_item_follows_a_test_module_marker`] consumes — so what it
+/// witnesses is the live scan. Both planted shapes are the ones the scan was
+/// blind to before the restricted-visibility opener joined [`ITEM_OPENERS`]:
+/// `pub(crate)` and `pub(super)`, the tree's dominant spellings, 51 of them
+/// at column zero while the header called the skipped region provably empty.
+#[test]
+fn the_boundary_self_check_sees_restricted_visibility_items() {
+    let planted = synthetic_file(
+        "src/planted.rs",
+        &[
+            "pub fn above_the_marker() {}",
+            "mod tests {",
+            "    fn a_test() {}",
+            "}",
+            "pub(crate) fn smuggled() {}",
+            "pub(super) const X: u8 = 0;",
+            "    pub(crate) fn indented_and_therefore_invisible() {}",
+        ],
+    );
+
+    let (offenders, scanned_files) = post_marker_offenders(&[planted]);
+    let reported: Vec<(usize, String)> = offenders
+        .iter()
+        .map(|(_, number, line)| (*number, line.clone()))
+        .collect();
+    assert_eq!(
+        reported,
+        vec![
+            (5, "pub(crate) fn smuggled() {}".to_string()),
+            (6, "pub(super) const X: u8 = 0;".to_string()),
+        ],
+        "the scan must report BOTH restricted-visibility items planted after the          marker. `pub fn above_the_marker` is before it and is not an offender;          the INDENTED item on the last line is limit 1 — silent under-detection,          named in the header rather than fixed, and asserted here so the limit is          a measured fact rather than a guess. Got: {offenders:?}"
+    );
+    assert_eq!(
+        scanned_files, 1,
+        "the planted file declares a marker, so the scan must count it — the          count is the live assertion's only non-vacuity floor and this proves it          is computed rather than defaulted"
+    );
+}
+
+#[test]
+fn no_production_item_follows_a_test_module_marker() {
+    let files = source_files();
+
+    let (offenders, scanned_files) = post_marker_offenders(&files);
+
     assert!(
         offenders.is_empty(),
         "a column-zero item declaration follows a file's `mod tests {{` marker. \
@@ -2075,7 +2159,10 @@ fn no_production_item_follows_a_test_module_marker() {
     // Non-vacuity: an assertion over an empty set of files is satisfied by
     // finding nothing, which is exactly the failure mode this whole test exists
     // to close. If `TEST_REGION_MARKER` were ever re-spelled, every file would
-    // fall out of the scan and the emptiness above would hold forever.
+    // fall out of the scan and the emptiness above would hold forever. The count
+    // is carried OUT of `post_marker_offenders` rather than recomputed here, so
+    // the extraction that gave the control arm a shared code path could not
+    // quietly drop this floor along the way.
     assert!(
         scanned_files >= 10,
         "this tree has many files with in-module tests; only {scanned_files} \
