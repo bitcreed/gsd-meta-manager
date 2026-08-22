@@ -2772,6 +2772,84 @@ mod tests {
         }
     }
 
+    /// Two identities that render identically must not both resolve.
+    ///
+    /// **The tracer for pass-6 gap 1.** Pass 5 wrote the sentence "two visually
+    /// identical aliases resolve to two different envelope and credential
+    /// paths", 21-15 truth 5 claimed to close it, and the fix structurally could
+    /// not: [`crate::text::carries_visible_content`] asks "is anything visible?",
+    /// which refuses `"\u{200b}"` and accepts `"demo\u{200b}"`. Every payload in
+    /// `DEGENERATE` is wholly invisible, so no fixture in the tree could express
+    /// the harm — hence [`crate::test_support::LOOK_ALIKE_PAIRS`], consumed here
+    /// rather than hand-spelled.
+    ///
+    /// The four seams asserted are the four a look-alike reached at pass 6: the
+    /// predicate itself, the run directory, the envelope root, and (through the
+    /// envelope root) the credential scope.
+    ///
+    /// **Red arm, observed verbatim against the unfixed tree** (this commit;
+    /// the `#[ignore]` comes off in the fix commit, so the committed tree stays
+    /// green while the red evidence is in history):
+    ///
+    /// ```text
+    /// running 1 test
+    /// test journal::tests::a_look_alike_identity_never_resolves_beside_its_visible_twin ... FAILED
+    ///
+    /// ---- journal::tests::a_look_alike_identity_never_resolves_beside_its_visible_twin stdout ----
+    ///
+    /// thread 'journal::tests::a_look_alike_identity_never_resolves_beside_its_visible_twin' (123442) panicked at src/journal/mod.rs:2801:13:
+    /// "demo\u{200b}" renders exactly as "demo" and carries different bytes; accepting both is how two identities that no reader can distinguish both resolve
+    ///
+    /// test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1031 filtered out; finished in 0.00s
+    /// ```
+    #[test]
+    #[ignore = "red: closes pass-6 gap 1; un-ignored in the fix commit"]
+    fn a_look_alike_identity_never_resolves_beside_its_visible_twin() {
+        let planning = Path::new("/p/.planning");
+        let envelope_root = Path::new("/data/envelope");
+
+        for (visible, look_alike) in crate::test_support::LOOK_ALIKE_PAIRS {
+            assert!(
+                is_plain_path_component(visible),
+                "{visible:?} is the visible member of a look-alike pair and must \
+                 keep being accepted — a refusal that swallowed both members \
+                 would close the harm by making the tool unusable"
+            );
+            assert!(
+                !is_plain_path_component(look_alike),
+                "{look_alike:?} renders exactly as {visible:?} and carries \
+                 different bytes; accepting both is how two identities that no \
+                 reader can distinguish both resolve"
+            );
+            assert!(
+                crate::envelope::envelope_dir_in(envelope_root, look_alike).is_none(),
+                "{look_alike:?} must not name an envelope root beside \
+                 {visible:?}'s — pass 6 reproduced exactly two roots rendering \
+                 as one"
+            );
+            assert!(
+                crate::envelope::envelope_dir_in(envelope_root, visible).is_some(),
+                "{visible:?} must still name its envelope root"
+            );
+        }
+
+        // The run-id half needs a run-id-SHAPED composite, because a run id is
+        // never a bare alias: this is the pinned legitimate shape with one
+        // invisible character appended.
+        let visible_run_id = "2026-08-19T12-00-00Z-aaaa";
+        let look_alike_run_id = "2026-08-19T12-00-00Z-aaaa\u{200b}";
+        assert!(
+            run_paths(planning, visible_run_id).is_some(),
+            "the pinned legitimate run id must keep resolving"
+        );
+        assert!(
+            run_paths(planning, look_alike_run_id).is_none(),
+            "a run id that renders identically to {visible_run_id:?} must yield \
+             no paths at all — pass 6 reproduced two run directories, one \
+             rendering, a record no human can tell from its sibling"
+        );
+    }
+
     // ---- The run lifecycle and the executor mapping (plan 16-06, Task 1) ----
 
     const RUN_ID: &str = "2026-07-28T14-03-11Z-a3f9";
