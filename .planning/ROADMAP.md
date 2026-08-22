@@ -459,7 +459,7 @@ Plans:
   - **The vacuity hazard is the phase's sharpest risk (C-3):** the officially-recommended untrusted-content channel is accepted by this transport with exit 0 and never reaches the model, so an injection-corpus test built on it passes *vacuously*, forever. Every corpus assertion must prove arrival before it proves the property
 
 **Research**: done — `21-RESEARCH.md` (five live spikes; four CONTEXT.md decisions contradicted and corrected in `21-CONTEXT.md` § "Research Corrections")
-**Plans**: 14/14 plans executed — 10/10 executed (6/6 in 6 waves, then 4 gap-closure plans in 3 further waves); the re-verification scored 4/5 must-have truths (criterion 1 ✗ FAILED again, on two NEW Criticals introduced by the gap-closure diff itself), so 2 further gap-closure plans were added in 2 more waves
+**Plans**: 16/16 plans executed — 10/10 executed (6/6 in 6 waves, then 4 gap-closure plans in 3 further waves); the re-verification scored 4/5 must-have truths (criterion 1 ✗ FAILED again, on two NEW Criticals introduced by the gap-closure diff itself), so 2 further gap-closure plans were added in 2 more waves
 
 Plans:
 **Wave 1**
@@ -517,11 +517,11 @@ Gap closure, round 5 (round 4's `NonBlank` mechanism survived direct attack and 
 
 **Wave 1**
 
-- [ ] 21-15-PLAN.md — Tracer: `DriveArgs` itself becomes the domain — all six argv string fields typed `payload::NonBlank` behind one parse boundary whose exhaustive destructure with no `..` makes a seventh field a compile error until classified; both `(None,None) => String::new()` arms in `run.rs` become unrepresentable and the source resolves above every disk write (CR-01); one production predicate `text::carries_visible_content` replaces the two disagreeing definitions of blank, composed with — not replacing — the traversal and control-char checks (CR-02); `RunRecord.goal` written from `Option<NonBlank>` so `""` provably means absent (IN-01) (DRIVE-01, DRIVE-03)
+- [x] 21-15-PLAN.md — Tracer: `DriveArgs` itself becomes the domain — all six argv string fields typed `payload::NonBlank` behind one parse boundary whose exhaustive destructure with no `..` makes a seventh field a compile error until classified; both `(None,None) => String::new()` arms in `run.rs` become unrepresentable and the source resolves above every disk write (CR-01); one production predicate `text::carries_visible_content` replaces the two disagreeing definitions of blank, composed with — not replacing — the traversal and control-char checks (CR-02); `RunRecord.goal` written from `Option<NonBlank>` so `""` provably means absent (IN-01) (DRIVE-01, DRIVE-03)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 21-16-PLAN.md — The type-reading guard four cycles never had: guard nine asserts `DriveArgs` declares no bare `String` argv field, self-tested by a planted synthetic defect; `ITEM_OPENERS` gains `"pub("` with the backwards header bound deleted and planted-offender controls, the boundary scan extracted as a shared fn both the live assertion and its control call while keeping the `scanned_files >= 10` non-vacuity floor; and round-4's two violated prohibitions become standing assertions, with both plans required to audit their own prohibitions against their own diff (DRIVE-04, SAFE-07, SAFE-08)
+- [x] 21-16-PLAN.md — The type-reading guard four cycles never had: guard nine asserts `DriveArgs` declares no bare `String` argv field, self-tested by a planted synthetic defect; `ITEM_OPENERS` gains `"pub("` with the backwards header bound deleted and planted-offender controls, the boundary scan extracted as a shared fn both the live assertion and its control call while keeping the `scanned_files >= 10` non-vacuity floor; and round-4's two violated prohibitions become standing assertions, with both plans required to audit their own prohibitions against their own diff (DRIVE-04, SAFE-07, SAFE-08)
 
 ### Phase 22: Container Execution Target
 
@@ -581,7 +581,7 @@ Gap closure, round 5 (round 4's `NonBlank` mechanism survived direct attack and 
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 8/8 | In Progress|  |
 | 20. Deterministic Decision Router & Run Bounds | 5/5 | In Progress|  |
-| 21. LLM Goal Layer & Prompt-Injection Hardening | 14/14 | In Progress|  |
+| 21. LLM Goal Layer & Prompt-Injection Hardening | 16/16 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
 
