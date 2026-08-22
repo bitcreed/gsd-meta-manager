@@ -2740,7 +2740,7 @@ fn raw_string_argv_fields(lines: &[(usize, String)]) -> Vec<(usize, String)> {
         let (start, mut joined) = match pending.take() {
             Some((start, acc)) => (start, format!("{acc} {trimmed}")),
             None => {
-                if !trimmed.starts_with("pub ") || !trimmed.contains(':') {
+                if !is_field_opener(trimmed) || !trimmed.contains(':') {
                     continue;
                 }
                 (number, trimmed.to_string())
@@ -2805,6 +2805,17 @@ fn names_bare_string(text: &str) -> bool {
 
 fn is_ident_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// Whether `trimmed` opens a field declaration.
+///
+/// **Extracted so the offender scan and the non-vacuity floor cannot disagree
+/// about what a field declaration is.** Pass 6 measured them disagreeing: the
+/// floor counted twelve while the scan reported nothing, with a planted
+/// `pub(crate)` offender in the body — two filters, one property, and the gap
+/// between them was the whole of WR-02's floor half.
+fn is_field_opener(trimmed: &str) -> bool {
+    trimmed.starts_with("pub ")
 }
 
 /// **The control arm, and it runs FIRST in this file's reading order for a
@@ -2891,6 +2902,209 @@ fn the_raw_argv_field_scanner_reports_a_planted_string_field() {
     );
 }
 
+/// Every spelling pass 6 measured guard nine silent (or wrong) on, planted and
+/// asserted through the SAME extracted fns the live assertion consumes.
+///
+/// **The WR-02 reproduction, brought in-tree.** Pass 6 fed ten declarations to
+/// this scanner: six were reported by nothing, one was reported with the
+/// FOLLOWING line swallowed into its text (so the next field was never judged at
+/// all), and the stated `>=10 field / >=6 NonBlank` floor was measured
+/// non-binding — `field_lines=12 protected=6` PASSES with a planted `pub(crate)`
+/// offender sitting right there. `pub(crate)` and `pub(super)` are the sharp
+/// end: `ITEM_OPENERS`, four commits later in this very file, was widened for
+/// exactly that spelling.
+///
+/// **Red arm, observed verbatim against the unfixed scanner** (this commit; the
+/// `#[ignore]` comes off in the fix commit, so the committed tree stays green
+/// while the red evidence is in history). Every plant fed to
+/// `raw_string_argv_fields` as it stands:
+///
+/// ```text
+/// === WR-02 reproduction against the UNFIXED scanner ===
+///   pub(crate) opener                  -> reported=0 []
+///   pub(super) opener                  -> reported=0 []
+///   Option<Box<str>>                   -> reported=0 []
+///   Option<Cow<'static, str>>          -> reported=0 []
+///   Option<&'static str>               -> reported=0 []
+///   Option<OsString>                   -> reported=0 []
+///   trailing // last field             -> reported=0 []
+///   trailing // mid-struct             -> reported=1 ["pub goal_file: Option<String>, // seventh pub dry_run: bool,"]
+///   Vec<OsString> (must NOT report)    -> reported=0 []
+///   Option<PathBuf> (must NOT report)  -> reported=0 []
+///   FLOOR PROBE: field_lines=12 protected=6 offenders=[]
+/// ```
+///
+/// Seven silent, one MISATTRIBUTED with the following declaration swallowed
+/// into its text, and the floor reading exactly the `field_lines=12
+/// protected=6` pass 6 recorded while the offender list was empty. The live
+/// assertion of this test fails at the first plant:
+///
+/// ```text
+/// thread 'the_raw_argv_field_scanner_sees_every_measured_silent_spelling' (274278) panicked at tests/spawn_seam_guard.rs:2931:9:
+/// assertion `left == right` failed: a `pub(crate)`-opened raw argv field must be REPORTED. It compiles, it is reachable from `from_argv`'s destructure, and it is the exact spelling `ITEM_OPENERS` in this same file was widened for. Got: []
+///   left: 0
+///  right: 1
+/// ```
+#[test]
+#[ignore = "red: pass-6 WR-02 reproduction; un-ignored in the fix commit"]
+fn the_raw_argv_field_scanner_sees_every_measured_silent_spelling() {
+    /// One planted declaration inside an otherwise clean `DriveArgs`.
+    fn planted_with(lines: &[&str]) -> Vec<(usize, String)> {
+        let mut body = vec!["pub struct DriveArgs {", "    pub alias: payload::NonBlank,"];
+        body.extend_from_slice(lines);
+        body.push("}");
+        synthetic_file("src/driver/mod.rs", &body).1
+    }
+
+    // --- Openers: the spelling ITEM_OPENERS was widened for, four commits later
+    for opener in ["pub(crate)", "pub(super)"] {
+        let declaration = format!("    {opener} goal_file: Option<String>,");
+        let planted = planted_with(&[declaration.as_str()]);
+        let found = raw_string_argv_fields(&planted);
+        assert_eq!(
+            found.len(),
+            1,
+            "a `{opener}`-opened raw argv field must be REPORTED. It compiles, it \
+             is reachable from `from_argv`'s destructure, and it is the exact \
+             spelling `ITEM_OPENERS` in this same file was widened for. Got: \
+             {found:?}"
+        );
+    }
+
+    // --- Payload type spellings: every one of these is a String wearing a coat
+    for type_text in [
+        "Option<Box<str>>",
+        "Option<Cow<'static, str>>",
+        "Option<&'static str>",
+        "&'static str",
+        "Box<str>",
+    ] {
+        let declaration = format!("    pub goal_file: {type_text},");
+        let planted = planted_with(&[declaration.as_str()]);
+        let found = raw_string_argv_fields(&planted);
+        assert_eq!(
+            found.len(),
+            1,
+            "`{type_text}` is a string payload spelled around the `String` token. \
+             A seventh argv field wearing it carries the identical defect, so it \
+             must be reported. Got: {found:?}"
+        );
+    }
+
+    // --- OsString, DENY-BY-DEFAULT (D-18-2). `goal_file` is on no allowlist,
+    //     which is the point: it stands in for the seventh field's NEW name.
+    let planted = planted_with(&["    pub goal_file: Option<OsString>,"]);
+    let found = raw_string_argv_fields(&planted);
+    assert_eq!(
+        found.len(),
+        1,
+        "`OsString` is the type argv actually arrives in, so a payload field \
+         respelled `OsString` is the same defect wearing the platform type. It is \
+         reported unless its NAME is on the two-entry suppress-allowlist — a \
+         by-name PROTECTION rule would cover no case the threat model names, \
+         because a seventh field carries a new name by definition. Got: {found:?}"
+    );
+
+    // --- The false-positive direction, with its own control: the two
+    //     legitimate OsString/PathBuf carriers must NOT be reported.
+    let legitimate = planted_with(&[
+        "    pub claude_args: Vec<OsString>,",
+        "    pub claude_program: Option<PathBuf>,",
+    ]);
+    assert!(
+        raw_string_argv_fields(&legitimate).is_empty(),
+        "`claude_args: Vec<OsString>` and `claude_program: Option<PathBuf>` are \
+         the allowlisted legitimate carriers; reporting them would make the \
+         property unsatisfiable. Got: {:?}",
+        raw_string_argv_fields(&legitimate)
+    );
+
+    // --- Trailing `//` comment, LAST field: the declaration never terminates in
+    //     `,` as far as the scan is concerned, so it was dropped entirely.
+    let last_field = planted_with(&["    pub goal_file: Option<String>, // seventh"]);
+    let found = raw_string_argv_fields(&last_field);
+    assert_eq!(
+        found.len(),
+        1,
+        "a raw argv field carrying a trailing `//` comment is still a raw argv \
+         field. As the LAST declaration it also exercises the pending flush — a \
+         scan that buffers and never judges the buffer drops it silently. Got: \
+         {found:?}"
+    );
+
+    // --- Trailing `//` comment, MID-STRUCT: pass 6 measured this one
+    //     MISATTRIBUTED — the following declaration was swallowed into its text,
+    //     so `dry_run` was never judged as a declaration at all.
+    let mid_struct = planted_with(&[
+        "    pub goal_file: Option<String>, // seventh",
+        "    pub dry_run: bool,",
+    ]);
+    let found = raw_string_argv_fields(&mid_struct);
+    assert_eq!(
+        found.len(),
+        1,
+        "exactly one offender: the commented `goal_file`. Got: {found:?}"
+    );
+    assert!(
+        !found[0].1.contains("dry_run"),
+        "the FOLLOWING declaration must not be swallowed into the offender's \
+         text. Pass 6 measured exactly that: the two lines were joined, so the \
+         report named the wrong span AND the next field was never judged on its \
+         own. Got: {:?}",
+        found[0].1
+    );
+
+    // --- The floor probe. Pass 6 measured `field_lines=12 protected=6 ->
+    //     PASSES (silent)` on precisely this input: a full twelve-field body
+    //     PLUS one `pub(crate)` offender. The floor is not what catches a single
+    //     added field; the OFFENDER SCAN is.
+    let full_plus_one = synthetic_file(
+        "src/driver/mod.rs",
+        &[
+            "pub struct DriveArgs {",
+            "    pub alias: payload::NonBlank,",
+            "    pub command: Option<payload::NonBlank>,",
+            "    pub target_phase: Option<payload::NonBlank>,",
+            "    pub max_steps: Option<u32>,",
+            "    pub wall_clock_cap_secs: Option<u64>,",
+            "    pub max_escalations: Option<u32>,",
+            "    pub approved_plan: Option<payload::NonBlank>,",
+            "    pub run_id: Option<payload::NonBlank>,",
+            "    pub dry_run: bool,",
+            "    pub goal: Option<payload::NonBlank>,",
+            "    pub claude_program: Option<PathBuf>,",
+            "    pub claude_args: Vec<OsString>,",
+            "    pub(crate) goal_file: Option<String>,",
+            "}",
+        ],
+    );
+    let found = raw_string_argv_fields(&full_plus_one.1);
+    assert_eq!(
+        found.len(),
+        1,
+        "a twelve-field body plus one `pub(crate)` offender must report the \
+         offender. Pass 6 measured `offenders=[]` on exactly this input while \
+         both floors passed, which is what proved the floors bound extraction \
+         breakage and wholesale style drift — never a single added field. Got: \
+         {found:?}"
+    );
+
+    // And the floor's OWN filter must agree with the scan about what a field
+    // declaration is: a scan and a floor that disagree is how the offender went
+    // unseen while the count read twelve.
+    let floor_visible = full_plus_one
+        .1
+        .iter()
+        .filter(|(_, line)| is_field_opener(line.trim()))
+        .count();
+    assert_eq!(
+        floor_visible, 13,
+        "the floor's field filter must see the `pub(crate)` declaration too — \
+         one shared `is_field_opener` is what stops the scan and the floor from \
+         disagreeing again. Got: {floor_visible}"
+    );
+}
+
 #[test]
 fn drive_args_declares_no_raw_argv_string_field() {
     let files = source_files();
@@ -2919,7 +3133,7 @@ fn drive_args_declares_no_raw_argv_string_field() {
         .iter()
         .filter(|(_, line)| {
             let trimmed = line.trim();
-            trimmed.starts_with("pub ") && trimmed.contains(':')
+            is_field_opener(trimmed) && trimmed.contains(':')
         })
         .collect();
     assert!(
