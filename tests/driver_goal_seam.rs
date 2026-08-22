@@ -1473,6 +1473,62 @@ fn a_phase_token_carrying_a_control_character_is_refused_by_name_rather_than_sto
     }
 }
 
+/// The phase tokens that carry a character rendering as nothing.
+///
+/// **A separate const from [`HOSTILE_PHASE_TOKENS`] on purpose.** Those four are
+/// each a real terminal capability, and the test over them is named for the
+/// control-character property it pins; a look-alike token carries no control
+/// character at all — it is refused by the identity clause D-17-1 added, not by
+/// the control clause — so folding it into that array would make that test's
+/// name assert a falsehood about two of its fixtures. Same register, different
+/// harm, own name (deviation recorded in 21-17-SUMMARY).
+const LOOK_ALIKE_PHASE_TOKENS: &[(&str, &str)] = &[
+    ("interior U+200B", "2\u{200b}0"),
+    ("trailing U+FEFF", "20\u{feff}"),
+];
+
+/// A model-supplied phase token that renders like a declared phase is refused.
+///
+/// **Pass-6 coincidental-reliance item 2, at the integration seam.** What used
+/// to keep these harmless was that no roadmap declares a token containing a
+/// `U+200B` — a fact about roadmap contents, not about the value. `PHASES`
+/// declares `"20"`, so a build refusing only by membership would report
+/// `PHASE_ABSENT_FROM_ROADMAP` here and this test would fail.
+#[test]
+fn a_phase_token_that_renders_like_a_declared_phase_is_refused_by_the_predicate() {
+    assert!(
+        PHASES.contains(&"20"),
+        "the fixture roadmap must declare the visible member, or this test \
+         proves nothing about where the refusal comes from"
+    );
+
+    for (label, look_alike) in LOOK_ALIKE_PHASE_TOKENS {
+        assert!(
+            !gsd_meta_manager::journal::is_plain_path_component(look_alike),
+            "the {label} fixture must be a token `is_plain_path_component` \
+             REFUSES — if it is accepted again, two phase tokens that render \
+             identically can both name a phase: {look_alike:?}"
+        );
+
+        let refusal = goal::legality(
+            &payload(vec![step(router::COMMAND_PLAN_PHASE, look_alike)]),
+            PHASES,
+            resolved_cap(),
+        )
+        .expect_err("a phase token carrying invisible formatting is refused");
+
+        assert_eq!(
+            refusal.reason().as_str(),
+            goal::REASON_PHASE_NOT_PLAIN_COMPONENT,
+            "the {label} token must be refused by the predicate. Reading `{}` \
+             here instead would mean the refusal came from roadmap membership — \
+             a coincidence of today's roadmap contents rather than a property \
+             of the value",
+            goal::REASON_PHASE_ABSENT_FROM_ROADMAP
+        );
+    }
+}
+
 /// **The layer that had no coverage at all, and why that mattered** (pass-5
 /// adjudication note).
 ///

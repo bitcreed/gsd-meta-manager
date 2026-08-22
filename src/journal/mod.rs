@@ -261,10 +261,28 @@ pub fn runs_root(planning_dir: &Path) -> PathBuf {
 ///   [`crate::text::carries_visible_content`] — the one production spelling of
 ///   the judgment — instead of carrying a second, weaker one of its own. Refused
 ///   as of that commit; the correction rides it.
+/// * **EMBEDDED invisible formatting** — a value that renders exactly like a
+///   sibling and carries different bytes. The shape above closes values that are
+///   *wholly* invisible; this one carries visible content too, so
+///   [`crate::text::carries_visible_content`] accepts it **by construction** and
+///   the blank half above can never see it. Pass 5 named the harm ("two visually
+///   identical aliases resolve to two different envelope and credential paths"),
+///   round 5 claimed to close it with the emptiness judgment alone, and pass 6
+///   reproduced it unchanged: `"demo"` and `"demo\u{200b}"` both accepted, two
+///   envelope roots rendering as one; `"…-aaaa"` and `"…-aaaa\u{200b}"` both
+///   accepted, two run directories, one rendering — a terminal record no human
+///   can tell from its sibling. Refused as of D-17-1 by delegating to
+///   [`crate::text::carries_invisible_formatting`], the second judgment over the
+///   same class spelling; the correction rides that commit.
 ///
-/// All three are now refused. None was ever a legitimate run id, alias, or phase
+/// All four are now refused. None was ever a legitimate run id, alias, or phase
 /// name; every value the suite pins as acceptable (`"20"`, `"2.1"`, real
 /// timestamped run ids, registered aliases) still passes.
+///
+/// **The named trade (D-17-1).** An identity may not carry ZWJ/ZWNJ, which are
+/// load-bearing in some scripts. Free text — goals, commands — is unaffected,
+/// because only identity seams consult this predicate; a directory whose *name*
+/// carries format characters registers under an explicitly chosen alias.
 pub fn is_plain_path_component(value: &str) -> bool {
     // Blank rather than merely empty, and judged by the ONE production spelling
     // of blankness rather than by a `trim` of this function's own. A component
@@ -281,6 +299,14 @@ pub fn is_plain_path_component(value: &str) -> bool {
     // character is EMBEDDED in otherwise-visible text — `"a\nEVIL"` carries
     // plenty of visible content and is still not a name.
     if value.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    // Identity, not emptiness — a THIRD question, and the one the two above
+    // structurally cannot ask. Both of them are satisfied by `"demo\u{200b}"`:
+    // it carries visible content and no control character. What it also carries
+    // is a byte that renders as nothing, so it names the same thing on screen as
+    // `"demo"` while naming a different directory on disk (D-17-1).
+    if crate::text::carries_invisible_formatting(value) {
         return false;
     }
     let mut components = Path::new(value).components();
@@ -2803,7 +2829,6 @@ mod tests {
     /// test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1031 filtered out; finished in 0.00s
     /// ```
     #[test]
-    #[ignore = "red: closes pass-6 gap 1; un-ignored in the fix commit"]
     fn a_look_alike_identity_never_resolves_beside_its_visible_twin() {
         let planning = Path::new("/p/.planning");
         let envelope_root = Path::new("/data/envelope");

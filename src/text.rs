@@ -1,5 +1,27 @@
-//! The one production spelling of "does this text carry anything a reader could
-//! see?".
+//! The one production spelling of the invisible-character CLASS, and the two
+//! judgments made over it.
+//!
+//! **One class, two questions.** [`is_invisible_formatting_char`] is the single
+//! production spelling of the zero-width and format ranges. Two predicates
+//! consume it and they ask different things:
+//!
+//! * [`carries_visible_content`] — *emptiness*: is anything visible at all?
+//!   Consumed by [`crate::driver::payload::NonBlank::new`],
+//!   [`crate::journal::is_plain_path_component`]'s blank half,
+//!   [`crate::app::goal_or_none`] and `crate::ui::screens::driver::goal_lines`.
+//! * [`carries_invisible_formatting`] — *identity*: does it carry bytes that
+//!   render as nothing? Consumed by
+//!   [`crate::journal::is_plain_path_component`]'s identity half (and so,
+//!   transitively, by every run directory, envelope root, credential scope and
+//!   phase token) and by `crate::registry::Alias::new`.
+//!
+//! The second judgment exists because the first **structurally cannot** close
+//! the look-alike harm: `carries_visible_content` refuses `"\u{200b}"` and
+//! accepts `"demo\u{200b}"` by construction, so it can never tell two values
+//! apart that render identically. Pass 5 named that harm, round 5 claimed to
+//! close it with the emptiness judgment alone, and pass 6 reproduced it
+//! unchanged. Both judgments over ONE class spelling is what stops the two from
+//! drifting the way the two blankness spellings drifted below.
 //!
 //! **Why this module exists at all: two spellings shipped in one commit and
 //! disagreed.** Round 4 built [`crate::driver::payload::NonBlank`] around an
@@ -39,11 +61,45 @@
 /// [`crate::journal::is_plain_path_component`]'s own structural half. This
 /// predicate composes with those checks; it does not replace them.
 pub fn carries_visible_content(value: &str) -> bool {
-    value.chars().any(|c| {
-        !(c.is_whitespace()
-            || c.is_control()
-            || matches!(c, '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}'))
-    })
+    value
+        .chars()
+        .any(|c| !(c.is_whitespace() || c.is_control() || is_invisible_formatting_char(c)))
+}
+
+/// The ONE production spelling of the zero-width and format ranges.
+///
+/// Private on purpose: the ranges are a class, not an API, and both judgments in
+/// this module read them from here so a widening lands in both at once. The only
+/// other spelling of these ranges in `src/` is the deliberately independent
+/// test-side oracle named in the module doc.
+fn is_invisible_formatting_char(c: char) -> bool {
+    matches!(c, '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}')
+}
+
+/// Whether `value` carries a character that renders as nothing.
+///
+/// **The SECOND judgment over the SAME class, and the one the emptiness judgment
+/// structurally cannot make.** [`carries_visible_content`] asks "is anything
+/// visible?" — it refuses `"\u{200b}"` and, by construction, *accepts*
+/// `"demo\u{200b}"`, because something visible is there. This asks "does it
+/// carry bytes that render as nothing?" and refuses `"demo\u{200b}"`, which is
+/// the difference between an emptiness check and an identity check. Two values
+/// that a reader cannot tell apart must not both be able to name a project, a
+/// run directory, an envelope root or a phase.
+///
+/// **The boundary of the claim, stated so it is not inherited as wider than it
+/// is.** This covers exactly the invisible-formatting class this phase
+/// reproduced — zero-width and format characters. It is **not** a general
+/// Unicode-confusables defence: a Cyrillic `а` renders like a Latin `a` and is
+/// accepted here, because homoglyph confusability is canon security territory
+/// (Unicode TR39) and a partial implementation of it under this name would be
+/// inherited as a boundary rather than as the narrow class it is.
+///
+/// Only *identity* seams consult this. Free text — a `--goal`, a `--command` —
+/// legitimately carries ZWJ/ZWNJ (they are load-bearing in real scripts), so it
+/// is judged by [`carries_visible_content`] alone.
+pub fn carries_invisible_formatting(value: &str) -> bool {
+    value.chars().any(is_invisible_formatting_char)
 }
 
 #[cfg(test)]
@@ -76,6 +132,72 @@ mod tests {
                 "{visible:?} carries a visible instruction and must be judged \
                  non-blank — a guard that refused this would be refusing on \
                  length rather than on emptiness"
+            );
+        }
+    }
+
+    /// **Both directions for the identity judgment.** The refusing direction is
+    /// the point of the function; the accepting direction is what stops it from
+    /// being a predicate that refuses everything — every shape the tree actually
+    /// passes through an identity seam must survive it.
+    #[test]
+    fn only_a_value_carrying_a_character_that_renders_as_nothing_is_look_alike() {
+        for carrying in [
+            "demo\u{200b}",
+            "de\u{200b}mo",
+            "demo\u{feff}",
+            "x\u{200c}y",
+            "\u{200b}",
+        ] {
+            assert!(
+                carries_invisible_formatting(carrying),
+                "{carrying:?} carries a character that renders as nothing and \
+                 must not be able to name an identity beside a twin that does not"
+            );
+        }
+
+        for clean in [
+            "demo",
+            "20",
+            "2.1",
+            "2026-08-19T12-00-00Z-aaaa",
+            " x ",
+            "/gsd:progress",
+        ] {
+            assert!(
+                !carries_invisible_formatting(clean),
+                "{clean:?} carries nothing invisible; refusing it would narrow \
+                 the tool rather than close the harm"
+            );
+        }
+    }
+
+    /// **The split that made the round-5 fix structurally unable to close pass
+    /// 5's named harm**, pinned as a difference rather than as two behaviours.
+    ///
+    /// For every look-alike pair the two members AGREE under the emptiness
+    /// judgment — both carry something visible, so `carries_visible_content`
+    /// cannot separate them no matter how it is tuned — and DISAGREE under the
+    /// identity judgment. If someone ever re-implemented
+    /// `carries_invisible_formatting` in terms of visibility, this fails.
+    #[test]
+    fn the_two_judgments_agree_on_visibility_and_disagree_on_identity() {
+        for (visible, look_alike) in crate::test_support::LOOK_ALIKE_PAIRS {
+            assert!(
+                carries_visible_content(visible) && carries_visible_content(look_alike),
+                "both members of ({visible:?}, {look_alike:?}) carry visible \
+                 content — the emptiness judgment cannot tell them apart, which \
+                 is exactly why the identity judgment exists"
+            );
+            assert!(
+                !carries_invisible_formatting(visible),
+                "{visible:?} is the visible member and must pass the identity \
+                 judgment"
+            );
+            assert!(
+                carries_invisible_formatting(look_alike),
+                "{look_alike:?} renders exactly as {visible:?} and must be \
+                 refused by the identity judgment"
             );
         }
     }

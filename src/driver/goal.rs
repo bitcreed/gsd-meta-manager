@@ -1110,6 +1110,51 @@ mod tests {
         assert_eq!(refusal.offending(), hostile);
     }
 
+    /// A look-alike phase token is refused by the PREDICATE, not by a fact about
+    /// today's roadmap.
+    ///
+    /// **Pass-6 coincidental-reliance item 2, converted from an undeclared
+    /// precondition into an enforced property.** What used to keep
+    /// `"2\u{200b}0"` harmless was that no roadmap declares a token containing a
+    /// `U+200B`, so the value fell out at the membership check — a fact about
+    /// roadmap *contents*, which the next roadmap could falsify, not a fact
+    /// about the *value*. This pin removes that dependency by construction: the
+    /// roadmap passed in DOES declare the visible member `"20"`, so a build that
+    /// only refused by membership would reach `PhaseAbsentFromRoadmap` — or,
+    /// worse, accept — and this test would fail (SAFE-08).
+    #[test]
+    fn a_look_alike_phase_token_is_refused_even_though_its_visible_twin_is_declared() {
+        // The premise, asserted rather than assumed: the roadmap this refusal is
+        // measured against really does declare the visible member.
+        assert!(
+            PHASES.contains(&"20"),
+            "the fixture roadmap must declare the visible member, or this test \
+             proves nothing about where the refusal comes from"
+        );
+
+        for look_alike in ["2\u{200b}0", "20\u{feff}"] {
+            let refusal = legality(
+                &payload(vec![step(
+                    router::COMMAND_EXECUTE_PHASE,
+                    look_alike,
+                    TERMINAL_VERIFICATION_PASSED,
+                )]),
+                PHASES,
+                resolved_cap(None),
+            )
+            .expect_err("a phase token carrying invisible formatting is refused");
+
+            assert_eq!(
+                refusal.reason().as_str(),
+                REASON_PHASE_NOT_PLAIN_COMPONENT,
+                "{look_alike:?} must be refused by the predicate. Reading \
+                 `{}` here instead would mean the refusal came from roadmap \
+                 membership — the coincidence this pin exists to remove",
+                REASON_PHASE_ABSENT_FROM_ROADMAP
+            );
+        }
+    }
+
     #[test]
     fn a_target_phase_absent_from_the_roadmap_is_refused() {
         let refusal = legality(

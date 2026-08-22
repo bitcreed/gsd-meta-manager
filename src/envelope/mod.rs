@@ -200,6 +200,11 @@ pub fn envelope_dir(alias: &str) -> Option<PathBuf> {
 /// to the joined path would have to ask the filesystem what the path means,
 /// which is exactly what a traversal check must not depend on (the argument
 /// [`crate::journal::is_plain_path_component`] records in full).
+///
+/// Since D-17-1 that predicate also refuses an alias carrying **embedded
+/// invisible formatting**, so two aliases that render identically can no longer
+/// name two envelope roots (and, through them, two credential scopes) — the harm
+/// pass 5 named and pass 6 reproduced.
 pub fn envelope_dir_in(root: &Path, alias: &str) -> Option<PathBuf> {
     if !crate::journal::is_plain_path_component(alias) {
         return None;
@@ -430,6 +435,25 @@ mod tests {
             assert!(
                 envelope_dir_in(Path::new("/data/envelope"), hostile).is_none(),
                 "{hostile:?} must not be joined into an envelope path"
+            );
+        }
+
+        // **The look-alike half, which is a different harm from the traversal
+        // shapes above.** Those are values that escape the root; these are two
+        // values that BOTH stay inside it and render identically, so the
+        // developer sees one envelope and the tool keeps two — the credential
+        // scope included, since it hangs off this directory. Pass 6 reproduced
+        // exactly this; refused since D-17-1's clause.
+        for (visible, look_alike) in crate::test_support::LOOK_ALIKE_PAIRS {
+            assert!(
+                envelope_dir_in(Path::new("/data/envelope"), look_alike).is_none(),
+                "{look_alike:?} renders exactly as {visible:?} and must not be \
+                 joined into an envelope path beside it"
+            );
+            assert!(
+                envelope_dir_in(Path::new("/data/envelope"), visible).is_some(),
+                "{visible:?} must still name its envelope root — the refusal \
+                 above must be about the invisible bytes, not about the pair"
             );
         }
     }

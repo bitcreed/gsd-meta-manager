@@ -1,11 +1,17 @@
-//! Fixtures shared by the crate's in-module tests.
+//! Fixtures shared by the crate's tests — in-module and integration alike.
 //!
-//! `#[cfg(test)]`, so nothing here reaches a release binary. It exists because
-//! the alternative — each seam's pin spelling its own blank-shape list — is
-//! exactly what pass 5 caught: the `--run-id` pin was given
-//! `["   ", "\t", "\n  \n"]`, three of six, **in the same commit that defined
-//! six**, so the two zero-width shapes were never asserted at the one seam where
-//! they were reachable end to end.
+//! It exists because the alternative — each seam's pin spelling its own
+//! blank-shape list — is exactly what pass 5 caught: the `--run-id` pin was
+//! given `["   ", "\t", "\n  \n"]`, three of six, **in the same commit that
+//! defined six**, so the two zero-width shapes were never asserted at the one
+//! seam where they were reachable end to end.
+//!
+//! **The module ships unconditionally (D-17-5).** It used to be `#[cfg(test)]`,
+//! which put it out of reach of the integration crates under `tests/` and left
+//! three hand-copied `DEGENERATE` subsets there — the prohibited pattern, and
+//! precisely the drift the module exists to prevent. It exports two consts and
+//! no behaviour, so there is no runtime cost and no API surface a consumer could
+//! misuse; the alternative was keeping the hand copies.
 
 /// The payloads that carry no instruction at all.
 ///
