@@ -1473,6 +1473,100 @@ fn a_phase_token_carrying_a_control_character_is_refused_by_name_rather_than_sto
     }
 }
 
+/// **The layer that had no coverage at all, and why that mattered** (pass-5
+/// adjudication note).
+///
+/// `goal::legality` refuses a model-supplied phase token at TWO layers: first
+/// `journal::is_plain_path_component` (separators, `..`, blank, control
+/// characters), then `untrusted::bounded(named_phase) != named_phase`, which
+/// answers a different question — renderability — and refuses a value the
+/// bound would have to shorten.
+///
+/// 21-13 tightened the predicate to refuse control characters, and every one of
+/// [`HOSTILE_PHASE_TOKENS`] carries one. From that commit on, all four fixtures
+/// were refused at the FIRST layer and the second had **zero live coverage**: it
+/// could have been deleted, inverted, or turned into a silent truncation and the
+/// suite would have stayed green. A defence-in-depth layer with zero coverage is
+/// a layer nobody notices breaking.
+///
+/// The only invocation that reaches it is a token that is control-free, a legal
+/// path component, and longer than `untrusted::MAX_UNTRUSTED_FIELD_CHARS`. That
+/// is what this builds.
+///
+/// **What it pins is REFUSAL, not repair.** `bounded` truncates; the goal layer
+/// must not. A 201-character token silently shortened to 200 is a *different
+/// phase token*, and a run driving toward a phase the model did not name — with
+/// the roadmap-membership check downstream then deciding on the shortened value
+/// — is exactly the "repair a model's answer" failure SAFE-08 forbids.
+#[test]
+fn an_over_length_phase_token_is_refused_by_the_bound_not_truncated_into_a_phase() {
+    // Control-free, path-component-legal, and one character past the bound. The
+    // constant is read rather than the number spelled, so a future cap change
+    // moves this fixture with it rather than leaving it silently under the bound.
+    let token = "2".repeat(gsd_meta_manager::driver::untrusted::MAX_UNTRUSTED_FIELD_CHARS + 1);
+
+    // **Arrival before property (C-3), the discipline this suite already applies
+    // at the injection corpus.** If the token were refused by the FIRST layer,
+    // the refusal below would prove nothing about the second — which is exactly
+    // the state every HOSTILE_PHASE_TOKENS fixture is in.
+    assert!(
+        gsd_meta_manager::journal::is_plain_path_component(&token),
+        "the fixture must PASS the first layer, or this test is re-testing the          predicate instead of the bound it exists for"
+    );
+    // And it must be a token the bound genuinely acts on: if `bounded` left it
+    // alone, the refusal below could only come from somewhere else.
+    assert_ne!(
+        gsd_meta_manager::driver::untrusted::bounded(&token),
+        token,
+        "the fixture must be a token `untrusted::bounded` would shorten, or the          second layer is not the one under test"
+    );
+
+    let refusal = goal::legality(
+        &payload(vec![step(router::COMMAND_PLAN_PHASE, &token)]),
+        PHASES,
+        resolved_cap(),
+    )
+    .expect_err(
+        "a phase token the bound would have to shorten must be REFUSED.          Truncated instead, it becomes a different phase token — and the          roadmap-membership check downstream would then decide on a value the          model never named, which is repairing a model's answer rather than          refusing it (SAFE-08)",
+    );
+
+    assert_eq!(
+        refusal.reason().as_str(),
+        goal::REASON_PHASE_NOT_PLAIN_COMPONENT,
+        "the over-length token REUSES the existing reason — the goal.rs comment's          documented choice, no new `GoalReason` arm. Against a build that          truncates instead of refusing, this reads `{}`: the roadmap-membership          arm, reached because the token was silently repaired into a phase the          model did not choose",
+        goal::REASON_PHASE_ABSENT_FROM_ROADMAP
+    );
+
+    // The refusal reporting an over-length value must not itself render 201
+    // characters: `GoalRefusal::new` bounds the offending value at construction,
+    // the same property the control-character fixtures pin for control bytes.
+    assert!(
+        refusal.offending().chars().count()
+            <= gsd_meta_manager::driver::untrusted::MAX_UNTRUSTED_FIELD_CHARS
+                + gsd_meta_manager::driver::untrusted::TRUNCATION_MARKER
+                    .chars()
+                    .count(),
+        "the refusal's rendered value must be bounded, not the full token; got          {} characters",
+        refusal.offending().chars().count()
+    );
+    assert_ne!(
+        refusal.offending(),
+        token,
+        "and it must not be the raw token: a refusal that echoes 201 unbounded \
+         characters into the operator's terminal is the shape `GoalRefusal::new`'s \
+         bounding exists to prevent"
+    );
+    assert!(
+        refusal
+            .offending()
+            .ends_with(gsd_meta_manager::driver::untrusted::TRUNCATION_MARKER),
+        "a shortened value must be MARKED as shortened — a silently shortened \
+         string is indistinguishable from a short one, and the char bound above \
+         alone would be satisfied by rendering the token in full. Got: {:?}",
+        refusal.offending()
+    );
+}
+
 #[test]
 fn a_legal_phase_token_reaches_the_step_byte_identical_to_what_the_roadmap_declared() {
     let plan = plan_from(&payload(vec![
