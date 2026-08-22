@@ -2353,6 +2353,12 @@ const COMMAND_SOURCE_VARIANTS: &[&str] = &[
 /// * `preview_text` **matches** them. Its arms name the variants as patterns
 ///   rather than building them; the match is exhaustive with no wildcard, which
 ///   is what makes a fourth source a compile error at every consumer.
+/// * `iteration_source` **matches** them too, and never builds one. It narrows
+///   the argv-resolved value to the two shapes the run loop can execute
+///   (`IterationSource`), refusing `Goal` — which reaches the run layer only if
+///   the decomposition and approval layers were bypassed. It joined this list in
+///   21-15, in the commit that moved `execute_run`'s source resolution above
+///   every disk write.
 ///
 /// No attempt is made to tell a construction from a pattern match textually. The
 /// distinction is not needed — both functions are allowlisted BY NAME, and an
@@ -2361,6 +2367,7 @@ const COMMAND_SOURCE_VARIANTS: &[&str] = &[
 const COMMAND_SOURCE_ALLOWLIST: &[(&str, &str)] = &[
     ("src/driver/mod.rs", "command_source"),
     ("src/driver/mod.rs", "preview_text"),
+    ("src/driver/run.rs", "iteration_source"),
 ];
 
 /// How many hits each allowlisted function must contribute: one per variant.

@@ -17,9 +17,13 @@ use rustix::process::Signal;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::config::RegisteredProject;
+// `CommandSource` and `command_source` are imported as a TYPE and a FUNCTION and
+// never as variant paths: `tests/spawn_seam_guard.rs`'s guard eight refuses a
+// `use …::CommandSource::Command;` import precisely because an imported variant
+// can then be constructed bare, matching none of its qualified needles.
 use crate::driver::{
-    bounds, escalate, goal, kill, liveness, lock, rate_limit, router, untrusted, DriveArgs,
-    ROUTED_RECORD_MARKER,
+    bounds, command_source, escalate, goal, kill, liveness, lock, rate_limit, router, untrusted,
+    CommandSource, DriveArgs, ROUTED_RECORD_MARKER,
 };
 use crate::envelope::advisory::{self, ProtectionState};
 use crate::envelope::cred::{self, EnvelopeEnv};
@@ -704,6 +708,39 @@ pub(crate) fn terminal_label(outcome: &RunOutcome, journal: &Path) -> String {
     }
 }
 
+/// Narrow the argv-resolved [`crate::driver::CommandSource`] to the two shapes
+/// the run loop can execute, or refuse.
+///
+/// **A consumer that matches, never a builder.** The single production
+/// constructor of `CommandSource` is [`crate::driver::command_source`]; this
+/// function only classifies what that one already resolved, which is why
+/// `tests/spawn_seam_guard.rs`'s guard eight allowlists it by name with that
+/// role stated.
+///
+/// **`Goal` is a refusal here, and that is D-15-6.** Through
+/// [`crate::driver::drive`] a goal run never arrives in this shape: the
+/// decomposition happens above the run and `drive` writes the approved plan's
+/// terminal phase back onto `args.target_phase`, so the source this function
+/// sees is already `Routed`. A raw `Goal` reaching the run layer therefore means
+/// the decomposition and approval layers were bypassed — a run carrying prose
+/// and nothing executable. It is refused before anything exists rather than
+/// decomposed here: decompose-once is type-enforced by the capability's move,
+/// and a second decomposition site would be exactly the property that move
+/// exists to hold.
+///
+/// The refusal is [`DriveError::NoCommandSource`], the argv seam's own name for
+/// a run with nothing to do, rather than a new variant describing a state no
+/// supported invocation reaches.
+fn iteration_source(source: &CommandSource) -> Result<IterationSource, DriveError> {
+    match source {
+        CommandSource::Command(command) => Ok(IterationSource::Fixed(command.as_str().to_string())),
+        CommandSource::Routed(target_phase) => Ok(IterationSource::Routed {
+            target_phase: target_phase.as_str().to_string(),
+        }),
+        CommandSource::Goal(_) => Err(DriveError::NoCommandSource),
+    }
+}
+
 /// The **run-scoped** facts a run establishes before its first write, gathered
 /// into one value.
 ///
@@ -751,9 +788,16 @@ struct EstablishedRun {
 /// group against the kernel's, so such a record makes every stop against that run
 /// refuse, and the user's kill switch stops working for a reason nothing on
 /// screen can explain. The caller passes what [`current_group`] reports.
+/// **`source` is the RESOLVED [`IterationSource`], not the raw options.** The
+/// record's `gsd_command` used to be derived by re-matching
+/// `(args.command, args.target_phase)` inside [`recorded_command`], which gave
+/// that helper a `(None, None)` case it answered with an empty string — the
+/// value D-30 reserves for *field absent*, in the field that says what ran. The
+/// resolved value arrives here instead, so this function re-derives nothing.
 fn make_run_record(
     run_id: String,
     args: &DriveArgs,
+    source: &IterationSource,
     entry: &RegisteredProject,
     options: &ExecutionOptions,
     established: EstablishedRun,
@@ -776,7 +820,7 @@ fn make_run_record(
         // which is where a reader finds every command a routed run issued and in
         // what order. A routed run records the marker rather than a command,
         // because it chose none at this point and will choose several later.
-        gsd_command: recorded_command(args),
+        gsd_command: recorded_command(source),
         // The routed run's identity, in a field whose type says what it is
         // rather than smuggled into one whose name says command.
         target_phase: args.target_phase.clone(),
@@ -836,16 +880,22 @@ fn make_run_record(
 ///
 /// The argv **digest** does not go through here, and that separation is the
 /// point — see [`digested_command_fragment`].
-fn recorded_command(args: &DriveArgs) -> String {
-    match (&args.command, &args.target_phase) {
-        (Some(command), _) => command.clone(),
-        (None, Some(_)) => ROUTED_RECORD_MARKER.to_string(),
-        // Unreachable: `driver::drive` refuses a run with neither before
-        // anything is created. An empty string rather than a panic, because a
-        // detached driver that panicked here would leave a run directory with no
-        // terminal record, which is the crash signal D-12 reserves for a genuine
-        // crash.
-        (None, None) => String::new(),
+///
+/// **It reads the RESOLVED source, never the raw options, and the match is
+/// TOTAL.** It used to take `&DriveArgs` and re-match
+/// `(&args.command, &args.target_phase)`, which gave it a `(None, None)` case
+/// that no invocation should reach and that it answered by manufacturing
+/// `String::new()` — the empty string that already means *field absent* on the
+/// tolerant read path (D-30), written into a field named `gsd_command`. That was
+/// not hypothetical: pass 5 reproduced a committed `run.json` carrying it, from a
+/// direct call to the `pub` [`execute_run`]. Over [`IterationSource`] there are
+/// two variants and no empty case, so no value has to be manufactured for one.
+/// The old doc said nothing about that arm; the correction rides the commit that
+/// deleted it.
+fn recorded_command(source: &IterationSource) -> String {
+    match source {
+        IterationSource::Fixed(command) => command.clone(),
+        IterationSource::Routed { .. } => ROUTED_RECORD_MARKER.to_string(),
     }
 }
 
@@ -864,11 +914,16 @@ fn recorded_command(args: &DriveArgs) -> String {
 /// [`journal::argv_digest`](crate::journal::argv_digest) promises: telling two
 /// runs with different command lines apart. The digest authenticates nothing;
 /// it discriminates, and a constant discriminates nothing.
-fn digested_command_fragment(args: &DriveArgs) -> String {
-    match (&args.command, &args.target_phase) {
-        (Some(command), _) => command.clone(),
-        (None, Some(target_phase)) => format!("--target-phase {target_phase}"),
-        (None, None) => String::new(),
+///
+/// **Total over [`IterationSource`], for the same reason [`recorded_command`]
+/// is.** Its `(None, None)` arm manufactured `String::new()` too — the same
+/// D-30 sentinel, reached through the same re-derivation from raw options — and
+/// it is deleted rather than reordered, because over two variants there is no
+/// empty case left for a fabricated value to answer.
+fn digested_command_fragment(source: &IterationSource) -> String {
+    match source {
+        IterationSource::Fixed(command) => command.clone(),
+        IterationSource::Routed { target_phase } => format!("--target-phase {target_phase}"),
     }
 }
 
@@ -2339,6 +2394,37 @@ pub async fn execute_run(
         .map_err(DriveError::PlanApprovalStale)?;
     }
 
+    // **THE SOURCE, RESOLVED ONCE, ABOVE EVERY WRITE.**
+    //
+    // A **second** line of defence, not the tested one, in the same register as
+    // the run-id read below: `driver::drive` refuses a run with no command
+    // source before anything is created, and that refusal is what
+    // `a_run_with_no_command_source_at_all_is_refused_before_anything_is_created`
+    // exercises. This one exists because `execute_run` is `pub`, so a direct
+    // caller bypasses every one of `drive`'s refusals — and pass 5 reproduced
+    // exactly that: called with `command: None, target_phase: None, goal: None`,
+    // this function returned `Err(NoCommandSource)` *after* `JournalRun::start`
+    // had committed a `run.json` carrying `"gsd_command": ""`, the value D-30
+    // reserves for **field absent**, in the field that says what ran.
+    //
+    // Its position is the whole of the fix. Nothing below it may run before it:
+    // `establish_own_group`, the envelope, the lock and `JournalRun::start` all
+    // come after, so a run with nothing executable now leaves no group moved, no
+    // envelope, no lock file, no run directory, no record and no journal. The
+    // arm that used to answer this state 129 lines further down had to stamp a
+    // terminal record precisely because the journal already existed by then; at
+    // this position there is no journal to stamp, which is the point.
+    //
+    // It goes through the **production** resolver rather than re-matching the
+    // options here. Re-deriving is how CR-01 happened, and a second derivation
+    // is a second thing that can disagree about which source won.
+    let argv_source = command_source(
+        args.command.as_deref(),
+        args.target_phase.as_deref(),
+        args.goal.as_deref(),
+    )?;
+    let source = iteration_source(&argv_source)?;
+
     let pgid = establish_own_group();
 
     // The TUI owns the id so it knows what to look for; the driver owns the
@@ -2442,12 +2528,13 @@ pub async fn execute_run(
     // carries `--target-phase N`, which is what tells two routed runs apart.
     let mut argv = vec![agent_program(args).display().to_string()];
     argv.extend(agent_leading_args(args));
-    argv.push(digested_command_fragment(args));
+    argv.push(digested_command_fragment(&source));
     let argv_digest = journal::argv_digest(&argv);
 
     let record = make_run_record(
         run_id,
         args,
+        &source,
         entry,
         &options,
         EstablishedRun {
@@ -2601,48 +2688,17 @@ pub async fn execute_run(
     // channel into a permanently ready arm spinning the poll thread.
     let mut echo_open = true;
 
-    // Which of the two execution models this run is. `driver::drive` has already
-    // refused both-or-neither, so the last arm is believed unreachable, and it is
-    // spelled out rather than `unwrap`ped because a detached driver that panicked
-    // here would leave a run directory with no terminal record, which is the
-    // signal D-12 reserves for a genuine crash.
+    // Which of the two execution models this run is was decided **above every
+    // write**, by `iteration_source` over the resolved `CommandSource`. This
+    // used to be a third derivation from `(&args.command, &args.target_phase)`
+    // performed *here*, after the lock and the journal existed, whose
+    // `(None, None)` arm had to stamp a terminal record before refusing —
+    // because by this point a run directory with no terminal record would be the
+    // D-12 crash signal. Moving the resolution above the first write removes the
+    // arm and its stamping together: there is no journal to close, because there
+    // is no run.
     //
-    // **The last arm used to construct `Fixed` around a freshly-made empty
-    // string, and that was the bug in the shape rather than in the behaviour.**
-    // As the "safe" fallback for a
-    // state believed unreachable it manufactured the EXACT value three
-    // gap-closure cycles were spent refusing: a blank command, at the spawn seam,
-    // with no refusal anywhere below it. Precisely because unreachable arms
-    // outlive the beliefs that make them unreachable — `execute_run` is `pub`,
-    // and a future direct caller is the worry the doc one screen up already names
-    // — it now refuses with the argv seam's own typed error instead. A caller who
-    // reaches this state inherits the refusal rather than the fabrication.
-    //
-    // Still no panic. And the refusal STAMPS THE RUN before returning, in the
-    // same shape as the spawn-failure arm below (`finish_run` then `return Err`):
-    // the journal is already open by this point, so a bare early return would
-    // leave a run directory with no terminal record — which is the D-12 crash
-    // signal, and manufacturing a false crash signal to avoid manufacturing a
-    // blank command would have been the same mistake in the other direction.
-    // "a run that started always has a terminal record, even when the thing it
-    // was started for never launched" (T-17-06) applies here too.
-    let source = match (&args.command, &args.target_phase) {
-        (Some(command), _) => IterationSource::Fixed(command.clone()),
-        (None, Some(target_phase)) => IterationSource::Routed {
-            target_phase: target_phase.clone(),
-        },
-        (None, None) => {
-            if let Err(journal_err) =
-                finish_run(&mut run.journal, "no_command_source", budget.used())
-            {
-                tracing::warn!(
-                    detail = %format!("{journal_err:#}"),
-                    "could not close the journal after a run with no command source",
-                );
-            }
-            return Err(DriveError::NoCommandSource);
-        }
-    };
+    // `source` is therefore already bound; nothing is re-derived at this line.
 
     // `run_bounds` is the value resolved above, before the record was built —
     // **not a second call**. It used to be resolved again here on the reasoning
@@ -3592,6 +3648,17 @@ mod tests {
         }
     }
 
+    /// The resolved source that matches [`args`], for the record builders.
+    ///
+    /// [`make_run_record`] takes the **resolved** [`IterationSource`] rather than
+    /// re-deriving it from `args`, so the fixtures hand it one. Written out
+    /// rather than derived from `args()` by a second copy of the resolution:
+    /// a fixture that re-derived would be exactly the re-derivation this plan
+    /// deleted, reintroduced in the test module.
+    fn fixed_source() -> IterationSource {
+        IterationSource::Fixed("/gsd-progress".to_string())
+    }
+
     /// A registry entry carrying a genuine driver opt-in, for the one test in
     /// this module that needs a [`DrivableProject`].
     ///
@@ -3951,6 +4018,7 @@ mod tests {
         let record = make_run_record(
             run_id.to_string(),
             &args(),
+            &fixed_source(),
             &entry(),
             &ExecutionOptions::default(),
             EstablishedRun {
@@ -4138,6 +4206,7 @@ mod tests {
         let record = make_run_record(
             "2026-07-29T12-00-00Z-aaaa".to_string(),
             &args(),
+            &fixed_source(),
             &entry(),
             &ExecutionOptions::default(),
             EstablishedRun {
@@ -4269,6 +4338,7 @@ mod tests {
         let record = make_run_record(
             "2026-07-29T12-00-00Z-aaaa".to_string(),
             &args(),
+            &fixed_source(),
             &entry(),
             &ExecutionOptions::default(),
             EstablishedRun {
@@ -4379,6 +4449,7 @@ mod tests {
         let record = make_run_record(
             "2026-07-29T12-00-00Z-aaaa".to_string(),
             &args(),
+            &fixed_source(),
             &entry(),
             &ExecutionOptions::default(),
             EstablishedRun {

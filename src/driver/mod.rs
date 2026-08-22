@@ -446,7 +446,7 @@ pub(crate) enum CommandSource {
 /// to `--command` in 21-11 and forgotten for `--target-phase` both times, which
 /// is round-4 CR-01. The arms below cannot forget it: there is no way to
 /// construct the payload that skips the check.
-fn command_source(
+pub(crate) fn command_source(
     command: Option<&str>,
     target_phase: Option<&str>,
     goal: Option<&str>,
