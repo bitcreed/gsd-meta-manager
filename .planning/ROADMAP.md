@@ -523,6 +523,16 @@ Gap closure, round 5 (round 4's `NonBlank` mechanism survived direct attack and 
 
 - [x] 21-16-PLAN.md — The type-reading guard four cycles never had: guard nine asserts `DriveArgs` declares no bare `String` argv field, self-tested by a planted synthetic defect; `ITEM_OPENERS` gains `"pub("` with the backwards header bound deleted and planted-offender controls, the boundary scan extracted as a shared fn both the live assertion and its control call while keeping the `scanned_files >= 10` non-vacuity floor; and round-4's two violated prohibitions become standing assertions, with both plans required to audit their own prohibitions against their own diff (DRIVE-04, SAFE-07, SAFE-08)
 
+Gap closure, round 6 (pass 6 verified criterion 1 for the first time — 5/5 ROADMAP criteria — so the goal-layer domain is closed; the remaining work is the *other* argv entry points and two anti-recurrence mechanisms measured weaker than their docs claimed):
+
+**Wave 1**
+
+- [ ] 21-17-PLAN.md — The look-alike class, closed structurally rather than by enumeration: `text::carries_invisible_formatting` (one shared char class with `carries_visible_content`) and `test_support::LOOK_ALIKE_PAIRS` — the fixture shape the tree provably lacked, since every `DEGENERATE` payload is wholly invisible and none can express "renders identically, differs in bytes"; then the `Commands` domain — a `registry::Alias` newtype deleting the fourth blankness predicate, look-alike refusal at registration, `AliasNotVisible` replacing the borrowed `UnknownAlias`, six envelope re-entry arms fail-closed, and guard ten's 8-row alias census with a planted-ninth control (DRIVE-01, DRIVE-03, SAFE-08)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 21-18-PLAN.md — Both anti-recurrence mechanisms made to say what they deliver, certified only by planted-defect controls: guard nine's nine silent spellings (`pub(`, `Box<str>`, `Cow`, `&'static str`, `OsString`, trailing-`//`) fixed via one shared `is_field_opener`, with `OsString` deny-by-default over the whole body behind a two-entry suppress-only allowlist; `one_of_each`'s false compile-error claim deleted and its residual named; the `--alias`/`--run-id` matrix exemption removed; and the SUMMARY carrying Record corrections naming 21-16 truths 1 and 4 as measured-false (DRIVE-04, SAFE-07)
+
 ### Phase 22: Container Execution Target
 
 **Goal**: A driven project can run inside a container on either runtime, indistinguishably from the host path
