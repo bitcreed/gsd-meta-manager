@@ -2530,3 +2530,328 @@ fn every_command_source_variant_is_named_only_where_it_is_built_or_matched() {
         render(&variant_imports)
     );
 }
+
+// ---------------------------------------------------------------------------
+// Guard nine: `DriveArgs` declares no raw argv `String` field
+// ---------------------------------------------------------------------------
+//
+// **The guard four gap-closure cycles never had: one that reads the TYPE rather
+// than a list.** Every cycle in this phase protected a hand-enumerated subset of
+// the argv-derived values and every enumeration was exactly one item short —
+// three `CommandSource` arms one at a time, then three of `DriveArgs`'s six
+// string fields, with all three of the next round's Criticals landing in the
+// other three. 21-15 moved the enumeration to the compiler: all six argv-derived
+// string fields are `payload::NonBlank`, and `DriveArgs::from_argv`'s exhaustive
+// destructure makes a seventh field a compile error until somebody classifies
+// it.
+//
+// This is that compile-side bound's **textual witness**. The destructure forces
+// a new field to be *handled*; it does not force it to be handled by giving it a
+// payload type. A seventh field declared `pub goal_file: Option<String>` and
+// dutifully copied across the destructure compiles fine and reintroduces the
+// whole defect class. That is what this scan refuses.
+//
+// **What this scan cannot see, each named with the direction it fails in**, in
+// the register guard six establishes. This guard has both directions.
+//
+// 1. A field whose type hides behind a local `type` alias for `String` — say
+//    `type Alias = String; pub alias: Alias,` — matches no needle.
+//    **Under-detection — silent.** Bounded by the fact that the tree declares no
+//    such alias today, which this guard asserts on its own line rather than
+//    assuming: `type .* = String` under `src/driver/` must be zero.
+// 2. The field-line heuristic requires this tree's `pub <name>:` declaration
+//    style. A field written in a different style — no `pub`, or a macro-expanded
+//    declaration — is skipped. **Under-detection — silent.** Bounded by the
+//    non-vacuity floor below: the scan must see at least 10 field declarations
+//    and at least 6 of them must name `NonBlank`, so a heuristic that stopped
+//    matching fails loudly rather than reporting a clean empty set.
+// 3. The struct-body extraction is column-zero brace based, like every other
+//    scan in this file. **Over- and under-detection**, per the shared marker
+//    approximation; cross-referenced to
+//    `no_production_item_follows_a_test_module_marker`, which bounds the related
+//    region gap.
+//
+// The scan reads `DriveArgs` **only**. `RawDriveArgs` sits a few lines away and
+// legitimately holds `String`s — it IS the raw side of the parse boundary, the
+// shape argv supplies before anything has judged it — so the extraction control
+// below asserts by name that the extracted region never reached it.
+
+/// The `DriveArgs` field declarations whose type text names a bare `String`.
+///
+/// A pure function over source lines, so the live assertion and its
+/// planted-defect control arms exercise **the same code path**. A control that
+/// re-implemented the scan would witness only its agreement with itself.
+///
+/// Each returned entry is `(line number of the declaration's first line, the
+/// joined declaration text)`.
+fn raw_string_argv_fields(lines: &[(usize, String)]) -> Vec<(usize, String)> {
+    let body = drive_args_body(lines);
+    let mut out = Vec::new();
+    // A declaration may WRAP across lines — a long type, or rustfmt's doing —
+    // and pass 5 recorded that names wrapping across two source lines defeat a
+    // full-name grep. Lines are joined up to the trailing comma before the type
+    // is judged, so a wrapped `Option<\n    String,\n>` cannot evade the needle.
+    let mut pending: Option<(usize, String)> = None;
+    for (number, line) in body {
+        let trimmed = line.trim();
+        if trimmed.starts_with("///") || trimmed.starts_with("//") || trimmed.starts_with("#[") {
+            continue;
+        }
+        let (start, mut joined) = match pending.take() {
+            Some((start, acc)) => (start, format!("{acc} {trimmed}")),
+            None => {
+                if !trimmed.starts_with("pub ") || !trimmed.contains(':') {
+                    continue;
+                }
+                (number, trimmed.to_string())
+            }
+        };
+        if !joined.ends_with(',') {
+            pending = Some((start, joined));
+            continue;
+        }
+        joined = joined.trim().to_string();
+        let Some((_, type_text)) = joined.split_once(':') else {
+            continue;
+        };
+        if names_bare_string(type_text) {
+            out.push((start, joined));
+        }
+    }
+    out
+}
+
+/// Every `(line number, line)` between `pub struct DriveArgs {` and the
+/// column-zero `}` that closes it.
+fn drive_args_body(lines: &[(usize, String)]) -> Vec<(usize, String)> {
+    let mut body = Vec::new();
+    let mut inside = false;
+    for (number, line) in lines {
+        if !inside {
+            if line.starts_with("pub struct DriveArgs {") {
+                inside = true;
+            }
+            continue;
+        }
+        if line == "}" {
+            break;
+        }
+        body.push((*number, line.clone()));
+    }
+    body
+}
+
+/// Whether `text` names `String` as a whole word.
+///
+/// Word-boundary semantics, so `OsString` and `PathBuf` do not match while
+/// `String`, `Option<String>` and `Vec<String>` do. A substring test would
+/// report `claude_args: Vec<OsString>` as an offender and make the property
+/// unsatisfiable.
+fn names_bare_string(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut from = 0usize;
+    while let Some(found) = text[from..].find("String") {
+        let start = from + found;
+        let end = start + "String".len();
+        let before_ok = start == 0 || !is_ident_byte(bytes[start - 1]);
+        let after_ok = end == bytes.len() || !is_ident_byte(bytes[end]);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+fn is_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// **The control arm, and it runs FIRST in this file's reading order for a
+/// reason.** An assertion on emptiness that no scanner could ever populate is
+/// the defect this repository has already paid for twice. Two planted raw argv
+/// fields — one the shape a future flag would take, one the shape pass 5 found
+/// unprotected — must both be reported by the SAME function the live assertion
+/// consumes.
+#[test]
+fn the_raw_argv_field_scanner_reports_a_planted_string_field() {
+    let planted = synthetic_file(
+        "src/driver/mod.rs",
+        &[
+            "pub struct DriveArgs {",
+            "    /// The registry alias to drive.",
+            "    pub alias: payload::NonBlank,",
+            "    #[cfg(debug_assertions)]",
+            "    pub claude_args: Vec<OsString>,",
+            "    /// A seventh argv field, added raw — the five-time losing bet.",
+            "    pub goal_file: Option<String>,",
+            "    pub run_id: Option<String>,",
+            "    pub dry_run: bool,",
+            "}",
+            "pub struct RawDriveArgs {",
+            "    pub alias: String,",
+            "}",
+        ],
+    );
+
+    let found = raw_string_argv_fields(&planted.1);
+    let reported: Vec<String> = found.iter().map(|(_, text)| text.clone()).collect();
+    assert_eq!(
+        reported,
+        vec![
+            "pub goal_file: Option<String>,".to_string(),
+            "pub run_id: Option<String>,".to_string(),
+        ],
+        "the scanner must report BOTH planted raw argv fields and nothing else — \
+         `alias: payload::NonBlank` is the protected shape, `claude_args: \
+         Vec<OsString>` must not match on a substring, `dry_run: bool` is not a \
+         string at all, and `RawDriveArgs`'s own `String` sits past the closing \
+         brace and is out of the extracted region entirely. Got: {found:?}"
+    );
+
+    // A wrapped declaration must not evade the scan: pass 5 recorded that a name
+    // split across two source lines defeats a full-name grep, and a guard that
+    // could be silenced by running rustfmt is not a guard.
+    let wrapped = synthetic_file(
+        "src/driver/mod.rs",
+        &[
+            "pub struct DriveArgs {",
+            "    pub some_extremely_long_argv_field_name:",
+            "        Option<String>,",
+            "    pub alias: payload::NonBlank,",
+            "}",
+        ],
+    );
+    assert_eq!(
+        raw_string_argv_fields(&wrapped.1).len(),
+        1,
+        "a field declaration wrapped across two lines is still a field \
+         declaration; got {:?}",
+        raw_string_argv_fields(&wrapped.1)
+    );
+
+    // And the other direction: a fully protected declaration reports nothing, so
+    // the assertions above are about the planted fields rather than about a
+    // scanner that flags everything.
+    let clean = synthetic_file(
+        "src/driver/mod.rs",
+        &[
+            "pub struct DriveArgs {",
+            "    pub alias: payload::NonBlank,",
+            "    pub command: Option<payload::NonBlank>,",
+            "    pub max_steps: Option<u32>,",
+            "    pub claude_program: Option<PathBuf>,",
+            "}",
+        ],
+    );
+    assert!(
+        raw_string_argv_fields(&clean.1).is_empty(),
+        "a fully protected declaration must report nothing; got {:?}",
+        raw_string_argv_fields(&clean.1)
+    );
+}
+
+#[test]
+fn drive_args_declares_no_raw_argv_string_field() {
+    let files = source_files();
+    let home = files
+        .iter()
+        .find(|(path, _)| path == "src/driver/mod.rs")
+        .expect("src/driver/mod.rs must exist");
+
+    let body = drive_args_body(&home.1);
+
+    // **The extraction control.** `RawDriveArgs` is declared a few lines below
+    // `DriveArgs` and legitimately holds `String`s — it is the raw side of the
+    // parse boundary. An extraction that ran past `DriveArgs`'s closing brace
+    // would report every one of them and make this property unsatisfiable, so
+    // the region is asserted by name rather than assumed.
+    assert!(
+        !body.iter().any(|(_, line)| line.contains("RawDriveArgs")),
+        "the extracted `DriveArgs` body reached `RawDriveArgs`, so the scan is \
+         reading the wrong struct"
+    );
+
+    // **Non-vacuity, and it is the whole reason this test can be trusted.** A
+    // scanner that matched nothing would satisfy the emptiness assertion below
+    // forever — which is the shape three of this phase's guards shipped in.
+    let field_lines: Vec<&(usize, String)> = body
+        .iter()
+        .filter(|(_, line)| {
+            let trimmed = line.trim();
+            trimmed.starts_with("pub ") && trimmed.contains(':')
+        })
+        .collect();
+    assert!(
+        field_lines.len() >= 10,
+        "the scan saw only {} field declarations in `DriveArgs`, so its emptiness \
+         proves almost nothing — the struct carries twelve. Either the extraction \
+         broke or the declaration style moved (limit 2).",
+        field_lines.len()
+    );
+    let protected = field_lines
+        .iter()
+        .filter(|(_, line)| line.contains("NonBlank"))
+        .count();
+    assert!(
+        protected >= 6,
+        "only {protected} of `DriveArgs`'s field declarations name `NonBlank`. All \
+         SIX argv-derived string fields — alias, command, target_phase, \
+         approved_plan, run_id, goal — must carry the payload type; a field that \
+         lost it is the five-time losing bet reopening."
+    );
+
+    let offenders = raw_string_argv_fields(&home.1);
+    let rendered: Vec<(String, usize, String)> = offenders
+        .iter()
+        .map(|(number, text)| ("src/driver/mod.rs".to_string(), *number, text.clone()))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "a `DriveArgs` field is declared with a bare `String` type. Every \
+         argv-derived string field must be `payload::NonBlank`, whose private \
+         field is the only thing that makes a blank payload unrepresentable — \
+         four gap-closure cycles each protected a hand-picked subset and each \
+         subset was exactly one item short. `DriveArgs::from_argv`'s exhaustive \
+         destructure forces a new field to be HANDLED; it does not force it to be \
+         handled by giving it a payload type, and this is the check that does. If \
+         the new field genuinely is not an argv payload, it does not belong on \
+         this struct; if it is, type it `payload::NonBlank` and give it a row in \
+         the degenerate matrix. Offending declarations:{}",
+        render(&rendered)
+    );
+}
+
+/// Limit 1's bound, asserted rather than assumed.
+///
+/// The scan matches the token `String` in a field's type text. A local
+/// `type Whatever = String;` would let a raw field wear a name the scan does not
+/// know — silent under-detection. The tree declares no such alias today, and
+/// this is what keeps that true: if one appears, this fails and whoever added it
+/// has to decide what guard nine should do about it.
+#[test]
+fn no_type_alias_hides_a_string_from_guard_nine() {
+    let files = source_files();
+    let aliases: Vec<(String, usize, String)> = files
+        .iter()
+        .filter(|(path, _)| path.starts_with("src/driver/"))
+        .flat_map(|file| {
+            executable_lines(file)
+                .filter(|(_, line)| {
+                    let trimmed = line.trim_start();
+                    trimmed.starts_with("type ") && names_bare_string(trimmed)
+                })
+                .map(|(number, line)| (file.0.clone(), *number, line.trim().to_string()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        aliases.is_empty(),
+        "a `type` alias under src/driver/ resolves to `String`. Guard nine reads \
+         field TYPE TEXT, so an aliased raw field would be invisible to it — the \
+         silent direction named as limit 1 in that guard's header. Either drop \
+         the alias or teach `raw_string_argv_fields` to resolve it, in the same \
+         commit. Found:{}",
+        render(&aliases)
+    );
+}
