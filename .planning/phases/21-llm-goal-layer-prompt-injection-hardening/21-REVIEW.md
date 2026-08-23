@@ -1,670 +1,697 @@
 ---
 phase: 21-llm-goal-layer-prompt-injection-hardening
-round: 5
-reviewed: 2026-08-22T18:20:00Z
+round: 6
+reviewed: 2026-08-23T03:20:00Z
 depth: deep
-diff_base: 199d334
-head: 1f07923
-previous_round: "Round 4's 21-REVIEW.md is preserved in git at c7bcafb (`git show c7bcafb:.planning/phases/21-llm-goal-layer-prompt-injection-hardening/21-REVIEW.md`). This file replaces it."
-files_reviewed: 23
+diff_base: 0352dda
+head: 7260ac8
+previous_round: "Round 5's 21-REVIEW.md is preserved in git at 5b24022 (`git show 5b24022:.planning/phases/21-llm-goal-layer-prompt-injection-hardening/21-REVIEW.md`). This file replaces it."
+files_reviewed: 20
 files_reviewed_list:
   - src/app.rs
-  - src/cli.rs
+  - src/driver/goal.rs
   - src/driver/mod.rs
   - src/driver/run.rs
+  - src/envelope/cred.rs
+  - src/envelope/hooks.rs
+  - src/envelope/mod.rs
+  - src/error.rs
   - src/journal/mod.rs
   - src/lib.rs
   - src/main.rs
+  - src/registry.rs
   - src/test_support.rs
   - src/text.rs
-  - src/ui/screens/driver.rs
+  - src/ui/screens/add_project.rs
   - tests/driver_dry_run.rs
-  - tests/driver_escalation_cap.rs
   - tests/driver_goal_seam.rs
-  - tests/driver_inbox.rs
-  - tests/driver_iteration_loop.rs
-  - tests/driver_lock.rs
   - tests/driver_optin.rs
-  - tests/driver_rate_limit.rs
-  - tests/driver_refusal_record.rs
-  - tests/driver_tracer.rs
-  - tests/envelope_wiring.rs
-  - tests/journal_run_paths.rs
+  - tests/registry_test.rs
   - tests/spawn_seam_guard.rs
 files_read_but_unchanged_this_round:
-  - src/registry.rs
-  - src/driver/spawn.rs
-  - src/driver/goal.rs
-  - src/envelope/mod.rs
+  - src/cli.rs
+  - src/journal/writer.rs
+  - src/envelope/policy.rs
+  - tests/driver_injection_corpus.rs
 findings:
   critical: 1
-  warning: 6
-  info: 5
-  total: 12
+  warning: 5
+  info: 3
+  total: 9
 status: issues_found
 ---
 
-# Phase 21 Round 5: Code Review Report
+# Phase 21 Round 6: Code Review Report
 
-**Reviewed:** 2026-08-22T18:20:00Z
-**Depth:** deep (cross-file; import graph, call chains, end-to-end binary reproduction)
-**Diff base:** `199d334` → `1f07923` (10 commits, 2 plans)
-**Round 4's review:** preserved at `c7bcafb`; this file replaces it.
+**Reviewed:** 2026-08-23T03:20:00Z
+**Depth:** deep (cross-file; call chains, predicate composition, end-to-end binary reproduction, guard-scanner re-execution against fresh plants)
+**Diff base:** `0352dda` → `7260ac8` (13 commits; `ca1956b` ignored as unrelated)
+**Round 5's review:** preserved at `5b24022`; this file replaces it.
 **Status:** issues_found — **1 Critical, reproduced end to end against the built binary.**
 
 ## Summary
 
-Round 5's three structural anchors are real and I could not break them.
-`DriveArgs`'s six argv string fields are `payload::NonBlank` (verified: 0 raw,
-9 `payload::NonBlank` mentions in the struct body); `NonBlank`'s privacy was
-not widened (exactly `new` + `as_str`, private tuple field, no `From`, no
-`into_inner`, no serde, no `Deref`/`AsRef`); `from_argv`'s destructure has no
-`..`; `execute_run` resolves its source at `run.rs:2442-2447`, above
-`establish_own_group`, the envelope, the lock and `JournalRun::start`; both
-`(None, None) => String::new()` arms are gone and `iteration_source` is total
-over `IterationSource` without fabricating a case; the `(None, None)` goal arm
-is spelled as the explicit `match` guard eight's needle requires; and
-`is_plain_path_component` kept both the `is_control()` refusal and the
-`Component::Normal` traversal check while replacing only the `trim` short-circuit.
-`post_marker_offenders` carries the `scanned_files` floor out of the extraction
-and the synthetic control calls that same function. All four literal-grep
-acceptance criteria read the numbers the plans specify.
+The sixth defect of the family exists, and it is one level below where the last
+five were found. Rounds 2–4 hand-enumerated **arms**; round 5 hand-enumerated
+**fields**; round 6 correctly stopped hand-enumerating either — and then
+hand-enumerated the **character class itself**.
 
-**And the fifth defect of the family is there.** It is not on `DriveArgs`. It is
-on the *other* argv path that ends in a filesystem path: `gsd-meta-manager add
-<path> <alias>`. `registry::add_project` judges alias blankness with
-`alias.is_empty() || alias.contains(char::is_whitespace)` — a **fourth**
-production spelling of "blank", untouched by the unification, and precisely the
-`trim`-class predicate CR-02 was about. I registered an alias of one `U+200B`
-and two visually identical aliases pointing at two different projects against
-the binary built from `1f07923`. That falsifies 21-15's must-have truth 4
-("exactly ONE production spelling of the invisibility judgment exists") and
-truth 5 ("the same predicate governs registry aliases … two visually identical
-aliases can no longer resolve to two different envelope paths"), and leaves
-threat T-21-15-02 (severity **high**, disposition **mitigate**) only half
-mitigated.
+`text::is_invisible_formatting_char` (`src/text.rs:75-77`) spells three literal
+ranges. Nine values that all render as `demo` in a terminal registered as nine
+distinct registry keys against the binary built from HEAD, including the
+Unicode bidi-override block (U+202A–U+202E — Trojan Source, CVE-2021-42574) and
+the Unicode tag block (U+E0000–U+E007F — the standard LLM "ASCII smuggling"
+carrier, in a *prompt-injection-hardening* phase). The failure signature is the
+one the round was designed against, verbatim: **round 6's clause covers exactly
+the characters pass 6 had reproduced (U+200B, U+200C, U+FEFF) and misses the
+class that was only named** ("zero-width and format characters" — the doc's own
+words at `src/text.rs:91-96`). Must-have truth 8, the backstop —
+*"No registry key, envelope root, credential scope, run directory name, or
+accepted phase token created by this build differs from another only by
+invisible formatting characters"* — is measurably false at HEAD.
 
-Two of the round's own anti-recurrence mechanisms also do less than their docs
-say: `one_of_each` produces **no compile error at all** for a fourth
-`CommandSource` variant (WR-01, reproduced), and guard nine's field scanner is
-blind to `pub(crate)`, to `Box<str>`/`Cow<str>`/`&str`/`OsString`, and to a
-trailing `//` comment (WR-02, reproduced) — including the exact `pub(`
-spelling the sibling guard in the same file was widened for four commits later.
+Structurally, everything else this round built is sound and I could not break it.
+`registry::Alias` is a real newtype with a genuinely delegating constructor and
+the fourth predicate is deleted rather than relocated; the compiler now makes an
+unjudged alias unrepresentable at both registration signatures; `AliasNotVisible`
+correctly stops narrating the registry; the shared `is_invisible_formatting_char`
+is genuinely shared (claim A's first half holds); guard nine's deny-by-default
+`OsString` rule is genuinely deny-by-default and not a protected-name list in
+disguise (claim C holds as designed); guard ten's census is exact-count with a
+same-extracted-fn control and the count of 8 is independently correct;
+`one_of_each` is now honest and no fictitious mechanism was substituted (claim E
+holds); the acceptance matrix's exemption is gone. **Criterion 1 has not
+regressed** — see the negative-evidence section, which is the longer half of this
+report.
 
-Gates at HEAD, measured independently: `cargo build --all-targets` clean;
-`cargo clippy --lib -- -D warnings` clean; `cargo test --workspace
---no-fail-fast -- --test-threads=2` exit 0, no failures, no flake this run.
-A green suite is exactly what all four previous cycles had.
+The Warnings are all of one kind: **mechanisms whose stated coverage exceeds
+what their committed controls measure** — which is precisely the class 21-18
+exists to end, recurring inside 21-18's own artifacts. Two of them
+(`is_field_opener`, the `OSSTRING_ALLOWED` early return) I reproduced by
+compiling and running guard nine's own extracted functions against fresh plants.
 
 ---
 
-## Structural anchors — what I tried that failed to break them
+## Critical Issues
 
-Negative evidence, since four-for-four makes it the most useful thing here.
-Everything below was measured at `1f07923` through `rtk proxy`.
+### CR-01: The invisible-formatting class is a hand-enumerated subset; nine aliases that render identically all register
 
-| Attempt | Result |
-|---|---|
-| `sed '/pub struct DriveArgs {/,/^}/p' \| grep -c ': String\|Option<String>'` | **0**, control `grep -c 'payload::NonBlank'` → **9**. Extraction non-vacuous. |
-| Escape hatch on `NonBlank` — `pub` field, `From<String>`, `into_inner`, serde, `Deref`, `AsRef` | **None.** `src/driver/mod.rs:546-592` declares `pub struct NonBlank(String)` with a private field and exactly `new`/`as_str`; derives are `Debug, Clone, PartialEq, Eq`. `grep -rn "into_inner\|impl Deref\|impl AsRef"` over `src/` finds nothing on this type. |
-| A blank reaching `run.json` through `make_run_record` | Cannot: `goal`/`target_phase` map from `Option<NonBlank>`; `gsd_command` is `recorded_command(&IterationSource)`, total over two variants (`run.rs:910-915`, `938-943`). |
-| A write before `execute_run`'s refusal | `command_source`+`iteration_source` at `run.rs:2442-2447`; `establish_own_group` at `:2449`, envelope at `:2492`, lock `:2609`, `JournalRun::start` `:2626`. Nothing above `:2442` writes. Corroborated: `~/.local/share/gsd-meta-manager/envelope/demo/` mtime is unchanged (2026-08-21) across a full `--test-threads=2` suite run today. |
-| A `Goal` source fabricating a case in `iteration_source` | `run.rs:734-742` — three arms, `Goal(_) => Err(NoCommandSource)`. No `_` arm, no manufactured value. |
-| The point-free `CommandSource::Goal)` spelling defeating guard eight | Not present: `mod.rs:713-716` is the explicit `match goal { Some(goal) => Ok(CommandSource::Goal(goal.clone())), None => Err(...) }`. Guard eight's per-needle floor passes with all three type-qualified needles matching. |
-| `is_plain_path_component` loosened by the unification | `journal/mod.rs:268-294` keeps `is_control()` (`:283`) and `Component::Normal` + single-component + `name == value` (`:286-293`). Only the `trim` short-circuit moved. |
-| `post_marker_offenders` dropping the non-vacuity floor | It returns `(offenders, scanned_files)`; live assertion asserts `scanned_files >= 10` (`spawn_seam_guard.rs:2166`); the control calls the **same fn** and asserts `scanned_files == 1`. `grep -c "post_marker_offenders("` → 3. |
-| `from_argv` admitting a rest-pattern / builder / `Default` | `mod.rs:409-424` destructures all twelve fields by name; `mod.rs:454-469` constructs all twelve. Confirmed by 21-16's live planted-field experiment (`E0063`). |
-| The four pre-existing `=> String::new()` hits being on a record path | They are not. `executor/outcome.rs:485` is inside a `#[cfg(test)]` envelope-builder helper; `archive.rs:154` is kebab→Title conversion for a display name; `ui/screens/normal.rs:680` is a workstream cue suffix; `ui/screens/detail.rs:3524` is a docs-browser header. The 21-15 SUMMARY's disclosure is **correct**. |
-| The three literal-grep acceptance criteria | `"pub("` → 1; `production style puts items at column zero` → 0; `scanned_files >= 10` → 1; `would keep calling` in `src/driver/mod.rs` → 0. All as specified. |
+**REPRODUCED** — against `target/debug/gsd-meta-manager` at HEAD, twice, with two
+disjoint scratch configs.
 
----
+**File:** `src/text.rs:75-77` (the class), `src/text.rs:101-103` (the judgment),
+`src/journal/mod.rs:309-311` (the seam clause), `src/registry.rs:97-101`
+(`Alias::new` clause 2), `src/test_support.rs:53-57` (the fixture that cannot
+falsify it)
 
-## Critical
-
-### CR-01: `registry::add_project` is a fourth, weaker production spelling of blankness — argv aliases carrying no visible content register, and look-alike aliases resolve to different projects and different envelope roots
-
-**Status: REPRODUCED** end to end against `target/debug/gsd-meta-manager` built from `1f07923`.
-
-**Files:**
-- `src/registry.rs:14-20` (`add_project`) and `src/registry.rs:65-71` (`add_project_unchecked`) — the predicate
-- `src/main.rs:35-57` — the `Add` arm and its exact-match duplicate check at `:45`
-- Falsified claims: `21-15-PLAN.md` `must_haves.truths[4]` and `[5]`; `21-15-SUMMARY.md` coverage row "One production spelling of the invisibility judgment"; threat `T-21-15-02` (high / mitigate)
-
-**Issue.** 21-15's truth 4 states that exactly one production spelling of the
-invisibility judgment exists and enumerates its four consumers
-(`NonBlank::new`, `is_plain_path_component`, `goal_or_none`, `goal_lines`).
-Truth 5 states that "the same predicate governs registry aliases … so two
-visually identical aliases can no longer resolve to two different envelope
-paths." There is a fifth production judge of alias blankness that the round did
-not enumerate, and it is the one that decides what goes *into* the registry:
+**Issue.**
 
 ```rust
-// src/registry.rs:14-20 — and again, verbatim, at :65-71
-if alias.is_empty() { bail!("Alias cannot be empty"); }
-if alias.contains(char::is_whitespace) { bail!("Alias cannot contain whitespace"); }
-```
-
-`U+200B` is neither empty nor `char::is_whitespace`. This is the exact
-`trim`-class weakness CR-02 named, spelled differently, on the argv path
-`gsd-meta-manager add <path> <alias>` — a path the round's own threat table
-lists under "registry aliases → `is_plain_path_component`" and treats as
-governed.
-
-**Reproduction (`1f07923`, `--config` a scratch file).** Every literal
-zero-width character in the transcripts below is rendered as `<U+200B>` so this
-review file itself carries none — a document about invisible characters must not
-smuggle any into the next reader's context. To re-run, substitute
-`$(printf '\u200b')` (bash/zsh) or `(printf '\u200b')` (fish) wherever
-`<U+200B>` appears.
-
-```
-$ gsd-meta-manager --config $CFG add .../projA demo
-Added project 'demo' at .../projA
-$ gsd-meta-manager --config $CFG add .../projB "demo$(printf '<U+200B>')"
-Added project 'demo<U+200B>' at .../projB
-$ gsd-meta-manager --config $CFG add .../projA "$(printf '<U+200B>')"
-Added project '<U+200B>' at .../projA
-
-$ gsd-meta-manager --config $CFG list
-ALIAS                PATH                                               ADDED
-------------------------------------------------------------------------------
-demo                 .../projA                                          2026-08-22...
-demo<U+200B>                .../projB                                          2026-08-22...
-<U+200B>                    .../projA                                          2026-08-22...
-
-$ python3 -c "import json; ..."   # the same file, escaped
-'demo<U+200B>' -> .../projB
-'<U+200B>'     -> .../projA
-'demo'       -> .../projA
-```
-
-Two rows of `list` are byte-different and pixel-identical; a third has an empty
-`ALIAS` column. The duplicate guard at `main.rs:45`
-(`config.projects.contains_key(&alias)`) compares exact bytes, so the look-alike
-is not reported as a duplicate.
-
-Both look-alikes are then **fully drivable and indistinguishable downstream**:
-
-```
-$ ... drive demo --command '/gsd:progress' --dry-run
-Error: the project `demo` has not opted in to being driven; ...
-$ ... drive "demo$(printf '<U+200B>')" --command '/gsd:progress' --dry-run
-Error: the project `demo<U+200B>` has not opted in to being driven; ...
-```
-
-`NonBlank::new("demo\u{200b}")` → `Some` (a `d` is visible), the registry lookup
-hits, and `envelope::envelope_dir_in` → `is_plain_path_component("demo\u{200b}")`
-→ `true` (independently reproduced: see the table under WR-05). So the two
-aliases carry **separate opt-in records and separate envelope roots**
-(`<envelope>/demo/` and `<envelope>/demo\u{200b}/`) while every render an
-operator sees — `list`, the dashboard, the refusal text, `run.json`'s `alias`
-— shows the same four characters. That is exactly the harm T-21-15-02 describes
-("two visually identical aliases resolve to different envelope paths") and the
-harm the round claims to have removed. The driver being authorised here is "an
-autonomous agent with git and push rights"; approving an opt-in for the alias
-you *think* you are looking at is the whole trust act.
-
-The wholly-invisible alias adds a second, round-attributable symptom (see WR-06).
-
-**Fix.** Route both registration predicates through the shared judgment, and
-close the look-alike case at registration rather than downstream:
-
-```rust
-// src/registry.rs, add_project AND add_project_unchecked
-if !crate::text::carries_visible_content(alias) {
-    bail!("Alias must carry at least one visible character");
-}
-// The look-alike half: an alias is a directory name and an identity a human
-// reads back. An embedded zero-width/format character makes two aliases render
-// identically while naming two projects, two opt-ins and two envelope roots.
-if alias.chars().any(|c| {
+fn is_invisible_formatting_char(c: char) -> bool {
     matches!(c, '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}')
-}) {
-    bail!("Alias must not contain zero-width or format characters: two aliases \
-           that render identically would name two different projects");
 }
-if alias.contains(char::is_whitespace) { bail!("Alias cannot contain whitespace"); }
 ```
 
-The second clause belongs in one place — put it beside `carries_visible_content`
-in `src/text.rs` (e.g. `fn carries_invisible_formatting`) so it does not become
-the *fifth* spelling. `is_plain_path_component` should then consume it too
-(see WR-05), which closes the run-id and phase-token halves in the same change.
-Add a matrix-style pin over `test_support::DEGENERATE` plus the look-alike pair.
+Three ranges. The class the doc claims — *"zero-width and format characters"*
+(`src/text.rs:91-96`, `src/journal/mod.rs` correction-list entry 4, and
+`AliasRefusal::InvisibleFormatting`'s message at `src/registry.rs:61-70`) — is
+General_Category `Cf` plus the zero-width combining marks. The gap between the
+two literal ranges (U+2010–U+205F) contains **U+202A–U+202E**, the bidi
+embedding/override block, and **U+2066–U+2069**, the bidi isolates. Everything
+above U+FEFF is missing entirely, including the tag block.
+
+Reproduction, verbatim, against a scratch config and one fixture project:
+
+```
+$ for a in demo demo+U+202E demo+U+202D demo+U+2066 demo+U+2069 \
+           demo+U+061C demo+U+FE0F demo+U+E0001 demo+U+13430 demo+U+200B ; do
+      gsd-meta-manager --config <scratch> add <fixture> "$a" ; done
+
+BASELINE demo                  exit=0
+U+202E RLO (Trojan Source)     exit=0
+U+202D LRO                     exit=0
+U+2066 LRI                     exit=0
+U+2069 PDI                     exit=0
+U+061C ALM                     exit=0
+U+FE0F VS16                    exit=0
+U+E0001 LANGUAGE TAG           exit=0
+U+13430 EGYPTIAN Cf            exit=0
+REFUSED CONTROL U+200B         exit=1        <- the only one refused
+
+registry keys (9):
+   'demo'            'demo\u061c'       'demo\u202d'       'demo\u202e'
+   'demo\u2066'      'demo\u2069'       'demo\ufe0f'       'demo\U00013430'
+   'demo\U000e0001'
+```
+
+A second independent probe added U+E0041 (tag), U+00AD (soft hyphen), U+034F
+(CGJ), U+180E (Mongolian vowel separator) and U+FFF9 (interlinear annotation
+anchor) — all `exit=0`, all seven keys rendering as `demo` in `list`:
+
+```
+$ gsd-meta-manager --config <scratch> list | cat -A
+demo                 /…/proj  2026-08-23T03:00:03…
+demoM-BM--           /…/proj  2026-08-23T03:00:03…      # U+00AD
+demoM-MM-^O          /…/proj  2026-08-23T03:00:04…      # U+034F
+demoM-aM- M-^N       /…/proj  2026-08-23T03:00:04…      # U+180E
+demoM-oM-8M-^@       /…/proj  2026-08-23T03:00:03…      # U+FE00
+demoM-oM-?M-9        /…/proj  2026-08-23T03:00:04…      # U+FFF9
+demoM-sM- M-^AM-^A   /…/proj  2026-08-23T03:00:03…      # U+E0041
+```
+
+**Every seam this round closed is reopened for the uncovered part of the class**,
+because they all read one predicate:
+
+| Seam | Judge | Status for U+202E / U+E0041 / U+FE0F / U+00AD |
+|---|---|---|
+| registry key | `Alias::new` clause 2 → `carries_invisible_formatting` | **accepted** (reproduced above) |
+| envelope root | `envelope_dir_in` → `is_plain_path_component` | **accepted** — proven: `Alias::new` clause 4 *is* `is_plain_path_component`, and it returned `Ok` |
+| credential scope | hangs off `envelope_dir` | **accepted**, same proof |
+| run directory | `run_paths` → `is_plain_path_component` (`src/journal/mod.rs:355`) | **accepted**, same predicate |
+| phase token | `goal::legality` → `is_plain_path_component` (`src/driver/goal.rs:667`) | **accepted** by the predicate; falls back to roadmap membership — i.e. back to the *coincidental reliance* SAFE-08's pin was written to eliminate |
+
+**The bidi half is worse than "renders as nothing."** U+202E does not merely
+disappear — it reorders the text after it. `list`, the TUI project table, and
+`judged_alias_or_exit`'s refusal (`src/main.rs:33-47`, which prints the alias
+through `Display`, not `Debug`) all render the raw alias, so an alias
+`gsd-\u{202E}nur` renders as `gsd-run` while being a different key. That is a
+terminal-spoofing vector in the tool's primary identity display, added by an
+`add` that exits 0.
+
+**Why nothing in the tree could catch it, stated as the systemic cause.**
+`test_support::LOOK_ALIKE_PAIRS` is built entirely from U+200B and U+FEFF —
+i.e. entirely from inside the predicate's own ranges — so the fixture can only
+ever agree with the implementation. Its doc (`src/test_support.rs:49-52`)
+explicitly claims the opposite: *"an enumeration derived from
+`carries_invisible_formatting`'s own structure could not contain a pair that
+predicate mishandles (round-3 WR-03's tautology)."* Constructed from literals it
+may be; drawn from the predicate's own coverage it certainly is. This is WR-03's
+tautology re-entering one level down, and it is the reason a green suite (1346/0)
+sits on top of a reproduced harm for the sixth consecutive round.
+
+**Fix.** Replace the literal ranges with a class, and make the class checkable by
+a mechanism rather than a list:
+
+```rust
+/// Every code point that is default-ignorable, a bidi control, or a
+/// zero-width combining mark. Derived from a checked-in Unicode data table,
+/// not hand-written — a hand list is exactly how this shipped as a subset.
+fn is_invisible_formatting_char(c: char) -> bool {
+    matches!(c,
+        '\u{00ad}'                       // SOFT HYPHEN
+        | '\u{034f}'                     // COMBINING GRAPHEME JOINER
+        | '\u{061c}'                     // ARABIC LETTER MARK
+        | '\u{115f}'..='\u{1160}'        // HANGUL FILLERS
+        | '\u{17b4}'..='\u{17b5}'
+        | '\u{180b}'..='\u{180f}'        // MONGOLIAN FVS / VOWEL SEPARATOR
+        | '\u{200b}'..='\u{200f}'        // ZW SPACE..RLM
+        | '\u{202a}'..='\u{202e}'        // BIDI EMBEDDING / OVERRIDE  <-- new
+        | '\u{2060}'..='\u{2064}'
+        | '\u{2065}'..='\u{206f}'        // reserved-DI + deprecated fmt <-- new
+        | '\u{3164}' | '\u{feff}' | '\u{ffa0}'
+        | '\u{fff0}'..='\u{fffb}'        // incl. interlinear annotation <-- new
+        | '\u{fe00}'..='\u{fe0f}'        // VARIATION SELECTORS         <-- new
+        | '\u{13430}'..='\u{1343f}'      // EGYPTIAN FORMAT CONTROLS    <-- new
+        | '\u{1bca0}'..='\u{1bca3}'
+        | '\u{1d173}'..='\u{1d17a}'
+        | '\u{e0000}'..='\u{e0fff}'      // TAGS + VARIATION SELECTORS  <-- new
+    )
+}
+```
+
+and add the mechanism the fixture cannot supply — a property test over a
+checked-in corpus, so the class can never silently be a subset again:
+
+```rust
+/// Every Unicode code point whose General_Category is `Cf`, plus the
+/// variation selectors and U+034F, read from `tests/data/invisible.txt`
+/// (generated from UCD `DerivedCoreProperties.txt`, Default_Ignorable_Code_Point).
+/// A fixture built from the predicate's own ranges can only agree with it —
+/// this one is derived from the STANDARD, so it can falsify.
+#[test]
+fn every_default_ignorable_code_point_is_refused() {
+    for c in unicode_default_ignorable_corpus() {
+        assert!(
+            carries_invisible_formatting(&format!("demo{c}")),
+            "U+{:04X} renders as nothing (or reorders its neighbours) and must \
+             not be able to name an identity beside `demo`", c as u32
+        );
+    }
+}
+```
+
+Then extend `LOOK_ALIKE_PAIRS` with at least one member drawn from *outside* the
+current ranges — `("demo", "demo\u{202e}")` and `("demo", "demo\u{e0041}")` —
+so the fixture regains the falsifying power its doc claims.
+
+**Disclosure note.** The doc's TR39/homoglyph carve-out (`src/text.rs:90-96`) is
+correct and should stay — a Cyrillic `а` is genuinely a different problem. None
+of the nine values above is a homoglyph; every one of them is default-ignorable
+or a bidi control, i.e. squarely inside the class the doc says it covers.
 
 ---
 
 ## Warnings
 
-### WR-01: `one_of_each` is not a second anchor — a fourth `CommandSource` variant is a compile error in exactly ONE place, and the set-equality pin stays green with the variant unswept
+### WR-01: Guard nine is blind to a field declared without `pub` — the same measurement signature as pass 6's, in a spelling neither SEEN nor SILENT names
 
-**Status: REPRODUCED** (standalone `rustc` program mirroring the shipped shape).
+**REPRODUCED** — by extracting guard nine's own `raw_string_argv_fields`,
+`judge_declaration`, `drive_args_body`, `names_token`, `names_string_payload`,
+`without_trailing_comment`, `declared_field_name`, `is_field_opener` and
+`synthetic_file` **verbatim** into a standalone binary and running them.
 
-**File:** `src/driver/mod.rs:2058-2084` (the doc and the fn), `:2086-2127` (the pin).
-**Falsified:** `21-16-PLAN.md` `must_haves.truths[3]` — "a fourth variant is a
-compile error in TWO places (`variant_name`, `one_of_each`)" — and the fn's own
-doc at `:2067-2072`: "a fourth variant is a compile error HERE too, in two ways:
-the array's declared length and the missing construction."
+**File:** `tests/spawn_seam_guard.rs:2992-2994` (`is_field_opener`),
+`:2766-2784` (the SILENT list that omits it), `:3309-3315` (the floor filter that
+inherits it)
 
-**Issue.** `one_of_each` constructs three variants into a `[…; 3]`. Neither
-mechanism it claims exists. An array of declared length 3 holding 3 entries is
-satisfied whatever the enum's arity; there is no exhaustiveness constraint of
-any kind on a function that merely *constructs* values. Only `variant_name`'s
-wildcard-free `match` errors.
-
-So the sequence a fourth variant actually produces is: `variant_name` fails to
-compile → the editor adds one arm → `one_of_each` still builds 3 →
-`ALL_VARIANT_NAMES.len() == 3 == built.len()` → the sorted name sets are equal
-→ `all_variant_names_matches_the_variant_set_in_both_directions` **passes**, and
-the matrix's coverage assertion at `:2317` (`for expected in ALL_VARIANT_NAMES`)
-sweeps three of four. That is pass-5 warning 4, verbatim, in the test written to
-close it.
-
-Reproduction output (four-variant enum, `one_of_each` unchanged):
+**Issue.** `is_field_opener` is `trimmed.starts_with("pub ") || trimmed.starts_with("pub(")`.
+A field declared with no visibility modifier opens neither. Fed the exact
+twelve-field body from the guard's own floor probe plus one bare private field:
 
 ```
-all_variant_names_matches_the_variant_set_in_both_directions: PASSES
-  ...with a FOURTH variant ("Resumed") constructed nowhere and swept nowhere.
+12 pub fields + 1 BARE PRIVATE String field:
+  offenders          = []
+  floor field_lines  = 12  (>=10 ? true)
+  protected NonBlank = 6   (>=6 ? true)
 ```
 
-**Fix.** Make the pairing exhaustive by *destructuring*, so the compiler is the
-enumerator rather than a length literal:
+That is `field_lines=12 protected=6 offenders=[]` — character for character the
+signature pass 6 recorded for `pub(crate)` and that this round's control test
+now pins as fixed. The `pub(crate)`/`pub(super)` spellings were reproduced by
+the verifier and are now covered; the bare spelling was never planted and is not
+in the SEEN list, not in the SILENT list, and not bounded by anything the guard
+asserts. What actually stops it today is that thirteen integration crates build
+`DriveArgs { … }` as struct literals and a private field breaks all thirteen —
+which is exactly the "thirteen-fixture-file coincidental compile bound" that
+`21-18-SUMMARY.md` named-shape row 15 reports as **retired**. It is retired for
+the two payload-type spellings pass 6 measured; it is intact and load-bearing for
+this one.
+
+**Fix.** One line in the shared helper, one plant in the control, one line in the
+limits block:
 
 ```rust
-fn one_of_each() -> Vec<(&'static str, CommandSource)> {
-    // Exhaustive by construction: adding a variant makes this `match` a compile
-    // error, and the arm it forces is the construction the sweep needs.
-    fn named(source: CommandSource) -> (&'static str, CommandSource) {
-        let name = match &source {
-            CommandSource::Command(_) => "Command",
-            CommandSource::Routed(_) => "Routed",
-            CommandSource::Goal(_) => "Goal",
-        };
-        (name, source)
-    }
-    vec![
-        named(CommandSource::Command(visible("x"))),
-        named(CommandSource::Routed(visible("x"))),
-        named(CommandSource::Goal(visible("x"))),
-    ]
+fn is_field_opener(trimmed: &str) -> bool {
+    // A field needs no visibility modifier at all to be a field. `DriveArgs`
+    // is `pub`, so a private field breaks the thirteen integration fixtures
+    // that build it literally — but that is a coincidence of today's tests,
+    // not a property, and this guard is what makes the property real.
+    trimmed.starts_with("pub ")
+        || trimmed.starts_with("pub(")
+        || trimmed
+            .split_once(':')
+            .is_some_and(|(name, _)| {
+                !name.is_empty() && name.bytes().all(|b| is_ident_byte(b))
+            })
 }
 ```
 
-That still does not force the *vec* to grow. The honest anchor is a
-`#[non_exhaustive]`-style trick or a `const ARITY` derived from a
-wildcard-free `match` returning an index — but at minimum the doc and the plan
-truth must stop claiming a compile error that does not exist, per this plan's
-own prohibition 1.
-
-### WR-02: guard nine's field scanner is blind to `pub(crate)`, to every blank-capable string type that is not spelled `String`, and to a trailing `//` comment — and its non-vacuity floor does not bind
-
-**Status: REPRODUCED** (`raw_string_argv_fields` + `drive_args_body` +
-`names_bare_string` extracted verbatim from `tests/spawn_seam_guard.rs:2727-2808`
-into a scratch binary and fed planted declarations).
-
-**Files:** `tests/spawn_seam_guard.rs:2743` (`!trimmed.starts_with("pub ")`),
-`:2749` (`!joined.ends_with(',')`), `:2790-2804` (`names_bare_string`),
-`:2918-2924` (the floor's own `starts_with("pub ")` filter),
-`:2694-2712` (the limits block).
-
-**Issue.** Guard nine is the round's textual witness for "a seventh argv field
-cannot be added raw." Measured against planted declarations, the shapes it
-misses are:
-
-| Planted field on `DriveArgs` | Guard nine |
-|---|---|
-| `pub goal_file: String,` | reported |
-| `pub goal_file: Option<String>,` | reported |
-| `pub(crate) goal_file: Option<String>,` | **SILENT** |
-| `pub(super) goal_file: Option<String>,` | **SILENT** |
-| `pub goal_file: Option<Box<str>>,` | **SILENT** |
-| `pub goal_file: Option<Cow<'static, str>>,` | **SILENT** |
-| `pub goal_file: Option<&'static str>,` | **SILENT** |
-| `pub goal_file: Option<OsString>,` | **SILENT** (by design) |
-| `pub goal_file: Option<String>, // seventh` (last field) | **SILENT** |
-
-And the floor does not save it. Fed a full twelve-field `DriveArgs` body with
-one extra `pub(crate) goal_file: Option<String>`:
-
-```
-D offenders=[] field_lines=12 protected=6 -> guard verdict: PASSES (silent)
-```
-
-Three separate problems:
-
-1. **`pub(`.** This is the *exact* spelling `ITEM_OPENERS` was widened for in
-   commit `2eefa73`, four commits after guard nine landed in `40a137e`, because
-   "the tree carries 51 column-zero items in exactly that spelling — the
-   dominant restricted-visibility style" (`spawn_seam_guard.rs:1993-1997`). One
-   guard in this file learned the lesson this round; the guard added in the same
-   round did not. What currently prevents a `pub(crate)` field on `DriveArgs` is
-   an *accident*: twelve integration-test files still build `DriveArgs { … }`
-   literally (`grep -rc "DriveArgs {" tests/*.rs`), so the field would break
-   them. That is coincidental reliance — the same thing pass 5 flagged as
-   T-21-15-04 for `alias` and `approved_plan`.
-2. **`names_bare_string` only knows `String`.** `Box<str>`, `Cow<str>`,
-   `&'static str` and `OsString` all hold `""` and all pass. `OsString` is not
-   hypothetical: `DriveArgs` **already carries** `claude_args: Vec<OsString>`,
-   and `OsString` is the type argv actually arrives in. None of these is named
-   in the limits block, which lists only the `type`-alias gap (limit 1) and the
-   declaration-style gap (limit 2) — so this is a silent under-detection the
-   guard's header does not disclose, which is 21-16's own prohibition 1.
-3. **The trailing-comment / last-field interaction.** `joined.ends_with(',')`
-   is false for `pub goal_file: Option<String>, // seventh`; the accumulator
-   holds it pending, `drive_args_body` breaks at the closing `}`, and the
-   pending declaration is dropped. Mid-struct it is reported but *swallows the
-   next field line* into the joined text, so attribution is wrong there too.
-
-**Fix (all three, small):**
+plus, in `the_raw_argv_field_scanner_sees_every_measured_silent_spelling`:
 
 ```rust
-// 1. tests/spawn_seam_guard.rs:2743 and :2921
-let is_field = (trimmed.starts_with("pub ") || trimmed.starts_with("pub("))
-    && trimmed.contains(':');
-
-// 2. widen the needle set, and say so in the limits block
-fn names_a_string_type(text: &str) -> bool {
-    ["String", "str"].iter().any(|needle| names_word(text, needle))
-        && !text.contains("OsStr")   // …or drop the exemption and allowlist
-}                                     //    claude_args by field NAME instead
-
-// 3. strip a trailing line comment before the ends_with(',') test, and flush
-//    `pending` when the body ends
-let trimmed = trimmed.split("//").next().unwrap_or(trimmed).trim_end();
+let bare = planted_with(&["    goal_file: Option<String>,"]);
+assert_eq!(raw_string_argv_fields(&bare).len(), 1,
+    "a field needs no `pub` to be a field. Bounded today only by thirteen \
+     integration crates building `DriveArgs` literally — a coincidence, not \
+     a property. Got: {:?}", raw_string_argv_fields(&bare));
 ```
 
-Then add control arms for `pub(crate)`, `Option<Box<str>>` and the
-trailing-comment shape beside the existing planted-field control at `:2817`, so
-each new claim is a measured fact.
+### WR-02: `OSSTRING_ALLOWED`'s early return plus a substring integrity pin lets an allowlisted field carry a raw `String` payload undetected
 
-### WR-03: the CR-01 tracer's "nothing created" assertion cannot see the envelope half of the property it exists to hold
+**REPRODUCED** — same standalone harness, guard nine's own functions.
 
-**Status: INFERRED** (mechanism verified by reading; not reproduced, because
-reproducing it requires reordering production code).
+**File:** `tests/spawn_seam_guard.rs:2859-2866` (`judge_declaration`'s early
+return), `:3343-3367` (the integrity pin)
 
-**Files:** `src/driver/run.rs:3788-3797` (the assertion), `:2418-2447` (the
-property it guards), `src/envelope/mod.rs:175-181` (`envelope_root`).
-
-**Issue.** The fix's own doc says a run with nothing executable "now leaves no
-group moved, **no envelope**, no lock file, no run directory, no record and no
-journal" (`run.rs:2431-2434`). The test asserts one thing:
+**Issue.** `judge_declaration` short-circuits:
 
 ```rust
-let runs_root = root.path().join(".planning/meta-manager");
-assert!(!runs_root.exists(), …);
-```
-
-`establish_envelope` writes to `envelope_root()` —
-`GSD_MM_ENVELOPE_ROOT` or `dirs::data_local_dir()/gsd-meta-manager/envelope/`
-— which is **outside the project root by construction** (`envelope/mod.rs:13`
-says so in as many words). `hooks::write_exclude_block` would write to
-`<project>/.git/info/exclude`, but the fixture's temp project has no `.git`
-(`opted_in_entry` creates only `.planning`), so that branch is skipped too.
-
-Consequence: move `let argv_source = command_source(…)` from `run.rs:2442` back
-below `establish_envelope` at `:2492` — a plausible refactor, and the exact
-regression the fix exists to prevent — and
-`a_run_with_no_command_source_writes_nothing_before_refusing` **stays green**
-while every `cargo test --lib` writes hook stubs, `settings.json`, `gitconfig`
-and `askpass` into the developer's real `~/.local/share/gsd-meta-manager/envelope/demo/`.
-The 21-15 SUMMARY's residual 4 records that the red-arm commit did exactly that
-("writes an envelope into the real user data directory unless
-`GSD_MM_ENVELOPE_ROOT` is set") — the executor saw the interaction and did not
-turn it into an assertion.
-
-**Fix.** Point the test at a temp envelope root and assert its absence in the
-same breath:
-
-```rust
-let envelope_root = root.path().join("envelope-root");
-std::env::set_var(crate::envelope::ENVELOPE_ROOT_ENV, &envelope_root);
-// … call execute_run …
-assert!(
-    !envelope_root.exists(),
-    "a refused run must establish no envelope either — the source is resolved \
-     ABOVE `establish_envelope`, and an assertion scoped to .planning/ cannot \
-     see that half of the property. Found:\n{}",
-    surviving_artifacts(&envelope_root)
-);
-```
-
-(Use a serialised env guard, or thread the root through the fixture, so
-parallel tests do not race on the process-wide variable.)
-
-### WR-04: the standing guard for prohibition 2 scans `src/` only while its name and its message claim tree-wide uniqueness — and three different hand-copied blank-shape subsets live in `tests/`
-
-**Status: REPRODUCED** (grep).
-
-**Files:** `tests/spawn_seam_guard.rs:3067-3097`
-(`the_degenerate_payload_set_is_spelled_in_exactly_one_place`), `:219-230`
-(`source_files`, rooted at `SRC_ROOT`); offenders at
-`tests/driver_dry_run.rs:611`, `tests/driver_dry_run.rs:704`,
-`tests/driver_goal_seam.rs:335`.
-
-**Issue.** This is the adjudication the executor asked for (21-15-SUMMARY
-residual 1), and the answer is: **yes, the check is narrower than its words, and
-it matters.**
-
-```
-tests/driver_dry_run.rs:611:    for blank in ["", "   "] {                       # 2 of 6
-tests/driver_dry_run.rs:704:    for blank in ["   ", "\t", "\n  \n", ""] {       # 4 of 6
-tests/driver_goal_seam.rs:335:  for blank in ["", "   \t ", "\u{200b}", "\u{feff}"] {  # a DIFFERENT 4 of 6
-```
-
-Three pins, three different hand-picked subsets, no two the same — which is the
-signature the whole round exists to remove. Two of the three are pins this round
-**retargeted** (`a_blank_command_is_refused_in_preview_and_in_a_real_run`,
-`a_blank_target_phase_is_refused_in_preview_and_in_a_real_run`), so they are
-new assertions about the new boundary that omit the two zero-width shapes the
-round is about. The guard written to make prohibition 2 enforceable is scoped to
-`SRC_ROOT` and reports green; its own failure message says "a blank-shape
-payload list is spelled outside `src/test_support.rs`" while three are.
-
-This is *coverage*, not a hole — the in-crate 7×6 matrix pins every position
-against every shape through `from_argv`, so nothing is unprotected. But a guard
-whose message overclaims its scan is precisely the mechanism 21-16 exists to
-close (its prohibition 1), and it is the third consecutive round in which a
-guard has been green about a region it never read.
-
-**Fix.** The executor identified the one-word fix and declined it on plan
-literalism. Take it:
-
-```rust
-// src/lib.rs — a single `const` of six `&'static str`; no runtime cost, and
-// `#[cfg(test)]` is what scoped the prohibition's check narrower than its words.
-pub mod test_support;
-```
-
-Then have the three pins consume `gsd_meta_manager::test_support::DEGENERATE`,
-and widen the guard's scan to `src/` **and** `tests/` (with `tests/spawn_seam_guard.rs`
-allowlisted for `DEGENERATE_WITNESS`, which it must spell to search for it), or
-narrow its name and message to `src/` and add a limits block saying so.
-
-### WR-05: `is_plain_path_component` still accepts embedded zero-width characters, so two run directories, two phase tokens and two aliases can render identically — the half of CR-02 pass 5 named and this round claims closed
-
-**Status: REPRODUCED** (`carries_visible_content` + `is_plain_path_component`
-extracted verbatim from `src/text.rs:41-47` and `src/journal/mod.rs:268-294`
-into a scratch binary).
-
-**File:** `src/journal/mod.rs:268-294`; claim falsified at
-`21-15-PLAN.md` truth 5 and `src/journal/mod.rs:256-263`.
-
-```
-"demo"          is_plain_path_component=true   renders_as="demo"
-"demo\u{200b}"  is_plain_path_component=true   renders_as="demo"
-"de\u{200b}mo"  is_plain_path_component=true   renders_as="demo"
-"demo\u{feff}"  is_plain_path_component=true   renders_as="demo"
-"\u{200b}"      is_plain_path_component=false
-"   "           is_plain_path_component=false
-```
-
-The unification closed the **wholly**-invisible case (which is what pass 5
-reproduced: a run directory whose entire name was one `U+200B`). It did not
-close the case pass 5 named in the same sentence — *"a successful, persisted,
-terminal run record that no human can … distinguish from a sibling run called
-`abc` vs `abc\u{200b}`"*. Truth 5's wording ("two visually identical aliases can
-**no longer** resolve to two different envelope paths") is therefore an
-overclaim, and it is the wording a sixth reviewer will read as closed.
-
-The blast radius is the same seven call sites CR-02 listed: `--run-id`
-(`driver/mod.rs:1079`, `journal/mod.rs:329`, `journal/writer.rs:491`), registry
-aliases (`main.rs:263`, `envelope/mod.rs:204`, `envelope/cred.rs:758`) and the
-model-supplied phase token (`goal.rs:667`).
-
-**Fix.** One added clause in the shared module, consumed by
-`is_plain_path_component` and by CR-01's registration check, so there is still
-one spelling:
-
-```rust
-// src/text.rs
-/// Whether `value` contains a character that renders as nothing while changing
-/// the value's identity. A NAME made of visible characters plus an invisible
-/// one is a second name for the first — two run directories, two envelope
-/// roots, one thing on screen.
-pub fn carries_invisible_formatting(value: &str) -> bool {
-    value.chars().any(|c| {
-        matches!(c, '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}')
-    })
+if names_token(type_text, "OsString") {
+    let name = declared_field_name(&joined);
+    if !OSSTRING_ALLOWED.contains(&name) { out.push((start, joined)); }
+    return;                                   // <-- String never examined
 }
-
-// src/journal/mod.rs, after the is_control() refusal
-if crate::text::carries_invisible_formatting(value) { return false; }
+if names_string_payload(type_text) { out.push((start, joined)); }
 ```
 
-Pin `("demo", "demo\u{200b}")` as a look-alike pair in the journal's
-both-directions test, and re-run the acceptance list (`"20"`, `"2.1"`,
-`"2026-08-19T12-00-00Z-aaaa"`, `"demo"`, `"99"`) — none contains a format
-character, so nothing legitimate regresses.
-
-### WR-06: `list` shows a project that `drive` says is not registered — a round-attributable inconsistency from D-15-4
-
-**Status: REPRODUCED** (same run as CR-01).
-
-**Files:** `src/driver/mod.rs:426-432` (the alias refusal, hoisted above the
-lookup by D-15-4), `src/registry.rs:14-20`, `src/main.rs:64-81`.
+so a type that names `OsString` **and** a raw payload, on an allowlisted name, is
+suppressed wholesale. The live assertion's "cannot be silently repurposed" pin
+(`:3358`) is `declaration.1.contains(expected_type)` — a **substring** test — so
+it also passes:
 
 ```
-$ ... list
-<U+200B>                    .../projA          2026-08-22...
-$ ... drive "$(printf '<U+200B>')" --command '/gsd:progress' --dry-run
-Error: no project is registered under the alias `<U+200B>`
+claude_args repurposed to (Vec<OsString>, String):
+  offenders                              = []
+  integrity pin contains("Vec<OsString>") = true
 ```
 
-The project **is** registered — `config.json` holds the key — but D-15-4 moved
-the supplied-but-blank refusal above the registry lookup and reuses
-`OptInError::UnknownAlias`, so the message states a falsehood about the
-registry's contents. Before this round the alias reached the lookup, matched,
-and produced the truthful opt-in refusal. The flagged DRIVE-01 assumption in
-21-15's edge-probe audit ("moving supplied-but-blank refusals ahead of the
-registry lookup … does not change any behavior a consumer depends on") is
-narrowly true — nothing is created either way — but the *message* regressed, and
-a refusal that misdescribes durable state is the class this phase is about.
+`21-18` truth 1 and the prohibition-3 table both certify that "an allowlist entry
+cannot be silently repurposed." Measured: it can. (`claude_program` is not
+exposed — `Option<PathBuf>` names no `OsString`, so it falls through to the
+`String`/`str` check and *is* reported. The hole is specific to the branch that
+returns early.)
 
-**Fix.** Closing CR-01 removes the ability to create such an entry going
-forward. For entries already in a user's config, give the boundary its own
-refusal rather than borrowing `UnknownAlias`:
+**Fix.** Do not return early, and make the integrity pin an equality:
 
 ```rust
-let alias = payload::NonBlank::new(&alias)
-    .ok_or(DriveError::AliasNotVisible { alias })?;
-// Display: "the alias {alias:?} carries no visible character, so it names no
-// project a human can read back — `list` may show it; it cannot be driven."
+if names_token(type_text, "OsString") && OSSTRING_ALLOWED.contains(&declared_field_name(&joined)) {
+    // Suppressed for the OsString itself — but a payload type sharing the
+    // declaration is a different offence and is still judged.
+    if names_string_payload(type_text) { out.push((start, joined)); }
+    return;
+}
 ```
+
+```rust
+let declared_type = declaration.1.trim()
+    .split_once(':').map(|(_, t)| t.trim().trim_end_matches(','))
+    .unwrap_or("");
+assert_eq!(declared_type, expected_type,
+    "`{name}` is on OSSTRING_ALLOWED because it declares EXACTLY \
+     `{expected_type}`; it now declares {declared_type:?}");
+```
+
+### WR-03: `LOOK_ALIKE_PAIRS` is drawn from inside the predicate's own ranges, so it cannot falsify the predicate — while its doc claims it can
+
+**Partly REPRODUCED (CR-01 is the demonstration), partly INFERRED by reading.**
+
+**File:** `src/test_support.rs:49-57`
+
+**Issue.** All three pairs use U+200B or U+FEFF. The doc asserts the
+anti-tautology property WR-03 was written for — that the enumeration is not
+derived from the predicate's structure. It is literal, but it is a *subset of the
+predicate's coverage*, which delivers the same tautology by a different route: no
+pair in the const can be mishandled, so every LOOK_ALIKE assertion at every seam
+(`journal/mod.rs:2836`, `envelope/mod.rs:460`, `registry.rs:641`,
+`text.rs:185`, `tests/registry_test.rs:99`) passes for any implementation that
+covers those two characters and nothing else. CR-01 is what that costs.
+
+**Fix.** Add pairs from outside the current ranges and state the rule at the
+const: *every pair must include at least one member the predicate does not
+already cover by construction* — e.g. `("demo", "demo\u{202e}")`,
+`("demo", "demo\u{e0041}")`, `("demo", "demo\u{fe0f}")`. With CR-01's fix these
+turn green; without it they turn red, which is the point.
+
+### WR-04: The tree-wide `DEGENERATE` uniqueness guard detects a hand-copied subset only if the subset contains one particular literal; the under-detection direction is undisclosed and its message overclaims
+
+**INFERRED** (direct read of the scan; not planted, because planting requires
+editing the repo and the review is read-only). Trivially reproducible.
+
+**File:** `tests/spawn_seam_guard.rs:3438-3455`, `:3518-3549`
+
+**Issue.** Detection is `executable_hits(&files, degenerate_witness())` where the
+witness is the single literal `"\n  \n"` — the fourth of six `DEGENERATE`
+members. A future hand-copied subset that omits that member —
+`["", "   ", "\t", "\u{200b}"]`, say, which is four of six and exactly the shape
+pass 5 found — is invisible to the scan. The guard's failure message
+(`:3539-3546`) nonetheless reads *"Every blank-shape pin consumes
+`test_support::DEGENERATE`"*, and `21-18` truth 5 certifies *"`DEGENERATE` is
+spelled in exactly one place TREE-WIDE and the guard's message is finally true."*
+Its coverage is one literal wide. The doc names only the over-detection direction
+("no ordinary string literal contains it"); the under-detection direction is not
+named — which is prohibition 3's exact prohibition, inside prohibition 3's own
+round. (No standing violation exists: I censused `grep -rn '"   "' src/ tests/`
+and every hit is prose, a single-value assertion, or the const itself.)
+
+**Fix.** Scan for the set, not one member, and state the residual:
+
+```rust
+/// Two witnesses, because a subset that omits one is the shape pass 5 found.
+/// Anything hand-copying `DEGENERATE` will carry at least one of these.
+fn degenerate_witnesses() -> [String; 2] {
+    [format!("{DEGENERATE_WITNESS_HEAD}{DEGENERATE_WITNESS_TAIL}"),
+     r#""\u{200b}", "\u{feff}""#.to_string()]
+}
+```
+
+plus a limits line: *a hand copy that omits every witness member is silent
+under-detection; the witnesses are chosen as the members no other literal in the
+tree carries.*
+
+### WR-05: `21-18-SUMMARY`'s SAFE-07 qualification misdescribes the ignored set, and omits that the arms' own non-vacuity check is itself ignored
+
+**REPRODUCED** — `cargo test --test driver_injection_corpus -- --list --ignored`.
+
+**File:** `.planning/phases/21-…/21-18-SUMMARY.md:389-401` (record, not source —
+reported because review question G.1 asks for this adjudication)
+
+**Issue.** The SUMMARY states: *"the ignored set is exactly the eight
+`corpus_*_arrives_and_leaves_the_command_unchanged` arms plus the two suppression
+controls."* Measured:
+
+```
+$ cargo test --test driver_injection_corpus -- --list --ignored
+both_arms_of_every_class_comparison_were_really_executed: test
+corpus_delimiter_escape_bare_…            corpus_delimiter_escape_nonce_…
+corpus_encoded_payload_…                  corpus_instruction_override_…
+corpus_multi_turn_deferral_…              corpus_role_confusion_…
+corpus_tool_output_shaping_…
+the_negative_control_…                    the_positive_control_…
+10 tests
+```
+
+There are **seven** such arms, not eight. The tenth ignored test is
+`both_arms_of_every_class_comparison_were_really_executed`
+(`tests/driver_injection_corpus.rs:1045-1046`) — the meta-check that certifies
+the hostile and clean arms both really ran. The SUMMARY's list of pins "that make
+those arms non-vacuous when they are run" omits it, and it is the only one that
+speaks to the comparison's non-vacuity rather than the corpus's.
+
+**Adjudication of G.1.** A structurally-reconfirmed SAFE-07 is **adequate as a
+regression check on this round's diff** — nothing in `0352dda..HEAD` touches the
+corpus, the boundary, or the reader, and the six executed integrity pins
+genuinely prevent the arms from passing by the payload never arriving or the
+binary being absent. It is **not adequate as a reconfirmation of SAFE-07's
+boundary**, and the corpus-integrity pins are *not* sufficient to make the arms
+non-vacuous when eventually run, because the check that both arms executed is in
+the ignored set with them. Carry as an open item: SAFE-07's boundary has not
+been executed end-to-end in any pass of this phase. Marking the coverage entry
+`partial` was right; the enumeration backing it needs correcting.
+
+**Fix.** Correct the sentence to "seven class arms, the two suppression controls,
+and `both_arms_of_every_class_comparison_were_really_executed` — the last of
+which is the arms' own non-vacuity check and did not execute either," and record
+"SAFE-07 boundary never executed live" in `deferred-items.md` rather than in a
+SUMMARY qualification.
 
 ---
 
 ## Info
 
-### IN-01: the padded-form matrix hand-exempts `--alias` and `--run-id` on a rationale that does not apply to the function under test
+### IN-01: The CR-01 tracer's envelope half skips silently when `envelope_root()` is `None`
 
-**File:** `src/driver/mod.rs:2560-2580`, specifically `:2563-2566`.
+**File:** `src/driver/run.rs:3840`
 
-`one_visible_character_is_accepted_in_every_argv_position` narrows two of seven
-columns to `&["x"]`, on the reasoning that "both are composed into path
-components downstream, where `is_plain_path_component` answers a stricter
-structural question that is not this test's subject." But the function under
-test is `DriveArgs::from_argv`, which never calls `is_plain_path_component` for
-either field — `NonBlank::new` is the only judge (`mod.rs:426`, `:437`). All
-four padded payloads (`"x"`, `" x "`, `"\u{200b}x"`, `"x\u{feff}"`) would be
-accepted. The exemption costs two columns of coverage for a reason that does not
-bear on the assertion, which is structurally the cycle-3 defect ("its matrix
-hand-exempted a column on a comment true for 1 of 4 payloads"). Delete the
-branch and sweep all seven columns with all four payloads.
+**Adjudication of G.2 — it is not a silent skip today, and the reasoning is
+sound.** `envelope_dir` returns `None` only when `envelope_root()` does (the
+alias `"cr01-envelope-probe"` is a plain component), and in that case
+`establish_envelope`'s very first line — `hooks::install(alias)?`
+(`src/driver/run.rs:123`) — cannot resolve a root either, so there is genuinely
+nothing for a premature establishment to have written. Verified by reading both
+functions, not taken from the SUMMARY.
 
-### IN-02: guard eight's limits block is numbered 1, 6, 2, 3, 4, 5
+The residual is one step out: nothing asserts the `Some` branch was *taken*. A
+future change to the test harness (a sandboxed CI without `XDG_DATA_HOME`, a
+`#[cfg(test)]` short-circuit in `envelope_root`) would make the envelope half
+vacuous without any test going red, and this test exists precisely because a
+silently-vacuous assertion was the last thing that went unnoticed here.
 
-**File:** `tests/spawn_seam_guard.rs:2380-2423`. The new limit 6 (`Self::`
-needles may match zero sites) was inserted after limit 1's continuation rather
-than after limit 5. Cosmetic, but this block is the artifact prohibition 1 asks
-a reader to audit.
+**Fix.** Two lines:
 
-### IN-03: several assertion messages lost their `\` line continuations and now embed 8–10 space runs in operator-facing text
+```rust
+let envelope_dir = crate::envelope::envelope_dir(CR01_ENVELOPE_PROBE_ALIAS)
+    .expect(
+        "the envelope root must resolve, or this assertion is vacuous. If it \
+         genuinely cannot on this machine, `establish_envelope` could not have \
+         written either — but that must be OBSERVED, not assumed, because a \
+         vacuous half is what this assertion exists to stop.",
+    );
+assert!(!envelope_dir.exists(), …);
+```
 
-**Files:** `tests/driver_goal_seam.rs:1514`, `:1521`, `:1530`, `:1536`, `:1549`;
-`tests/spawn_seam_guard.rs:2132`, `:2136`. Example: `"the fixture must PASS the
-first layer, or this test is re-testing the          predicate instead of the
-bound it exists for"`. These are the messages a future reviewer reads when the
-guard fires.
+### IN-02: Guard ten's census never checks that a table row's variant exists
 
-### IN-04: `main.rs` calls `load_config` before `DriveArgs::from_argv`
+**File:** `tests/spawn_seam_guard.rs:3594-3629`, `:3747-3760`
 
-**File:** `src/main.rs:107` vs `:133`. Adjudicating 21-15-SUMMARY residual 5:
-**both claims check out.** The ordering is pre-existing (`load_config` has
-always preceded `drive`, which needed the config), and it is out of scope. The
-consequence is message ordering only — an unparseable `--config` is refused
-before a blank payload is — and neither path creates anything. Not a finding;
-recorded because the residual asked.
+The live assertion checks the *count* against `src/cli.rs` and the *shape* of
+each judge string, but never that `ARGV_ALIAS_ENTRY_POINTS`'s variant names
+(`"EnvelopeAction::Scan"` etc.) appear in `cli.rs` at all. Renaming a variant, or
+removing one while adding another, leaves the count at 8 and the table stale with
+a row naming a variant that no longer exists. The limits block names the
+declaration-spelling and judge-prose approximations but not this one.
 
-### IN-05: deviation 5 (prose reworded so three literal greps read the specified numbers) lost no assertion — but the criteria, not the response, were the defect
+**Fix.** One loop, and a limits line:
 
-I checked each rewritten paragraph against the property it is supposed to state.
-`spawn_seam_guard.rs:2043-2053` still names both remaining silent gaps, still
-records that gap 2 was live at column zero with 51 instances, and still points
-at the control that bounds it — only the literal sentence
-`"production style puts items at column zero"` is paraphrased. Same for
-`:1993-1997` and `:2159-2171`. **No assertion was lost.** The finding here is
-against the *plan*: an acceptance criterion of the form
-`grep -c "<a sentence of prose>" == 0` makes source text the artifact under
-test, which invites exactly the "edit the prose to satisfy the grep" move the
-executor was forced into and correctly disclosed. Future plans should assert
-behaviour (a control that plants the defect) and not prose counts.
+```rust
+for (variant, _) in ARGV_ALIAS_ENTRY_POINTS {
+    let short = variant.rsplit("::").next().expect("a qualified variant name");
+    assert!(
+        home.1.iter().any(|(_, line)| line.trim().starts_with(&format!("{short} {{"))),
+        "{variant} has a census row but is not declared in {ARGV_ALIAS_HOME}. \
+         A stale row keeps the count at 8 while the classification describes a \
+         variant that no longer exists."
+    );
+}
+```
 
----
+### IN-03: The `Add` arm now judges the alias before `load_config`, inverting the message order IN-04 documented
 
-## Adjudications the executors requested
+**File:** `src/main.rs:77-90`
 
-| # | Question | Adjudication |
-|---|---|---|
-| G.1 | Is prohibition 2's check narrower than its words, and does it matter? | **Yes and yes.** See WR-04 — three different hand-copied subsets in `tests/`, two of them in pins this round retargeted, and the guard's own message overclaims. Take the one-word fix (`pub mod test_support`). |
-| G.2 | Is hoisting ambiguity above the per-position checks preferable? | **No — keep the current order.** "Refused with the flag you mistyped named" is the better message, and the safety property (a blank must not DEMOTE an ambiguous invocation into a legal one) is held by construction: the boundary refuses each position before ambiguity is reachable at all. `a_blank_payload_beside_a_visible_one_is_still_refused_at_the_boundary` pins all three pairings across all six shapes. But see WR-06 — the same hoist did regress one message. |
-| G.3 | Is `92ad11f`'s envelope write harmless from `015aea5` on? | **Confirmed at HEAD**, and independently: `~/.local/share/gsd-meta-manager/envelope/demo/` mtime is unchanged (2026-08-21) across a full `--test-threads=2` suite run today. **But it is not asserted** — see WR-03. |
-| G.4 | Is `main.rs`'s `load_config`-before-`from_argv` pre-existing and out of scope? | **Both claims verified.** IN-04. |
-| G.5 | The matrix row table stays hand-maintained; guard nine is textual, so an aliased field is silent under-detection bounded by its own asserted test. | **The row-table residual is correctly disclosed** at `positions()`'s doc and in truth 6 — accept it. **The guard-nine bound is weaker than stated**: limit 1's `type`-alias bound is asserted, but limit 2's bound (the `>=10`/`>=6` floor) provably does not bind for a single field, and three *unnamed* silent shapes exist besides. WR-02. |
-| H.1 | Tracer fixture uses `from_registry` not `for_testing_bypassing_opt_in`. | Correct call; the plan's instruction would have broken the `ESCAPE_HATCH` assertion. No assertion lost. |
-| H.2 | `positions()` needed type aliases. | Correct; `clippy --all-targets` is back to the 4 pre-existing lints, verified. No assertion lost. |
-| H.3 | Fixtures use `Some(nonblank(x))` with `.expect` rather than the plan's bare `Option`. | **Strictly better than the plan** and the deviation's reasoning is right — the plan's form would silently convert "a blank is refused" into "nothing was supplied". |
-| H.4 | `driver_goal_seam`'s blank-goal rows retargeted to the boundary. | Sound retarget; `goal_args` now goes *through* `from_argv`, which is the right direction. The retarget's own payload list is one of WR-04's three hand copies. |
-| H.5 | Corrective prose reworded so three literal greps read the specified numbers. | **No assertion lost** — verified paragraph by paragraph. IN-05 records the meta-finding against the criteria. |
-| H.6 | The over-length fixture's third assertion strengthened. | **Correct and necessary.** The plan's char bound (`<= MAX + marker.len()` = 212) is satisfied by rendering 201 characters in full; the added `!=` raw-token and `ends_with(TRUNCATION_MARKER)` assertions are what make it detect the defect it names (`tests/driver_goal_seam.rs:1543-1567`). |
-| I | Are the 4 pre-existing `=> String::new()` hits genuinely off any argv or record path? | **Yes, all four** — read individually; see the negative-evidence table. The disclosure is accurate. The `"\n  \n"` disclosure is accurate **for `src/`** and incomplete tree-wide (WR-04). |
+Round 5's IN-04 recorded (and review G.4 adjudicated as pre-existing) that
+`load_config` ran before `DriveArgs::from_argv`, so a bad `--config` was reported
+before a bad payload. This round's `Add` arm reverses that relationship for
+registration: `Alias::new` now runs *above* `load_config(&config_path)?`. The
+consequence is message ordering only, neither path writes, and the new order is
+arguably the better one (a refusal about the value costs no file read). Recorded
+because the phase treats ordering facts as load-bearing and the change is
+undocumented at the site.
 
----
-
-## Gates measured independently at `1f07923`
-
-| Gate | Result |
-|---|---|
-| `rtk proxy cargo build --all-targets` | clean |
-| `rtk proxy cargo clippy --lib -- -D warnings` | clean |
-| `rtk proxy cargo test --workspace --no-fail-fast -- --test-threads=2` | **exit 0**, 0 failures; neither documented flake fired |
-| `sed '/pub struct DriveArgs {/,/^}/p' \| grep -c ': String\|Option<String>'` | 0 (control: 9 `payload::NonBlank`) |
-| `grep -rn "=> String::new()" src/` | 4, all pre-existing, all verified off argv/record paths |
-| `grep -c "post_marker_offenders(" tests/spawn_seam_guard.rs` | 3 |
-| `grep -c '"pub("' / "production style…" / "scanned_files >= 10"` | 1 / 0 / 1 — as specified |
+**Fix.** One comment at the arm noting the deliberate order and why (pure
+refusals before I/O), so the next reader does not have to re-derive it.
 
 ---
 
-_Reviewed: 2026-08-22T18:20:00Z_
-_Reviewer: Claude (gsd-code-reviewer), adversarial stance_
-_Depth: deep · Round 5 · diff_base 199d334 → HEAD 1f07923_
-_Round 4's review preserved at `c7bcafb`_
+## Negative evidence — what I tried that failed to break it
+
+Given five-for-five, this section is the load-bearing one. Everything below was
+attempted with intent to falsify and did not yield.
+
+**Criterion 1 — verified intact, by direct read, not from the SUMMARYs.**
+
+- `DriveArgs::from_argv`'s destructure (`src/driver/mod.rs:414-429`) names all
+  **twelve** fields with **no** `..` rest pattern; the two `#[cfg(debug_assertions)]`
+  fields are named individually.
+- The six argv-derived string fields are still `payload::NonBlank`
+  (`alias`, `command`, `target_phase`, `approved_plan`, `run_id`, `goal`);
+  `drive_args_declares_no_raw_argv_string_field` reports zero offenders against
+  the real body, and the `>=10`/`>=6` floors both hold.
+- `from_argv` is still pure — no file, no process — and still above `drive`.
+  The round's entire diff at that function is **one arm**: the alias refusal's
+  variant. Verified line by line against `git diff`.
+- `execute_run`'s resolve-above-every-write ordering is untouched; `run.rs`'s
+  only change is inside `#[cfg(test)] mod tests`.
+- `cargo test --lib` → **1037 passed / 0 failed**; `cargo test --test
+  spawn_seam_guard` → **35 passed / 0 failed**; `cargo clippy --lib -- -D
+  warnings` → clean. Run by me, at HEAD, via `rtk proxy`.
+
+**Claim A (the shared class) — holds.** `carries_visible_content` (`text.rs:63-67`)
+and `carries_invisible_formatting` (`text.rs:101-103`) both call
+`is_invisible_formatting_char`; the ranges appear exactly once in production
+(`grep -rln "2060" src/` → `src/text.rs` and `src/driver/mod.rs`, the latter the
+declared independent test-side oracle inside its `#[cfg(test)]` module). I looked
+for a second spelling in `journal`, `registry`, `envelope`, `goal` and `payload`
+and found none. The two-judgment split is real; the CR-01 defect is the class's
+*extent*, not its sharing.
+
+**Claim B (the fourth predicate) — deleted, not relocated.**
+`grep -n "is_empty\|is_whitespace\|trim()" src/registry.rs` returns, in
+executable code: `Alias::new`'s delegating clause 3 (`:107`),
+`opt_in.prompt_inputs.is_empty()` (`:389`, unrelated) and
+`derive_alias`'s file-name fallback (`:494`, which feeds `Alias::new` anyway).
+`add_project`/`add_project_unchecked` carry no predicate. Every clause of
+`Alias::new` delegates; I checked each one resolves to `text::` or `journal::`.
+`AliasNotVisible` correctly replaces the borrowed `UnknownAlias` and is added to
+the `source()` classification group with no wildcard arm absorbing it; the only
+other `match self` over `DriveError` is `Display`, which handles it explicitly.
+
+**Claim C (deny-by-default) — genuinely deny-by-default.** I fed
+`judge_declaration` a field named `goal_file` typed `Option<OsString>` and it was
+reported; a *by-name protection* list would not have. The allowlist suppresses
+only, and I confirmed by construction that a seventh field with any new name is
+bound. The hole is WR-02's compound-type case, not the rule's direction.
+
+**Guard nine's fixed spellings — all genuinely fixed.** Run through the guard's
+own extracted functions with fresh plants: `pub(crate)` ✓, `pub(super)` ✓,
+`Box<str>` ✓, `Cow<'static, str>` ✓, `&'static str` ✓, `Option<OsString>` on a
+new name ✓, trailing `//` last-field ✓, trailing `//` mid-struct with correct
+attribution and `dry_run` still judged ✓, wrapped declarations ✓,
+`Vec<OsString>`/`Option<PathBuf>` correctly NOT reported ✓. I additionally tried
+`Vec<String>` (reported ✓) and a `/* … */` trailing comment (reported ✓). The
+scan and the floor share one `is_field_opener` — I verified both call sites.
+
+**Claim F (guard ten) — count independently correct.** `grep -n 'alias' src/cli.rs`
+shows exactly eight `alias: String,` / `alias: Option<String>,` declarations
+(lines 30, 35, 50, 306, 319, 337, 361, 371) and the census asserts exactly 8. The
+planted-ninth control consumes `argv_alias_fields`, the same extracted fn, not a
+re-implemented loop — read line by line.
+
+**Claim E (`one_of_each`) — honest, and nothing weaker was substituted.** The
+false "compile error in two ways" claim is deleted from both the doc and the pin
+message; the residual is stated in the doc; no `named(source)` helper or
+equivalent pseudo-mechanism was added. The prohibition-3 table enters it as
+*named, not certified*, which is correct.
+
+**Shell injection through the alias into generated hook stubs — not present.**
+`is_plain_path_component` accepts `;`, `$`, backtick and `'`, so I chased
+`stub_body` (`src/envelope/hooks.rs:167-175`) and `write_askpass_stub_in`. Both
+route the alias through `sh_quote` (`:183-185`), which POSIX single-quotes with
+correct `'\''` escaping and is deliberately shared so the escaping exists once.
+The stub interpolates only quoted values and `"$0"`. Clean.
+
+**Fail-closed exit codes — correct.** The `Guard` arm's `judged_alias_or_exit(&alias, 2)`
+exits 2 without writing the deny JSON; I checked `deny()` (`hooks.rs:1129-1131`),
+which states and relies on exit 2 being "the carrier that does not depend on the
+JSON being understood." Blocking is preserved. The `Askpass` arm emits no
+credential on the refusal path and prints only the alias (Debug-escaped through
+`AliasRefusal`), so the redaction contract holds. Hook arms exit 1; each message
+contains `remove`.
+
+**Registration reachable only through `Alias`** — enforced by the signatures, so
+compiler-checked rather than grep-checked. I confirmed all four callers
+(`main.rs` Add/Scan, `app.rs:1157`, `ui/screens/add_project.rs:172`,
+`registry.rs:555` auto-register) construct through `Alias::new`, and that
+auto-register's `Err` path warns and continues rather than registering.
+
+**No weakened test.** Every `tests/` conversion in the diff *widens*: the two
+`driver_dry_run` loops go from two-of-six and four-of-six to all six; the
+`driver_goal_seam` loop from four-of-six to all six; the two rewritten
+`registry_test` tests assert the same two properties at the new site.
+`grep -rn 'for blank in \[' src/ tests/` → one hit, `src/text.rs:122`, and its
+four values are **not** in `DEGENERATE` (`"\u{2060}"`, `"\u{200b}\u{feff}"`,
+`"\u{200f}"`, `"\r\n"`) — additive coverage, not a hand copy. `grep -c
+"position.starts_with" src/driver/mod.rs` → 0.
+
+**Adjudication of H (deviation D-18-6) — sound; it is a third path that satisfies
+the criterion's real conditions, not neither branch.** The plan's criterion has
+two substantive requirements: the envelope root is asserted untouched, and no
+`set_var` enters a parallel test. Both hold. "With a race-safe injected root" was
+the plan's *proposed means*, and reading `envelope_dir(alias)` — the same
+resolution `establish_envelope` performs — is strictly stronger than injecting
+one, because it observes the real root rather than a substitute. The dedicated
+`cr01-envelope-probe` alias removes the collision risk that would otherwise make
+the assertion fire on an unrelated condition, and the planted-ordering scratch
+probe quoted in the SUMMARY demonstrates the direction is now loud. Row 13
+closing by assertion is correct. My only residual is IN-01.
+
+**Adjudication of G.3 (spot-checking the killed executor's tasks 1–2).** I did not
+take their green on trust: I re-derived guard nine's scanner by running its own
+code against nine fresh plants (results above), read the rewritten limits block
+line by line against the controls that back each bullet, and confirmed each SEEN
+bullet has a planted arm and each SILENT bullet has either a bounding assertion
+(`no_type_alias_hides_a_string_from_guard_nine`) or an explicit "bounded by
+nothing in this file." The block is honest about what it measures. **The one
+thing it does not enumerate is the bare-`pub`-less opener (WR-01), and the one
+thing its allowlist claim overstates is repurposing (WR-02).** Both live in
+task 1's code — the least-reviewed code in the round, exactly as flagged.
+
+**What I could not find:** a fifth *seam* where a value becomes an identity
+without passing `is_plain_path_component` or `Alias::new`. I traced
+`is_plain_path_component`'s six production call sites (`registry.rs:114`,
+`journal/mod.rs:355`, `journal/writer.rs:491`, `driver/mod.rs:877` target-phase,
+`:1087` run-id, `goal.rs:667` phase token, `envelope/mod.rs:222`) and checked
+`record_opt_in`/`clear_opt_in`/`is_opted_in`/`remove_project` (all
+membership-checked lookups that create nothing) and `guard_in`/`assert_provenance_in`
+(internal, downstream of a judged `Alias`). The seams are complete. **The gap is
+not a missing seam — it is that every seam reads a predicate whose class is a
+subset of what it claims** (CR-01). Two seams are covered only by the shared
+predicate and carry no `LOOK_ALIKE_PAIRS` pin of their own — `--target-phase`
+(`driver/mod.rs:877`) and the re-read run id (`journal/writer.rs:491`) — which is
+a pin-coverage residual worth closing alongside CR-01's fix, not a behaviour gap.
+
+---
+
+_Reviewed: 2026-08-23T03:20:00Z_
+_Reviewer: Claude (gsd-code-reviewer)_
+_Depth: deep_
+_Round: 6 — diff `0352dda..7260ac8`; round 5 preserved at `5b24022`_
