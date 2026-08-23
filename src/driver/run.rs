@@ -3763,12 +3763,46 @@ mod tests {
     ///
     /// Against that build this test FAILS on the nothing-created assertion: the
     /// typed error is correct and the disk is corrupt.
+    ///
+    /// **Both halves of "nothing", not just the project half** (pass 6's
+    /// `run.rs:3788` warning). Until this plan the assertion covered
+    /// `.planning/meta-manager` inside the temporary project root and nothing
+    /// else — so a regression that moved the command-source resolution BELOW
+    /// [`establish_envelope`] (:2493) would have kept this test green while
+    /// writing hook stubs, a settings file, a generated gitconfig, a `gh`
+    /// directory and an askpass responder into the developer's real data
+    /// directory, which lives outside the project by construction. That
+    /// direction was silent. The second assertion below closes it: every one of
+    /// those writes lands under `envelope_dir(alias)`
+    /// (`hooks::install` → `install_in`, `cred::build_env` → `build_env_in`,
+    /// both resolving `<root>/<alias>`), so the alias's envelope directory not
+    /// existing is the whole envelope not existing.
+    ///
+    /// **The root is READ, never set.** `envelope::envelope_dir` resolves
+    /// exactly what the run would have resolved — `GSD_MM_ENVELOPE_ROOT`, else
+    /// the platform data directory — and this test observes it instead of
+    /// injecting one. `std::env::set_var` in a test that runs in parallel with
+    /// the rest of the library binary is a data race on the process
+    /// environment, and no library test sets that variable today; adding one
+    /// here to gain an injectable root would be a cure worse than the disease.
+    /// The alias is [`CR01_ENVELOPE_PROBE_ALIAS`] rather than `"demo"` so that
+    /// an unrelated real envelope in a developer's data directory can never
+    /// make this assertion fire.
+    ///
+    /// **Still unobserved, with its direction**: `establish_envelope` also
+    /// calls `hooks::write_exclude_block(project_root)`, but only when the
+    /// project root carries a `.git` — and this fixture has none, so that write
+    /// is unreachable here rather than merely unchecked. If the fixture ever
+    /// grows a repository, that path becomes a third place a premature envelope
+    /// could write (into `.git/info/exclude`, which is neither
+    /// `.planning/meta-manager` nor the envelope root) and it would be silent
+    /// until asserted.
     #[tokio::test]
     async fn a_run_with_no_command_source_writes_nothing_before_refusing() {
         let root = tempfile::TempDir::new().expect("temp dir");
         let entry = opted_in_entry(root.path());
-        let project =
-            DrivableProject::from_registry("demo", &entry).expect("an opted-in real directory");
+        let project = DrivableProject::from_registry(CR01_ENVELOPE_PROBE_ALIAS, &entry)
+            .expect("an opted-in real directory");
 
         let mut args = args();
         args.command = None;
@@ -3792,10 +3826,40 @@ mod tests {
              run.json, no journal.jsonl. A refusal that fires AFTER \
              `JournalRun::start` has already committed `\"gsd_command\": \"\"` into \
              the record that says what ran, and `\"\"` is the field-absent \
-             sentinel (D-30), so the record stops being evidence. Found:\n{}",
+             sentinel (D-30), so the record stops being evidence. This covers \
+             the PROJECT half; the envelope half is asserted below. Found:\n{}",
             surviving_artifacts(&runs_root)
         );
+
+        // The envelope half. `envelope_dir` returns `None` only when
+        // `envelope_root()` does, and in that case `establish_envelope` refuses
+        // at its very first line (`hooks::install`'s "no application data
+        // directory is resolvable") — so there is no envelope for a premature
+        // establishment to have written, and nothing to assert. Everywhere else
+        // this is a live assertion against the real resolved root.
+        if let Some(envelope_dir) = crate::envelope::envelope_dir(CR01_ENVELOPE_PROBE_ALIAS) {
+            assert!(
+                !envelope_dir.exists(),
+                "a refused run must have created NOTHING OUTSIDE the project \
+                 either — no hook stubs, no settings file, no generated \
+                 gitconfig, no askpass responder. This directory existing means \
+                 the command-source resolution ran BELOW `establish_envelope` \
+                 instead of above it, which is the CR-01 ordering itself, and it \
+                 writes into the developer's real data directory rather than \
+                 into a temporary one. Found:\n{}",
+                surviving_artifacts(&envelope_dir)
+            );
+        }
     }
+
+    /// The alias the CR-01 tracer drives, distinct on purpose.
+    ///
+    /// That test asserts the alias's envelope directory does NOT exist under
+    /// the real resolved envelope root, which it reads rather than injects. A
+    /// generic alias such as `"demo"` would make a developer who once drove a
+    /// project of that name fail a test about something else entirely; this
+    /// name belongs to the probe and to nothing a person would register.
+    const CR01_ENVELOPE_PROBE_ALIAS: &str = "cr01-envelope-probe";
 
     // ========================================================================
     // The goal-decomposition capability
