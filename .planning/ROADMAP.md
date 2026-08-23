@@ -459,7 +459,7 @@ Plans:
   - **The vacuity hazard is the phase's sharpest risk (C-3):** the officially-recommended untrusted-content channel is accepted by this transport with exit 0 and never reaches the model, so an injection-corpus test built on it passes *vacuously*, forever. Every corpus assertion must prove arrival before it proves the property
 
 **Research**: done — `21-RESEARCH.md` (five live spikes; four CONTEXT.md decisions contradicted and corrected in `21-CONTEXT.md` § "Research Corrections")
-**Plans**: 16/16 plans executed — 10/10 executed (6/6 in 6 waves, then 4 gap-closure plans in 3 further waves); the re-verification scored 4/5 must-have truths (criterion 1 ✗ FAILED again, on two NEW Criticals introduced by the gap-closure diff itself), so 2 further gap-closure plans were added in 2 more waves
+**Plans**: 18/18 plans executed — 10/10 executed (6/6 in 6 waves, then 4 gap-closure plans in 3 further waves); the re-verification scored 4/5 must-have truths (criterion 1 ✗ FAILED again, on two NEW Criticals introduced by the gap-closure diff itself), so 2 further gap-closure plans were added in 2 more waves
 
 Plans:
 **Wave 1**
@@ -527,11 +527,11 @@ Gap closure, round 6 (pass 6 verified criterion 1 for the first time — 5/5 ROA
 
 **Wave 1**
 
-- [ ] 21-17-PLAN.md — The look-alike class, closed structurally rather than by enumeration: `text::carries_invisible_formatting` (one shared char class with `carries_visible_content`) and `test_support::LOOK_ALIKE_PAIRS` — the fixture shape the tree provably lacked, since every `DEGENERATE` payload is wholly invisible and none can express "renders identically, differs in bytes"; then the `Commands` domain — a `registry::Alias` newtype deleting the fourth blankness predicate, look-alike refusal at registration, `AliasNotVisible` replacing the borrowed `UnknownAlias`, six envelope re-entry arms fail-closed, and guard ten's 8-row alias census with a planted-ninth control (DRIVE-01, DRIVE-03, SAFE-08)
+- [x] 21-17-PLAN.md — The look-alike class, closed structurally rather than by enumeration: `text::carries_invisible_formatting` (one shared char class with `carries_visible_content`) and `test_support::LOOK_ALIKE_PAIRS` — the fixture shape the tree provably lacked, since every `DEGENERATE` payload is wholly invisible and none can express "renders identically, differs in bytes"; then the `Commands` domain — a `registry::Alias` newtype deleting the fourth blankness predicate, look-alike refusal at registration, `AliasNotVisible` replacing the borrowed `UnknownAlias`, six envelope re-entry arms fail-closed, and guard ten's 8-row alias census with a planted-ninth control (DRIVE-01, DRIVE-03, SAFE-08)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 21-18-PLAN.md — Both anti-recurrence mechanisms made to say what they deliver, certified only by planted-defect controls: guard nine's nine silent spellings (`pub(`, `Box<str>`, `Cow`, `&'static str`, `OsString`, trailing-`//`) fixed via one shared `is_field_opener`, with `OsString` deny-by-default over the whole body behind a two-entry suppress-only allowlist; `one_of_each`'s false compile-error claim deleted and its residual named; the `--alias`/`--run-id` matrix exemption removed; and the SUMMARY carrying Record corrections naming 21-16 truths 1 and 4 as measured-false (DRIVE-04, SAFE-07)
+- [x] 21-18-PLAN.md — Both anti-recurrence mechanisms made to say what they deliver, certified only by planted-defect controls: guard nine's nine silent spellings (`pub(`, `Box<str>`, `Cow`, `&'static str`, `OsString`, trailing-`//`) fixed via one shared `is_field_opener`, with `OsString` deny-by-default over the whole body behind a two-entry suppress-only allowlist; `one_of_each`'s false compile-error claim deleted and its residual named; the `--alias`/`--run-id` matrix exemption removed; and the SUMMARY carrying Record corrections naming 21-16 truths 1 and 4 as measured-false (DRIVE-04, SAFE-07)
 
 ### Phase 22: Container Execution Target
 
@@ -591,7 +591,7 @@ Gap closure, round 6 (pass 6 verified criterion 1 for the first time — 5/5 ROA
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
 | 19. GITSAFE — Git & Blast-Radius Envelope | 8/8 | In Progress|  |
 | 20. Deterministic Decision Router & Run Bounds | 5/5 | In Progress|  |
-| 21. LLM Goal Layer & Prompt-Injection Hardening | 16/16 | In Progress|  |
+| 21. LLM Goal Layer & Prompt-Injection Hardening | 18/18 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |
 | 23. Gate Policy & Auto-Validation | 0/? | Not started | - |
 
