@@ -191,6 +191,83 @@ exempt, and no shared predicate left to agree with itself.
 
 ---
 
+---
+
+# Round-7 premises (appended 2026-08-23, before any round-7 plan; HEAD `f1faa3e`)
+
+Pass 7 corrected pass 6: criterion 1 was never verified — it was measured with U+200B/U+FEFF,
+two of the twenty-two code points `src/text.rs:75-77` enumerates, and it falls to any invisible
+character outside the list (U+202E, U+00AD, U+E0041, U+FE0F, all measured `Ok` in all four argv
+positions). Two premises are adjudicated here because they are design forks, not fixes.
+
+## Premise 7 — Level 4: the SOURCE of the character class (hand list vs derivation)
+
+**Verdict: BROKEN as shipped; derive it.** Three literal ranges are a hand-enumerated subset of
+the class the module's own doc names ("zero-width and format characters"). The fix is to derive
+`is_invisible_formatting_char` from Unicode's own data: `General_Category=Cf` ∪
+`Default_Ignorable_Code_Point`, queried from `icu_properties` (ICU4X, compiled data — the
+Unicode consortium's own Rust implementation; pure Rust, no libc, matching this tree's
+dependency posture). A checked-in generated table was considered and declined: its generator
+needs UCD files fetched at generation time and the table itself becomes one more checked-in
+thing that goes stale silently. **Maintenance obligation, recorded:** the class is as current as
+the pinned crate version; `cargo update` at each release (already mandated by CLAUDE.md's
+release process) refreshes it, and the independent-oracle sweep (Premise 7a below) goes red on
+version skew between implementation and oracle. Residual, disclosed rather than closed: a code
+point unassigned at the pinned version that a future Unicode release makes `Cf` is accepted
+until the next dep refresh — bounded to the free-text emptiness judgment only, because
+identities stop consulting this class at all (Premise 8).
+
+**Premise 7a — the sampling, which is the round's primary target.** Six rounds sampled every
+fixture from inside whatever the implementation covered; `LOOK_ALIKE_PAIRS`' doc claims the
+anti-tautology property while holding three pairs built from U+200B/U+FEFF — inside the
+predicate's own ranges. Literal spelling is not independence; **independence lives in the
+sampling source**. Round 7's rule: the implementation derives from ICU4X; the falsifying corpus
+derives from `unicode-properties` (unicode-rs — a different codebase deriving from the same
+standard) via an exhaustive all-codepoints sweep. Neither reads the other; a subset in either
+goes red against the other. Hand consts stay only as named seam fixtures and their docs stop
+claiming the property the sweep now actually has. The non-`Cf` default-ignorable half
+(variation selectors, U+034F, Hangul fillers) has no second independent machine source in the
+chosen dev-dep, so it is pinned by named members from the standard's published list — a
+disclosed residual with its direction (under-detection of a DI-only subset bug), not a claim.
+
+## Premise 8 — Level 5: the DIRECTION of the identity judgment (deny-list vs allow-list)
+
+**Verdict: adopt the allow-list for identities; keep the derived deny-list for free text. The
+boundary is "does the value become a filesystem path, registry key, or comparison token?"**
+
+A deny-list over 1.1M growing code points can always be one item short — this phase has proved
+it empirically at three successive levels. An allow-list cannot, because the accepted set is
+finite and printable. Every identity the tree accepts today is already ASCII by its own
+fixtures (`"demo"`, `"20"`, `"2.1"`, `"2026-08-19T12-00-00Z-aaaa"`, `"99"`, `"RID"`), so
+`[A-Za-z0-9._-]` (one spelling: `text::is_identity_char`) closes bidi, tags, variation
+selectors AND homoglyphs at every `is_plain_path_component` consumer — run directories,
+envelope roots, credential scopes, phase tokens — and at `Alias::new`, in one clause with no
+table and no dependency.
+
+**Where the allow-list must NOT go:** free text. A `--goal` or `--command` legitimately carries
+arbitrary script (ZWJ/ZWNJ are load-bearing in real text); an ASCII allow-list there would
+refuse legitimate input and is wrong. Free text keeps `carries_visible_content` over the
+derived class (Premise 7): the emptiness question needs the deny-list, the identity question
+no longer does. Two judgments, two directions — this is why Premise 7 is still required.
+
+**The recorded product trade (user-visible behavioural change):** a non-Latin-script alias
+that an older build accepted stops working — registration refuses it, and legacy entries fail
+closed at the envelope seams with the already-named recovery route (D-17-3 `remove` + re-add).
+Reversibility: **costly, not one-way** — reverting the clause restores acceptance, no data is
+destroyed, and legacy entries remain in `config.json` and removable throughout. Rated `costly`
+in 21-19's decision table with the trade recorded at the site (`is_identity_char`'s doc), in
+the refusal message, and in the SUMMARY disclosure list — chosen, not discovered.
+
+**The honest bottom, recorded so it is not re-derived:** no predicate over code points is
+complete for "renders identically" — rendering belongs to fonts and shaping engines. The only
+move with zero enumeration left is to stop letting user bytes BE an identity (generated keys,
+user string as display label). That is a bigger change than a closure round should attempt and
+is NOT planned here; it is named as the level below level 5, with the allow-list as the
+terminating move for everything short of it. TR39 confusables stay carved out (separate
+roadmap item; none of pass 7's twenty reproduced values is a homoglyph).
+
+---
+
 ## Process failures designed against (both plans carry these as prohibitions)
 
 1. **Premature `REQUIREMENTS.md` marking (twice: `828d7cc` revert, `760d71f` re-offense,
