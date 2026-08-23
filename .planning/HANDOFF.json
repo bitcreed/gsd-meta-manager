@@ -1,0 +1,40 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-08-23T03:49:17.000Z",
+  "phase": "21",
+  "phase_name": "llm-goal-layer-prompt-injection-hardening",
+  "phase_dir": "21-llm-goal-layer-prompt-injection-hardening",
+  "plan": 19,
+  "task": 0,
+  "total_tasks": 2,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": "21-01..21-18", "name": "goal layer build + six gap-closure rounds", "status": "done", "commit": "see 21-01-SUMMARY.md through 21-18-SUMMARY.md"},
+    {"id": "verification-pass-7", "name": "21-VERIFICATION.md pass 7 — corrected pass 6's false criterion-1 verification", "status": "done", "commit": "84143bb"},
+    {"id": "round-7-plans", "name": "21-19-PLAN.md and 21-20-PLAN.md written and committed", "status": "done", "commit": "0eb2e7f"}
+  ],
+  "remaining_tasks": [
+    {"id": 1, "name": "Run gsd-plan-checker against 21-19-PLAN.md and 21-20-PLAN.md (max-3 revision loop)", "status": "not_started"},
+    {"id": 2, "name": "Add round-7 entry to .planning/ROADMAP.md Phase 21 plan list (rounds 4/5/6 pattern at ROADMAP.md:526)", "status": "not_started"},
+    {"id": 3, "name": "/gsd-execute-phase 21 --gaps-only (wave 1: 21-19, wave 2: 21-20)", "status": "not_started"},
+    {"id": 4, "name": "Independent code review, then gsd-verifier, in separate agents from the executor", "status": "not_started"},
+    {"id": 5, "name": "Human-run of 10 #[ignore]d driver_injection_corpus tests (needs live Claude subscription) for SAFE-07 behavioural criterion 4", "status": "not_started"}
+  ],
+  "blockers": [
+    {"description": "Criterion 4 (SAFE-07) behavioural half cannot be automated — needs a human with a live Claude subscription to run 10 #[ignore]d driver_injection_corpus tests", "type": "human_action", "workaround": "none — tracked in deferred-items.md, not resolvable by an agent"}
+  ],
+  "async_jobs": [],
+  "human_actions_pending": [
+    {"action": "Run the 10 #[ignore]d driver_injection_corpus tests (7 class arms, 2 suppression controls, both_arms_of_every_class_comparison_were_really_executed) under a real Claude subscription", "context": "This is the only way to close criterion 4 (SAFE-07) — no automated pass can substitute", "blocking": true},
+    {"action": "Confirm or veto the round-7 identity allow-list product trade (non-ASCII aliases stop registering)", "context": "Rated costly not one-way (code-revertible, D-17-3 recovery path exists), so no automatic checkpoint:decision gate fired; user has seen it flagged but has not explicitly ruled on it", "blocking": false}
+  ],
+  "decisions": [
+    {"decision": "Pass 7 corrects pass 6's false claim that criterion 1 was verified, rather than treating it as newly regressed", "rationale": "git show 5b24022:src/text.rs is byte-identical to HEAD — the gap was never closed, pass 6 just tested inside its own coverage (U+200B/U+FEFF) instead of an independent sample", "phase": "21"},
+    {"decision": "Round 7 derives the invisible-character class from icu_properties instead of enumerating it further, and oracles the exhaustive fixture from the independent unicode-properties crate", "rationale": "Six rounds running, each fix closed one enumeration level (arms -> fields -> character class) while sampling never moved off the implementation's own coverage; derivation + independent oracle is designed to end that pattern structurally", "phase": "21"},
+    {"decision": "Round 7 inverts identity fields (alias, run-id, target-phase) to an [A-Za-z0-9._-] allow-list instead of growing the deny-list further", "rationale": "An allow-list cannot be one code point short the way a deny-list can; this is a user-visible behavioural change (non-ASCII aliases stop working), rated costly not one-way, not yet explicitly ruled on by the user", "phase": "21"},
+    {"decision": "TR39 confusables/homoglyphs stay out of scope for phase 21", "rationale": "Separate future roadmap item with its own research; pass 7 re-confirmed the text.rs:90-96 carve-out is correct", "phase": "21"}
+  ],
+  "uncommitted_files": [],
+  "next_action": "Run gsd-plan-checker against 21-19-PLAN.md and 21-20-PLAN.md using the same max-3-revision-loop process used in every prior round of this phase.",
+  "context_notes": "Seventh verification pass, sixth gap-closure round on phase 21 (v2.0 milestone). Execution stopped at the exact boundary between planning and execution: round-7 plans are written and committed (0eb2e7f) but not yet run through gsd-plan-checker. 11/20 must-haves and 3/5 ROADMAP criteria currently hold; criterion 1 FAILED (corrected from pass 6's false pass), criterion 4 PRESENT_BEHAVIOUR_UNVERIFIED pending a human Claude-subscription run. rtk output filtering has produced false negatives three times in this phase -- always use rtk proxy for count/presence checks. Code review and gsd-verifier must run as separate agents from the executor -- that separation caught a real defect in each of the six prior gap-closure cycles."
+}
