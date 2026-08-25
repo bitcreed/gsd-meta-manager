@@ -3771,24 +3771,94 @@ fn no_type_alias_hides_a_string_from_guard_nine() {
 /// fabricated value rather than a typed refusal.
 const MANUFACTURED_BLANK: &str = "=> String::new()";
 
-/// The blank-shape payload set's most distinctive member, as source text.
+/// THREE members of the blank-shape payload set, as source text, split in half.
 ///
-/// Distinctive because no ordinary string literal contains it: a hit outside
-/// `src/test_support.rs` is a hand-copied `DEGENERATE` subset.
-/// **Assembled at RUNTIME from two halves, following `REJECT_HEAD`/`REJECT_TAIL`
-/// in this same file.** Once the uniqueness scan was widened to `tests/` in
-/// round 6 it began walking this file too, and a witness spelled out as one
-/// literal made the guard report ITSELF. The halves are meaningless apart.
-const DEGENERATE_WITNESS_HEAD: &str = r#""\n "#;
-const DEGENERATE_WITNESS_TAIL: &str = r#" \n""#;
+/// **Assembled at RUNTIME from halves, following `REJECT_HEAD`/`REJECT_TAIL` in
+/// this same file.** Once the uniqueness scan was widened to `tests/` in round 6
+/// it began walking this file too, and a witness spelled out as one literal made
+/// the guard report ITSELF. The halves are meaningless apart.
+///
+/// **Three rather than one, and from three DIFFERENT members (round 7).** Pass 7
+/// measured the single-witness version detecting a hand copy only if the copy
+/// happened to carry the one `"\n  \n"` member — while the failure message told
+/// the reader that every blank-shape pin consumes the const. Two of the three are
+/// drawn from the members 21-19 added from OUTSIDE the pre-round-7 ranges, so a
+/// copy made from the current const is more likely to carry one.
+///
+/// Index 0 is the whitespace member, index 1 the zero-width-space member, index 2
+/// the bidi-override member 21-19 added.
+const DEGENERATE_WITNESS_HEADS: [&str; 3] = [
+    r#""\n "#,
+    r#""\u{2"#,
+    r#""\u{20"#,
+];
 
-/// [`DEGENERATE_WITNESS_HEAD`] and [`DEGENERATE_WITNESS_TAIL`], joined.
-fn degenerate_witness() -> String {
-    format!("{DEGENERATE_WITNESS_HEAD}{DEGENERATE_WITNESS_TAIL}")
+/// The tails of [`DEGENERATE_WITNESS_HEADS`], by the same index.
+const DEGENERATE_WITNESS_TAILS: [&str; 3] = [
+    r#" \n""#,
+    r#"00b}""#,
+    r#"2e}""#,
+];
+
+/// [`DEGENERATE_WITNESS_HEADS`] and [`DEGENERATE_WITNESS_TAILS`], joined pairwise.
+fn degenerate_witnesses() -> [String; 3] {
+    [0usize, 1, 2].map(|index| {
+        format!(
+            "{}{}",
+            DEGENERATE_WITNESS_HEADS[index], DEGENERATE_WITNESS_TAILS[index]
+        )
+    })
 }
 
-/// The one file that may spell [`DEGENERATE_WITNESS`].
+/// The one file that may spell a witness as part of the shared const itself.
 const DEGENERATE_HOME: &str = "src/test_support.rs";
+
+/// The executable sites BESIDES [`DEGENERATE_HOME`] that may spell a witness,
+/// as `(witness index, path, exact expected hit count, why it is not a copy)`.
+///
+/// **Why this table exists, stated plainly.** The `"\n  \n"` witness (index 0)
+/// is distinctive — no ordinary string literal contains it — which is what let
+/// the single-witness version assert plain uniqueness. The two members round 7
+/// added are NOT distinctive: `"\u{200b}"` and `"\u{202e}"` are ordinary hostile
+/// fixtures that legitimately appear in the class's own membership pins and in
+/// the look-alike suffix list 21-19 added. Widening the witness set therefore
+/// buys detection at the cost of over-detection, and the honest way to pay it is
+/// to name each legitimate site rather than to quietly narrow the scan.
+///
+/// The COUNT is exact on purpose: an allowed site cannot grow a second member of
+/// the set — the first step of becoming the hand copy this guard exists to
+/// catch — without breaking this loudly. The reason column is the adjudication.
+const WITNESS_ALLOWED_ELSEWHERE: [(usize, &str, usize, &str); 4] = [
+    (
+        1,
+        "src/journal/writer.rs",
+        1,
+        "the look-alike SUFFIX list: values appended to a visible stem, which is \
+         LOOK_ALIKE_PAIRS' question rather than DEGENERATE's, and it carries a \
+         member that is in neither const",
+    ),
+    (
+        1,
+        "src/text.rs",
+        2,
+        "the invisible class's OWN membership pins, in the class's own module; \
+         both lists carry code points outside DEGENERATE, so neither is a subset \
+         of it",
+    ),
+    (
+        2,
+        "src/journal/writer.rs",
+        1,
+        "the same look-alike SUFFIX list as the row above",
+    ),
+    (
+        2,
+        "src/text.rs",
+        1,
+        "the derived class's solely-invisible pin, whose eight code points are \
+         mostly outside DEGENERATE entirely",
+    ),
+];
 
 #[test]
 fn no_match_arm_in_the_driver_manufactures_a_blank_value() {
@@ -3835,17 +3905,37 @@ fn no_match_arm_in_the_driver_manufactures_a_blank_value() {
     );
 }
 
-/// The shared blank-shape const is spelled in exactly one place, TREE-WIDE.
+/// No hand copy of the blank-shape set CARRYING ONE OF THREE NAMED WITNESSES is
+/// spelled outside its home and the sites named in [`WITNESS_ALLOWED_ELSEWHERE`].
 ///
 /// **This scan used to walk `src/` alone while its message said "tree-wide", and
 /// three hand-copied subsets sat in `tests/` the whole time** (pass-6 WR-04):
 /// `driver_dry_run.rs` carried two of six and four of six, `driver_goal_seam.rs`
 /// four of six. The scan now walks `tests/` as well, which is what makes the
-/// message true; the three subsets consume the const, which is what makes the
-/// scan pass. Both halves landed together, because widening the scan without
-/// converting the subsets would only have moved the dishonesty into a failing
-/// test, and converting them without widening the scan would have left the
-/// overclaim standing.
+/// walk tree-wide; the three subsets consume the const, which is what makes the
+/// scan pass.
+///
+/// **What this scan performs, and the direction it fails in — round 7's
+/// correction, and it is a NARROWING of the claim rather than a widening of the
+/// scan.** Pass 7 measured the previous version detecting a hand copy through
+/// exactly ONE witness literal while its failure message told the reader that
+/// *every* blank-shape pin consumes the const. It does not check that, and no
+/// textual scan can: it checks that three specific literals do not appear where
+/// they should not.
+///
+/// * **Under-detection, silent, and this is the residual to know about.** A hand
+///   copy that carries only members OTHER than the three witnesses — say
+///   `["", "   ", "\t"]`, three real members of the set and none of them a
+///   witness — **is invisible to this scan and always will be.** Nothing in this
+///   file bounds it. Three witnesses make such a copy less likely than one did;
+///   they do not make it impossible, and the failure message no longer says
+///   otherwise.
+/// * **Over-detection, loud, and adjudicated site by site.** Two of the three
+///   witnesses are ordinary hostile fixtures with legitimate homes elsewhere.
+///   Those homes are enumerated in [`WITNESS_ALLOWED_ELSEWHERE`] with exact hit
+///   counts, so an allowed site that GROWS a second member — the first step of
+///   becoming the copy this guard exists to catch — breaks here rather than
+///   sliding under a blanket exemption.
 ///
 /// Reachable only because 21-17 dropped `test_support`'s `#[cfg(test)]` gate
 /// (D-17-5): before that an integration crate could not name the const at all,
@@ -3853,35 +3943,75 @@ fn no_match_arm_in_the_driver_manufactures_a_blank_value() {
 /// recorded honestly at the time.
 #[test]
 fn the_degenerate_payload_set_is_spelled_in_exactly_one_place() {
+    use std::collections::BTreeMap;
+
     let files = source_and_test_files();
-    let witness = degenerate_witness();
-    let hits = executable_hits(&files, &witness);
 
-    let home_hits = hits.iter().filter(|(path, _, _)| path == DEGENERATE_HOME).count();
-    assert_eq!(
-        home_hits, 1,
-        "the shared `DEGENERATE` const must be spelled exactly once in \
-         {DEGENERATE_HOME}; found {home_hits}. Zero means this scan is looking at \
-         nothing and its uniqueness claim is vacuous."
-    );
+    for (index, witness) in degenerate_witnesses().iter().enumerate() {
+        let hits = executable_hits(&files, witness);
 
-    let offenders: Vec<(String, usize, String)> = hits
-        .iter()
-        .filter(|(path, _, _)| path != DEGENERATE_HOME)
-        .cloned()
-        .collect();
-    assert!(
-        offenders.is_empty(),
-        "a blank-shape payload list is spelled outside {DEGENERATE_HOME}. Every \
-         blank-shape pin consumes `test_support::DEGENERATE`, because a const each \
-         seam copies from is a const each seam can copy from INCOMPLETELY — pass 5 \
-         found the `--run-id` pin carrying three of the six shapes, added in the \
-         very commit that defined six, so the two zero-width shapes were never \
-         asserted at the one seam where they were reachable end to end and \
-         `--run-id '\\u{{200b}}'` drove a complete run. Consume the const. \
-         Offending lines:{}",
-        render(&offenders)
-    );
+        let home_hits = hits
+            .iter()
+            .filter(|(path, _, _)| path == DEGENERATE_HOME)
+            .count();
+        assert_eq!(
+            home_hits, 1,
+            "witness {index} must be spelled exactly once in {DEGENERATE_HOME}, \
+             as part of the shared `DEGENERATE` const; found {home_hits}. Zero \
+             means this scan is looking at nothing and its claim is vacuous — \
+             either the member was removed from the const or the halves this \
+             witness is assembled from no longer join to a member's source text."
+        );
+
+        // Elsewhere: an exact per-path census, compared BOTH ways against the
+        // adjudicated table. An extra path is an unadjudicated copy; a missing
+        // path is a stale row that would otherwise exempt a file forever; a
+        // changed count is an allowed site that grew.
+        let mut actual: BTreeMap<&str, usize> = BTreeMap::new();
+        for (path, _, _) in hits.iter().filter(|(path, _, _)| path != DEGENERATE_HOME) {
+            *actual.entry(path.as_str()).or_default() += 1;
+        }
+        let expected: BTreeMap<&str, usize> = WITNESS_ALLOWED_ELSEWHERE
+            .iter()
+            .filter(|(witness_index, _, _, _)| *witness_index == index)
+            .map(|(_, path, count, _)| (*path, *count))
+            .collect();
+
+        let offenders: Vec<(String, usize, String)> = hits
+            .iter()
+            .filter(|(path, _, _)| {
+                path != DEGENERATE_HOME && !expected.contains_key(path.as_str())
+            })
+            .cloned()
+            .collect();
+
+        assert_eq!(
+            actual,
+            expected,
+            "the per-file census for witness {index} does not match \
+             WITNESS_ALLOWED_ELSEWHERE.\n\
+             \n\
+             A path present here but absent from the table is a blank-shape \
+             payload list spelled outside {DEGENERATE_HOME}. Every blank-shape \
+             pin consumes `test_support::DEGENERATE`, because a const each seam \
+             copies from is a const each seam can copy from INCOMPLETELY — pass 5 \
+             found the `--run-id` pin carrying three of the six shapes, added in \
+             the very commit that defined six, so the two zero-width shapes were \
+             never asserted at the one seam where they were reachable end to end. \
+             Consume the const.\n\
+             \n\
+             A path in the table with a HIGHER count is an adjudicated site that \
+             grew another member of the set; re-adjudicate it or make it consume \
+             the const. A path in the table with a LOWER count, or missing, is a \
+             stale exemption: drop the row, or it goes on exempting a file for a \
+             reason that no longer holds.\n\
+             \n\
+             **What this scan does NOT check:** a hand copy carrying none of the \
+             three witnesses is invisible to it — silent under-detection, stated \
+             rather than mitigated. Unadjudicated lines:{}",
+            render(&offenders)
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3963,6 +4093,33 @@ const ARGV_ALIAS_ENTRY_POINTS: [(&str, &str); 8] = [
         "registry::Alias::new in the arm (replaced the manual predicate check)",
     ),
 ];
+
+/// Judge ONE census row against the scanned [`ARGV_ALIAS_HOME`] lines.
+///
+/// `Some(reason)` when the row is defective, `None` when it is sound. Extracted
+/// so the live assertion and the planted-stale-row control consume the SAME code
+/// path — a control that re-implemented the check would witness only its own
+/// agreement with itself, which is guard nine's `is_field_opener` rule applied to
+/// guard ten.
+fn census_row_offence(row: (&str, &str), _lines: &[(usize, String)]) -> Option<String> {
+    let (variant, judge) = row;
+    if judge.trim().is_empty() {
+        return Some(format!(
+            "{variant} carries no judge — an unclassified row defeats the census"
+        ));
+    }
+    if !(judge.contains("Alias::new")
+        || judge.contains("NonBlank")
+        || judge.contains("BY DECISION"))
+    {
+        return Some(format!(
+            "{variant}'s judge must name a constructor (`Alias::new`, `NonBlank`) \
+             or be an explicitly recorded raw-by-design decision (`BY DECISION`). \
+             Got: {judge:?}"
+        ));
+    }
+    None
+}
 
 /// Every line in `lines` that declares an argv alias field.
 ///
@@ -4080,18 +4237,85 @@ fn every_argv_alias_field_is_classified() {
          {declared:?}"
     );
 
-    for (variant, judge) in ARGV_ALIAS_ENTRY_POINTS {
-        assert!(
-            !judge.trim().is_empty(),
-            "{variant} carries no judge — an unclassified row defeats the census"
-        );
-        assert!(
-            judge.contains("Alias::new")
-                || judge.contains("NonBlank")
-                || judge.contains("BY DECISION"),
-            "{variant}'s judge must name a constructor (`Alias::new`, `NonBlank`) \
-             or be an explicitly recorded raw-by-design decision (`BY DECISION`). \
-             Got: {judge:?}"
-        );
+    for row in ARGV_ALIAS_ENTRY_POINTS {
+        if let Some(reason) = census_row_offence(row, &home.1) {
+            panic!("{reason}");
+        }
     }
+}
+
+/// **Guard ten's stale-row control, and the plant is permanent.**
+///
+/// The live assertion's clean zero must not be indistinguishable from a checker
+/// that stopped matching. A synthetic row naming a variant `src/cli.rs` does not
+/// declare — with a perfectly good judge, so no other clause can catch it — is
+/// fed to the SAME `census_row_offence` the live assertion consumes.
+///
+/// **Red arm, observed verbatim against the row check as it stood before the
+/// variant-existence clause existed** (this commit; the `#[ignore]` comes off in
+/// the fix commit):
+///
+/// ```text
+/// running 1 test
+/// test every_census_row_names_a_variant_that_still_exists ... FAILED
+///
+/// ---- every_census_row_names_a_variant_that_still_exists stdout ----
+///
+/// thread 'every_census_row_names_a_variant_that_still_exists' (720027) panicked at tests/spawn_seam_guard.rs:4276:5:
+/// a census row naming a variant `src/cli.rs` does not declare must be REPORTED. Pass 7's warning was that the census bounds a COUNT and nothing else: rename `Scan` to `Sweep`, or delete one variant and add a different one, and the count stays at eight while the table describes a tree that no longer exists. The rows would go on naming judges for variants nobody can invoke. Got: None
+///
+/// test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 37 filtered out; finished in 0.03s
+/// ```
+#[test]
+#[ignore = "red: pass-7 guard-ten stale-row plant; un-ignored in the fix commit"]
+fn every_census_row_names_a_variant_that_still_exists() {
+    let files = source_files();
+    let home = files
+        .iter()
+        .find(|(path, _)| path == ARGV_ALIAS_HOME)
+        .unwrap_or_else(|| panic!("{ARGV_ALIAS_HOME} must exist"));
+
+    // --- The plant. `Commands::Adopt` is not declared anywhere in src/cli.rs.
+    let stale = (
+        "Commands::Adopt",
+        "registry::Alias::new in the Adopt arm (registration refusal)",
+    );
+    let offence = census_row_offence(stale, &home.1);
+    assert!(
+        offence.is_some(),
+        "a census row naming a variant `{ARGV_ALIAS_HOME}` does not declare must \
+         be REPORTED. Pass 7's warning was that the census bounds a COUNT and \
+         nothing else: rename `Scan` to `Sweep`, or delete one variant and add a \
+         different one, and the count stays at eight while the table describes a \
+         tree that no longer exists. The rows would go on naming judges for \
+         variants nobody can invoke. Got: {offence:?}"
+    );
+
+    // --- The live assertion: every real row still names a real variant.
+    let stale_rows: Vec<&str> = ARGV_ALIAS_ENTRY_POINTS
+        .iter()
+        .filter(|row| census_row_offence(**row, &home.1).is_some())
+        .map(|(variant, _)| *variant)
+        .collect();
+    assert!(
+        stale_rows.is_empty(),
+        "a census row names a variant that {ARGV_ALIAS_HOME} no longer declares. \
+         Either the variant was renamed — update the row and re-pin its refusal — \
+         or it was removed, in which case drop the row rather than leaving a \
+         judge recorded for an entry point that does not exist. Stale: \
+         {stale_rows:?}"
+    );
+
+    // --- The other direction, so the emptiness above is about the tree rather
+    //     than about a checker that reports everything: a row naming a variant
+    //     that IS declared must be sound.
+    let sound = (
+        "Commands::Add",
+        "registry::Alias::new in the Add arm (registration refusal)",
+    );
+    assert_eq!(
+        census_row_offence(sound, &home.1),
+        None,
+        "a row naming a declared variant with a named judge must not be reported"
+    );
 }
