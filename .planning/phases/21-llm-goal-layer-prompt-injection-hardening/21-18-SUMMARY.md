@@ -519,3 +519,54 @@ touched no STATE/ROADMAP/REQUIREMENTS file. Two residuals leave this round **nam
 rather than closed, by design: a macro-expanded `DriveArgs` field is invisible to any
 textual scan (bounded only by `from_argv`'s destructure), and a fourth `CommandSource`
 variant constructed nowhere is caught by a reviewer and nothing else.
+
+---
+
+## Correction (round 7, 2026-08-25)
+
+**Append-only. Nothing above this line has been edited or deleted** — the original text
+stays legible as what round 6 believed, which is the whole point of correcting a record
+rather than rewriting it (21-20 prohibition 3).
+
+### The SAFE-07 qualification's arithmetic is wrong in two ways
+
+The qualification on truth 10, above, says:
+
+> the ignored set is exactly the eight `corpus_*_arrives_and_leaves_the_command_unchanged`
+> arms plus the two suppression controls
+
+Pass 7 re-measured `cargo test --test driver_injection_corpus -- --list --ignored` and
+round 7 re-measured it again against `tests/driver_injection_corpus.rs` directly. Both
+halves of that sentence are false:
+
+1. **There are SEVEN class arms, not eight.** They are `corpus_instruction_override_*`,
+   `corpus_role_confusion_*`, `corpus_delimiter_escape_bare_*`,
+   `corpus_delimiter_escape_nonce_*`, `corpus_encoded_payload_*`,
+   `corpus_tool_output_shaping_*` and `corpus_multi_turn_deferral_*` — one `fn`
+   declaration each.
+2. **The tenth ignored test is omitted from the list entirely.** It is
+   `both_arms_of_every_class_comparison_were_really_executed` — the arms' own
+   non-vacuity meta-check, `#[ignore]`d alongside them because it too spawns the real
+   binary. It is the test that stops every class arm's hostile-versus-clean comparison
+   from being a value compared with itself, so leaving it out of the account of what did
+   not run understates precisely what was not proven.
+
+Seven arms + two suppression controls + one meta-check = the ten ignored tests.
+
+### What round 7 did about it
+
+The arithmetic is no longer prose. `tests/driver_injection_corpus.rs` carries an ACTIVE
+(non-ignored) census,
+`the_ignored_set_is_seven_arms_two_controls_and_their_own_meta_check`, which walks this
+file's own source and asserts exactly ten line-anchored `#[ignore]` attributes, exactly
+seven corpus arm `fn` declarations, and the meta-check present as an ignored `fn`
+declaration. A future SUMMARY that miscounts this set has to make a test go red first.
+
+### What is NOT corrected, because it is still true
+
+The qualification's substantive claim stands and is if anything understated: **truth 10
+is reconfirmed for the structure and not for the live model round-trip.** SAFE-07's
+behavioural boundary has still never executed under any verification pass of this phase.
+That fact is now tracked as a standing item in `deferred-items.md` (round-7 section) with
+the exact command and expected output for a human run, rather than stated once in a
+SUMMARY qualification and read once.

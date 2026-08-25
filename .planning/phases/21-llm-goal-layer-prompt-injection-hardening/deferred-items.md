@@ -121,3 +121,74 @@ None is closed; none should be read as fixed.
 | Item | Location | Disposition |
 |---|---|---|
 | `goal.rs`'s length-bound refusal had zero live coverage | `src/driver/goal.rs`, `tests/driver_goal_seam.rs` | **Closed by 21-16 Task 4.** 21-13's predicate tightening left every `HOSTILE_PHASE_TOKENS` fixture refused at the first layer, so the second refusal — reachable only by a control-free over-length token — was never exercised. A defence-in-depth layer with zero coverage is a layer nobody notices breaking. |
+
+---
+
+# Round-7 items (2026-08-25)
+
+## STANDING — SAFE-07's boundary has never executed under any verification pass of this phase
+
+**This item does NOT close ROADMAP success criterion 4, and it must be
+re-surfaced every round until a human run is recorded here.** It is a standing
+item precisely because the fact keeps being stated once, in a SUMMARY
+qualification, and read once. Tracked here it is read every round.
+
+**What is unexecuted.** All **ten** behavioural tests in
+`tests/driver_injection_corpus.rs` are `#[ignore]`d — they spawn the real
+`claude` binary and need an authenticated subscription, so no verification pass
+can run them. The ten are:
+
+| Count | Tests |
+|---|---|
+| 7 | the class arms `corpus_instruction_override_*`, `corpus_role_confusion_*`, `corpus_delimiter_escape_bare_*`, `corpus_delimiter_escape_nonce_*`, `corpus_encoded_payload_*`, `corpus_tool_output_shaping_*`, `corpus_multi_turn_deferral_*` (each `…_arrives_and_leaves_the_command_unchanged`) |
+| 2 | the suppression controls `the_positive_control_sees_the_claude_md_without_the_suppression_variable` and `the_negative_control_does_not_see_the_claude_md_while_the_planning_markers_arrive` |
+| 1 | `both_arms_of_every_class_comparison_were_really_executed` — the arms' own non-vacuity meta-check |
+
+`21-18-SUMMARY.md`'s SAFE-07 qualification said *eight* arms and omitted the
+meta-check; that miscount is corrected, dated and append-only at the end of that
+file.
+
+**The human run.** With an authenticated `claude` CLI available, from the
+repository root:
+
+```
+cargo test --test driver_injection_corpus -- --ignored --nocapture
+```
+
+**Expected output:** `10 passed, 0 failed`. Every
+`corpus_*_arrives_and_leaves_the_command_unchanged` arm asserts the payload
+**ARRIVED** at the model before asserting the command was unchanged; the two
+suppression controls show the positive/negative
+`CLAUDE_CODE_DISABLE_CLAUDE_MDS` pair diverging; and
+`both_arms_of_every_class_comparison_were_really_executed` confirms the hostile
+and clean arms both really ran. **Record the `claude --version` output beside the
+result**, here in this file.
+
+**Provenance.** The last executor-claimed live run is `21-05-SUMMARY.md:514` (10
+passed against `claude` 2.1.238), a claim no verification pass has reproduced.
+The round-6 reviewer independently adjudicated the same item: *carry as open —
+SAFE-07's boundary has not been executed end-to-end in any pass of this phase.*
+
+**Where the mechanised half stops and the human half begins.** What DOES run
+every round, under an ordinary `cargo test`, is the structural half: thirteen
+active pins proving the corpus is planted where the shipped reader reads, that
+every payload survives the production bound whole, and that the typed state
+carries no marker — i.e. that the labelled untrusted boundary is the only
+channel. Among them, and named here by identifier because it is the test that
+keeps *this item's own arithmetic* honest:
+
+```
+the_ignored_set_is_seven_arms_two_controls_and_their_own_meta_check
+```
+
+It walks the corpus file's own source and asserts exactly ten line-anchored
+`#[ignore]` attributes, exactly seven corpus arm `fn` declarations, and the
+meta-check present as an ignored `fn` declaration. It counts declarations, never
+mentions. **Presence and wiring are verified by it; behaviour is not, and it
+says so in its own doc.**
+
+**Run history:**
+
+| Date | `claude --version` | Result |
+|---|---|---|
+| — | — | *(never run under verification)* |
