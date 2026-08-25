@@ -1077,6 +1077,58 @@ mod tests {
         clear_active_pointer(&root).expect("clearing twice is not an error");
     }
 
+    /// **The re-read seam's own look-alike pin** (pass-7 missing item 3).
+    ///
+    /// This is the seam where the agent's own bytes come BACK into the tool.
+    /// The `active` file lives inside the driven project, so the agent this
+    /// subsystem runs unattended — with git and push rights — controls its
+    /// contents. `read_active_run` consumed `is_plain_path_component` and had no
+    /// look-alike coverage of its own: the pin above covers the STALE-pointer
+    /// rule, which a build that dropped the component check entirely would still
+    /// satisfy.
+    ///
+    /// Both directions, because the refusing one alone would be satisfied by a
+    /// function that returned `None` unconditionally: the look-alike pointer
+    /// resolves to nothing even though the visible twin's directory is right
+    /// there, and the visible twin still resolves.
+    #[test]
+    fn an_active_pointer_naming_a_look_alike_run_is_refused_not_followed() {
+        for look_alike_suffix in ["\u{202e}", "\u{200b}", "\u{e0041}", "\u{ad}"] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let planning = dir.path().join(".planning");
+            let root = crate::journal::runs_root(&planning);
+
+            // The visible twin exists on disk, so a `None` below cannot be the
+            // stale-pointer rule firing instead of the component check.
+            let visible_id = "2026-08-19T12-00-00Z-aaaa";
+            create_run_dir(&planning, visible_id).expect("create the visible run directory");
+            let look_alike_id = format!("{visible_id}{look_alike_suffix}");
+
+            // Written raw rather than through `write_active_pointer`, because
+            // that is how the value arrives: the agent edits the file.
+            std::fs::write(root.join("active"), format!("{look_alike_id}\n"))
+                .expect("write the pointer");
+
+            assert_eq!(
+                read_active_run(&planning),
+                None,
+                "an active pointer naming {look_alike_id:?} renders exactly as \
+                 {visible_id:?} and must be refused rather than followed — the \
+                 agent controls this file, and a followed look-alike is how a \
+                 render surface tails a run nobody named"
+            );
+
+            // And the visible twin still resolves, so the refusal is about the
+            // invisible bytes and not about the pointer mechanism.
+            write_active_pointer(&root, visible_id).expect("write the visible pointer");
+            assert_eq!(
+                read_active_run(&planning).as_deref(),
+                Some(visible_id),
+                "the visible twin's pointer must still resolve"
+            );
+        }
+    }
+
     // ---- Growth bounds and retention (plan 16-03, Task 2) ----
 
     /// A journal opened with a test-sized cap, so the breach is reachable

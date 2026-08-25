@@ -33,7 +33,15 @@ fn judged_alias_or_exit(raw: &str, refusal_code: i32) -> gsd_meta_manager::regis
     match gsd_meta_manager::registry::Alias::new(raw) {
         Ok(alias) => alias,
         Err(refusal) => {
-            eprintln!("Error: {refusal}");
+            // The refused value is UNTRUSTED and the refusal message quotes it,
+            // so it is escaped before it reaches a terminal (D-19-5). A refusal
+            // that reported a bidi override by rendering one would let the
+            // rejected value reorder the sentence explaining why it was
+            // rejected.
+            eprintln!(
+                "Error: {}",
+                gsd_meta_manager::text::display_identity(&refusal.to_string())
+            );
             eprintln!(
                 "This alias was accepted by an older build and no longer names a valid \
                  identity, so this hook refuses rather than guessing which project it \
@@ -128,9 +136,14 @@ async fn main() -> anyhow::Result<()> {
                 println!("{:<20} {:<50} ADDED", "ALIAS", "PATH");
                 println!("{}", "-".repeat(90));
                 for (alias, project) in projects {
+                    // **Escaped, not raw** (D-19-5). New registrations cannot
+                    // carry invisible bytes, but rows an older build accepted
+                    // are still here — and pass 7 measured this exact loop
+                    // printing a legacy `gsd-\u{202e}nur` as `gsd-run`. Trojan
+                    // Source (CVE-2021-42574) in the tool's own project list.
                     println!(
                         "{:<20} {:<50} {}",
-                        alias,
+                        gsd_meta_manager::text::display_identity(alias),
                         project.path.display(),
                         project.added
                     );

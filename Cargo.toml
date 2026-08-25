@@ -69,6 +69,52 @@ rustix = { version = "1.1", features = ["process", "fs"] }
 # units and leaves two sha2 majors in the lockfile; claiming otherwise by
 # reusing rustix's "already present, zero new units" sentence would be false.
 sha2 = "0.11.0"
+# The invisible-character class, DERIVED rather than enumerated (D-19-1).
+#
+# `src/text.rs::is_invisible_formatting_char` used to spell three literal
+# ranges. Pass 7 measured twenty values ACCEPTED whose every character is
+# `General_Category=Cf` or `Default_Ignorable_Code_Point` — inside the class the
+# function's own doc named and outside the ranges it spelled. Six consecutive
+# rounds "fixed" that by hand-enumerating the next level down, so this add
+# replaces the enumeration with a query against Unicode's own reference data
+# (ICU4X compiled data, `compiled_data` on by default at 2.x).
+#
+# The declined alternative was a checked-in generated table. Declined because
+# the generator needs network access at generation time and the table is one
+# more artifact that stales silently; a crate stales visibly and refreshes under
+# the release process's existing `cargo update` (CLAUDE.md, step 2).
+#
+# WHY TWO CRATES — this is the whole point, not redundancy. The production class
+# reads `icu_properties` and the exhaustive sweep's oracle in `src/text.rs`'s
+# test module reads `unicode-properties` (dev-dependency below), and neither
+# reads the other. An oracle that consumes the predicate it checks can only ever
+# agree with it — round-3 WR-03's tautology, which recurred at three levels
+# because every fixture in six rounds was sampled from inside the
+# implementation. Two independently maintained derivations of the same standard
+# means a subset in either goes red against the other (D-19-3, Premise 7a).
+#
+# STALENESS OBLIGATION, disclosed rather than assumed away (T-21-19-05): the
+# class is exactly as current as this crate's pinned Unicode version. A code
+# point unassigned at that version, which a future Unicode release makes Cf, is
+# accepted in FREE TEXT until the next `cargo update`. Identities are
+# version-independent — they are judged by the finite alphabet (D-19-2), not by
+# this class.
+icu_properties = "2.2.0"
 
 [dev-dependencies]
 assert_fs = "1"
+# The INDEPENDENT ORACLE for the invisible class (D-19-3). unicode-rs's
+# derivation of the same standard `icu_properties` derives above; see the
+# rationale on that entry for why the two must not be one.
+#
+# `general-category` IS NAMED EXPLICITLY AND MUST STAY THAT WAY, even though it
+# is currently a default feature. This oracle is the only thing standing between
+# this plan and another six rounds of fixtures that agree with the
+# implementation by construction. A default-feature change upstream would delete
+# it silently: the `UnicodeGeneralCategory` trait would stop resolving, the
+# sweep would stop compiling, and the repair an executor reaches for under a
+# broken build is to narrow the sweep. Naming the feature makes that failure a
+# resolution error against a feature this manifest demands, not a quiet
+# disappearance. The sweep additionally carries its own committed
+# `format_seen >= 150` non-vacuity floor for the same reason.
+unicode-properties = { version = "0.1.4", features = ["general-category"] }
