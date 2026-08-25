@@ -2745,6 +2745,20 @@ fn every_command_source_variant_is_named_only_where_it_is_built_or_matched() {
 // * `pub(crate)` / `pub(super)` field openers. That is the exact spelling
 //   `ITEM_OPENERS` was widened for four commits later in this same file, and
 //   pass 6 measured guard nine silent on both.
+// * **A field declared with NO visibility modifier at all** — `goal_hint:
+//   String,`. Round 7's addition, and the sharpest of the set: pass 7 measured
+//   it silent to the scan AND to the floor, which share `is_field_opener`, so
+//   the reading was `field_lines=12 protected=6 offenders=[]` — pass 6's exact
+//   signature, in a spelling that appeared in neither of these two lists. Its
+//   arm is `the_scanner_reports_a_bare_private_field`, committed red against the
+//   unfixed opener before the opener was widened.
+// * **A payload type riding beside an allowlisted `OsString`** — `pub
+//   claude_args: (Vec<OsString>, String),`. Round 7's second addition. The
+//   allowlist suppressed the whole judgment rather than the OsString-presence
+//   report alone, and the integrity pin that exists to catch a repurposed entry
+//   was a `contains`, which this type satisfies. Its arm is
+//   `an_allowlisted_name_cannot_carry_a_raw_payload_beside_its_osstring`, also
+//   committed red first; the pin is now an EQUALITY on the parsed declared type.
 // * The str-family payload spellings — `Box<str>`, `Cow<'_, str>`,
 //   `&'static str`, `&str` — none of which contains the `String` token.
 // * `OsString`, **deny-by-default over the whole scanned body**: any field whose
@@ -2782,6 +2796,21 @@ fn every_command_source_variant_is_named_only_where_it_is_built_or_matched() {
 //    `no_production_item_follows_a_test_module_marker`, which bounds the related
 //    region gap. The extraction's own control asserts by name that the region
 //    never reached `RawDriveArgs`.
+//
+// **A RETIRED reliance, named because relying on it silently is how round 6
+// shipped a false bound.** Until round 7, what actually stopped a bare
+// (no-`pub`) argv field was not this guard at all: **thirteen integration crates
+// build `DriveArgs { … }` as struct literals, and a private field breaks all
+// thirteen at compile time.** That is a **coincidence of the fixture tree, not a
+// property of the code** — delete or restructure those thirteen crates and the
+// spelling compiles unprotected. `21-18-SUMMARY.md`'s named-shape row 15
+// reported that coincidental bound RETIRED; pass 7 measured it retired for the
+// two payload-type spellings and still load-bearing for this one, which is what
+// let the previous version of this block certify a bound nothing asserted. It is
+// no longer relied on in either direction: `is_field_opener` now sees the
+// spelling, and `the_scanner_reports_a_bare_private_field` is the committed
+// control that goes red if it stops seeing it. Nothing in this header claims a
+// bound beyond the arms named in it.
 //
 // **What the FLOORS bound, stated as measured rather than as hoped.** The
 // `>=10 field-declaration` and `>=6 NonBlank` assertions catch **extraction
@@ -2851,6 +2880,17 @@ fn raw_string_argv_fields(lines: &[(usize, String)]) -> Vec<(usize, String)> {
 }
 
 /// Judge one joined declaration and push it if it carries a raw argv payload.
+///
+/// **An allowlisted name suppresses the `OsString`-PRESENCE report only, never a
+/// payload-type report.** Until round 7 this fn `return`ed out of the `OsString`
+/// branch, so `names_string_payload` never ran for any declaration naming
+/// `OsString` — and `pub claude_args: (Vec<OsString>, String),` was therefore
+/// silent, an allowlist entry repurposed to carry raw argv text while inheriting
+/// its own suppression. Pass 7 measured it; the plant is
+/// [`an_allowlisted_name_cannot_carry_a_raw_payload_beside_its_osstring`],
+/// committed red against this fn before the branch was opened.
+///
+/// A declaration is reported at most once even when both rules would fire.
 fn judge_declaration(start: usize, joined: String, out: &mut Vec<(usize, String)>) {
     let joined = joined.trim().to_string();
     let Some((_, type_text)) = joined.split_once(':') else {
@@ -2861,12 +2901,31 @@ fn judge_declaration(start: usize, joined: String, out: &mut Vec<(usize, String)
         let name = declared_field_name(&joined);
         if !OSSTRING_ALLOWED.contains(&name) {
             out.push((start, joined));
+            return;
         }
-        return;
+        // Allowlisted: the OsString-presence report is suppressed, and the
+        // payload judgment below still runs.
     }
     if names_string_payload(type_text) {
         out.push((start, joined));
     }
+}
+
+/// The TYPE a declaration declares, as text — trimmed, trailing comment and
+/// trailing comma stripped.
+///
+/// Extracted so [`drive_args_declares_no_raw_argv_string_field`]'s allowlist
+/// integrity pin can compare for EQUALITY rather than containment. Pass 7
+/// measured the `contains` form passing over `pub claude_args: (Vec<OsString>,
+/// String),` — the exact repurposing the pin exists to refuse contains its own
+/// expected type as a substring, so containment can never see it.
+fn declared_type_text(joined: &str) -> &str {
+    let code = without_trailing_comment(joined.trim());
+    let type_text = match code.split_once(':') {
+        Some((_, right)) => right,
+        None => return "",
+    };
+    type_text.trim().trim_end_matches(',').trim()
 }
 
 /// Every `(line number, line)` between `pub struct DriveArgs {` and the
@@ -2989,8 +3048,42 @@ fn is_ident_byte(byte: u8) -> bool {
 /// floor counted twelve while the scan reported nothing, with a planted
 /// `pub(crate)` offender in the body — two filters, one property, and the gap
 /// between them was the whole of WR-02's floor half.
+///
+/// **Widened in round 7 to bare (private) declarations.** Pass 7 measured the
+/// `pub `/`pub(` requirement letting `goal_hint: String,` — a field with no
+/// visibility modifier at all — through both the scan and the floor, producing
+/// pass 6's exact silent signature in a spelling neither of guard nine's lists
+/// named. A private field is still a field, `from_argv` still has to destructure
+/// it, and a `String` on it still carries unvalidated argv text.
+///
+/// **Over-detection direction, and why it is loud rather than silent.** A bare
+/// identifier followed by `:` is also the shape of a match arm, a struct-literal
+/// initialiser and a labelled loop. None of them is in scope here **by
+/// construction**: [`raw_string_argv_fields`] runs only over
+/// [`drive_args_body`]'s lines, which are the lines between `pub struct
+/// DriveArgs {` and its column-zero `}`. Should that region ever widen, a
+/// non-field line matching this opener would be **reported** — it would appear
+/// in the offender list and fail the live assertion visibly — not pass silently.
+/// The under-detection direction is the one this repository keeps paying for,
+/// and this widening moves in the opposite direction.
 fn is_field_opener(trimmed: &str) -> bool {
-    trimmed.starts_with("pub ") || trimmed.starts_with("pub(")
+    if trimmed.starts_with("pub ") || trimmed.starts_with("pub(") {
+        return true;
+    }
+    // A bare declaration: the first token is an identifier and the line reaches
+    // a `:` before any `//`. Implemented with `chars()` rather than a regex —
+    // this crate has no regex dependency and is not gaining one for a scanner.
+    let code = without_trailing_comment(trimmed);
+    let Some((left, _)) = code.split_once(':') else {
+        return false;
+    };
+    let name = left.trim();
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// **The control arm, and it runs FIRST in this file's reading order for a
@@ -3282,6 +3375,208 @@ fn the_raw_argv_field_scanner_sees_every_measured_silent_spelling() {
     );
 }
 
+/// **WR-01's plant: a field declared with NO visibility modifier.**
+///
+/// Pass 7 traced the control flow and measured `is_field_opener` accepting only
+/// `pub `/`pub(`. A seventh argv field spelled `goal_hint: String,` — no `pub` —
+/// is therefore skipped by the offender scan AND by the non-vacuity floor, which
+/// share that fn. The floor reads `field_lines=12 protected=6` and the scan
+/// reports `offenders=[]`: pass 6's exact silent signature, reproduced by a
+/// spelling that appeared in neither guard nine's SEEN list nor its SILENT list.
+///
+/// What USED to stop this spelling was thirteen struct-literal fixture crates —
+/// a coincidence, not a bound, and the SUMMARY reported those retired.
+///
+/// **Red arm, observed verbatim against the unfixed scanner** (this commit; the
+/// `#[ignore]` comes off in the fix commit, so the committed tree stays green
+/// while the red evidence lands in history):
+///
+/// ```text
+/// running 1 test
+/// test the_scanner_reports_a_bare_private_field ... FAILED
+///
+/// ---- the_scanner_reports_a_bare_private_field stdout ----
+///
+/// thread 'the_scanner_reports_a_bare_private_field' (664715) panicked at tests/spawn_seam_guard.rs:3315:5:
+/// assertion `left == right` failed: a field declared with NO visibility modifier is still a field, and a `String` on it is still raw argv text. `is_field_opener` accepted only `pub `/`pub(`, so this spelling was skipped by the scan AND by the floor that shares the fn — pass 6's exact silent signature (`field_lines=12 protected=6 offenders=[]`) reproduced by a spelling in neither the SEEN nor the SILENT list. Got: []
+///   left: []
+///  right: ["goal_hint: String,"]
+///
+/// test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.00s
+/// ```
+#[test]
+fn the_scanner_reports_a_bare_private_field() {
+    // The real twelve declarations, plus a THIRTEENTH carrying no visibility
+    // modifier at all. `goal_hint: String,` compiles, is reachable from
+    // `from_argv`'s destructure, and carries unvalidated argv text — the whole
+    // defect class, spelled in a way neither the SEEN nor the SILENT list named.
+    let planted = synthetic_file(
+        "src/driver/mod.rs",
+        &[
+            "pub struct DriveArgs {",
+            "    pub alias: payload::NonBlank,",
+            "    pub command: Option<payload::NonBlank>,",
+            "    pub target_phase: Option<payload::NonBlank>,",
+            "    pub max_steps: Option<u32>,",
+            "    pub wall_clock_cap_secs: Option<u64>,",
+            "    pub max_escalations: Option<u32>,",
+            "    pub approved_plan: Option<payload::NonBlank>,",
+            "    pub run_id: Option<payload::NonBlank>,",
+            "    pub dry_run: bool,",
+            "    pub goal: Option<payload::NonBlank>,",
+            "    pub claude_program: Option<PathBuf>,",
+            "    pub claude_args: Vec<OsString>,",
+            "    goal_hint: String,",
+            "}",
+        ],
+    );
+
+    let found = raw_string_argv_fields(&planted.1);
+    let reported: Vec<String> = found.iter().map(|(_, text)| text.clone()).collect();
+    assert_eq!(
+        reported,
+        vec!["goal_hint: String,".to_string()],
+        "a field declared with NO visibility modifier is still a field, and a \
+         `String` on it is still raw argv text. `is_field_opener` accepted only \
+         `pub `/`pub(`, so this spelling was skipped by the scan AND by the floor \
+         that shares the fn — pass 6's exact silent signature \
+         (`field_lines=12 protected=6 offenders=[]`) reproduced by a spelling in \
+         neither the SEEN nor the SILENT list. Got: {found:?}"
+    );
+
+    // The floor's own filter must see it too. One shared `is_field_opener` is
+    // what stops the scan and the floor from disagreeing; if the widening had
+    // touched only the scan, this would read 12 and the disagreement pass 6
+    // measured would be back in a new spelling.
+    let floor_visible = planted
+        .1
+        .iter()
+        .filter(|(_, line)| {
+            let trimmed = line.trim();
+            is_field_opener(trimmed) && trimmed.contains(':')
+        })
+        .count();
+    assert_eq!(
+        floor_visible, 13,
+        "the floor's field filter must count the bare declaration as a field \
+         declaration too. Got: {floor_visible}"
+    );
+
+    // The over-detection direction, bounded rather than asserted in prose. The
+    // scan runs only between the struct's braces, so the shapes that LOOK like
+    // `word:` elsewhere in a Rust file — match arms, struct-literal
+    // initialisers, labelled loops — are out of the region by construction.
+    // Inside the region, a protected bare field must still report nothing.
+    let clean_bare = synthetic_file(
+        "src/driver/mod.rs",
+        &[
+            "pub struct DriveArgs {",
+            "    alias: payload::NonBlank,",
+            "    max_steps: Option<u32>,",
+            "}",
+        ],
+    );
+    assert!(
+        raw_string_argv_fields(&clean_bare.1).is_empty(),
+        "widening the opener must not make the scan report protected \
+         declarations; got {:?}",
+        raw_string_argv_fields(&clean_bare.1)
+    );
+}
+
+/// **WR-02's plant: an allowlist entry silently repurposed.**
+///
+/// Pass 7 traced two failures that compound. `judge_declaration`'s `OsString`
+/// branch `return`s after the allowlist check, so `names_string_payload` never
+/// runs for any declaration naming `OsString` — an allowlisted name suppresses
+/// the whole judgment rather than just the OsString-presence report. And the
+/// `OSSTRING_ALLOWED` integrity pin, which exists to catch exactly a repurposed
+/// entry, was a `contains`: `"pub claude_args: (Vec<OsString>, String),"
+/// .contains("Vec<OsString>")` is **true**, so the pin passes over the very
+/// declaration it was written to refuse.
+///
+/// **Red arm, observed verbatim against the unfixed scanner** (this commit; the
+/// `#[ignore]` comes off in the fix commit):
+///
+/// ```text
+/// running 1 test
+/// test an_allowlisted_name_cannot_carry_a_raw_payload_beside_its_osstring ... FAILED
+///
+/// ---- an_allowlisted_name_cannot_carry_a_raw_payload_beside_its_osstring stdout ----
+///
+/// thread 'an_allowlisted_name_cannot_carry_a_raw_payload_beside_its_osstring' (665429) panicked at tests/spawn_seam_guard.rs:3386:5:
+/// assertion `left == right` failed: an allowlisted NAME suppresses the `OsString`-presence report only. It must never suppress a raw payload TYPE riding beside it: `judge_declaration` returned from the OsString branch before `names_string_payload` ever ran, so this declaration was silent. Got: []
+///   left: []
+///  right: ["pub claude_args: (Vec<OsString>, String),"]
+///
+/// test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.00s
+/// ```
+#[test]
+fn an_allowlisted_name_cannot_carry_a_raw_payload_beside_its_osstring() {
+    // `claude_args` is on OSSTRING_ALLOWED because it legitimately holds argv as
+    // `Vec<OsString>`. The suppression is by NAME, so a declaration that keeps
+    // the name and grows a raw `String` beside the `OsString` inherits the
+    // suppression for free — and the integrity pin that exists to catch exactly
+    // that was a `contains`, which this type satisfies.
+    let planted = synthetic_file(
+        "src/driver/mod.rs",
+        &[
+            "pub struct DriveArgs {",
+            "    pub alias: payload::NonBlank,",
+            "    pub claude_args: (Vec<OsString>, String),",
+            "}",
+        ],
+    );
+
+    let found = raw_string_argv_fields(&planted.1);
+    let reported: Vec<String> = found.iter().map(|(_, text)| text.clone()).collect();
+    assert_eq!(
+        reported,
+        vec!["pub claude_args: (Vec<OsString>, String),".to_string()],
+        "an allowlisted NAME suppresses the `OsString`-presence report only. It \
+         must never suppress a raw payload TYPE riding beside it: \
+         `judge_declaration` returned from the OsString branch before \
+         `names_string_payload` ever ran, so this declaration was silent. Got: \
+         {found:?}"
+    );
+
+    // The false-positive direction keeps its controls: the two legitimate
+    // carriers must still report nothing, or the widening has made the property
+    // unsatisfiable rather than stricter.
+    let legitimate = synthetic_file(
+        "src/driver/mod.rs",
+        &[
+            "pub struct DriveArgs {",
+            "    pub claude_args: Vec<OsString>,",
+            "    pub claude_program: Option<PathBuf>,",
+            "}",
+        ],
+    );
+    assert!(
+        raw_string_argv_fields(&legitimate.1).is_empty(),
+        "the legitimate allowlisted carriers must stay unreported; got {:?}",
+        raw_string_argv_fields(&legitimate.1)
+    );
+
+    // And a NON-allowlisted name carrying the same compound type is reported by
+    // the OsString rule as well as the payload rule — once, not twice.
+    let unlisted = synthetic_file(
+        "src/driver/mod.rs",
+        &[
+            "pub struct DriveArgs {",
+            "    pub goal_hint: (Vec<OsString>, String),",
+            "}",
+        ],
+    );
+    assert_eq!(
+        raw_string_argv_fields(&unlisted.1).len(),
+        1,
+        "a seventh field carrying the compound type is reported exactly once; \
+         got {:?}",
+        raw_string_argv_fields(&unlisted.1)
+    );
+}
+
 #[test]
 fn drive_args_declares_no_raw_argv_string_field() {
     let files = source_files();
@@ -3333,13 +3628,50 @@ fn drive_args_declares_no_raw_argv_string_field() {
          lost it is the five-time losing bet reopening."
     );
 
-    // **The allowlist's own integrity, pinned against the REAL body.**
-    // `OSSTRING_ALLOWED` suppresses the `OsString` deny-by-default rule for two
-    // NAMES. Nothing in that mechanism alone stops someone respelling one of
-    // those fields into a payload carrier and inheriting the suppression for
-    // free — so each allowlisted name is pinned here to the type it legitimately
-    // declares. Respelling either breaks this loudly, in the live run, against
-    // the real declarations rather than against a fixture.
+    // **The widening's own control, against the REAL body.** Round 7 widened
+    // `is_field_opener` to bare (private) declarations. Every field `DriveArgs`
+    // actually declares carries `pub`, so the widened opener must see EXACTLY
+    // the set the narrow one saw. The narrow rule is respelled here on purpose,
+    // as an independent expected value: if the widened count ever exceeds it,
+    // the extra lines are not field declarations, the over-detection direction
+    // has become real in this region, and whoever widened the extraction has to
+    // say what guard nine should do about it. Under-detection is caught by the
+    // floor above and by the offender scan; this catches the other side.
+    let narrow_visible = body
+        .iter()
+        .filter(|(_, line)| {
+            let trimmed = line.trim();
+            (trimmed.starts_with("pub ") || trimmed.starts_with("pub(")) && trimmed.contains(':')
+        })
+        .count();
+    assert_eq!(
+        field_lines.len(),
+        narrow_visible,
+        "the widened `is_field_opener` sees {} field declarations in the real \
+         `DriveArgs` body where the pre-round-7 `pub`-only rule sees \
+         {narrow_visible}. Every real field carries `pub`, so the two must agree; \
+         a difference means the widening is matching something that is not a \
+         field declaration.",
+        field_lines.len()
+    );
+
+    // **The allowlist's own integrity, pinned against the REAL body — as an
+    // EQUALITY, because containment could never see the harm it was written
+    // for.** `OSSTRING_ALLOWED` suppresses the `OsString` deny-by-default rule
+    // for two NAMES. Nothing in that mechanism alone stops someone respelling
+    // one of those fields into a payload carrier and inheriting the suppression
+    // for free — so each allowlisted name is pinned here to the type it
+    // legitimately declares.
+    //
+    // Until round 7 this was `declaration.contains(expected_type)`, and pass 7
+    // measured what that means: `pub claude_args: (Vec<OsString>, String),`
+    // CONTAINS `Vec<OsString>`, so the pin passed over the exact repurposing it
+    // exists to refuse. A compound type that inherits the suppression is the
+    // planted control
+    // (`an_allowlisted_name_cannot_carry_a_raw_payload_beside_its_osstring`),
+    // committed red before this line changed. The comparison is now equality on
+    // the parsed declared type text, so anything other than the legitimate type
+    // — wider, narrower or merely different — breaks loudly.
     for (name, expected_type) in [
         ("claude_args", "Vec<OsString>"),
         ("claude_program", "Option<PathBuf>"),
@@ -3355,13 +3687,17 @@ fn drive_args_declares_no_raw_argv_string_field() {
                      inherit — drop the entry or restore the field."
                 )
             });
-        assert!(
-            declaration.1.contains(expected_type),
+        let actual_type = declared_type_text(&declaration.1);
+        assert_eq!(
+            actual_type, expected_type,
             "`{name}` is on OSSTRING_ALLOWED because it legitimately carries \
-             `{expected_type}`. Its declaration now reads {:?}. The allowlist can \
-             only SUPPRESS, and it must not be silently repurposed for a payload \
-             field: either restore the type or take the name off the allowlist \
-             and let the deny-by-default rule judge it.",
+             exactly `{expected_type}`. Its declaration now reads {:?}. The \
+             allowlist can only SUPPRESS, and it must not be silently repurposed \
+             for a payload field: a type that merely CONTAINS the expected one — \
+             `(Vec<OsString>, String)` was pass 7's measured example — smuggles \
+             raw argv text past the deny-by-default rule under a name that was \
+             cleared for something else. Either restore the type or take the name \
+             off the allowlist and let the deny-by-default rule judge it.",
             declaration.1.trim()
         );
     }
@@ -3435,24 +3771,94 @@ fn no_type_alias_hides_a_string_from_guard_nine() {
 /// fabricated value rather than a typed refusal.
 const MANUFACTURED_BLANK: &str = "=> String::new()";
 
-/// The blank-shape payload set's most distinctive member, as source text.
+/// THREE members of the blank-shape payload set, as source text, split in half.
 ///
-/// Distinctive because no ordinary string literal contains it: a hit outside
-/// `src/test_support.rs` is a hand-copied `DEGENERATE` subset.
-/// **Assembled at RUNTIME from two halves, following `REJECT_HEAD`/`REJECT_TAIL`
-/// in this same file.** Once the uniqueness scan was widened to `tests/` in
-/// round 6 it began walking this file too, and a witness spelled out as one
-/// literal made the guard report ITSELF. The halves are meaningless apart.
-const DEGENERATE_WITNESS_HEAD: &str = r#""\n "#;
-const DEGENERATE_WITNESS_TAIL: &str = r#" \n""#;
+/// **Assembled at RUNTIME from halves, following `REJECT_HEAD`/`REJECT_TAIL` in
+/// this same file.** Once the uniqueness scan was widened to `tests/` in round 6
+/// it began walking this file too, and a witness spelled out as one literal made
+/// the guard report ITSELF. The halves are meaningless apart.
+///
+/// **Three rather than one, and from three DIFFERENT members (round 7).** Pass 7
+/// measured the single-witness version detecting a hand copy only if the copy
+/// happened to carry the one `"\n  \n"` member — while the failure message told
+/// the reader that every blank-shape pin consumes the const. Two of the three are
+/// drawn from the members 21-19 added from OUTSIDE the pre-round-7 ranges, so a
+/// copy made from the current const is more likely to carry one.
+///
+/// Index 0 is the whitespace member, index 1 the zero-width-space member, index 2
+/// the bidi-override member 21-19 added.
+const DEGENERATE_WITNESS_HEADS: [&str; 3] = [
+    r#""\n "#,
+    r#""\u{2"#,
+    r#""\u{20"#,
+];
 
-/// [`DEGENERATE_WITNESS_HEAD`] and [`DEGENERATE_WITNESS_TAIL`], joined.
-fn degenerate_witness() -> String {
-    format!("{DEGENERATE_WITNESS_HEAD}{DEGENERATE_WITNESS_TAIL}")
+/// The tails of [`DEGENERATE_WITNESS_HEADS`], by the same index.
+const DEGENERATE_WITNESS_TAILS: [&str; 3] = [
+    r#" \n""#,
+    r#"00b}""#,
+    r#"2e}""#,
+];
+
+/// [`DEGENERATE_WITNESS_HEADS`] and [`DEGENERATE_WITNESS_TAILS`], joined pairwise.
+fn degenerate_witnesses() -> [String; 3] {
+    [0usize, 1, 2].map(|index| {
+        format!(
+            "{}{}",
+            DEGENERATE_WITNESS_HEADS[index], DEGENERATE_WITNESS_TAILS[index]
+        )
+    })
 }
 
-/// The one file that may spell [`DEGENERATE_WITNESS`].
+/// The one file that may spell a witness as part of the shared const itself.
 const DEGENERATE_HOME: &str = "src/test_support.rs";
+
+/// The executable sites BESIDES [`DEGENERATE_HOME`] that may spell a witness,
+/// as `(witness index, path, exact expected hit count, why it is not a copy)`.
+///
+/// **Why this table exists, stated plainly.** The `"\n  \n"` witness (index 0)
+/// is distinctive — no ordinary string literal contains it — which is what let
+/// the single-witness version assert plain uniqueness. The two members round 7
+/// added are NOT distinctive: `"\u{200b}"` and `"\u{202e}"` are ordinary hostile
+/// fixtures that legitimately appear in the class's own membership pins and in
+/// the look-alike suffix list 21-19 added. Widening the witness set therefore
+/// buys detection at the cost of over-detection, and the honest way to pay it is
+/// to name each legitimate site rather than to quietly narrow the scan.
+///
+/// The COUNT is exact on purpose: an allowed site cannot grow a second member of
+/// the set — the first step of becoming the hand copy this guard exists to
+/// catch — without breaking this loudly. The reason column is the adjudication.
+const WITNESS_ALLOWED_ELSEWHERE: [(usize, &str, usize, &str); 4] = [
+    (
+        1,
+        "src/journal/writer.rs",
+        1,
+        "the look-alike SUFFIX list: values appended to a visible stem, which is \
+         LOOK_ALIKE_PAIRS' question rather than DEGENERATE's, and it carries a \
+         member that is in neither const",
+    ),
+    (
+        1,
+        "src/text.rs",
+        2,
+        "the invisible class's OWN membership pins, in the class's own module; \
+         both lists carry code points outside DEGENERATE, so neither is a subset \
+         of it",
+    ),
+    (
+        2,
+        "src/journal/writer.rs",
+        1,
+        "the same look-alike SUFFIX list as the row above",
+    ),
+    (
+        2,
+        "src/text.rs",
+        1,
+        "the derived class's solely-invisible pin, whose eight code points are \
+         mostly outside DEGENERATE entirely",
+    ),
+];
 
 #[test]
 fn no_match_arm_in_the_driver_manufactures_a_blank_value() {
@@ -3499,17 +3905,37 @@ fn no_match_arm_in_the_driver_manufactures_a_blank_value() {
     );
 }
 
-/// The shared blank-shape const is spelled in exactly one place, TREE-WIDE.
+/// No hand copy of the blank-shape set CARRYING ONE OF THREE NAMED WITNESSES is
+/// spelled outside its home and the sites named in [`WITNESS_ALLOWED_ELSEWHERE`].
 ///
 /// **This scan used to walk `src/` alone while its message said "tree-wide", and
 /// three hand-copied subsets sat in `tests/` the whole time** (pass-6 WR-04):
 /// `driver_dry_run.rs` carried two of six and four of six, `driver_goal_seam.rs`
 /// four of six. The scan now walks `tests/` as well, which is what makes the
-/// message true; the three subsets consume the const, which is what makes the
-/// scan pass. Both halves landed together, because widening the scan without
-/// converting the subsets would only have moved the dishonesty into a failing
-/// test, and converting them without widening the scan would have left the
-/// overclaim standing.
+/// walk tree-wide; the three subsets consume the const, which is what makes the
+/// scan pass.
+///
+/// **What this scan performs, and the direction it fails in — round 7's
+/// correction, and it is a NARROWING of the claim rather than a widening of the
+/// scan.** Pass 7 measured the previous version detecting a hand copy through
+/// exactly ONE witness literal while its failure message told the reader that
+/// *every* blank-shape pin consumes the const. It does not check that, and no
+/// textual scan can: it checks that three specific literals do not appear where
+/// they should not.
+///
+/// * **Under-detection, silent, and this is the residual to know about.** A hand
+///   copy that carries only members OTHER than the three witnesses — say
+///   `["", "   ", "\t"]`, three real members of the set and none of them a
+///   witness — **is invisible to this scan and always will be.** Nothing in this
+///   file bounds it. Three witnesses make such a copy less likely than one did;
+///   they do not make it impossible, and the failure message no longer says
+///   otherwise.
+/// * **Over-detection, loud, and adjudicated site by site.** Two of the three
+///   witnesses are ordinary hostile fixtures with legitimate homes elsewhere.
+///   Those homes are enumerated in [`WITNESS_ALLOWED_ELSEWHERE`] with exact hit
+///   counts, so an allowed site that GROWS a second member — the first step of
+///   becoming the copy this guard exists to catch — breaks here rather than
+///   sliding under a blanket exemption.
 ///
 /// Reachable only because 21-17 dropped `test_support`'s `#[cfg(test)]` gate
 /// (D-17-5): before that an integration crate could not name the const at all,
@@ -3517,35 +3943,75 @@ fn no_match_arm_in_the_driver_manufactures_a_blank_value() {
 /// recorded honestly at the time.
 #[test]
 fn the_degenerate_payload_set_is_spelled_in_exactly_one_place() {
+    use std::collections::BTreeMap;
+
     let files = source_and_test_files();
-    let witness = degenerate_witness();
-    let hits = executable_hits(&files, &witness);
 
-    let home_hits = hits.iter().filter(|(path, _, _)| path == DEGENERATE_HOME).count();
-    assert_eq!(
-        home_hits, 1,
-        "the shared `DEGENERATE` const must be spelled exactly once in \
-         {DEGENERATE_HOME}; found {home_hits}. Zero means this scan is looking at \
-         nothing and its uniqueness claim is vacuous."
-    );
+    for (index, witness) in degenerate_witnesses().iter().enumerate() {
+        let hits = executable_hits(&files, witness);
 
-    let offenders: Vec<(String, usize, String)> = hits
-        .iter()
-        .filter(|(path, _, _)| path != DEGENERATE_HOME)
-        .cloned()
-        .collect();
-    assert!(
-        offenders.is_empty(),
-        "a blank-shape payload list is spelled outside {DEGENERATE_HOME}. Every \
-         blank-shape pin consumes `test_support::DEGENERATE`, because a const each \
-         seam copies from is a const each seam can copy from INCOMPLETELY — pass 5 \
-         found the `--run-id` pin carrying three of the six shapes, added in the \
-         very commit that defined six, so the two zero-width shapes were never \
-         asserted at the one seam where they were reachable end to end and \
-         `--run-id '\\u{{200b}}'` drove a complete run. Consume the const. \
-         Offending lines:{}",
-        render(&offenders)
-    );
+        let home_hits = hits
+            .iter()
+            .filter(|(path, _, _)| path == DEGENERATE_HOME)
+            .count();
+        assert_eq!(
+            home_hits, 1,
+            "witness {index} must be spelled exactly once in {DEGENERATE_HOME}, \
+             as part of the shared `DEGENERATE` const; found {home_hits}. Zero \
+             means this scan is looking at nothing and its claim is vacuous — \
+             either the member was removed from the const or the halves this \
+             witness is assembled from no longer join to a member's source text."
+        );
+
+        // Elsewhere: an exact per-path census, compared BOTH ways against the
+        // adjudicated table. An extra path is an unadjudicated copy; a missing
+        // path is a stale row that would otherwise exempt a file forever; a
+        // changed count is an allowed site that grew.
+        let mut actual: BTreeMap<&str, usize> = BTreeMap::new();
+        for (path, _, _) in hits.iter().filter(|(path, _, _)| path != DEGENERATE_HOME) {
+            *actual.entry(path.as_str()).or_default() += 1;
+        }
+        let expected: BTreeMap<&str, usize> = WITNESS_ALLOWED_ELSEWHERE
+            .iter()
+            .filter(|(witness_index, _, _, _)| *witness_index == index)
+            .map(|(_, path, count, _)| (*path, *count))
+            .collect();
+
+        let offenders: Vec<(String, usize, String)> = hits
+            .iter()
+            .filter(|(path, _, _)| {
+                path != DEGENERATE_HOME && !expected.contains_key(path.as_str())
+            })
+            .cloned()
+            .collect();
+
+        assert_eq!(
+            actual,
+            expected,
+            "the per-file census for witness {index} does not match \
+             WITNESS_ALLOWED_ELSEWHERE.\n\
+             \n\
+             A path present here but absent from the table is a blank-shape \
+             payload list spelled outside {DEGENERATE_HOME}. Every blank-shape \
+             pin consumes `test_support::DEGENERATE`, because a const each seam \
+             copies from is a const each seam can copy from INCOMPLETELY — pass 5 \
+             found the `--run-id` pin carrying three of the six shapes, added in \
+             the very commit that defined six, so the two zero-width shapes were \
+             never asserted at the one seam where they were reachable end to end. \
+             Consume the const.\n\
+             \n\
+             A path in the table with a HIGHER count is an adjudicated site that \
+             grew another member of the set; re-adjudicate it or make it consume \
+             the const. A path in the table with a LOWER count, or missing, is a \
+             stale exemption: drop the row, or it goes on exempting a file for a \
+             reason that no longer holds.\n\
+             \n\
+             **What this scan does NOT check:** a hand copy carrying none of the \
+             three witnesses is invisible to it — silent under-detection, stated \
+             rather than mitigated. Unadjudicated lines:{}",
+            render(&offenders)
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3579,8 +4045,21 @@ fn the_degenerate_payload_set_is_spelled_in_exactly_one_place() {
 //    for `NonBlank` at `from_argv`;
 //    `journal::tests::a_look_alike_identity_never_resolves_beside_its_visible_twin`
 //    for the seam predicate.
+// 3. **The row-existence check matches variant NAMES** (round 7). Pass 7 warned
+//    that this census bounded a COUNT and nothing else: rename `Scan` to
+//    `Sweep`, or delete one variant and add a different one, and the count stays
+//    at eight while every row goes on naming a judge for an entry point nobody
+//    can invoke. `census_row_offence` now asserts each row's variant token is
+//    still declared in `src/cli.rs`, with
+//    `every_census_row_names_a_variant_that_still_exists` as the live assertion
+//    and a permanent planted `Commands::Adopt` row beside it so the clean zero is
+//    never indistinguishable from a checker that stopped matching. What it does
+//    NOT catch: a variant REMOVED and RE-ADDED under the same name with a
+//    different meaning — the row still resolves, the judge named in it may no
+//    longer be the judge in the arm. **Under-detection, silent**, bounded only by
+//    the judge strings' own tests named in limit 2.
 //
-// No claim beyond these two.
+// No claim beyond these three.
 // ---------------------------------------------------------------------------
 
 /// The file whose alias-carrying variants this census bounds.
@@ -3627,6 +4106,67 @@ const ARGV_ALIAS_ENTRY_POINTS: [(&str, &str); 8] = [
         "registry::Alias::new in the arm (replaced the manual predicate check)",
     ),
 ];
+
+/// Judge ONE census row against the scanned [`ARGV_ALIAS_HOME`] lines.
+///
+/// `Some(reason)` when the row is defective, `None` when it is sound. Extracted
+/// so the live assertion and the planted-stale-row control consume the SAME code
+/// path — a control that re-implemented the check would witness only its own
+/// agreement with itself, which is guard nine's `is_field_opener` rule applied to
+/// guard ten.
+fn census_row_offence(row: (&str, &str), lines: &[(usize, String)]) -> Option<String> {
+    let (variant, judge) = row;
+    if judge.trim().is_empty() {
+        return Some(format!(
+            "{variant} carries no judge — an unclassified row defeats the census"
+        ));
+    }
+    if !(judge.contains("Alias::new")
+        || judge.contains("NonBlank")
+        || judge.contains("BY DECISION"))
+    {
+        return Some(format!(
+            "{variant}'s judge must name a constructor (`Alias::new`, `NonBlank`) \
+             or be an explicitly recorded raw-by-design decision (`BY DECISION`). \
+             Got: {judge:?}"
+        ));
+    }
+    // **Round 7: the row must name a variant that still exists.** Pass 7's
+    // warning was that the census bounds a COUNT and nothing else, so a variant
+    // renamed or swapped for a different one leaves the count at eight while the
+    // table describes a tree that no longer exists.
+    let token = variant.rsplit("::").next().unwrap_or(variant).trim();
+    if !variant_is_declared(token, lines) {
+        return Some(format!(
+            "{variant} names a variant `{token}` that {ARGV_ALIAS_HOME} no longer \
+             declares. Either it was renamed — update the row and re-pin its \
+             refusal — or it was removed, in which case drop the row rather than \
+             leaving a judge recorded for an entry point nobody can invoke."
+        ));
+    }
+    None
+}
+
+/// Whether `token` appears as an enum-variant declaration in `lines`.
+///
+/// A variant declaration is a non-comment line whose trimmed form is `token`
+/// followed by end-of-line, `,`, `{`, `(` or whitespace — the three shapes
+/// `src/cli.rs` actually uses (`List,`, `Add {`, and a bare unit variant).
+fn variant_is_declared(token: &str, lines: &[(usize, String)]) -> bool {
+    lines.iter().any(|(_, line)| {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") {
+            return false;
+        }
+        let Some(rest) = trimmed.strip_prefix(token) else {
+            return false;
+        };
+        match rest.chars().next() {
+            None => true,
+            Some(next) => matches!(next, ',' | '{' | '(' | ' '),
+        }
+    })
+}
 
 /// Every line in `lines` that declares an argv alias field.
 ///
@@ -3744,18 +4284,84 @@ fn every_argv_alias_field_is_classified() {
          {declared:?}"
     );
 
-    for (variant, judge) in ARGV_ALIAS_ENTRY_POINTS {
-        assert!(
-            !judge.trim().is_empty(),
-            "{variant} carries no judge — an unclassified row defeats the census"
-        );
-        assert!(
-            judge.contains("Alias::new")
-                || judge.contains("NonBlank")
-                || judge.contains("BY DECISION"),
-            "{variant}'s judge must name a constructor (`Alias::new`, `NonBlank`) \
-             or be an explicitly recorded raw-by-design decision (`BY DECISION`). \
-             Got: {judge:?}"
-        );
+    for row in ARGV_ALIAS_ENTRY_POINTS {
+        if let Some(reason) = census_row_offence(row, &home.1) {
+            panic!("{reason}");
+        }
     }
+}
+
+/// **Guard ten's stale-row control, and the plant is permanent.**
+///
+/// The live assertion's clean zero must not be indistinguishable from a checker
+/// that stopped matching. A synthetic row naming a variant `src/cli.rs` does not
+/// declare — with a perfectly good judge, so no other clause can catch it — is
+/// fed to the SAME `census_row_offence` the live assertion consumes.
+///
+/// **Red arm, observed verbatim against the row check as it stood before the
+/// variant-existence clause existed** (this commit; the `#[ignore]` comes off in
+/// the fix commit):
+///
+/// ```text
+/// running 1 test
+/// test every_census_row_names_a_variant_that_still_exists ... FAILED
+///
+/// ---- every_census_row_names_a_variant_that_still_exists stdout ----
+///
+/// thread 'every_census_row_names_a_variant_that_still_exists' (720027) panicked at tests/spawn_seam_guard.rs:4276:5:
+/// a census row naming a variant `src/cli.rs` does not declare must be REPORTED. Pass 7's warning was that the census bounds a COUNT and nothing else: rename `Scan` to `Sweep`, or delete one variant and add a different one, and the count stays at eight while the table describes a tree that no longer exists. The rows would go on naming judges for variants nobody can invoke. Got: None
+///
+/// test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 37 filtered out; finished in 0.03s
+/// ```
+#[test]
+fn every_census_row_names_a_variant_that_still_exists() {
+    let files = source_files();
+    let home = files
+        .iter()
+        .find(|(path, _)| path == ARGV_ALIAS_HOME)
+        .unwrap_or_else(|| panic!("{ARGV_ALIAS_HOME} must exist"));
+
+    // --- The plant. `Commands::Adopt` is not declared anywhere in src/cli.rs.
+    let stale = (
+        "Commands::Adopt",
+        "registry::Alias::new in the Adopt arm (registration refusal)",
+    );
+    let offence = census_row_offence(stale, &home.1);
+    assert!(
+        offence.is_some(),
+        "a census row naming a variant `{ARGV_ALIAS_HOME}` does not declare must \
+         be REPORTED. Pass 7's warning was that the census bounds a COUNT and \
+         nothing else: rename `Scan` to `Sweep`, or delete one variant and add a \
+         different one, and the count stays at eight while the table describes a \
+         tree that no longer exists. The rows would go on naming judges for \
+         variants nobody can invoke. Got: {offence:?}"
+    );
+
+    // --- The live assertion: every real row still names a real variant.
+    let stale_rows: Vec<&str> = ARGV_ALIAS_ENTRY_POINTS
+        .iter()
+        .filter(|row| census_row_offence(**row, &home.1).is_some())
+        .map(|(variant, _)| *variant)
+        .collect();
+    assert!(
+        stale_rows.is_empty(),
+        "a census row names a variant that {ARGV_ALIAS_HOME} no longer declares. \
+         Either the variant was renamed — update the row and re-pin its refusal — \
+         or it was removed, in which case drop the row rather than leaving a \
+         judge recorded for an entry point that does not exist. Stale: \
+         {stale_rows:?}"
+    );
+
+    // --- The other direction, so the emptiness above is about the tree rather
+    //     than about a checker that reports everything: a row naming a variant
+    //     that IS declared must be sound.
+    let sound = (
+        "Commands::Add",
+        "registry::Alias::new in the Add arm (registration refusal)",
+    );
+    assert_eq!(
+        census_row_offence(sound, &home.1),
+        None,
+        "a row naming a declared variant with a named judge must not be reported"
+    );
 }

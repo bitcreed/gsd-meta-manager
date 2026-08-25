@@ -1194,22 +1194,58 @@ fn the_negative_control_does_not_see_the_claude_md_while_the_planning_markers_ar
 // The non-ignored guards. These run under an ordinary `cargo test`.
 // ===========================================================================
 
+/// Whether an already-`trim_start`ed line is a comment.
+///
+/// The same filter `tests/spawn_seam_guard.rs`'s `executable_lines` applies and
+/// for the same reason: it is what lets this file's own prose describe the call
+/// shape and the attribute it scans for without the description becoming a call
+/// site or an attribute.
+///
+/// **Extracted in round 7 so this file has ONE self-scan mechanism rather than
+/// two.** `the_ignored_set_is_seven_arms_two_controls_and_their_own_meta_check`
+/// walks the same source for a different question, and two independent scans of
+/// one file drift apart about what a comment is — which is exactly the drift
+/// guard nine named when it made its offender scan and its non-vacuity floor
+/// share one `is_field_opener` "so they cannot disagree"
+/// (`tests/spawn_seam_guard.rs`).
+fn is_comment_line(trimmed: &str) -> bool {
+    trimmed.starts_with("//")
+}
+
+/// Whether an already-`trim_start`ed line is an `#[ignore…]` attribute.
+///
+/// **Line-anchored, and that is load-bearing.** A raw substring count of the
+/// attribute over this file reads strictly HIGHER than the number of tests
+/// actually ignored: header prose, several assertion messages, and the literal
+/// on this function's own line all contain it while none of them ignores
+/// anything. Measured at the commit that added the census: **10** anchored
+/// against **18** raw (it was 14 raw before the census's own prose landed, which
+/// is the point — describing the attribute grew the substring count by four and
+/// the anchored count by zero). A census built on containment would assert ten
+/// over a set of eighteen — green over the wrong set, which is the defect class
+/// round 7 exists to end. The gap is not stated as a fixed number anywhere a
+/// test reads, because a hand-maintained number is the same failure mode.
+///
+/// Extracted alongside [`is_comment_line`]; see that doc for why there is one
+/// mechanism rather than two.
+fn is_ignore_attribute_line(trimmed: &str) -> bool {
+    trimmed.starts_with("#[ignore")
+}
+
 /// Every per-class arm in this file, as `(class id, whether it is ignored)`.
 ///
-/// A line whose trimmed form starts with `//` is dropped before the scan, the
-/// same filter `tests/spawn_seam_guard.rs:267-271` applies and for the same
-/// reason: it is what lets this file's own prose describe the call shape it
-/// scans for without the description becoming a call site.
+/// A line whose trimmed form starts with `//` is dropped before the scan, via
+/// the shared [`is_comment_line`].
 fn assert_class_call_sites() -> Vec<(String, bool)> {
     let mut out = Vec::new();
     let mut pending_ignore = false;
     let mut current_ignored = false;
     for line in OWN_SOURCE.lines() {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("//") {
+        if is_comment_line(trimmed) {
             continue;
         }
-        if trimmed.starts_with("#[ignore") {
+        if is_ignore_attribute_line(trimmed) {
             pending_ignore = true;
             continue;
         }
@@ -1276,6 +1312,137 @@ fn every_named_class_has_exactly_one_ignored_arm_and_every_arm_names_a_class() {
              real binary"
         );
     }
+}
+
+/// The name every corpus class arm starts with.
+const CORPUS_ARM_PREFIX: &str = "corpus_";
+
+/// The first half of the suffix every corpus class arm ends with.
+const CORPUS_ARM_SUFFIX_HEAD: &str = "_arrives_and_leaves_the";
+
+/// The second half of the suffix every corpus class arm ends with.
+const CORPUS_ARM_SUFFIX_TAIL: &str = "_command_unchanged";
+
+/// The first half of the arms' own non-vacuity check's name.
+const META_CHECK_NAME_HEAD: &str = "both_arms_of_every_class";
+
+/// The second half of the arms' own non-vacuity check's name.
+const META_CHECK_NAME_TAIL: &str = "_comparison_were_really_executed";
+
+/// The composition of this file's `#[ignore]`d set, asserted rather than
+/// recorded in a SUMMARY sentence.
+///
+/// **Why this test exists.** `21-18-SUMMARY.md` qualified SAFE-07 by saying the
+/// ignored set was eight class arms plus two suppression controls. Pass 7
+/// re-measured it: there are **seven** class arms, and the tenth ignored test is
+/// `both_arms_of_every_class_comparison_were_really_executed` — the arms' own
+/// non-vacuity meta-check, ignored alongside them and omitted from the list
+/// entirely. Arithmetic that lives in prose gets a round to be wrong in. This is
+/// the arithmetic as a mechanism, so the next SUMMARY that miscounts the set has
+/// to make a test go red first.
+///
+/// **What it can assert, and what it explicitly cannot.** This test is what a
+/// verification pass WITHOUT a Claude subscription is able to check: the
+/// composition of the ignored set. It says nothing whatever about the behaviour
+/// those ten tests would assert if run — that is the standing human item in
+/// `.planning/phases/21-llm-goal-layer-prompt-injection-hardening/deferred-items.md`,
+/// which names this test by identifier as the part that DOES run every round.
+///
+/// **It counts DECLARATIONS, never mentions**, on two independent grounds, and
+/// neither is claimed to do the other's work:
+///
+/// 1. Every count is anchored to a `fn ` declaration line or to
+///    [`is_ignore_attribute_line`], which is line-anchored. This alone is
+///    sufficient: adding PROSE about an arm does not add an arm, and a raw
+///    substring count of the ignore attribute over this file reads **18** where
+///    the anchored count reads **10** (it read 14 before this test's own prose
+///    landed — four more mentions, zero more ignored tests).
+/// 2. The arm suffix and the meta-check's name are each joined from two consts
+///    at RUNTIME — the idiom `assert_class_call_sites` and
+///    `tests/spawn_seam_guard.rs`'s witness halves already use — so the census
+///    cannot match its own source even if a later change moved it back onto
+///    containment. This is a second, independent reason, not a restatement of
+///    the first.
+///
+/// It consumes [`is_comment_line`] and [`is_ignore_attribute_line`], the SAME
+/// two predicates `assert_class_call_sites` consumes, so the two self-scans of
+/// this file cannot drift apart about what a comment or an ignore attribute is.
+///
+/// **The SUMMARY arithmetic for SAFE-07 derives from these counts — update both
+/// together.**
+#[test]
+fn the_ignored_set_is_seven_arms_two_controls_and_their_own_meta_check() {
+    let arm_suffix = format!("{CORPUS_ARM_SUFFIX_HEAD}{CORPUS_ARM_SUFFIX_TAIL}");
+    let meta_check = format!("{META_CHECK_NAME_HEAD}{META_CHECK_NAME_TAIL}");
+
+    let mut ignore_attributes = 0usize;
+    let mut arms: Vec<String> = Vec::new();
+    let mut meta_check_seen = false;
+    let mut meta_check_ignored = false;
+    let mut pending_ignore = false;
+
+    for line in OWN_SOURCE.lines() {
+        let trimmed = line.trim_start();
+        if is_comment_line(trimmed) {
+            continue;
+        }
+        if is_ignore_attribute_line(trimmed) {
+            ignore_attributes += 1;
+            pending_ignore = true;
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix("fn ") else {
+            continue;
+        };
+        let ignored_here = pending_ignore;
+        pending_ignore = false;
+        let name = rest.split('(').next().unwrap_or("").trim();
+        if name.starts_with(CORPUS_ARM_PREFIX) && name.contains(&arm_suffix) {
+            arms.push(name.to_string());
+        }
+        if name == meta_check {
+            meta_check_seen = true;
+            meta_check_ignored = ignored_here;
+        }
+    }
+
+    assert_eq!(
+        ignore_attributes, 10,
+        "this file must carry exactly TEN line-anchored `#[ignore]` attributes: \
+         seven class arms, two suppression controls, and the arms' own \
+         non-vacuity meta-check. Found {ignore_attributes}. A raw substring count \
+         of the attribute over this file reads strictly higher — header prose, \
+         several assertion messages and `is_ignore_attribute_line`'s own literal \
+         all contain it and none of them ignores anything — so a census built on \
+         containment would assert ten while MEASURING the larger set. If this \
+         number genuinely changed, the SAFE-07 arithmetic in the phase SUMMARYs \
+         and the standing item in deferred-items.md change with it."
+    );
+
+    assert_eq!(
+        arms.len(),
+        7,
+        "this file must declare exactly SEVEN corpus class arms; found {}. \
+         `21-18-SUMMARY.md` said eight, which is the miscount this test exists to \
+         make impossible to repeat. The count is over `fn ` DECLARATION lines, so \
+         adding prose about an arm is not adding an arm. Declared: {arms:?}",
+        arms.len()
+    );
+
+    assert!(
+        meta_check_seen,
+        "the arms' own non-vacuity meta-check is not declared in this file. It is \
+         the tenth ignored test — the one `21-18-SUMMARY.md`'s list omitted — and \
+         without it every class arm's hostile-versus-clean comparison could be a \
+         value compared with itself."
+    );
+    assert!(
+        meta_check_ignored,
+        "the arms' own non-vacuity meta-check is declared but is no longer \
+         `#[ignore]`d. It spawns the real binary like the arms it checks, so it \
+         belongs to the same availability-gated set, and the ten-attribute count \
+         above depends on it staying there."
+    );
 }
 
 #[test]
