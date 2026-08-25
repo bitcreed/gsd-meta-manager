@@ -3630,13 +3630,23 @@ fn drive_args_declares_no_raw_argv_string_field() {
 
     // **The widening's own control, against the REAL body.** Round 7 widened
     // `is_field_opener` to bare (private) declarations. Every field `DriveArgs`
-    // actually declares carries `pub`, so the widened opener must see EXACTLY
-    // the set the narrow one saw. The narrow rule is respelled here on purpose,
-    // as an independent expected value: if the widened count ever exceeds it,
-    // the extra lines are not field declarations, the over-detection direction
-    // has become real in this region, and whoever widened the extraction has to
-    // say what guard nine should do about it. Under-detection is caught by the
-    // floor above and by the offender scan; this catches the other side.
+    // declares TODAY carries `pub`, so the widened opener must see EXACTLY the
+    // set the narrow one sees. The narrow rule is respelled here on purpose, as
+    // an independent expected value.
+    //
+    // **What a difference actually means, and pass 8 measured it rather than
+    // assuming it.** This assertion used to say a difference meant the widening
+    // was matching something that is not a field declaration. Pass 8 planted a
+    // bare field in the real body and the assertion fired — correctly — with
+    // that message, which points a repairing executor at `is_field_opener` and
+    // would have got round 7's fix REVERTED. The likelier cause of a difference
+    // here is the opposite one: a real field added with no visibility modifier,
+    // which is exactly what the widening exists to see and exactly what this
+    // respelled `pub`-only expectation cannot. The message below therefore names
+    // both causes, names the likelier one first, and states which repair belongs
+    // to which — because the sentence an executor reads under a red test is an
+    // instruction, not a comment. Under-detection is caught by the floor above
+    // and by the offender scan; this catches the other side.
     let narrow_visible = body
         .iter()
         .filter(|(_, line)| {
@@ -3648,10 +3658,35 @@ fn drive_args_declares_no_raw_argv_string_field() {
         field_lines.len(),
         narrow_visible,
         "the widened `is_field_opener` sees {} field declarations in the real \
-         `DriveArgs` body where the pre-round-7 `pub`-only rule sees \
-         {narrow_visible}. Every real field carries `pub`, so the two must agree; \
-         a difference means the widening is matching something that is not a \
-         field declaration.",
+         `DriveArgs` body where the pre-round-7 `pub`-only rule respelled just \
+         above this assertion sees {narrow_visible}. TWO different things produce \
+         that difference and they are repaired in OPPOSITE directions. Read both \
+         before changing anything.\n\
+         \n\
+         (1) LIKELIER, and it is what verification pass 8 measured when it \
+         planted one: a REAL field was added to `DriveArgs` with NO visibility \
+         modifier — `goal_hint: String,` rather than `pub goal_hint: String,`. \
+         The widened opener SEES it, which is round 7's fix working: a private \
+         field is still a field, `from_argv` still has to destructure it, and \
+         pass 7 measured that exact spelling slipping past the old `pub`-only \
+         rule with pass 6's silent signature. The respelled `pub`-only \
+         expectation above CANNOT see it. THE REPAIR IS TO WIDEN THAT \
+         EXPECTATION, here, so it agrees with `is_field_opener` again — and then \
+         to check that guard nine's offender scan classifies the new field. DO \
+         NOT narrow `is_field_opener` back to `pub `/`pub(`: that reverts round \
+         7 and reopens the hole a bare field slipped through.\n\
+         \n\
+         (2) ONLY IF NO SUCH FIELD EXISTS: an over-detection in \
+         `is_field_opener` — a line inside the extracted region that matches the \
+         bare `identifier:` shape without being a field declaration (a match \
+         arm, a struct-literal initialiser, a labelled loop). None of those is in \
+         `DriveArgs`'s body by construction today, so this cause requires that \
+         the extracted region itself widened. THE REPAIR FOR THAT ONE is to \
+         narrow `is_field_opener`, and it is correct only after you have read the \
+         offending line and confirmed it is not a field.\n\
+         \n\
+         Tell the two apart by listing the lines the widened opener accepts that \
+         the narrow rule rejects, and reading them.",
         field_lines.len()
     );
 
@@ -3825,9 +3860,52 @@ const DEGENERATE_HOME: &str = "src/test_support.rs";
 /// buys detection at the cost of over-detection, and the honest way to pay it is
 /// to name each legitimate site rather than to quietly narrow the scan.
 ///
-/// The COUNT is exact on purpose: an allowed site cannot grow a second member of
-/// the set — the first step of becoming the hand copy this guard exists to
-/// catch — without breaking this loudly. The reason column is the adjudication.
+/// **What the exact COUNT delivers, and it is narrower than this doc used to
+/// claim** (WR-01, round 8). The claim here was that an allowed site cannot grow
+/// "a second member of the set" without breaking loudly. That is false in two
+/// directions, and round 8 MEASURED both by planting them rather than arguing
+/// them — a doc that asserts a residual nobody tested is the same defect as a doc
+/// that asserts a bound nobody tested, pointed the other way.
+///
+/// What it DOES deliver: for each `(witness index, path)` pair below, the number
+/// of executable lines in that file spelling THAT WITNESS is compared as an
+/// equality, so the site cannot grow a second occurrence **of that one literal**
+/// unnoticed, and a row that goes stale cannot go on exempting the file. That is
+/// the whole of it.
+///
+/// * **Residual 1 — the census counts WITNESSES, not members. Under-detection,
+///   silent.** `test_support::DEGENERATE` has ten members and only three are
+///   witnesses, so an allowed file may grow any of the other **seven** and no
+///   count here moves. **Measured, not reasoned:** round 8 planted all seven
+///   non-witness members as one hand-copy-shaped array inside `src/text.rs` — a
+///   file this table already allows — and
+///   `the_degenerate_payload_set_is_spelled_in_exactly_one_place` stayed GREEN,
+///   as did all 38 tests in this file. Plant reverted; tree confirmed clean.
+/// * **Residual 2 — the census is per-FILE, not per-line. Under-detection,
+///   silent.** Nothing here says WHICH lines the hits are on, so an occurrence
+///   deleted and a hand-copy occurrence added inside the same allowed file leaves
+///   `actual == expected` holding. **Measured:** round 8 deleted the legitimate
+///   `"\u{200b}"` from `src/text.rs`'s look-alike fixture list and added one in a
+///   hand-copy-shaped array in the same file; `src/text.rs` still reported two
+///   executable hits and the census stayed GREEN. Plant reverted; tree confirmed
+///   clean.
+///
+/// A third direction — a copy carrying NONE of the three witnesses — is stated in
+/// [`the_degenerate_payload_set_is_spelled_in_exactly_one_place`]'s own doc and is
+/// unchanged.
+///
+/// **Why the table is nonetheless KEPT rather than deleted, which is the
+/// adjudication a future reader needs.** It is a both-ways `assert_eq!` over a
+/// `BTreeMap`, so a stale row fails LOUDLY — an extra path, a missing path and a
+/// changed count are each reported as their own harm. And it governs a HYGIENE
+/// scan (does one const get hand-copied?) rather than a production predicate: a
+/// wrong row here weakens a duplicate-detector, it does not admit a hostile value
+/// at any seam, because every seam is guarded by `text::is_identity_char` and
+/// `journal::is_plain_path_component` independently of this file. All four rows
+/// were re-measured correct at round 8's tree. Deleting the table to make this
+/// doc true would trade a loud stale-row failure for a silent one.
+///
+/// The reason column is the adjudication.
 const WITNESS_ALLOWED_ELSEWHERE: [(usize, &str, usize, &str); 4] = [
     (
         1,
@@ -3933,9 +4011,19 @@ fn no_match_arm_in_the_driver_manufactures_a_blank_value() {
 /// * **Over-detection, loud, and adjudicated site by site.** Two of the three
 ///   witnesses are ordinary hostile fixtures with legitimate homes elsewhere.
 ///   Those homes are enumerated in [`WITNESS_ALLOWED_ELSEWHERE`] with exact hit
-///   counts, so an allowed site that GROWS a second member — the first step of
-///   becoming the copy this guard exists to catch — breaks here rather than
-///   sliding under a blanket exemption.
+///   counts, so an allowed site that grows a second occurrence **of that same
+///   witness literal** breaks here rather than sliding under a blanket exemption.
+/// * **Under-detection INSIDE an allowed site, silent, in two further directions
+///   round 8 measured** (WR-01). This bullet used to say an allowed site could not
+///   grow "a second member of the set" unnoticed. It can, twice over. (a) The
+///   census counts the three WITNESSES, not the ten members, so an allowed file
+///   may grow any of the other seven and no count moves — planted as a seven-member
+///   hand copy in `src/text.rs` and the census stayed green. (b) The census is
+///   per-FILE, not per-line, so deleting a legitimate occurrence and adding a
+///   hand-copy one in the same allowed file leaves the count unmoved — planted in
+///   `src/text.rs` and the census stayed green. Both plants were reverted and the
+///   tree confirmed clean. See [`WITNESS_ALLOWED_ELSEWHERE`]'s doc, which carries
+///   the same two residuals and the reason the table is kept anyway.
 ///
 /// Reachable only because 21-17 dropped `test_support`'s `#[cfg(test)]` gate
 /// (D-17-5): before that an integration crate could not name the const at all,
@@ -4001,14 +4089,21 @@ fn the_degenerate_payload_set_is_spelled_in_exactly_one_place() {
              Consume the const.\n\
              \n\
              A path in the table with a HIGHER count is an adjudicated site that \
-             grew another member of the set; re-adjudicate it or make it consume \
-             the const. A path in the table with a LOWER count, or missing, is a \
-             stale exemption: drop the row, or it goes on exempting a file for a \
-             reason that no longer holds.\n\
+             grew another occurrence OF THIS WITNESS; re-adjudicate it or make it \
+             consume the const. A path in the table with a LOWER count, or \
+             missing, is a stale exemption: drop the row, or it goes on exempting \
+             a file for a reason that no longer holds.\n\
              \n\
-             **What this scan does NOT check:** a hand copy carrying none of the \
-             three witnesses is invisible to it — silent under-detection, stated \
-             rather than mitigated. Unadjudicated lines:{}",
+             **What this scan does NOT check — three silent under-detection \
+             directions, all measured rather than assumed:** (a) a hand copy \
+             carrying none of the three witnesses is invisible to it; (b) the \
+             census counts WITNESSES, not members, so an allowed file may grow \
+             any of DEGENERATE's seven non-witness members without moving a \
+             count; (c) the census is per-FILE, not per-line, so an occurrence \
+             deleted and a hand-copy occurrence added in the same allowed file \
+             leaves this comparison holding. (b) and (c) were each planted in \
+             round 8 and each left this test green; see \
+             WITNESS_ALLOWED_ELSEWHERE's doc. Unadjudicated lines:{}",
             render(&offenders)
         );
     }
