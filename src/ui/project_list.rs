@@ -146,18 +146,27 @@ fn render_main(frame: &mut Frame, app: &mut App, area: Rect) {
 
                 let row_color = status_color(&status_str);
 
+                // **Escaped, not raw** (D-19-5). Registration cannot admit an
+                // invisible byte any more, but rows an older build accepted are
+                // still in `config.json` and still land here. A legacy
+                // `gsd-\u{202e}nur` printed raw renders as `gsd-run` — Trojan
+                // Source (CVE-2021-42574) in the project list the operator
+                // steers by. The map lookups above use the RAW key, because
+                // that is the identity; only this cell is a rendering.
+                let alias_cell = crate::text::display_identity(alias);
+
                 let cells: Vec<String> = if terminal_width >= 80 {
                     vec![
-                        alias.clone(),
+                        alias_cell,
                         phase_cell,
                         status_str,
                         progress_cell,
                         backlog_cell,
                     ]
                 } else if terminal_width >= 60 {
-                    vec![alias.clone(), phase_cell, status_str, progress_cell]
+                    vec![alias_cell, phase_cell, status_str, progress_cell]
                 } else {
-                    vec![alias.clone(), phase_cell, status_str]
+                    vec![alias_cell, phase_cell, status_str]
                 };
 
                 Row::new(cells).style(Style::default().fg(row_color))

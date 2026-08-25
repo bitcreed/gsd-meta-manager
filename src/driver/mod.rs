@@ -1743,6 +1743,99 @@ mod tests {
         );
     }
 
+    /// **The `--target-phase` seam's own look-alike pin** (pass-7 missing item
+    /// 3).
+    ///
+    /// The seam consumes `journal::is_plain_path_component` and nothing else —
+    /// no roadmap lookup happens here — so this certifies the WIRING, not a new
+    /// mechanism. It had no look-alike coverage of its own: the traversal pin
+    /// above is the only thing that ever exercised it, and a build that dropped
+    /// the check for look-alikes specifically would have kept that pin green.
+    ///
+    /// **THE VISIBLE HALF IS A PREDICATE ASSERTION, NOT A DRIVE OUTCOME. Do not
+    /// "fix" it into the stronger-looking claim, which is false.** `drive` with
+    /// `--target-phase demo` does NOT succeed: the value is used downstream as a
+    /// key into `ProjectState::phase_disk_statuses`, so a visible member of
+    /// `LOOK_ALIKE_PAIRS` ("demo", "run", "x", "abc") is a perfectly legal path
+    /// component that is not a phase in any fixture roadmap. Asserting success
+    /// would fail for a reason with nothing to do with this seam. So the visible
+    /// half is asserted two ways, both true by construction: the predicate
+    /// directly, and — where the pair is driven end to end — only that the error
+    /// is NOT `TargetPhaseInvalid`. That second one is the DISCRIMINATING claim:
+    /// the seam refused the look-alike for being a look-alike, and not for
+    /// something both members share.
+    #[tokio::test]
+    async fn a_target_phase_that_renders_as_another_is_refused_at_the_seam() {
+        for (visible_member, look_alike) in crate::test_support::LOOK_ALIKE_PAIRS {
+            // The visible half, direct: the predicate accepts it, so the refusal
+            // below is about the invisible bytes rather than about the pair.
+            assert!(
+                journal::is_plain_path_component(visible_member),
+                "{visible_member:?} is the visible member and must pass the \
+                 predicate this seam consumes"
+            );
+
+            let root = tempfile::TempDir::new().expect("temp dir");
+            let config = opted_in(root.path());
+
+            let mut hostile_args = args("demo");
+            hostile_args.command = None;
+            hostile_args.target_phase = Some(visible(look_alike));
+            hostile_args.run_id = Some(visible("2026-08-19T12-00-00Z-aaaa"));
+
+            let err = drive(hostile_args, &config)
+                .await
+                .expect_err("a look-alike target phase must be refused at the seam");
+
+            assert!(
+                matches!(err, DriveError::TargetPhaseInvalid { .. }),
+                "{look_alike:?} renders exactly as {visible_member:?} and must \
+                 be refused by the typed seam refusal, got: {err:?}"
+            );
+            assert!(
+                !root.path().join(".planning/meta-manager").exists(),
+                "and a refused run must have created NOTHING"
+            );
+
+            // The discriminating half: the visible twin, driven end to end,
+            // fails for some OTHER reason — never TargetPhaseInvalid.
+            let visible_root = tempfile::TempDir::new().expect("temp dir");
+            let visible_config = opted_in(visible_root.path());
+            let mut visible_args = args("demo");
+            visible_args.command = None;
+            visible_args.target_phase = Some(visible(visible_member));
+            visible_args.run_id = Some(visible("2026-08-19T12-00-00Z-aaaa"));
+
+            if let Err(err) = drive(visible_args, &visible_config).await {
+                assert!(
+                    !matches!(err, DriveError::TargetPhaseInvalid { .. }),
+                    "{visible_member:?} is a legal path component, so whatever \
+                     stops it downstream must not be THIS seam — otherwise the \
+                     refusal above was about something both members share \
+                     rather than about the look-alike. Got: {err:?}"
+                );
+            }
+        }
+
+        // And a token from OUTSIDE the pre-round-7 ranges, so this pin cannot
+        // pass by re-confirming the three literal ranges pass 7 found short.
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let config = opted_in(root.path());
+        let mut outside_args = args("demo");
+        outside_args.command = None;
+        outside_args.target_phase = Some(visible("2\u{e0041}0"));
+        outside_args.run_id = Some(visible("2026-08-19T12-00-00Z-aaaa"));
+
+        let err = drive(outside_args, &config)
+            .await
+            .expect_err("a tag-character target phase must be refused at the seam");
+        assert!(
+            matches!(err, DriveError::TargetPhaseInvalid { .. }),
+            "a U+E0041 tag character is outside the old literal ranges and was \
+             ACCEPTED here at HEAD; got: {err:?}"
+        );
+    }
+
     /// **The `--run-id` blank pin MOVED to the parse boundary** (21-15).
     ///
     /// It used to drive `drive` with a blank `--run-id` and assert

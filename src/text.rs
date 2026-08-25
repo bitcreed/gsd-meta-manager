@@ -235,6 +235,39 @@ pub fn carries_invisible_formatting(value: &str) -> bool {
     value.chars().any(is_invisible_formatting_char)
 }
 
+/// Render `value` for a terminal with every invisible-class character replaced
+/// by its visible `U+XXXX` form.
+///
+/// **A RENDER-side defence for entries an older build accepted** (D-19-5). New
+/// identities cannot carry these bytes at all — [`is_identity_char`] refuses
+/// them at registration — so this is not the primary control and must not be
+/// mistaken for one. It exists because refusing future registrations does
+/// nothing about the rows already sitting in a user's `config.json`, and those
+/// rows still render.
+///
+/// Pass 7 reproduced what that costs at the binary level: a legacy key
+/// `"gsd-\u{202e}nur"` printed by `list` as `gsd-run`, because `U+202E`
+/// (RIGHT-TO-LEFT OVERRIDE) reverses everything after it. That is Trojan Source
+/// (CVE-2021-42574) inside the tool's own project list — the operator reads one
+/// project's name and acts on another. Escaping makes the spoof VISIBLE instead
+/// of invisible: the row reads `gsd-U+202Enur`, which is ugly and honest.
+///
+/// **Only the invisible class is escaped.** Every other character passes
+/// through unchanged, so a legacy non-ASCII alias still renders as itself rather
+/// than as a wall of code points — this is a legibility defence, not a
+/// transliteration. Nothing persisted changes; this is display only.
+pub fn display_identity(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        if is_invisible_formatting_char(c) {
+            out.push_str(&format!("U+{:04X}", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,6 +300,39 @@ mod tests {
                  length rather than on emptiness"
             );
         }
+    }
+
+    /// **The Trojan Source reproduction, as a unit** (D-19-5).
+    ///
+    /// `"gsd-\u{202e}nur"` is the legacy key pass 7 measured `list` printing as
+    /// `gsd-run`. The escaped form is what a reader can act on.
+    #[test]
+    fn an_invisible_character_renders_as_its_visible_code_point() {
+        assert_eq!(
+            display_identity("gsd-\u{202e}nur"),
+            "gsd-U+202Enur",
+            "a bidi override must render as a marker a reader can see — printed \
+             raw, this row reads `gsd-run` and the operator acts on the wrong \
+             project"
+        );
+        assert_eq!(
+            display_identity("demo"),
+            "demo",
+            "and a clean alias must pass through untouched — this is a \
+             legibility defence, not a transliteration"
+        );
+        assert_eq!(
+            display_identity("d\u{e9}mo"),
+            "d\u{e9}mo",
+            "a legacy non-ASCII alias is VISIBLE, so it renders as itself; only \
+             the invisible class is escaped"
+        );
+        assert_eq!(
+            display_identity("a\u{200b}b\u{e0041}c"),
+            "aU+200BbU+E0041c",
+            "every invisible-class character is escaped, including one from \
+             outside the pre-round-7 ranges"
+        );
     }
 
     /// **The sampling fix, and the only fixture shape in this tree that can go
