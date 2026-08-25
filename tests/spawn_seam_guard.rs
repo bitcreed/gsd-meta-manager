@@ -4045,8 +4045,21 @@ fn the_degenerate_payload_set_is_spelled_in_exactly_one_place() {
 //    for `NonBlank` at `from_argv`;
 //    `journal::tests::a_look_alike_identity_never_resolves_beside_its_visible_twin`
 //    for the seam predicate.
+// 3. **The row-existence check matches variant NAMES** (round 7). Pass 7 warned
+//    that this census bounded a COUNT and nothing else: rename `Scan` to
+//    `Sweep`, or delete one variant and add a different one, and the count stays
+//    at eight while every row goes on naming a judge for an entry point nobody
+//    can invoke. `census_row_offence` now asserts each row's variant token is
+//    still declared in `src/cli.rs`, with
+//    `every_census_row_names_a_variant_that_still_exists` as the live assertion
+//    and a permanent planted `Commands::Adopt` row beside it so the clean zero is
+//    never indistinguishable from a checker that stopped matching. What it does
+//    NOT catch: a variant REMOVED and RE-ADDED under the same name with a
+//    different meaning — the row still resolves, the judge named in it may no
+//    longer be the judge in the arm. **Under-detection, silent**, bounded only by
+//    the judge strings' own tests named in limit 2.
 //
-// No claim beyond these two.
+// No claim beyond these three.
 // ---------------------------------------------------------------------------
 
 /// The file whose alias-carrying variants this census bounds.
@@ -4101,7 +4114,7 @@ const ARGV_ALIAS_ENTRY_POINTS: [(&str, &str); 8] = [
 /// path — a control that re-implemented the check would witness only its own
 /// agreement with itself, which is guard nine's `is_field_opener` rule applied to
 /// guard ten.
-fn census_row_offence(row: (&str, &str), _lines: &[(usize, String)]) -> Option<String> {
+fn census_row_offence(row: (&str, &str), lines: &[(usize, String)]) -> Option<String> {
     let (variant, judge) = row;
     if judge.trim().is_empty() {
         return Some(format!(
@@ -4118,7 +4131,41 @@ fn census_row_offence(row: (&str, &str), _lines: &[(usize, String)]) -> Option<S
              Got: {judge:?}"
         ));
     }
+    // **Round 7: the row must name a variant that still exists.** Pass 7's
+    // warning was that the census bounds a COUNT and nothing else, so a variant
+    // renamed or swapped for a different one leaves the count at eight while the
+    // table describes a tree that no longer exists.
+    let token = variant.rsplit("::").next().unwrap_or(variant).trim();
+    if !variant_is_declared(token, lines) {
+        return Some(format!(
+            "{variant} names a variant `{token}` that {ARGV_ALIAS_HOME} no longer \
+             declares. Either it was renamed — update the row and re-pin its \
+             refusal — or it was removed, in which case drop the row rather than \
+             leaving a judge recorded for an entry point nobody can invoke."
+        ));
+    }
     None
+}
+
+/// Whether `token` appears as an enum-variant declaration in `lines`.
+///
+/// A variant declaration is a non-comment line whose trimmed form is `token`
+/// followed by end-of-line, `,`, `{`, `(` or whitespace — the three shapes
+/// `src/cli.rs` actually uses (`List,`, `Add {`, and a bare unit variant).
+fn variant_is_declared(token: &str, lines: &[(usize, String)]) -> bool {
+    lines.iter().any(|(_, line)| {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") {
+            return false;
+        }
+        let Some(rest) = trimmed.strip_prefix(token) else {
+            return false;
+        };
+        match rest.chars().next() {
+            None => true,
+            Some(next) => matches!(next, ',' | '{' | '(' | ' '),
+        }
+    })
 }
 
 /// Every line in `lines` that declares an argv alias field.
@@ -4267,7 +4314,6 @@ fn every_argv_alias_field_is_classified() {
 /// test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 37 filtered out; finished in 0.03s
 /// ```
 #[test]
-#[ignore = "red: pass-7 guard-ten stale-row plant; un-ignored in the fix commit"]
 fn every_census_row_names_a_variant_that_still_exists() {
     let files = source_files();
     let home = files
