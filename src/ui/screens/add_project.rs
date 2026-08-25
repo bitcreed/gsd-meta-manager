@@ -60,9 +60,14 @@ impl Screen for AddProjectScreen {
         ])
         .split(area);
 
-        // Render the project list in main area (reuse the normal screen render)
-        // Actually, the old code rendered project_list in the background.
-        // For simplicity, we render a minimal project list block.
+        // Render a minimal project-list block in the main area.
+        //
+        // This used to say "the old code rendered project_list in the
+        // background", citing `src/ui/project_list.rs`. That file was deleted in
+        // 21-21 — it had been orphaned from the module tree since `c297631` (the
+        // commit that introduced the `Screen` trait and `screens/normal.rs`) and
+        // the build never compiled it, so the "old code" being deferred to had
+        // not shipped for the whole of its citation's life.
         render_project_list_background(frame, chunks[0], ctx);
 
         // Footer

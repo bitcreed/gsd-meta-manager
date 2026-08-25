@@ -5,9 +5,9 @@
 //! be a subset of the set that existed. CR-01 is that failure one more time and
 //! at its most embarrassing: the escaping mechanism ([`crate::text::display_identity`])
 //! was correct, but the single UI call to it lived in `src/ui/project_list.rs` —
-//! a file the module tree does not contain and the build never compiled — and
-//! that dead call convinced both a reviewer and a verifier that the TUI was
-//! escaped.
+//! a file the module tree did not contain and the build never compiled, orphaned
+//! since `c297631` and deleted in 21-21 — and that dead call convinced both a
+//! reviewer and a verifier that the TUI was escaped.
 //!
 //! So this module answers exactly one question: **what performs the
 //! enumeration?**
@@ -288,6 +288,18 @@ type Fixture = fn(&str) -> (AppContext, Box<dyn Screen>);
 /// test, not a silent skip.
 fn fixture_for(type_name: &str) -> Option<Fixture> {
     match type_name {
+        // The fixture puts the screen in the state its disposition names: the
+        // project is registered, and the screen is the destructive confirm for
+        // that exact key.
+        //
+        // The arrival assertion is load-bearing here, measured by emptying this
+        // fixture (`ctx_with_aliases(&[])`, `DeleteConfirmScreen::new(String::new())`)
+        // and re-running the probe:
+        //
+        // ```text
+        // panicked at src/ui/screens/render_escape_guard.rs:511:21:
+        // DeleteConfirmScreen (src/ui/screens/delete_confirm.rs) is adjudicated as rendering identity, but a clean identity handed to its fixture never reached the buffer. Either the disposition is wrong or the fixture does not put the screen in a state that renders it — and until this passes, every assertion below it would pass by silence.
+        // ```
         "DeleteConfirmScreen" => Some(|identity| {
             let ctx = super::tests::ctx_with_aliases(&[identity]);
             let screen: Box<dyn Screen> = Box::new(
@@ -489,7 +501,6 @@ mod tests {
     ///
     /// A guard never observed red is not certified. This one was.
     #[test]
-    #[ignore = "red: CR-01 probe; un-ignored in the fix commit"]
     fn the_screen_renders_identity_escaped() {
         let clean = clean_identity();
         let hostile = hostile_identity();
