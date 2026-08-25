@@ -5,15 +5,15 @@ milestone_name: Autonomous Orchestration
 current_phase: 21
 current_phase_name: llm-goal-layer-prompt-injection-hardening
 status: executing
-stopped_at: Phase 19 human verification deferred by user; starting Phase 20 autonomous run
-last_updated: "2026-08-23T03:47:50.358Z"
-last_activity: 2026-08-22
-last_activity_desc: Phase 21 execution resumed (wave continue)
+stopped_at: Phase 21 gap closure round 7 planned and plan-checked; ready to execute 21-19 then 21-20
+last_updated: "2026-08-25T00:00:00.000Z"
+last_activity: 2026-08-25
+last_activity_desc: Round-7 plans passed plan-check; ROADMAP round-7 block written
 state_head: 84143bbf0bce375e0273700377c508cb7ba1cc13
 progress:
   total_phases: 10
   completed_phases: 6
-  total_plans: 70
+  total_plans: 72
   completed_plans: 68
   percent: 60
 ---
@@ -29,11 +29,14 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 
 ## Current Position
 
-Phase: 21 (llm-goal-layer-prompt-injection-hardening) — READY TO EXECUTE
-Plan: 1 of 18
-Status: Ready to execute
-  human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-08-22 — Phase 21 execution started
+Phase: 21 (llm-goal-layer-prompt-injection-hardening) — GAP CLOSURE, ROUND 7 (planning boundary)
+Plan: 18 of 20 executed; 21-19 and 21-20 written, PLAN-CHECKED and PASSED (revisions at 3b0ef4d
+  and addc3cc), ROADMAP round-7 block added — ready to execute
+Status: 21-VERIFICATION.md pass 7 = gaps_found — 11/20 must-haves, 3/5 ROADMAP criteria;
+  criterion 1 FAILED (pass 6's "verified" claim was itself false), criterion 4
+  PRESENT_BEHAVIOUR_UNVERIFIED pending a human Claude-subscription run.
+  Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
+Last activity: 2026-08-25 — round-7 plans passed the plan-checker; ROADMAP round-7 block written
 
 ## Deferred Verification
 
@@ -264,8 +267,14 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-08-19
-Stopped at: Phase 19 fully executed (8/8 plans, verification human_needed → deferred by user); autonomous run started at Phase 20
-Resume file: none — resume with /gsd-autonomous --from 20 --to 22
+Last session: 2026-08-25
+Stopped at: Round-7 planning boundary CLOSED — gsd-plan-checker ran against `21-19-PLAN.md` and
+`21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
+"Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
+Resume file: `.planning/HANDOFF.json` + `.planning/phases/21-llm-goal-layer-prompt-injection-hardening/.continue-here.md`
+(both retained deliberately — the plan-checker step runs as a separate agent and needs them;
+delete only after round 7 executes).
 Note: `.planning/phases/19-gitsafe-git-blast-radius-envelope/.continue-here.md` is a stale
 mid-execution checkpoint (claims task 3 of 8); all 8 plans have summaries. Ignore it.
+Note: `.planning/ROADMAP.md`'s "Gap closure, round 7" block is now written (unexecuted `- [ ]`
+boxes for 21-19/21-20); the outstanding-edit note that stood here is resolved.
