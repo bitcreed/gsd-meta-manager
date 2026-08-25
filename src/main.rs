@@ -38,10 +38,19 @@ fn judged_alias_or_exit(raw: &str, refusal_code: i32) -> gsd_meta_manager::regis
             // that reported a bidi override by rendering one would let the
             // rejected value reorder the sentence explaining why it was
             // rejected.
-            eprintln!(
-                "Error: {}",
-                gsd_meta_manager::text::display_identity(&refusal.to_string())
-            );
+            //
+            // **The escaping is no longer done HERE** (D-21-3, 21-21). It is
+            // done once, in `Display for AliasRefusal`, which is the one
+            // producer every echo of this type goes through. This site used to
+            // wrap `refusal.to_string()` in a second `display_identity` call — a
+            // second spelling of one judgment, which is precisely the defect
+            // D-19-2 removed from `Alias::new`, and which left the OTHER two
+            // echo sites (`:91` and `:359` before this edit) depending on
+            // whoever remembered to copy it. Removing it is behaviour-preserving
+            // and that is not assumed: `display_identity` is pinned idempotent
+            // over its own output by
+            // `registry::tests::escaping_an_already_escaped_identity_changes_nothing`.
+            eprintln!("Error: {refusal}");
             eprintln!(
                 "This alias was accepted by an older build and no longer names a valid \
                  identity, so this hook refuses rather than guessing which project it \
@@ -97,18 +106,31 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
             let config = load_config(&config_path)?;
+            // The membership check keeps the RAW bytes (`as_str`) — it is a
+            // lookup into `config.projects` and an escaped key would miss every
+            // entry. The sentence beneath it is READ, so it carries the escaped
+            // form. Same value, one line apart, two different answers; that is
+            // the whole split the withdrawn `Display` impl forces you to make.
             if config.projects.contains_key(alias.as_str()) {
                 eprintln!(
                     "Error: alias '{}' already exists. Provide an explicit alias: gsd-manager add {} <alias>",
-                    alias,
+                    gsd_meta_manager::text::display_identity(alias.as_str()),
                     canonical_path.display()
                 );
                 std::process::exit(1);
             }
             let mut config = config;
+            // RAW into `add_project`: that is the value becoming the key.
             add_project(&mut config, &alias, &canonical_path)?;
             save_config(&config, &config_path)?;
-            println!("Added project '{}' at {}", alias, canonical_path.display());
+            // READ by a human, so escaped. A confirmation that renders a name
+            // other than the one just written is a confirmation of the wrong
+            // thing.
+            println!(
+                "Added project '{}' at {}",
+                gsd_meta_manager::text::display_identity(alias.as_str()),
+                canonical_path.display()
+            );
         }
         // **The ONE deliberately-raw alias consumer (D-17-3), recorded loudly
         // rather than left to be discovered as an oversight.** Removal is a
@@ -121,11 +143,35 @@ async fn main() -> anyhow::Result<()> {
         // WR-06-class falsehood generator ("Project not found" about an entry
         // `list` prints). Classified `raw-by-design` in guard ten's table with
         // this reason.
+        //
+        // **Accepting and echoing are now separated STRUCTURALLY rather than
+        // remembered** (21-21, T-21-21-03). The argv string is bound into
+        // `registry::LegacyRegistryKey`, which judges nothing — removal still
+        // accepts byte-for-byte what an older build registered, which is
+        // D-17-3's whole content — but which implements no `Display` and no
+        // conversion into a string-like type. So `remove_project` keeps getting
+        // the raw bytes while the echo below CANNOT be written unescaped without
+        // a deliberate, visible choice. Before this, the arm bound a bare
+        // `String` and the echo printed a raw legacy alias; verification pass 8
+        // measured a bidi spoof through that line.
         Some(Commands::Remove { alias }) => {
+            let key = gsd_meta_manager::registry::LegacyRegistryKey::from_argv(alias);
             let mut config = load_config(&config_path)?;
-            remove_project(&mut config, &alias)?;
+            // RAW — this is the lookup and the removal.
+            remove_project(&mut config, key.as_raw_for_lookup_only())?;
             save_config(&config, &config_path)?;
-            println!("Removed project '{}'", alias);
+            // ESCAPED — this is read by a person.
+            //
+            // That the raw route is not merely discouraged but IMPOSSIBLE was
+            // measured, by writing `println!("Removed project '{}'", key)` here
+            // and compiling:
+            //
+            //   error[E0277]: `LegacyRegistryKey` doesn't implement `std::fmt::Display`
+            //      --> src/main.rs:164:46
+            //   164 |             println!("Removed project '{}'", key);
+            //       |                                        --    ^^^ `LegacyRegistryKey` cannot be formatted with the default formatter
+            //       = help: the trait `std::fmt::Display` is not implemented for `LegacyRegistryKey`
+            println!("Removed project '{}'", key.escaped_for_display());
         }
         Some(Commands::List) => {
             let config = load_config(&config_path)?;
@@ -368,7 +414,14 @@ async fn main() -> anyhow::Result<()> {
                 // Stdout, because this entry point is read by a human. The
                 // report is safe to print by construction: it carries file,
                 // line and rule, and has nowhere to hold a matched secret.
-                println!("alias={alias} root={}", root.display());
+                // READ by a human — this entry point prints to stdout for a
+                // person, as the comment above says — so the alias is escaped.
+                // The scan itself was handed `&root`, not this string.
+                println!(
+                    "alias={} root={}",
+                    gsd_meta_manager::text::display_identity(alias.as_str()),
+                    root.display()
+                );
                 print!("{}", report.render());
                 // The exit code IS the control (D-25), here as much as in the
                 // hook: a finding exits non-zero.

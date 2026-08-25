@@ -62,8 +62,48 @@ pub enum AliasRefusal {
     },
 }
 
+/// **The ONE producer, so no consumer has to be named** (D-21-3, CR-01).
+///
+/// Every variant that embeds the refused candidate routes it through
+/// [`crate::text::display_identity`] first. That closes `src/main.rs:91` and
+/// `src/main.rs:359` — and every refusal echo added after this one — without
+/// this file, or that one, naming any of them. One producer beats three
+/// consumers, and beats a list of three consumers that will be four next round.
+///
+/// # The measurement that made this different from what the plan predicted
+///
+/// The plan expected these echoes to be emitting RAW invisible bytes. Measured
+/// with a scratch program against this toolchain, they were not:
+///
+/// ```text
+/// U+202E Cf                                  -> "demo\u{202e}"   survivors: []
+/// U+00AD Cf                                  -> "demo\u{ad}"     survivors: []
+/// U+E0041 Cf (tag)                           -> "demo\u{e0041}"  survivors: []
+/// U+180E Cf                                  -> "demo\u{180e}"   survivors: []
+/// U+FE0F Mn + Default_Ignorable              -> "demo\u{fe0f}"   survivors: []
+/// U+034F Mn + Default_Ignorable              -> "demo\u{34f}"    survivors: []
+/// U+E0100 Mn + Default_Ignorable (VS17)      -> "demo\u{e0100}"  survivors: []
+/// ```
+///
+/// `{alias:?}` — `str`'s `Debug` — already escaped every member of the class it
+/// was handed. So the harm here was never "an invisible character reaches the
+/// terminal through a refusal". It was subtler and is worth naming, because it
+/// is this phase's own recurring shape one level down: **the guarantee rested on
+/// `core::char::is_printable`, a standard-library table that no test in this
+/// tree pins, no doc in this tree names, that can move with a toolchain
+/// upgrade, and that is a SECOND spelling of a class this project already
+/// derives for itself in [`crate::text`].** Two spellings of one judgment is
+/// exactly the defect D-19-2 removed from `Alias::new`.
+///
+/// Escaping here replaces that accident with the project's own derived class, in
+/// the project's own notation (`U+202E`, not `\u{202e}`), and `{:?}` then adds
+/// nothing because the escaped form is ASCII. What a reader gets is one
+/// notation, produced by one predicate, certified by one test.
 impl std::fmt::Display for AliasRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Bound once, above the match, so a variant added tomorrow cannot embed
+        // the candidate without going through it.
+        let escaped = |alias: &String| crate::text::display_identity(alias);
         match self {
             Self::NotVisible => write!(
                 f,
@@ -71,41 +111,100 @@ impl std::fmt::Display for AliasRefusal {
                  of whitespace, control or zero-width characters, so nothing in \
                  the project list would identify it"
             ),
-            Self::InvisibleFormatting { alias } => write!(
-                f,
-                "the alias {alias:?} carries a character that renders as \
-                 nothing, so on screen it is indistinguishable from an alias \
-                 that does not. Two aliases that render identically would name \
-                 two different projects, two separate driver opt-ins and two \
-                 separate envelope roots — and nothing in the interface would \
-                 show you which one you were acting on. Choose an alias whose \
-                 written form is what you see"
-            ),
+            Self::InvisibleFormatting { alias } => {
+                let alias = escaped(alias);
+                write!(
+                    f,
+                    "the alias {alias:?} carries a character that renders as \
+                     nothing, so on screen it is indistinguishable from an alias \
+                     that does not. Two aliases that render identically would name \
+                     two different projects, two separate driver opt-ins and two \
+                     separate envelope roots — and nothing in the interface would \
+                     show you which one you were acting on. Choose an alias whose \
+                     written form is what you see"
+                )
+            }
             Self::Whitespace => write!(f, "an alias may not contain whitespace"),
-            Self::OutsideIdentityAlphabet { alias } => write!(
-                f,
-                "the alias {alias:?} uses characters outside A-Z a-z 0-9 . _ - \
-                 An alias is how this tool names a project to you and to \
-                 itself, so the set it accepts is deliberately small and \
-                 finite: outside it, two aliases can render identically while \
-                 naming different projects — through a bidi override, a tag \
-                 character, a variation selector or a look-alike letter from \
-                 another script — and nothing in the interface would show you \
-                 which one you were acting on. The project folder itself may be \
-                 named anything, in any script; only the alias is restricted. \
-                 Register it under an ASCII alias of your choosing. If this \
-                 alias is an existing entry an older build accepted, \
-                 `remove {alias:?}` still accepts it — remove it and re-add \
-                 under an alias from this set"
-            ),
-            Self::NotPlainComponent { alias } => write!(
-                f,
-                "the alias {alias:?} is not a single plain directory name, so it \
-                 could never name its own envelope root; it may not contain a \
-                 path separator, `..`, a leading `/`, or an embedded control \
-                 character"
-            ),
+            Self::OutsideIdentityAlphabet { alias } => {
+                let alias = escaped(alias);
+                write!(
+                    f,
+                    "the alias {alias:?} uses characters outside A-Z a-z 0-9 . _ - \
+                     An alias is how this tool names a project to you and to \
+                     itself, so the set it accepts is deliberately small and \
+                     finite: outside it, two aliases can render identically while \
+                     naming different projects — through a bidi override, a tag \
+                     character, a variation selector or a look-alike letter from \
+                     another script — and nothing in the interface would show you \
+                     which one you were acting on. The project folder itself may be \
+                     named anything, in any script; only the alias is restricted. \
+                     Register it under an ASCII alias of your choosing. If this \
+                     alias is an existing entry an older build accepted, \
+                     `remove {alias:?}` still accepts it — remove it and re-add \
+                     under an alias from this set"
+                )
+            }
+            Self::NotPlainComponent { alias } => {
+                let alias = escaped(alias);
+                write!(
+                    f,
+                    "the alias {alias:?} is not a single plain directory name, so it \
+                     could never name its own envelope root; it may not contain a \
+                     path separator, `..`, a leading `/`, or an embedded control \
+                     character"
+                )
+            }
         }
+    }
+}
+
+/// A registry key an OLDER build accepted, on its way to being removed.
+///
+/// **This type judges NOTHING, and that is its entire content** (D-17-3). It
+/// must accept exactly what an older build registered — invisible bytes,
+/// look-alike scripts, anything — because removal is the documented recovery
+/// route for precisely those entries and a removal that could not name them
+/// would make a bad entry permanent. [`Alias`] is the type for a value being
+/// CREATED; this is the type for a value being LOOKED UP and thrown away.
+///
+/// **What it buys is that ACCEPTING and ECHOING become two different questions
+/// the compiler asks separately** (21-21, T-21-21-03). Before it, the `Remove`
+/// arm bound a bare `String` and `println!("Removed project '{}'", alias)`
+/// compiled without anyone deciding anything; a bidi spoof through that line was
+/// measured by verification pass 8. The type has:
+///
+/// * **no `Display`** — so it cannot be interpolated at all,
+/// * **no `Into<Cow<str>>`, no `Deref`, no `AsRef<str>`** — so it cannot be
+///   coerced into one either,
+/// * exactly two accessors, each named after the question it answers:
+///   [`as_raw_for_lookup_only`](Self::as_raw_for_lookup_only) and
+///   [`escaped_for_display`](Self::escaped_for_display).
+///
+/// The raw accessor is deliberately unattractive to type. Reaching for it is a
+/// choice a reviewer can see in a diff, which is what a bare `String` never was.
+#[derive(Debug)]
+pub struct LegacyRegistryKey(String);
+
+impl LegacyRegistryKey {
+    /// Wrap an argv string. **No judgment is applied and none may be added** —
+    /// see the type's own doc for why (D-17-3).
+    pub fn from_argv(raw: String) -> Self {
+        Self(raw)
+    }
+
+    /// The raw bytes, for the membership check and the removal ONLY.
+    ///
+    /// `config.projects` is keyed by exactly these bytes. An escaped key would
+    /// miss every legacy entry, which is the regression this accessor's name
+    /// exists to make visible at the call site.
+    pub fn as_raw_for_lookup_only(&self) -> &str {
+        &self.0
+    }
+
+    /// The form a human READS, with every invisible-class character replaced by
+    /// its visible `U+XXXX` spelling.
+    pub fn escaped_for_display(&self) -> String {
+        crate::text::display_identity(&self.0)
     }
 }
 
@@ -165,11 +264,22 @@ impl Alias {
     }
 }
 
-impl std::fmt::Display for Alias {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+// `impl Display for Alias` is WITHDRAWN (D-21-2, CR-01).
+//
+// **What the withdrawal buys, and it is not the four sites it named.** With the
+// impl in place, `format!("{alias}")` compiles anywhere and renders the raw
+// bytes, so every render site is a site somebody has to REMEMBER. Without it,
+// the compiler names every interpolation and each one has to be resolved
+// deliberately: `as_str()` where the value is a lookup, a comparison, a path
+// segment or a tracing field, and `crate::text::display_identity` where a human
+// reads it. The point is not the four sites that existed — it is that the fifth,
+// added tomorrow, is a compile error rather than a bug nobody sees.
+//
+// The reach is small and saying so is the point: it does NOT catch
+// `Removed project '{}'` in `main.rs`, whose arm binds a raw argv `String` and
+// never an `Alias` (that is `LegacyRegistryKey`'s job), and it does not catch
+// the TUI, where no identity type reaches at all (that is the `Screen` census's
+// job). Three mechanisms, three measured reaches, none doing another's work.
 
 /// Add a project to the registry with the given alias and path.
 /// Validates that:
@@ -641,8 +751,13 @@ pub fn auto_register_from_sessions(
         };
 
         if let Err(e) = add_project(config, &alias, &canonical) {
+            // RAW (`as_str`). A log line is a machine record read by grep and by
+            // whoever is debugging a registration that did not happen, and it
+            // has to carry the bytes that were actually used as the key. It is
+            // not a terminal cell an operator reads a name off, which is the
+            // question `display_identity` answers.
             tracing::warn!(
-                alias = %alias,
+                alias = %alias.as_str(),
                 path = %canonical.display(),
                 error = %e,
                 "auto-register: add_project failed",
@@ -679,6 +794,155 @@ mod tests {
     /// A fixture alias, judged the way a real one is.
     fn visible(raw: &str) -> Alias {
         Alias::new(raw).expect("a visible test alias")
+    }
+
+    /// `display_identity` applied twice equals `display_identity` applied once.
+    ///
+    /// **This is what licenses removing the outer escape at `src/main.rs`'s
+    /// `judged_alias_or_exit`** (D-21-3, 21-21). That site used to wrap
+    /// `refusal.to_string()` in a second `display_identity` call while
+    /// `Display for AliasRefusal` now escapes at the producer. Deleting the
+    /// outer call is only behaviour-preserving if the function is idempotent
+    /// over its own output — so that is ASSERTED here rather than assumed, over
+    /// the imported hostile fixtures rather than over a literal chosen to
+    /// agree with it.
+    ///
+    /// It also states the property that makes `shown()` safe to apply at a
+    /// render site whose input may already have passed through another one.
+    #[test]
+    fn escaping_an_already_escaped_identity_changes_nothing() {
+        use crate::test_support::{DEGENERATE, LOOK_ALIKE_PAIRS};
+        use crate::text::display_identity;
+
+        let corpus: Vec<String> = DEGENERATE
+            .iter()
+            .map(|s| (*s).to_string())
+            .chain(
+                LOOK_ALIKE_PAIRS
+                    .iter()
+                    .flat_map(|(clean, hostile)| [(*clean).to_string(), (*hostile).to_string()]),
+            )
+            .collect();
+
+        assert!(
+            !corpus.is_empty(),
+            "the imported fixtures are empty, so this pin asserts nothing"
+        );
+
+        // Non-vacuity: at least one fixture must actually BE escaped, or
+        // idempotence would be the trivial identity over unchanged strings.
+        assert!(
+            corpus.iter().any(|raw| display_identity(raw) != *raw),
+            "no imported fixture is changed by display_identity, so an \
+             idempotence pin over them would hold for a function that did \
+             nothing at all"
+        );
+
+        for raw in &corpus {
+            let once = display_identity(raw);
+            let twice = display_identity(&once);
+            assert_eq!(
+                once, twice,
+                "display_identity is not idempotent over {raw:?}: one pass gives \
+                 {once:?} and a second gives {twice:?}. Removing the duplicate \
+                 outer escape at main.rs's judged_alias_or_exit would then be a \
+                 behaviour CHANGE rather than a de-duplication."
+            );
+        }
+    }
+
+    /// `..` and `.` still reach [`AliasRefusal::NotPlainComponent`].
+    ///
+    /// **The pin certifies more than the message** (WR-04, D-21-5). `Alias::new`
+    /// places the identity-ALPHABET clause (clause 4, D-19-2) ABOVE the
+    /// structural path-component clause (clause 5). `.` and `-` and `_` are all
+    /// inside that alphabet, so `".."` and `"."` pass clause 4 and fall through
+    /// to clause 5 — which is what makes them the ONLY two values that still
+    /// reach this variant, and what makes this test the certificate that the
+    /// alphabet clause did NOT subsume the structural one. That non-subsumption
+    /// is 21-19 truth 3's load-bearing claim, and before this test it had zero
+    /// consumers: measured with
+    /// `rtk proxy grep -rn "NotPlainComponent" src/ tests/`, the
+    /// `AliasRefusal` variant had exactly three occurrences — its declaration,
+    /// its `Display` arm and its construction — all in this file, and none in a
+    /// test.
+    ///
+    /// Kept and pinned rather than retired: it is the only place the traversal
+    /// invariant is stated in a refusal a user can read.
+    #[test]
+    fn the_two_values_that_still_reach_not_plain_component_still_reach_it() {
+        for raw in ["..", "."] {
+            let refusal = Alias::new(raw).expect_err(
+                "a value that cannot name a directory of its own must not become \
+                 a registry key — that mismatch is WR-06's falsehood generator",
+            );
+            assert!(
+                matches!(refusal, AliasRefusal::NotPlainComponent { .. }),
+                "{raw:?} must be refused as NOT-A-PLAIN-COMPONENT and not by some \
+                 clause above it. If this now reports OutsideIdentityAlphabet, \
+                 D-19-2's alphabet clause has SUBSUMED the structural clause — \
+                 and 21-19 truth 3, which claims the two are independent, is \
+                 false. Got: {refusal:?}"
+            );
+            let message = refusal.to_string();
+            assert!(
+                message.contains(raw),
+                "the refusal must name the value it refused, or the user is told \
+                 no without being told about what. Got: {message}"
+            );
+        }
+
+        // The other direction, so "reaches it" is not mistaken for "reaches it
+        // for everything": a value outside the alphabet must be refused by
+        // clause 4, ABOVE this one, because that message carries the product
+        // trade and the recovery route.
+        let outside = Alias::new("d\u{e9}mo").expect_err("a non-ASCII alias is refused");
+        assert!(
+            matches!(outside, AliasRefusal::OutsideIdentityAlphabet { .. }),
+            "a non-ASCII alias must read the message that names the trade and the \
+             `remove` recovery route, not the structural one. Got: {outside:?}"
+        );
+    }
+
+    /// The one producer escapes, so no consumer has to (D-21-3, CR-01).
+    ///
+    /// `src/main.rs`'s two remaining refusal echoes — `Commands::Add` and
+    /// `EnvelopeAction::Scan` — do nothing but `eprintln!("Error: {refusal}")`.
+    /// This is what makes that safe, and it is asserted against the type rather
+    /// than against those two call sites, which is the whole point: an echo
+    /// added tomorrow inherits it without being named here.
+    #[test]
+    fn a_refusal_never_carries_an_invisible_character_into_its_own_message() {
+        use crate::test_support::LOOK_ALIKE_PAIRS;
+
+        let mut refusals_seen = 0;
+        for (_, hostile) in LOOK_ALIKE_PAIRS {
+            let refusal = Alias::new(hostile).expect_err("a look-alike is refused");
+            refusals_seen += 1;
+            let message = refusal.to_string();
+            let invisible: Vec<char> = message
+                .chars()
+                .filter(|c| crate::text::is_invisible_formatting_char(*c))
+                .collect();
+            assert!(
+                invisible.is_empty(),
+                "the refusal for {hostile:?} carried {invisible:?} into its own \
+                 message. A refusal that reports an invisible character by \
+                 emitting one lets the rejected value edit the sentence \
+                 explaining why it was rejected. Message: {message}"
+            );
+            assert!(
+                message.contains("U+"),
+                "the refusal for {hostile:?} must name the offending code point in \
+                 THIS project's notation, produced by THIS project's derived \
+                 class — not by `str`'s Debug impl, whose escaping is a \
+                 standard-library table no test here pins. Message: {message}"
+            );
+        }
+        assert!(
+            refusals_seen > 0,
+            "no look-alike fixture produced a refusal, so this test asserted nothing"
+        );
     }
 
     /// Two aliases that render identically cannot both name a project.
