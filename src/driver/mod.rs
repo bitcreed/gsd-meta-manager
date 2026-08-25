@@ -2165,17 +2165,22 @@ mod tests {
     /// delegated to [`crate::text::carries_visible_content`], and the reason is
     /// narrower than the old doc claimed** (pass-5 WR-02). The old text credited
     /// this detector with breaking the trim tautology round-3 WR-03 found. It
-    /// does not: the tautology is broken by the LITERAL
-    /// [`crate::test_support::DEGENERATE`] array, which names six concrete
-    /// payloads and demands a refusal for each — an enumeration written
-    /// independently of the predicate can contain a value the predicate
-    /// mishandles, which is exactly what `U+200B` and `U+FEFF` demonstrate. No
-    /// degenerate payload ever reaches this detector at all, because every one of
-    /// them is refused at the parse boundary before anything renders.
+    /// does not — and the replacement claim, that
+    /// [`crate::test_support::DEGENERATE`] breaks it instead, was ALSO wrong and
+    /// is corrected here (pass-7 gap 2, D-19-4). A hand-written enumeration is
+    /// not independent of the predicate merely by being literal: every payload
+    /// in that array was drawn from inside the class the implementation already
+    /// covered, so it agreed with the implementation by construction for six
+    /// rounds. What breaks the tautology is
+    /// `crate::text::tests::every_format_character_the_standard_names_is_inside_the_class`,
+    /// which sweeps all code points against an independently maintained
+    /// derivation of the standard. No degenerate payload ever reaches this
+    /// detector at all, because every one of them is refused at the parse
+    /// boundary before anything renders.
     ///
     /// What this detector is genuinely for is the **realistic** half: a renderer
     /// that printed an invisible numbered entry beneath a *visible* payload. Its
-    /// independently-written character classes matter there — if
+    /// independently-DERIVED character class matters there — if
     /// [`payload::NonBlank`] were ever loosened to admit a zero-width payload,
     /// this detector would still judge a `U+200B` entry visibly empty and the
     /// matrix would go red — and the
@@ -2183,16 +2188,57 @@ mod tests {
     /// [`the_visibly_empty_detector_is_falsifiable_on_its_own`] make that claim
     /// checkable rather than asserted. Do not replace this with a call to
     /// `carries_visible_content` or with `tail.trim()`.
+    ///
+    /// **Its class is no longer hand-written** (D-19-3). It used to spell the
+    /// same three literal ranges production spelled, so "independent" bought
+    /// nothing: pass 7 found the class short in both at once. See the inner
+    /// `invisible` helper for what it derives from and what that does and does
+    /// not buy.
     fn visibly_empty_numbered_entry(rendered: &str) -> Option<&str> {
+        /// The detector's own answer to "is this character invisible?", derived
+        /// INDEPENDENTLY OF PRODUCTION (D-19-3).
+        ///
+        /// It used to spell three literal ranges. Those ranges were the same
+        /// 22-code-point subset production spelled, written twice, so the
+        /// "independent" oracle and the thing it checked shared a mistake —
+        /// which is why pass 7 found the class short in both places at once.
+        /// It now reads the `unicode-properties` dev-dependency (unicode-rs)
+        /// while production reads `icu_properties` (ICU4X), so the two derive
+        /// the same standard from different data.
+        ///
+        /// The `Cf` half comes from the oracle; the default-ignorable half is
+        /// named members, because the dev-dependency does not expose that
+        /// property. Same disclosed gap as
+        /// `text::tests::named_default_ignorable_members_beyond_cf_are_inside_the_class`,
+        /// and deliberately the same member list — these two are the second and
+        /// third consumers of one oracle, so a defect in `unicode-properties`
+        /// deceives both. What neither can be deceived by is a defect in
+        /// production's derivation, which is the only property that was ever
+        /// load-bearing here. Do NOT replace this with a call to
+        /// `crate::text::carries_visible_content` or with `tail.trim()`.
+        fn invisible(c: char) -> bool {
+            use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
+
+            c.general_category() == GeneralCategory::Format
+                || matches!(
+                    c,
+                    '\u{034f}'
+                        | '\u{115f}'
+                        | '\u{1160}'
+                        | '\u{17b4}'
+                        | '\u{17b5}'
+                        | '\u{180b}'
+                        | '\u{180d}'
+                        | '\u{3164}'
+                        | '\u{fe00}'..='\u{fe0f}'
+                        | '\u{ffa0}'
+                        | '\u{e0100}'..='\u{e01ef}'
+                )
+        }
+
         fn visible(text: &str) -> bool {
-            text.chars().any(|c| {
-                !(c.is_whitespace()
-                    || c.is_control()
-                    || matches!(
-                        c,
-                        '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}'
-                    ))
-            })
+            text.chars()
+                .any(|c| !(c.is_whitespace() || c.is_control() || invisible(c)))
         }
 
         rendered.lines().find(|line| {
@@ -2226,10 +2272,26 @@ mod tests {
              spells its own character classes"
         );
         assert_eq!(
+            visibly_empty_numbered_entry("1. \u{202e}"),
+            Some("1. \u{202e}"),
+            "and for a tail of one RIGHT-TO-LEFT OVERRIDE — a character OUTSIDE \
+             the three literal ranges this detector used to spell. Against the \
+             pre-D-19-3 detector this assertion fails, which is the point: the \
+             old 'independent' oracle carried production's own subset"
+        );
+        assert_eq!(
             visibly_empty_numbered_entry("1. x"),
             None,
             "a numbered entry with a visible command is not visibly empty; a \
              detector that reported this would make the matrix unsatisfiable"
+        );
+        assert_eq!(
+            visibly_empty_numbered_entry("1. \u{65e5}"),
+            None,
+            "and a tail of one CJK ideograph is a visible command — the \
+             over-detection bound, past ASCII, so a wrong oracle that swallowed \
+             real script is caught here rather than silently reporting every \
+             non-Latin entry as empty"
         );
         assert_eq!(
             visibly_empty_numbered_entry("no numbered entry here"),

@@ -605,7 +605,10 @@ async fn a_blank_command_is_refused_in_preview_and_in_a_real_run() {
     // was true when it was written and stopped being true in 21-17, which
     // dropped the cfg gate (D-17-5) precisely so these three hand-picked subsets
     // could consume the const. Two of six is exactly the hand copy pass 5
-    // caught, and it is now six of six without anybody remembering to widen it.
+    // caught; this now sweeps the WHOLE const, which is how D-19-4's four
+    // outside-the-old-ranges payloads arrived here without anybody remembering
+    // to widen it. No count is restated: a number kept in prose is the hand copy
+    // in another form.
     for blank in gsd_meta_manager::test_support::DEGENERATE {
         for dry_run in [true, false] {
             let mut raw = raw_args(Some(&evidence));

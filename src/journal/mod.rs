@@ -2759,8 +2759,10 @@ mod tests {
         // the very commit that defined six — so the two zero-width shapes were
         // never asserted at the one seam where they were reachable end to end,
         // and `--run-id '\u{200b}'` drove a complete run. Every blank-shape pin
-        // in the tree now reads `test_support::DEGENERATE`, so a seventh shape
-        // lands here without anybody remembering to copy it. The traversal,
+        // in the tree now reads `test_support::DEGENERATE`, so a NEW shape lands
+        // here without anybody remembering to copy it — which is how D-19-4's
+        // four outside-the-old-ranges payloads arrived at this seam. The
+        // traversal,
         // separator and embedded-control hostiles below are NOT blank shapes and
         // stay written out.
         let structural_hostiles = [
