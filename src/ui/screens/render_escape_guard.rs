@@ -39,10 +39,16 @@
 //!
 //! # The census was observed catching a real twelfth screen, not argued to
 //!
-//! A throwaway `impl Screen for` was added to `src/driver/liveness.rs` — a file
-//! two directory levels down, with nothing to do with the UI, and one this plan
-//! does not otherwise touch — and the census reported it with nobody editing
-//! anything:
+//! A throwaway twelfth implementor of the trait was added to
+//! `src/driver/liveness.rs` — a file two directory levels down, with nothing to
+//! do with the UI, and one this plan does not otherwise touch — and the census
+//! reported it with nobody editing anything:
+//!
+//! (The sentence above deliberately avoids spelling the implementation header
+//! literally. The walk already drops comment lines, so a doc naming the trait
+//! cannot forge a member — but a naive `grep -rn` over the tree does NOT drop
+//! them, and a reader cross-checking the census's count against such a grep
+//! would otherwise get 12 where the census reports 11 and have to work out why.)
 //!
 //! ```text
 //! thread 'ui::screens::render_escape_guard::tests::the_screen_census_matches_the_tree' (1531855) panicked at src/ui/screens/render_escape_guard.rs:863:9:
