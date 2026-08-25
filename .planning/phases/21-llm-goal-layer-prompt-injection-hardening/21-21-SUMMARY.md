@@ -356,14 +356,25 @@ in a generator script, never pasted (prohibition 8).
 
 ```
 exit code: 0
-stdout raw repr: "Removed project 'gsd-‮nur'\n"
+stdout raw repr: "Removed project 'gsd-\u{202e}nur'\n"   <- respelled; see note below
 stdout code points: [... 0x67, 0x73, 0x64, 0x2d, 0x202e, 0x6e, 0x75, 0x72, 0x27]
 keys after: [['0x6b','0x65','0x65','0x70','0x6d','0x65']]
 legacy key still present: False       unrelated key survived: True
 ```
 
-The `0x202e` in the output is the Trojan Source spoof, reproduced: a terminal
-renders that line as `Removed project 'gsd-run'`.
+The `0x202e` in the code-point list is the Trojan Source spoof, reproduced: a
+terminal renders that line as `Removed project 'gsd-run'`.
+
+> **Note on the `raw repr` line above — and it is a finding about this SUMMARY,
+> not a formatting nicety.** The Python `repr` genuinely emitted the raw
+> `U+202E`, and pasting it verbatim put a raw bidi override into this file. That
+> is a **prohibition-8 violation in the artifact written to end overclaiming** —
+> this phase's signature shape, one more time, in the document auditing it. It
+> was caught by re-running the prohibition-8 scanner against the SUMMARY itself
+> after committing it, and the character is respelled `\u{202e}` above. The
+> **code-point list** beneath it is the load-bearing evidence and always was: it
+> shows `0x202e` present BEFORE and absent AFTER without needing the character
+> itself to appear anywhere.
 
 **AFTER** (`LegacyRegistryKey`):
 
@@ -493,7 +504,7 @@ Every row is a command and its output. No row is a grep for a sentence of prose.
 | 5 | No deleting `WITNESS_ALLOWED_ELSEWHERE` | `git diff f1a9d0d..HEAD --stat -- tests/spawn_seam_guard.rs` → *(empty)*; `grep -c WITNESS_ALLOWED_ELSEWHERE tests/spawn_seam_guard.rs` → `5` | file untouched, table present | **HELD.** This plan touches no file under `tests/` at all (`git diff f1a9d0d..HEAD -- tests/` is empty). |
 | 6 | No certifying a structural claim with a prose grep | *(this table; every row is a command, a count, a compiler error, a test name, or a binary run)* | — | **HELD.** Every mechanism claim above names a test observed red without the fix, or a binary-level run. |
 | 7 | No claiming a bound no committed control goes red for | *(the limits block in `render_escape_guard.rs`'s module doc)* | four residuals, each with its failure direction and an explicit statement of whether a control bounds it or it is disclosed only | **HELD** — see "Limits and residuals" below, which repeats them and adds the ones found during execution. |
-| 8 | No raw invisible/bidi/tag/VS character in any file | scanner over `git diff f1a9d0d..HEAD` for `Cf` ∪ Default_Ignorable ∪ bidi controls ∪ tag block ∪ variation selectors | `diff lines scanned: 2869` / `raw invisible/bidi/tag/VS characters found in added or removed lines: 0` | **HELD.** The one place a real `U+202E` was needed (the legacy `config.json` fixture) is built by a generator from `chr(0x202E)`, outside the repo, and is not in the diff. |
+| 8 | No raw invisible/bidi/tag/VS character in any file | scanner over `git diff f1a9d0d..HEAD` (code) → `diff lines scanned: 2869` / `found: 0`; then **re-run against this SUMMARY itself** | code: **0**. This SUMMARY, first attempt: **1** — a raw `U+202E` at line 359, pasted from a Python `repr`. Respelled `\u{202e}`; re-scan: **0**. | **HELD, after a caught violation.** The first scan was scoped to the code diff and was already stale by the time the SUMMARY existed. Recorded rather than quietly fixed: the prohibition was violated in the very artifact auditing it, which is this phase's signature shape. See the note under the D-17-3 measurement. |
 | 9 | No rewriting or deleting a line of the 21-19 records | `git diff --numstat f1a9d0d..HEAD -- .../21-19-PLAN.md .../21-19-SUMMARY.md` | `56  0  21-19-PLAN.md` / `78  0  21-19-SUMMARY.md` | **HELD.** Zero deletions in both. |
 | 10 | No flipping a REQUIREMENTS.md requirement | `git log --format=%H f1a9d0d..HEAD -- .planning/REQUIREMENTS.md` | *(empty)* | **HELD.** |
 
@@ -691,6 +702,43 @@ plan's text.
   passed verification to decide.
 - STATE.md and ROADMAP.md are deliberately not modified by this plan — this
   executor ran in a worktree and the orchestrator owns those writes.
+
+## Self-Check: PASSED
+
+Files this SUMMARY claims were created, checked on disk:
+
+```
+$ rtk proxy ls -1 src/ui/screens/render_escape_guard.rs .planning/.../21-21-SUMMARY.md
+.planning/phases/21-llm-goal-layer-prompt-injection-hardening/21-21-SUMMARY.md
+src/ui/screens/render_escape_guard.rs
+
+$ [ -f src/ui/project_list.rs ]
+CONFIRMED DELETED: src/ui/project_list.rs
+```
+
+Commits this SUMMARY claims, checked in `git log`:
+
+```
+$ git log --format='%h %s' f1a9d0d..HEAD
+db6194b docs(21-21): complete the deriving-the-render-surface plan
+2b5ca7a docs(21-21): stop the census's own doc from inflating a cross-check grep
+b8b9d78 feat(21-21): withdraw the trait impl, escape at the producer, split accept from echo
+6abd828 fix(21-21): adjudicate all eleven implementors, and prove a twelfth goes red
+f3a2a67 fix(21-21): escape the destructive confirm, and delete the orphan that certified it
+d8e0518 test(21-21): the render-surface census and probe, observed RED before any fix
+```
+
+All five task commits present, in the stated order, with the red arm preceding
+its fix. The sixth is this document.
+
+Prohibition-8 scanner re-run over the three `.planning/` artifacts this plan
+writes, after the violation above was corrected:
+
+```
+21-21-SUMMARY.md: 0 raw invisible/bidi/tag/VS characters
+21-19-PLAN.md:    0 raw invisible/bidi/tag/VS characters
+21-19-SUMMARY.md: 0 raw invisible/bidi/tag/VS characters
+```
 
 ---
 *Phase: 21-llm-goal-layer-prompt-injection-hardening*
