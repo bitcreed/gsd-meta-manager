@@ -36,6 +36,67 @@
 //! alternative — a syntactic scan — would have to judge every sink call under
 //! `src/ui/`, and every one of them is a place for a scan to be one spelling
 //! short.
+//!
+//! # The census was observed catching a real twelfth screen, not argued to
+//!
+//! A throwaway `impl Screen for` was added to `src/driver/liveness.rs` — a file
+//! two directory levels down, with nothing to do with the UI, and one this plan
+//! does not otherwise touch — and the census reported it with nobody editing
+//! anything:
+//!
+//! ```text
+//! thread 'ui::screens::render_escape_guard::tests::the_screen_census_matches_the_tree' (1531855) panicked at src/ui/screens/render_escape_guard.rs:863:9:
+//! the derived render surface and the disposition table disagree:
+//!
+//! UNADJUDICATED IMPLEMENTOR: `TwelfthScreenNobodyAdjudicated` (in src/driver/liveness.rs) implements the trait but no row adjudicates whether it renders identity. A screen nobody adjudicated is a screen nobody escaped. Add a row to SCREEN_IDENTITY_DISPOSITIONS stating which values it draws and where they come from.
+//! ```
+//!
+//! The implementor was then removed and the tree confirmed clean
+//! (`git status --porcelain` does not name `src/driver/liveness.rs`).
+//!
+//! # LIMITS — what this module does NOT bound, each with its failure direction
+//!
+//! Stated here because the failure this phase keeps repeating is a guard whose
+//! doc claims a bound no committed control goes red for. Every bound claimed
+//! below names the control that certifies it; every residual names the
+//! direction it fails in.
+//!
+//! 1. **The probe sees only what a screen renders under the states its fixture
+//!    constructs.** A render path reachable only under state the fixture does
+//!    not build is invisible to it. **Under-detection, and silent.** Partially
+//!    bounded — each disposition row NAMES the states its fixture puts the
+//!    screen in, so what was and was not looked at is readable rather than
+//!    assumed, and `DetailScreen` is rendered in all eleven of its sub-views
+//!    rather than only its default. Not bounded at all within a state: the
+//!    Backlog, Sessions, Archive, Browse and Defaults tabs, and the Driver
+//!    tab's run list and run detail, draw from `view_cache` / `archive_cache` /
+//!    `active_sessions` entries that `probe_ctx` leaves at their defaults, so
+//!    those tabs render their empty branch and their populated branches are
+//!    **not** exercised by any committed control. That residual is disclosed,
+//!    not closed.
+//! 2. **The probe judges the invisible class, not homoglyphs.** A Cyrillic `а`
+//!    renders like a Latin `a` and is accepted here, exactly as
+//!    [`crate::text::carries_invisible_formatting`] records for its own class.
+//!    **Under-detection, and by design** — Unicode TR39 confusables are a
+//!    separate roadmap item, and at identity SEAMS the harm is already closed
+//!    by the finite alphabet ([`crate::text::is_identity_char`]), which admits
+//!    no Cyrillic at all. Disclosed, not bounded here.
+//! 3. **A render surface not reached through `Screen::render` is invisible to
+//!    the probe** — a widget drawn from somewhere else, or a future second
+//!    entry point beside `ui::render`. **Under-detection, silent.** What bounds
+//!    how that residual can GROW is the census rather than the probe: a new
+//!    entry point that is a `Screen` is reported by
+//!    `the_screen_census_matches_the_tree`, which is the control observed red
+//!    above. A new entry point that is NOT a `Screen` is reported by nothing
+//!    here.
+//! 4. **The probe cannot assert that the RAW form is absent.** ratatui 0.30
+//!    deletes zero-width graphemes before a cell exists (measured — see
+//!    `the_screen_renders_identity_escaped`'s doc), so that assertion is true of
+//!    an unescaped site too and would pass vacuously forever. **This is a
+//!    limit on the assertion, not on the code**: what replaces it is arrival of
+//!    the clean stem plus presence of the escaped form, and both were observed
+//!    red (the arrival assertion by emptying a fixture, the escaped-form
+//!    assertion against the unescaped tree at HEAD).
 
 use super::{AppContext, Screen};
 use crate::test_support::LOOK_ALIKE_PAIRS;
@@ -66,16 +127,120 @@ const RENDERS_NO_IDENTITY: &str = "renders_no_attacker_influenced_identity";
 /// way round.
 type DispositionRow = (&'static str, &'static str, &'static str, &'static str);
 
-const SCREEN_IDENTITY_DISPOSITIONS: &[DispositionRow] = &[(
-    "DeleteConfirmScreen",
-    "src/ui/screens/delete_confirm.rs",
-    RENDERS_IDENTITY,
-    "Draws the registry key of the project about to be unregistered into a \
-     destructive [y/n] prompt, and again into the removal toast. This is the \
-     highest-consequence identity render in the tree: the operator confirms the \
-     name they READ, so a rendered name that is not the key is a confirmation \
-     of a different thing than was asked (T-21-21-01).",
-)];
+const SCREEN_IDENTITY_DISPOSITIONS: &[DispositionRow] = &[
+    (
+        "AddProjectScreen",
+        "src/ui/screens/add_project.rs",
+        RENDERS_IDENTITY,
+        "Draws the alias the operator is typing (`ctx.input_buffer`) and, beside \
+         it, `ctx.error_message` — which on this screen is an `AliasRefusal` \
+         whose Display embeds the alias it refused. The background is an empty \
+         bordered block and draws nothing. Fixture states: the alias field, and \
+         the alias field with a real refusal for the hostile identity echoed \
+         beside it.",
+    ),
+    (
+        "CreateProjectScreen",
+        "src/ui/screens/create_project.rs",
+        RENDERS_IDENTITY,
+        "Draws the project name the operator is typing, `ctx.error_message`, and \
+         in its Confirm phase the chosen name and path. The name becomes a \
+         directory, so it is an identity in the full sense. Fixture states: the \
+         name field, and the name field with an error echoed beside it.",
+    ),
+    (
+        "DeleteConfirmScreen",
+        "src/ui/screens/delete_confirm.rs",
+        RENDERS_IDENTITY,
+        "Draws the registry key of the project about to be unregistered into a \
+         destructive [y/n] prompt, again into the removal toast, and again into \
+         the live-run refusal. This is the highest-consequence identity render \
+         in the tree: the operator confirms the name they READ, so a rendered \
+         name that is not the key is a confirmation of a different thing than \
+         was asked (T-21-21-01). Fixture state: the confirm prompt for a \
+         registered hostile key.",
+    ),
+    (
+        "DetailScreen",
+        "src/ui/screens/detail.rs",
+        RENDERS_IDENTITY,
+        "The widest identity surface in the tree. Draws the registry key in its \
+         tab-bar title, and in its eleven tabs the values parsed out of the \
+         project's `.planning/` — status, milestone, phase numbers and names, \
+         HANDOFF pause context, queued commands, backlog and session entries, \
+         git log text, file names. All of it is third-party text under SAFE-07 \
+         and none of it was authored by this build. Fixture states: one per \
+         sub-view, all eleven.",
+    ),
+    (
+        "DriverConfirmScreen",
+        "src/ui/screens/driver_confirm.rs",
+        RENDERS_IDENTITY,
+        "Draws the registry key into four prompts — start, stop, grant opt-in, \
+         withdraw opt-in — each of which precedes an irreversible act, and draws \
+         the command and the goal (already `sanitize_render_line`d for C0/ESC, \
+         which is a different class from the invisible one). Fixture states: all \
+         four prompts.",
+    ),
+    (
+        "DriverInjectScreen",
+        "src/ui/screens/driver_inject.rs",
+        RENDERS_IDENTITY,
+        "Paints its body with `DetailScreen::render_main_only`, so it draws \
+         everything the active detail tab draws, and adds a footer echoing the \
+         steering message being typed. Fixture states: one per sub-view.",
+    ),
+    (
+        "DriverStartScreen",
+        "src/ui/screens/driver_start.rs",
+        RENDERS_IDENTITY,
+        "Paints its body with `DetailScreen::render_main_only`, and its two \
+         wizard rows draw the command being typed (Step A) and the committed \
+         command (Step B). Fixture states: one per sub-view at Step A, plus Step \
+         B reached by driving the real key handler.",
+    ),
+    (
+        "EnqueueScreen",
+        "src/ui/screens/enqueue.rs",
+        RENDERS_IDENTITY,
+        "Paints its body with `DetailScreen::render_main_only`, and its footer \
+         echoes `ctx.input_buffer` — which Tab-completion fills from \
+         `queue_md::suggest_next_commands`, a function of the project's parsed \
+         `.planning/` state, so the buffer is not always something the operator \
+         typed. Fixture states: one per sub-view.",
+    ),
+    (
+        "HelpScreen",
+        "src/ui/screens/help.rs",
+        RENDERS_NO_IDENTITY,
+        "Draws `help_lines()`, which the module doc calls a pure function of \
+         nothing: keybindings, the filter grammar and two legends, every byte of \
+         it authored in this repository. It `Clear`s its popup area and paints \
+         no background, so nothing from `AppContext` reaches a cell. Checked, \
+         not claimed: the fixture registers the hostile identity and puts a \
+         hostile project state behind it, and the probe asserts the clean stem \
+         is absent from the buffer.",
+    ),
+    (
+        "NormalScreen",
+        "src/ui/screens/normal.rs",
+        RENDERS_IDENTITY,
+        "The dashboard. Draws every registered key in the name column together \
+         with the phase, status and milestone parsed from each project's \
+         `.planning/`, and echoes the filter text in its search footer. \
+         `row_badge`'s lookup keys off the RAW alias while the cell beside it is \
+         escaped — the worked example of the split. Fixture states: the \
+         dashboard, and the dashboard with the filter footer active.",
+    ),
+    (
+        "QueueDeleteConfirmScreen",
+        "src/ui/screens/queue_delete_confirm.rs",
+        RENDERS_IDENTITY,
+        "Paints its body with `DetailScreen::render_main_only`, and its \
+         destructive [y/n] footer draws the queued command text read from the \
+         project's `.planning/queue.md`. Fixture states: one per sub-view.",
+    ),
+];
 
 // ---------------------------------------------------------------------------
 // The walk — what performs the enumeration
@@ -276,8 +441,141 @@ fn hostile_identity() -> String {
     )
 }
 
-/// Build the context and the screen that a probe run renders.
-type Fixture = fn(&str) -> (AppContext, Box<dyn Screen>);
+/// One render state a probe run puts a screen in.
+///
+/// A screen is not one picture. `DetailScreen` has eleven tabs;
+/// `DriverStartScreen` has two steps; `DriverConfirmScreen` has four prompts.
+/// The probe renders EACH, and the `label` is what a failure names — so a
+/// failure says which state leaked rather than only which screen.
+struct ProbeState {
+    label: String,
+    ctx: AppContext,
+    screen: Box<dyn Screen>,
+}
+
+/// Build every render state for one implementor.
+type Fixture = fn(&str) -> Vec<ProbeState>;
+
+/// A `ProjectState` whose every `.planning/`-read field carries `identity`.
+///
+/// **This is what widens the probe past aliases.** SAFE-07's trust boundary is
+/// `.planning/` file content, so a workspace name, a phase name, a milestone, a
+/// status, a HANDOFF context line and a queued command are attacker-influenced
+/// in exactly the way a registry key is. Putting the identity in all of them at
+/// once means the probe's invisible-class assertion goes red for whichever one a
+/// screen renders raw, without the probe having to know which.
+fn hostile_project_state(identity: &str) -> crate::state_reader::ProjectState {
+    use crate::state_reader::queue_md::QueuedAction;
+    use crate::state_reader::roadmap_md::RoadmapPhase;
+    use crate::state_reader::ProjectState;
+
+    ProjectState {
+        status: identity.to_string(),
+        current_phase: "1".to_string(),
+        current_phase_name: identity.to_string(),
+        current_plan: identity.to_string(),
+        total_phases: 1,
+        completed_phases: 0,
+        total_plans: 1,
+        completed_plans: 0,
+        milestone: identity.to_string(),
+        backlog_count: 1,
+        phases: vec![RoadmapPhase {
+            number: "1".to_string(),
+            name: identity.to_string(),
+            description: identity.to_string(),
+            completed: false,
+            total_plans: 1,
+            completed_plans: 0,
+            depends_on: vec![identity.to_string()],
+        }],
+        queued_actions: vec![QueuedAction {
+            command: identity.to_string(),
+        }],
+        paused: true,
+        pause_context: Some(identity.to_string()),
+        deferred_verification_phases: vec![identity.to_string()],
+        ..Default::default()
+    }
+}
+
+/// An `AppContext` with `identity` registered as a key AND as every
+/// `.planning`-read value the dashboard and detail views draw.
+///
+/// Built on `super::tests::ctx_with_aliases` rather than beside it: a second
+/// full-field `AppContext` literal is a second thing to keep in step with the
+/// struct.
+fn probe_ctx(identity: &str) -> AppContext {
+    let mut ctx = super::tests::ctx_with_aliases(&[identity]);
+    ctx.project_states
+        .insert(identity.to_string(), hostile_project_state(identity));
+    ctx.view_cache.entry(identity.to_string()).or_default();
+    ctx.recompute_filtered_aliases();
+    ctx.table_state.select(Some(0));
+    ctx
+}
+
+/// Every detail sub-view, so a tab is a render state rather than a place the
+/// probe never looked.
+const ALL_SUB_VIEWS: [crate::app::DetailSubView; 11] = {
+    use crate::app::DetailSubView::*;
+    [
+        PhaseList, RoadmapViz, Backlog, GitHistory, Pipeline, Queue, Sessions, Archive, Defaults,
+        Browse, Driver,
+    ]
+};
+
+fn sub_view_label(view: &crate::app::DetailSubView) -> &'static str {
+    use crate::app::DetailSubView::*;
+    match view {
+        PhaseList => "PhaseList tab",
+        RoadmapViz => "RoadmapViz tab",
+        Backlog => "Backlog tab",
+        GitHistory => "GitHistory tab",
+        Pipeline => "Pipeline tab",
+        Queue => "Queue tab",
+        Sessions => "Sessions tab",
+        Archive => "Archive tab",
+        Defaults => "Defaults tab",
+        Browse => "Browse tab",
+        Driver => "Driver tab",
+    }
+}
+
+/// One state per detail sub-view, for every screen whose body is a detail view.
+///
+/// `EnqueueScreen`, `DriverInjectScreen`, `DriverStartScreen` and
+/// `QueueDeleteConfirmScreen` all paint their body with
+/// `DetailScreen::render_main_only`, so each of them renders whatever the active
+/// tab renders. Sharing this helper is what stops the probe covering the detail
+/// body for one of them and not the others.
+fn states_over_sub_views(
+    identity: &str,
+    build: &dyn Fn(&str, &mut AppContext) -> Box<dyn Screen>,
+) -> Vec<ProbeState> {
+    ALL_SUB_VIEWS
+        .iter()
+        .map(|view| {
+            let mut ctx = probe_ctx(identity);
+            ctx.detail_sub_view_per_project
+                .insert(identity.to_string(), view.clone());
+            let screen = build(identity, &mut ctx);
+            ProbeState {
+                label: sub_view_label(view).to_string(),
+                ctx,
+                screen,
+            }
+        })
+        .collect()
+}
+
+fn one_state(label: &str, ctx: AppContext, screen: Box<dyn Screen>) -> ProbeState {
+    ProbeState {
+        label: label.to_string(),
+        ctx,
+        screen,
+    }
+}
 
 /// The constructor for each adjudicated implementor.
 ///
@@ -301,12 +599,211 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
         // DeleteConfirmScreen (src/ui/screens/delete_confirm.rs) is adjudicated as rendering identity, but a clean identity handed to its fixture never reached the buffer. Either the disposition is wrong or the fixture does not put the screen in a state that renders it — and until this passes, every assertion below it would pass by silence.
         // ```
         "DeleteConfirmScreen" => Some(|identity| {
-            let ctx = super::tests::ctx_with_aliases(&[identity]);
-            let screen: Box<dyn Screen> = Box::new(
-                super::delete_confirm::DeleteConfirmScreen::new(identity.to_string()),
-            );
-            (ctx, screen)
+            vec![one_state(
+                "confirm prompt",
+                probe_ctx(identity),
+                Box::new(super::delete_confirm::DeleteConfirmScreen::new(
+                    identity.to_string(),
+                )),
+            )]
         }),
+
+        // The dashboard, in both footer modes: the normal footer and the
+        // filter/search footer, because the second one echoes the filter text
+        // the operator typed.
+        "NormalScreen" => Some(|identity| {
+            let plain = probe_ctx(identity);
+            let mut filtering = probe_ctx(identity);
+            filtering.filter_text = identity.to_string();
+            filtering.recompute_filtered_aliases();
+            vec![
+                one_state(
+                    "dashboard",
+                    plain,
+                    Box::new(super::normal::NormalScreen::new()),
+                ),
+                // `searching: true` is not decoration. `render_footer`
+                // dispatches on that field, so a state that sets `filter_text`
+                // without it renders the NORMAL footer and never looks at the
+                // filter at all — the assertion would have passed by silence.
+                // It did, until this line was added; the search footer was
+                // drawing `ctx.filter_text` raw the whole time.
+                one_state(
+                    "dashboard with filter footer",
+                    filtering,
+                    Box::new(super::normal::NormalScreen { searching: true }),
+                ),
+            ]
+        }),
+
+        // A pure overlay over authored text. Its disposition is CHECKED: the
+        // fixture registers the identity and puts a hostile project state behind
+        // it, and the probe asserts the clean stem never reaches the buffer.
+        "HelpScreen" => Some(|identity| {
+            vec![one_state(
+                "help overlay",
+                probe_ctx(identity),
+                Box::new(super::help::HelpScreen::new()),
+            )]
+        }),
+
+        "DetailScreen" => Some(|identity| {
+            states_over_sub_views(identity, &|identity, _ctx| {
+                Box::new(super::detail::DetailScreen::new(identity.to_string()))
+            })
+        }),
+
+        "EnqueueScreen" => Some(|identity| {
+            states_over_sub_views(identity, &|identity, ctx| {
+                ctx.input_buffer = identity.to_string();
+                Box::new(super::enqueue::EnqueueScreen::new(identity.to_string()))
+            })
+        }),
+
+        "QueueDeleteConfirmScreen" => Some(|identity| {
+            states_over_sub_views(identity, &|identity, _ctx| {
+                Box::new(
+                    super::queue_delete_confirm::QueueDeleteConfirmScreen::new(
+                        identity.to_string(),
+                        0,
+                        identity.to_string(),
+                    ),
+                )
+            })
+        }),
+
+        "DriverInjectScreen" => Some(|identity| {
+            states_over_sub_views(identity, &|identity, ctx| {
+                ctx.input_buffer = identity.to_string();
+                Box::new(super::driver_inject::DriverInjectScreen::new(
+                    identity.to_string(),
+                    identity.to_string(),
+                ))
+            })
+        }),
+
+        // Both wizard steps. Step B is reached by driving the real state
+        // machine — `Enter` on a slash-prefixed command — rather than by
+        // constructing the field directly, so what the probe renders is a state
+        // the key handler can actually produce.
+        "DriverStartScreen" => Some(|identity| {
+            let mut states = states_over_sub_views(identity, &|identity, ctx| {
+                ctx.input_buffer = identity.to_string();
+                Box::new(super::driver_start::DriverStartScreen::new(
+                    identity.to_string(),
+                ))
+            });
+            let mut goal_ctx = probe_ctx(identity);
+            let mut goal_screen =
+                super::driver_start::DriverStartScreen::new(identity.to_string());
+            goal_ctx.input_buffer = format!("/{identity}");
+            goal_screen.handle_key(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+                &mut goal_ctx,
+            );
+            goal_ctx.input_buffer = identity.to_string();
+            states.push(one_state(
+                "goal step, showing the committed command",
+                goal_ctx,
+                Box::new(goal_screen),
+            ));
+            states
+        }),
+
+        // All four prompts: start (with and without a goal), stop, and both
+        // directions of the opt-in toggle. Each names the alias.
+        "DriverConfirmScreen" => Some(|identity| {
+            use super::driver_confirm::{DriverAction, DriverConfirmScreen};
+            let opted_in = {
+                let mut ctx = probe_ctx(identity);
+                crate::registry::record_opt_in(&mut ctx.config, identity).ok();
+                ctx
+            };
+            vec![
+                one_state(
+                    "start prompt with a goal",
+                    probe_ctx(identity),
+                    Box::new(DriverConfirmScreen::new_start(
+                        identity.to_string(),
+                        format!("/{identity}"),
+                        Some(identity.to_string()),
+                    )),
+                ),
+                one_state(
+                    "stop prompt",
+                    probe_ctx(identity),
+                    Box::new(DriverConfirmScreen::new(
+                        identity.to_string(),
+                        DriverAction::Stop,
+                    )),
+                ),
+                one_state(
+                    "opt-in grant prompt, with the disclosure",
+                    probe_ctx(identity),
+                    Box::new(DriverConfirmScreen::new(
+                        identity.to_string(),
+                        DriverAction::ToggleOptIn,
+                    )),
+                ),
+                one_state(
+                    "opt-in withdrawal prompt",
+                    opted_in,
+                    Box::new(DriverConfirmScreen::new(
+                        identity.to_string(),
+                        DriverAction::ToggleOptIn,
+                    )),
+                ),
+            ]
+        }),
+
+        // The alias field, with and without a refusal beside it. The refusal
+        // path is the one that carries an identity this build did not author:
+        // `AliasRefusal`'s own `Display` embeds the alias it refused.
+        "AddProjectScreen" => Some(|identity| {
+            let mut refused = probe_ctx(identity);
+            refused.input_buffer = identity.to_string();
+            refused.error_message = Some(
+                crate::registry::Alias::new(identity)
+                    .map(|_| String::new())
+                    .unwrap_or_else(|refusal| refusal.to_string()),
+            );
+            let mut typing = probe_ctx(identity);
+            typing.input_buffer = identity.to_string();
+            vec![
+                one_state(
+                    "alias field",
+                    typing,
+                    Box::new(super::add_project::AddProjectScreen::new_alias()),
+                ),
+                one_state(
+                    "alias field with the refusal echoed beside it",
+                    refused,
+                    Box::new(super::add_project::AddProjectScreen::new_alias()),
+                ),
+            ]
+        }),
+
+        "CreateProjectScreen" => Some(|identity| {
+            let mut typing = probe_ctx(identity);
+            typing.input_buffer = identity.to_string();
+            let mut errored = probe_ctx(identity);
+            errored.input_buffer = identity.to_string();
+            errored.error_message = Some(identity.to_string());
+            vec![
+                one_state(
+                    "name field",
+                    typing,
+                    Box::new(super::create_project::CreateProjectScreen::new_name()),
+                ),
+                one_state(
+                    "name field with an error echoed beside it",
+                    errored,
+                    Box::new(super::create_project::CreateProjectScreen::new_name()),
+                ),
+            ]
+        }),
+
         _ => None,
     }
 }
@@ -419,8 +916,6 @@ mod tests {
     /// The live census: the walk's derived set equals the disposition table,
     /// both ways.
     #[test]
-    #[ignore = "red until Task 2 adjudicates the remaining ten implementors — \
-                deny-by-default working as designed"]
     fn the_screen_census_matches_the_tree() {
         let derived = screen_implementors_from_source();
         let table = disposition_table();
@@ -511,66 +1006,105 @@ mod tests {
                 panic!("{name} ({path}) has no probe fixture");
             };
 
-            let (clean_ctx, clean_screen) = build(&clean);
-            let clean_text = render_to_text(clean_screen.as_ref(), &clean_ctx);
-            let (hostile_ctx, hostile_screen) = build(&hostile);
-            let hostile_text = render_to_text(hostile_screen.as_ref(), &hostile_ctx);
+            let clean_states = build(&clean);
+            let hostile_states = build(&hostile);
+            assert_eq!(
+                clean_states.len(),
+                hostile_states.len(),
+                "{name} ({path}): the fixture must build the same states for a \
+                 clean identity as for a hostile one, or the two renders being \
+                 compared are not the same picture"
+            );
+            assert!(
+                !clean_states.is_empty(),
+                "{name} ({path}): the fixture built no render states, so nothing \
+                 about this screen was checked"
+            );
 
-            match *disposition {
-                RENDERS_IDENTITY => {
-                    // 1. ARRIVAL, before any property. A screen that rendered
-                    //    nothing, or that was built in a state showing no
-                    //    identity, fails HERE rather than passing by silence.
-                    assert!(
-                        clean_text.contains(clean.as_str()),
-                        "{name} ({path}) is adjudicated as rendering identity, \
-                         but a clean identity handed to its fixture never \
-                         reached the buffer. Either the disposition is wrong or \
-                         the fixture does not put the screen in a state that \
-                         renders it — and until this passes, every assertion \
-                         below it would pass by silence."
-                    );
-                    // 2. The escaped form of the hostile twin is what a human
-                    //    reads.
-                    assert!(
-                        hostile_text.contains(escaped.as_str()),
-                        "{name} ({path}) did not render {escaped:?}. Route what \
-                         a human READS through crate::text::display_identity; \
-                         the value used for lookups, map keys, path segments, \
-                         comparisons and persistence stays RAW."
-                    );
+            let mut arrived_anywhere = false;
+            let mut drew_anything = false;
+
+            for (clean_state, hostile_state) in clean_states.iter().zip(hostile_states.iter()) {
+                let where_ = format!("{name} ({path}) [{}]", clean_state.label);
+                let clean_text = render_to_text(clean_state.screen.as_ref(), &clean_state.ctx);
+                let hostile_text =
+                    render_to_text(hostile_state.screen.as_ref(), &hostile_state.ctx);
+
+                let arrived = clean_text.contains(clean.as_str());
+                arrived_anywhere |= arrived;
+                drew_anything |= clean_text.chars().any(|c| !c.is_whitespace());
+
+                match *disposition {
+                    RENDERS_IDENTITY => {
+                        // 2. PER STATE, and gated on arrival: wherever the clean
+                        //    identity DID reach the buffer, the hostile one must
+                        //    reach it escaped. A state that draws no identity is
+                        //    not asserted about here — it is covered by the
+                        //    whole-screen arrival assertion below and by 3.
+                        if arrived {
+                            assert!(
+                                hostile_text.contains(escaped.as_str()),
+                                "{where_} rendered a clean identity but did not \
+                                 render {escaped:?} for the hostile one. Route \
+                                 what a human READS through \
+                                 crate::text::display_identity; the value used \
+                                 for lookups, map keys, path segments, \
+                                 comparisons and persistence stays RAW."
+                            );
+                        }
+                    }
+                    RENDERS_NO_IDENTITY => {
+                        // The disposition is CHECKED, not claimed: if the screen
+                        // really draws no identity, the clean stem — which is
+                        // all-ASCII and cannot be dropped — cannot be in its
+                        // buffer.
+                        assert!(
+                            !arrived,
+                            "{where_} is adjudicated as rendering no identity, \
+                             but it drew one. The row is wrong: re-read the \
+                             render, re-state the adjudication, and escape what \
+                             a human reads."
+                        );
+                    }
+                    other => panic!("{where_} carries an unknown disposition {other:?}"),
                 }
-                RENDERS_NO_IDENTITY => {
-                    // The disposition is CHECKED, not claimed: if the screen
-                    // really draws no identity, the clean stem cannot be in its
-                    // buffer.
-                    assert!(
-                        !clean_text.contains(clean.as_str()),
-                        "{name} ({path}) is adjudicated as rendering no \
-                         identity, but it drew one. The row is wrong: re-read \
-                         the render, re-state the adjudication, and escape what \
-                         a human reads."
-                    );
-                    assert!(
-                        clean_text.chars().any(|c| !c.is_whitespace()),
-                        "{name} ({path}) rendered a blank buffer, so its \
-                         absence assertion above proved nothing"
-                    );
-                }
-                other => panic!("{name} ({path}) carries an unknown disposition {other:?}"),
+
+                // 3. Applies to EVERY state of EVERY implementor whatever its
+                //    disposition: the tag block U+E0000-U+E007F reaches a
+                //    terminal cell INTACT (measured — see this test's doc), and
+                //    a cell holding it is a cell the operator cannot see
+                //    (T-21-21-02). This is the assertion that forces BREADTH:
+                //    it goes red for whichever value a state renders raw,
+                //    without the probe having to know which value that is.
+                assert!(
+                    invisible_chars(&hostile_text).is_empty(),
+                    "{where_} rendered {:?} into the terminal buffer. Those \
+                     characters render as nothing, so what the operator reads is \
+                     not what the value is.",
+                    invisible_chars(&hostile_text)
+                );
             }
 
-            // 3. Applies to EVERY implementor whatever its disposition: the tag
-            //    block U+E0000-U+E007F reaches a terminal cell INTACT (measured
-            //    — see this test's doc), and a cell holding it is a cell the
-            //    operator cannot see (T-21-21-02).
-            assert!(
-                invisible_chars(&hostile_text).is_empty(),
-                "{name} ({path}) rendered {:?} into the terminal buffer. Those \
-                 characters render as nothing, so what the operator reads is not \
-                 what the value is.",
-                invisible_chars(&hostile_text)
-            );
+            // 1. ARRIVAL, for the screen as a whole. A screen that rendered
+            //    nothing, or that was built in states showing no identity, fails
+            //    HERE rather than passing by silence.
+            match *disposition {
+                RENDERS_IDENTITY => assert!(
+                    arrived_anywhere,
+                    "{name} ({path}) is adjudicated as rendering identity, but a \
+                     clean identity handed to its fixture never reached the \
+                     buffer in ANY of its {} states. Either the disposition is \
+                     wrong or the fixture does not put the screen in a state \
+                     that renders it — and until this passes, every assertion \
+                     above it passed by silence.",
+                    clean_states.len()
+                ),
+                _ => assert!(
+                    drew_anything,
+                    "{name} ({path}) rendered a blank buffer in every state, so \
+                     its absence assertions proved nothing"
+                ),
+            }
         }
     }
 }

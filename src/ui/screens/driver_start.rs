@@ -318,12 +318,17 @@ impl Screen for DriverStartScreen {
             .add_modifier(Modifier::DIM);
         let hint = Style::default().fg(Color::DarkGray);
 
+        // Read, not committed: `handle_key` commits `ctx.input_buffer` and
+        // `self.command` raw — the argv the child process receives is
+        // byte-identical to what was typed. Only these two echo rows are
+        // escaped, because a command with an invisible character in it is a
+        // command the operator cannot tell apart from the one they meant.
         let (command_row, goal_row) = match self.step {
             StartStep::Command => (
                 // Active: prompt BOLD, buffer default, caret, hints DarkGray.
                 Line::from(vec![
                     Span::styled(COMMAND_PROMPT, bold),
-                    Span::raw(&ctx.input_buffer),
+                    Span::raw(crate::text::display_identity(&ctx.input_buffer)),
                     Span::raw("_"),
                     Span::styled(COMMAND_HINT, hint),
                 ]),
@@ -335,11 +340,11 @@ impl Screen for DriverStartScreen {
                 // Already answered: DarkGray, showing the committed command.
                 Line::from(vec![
                     Span::styled(COMMAND_PROMPT, hint),
-                    Span::styled(self.command.as_str(), hint),
+                    Span::styled(crate::text::display_identity(&self.command), hint),
                 ]),
                 Line::from(vec![
                     Span::styled(GOAL_PROMPT, bold),
-                    Span::raw(&ctx.input_buffer),
+                    Span::raw(crate::text::display_identity(&ctx.input_buffer)),
                     Span::raw("_"),
                     Span::styled(GOAL_HINT, hint),
                 ]),

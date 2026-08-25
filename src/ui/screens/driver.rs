@@ -870,7 +870,12 @@ fn render_run_header(
 /// The two are genuinely different situations: one project is ready and has not
 /// been asked to do anything, the other has not been given permission.
 fn no_runs_lines(alias: &str, opted_in: bool) -> Vec<Line<'static>> {
-    let alias = sanitize_render_line(alias);
+    // Two classes, two predicates, composed (CR-01): `sanitize_render_line`
+    // answers the ESC / C0 / DEL *control* question, `display_identity` answers
+    // the invisible-formatting one (`General_Category=Cf` union
+    // `Default_Ignorable_Code_Point`). Neither subsumes the other, and this is
+    // the only place a registry key is drawn on this path.
+    let alias = crate::text::display_identity(&sanitize_render_line(alias));
     if opted_in {
         vec![
             Line::from(format!("  {NO_RUNS_OPTED_IN} \"{alias}\".")),

@@ -180,9 +180,13 @@ impl Screen for DriverInjectScreen {
         let detail = super::detail::DetailScreen::new(self.alias.clone());
         detail.render_main_only(frame, chunks[0], ctx);
 
+        // Read, not sent: the message dispatched in `handle_key` is
+        // `std::mem::take(&mut ctx.input_buffer)` — the raw bytes, verbatim,
+        // because a steering message is free prose and the agent must receive
+        // what the human wrote. Only the echo is escaped.
         let footer = Paragraph::new(Line::from(vec![
             Span::styled("  Inject> ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(&ctx.input_buffer),
+            Span::raw(crate::text::display_identity(&ctx.input_buffer)),
             Span::raw("_"),
             Span::styled(FOOTER_HINT, Style::default().fg(Color::DarkGray)),
         ]));

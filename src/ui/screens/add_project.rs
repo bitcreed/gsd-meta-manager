@@ -221,18 +221,30 @@ fn render_project_list_background(frame: &mut Frame, area: Rect, _ctx: &AppConte
 }
 
 fn render_input_footer(frame: &mut Frame, area: Rect, ctx: &AppContext, label: &str) {
+    // The split, at the site: what a HUMAN READS is escaped, what is COMMITTED
+    // is raw. `ctx.input_buffer` is still handed to `registry::Alias::new` and
+    // to the path canonicaliser byte-for-byte by the key handler above; only the
+    // echo changes. An invisible character pasted into this field would
+    // otherwise be invisible in the one place the operator could still catch it.
     let mut spans = vec![
         Span::raw(format!("{}: ", label)),
         Span::styled(
-            ctx.input_buffer.clone(),
+            crate::text::display_identity(&ctx.input_buffer),
             Style::default().add_modifier(Modifier::UNDERLINED),
         ),
         Span::raw("_"),
     ];
 
     if let Some(err) = &ctx.error_message {
+        // `AliasRefusal`'s own Display embeds the alias it refused, so this row
+        // carries a value this build did not author. Escaped whole: no
+        // invisible-class character may reach a cell whatever part of the
+        // sentence it came from.
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(err.clone(), Style::default().fg(Color::Red)));
+        spans.push(Span::styled(
+            crate::text::display_identity(err),
+            Style::default().fg(Color::Red),
+        ));
     }
 
     let line = Line::from(spans);

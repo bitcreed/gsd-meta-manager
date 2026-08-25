@@ -102,10 +102,16 @@ impl Screen for EnqueueScreen {
         let main_chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
         detail.render_main_only(frame, main_chunks[0], ctx);
 
-        // Enqueue input footer
+        // Enqueue input footer.
+        //
+        // Read, not queued: the command written to `.planning/queue.md` is
+        // `ctx.input_buffer` raw. Only the echo is escaped — and this field is
+        // not always something the operator typed, because `Tab` fills it from
+        // `queue_md::suggest_next_commands`, a function of the project's parsed
+        // `.planning/` state.
         let footer = Paragraph::new(Line::from(vec![
             Span::styled("  Enqueue> ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(&ctx.input_buffer),
+            Span::raw(crate::text::display_identity(&ctx.input_buffer)),
             Span::styled(
                 "  [Tab] suggestions  [Enter] queue  [Esc] cancel",
                 Style::default().fg(Color::DarkGray),
