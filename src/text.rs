@@ -682,4 +682,151 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // The spelling census: `is_identity_char`'s ONE-spelling claim, made
+    // checkable instead of believed
+    // -----------------------------------------------------------------------
+
+    /// The needle, assembled at RUNTIME from two halves that are meaningless
+    /// apart — the anti-self-match idiom this tree already uses at
+    /// `tests/spawn_seam_guard.rs`'s `DEGENERATE_WITNESS_HEADS` and at
+    /// `ui::screens::render_escape_guard`'s `IMPL_HEAD`/`IMPL_TAIL`.
+    ///
+    /// The census walks `src/`, and `src/text.rs` is under `src/`. Spelled as one
+    /// literal here, this const's own line would be a hit and the census would
+    /// count itself.
+    const ALPHABET_CLAUSE_HEAD: &str = "'.' |";
+    /// The tail of [`ALPHABET_CLAUSE_HEAD`].
+    const ALPHABET_CLAUSE_TAIL: &str = " '_' | '-')";
+
+    /// Every `.rs` file under `dir`, recursively, as `(relative path, lines)`.
+    ///
+    /// The recursive `read_dir` shape follows
+    /// `ui::screens::render_escape_guard::collect`: an unreadable entry is
+    /// skipped rather than panicked on, and paths are relative to
+    /// `CARGO_MANIFEST_DIR`.
+    fn collect_rs(
+        dir: &std::path::Path,
+        base: &std::path::Path,
+        out: &mut Vec<(String, Vec<(usize, String)>)>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                collect_rs(&path, base, out);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let relative = path
+                .strip_prefix(base)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let lines = text
+                .lines()
+                .enumerate()
+                .map(|(index, line)| (index + 1, line.to_string()))
+                .collect();
+            out.push((relative, lines));
+        }
+    }
+
+    /// [`is_identity_char`]'s doc claims to be **the** spelling of the identity
+    /// alphabet. This makes that claim checkable rather than believed.
+    ///
+    /// **Why an EQUALITY on a count and not a containment.** WR-03 measured the
+    /// claim false: `envelope::advisory::is_plain_component` respelled the same
+    /// character set byte-for-byte and used it to gate the GitHub `owner`/`repo`
+    /// segments that are then interpolated into a request path. A containment
+    /// check ("at least one spelling exists") could never have seen that; only an
+    /// equality on the number of executable occurrences can.
+    ///
+    /// **Committed RED, verbatim, before the delegation.** Against the tree
+    /// before `advisory.rs` delegated,
+    /// `cargo test --lib -- --ignored exactly_one_executable_spelling`:
+    ///
+    /// ```text
+    /// running 1 test
+    /// test text::tests::exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src ... FAILED
+    ///
+    /// ---- text::tests::exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src stdout ----
+    ///
+    /// thread 'text::tests::exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src' (1779910) panicked at src/text.rs:810:9:
+    /// assertion `left == right` failed: the identity alphabet's character clause is spelled 2 times in executable lines under src/, and `is_identity_char`'s doc claims to be THE one spelling. Sites: ["src/envelope/advisory.rs:569", "src/text.rs:213"]. A second spelling is a boundary that can stop agreeing with the boundary: WR-03 measured exactly that, in `envelope::advisory::is_plain_component`, gating the GitHub owner/repo segments that are interpolated into a request path. The repair is DELEGATION to `crate::text::is_identity_char`, not a softening of the claim.
+    ///   left: 2
+    ///  right: 1
+    ///
+    /// test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1055 filtered out; finished in 0.08s
+    /// ```
+    ///
+    /// **Its under-detection direction, named because a textual census has one.**
+    /// A THIRD spelling written with a different but equivalent construction — a
+    /// `match` with the same arms, a byte-range comparison, an `is_ascii_*`
+    /// composition — is invisible to this scan and always will be. What bounds
+    /// that residual is the DELEGATION itself (one function every seam calls),
+    /// not this census; the census only stops the *textual* copy from being
+    /// re-introduced silently. It is deliberately not sold as more than that.
+    ///
+    /// The nearby set in `advisory::default_branch_of`, which additionally admits
+    /// `'/'`, is genuinely a different question — a branch name legitimately
+    /// carries a separator and is not an identity — and is excluded from this
+    /// count by construction, because its clause does not end where the identity
+    /// alphabet's does.
+    #[test]
+    #[ignore = "red: WR-03 second spelling; un-ignored in the fix commit"]
+    fn exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src() {
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        collect_rs(&base.join("src"), &base, &mut files);
+        assert!(
+            !files.is_empty(),
+            "the census walked src/ and found no Rust source at all, so a clean \
+             result here would be a walk that never looked"
+        );
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let needle = format!("{ALPHABET_CLAUSE_HEAD}{ALPHABET_CLAUSE_TAIL}");
+        let mut sites: Vec<String> = Vec::new();
+        for (path, lines) in &files {
+            for (number, line) in lines {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                for _ in line.matches(needle.as_str()) {
+                    sites.push(format!("{path}:{number}"));
+                }
+            }
+        }
+
+        assert_eq!(
+            sites.len(),
+            1,
+            "the identity alphabet's character clause is spelled {} times in \
+             executable lines under src/, and `is_identity_char`'s doc claims to \
+             be THE one spelling. Sites: {sites:?}. A second spelling is a \
+             boundary that can stop agreeing with the boundary: WR-03 measured \
+             exactly that, in `envelope::advisory::is_plain_component`, gating \
+             the GitHub owner/repo segments that are interpolated into a request \
+             path. The repair is DELEGATION to `crate::text::is_identity_char`, \
+             not a softening of the claim.",
+            sites.len()
+        );
+        assert_eq!(
+            sites[0].split(':').next(),
+            Some("src/text.rs"),
+            "the one surviving spelling must be `is_identity_char`'s own, in this \
+             module; found it at {}. A single spelling that lives somewhere else \
+             is still one spelling, but it is no longer the one the doc claims.",
+            sites[0]
+        );
+    }
 }
