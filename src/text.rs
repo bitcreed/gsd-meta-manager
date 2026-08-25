@@ -202,6 +202,78 @@ mod tests {
         }
     }
 
+    /// **The tracer for pass-7 gaps 1 and 2: the class outside the list.**
+    ///
+    /// Every character here is one pass 7 MEASURED as accepted against the
+    /// shipped tree, and every one of them is `General_Category=Cf` or
+    /// `Default_Ignorable_Code_Point` — inside the class this module's own doc
+    /// names and outside the three literal ranges the implementation spelled.
+    /// The emptiness half is the half no round had named: `--goal '\u{202e}'`
+    /// carried no visible instruction and was accepted as one.
+    ///
+    /// **Committed RED, verbatim, before the fix** (the house tracer contract:
+    /// red evidence lands in history first and the tree stays green meanwhile).
+    /// Against HEAD, `cargo test --lib a_character_the_standard_calls_invisible`:
+    ///
+    /// ```text
+    /// running 1 test
+    /// test text::tests::a_character_the_standard_calls_invisible_is_refused_even_outside_the_old_ranges ... FAILED
+    ///
+    /// ---- text::tests::a_character_the_standard_calls_invisible_is_refused_even_outside_the_old_ranges stdout ----
+    ///
+    /// thread 'text::tests::a_character_the_standard_calls_invisible_is_refused_even_outside_the_old_ranges' (386400) panicked at src/text.rs:227:13:
+    /// "\u{202e}" renders as nothing, so it carries no visible instruction — pass 7 measured this value ACCEPTED because the class was three hand-written ranges instead of the standard's own answer
+    ///
+    /// test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1037 filtered out; finished in 0.00s
+    /// ```
+    ///
+    /// It fails on the FIRST assertion because `is_invisible_formatting_char`
+    /// is three literal ranges; every later assertion fails for the same cause.
+    #[test]
+    #[ignore = "red: closes pass-7 gap 1/2; un-ignored in the fix commit"]
+    fn a_character_the_standard_calls_invisible_is_refused_even_outside_the_old_ranges() {
+        // The emptiness half (pass-7 gap 1) — each of these is a value whose
+        // every character renders as nothing, so it carries no instruction.
+        for solely_invisible in [
+            "\u{202e}", // RIGHT-TO-LEFT OVERRIDE (Cf) — Trojan Source, CVE-2021-42574
+            "\u{00ad}", // SOFT HYPHEN (Cf)
+            "\u{034f}", // COMBINING GRAPHEME JOINER (Default_Ignorable, not Cf)
+            "\u{e0041}", // TAG LATIN CAPITAL LETTER A (Cf) — the LLM smuggling carrier
+            "\u{fe0f}", // VARIATION SELECTOR-16 (Default_Ignorable, not Cf)
+            "\u{13430}", // EGYPTIAN HIEROGLYPH VERTICAL JOINER (Cf)
+            "\u{180e}", // MONGOLIAN VOWEL SEPARATOR (Cf)
+            "\u{fff9}", // INTERLINEAR ANNOTATION ANCHOR (Cf)
+        ] {
+            assert!(
+                !carries_visible_content(solely_invisible),
+                "{solely_invisible:?} renders as nothing, so it carries no \
+                 visible instruction — pass 7 measured this value ACCEPTED \
+                 because the class was three hand-written ranges instead of \
+                 the standard's own answer"
+            );
+        }
+
+        // The identity half (pass-7 gap 2) — visible content beside bytes that
+        // render as nothing, so the emptiness judgment cannot see them.
+        for embedded in ["demo\u{202e}", "demo\u{e0041}", "demo\u{ad}", "demo\u{fe0f}"] {
+            assert!(
+                carries_invisible_formatting(embedded),
+                "{embedded:?} renders exactly as \"demo\" and must not be able \
+                 to name an identity beside it"
+            );
+        }
+
+        // And the seam that consumes both, so the tracer is end to end rather
+        // than a predicate unit test.
+        for outside in ["demo\u{202e}", "2\u{e0041}0"] {
+            assert!(
+                !crate::journal::is_plain_path_component(outside),
+                "{outside:?} must not be able to name a run directory, envelope \
+                 root, credential scope or phase token"
+            );
+        }
+    }
+
     /// The disagreement this module exists to remove, pinned as a *difference*
     /// rather than only as a behaviour: `str::trim` accepts every one of these
     /// and this predicate refuses them. If someone re-implemented
