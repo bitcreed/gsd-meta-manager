@@ -115,16 +115,35 @@ impl<'a> Widget for RoadmapWidget<'a> {
                     format!("{}/{}", phase.completed_plans, phase.total_plans)
                 };
 
+                // The identity split at this site (CR-01): `phase.number` is
+                // COMPARED raw by `is_current_phase` above and only READ here,
+                // and `phase.name` is only ever read. Both come out of the
+                // project's `.planning/ROADMAP.md`, which is third-party text
+                // under SAFE-07, so both are escaped on their way to a cell.
+                //
+                // Escape BEFORE measuring and truncating — the escaped form is
+                // what occupies cells — and truncate by `char`, because
+                // `&s[..n]` panics when byte `n` is not a char boundary and a
+                // phase name is read off disk. That was a reachable panic for as
+                // long as the slice was written that way.
+                //
                 // Available space for name: box_width - 2 (vert chars) - icon(1) - space(1) - "P##:"(~4) - space(1) - plan_display - space(1)
-                let prefix = format!("{} P{}: ", icon, phase.number);
+                let prefix = format!("{} P{}: ", icon, crate::text::display_identity(&phase.number));
                 let suffix = format!("  {}", plan_display);
                 let inner_width = box_width.saturating_sub(2); // content between vertical bars
-                let name_max = inner_width.saturating_sub(prefix.len() + suffix.len());
+                let name_max = inner_width.saturating_sub(prefix.chars().count() + suffix.chars().count());
 
-                let name_truncated = if phase.name.len() > name_max {
-                    format!("{}...", &phase.name[..name_max.saturating_sub(3)])
+                let name_shown = crate::text::display_identity(&phase.name);
+                let name_truncated = if name_shown.chars().count() > name_max {
+                    format!(
+                        "{}...",
+                        name_shown
+                            .chars()
+                            .take(name_max.saturating_sub(3))
+                            .collect::<String>()
+                    )
                 } else {
-                    phase.name.clone()
+                    name_shown
                 };
 
                 let content = format!("{}{}{}", prefix, name_truncated, suffix);

@@ -59,10 +59,23 @@ impl Screen for DeleteConfirmScreen {
             .title(" GSD Manager ");
         frame.render_widget(block, chunks[0]);
 
-        // Footer with delete confirmation
+        // Footer with delete confirmation.
+        //
+        // **The split, stated here so a maintainer reading the diff sees the
+        // rule rather than the instance:** the value a HUMAN READS goes through
+        // `crate::text::display_identity`; the value used for the removal, the
+        // map keys and the config lookup — `self.alias`, untouched, in
+        // `do_remove_project` below — stays RAW.
+        //
+        // This is the highest-consequence identity render in the tree
+        // (T-21-21-01). The operator confirms the name they READ, so a rendered
+        // name that is not the key is a confirmation of a different thing than
+        // was asked. Measured: ratatui's buffer DROPS the zero-width bytes of a
+        // legacy key, so `"gsd-\u{200b}run"` reads as `gsd-run` and can collide
+        // with a real project of that name.
         let prompt = format!(
             "Remove \"{}\"? This only unregisters it \u{2014} project files are not deleted. [y/n]",
-            self.alias
+            crate::text::display_identity(&self.alias)
         );
         let line = Line::from(Span::styled(prompt, Style::default().fg(Color::Red)));
         frame.render_widget(Paragraph::new(line), chunks[1]);
@@ -94,10 +107,14 @@ fn do_remove_project(ctx: &mut AppContext, alias: &str) {
     // Only a positively `Dead` run is nothing left to abandon.
     if let Some(run) = ctx.observed_runs.get(alias) {
         if run.liveness != crate::driver::liveness::Liveness::Dead {
+            // The third human-read site in this file, and the same split: the
+            // lookup two lines above keys off the RAW `alias`, the sentence a
+            // person reads carries the escaped form.
             ctx.error_message = Some(format!(
-                "'{alias}' still has a driver run ({}) that is not known to be \
+                "'{}' still has a driver run ({}) that is not known to be \
                  finished. Press 'x' to stop it first — unregistering now would \
                  leave it running with no way back to it from here",
+                crate::text::display_identity(alias),
                 run.run_id
             ));
             ctx.needs_redraw = true;
@@ -138,8 +155,13 @@ fn do_remove_project(ctx: &mut AppContext, alias: &str) {
             ctx.journal_cursors
                 .retain(|(cursor_alias, _), _| cursor_alias != alias);
 
-            ctx.status_message =
-                Some((format!("Removed \"{}\"", alias), std::time::Instant::now()));
+            // Read, not looked up: every map removal above keys off the RAW
+            // `alias`; only this toast is escaped, because only this toast is
+            // read by a person.
+            ctx.status_message = Some((
+                format!("Removed \"{}\"", crate::text::display_identity(alias)),
+                std::time::Instant::now(),
+            ));
 
             ctx.recompute_filtered_aliases();
             if ctx.filtered_aliases.is_empty() {

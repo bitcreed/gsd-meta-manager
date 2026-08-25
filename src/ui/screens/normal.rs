@@ -662,8 +662,14 @@ impl NormalScreen {
                         _ => "unknown".to_string(),
                     };
 
+                    // Every cell below carries values parsed out of the
+                    // project's `.planning/` — third-party text under SAFE-07 —
+                    // so each is escaped on the way to a cell while the raw
+                    // value keeps serving the lookups and comparisons around it
+                    // (`status_color(&status_str)` below is the clearest case:
+                    // it classifies the RAW status and colours the ESCAPED one).
                     let phase_cell = match state {
-                        Some(s) => format_phase_display(s),
+                        Some(s) => crate::text::display_identity(&format_phase_display(s)),
                         None => "?".to_string(),
                     };
 
@@ -673,7 +679,10 @@ impl NormalScreen {
                     let ws_suffix = match state {
                         Some(s) if !s.workstreams.is_empty() => {
                             match s.workstreams.iter().find(|w| w.active) {
-                                Some(active) => format!("  [ws:{}]", active.name),
+                                Some(active) => format!(
+                                    "  [ws:{}]",
+                                    crate::text::display_identity(&active.name)
+                                ),
                                 None => format!("  [{} ws]", s.workstreams.len()),
                             }
                         }
@@ -710,7 +719,10 @@ impl NormalScreen {
                         // D-03: Show milestone name for completed milestones
                         let milestone_text = match state {
                             Some(s) if !s.milestone.is_empty() => {
-                                format!("{} Complete", s.milestone)
+                                format!(
+                                    "{} Complete",
+                                    crate::text::display_identity(&s.milestone)
+                                )
                             }
                             _ => "Complete".to_string(),
                         };
@@ -723,7 +735,7 @@ impl NormalScreen {
                         match state.and_then(|s| s.current_phase_status.as_ref()) {
                             Some(inference) => compact_pipeline(&inference.status),
                             None => Line::from(Span::styled(
-                                status_str.clone(),
+                                crate::text::display_identity(&status_str),
                                 Style::default().fg(row_color),
                             )),
                         }
@@ -731,15 +743,24 @@ impl NormalScreen {
 
                     // Badge priority (D-24): driven-and-live > needs-human >
                     // pause > external-job-waiting > session. At most one.
+                    //
+                    // **The worked example of the identity split (CR-01).**
+                    // `row_badge(ctx, alias)` is handed the RAW key, because it
+                    // is a LOOKUP — it indexes `observed_runs`, `project_states`
+                    // and `run_states` by that exact string, and an escaped key
+                    // would miss every one of them. The cell rendered beside the
+                    // badge is what a HUMAN READS, so it carries the escaped
+                    // form. Same value, two questions, and the answer differs.
+                    let alias_read = crate::text::display_identity(alias);
                     let alias_cell: Line = match row_badge(ctx, alias) {
                         Some(badge) => Line::from(vec![
                             Span::styled(
                                 badge.glyph,
                                 Style::default().fg(badge.color).add_modifier(badge.modifier),
                             ),
-                            Span::raw(alias.clone()),
+                            Span::raw(alias_read),
                         ]),
-                        None => Line::from(alias.clone()),
+                        None => Line::from(alias_read),
                     };
 
                     let cells: Vec<Line> = if terminal_width >= 80 {
@@ -902,10 +923,14 @@ fn render_normal_footer(frame: &mut Frame, area: Rect, ctx: &AppContext) {
 }
 
 fn render_search_footer(frame: &mut Frame, area: Rect, ctx: &AppContext) {
+    // Read, not matched: `recompute_filtered_aliases` matches against
+    // `ctx.filter_text` RAW, so what the filter selects is unchanged. Only the
+    // echo is escaped — and it must be, because a filter term the operator
+    // cannot fully see is a filter whose result they cannot explain.
     let left_spans = vec![
         Span::raw("/ "),
         Span::styled(
-            ctx.filter_text.clone(),
+            crate::text::display_identity(&ctx.filter_text),
             Style::default().add_modifier(Modifier::UNDERLINED),
         ),
         Span::raw("_"),

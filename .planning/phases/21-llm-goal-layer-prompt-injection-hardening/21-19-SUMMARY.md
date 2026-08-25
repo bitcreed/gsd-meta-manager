@@ -423,3 +423,81 @@ None — no external service configuration required. One maintenance obligation 
 ---
 *Phase: 21-llm-goal-layer-prompt-injection-hardening*
 *Completed: 2026-08-25*
+
+---
+
+## CORRECTION — 2026-08-25, filed by 21-21 (round 8), in the commit that falsifies it
+
+**Append-only.** Nothing above this line has been rewritten or deleted. This
+block quotes the text it corrects, states what was measured, and reopens one
+named-shape row. It is filed by the plan whose work falsified the claim, in the
+same commit as that work, so the record and the correction cannot drift apart.
+
+### 1. The Accomplishments bullet at line 180 — FALSE AS SHIPPED
+
+Quoted verbatim:
+
+> - **The two pin-free seams got pins**, and the three render sites stopped being reorderable by what they render.
+
+**There were not three render sites in the built binary. There were two.**
+
+Measured under `rtk proxy` against the tree this summary describes:
+
+```
+$ rtk proxy grep -rn "display_identity" src/ --include=*.rs
+src/ui/project_list.rs:156:                let alias_cell = crate::text::display_identity(alias);
+src/text.rs:259:pub fn display_identity(value: &str) -> String {
+src/main.rs:43:                gsd_meta_manager::text::display_identity(&refusal.to_string())
+src/main.rs:146:                        gsd_meta_manager::text::display_identity(alias),
+
+$ rtk proxy grep -rn "mod project_list" src/
+(no output; exit 1)
+```
+
+The third site — the TUI one — was `src/ui/project_list.rs:156`, in a file the
+module tree does not declare and the build has never compiled. `src/ui/mod.rs`
+declares only `roadmap_widget` and `screens`;
+`git log -S"mod project_list" -- src/ui/mod.rs` names `c297631`
+(`feat(05-02): refactor InputMode to Screen trait + screen stack architecture`)
+as the commit that removed the declaration, in 2025.
+
+So the live TUI rendered every alias, phase name, milestone, queued command and
+status **raw**, and had done so throughout this phase. The dead call is what
+made the claim look true to a reader — and it convinced two independent readers,
+a code reviewer and a verifier, which is why the shape is recorded here rather
+than only fixed.
+
+### 2. `must_haves.truths` — the "identity displays" truth — FALSE AS SHIPPED
+
+The same correction applies to `21-19-PLAN.md`'s truth about the render surface;
+it is filed in full in that file's own correction block. See there.
+
+### 3. Named-shape row 8 — REOPENED from CLOSED
+
+Quoted verbatim:
+
+> | 8 | `list`/TUI/refusal-echo Trojan Source spoofing | 21-19 T3 | **CLOSED.** `display_identity` at all three render sites; binary-level `cat -v` check quoted above. |
+
+**REOPENED.** The row was marked CLOSED on the strength of the third site, which
+did not ship. Its `list` half and its refusal-echo half were genuinely closed;
+its TUI half was not closed at all.
+
+Closed instead by 21-21, and by derivation rather than by a third hand-named
+site:
+
+| Half | Closed by | Certified by |
+|---|---|---|
+| `list` | unchanged from 21-19 (`src/main.rs`'s `List` arm) | still passing |
+| refusal echo | `Display for AliasRefusal` — the ONE producer | `registry::tests::a_refusal_never_carries_an_invisible_character_into_its_own_message`, plus a binary-level run of the two echo sites that do **not** appear in 21-21's diff |
+| TUI | a source-derived, deny-by-default census over the `Screen` trait, plus a behavioural probe that renders every implementor in every state its row names | `ui::screens::render_escape_guard::the_screen_census_matches_the_tree` and `::the_screen_renders_identity_escaped`, both observed RED before green; the census additionally observed catching a real twelfth implementor planted in `src/driver/liveness.rs` |
+| `Removed project '{}'` (not in row 8, found by pass 8) | `registry::LegacyRegistryKey` — no `Display`, two accessors named for the questions they answer | binary-level before/after runs against a hand-built legacy `config.json` |
+
+### 4. What generalises, recorded so round 9 does not re-derive it
+
+A grep for a call site proves the call is written. It does not prove the call is
+**compiled**, and it does not prove the surface it belongs to is **reached**.
+Three of this phase's eight rounds certified a render-surface claim with a
+`grep` for `display_identity`; the file the grep found had been dead for a year.
+The census exists because a mechanism that enumerates by walking the tree cannot
+make that mistake, and the probe exists because a mechanism that inspects a
+rendered buffer cannot be satisfied by a file the build never compiled.

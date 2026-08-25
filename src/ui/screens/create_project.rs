@@ -71,7 +71,14 @@ impl Screen for CreateProjectScreen {
                 render_input_footer(frame, chunks[1], ctx, "Path (Tab to complete)");
             }
             CreatePhase::Confirm { name, path } => {
-                let prompt = format!("Create \"{}\" at {}? [y/n]", name, path.display());
+                // Read, not created: `name` and `path` are still used verbatim
+                // by `handle_confirm_key` to create the directory; only this
+                // last-chance prompt is escaped.
+                let prompt = format!(
+                    "Create \"{}\" at {}? [y/n]",
+                    crate::text::display_identity(name),
+                    crate::text::display_identity(&path.display().to_string())
+                );
                 let line = Line::from(Span::styled(prompt, Style::default().fg(Color::Yellow)));
                 frame.render_widget(Paragraph::new(line), chunks[1]);
             }
@@ -238,10 +245,15 @@ impl CreateProjectScreen {
 }
 
 fn render_input_footer(frame: &mut Frame, area: Rect, ctx: &AppContext, label: &str) {
+    // The split, at the site: the project name and the path a HUMAN READS are
+    // escaped; the bytes handed to `project_creator` and to the filesystem are
+    // `ctx.input_buffer` raw, unchanged. The name becomes a directory, so an
+    // invisible character in it is an identity difference the operator cannot
+    // see at the one moment they could still refuse it.
     let mut spans = vec![
         Span::raw(format!("{}: ", label)),
         Span::styled(
-            ctx.input_buffer.clone(),
+            crate::text::display_identity(&ctx.input_buffer),
             Style::default().add_modifier(Modifier::UNDERLINED),
         ),
         Span::raw("_"),
@@ -249,7 +261,10 @@ fn render_input_footer(frame: &mut Frame, area: Rect, ctx: &AppContext, label: &
 
     if let Some(err) = &ctx.error_message {
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(err.clone(), Style::default().fg(Color::Red)));
+        spans.push(Span::styled(
+            crate::text::display_identity(err),
+            Style::default().fg(Color::Red),
+        ));
     }
 
     let line = Line::from(spans);

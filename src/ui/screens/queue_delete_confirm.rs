@@ -78,11 +78,26 @@ impl Screen for QueueDeleteConfirmScreen {
         let detail = super::detail::DetailScreen::new(self.alias.clone());
         detail.render_main_only(frame, chunks[0], ctx);
 
-        // Red confirmation prompt in footer
-        let display_text = if self.command_text.len() > 50 {
-            format!("{}...", &self.command_text[..47])
+        // Red confirmation prompt in footer.
+        //
+        // The split: `self.command_text` is only ever RENDERED — the removal in
+        // `handle_key` is by `self.index` into the queue file, never by this
+        // string — so escaping it changes nothing about what is deleted. It is
+        // read from the project's `.planning/queue.md`, which is third-party
+        // text under SAFE-07, and it is the name in a destructive [y/n] prompt.
+        //
+        // Escape BEFORE truncating, and truncate by `char` rather than by byte:
+        // `&s[..47]` panics when byte 47 is not a char boundary, and this string
+        // comes off disk. That was a reachable panic — a denial of service
+        // driven by a file the tool does not own — for as long as the slice was
+        // written that way.
+        const CAP: usize = 50;
+        const KEEP: usize = 47;
+        let escaped = crate::text::display_identity(&self.command_text);
+        let display_text = if escaped.chars().count() > CAP {
+            format!("{}...", escaped.chars().take(KEEP).collect::<String>())
         } else {
-            self.command_text.clone()
+            escaped
         };
         let prompt = format!("  Remove \"{}\" from queue? [y/n]", display_text,);
         let line = Line::from(Span::styled(

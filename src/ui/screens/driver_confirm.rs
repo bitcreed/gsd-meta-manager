@@ -262,10 +262,21 @@ impl DriverConfirmScreen {
 /// `gsd-tools smart-entry` subprocess, so a command string is not necessarily
 /// something the user typed, and an escape sequence reaching a rendered prompt
 /// can repaint the screen or forge a line (T-18-38).
+///
+/// The alias is escaped through [`crate::text::display_identity`] for the same
+/// reason and at the same seam: this prompt is the last thing a human reads
+/// before an irreversible act, and `sanitize_render_line` answers a DIFFERENT
+/// question — it strips `ESC` and C0/DEL, the *control* class, and says nothing
+/// about the invisible-formatting class (`General_Category=Cf` union
+/// `Default_Ignorable_Code_Point`). The two compose; neither replaces the other.
+/// Nothing dispatched changes: `do_start_run`, `do_stop_run` and
+/// `do_toggle_opt_in` all receive `&self.alias` raw.
 fn prompt_text(alias: &str, action: DriverAction, opted_in: bool, command: &str) -> String {
+    let alias = &crate::text::display_identity(alias);
     match action {
         DriverAction::Start => {
-            let command = super::sanitize_render_line(command);
+            let command =
+                crate::text::display_identity(&super::sanitize_render_line(command));
             format!(
                 "Drive \"{alias}\" with {command}? An autonomous agent will run it in that \
                  project with full autonomy, including git operations. [y/n]"
@@ -298,7 +309,16 @@ fn prompt_text(alias: &str, action: DriverAction, opted_in: bool, command: &str)
 /// caps by `char`. Without it a goal is a straight path from free text to a
 /// rendered terminal line (T-18-38).
 fn goal_row(goal: Option<&str>) -> Option<String> {
-    goal.map(|g| format!("Goal: {}", super::sanitize_render_line(g)))
+    // Two classes, two predicates, composed: `sanitize_render_line` for ESC and
+    // the C0/DEL control class, `display_identity` for the invisible-formatting
+    // class. The goal recorded in `RunRecord.goal` and passed to the child is
+    // the raw string; only this row is escaped.
+    goal.map(|g| {
+        format!(
+            "Goal: {}",
+            crate::text::display_identity(&super::sanitize_render_line(g))
+        )
+    })
 }
 
 /// `Color::Red` for the two directions that take something away — stopping a

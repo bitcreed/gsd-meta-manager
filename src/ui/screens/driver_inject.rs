@@ -6,8 +6,11 @@
 //! 1. **Different footer copy.** `  Inject> ` rather than `  Enqueue> `, and a
 //!    caret. The four existing text inputs in this tree fake a caret with a
 //!    trailing `Span::raw("_")`; `enqueue.rs` is the one that omits it, so the
-//!    caret is taken from `project_list.rs:279` / `add_project.rs:212` rather
-//!    than from the file this one is modelled on.
+//!    caret is taken from `add_project.rs`'s `render_input_footer` rather than
+//!    from the file this one is modelled on. (This used to cite
+//!    `project_list.rs:279` as the other source. That file was deleted in 21-21:
+//!    it had been orphaned from the module tree since `c297631` and the build
+//!    never compiled it, so the citation pointed at code that did not ship.)
 //! 2. **No `Tab` arm and no `[Tab] suggestions` hint.**
 //!    `queue_md::suggest_next_commands` suggests **GSD commands**, and a
 //!    steering message is free prose. Offering irrelevant completions would be
@@ -177,9 +180,13 @@ impl Screen for DriverInjectScreen {
         let detail = super::detail::DetailScreen::new(self.alias.clone());
         detail.render_main_only(frame, chunks[0], ctx);
 
+        // Read, not sent: the message dispatched in `handle_key` is
+        // `std::mem::take(&mut ctx.input_buffer)` — the raw bytes, verbatim,
+        // because a steering message is free prose and the agent must receive
+        // what the human wrote. Only the echo is escaped.
         let footer = Paragraph::new(Line::from(vec![
             Span::styled("  Inject> ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(&ctx.input_buffer),
+            Span::raw(crate::text::display_identity(&ctx.input_buffer)),
             Span::raw("_"),
             Span::styled(FOOTER_HINT, Style::default().fg(Color::DarkGray)),
         ]));

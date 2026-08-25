@@ -23,6 +23,33 @@ use std::cell::Cell;
 
 pub(super) const PAGE_SCROLL_LINES: u16 = 20;
 
+/// What a human READS, escaped — the render-side half of the identity split,
+/// spelled once for this file (CR-01, D-19-5).
+///
+/// **The rule every call site below follows.** A value this build did not author
+/// — a registry key, or a status, milestone, phase number, phase name, HANDOFF
+/// context line, queued command, backlog title, session id, git subject or file
+/// name parsed out of the project's `.planning/` — goes through here on its way
+/// to a terminal cell. The SAME value goes to a map lookup, a comparison, a path
+/// segment or a write **raw and untouched**, because escaping is a legibility
+/// defence and not a transformation of the data.
+///
+/// It is a named function rather than an inline call at each site so the rule is
+/// stated in one place and a reader of the diff sees the rule rather than fifty
+/// instances of it. It is deliberately NOT a wrapper type: a type would be the
+/// UI-wide retype D-21-4 measured at 25 direct compile errors plus an unbounded
+/// cascade, and this round chose the source-derived `Screen` census and its
+/// behavioural probe instead. What holds these call sites honest is therefore
+/// `render_escape_guard::the_screen_renders_identity_escaped`, which renders
+/// every tab and asserts that no invisible-class character reaches a cell — not
+/// the discipline of whoever adds the next one.
+///
+/// `display_identity` is idempotent over its own output (pinned in
+/// `text::tests`), so a value that passes through here twice is unchanged.
+fn shown(value: &str) -> String {
+    crate::text::display_identity(value)
+}
+
 /// Viewport metrics recorded by the last render pass of a markdown file view.
 ///
 /// Both fields are zero before the first render, which yields a max scroll of
@@ -2427,7 +2454,7 @@ impl Screen for DetailScreen {
             .divider("|");
         let tab_block = Block::default()
             .borders(Borders::BOTTOM)
-            .title(format!(" Project: {} ", alias));
+            .title(format!(" Project: {} ", shown(alias)));
         frame.render_widget(tabs_widget.block(tab_block), tab_area);
 
         // Render content based on active tab
@@ -2541,18 +2568,20 @@ impl DetailScreen {
 
         lines.push(Line::from(vec![
             Span::styled("  Path: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(&project_path),
+            Span::raw(shown(&project_path)),
         ]));
 
         if let Some(state) = state {
+            // `classify_status` reads the RAW status — it is a comparison, not
+            // a render — while the cell beside it carries the escaped form.
             let cat = classify_status(&state.status);
             let color = status_color(&cat);
             lines.push(Line::from(vec![
                 Span::styled("  Status: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(&state.status, Style::default().fg(color)),
+                Span::styled(shown(&state.status), Style::default().fg(color)),
                 Span::raw("    "),
                 Span::styled("Milestone: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(&state.milestone),
+                Span::raw(shown(&state.milestone)),
             ]));
 
             if state.paused {
@@ -2564,7 +2593,7 @@ impl DetailScreen {
                                 .fg(Color::Cyan)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(ctx_text.as_str(), Style::default().fg(Color::Cyan)),
+                        Span::styled(shown(ctx_text), Style::default().fg(Color::Cyan)),
                     ])
                 } else {
                     Line::from(Span::styled(
@@ -2579,7 +2608,7 @@ impl DetailScreen {
 
             if let Some(event) = ctx.change_tracker.latest_change(alias) {
                 let elapsed = ChangeTracker::format_elapsed(event.timestamp);
-                let banner = format!("  [ {} -- {} ]", event.description, elapsed);
+                let banner = format!("  [ {} -- {} ]", shown(&event.description), elapsed);
                 lines.push(Line::from(Span::styled(
                     banner,
                     Style::default()
@@ -2622,9 +2651,15 @@ impl DetailScreen {
                     let badge_spans =
                         disk_suffix_spans(&phase.number, &state.phase_disk_statuses, show_badges);
 
+                    // `phase.number` above is COMPARED raw against
+                    // `current_phase_num` and looked up raw in
+                    // `phase_disk_statuses`; here it is read by a human.
                     let line_text = format!(
                         "  {} P{}: {}  {}",
-                        icon, phase.number, phase.name, plan_display
+                        icon,
+                        shown(&phase.number),
+                        shown(&phase.name),
+                        plan_display
                     );
 
                     if is_current {
@@ -2669,7 +2704,7 @@ impl DetailScreen {
                 for (i, action) in state.queued_actions.iter().enumerate() {
                     lines.push(Line::from(vec![
                         Span::raw(format!("    {}. ", i + 1)),
-                        Span::styled(&action.command, Style::default().fg(Color::Cyan)),
+                        Span::styled(shown(&action.command), Style::default().fg(Color::Cyan)),
                     ]));
                 }
             }
@@ -2713,17 +2748,17 @@ impl DetailScreen {
             let mut header_lines: Vec<Line> = Vec::new();
             header_lines.push(Line::from(vec![
                 Span::styled("  Path: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(&project_path),
+                Span::raw(shown(&project_path)),
             ]));
 
             let cat = classify_status(&state.status);
             let color = status_color(&cat);
             header_lines.push(Line::from(vec![
                 Span::styled("  Status: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::styled(&state.status, Style::default().fg(color)),
+                Span::styled(shown(&state.status), Style::default().fg(color)),
                 Span::raw("    "),
                 Span::styled("Milestone: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(&state.milestone),
+                Span::raw(shown(&state.milestone)),
             ]));
 
             if state.paused {
@@ -2735,7 +2770,7 @@ impl DetailScreen {
                                 .fg(Color::Cyan)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(ctx_text.as_str(), Style::default().fg(Color::Cyan)),
+                        Span::styled(shown(ctx_text), Style::default().fg(Color::Cyan)),
                     ])
                 } else {
                     Line::from(Span::styled(
@@ -2750,7 +2785,7 @@ impl DetailScreen {
 
             if let Some(event) = ctx.change_tracker.latest_change(alias) {
                 let elapsed = ChangeTracker::format_elapsed(event.timestamp);
-                let banner = format!("  [ {} -- {} ]", event.description, elapsed);
+                let banner = format!("  [ {} -- {} ]", shown(&event.description), elapsed);
                 header_lines.push(Line::from(Span::styled(
                     banner,
                     Style::default()
@@ -3080,7 +3115,13 @@ impl DetailScreen {
         let items: Vec<ListItem> = state
             .phases
             .iter()
-            .map(|phase| ListItem::new(format!("P{}: {}", phase.number, phase.name)))
+            .map(|phase| {
+                ListItem::new(format!(
+                    "P{}: {}",
+                    shown(&phase.number),
+                    shown(&phase.name)
+                ))
+            })
             .collect();
 
         let list = List::new(items)
@@ -3116,9 +3157,12 @@ impl DetailScreen {
                 let substage_lines = build_substage_lines(inf);
 
                 let mut lines: Vec<Line> = Vec::new();
+                // `phase.number` is the RAW key into `phase_disk_statuses` and
+                // into `find_phase_dir` above and below; only this row is read.
                 lines.push(Line::from(format!(
                     "  Phase {}: {}",
-                    phase.number, phase.name
+                    shown(&phase.number),
+                    shown(&phase.name)
                 )));
                 lines.push(Line::from(""));
                 lines.push(pipeline_line);
@@ -3211,7 +3255,9 @@ impl DetailScreen {
 
                 let items: Vec<ListItem> = actions
                     .iter()
-                    .map(|action| ListItem::new(Line::from(format!("  > {}", action.command))))
+                    .map(|action| {
+                        ListItem::new(Line::from(format!("  > {}", shown(&action.command))))
+                    })
                     .collect();
 
                 let title = format!(" Queue ({} items) ", actions.len());
@@ -3734,7 +3780,7 @@ impl DetailScreen {
             .divider("|");
         let tab_block = Block::default()
             .borders(Borders::BOTTOM)
-            .title(format!(" Project: {} ", alias));
+            .title(format!(" Project: {} ", shown(alias)));
         frame.render_widget(tabs_widget.block(tab_block), tab_area);
 
         // Render content based on active tab
