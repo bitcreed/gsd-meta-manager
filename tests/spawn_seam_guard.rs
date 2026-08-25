@@ -2745,6 +2745,20 @@ fn every_command_source_variant_is_named_only_where_it_is_built_or_matched() {
 // * `pub(crate)` / `pub(super)` field openers. That is the exact spelling
 //   `ITEM_OPENERS` was widened for four commits later in this same file, and
 //   pass 6 measured guard nine silent on both.
+// * **A field declared with NO visibility modifier at all** — `goal_hint:
+//   String,`. Round 7's addition, and the sharpest of the set: pass 7 measured
+//   it silent to the scan AND to the floor, which share `is_field_opener`, so
+//   the reading was `field_lines=12 protected=6 offenders=[]` — pass 6's exact
+//   signature, in a spelling that appeared in neither of these two lists. Its
+//   arm is `the_scanner_reports_a_bare_private_field`, committed red against the
+//   unfixed opener before the opener was widened.
+// * **A payload type riding beside an allowlisted `OsString`** — `pub
+//   claude_args: (Vec<OsString>, String),`. Round 7's second addition. The
+//   allowlist suppressed the whole judgment rather than the OsString-presence
+//   report alone, and the integrity pin that exists to catch a repurposed entry
+//   was a `contains`, which this type satisfies. Its arm is
+//   `an_allowlisted_name_cannot_carry_a_raw_payload_beside_its_osstring`, also
+//   committed red first; the pin is now an EQUALITY on the parsed declared type.
 // * The str-family payload spellings — `Box<str>`, `Cow<'_, str>`,
 //   `&'static str`, `&str` — none of which contains the `String` token.
 // * `OsString`, **deny-by-default over the whole scanned body**: any field whose
@@ -2782,6 +2796,21 @@ fn every_command_source_variant_is_named_only_where_it_is_built_or_matched() {
 //    `no_production_item_follows_a_test_module_marker`, which bounds the related
 //    region gap. The extraction's own control asserts by name that the region
 //    never reached `RawDriveArgs`.
+//
+// **A RETIRED reliance, named because relying on it silently is how round 6
+// shipped a false bound.** Until round 7, what actually stopped a bare
+// (no-`pub`) argv field was not this guard at all: **thirteen integration crates
+// build `DriveArgs { … }` as struct literals, and a private field breaks all
+// thirteen at compile time.** That is a **coincidence of the fixture tree, not a
+// property of the code** — delete or restructure those thirteen crates and the
+// spelling compiles unprotected. `21-18-SUMMARY.md`'s named-shape row 15
+// reported that coincidental bound RETIRED; pass 7 measured it retired for the
+// two payload-type spellings and still load-bearing for this one, which is what
+// let the previous version of this block certify a bound nothing asserted. It is
+// no longer relied on in either direction: `is_field_opener` now sees the
+// spelling, and `the_scanner_reports_a_bare_private_field` is the committed
+// control that goes red if it stops seeing it. Nothing in this header claims a
+// bound beyond the arms named in it.
 //
 // **What the FLOORS bound, stated as measured rather than as hoped.** The
 // `>=10 field-declaration` and `>=6 NonBlank` assertions catch **extraction
@@ -2851,6 +2880,17 @@ fn raw_string_argv_fields(lines: &[(usize, String)]) -> Vec<(usize, String)> {
 }
 
 /// Judge one joined declaration and push it if it carries a raw argv payload.
+///
+/// **An allowlisted name suppresses the `OsString`-PRESENCE report only, never a
+/// payload-type report.** Until round 7 this fn `return`ed out of the `OsString`
+/// branch, so `names_string_payload` never ran for any declaration naming
+/// `OsString` — and `pub claude_args: (Vec<OsString>, String),` was therefore
+/// silent, an allowlist entry repurposed to carry raw argv text while inheriting
+/// its own suppression. Pass 7 measured it; the plant is
+/// [`an_allowlisted_name_cannot_carry_a_raw_payload_beside_its_osstring`],
+/// committed red against this fn before the branch was opened.
+///
+/// A declaration is reported at most once even when both rules would fire.
 fn judge_declaration(start: usize, joined: String, out: &mut Vec<(usize, String)>) {
     let joined = joined.trim().to_string();
     let Some((_, type_text)) = joined.split_once(':') else {
@@ -2861,12 +2901,31 @@ fn judge_declaration(start: usize, joined: String, out: &mut Vec<(usize, String)
         let name = declared_field_name(&joined);
         if !OSSTRING_ALLOWED.contains(&name) {
             out.push((start, joined));
+            return;
         }
-        return;
+        // Allowlisted: the OsString-presence report is suppressed, and the
+        // payload judgment below still runs.
     }
     if names_string_payload(type_text) {
         out.push((start, joined));
     }
+}
+
+/// The TYPE a declaration declares, as text — trimmed, trailing comment and
+/// trailing comma stripped.
+///
+/// Extracted so [`drive_args_declares_no_raw_argv_string_field`]'s allowlist
+/// integrity pin can compare for EQUALITY rather than containment. Pass 7
+/// measured the `contains` form passing over `pub claude_args: (Vec<OsString>,
+/// String),` — the exact repurposing the pin exists to refuse contains its own
+/// expected type as a substring, so containment can never see it.
+fn declared_type_text(joined: &str) -> &str {
+    let code = without_trailing_comment(joined.trim());
+    let type_text = match code.split_once(':') {
+        Some((_, right)) => right,
+        None => return "",
+    };
+    type_text.trim().trim_end_matches(',').trim()
 }
 
 /// Every `(line number, line)` between `pub struct DriveArgs {` and the
@@ -2989,8 +3048,42 @@ fn is_ident_byte(byte: u8) -> bool {
 /// floor counted twelve while the scan reported nothing, with a planted
 /// `pub(crate)` offender in the body — two filters, one property, and the gap
 /// between them was the whole of WR-02's floor half.
+///
+/// **Widened in round 7 to bare (private) declarations.** Pass 7 measured the
+/// `pub `/`pub(` requirement letting `goal_hint: String,` — a field with no
+/// visibility modifier at all — through both the scan and the floor, producing
+/// pass 6's exact silent signature in a spelling neither of guard nine's lists
+/// named. A private field is still a field, `from_argv` still has to destructure
+/// it, and a `String` on it still carries unvalidated argv text.
+///
+/// **Over-detection direction, and why it is loud rather than silent.** A bare
+/// identifier followed by `:` is also the shape of a match arm, a struct-literal
+/// initialiser and a labelled loop. None of them is in scope here **by
+/// construction**: [`raw_string_argv_fields`] runs only over
+/// [`drive_args_body`]'s lines, which are the lines between `pub struct
+/// DriveArgs {` and its column-zero `}`. Should that region ever widen, a
+/// non-field line matching this opener would be **reported** — it would appear
+/// in the offender list and fail the live assertion visibly — not pass silently.
+/// The under-detection direction is the one this repository keeps paying for,
+/// and this widening moves in the opposite direction.
 fn is_field_opener(trimmed: &str) -> bool {
-    trimmed.starts_with("pub ") || trimmed.starts_with("pub(")
+    if trimmed.starts_with("pub ") || trimmed.starts_with("pub(") {
+        return true;
+    }
+    // A bare declaration: the first token is an identifier and the line reaches
+    // a `:` before any `//`. Implemented with `chars()` rather than a regex —
+    // this crate has no regex dependency and is not gaining one for a scanner.
+    let code = without_trailing_comment(trimmed);
+    let Some((left, _)) = code.split_once(':') else {
+        return false;
+    };
+    let name = left.trim();
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// **The control arm, and it runs FIRST in this file's reading order for a
@@ -3312,7 +3405,6 @@ fn the_raw_argv_field_scanner_sees_every_measured_silent_spelling() {
 /// test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.00s
 /// ```
 #[test]
-#[ignore = "red: pass-7 WR-01/WR-02 plants; un-ignored in the fix commit"]
 fn the_scanner_reports_a_bare_private_field() {
     // The real twelve declarations, plus a THIRTEENTH carrying no visibility
     // modifier at all. `goal_hint: String,` compiles, is reachable from
@@ -3420,7 +3512,6 @@ fn the_scanner_reports_a_bare_private_field() {
 /// test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.00s
 /// ```
 #[test]
-#[ignore = "red: pass-7 WR-01/WR-02 plants; un-ignored in the fix commit"]
 fn an_allowlisted_name_cannot_carry_a_raw_payload_beside_its_osstring() {
     // `claude_args` is on OSSTRING_ALLOWED because it legitimately holds argv as
     // `Vec<OsString>`. The suppression is by NAME, so a declaration that keeps
@@ -3537,13 +3628,50 @@ fn drive_args_declares_no_raw_argv_string_field() {
          lost it is the five-time losing bet reopening."
     );
 
-    // **The allowlist's own integrity, pinned against the REAL body.**
-    // `OSSTRING_ALLOWED` suppresses the `OsString` deny-by-default rule for two
-    // NAMES. Nothing in that mechanism alone stops someone respelling one of
-    // those fields into a payload carrier and inheriting the suppression for
-    // free — so each allowlisted name is pinned here to the type it legitimately
-    // declares. Respelling either breaks this loudly, in the live run, against
-    // the real declarations rather than against a fixture.
+    // **The widening's own control, against the REAL body.** Round 7 widened
+    // `is_field_opener` to bare (private) declarations. Every field `DriveArgs`
+    // actually declares carries `pub`, so the widened opener must see EXACTLY
+    // the set the narrow one saw. The narrow rule is respelled here on purpose,
+    // as an independent expected value: if the widened count ever exceeds it,
+    // the extra lines are not field declarations, the over-detection direction
+    // has become real in this region, and whoever widened the extraction has to
+    // say what guard nine should do about it. Under-detection is caught by the
+    // floor above and by the offender scan; this catches the other side.
+    let narrow_visible = body
+        .iter()
+        .filter(|(_, line)| {
+            let trimmed = line.trim();
+            (trimmed.starts_with("pub ") || trimmed.starts_with("pub(")) && trimmed.contains(':')
+        })
+        .count();
+    assert_eq!(
+        field_lines.len(),
+        narrow_visible,
+        "the widened `is_field_opener` sees {} field declarations in the real \
+         `DriveArgs` body where the pre-round-7 `pub`-only rule sees \
+         {narrow_visible}. Every real field carries `pub`, so the two must agree; \
+         a difference means the widening is matching something that is not a \
+         field declaration.",
+        field_lines.len()
+    );
+
+    // **The allowlist's own integrity, pinned against the REAL body — as an
+    // EQUALITY, because containment could never see the harm it was written
+    // for.** `OSSTRING_ALLOWED` suppresses the `OsString` deny-by-default rule
+    // for two NAMES. Nothing in that mechanism alone stops someone respelling
+    // one of those fields into a payload carrier and inheriting the suppression
+    // for free — so each allowlisted name is pinned here to the type it
+    // legitimately declares.
+    //
+    // Until round 7 this was `declaration.contains(expected_type)`, and pass 7
+    // measured what that means: `pub claude_args: (Vec<OsString>, String),`
+    // CONTAINS `Vec<OsString>`, so the pin passed over the exact repurposing it
+    // exists to refuse. A compound type that inherits the suppression is the
+    // planted control
+    // (`an_allowlisted_name_cannot_carry_a_raw_payload_beside_its_osstring`),
+    // committed red before this line changed. The comparison is now equality on
+    // the parsed declared type text, so anything other than the legitimate type
+    // — wider, narrower or merely different — breaks loudly.
     for (name, expected_type) in [
         ("claude_args", "Vec<OsString>"),
         ("claude_program", "Option<PathBuf>"),
@@ -3559,13 +3687,17 @@ fn drive_args_declares_no_raw_argv_string_field() {
                      inherit — drop the entry or restore the field."
                 )
             });
-        assert!(
-            declaration.1.contains(expected_type),
+        let actual_type = declared_type_text(&declaration.1);
+        assert_eq!(
+            actual_type, expected_type,
             "`{name}` is on OSSTRING_ALLOWED because it legitimately carries \
-             `{expected_type}`. Its declaration now reads {:?}. The allowlist can \
-             only SUPPRESS, and it must not be silently repurposed for a payload \
-             field: either restore the type or take the name off the allowlist \
-             and let the deny-by-default rule judge it.",
+             exactly `{expected_type}`. Its declaration now reads {:?}. The \
+             allowlist can only SUPPRESS, and it must not be silently repurposed \
+             for a payload field: a type that merely CONTAINS the expected one — \
+             `(Vec<OsString>, String)` was pass 7's measured example — smuggles \
+             raw argv text past the deny-by-default rule under a name that was \
+             cleared for something else. Either restore the type or take the name \
+             off the allowlist and let the deny-by-default rule judge it.",
             declaration.1.trim()
         );
     }
