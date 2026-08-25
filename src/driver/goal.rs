@@ -1132,7 +1132,19 @@ mod tests {
              proves nothing about where the refusal comes from"
         );
 
-        for look_alike in ["2\u{200b}0", "20\u{feff}"] {
+        // The last three are OUTSIDE the pre-round-7 ranges. Pass 7 measured
+        // every one of them reaching roadmap membership at HEAD — the identity
+        // clause was a 22-code-point subset, so `"2\u{202e}0"` WAS a plain path
+        // component and only the roadmap's contents kept it harmless. Under
+        // D-19-2's finite alphabet the refusal is a property of the value
+        // (21-17 truth 6, made true).
+        for look_alike in [
+            "2\u{200b}0",
+            "20\u{feff}",
+            "2\u{202e}0",
+            "2\u{e0041}0",
+            "2\u{ad}0",
+        ] {
             let refusal = legality(
                 &payload(vec![step(
                     router::COMMAND_EXECUTE_PHASE,

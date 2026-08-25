@@ -23,9 +23,11 @@ use std::path::{Path, PathBuf};
 ///
 /// **The invariant, in one sentence: an `Alias` always satisfies
 /// [`crate::journal::is_plain_path_component`]**, so every alias this build
-/// admits into `config.json` can name its own envelope root. Clauses 1 and 2
-/// exist only to give the two most likely refusals their own honest message —
-/// the final clause is what carries the invariant.
+/// admits into `config.json` can name its own envelope root. The final clause
+/// is what carries that invariant; the clauses above it exist to give the
+/// likely refusals their own honest message. As of D-19-2 the set is also
+/// bounded from the other direction — an `Alias` is drawn entirely from
+/// [`crate::text::is_identity_char`]'s finite alphabet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Alias(String);
 
@@ -42,6 +44,17 @@ pub enum AliasRefusal {
     },
     /// It carries whitespace.
     Whitespace,
+    /// It carries a character outside the identity alphabet `[A-Za-z0-9._-]`.
+    ///
+    /// **The only refusal in this enum that owes the user a product decision
+    /// rather than a defect report** (D-19-2). The others describe values that
+    /// were never legitimate; this one describes a value that an older build
+    /// accepted and this one will not, so its message carries the trade and the
+    /// route rather than only the rule.
+    OutsideIdentityAlphabet {
+        /// The candidate, verbatim.
+        alias: String,
+    },
     /// It could not name a directory of its own.
     NotPlainComponent {
         /// The candidate, verbatim.
@@ -69,6 +82,22 @@ impl std::fmt::Display for AliasRefusal {
                  written form is what you see"
             ),
             Self::Whitespace => write!(f, "an alias may not contain whitespace"),
+            Self::OutsideIdentityAlphabet { alias } => write!(
+                f,
+                "the alias {alias:?} uses characters outside A-Z a-z 0-9 . _ - \
+                 An alias is how this tool names a project to you and to \
+                 itself, so the set it accepts is deliberately small and \
+                 finite: outside it, two aliases can render identically while \
+                 naming different projects — through a bidi override, a tag \
+                 character, a variation selector or a look-alike letter from \
+                 another script — and nothing in the interface would show you \
+                 which one you were acting on. The project folder itself may be \
+                 named anything, in any script; only the alias is restricted. \
+                 Register it under an ASCII alias of your choosing. If this \
+                 alias is an existing entry an older build accepted, \
+                 `remove {alias:?}` still accepts it — remove it and re-add \
+                 under an alias from this set"
+            ),
             Self::NotPlainComponent { alias } => write!(
                 f,
                 "the alias {alias:?} is not a single plain directory name, so it \
@@ -107,7 +136,18 @@ impl Alias {
         if raw.contains(char::is_whitespace) {
             return Err(AliasRefusal::Whitespace);
         }
-        // 4. The clause that carries the invariant: separators, `..`,
+        // 4. The identity ALPHABET — the finite direction (D-19-2). It sits
+        //    above the path-component clause so a non-ASCII alias reads the
+        //    message that carries the product trade and the recovery route,
+        //    rather than "not a single plain directory name", which would be
+        //    true and unhelpful. Like every other clause here it judges nothing
+        //    itself: `text::is_identity_char` is the one spelling.
+        if !raw.chars().all(crate::text::is_identity_char) {
+            return Err(AliasRefusal::OutsideIdentityAlphabet {
+                alias: raw.to_string(),
+            });
+        }
+        // 5. The clause that carries the invariant: separators, `..`,
         //    traversal tokens, embedded control characters. An alias that
         //    cannot name an envelope root must not become a registry key —
         //    that mismatch is WR-06's falsehood generator.
@@ -486,13 +526,48 @@ fn canon_or_raw(p: &Path) -> PathBuf {
     p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
 }
 
-/// Derive an alias from a path's file name (lowercased). Falls back to "project".
+/// Derive an alias from a path's file name (lowercased), SANITIZED to the
+/// identity alphabet. Falls back to `"project"`.
+///
+/// **Sanitizing rather than refusing is the right direction here, and the
+/// reason is that a folder name is not an identity** (D-19-2). [`Alias::new`]
+/// refuses a value outside the alphabet because the user TYPED it and can type
+/// another; this function is handed whatever the filesystem happens to hold, by
+/// auto-registration the user did not ask a question about. Refusing there would
+/// drop a real project on the floor.
+///
+/// So a disallowed character maps to `'-'`, repeats collapse, and the result is
+/// trimmed of leading/trailing separators. A name that sanitizes to nothing —
+/// every character outside the alphabet, e.g. an all-Cyrillic folder — falls
+/// back to `"project"` rather than to `""` or to a bare run of separators.
+/// Without that last step `unique_alias` would grow `"-"` into `"-2"`, `"-3"`,
+/// queueing every such folder under one meaningless prefix; `"project"` at least
+/// says what it is and collides into `project-2` like any other duplicate.
+/// Pinned by
+/// `a_folder_named_in_a_non_latin_script_derives_a_usable_alias_or_refuses_with_the_hint`.
+///
+/// The result still passes through [`Alias::new`] at the call site — this
+/// sanitizer is a convenience, not a second judgment.
 fn derive_alias(path: &Path) -> String {
-    path.file_name()
+    let sanitized = path
+        .file_name()
         .and_then(|n| n.to_str())
         .map(|s| s.to_lowercase())
+        .map(|s| {
+            let mut out = String::with_capacity(s.len());
+            for c in s.chars() {
+                if crate::text::is_identity_char(c) {
+                    out.push(c);
+                } else if !out.ends_with('-') {
+                    out.push('-');
+                }
+            }
+            out.trim_matches('-').to_string()
+        })
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "project".to_string())
+        .filter(|s| s.chars().any(|c| c.is_ascii_alphanumeric()));
+
+    sanitized.unwrap_or_else(|| "project".to_string())
 }
 
 /// Pick an alias that doesn't collide with existing keys. If `base` is free,
@@ -667,6 +742,132 @@ mod tests {
                  being registrable"
             );
         }
+    }
+
+    /// **The finite direction at the registration seam** (D-19-2).
+    ///
+    /// The look-alike sweep above refuses by DENY-list, and this phase spent six
+    /// rounds proving a deny-list can always be one code point short: pass 7
+    /// registered nine keys all rendering as `demo`. This pins the other
+    /// direction — a value outside `[A-Za-z0-9._-]` is refused because it is not
+    /// in the alphabet, not because someone remembered its code point.
+    ///
+    /// The Cyrillic case is the one the deny-list could NEVER have caught: it
+    /// carries nothing invisible at all. `"\u{434}\u{435}\u{43c}\u{43e}"` renders
+    /// as `демо`, which is not `demo` — but `carries_invisible_formatting` is
+    /// explicitly not a homoglyph defence (TR39 is carved out and stays carved
+    /// out), and the alphabet closes the identity half of that harm for free by
+    /// admitting no non-ASCII letter at all.
+    #[test]
+    fn an_alias_outside_the_identity_alphabet_is_refused_with_the_product_trade() {
+        for outside in [
+            "\u{434}\u{435}\u{43c}\u{43e}", // Cyrillic
+            "demo\u{202e}",                 // bidi override
+            "demo\u{e0041}",                // tag character
+            "d\u{e9}mo",                    // Latin-1 accented — visible, and still not an identity
+            "\u{65e5}\u{672c}",             // CJK
+        ] {
+            let refused = Alias::new(outside)
+                .expect_err("a value outside the identity alphabet is not an alias");
+            assert!(
+                matches!(
+                    refused,
+                    AliasRefusal::OutsideIdentityAlphabet { .. }
+                        | AliasRefusal::InvisibleFormatting { .. }
+                ),
+                "{outside:?} must be refused by the alphabet (or by the earlier, \
+                 more specific invisible-formatting clause), not by a generic \
+                 path-component message: got {refused:?}"
+            );
+        }
+
+        // The message carries the product trade and the recovery route — this is
+        // the one refusal in the enum that reports a CHOSEN narrowing rather
+        // than a value that was never legitimate, so the user is owed both.
+        let refused = Alias::new("\u{434}\u{435}\u{43c}\u{43e}").unwrap_err();
+        let message = refused.to_string();
+        for owed in ["A-Z a-z 0-9 . _ -", "may be named anything", "remove"] {
+            assert!(
+                message.contains(owed),
+                "the refusal message must carry {owed:?} — it reports a trade \
+                 this build chose, so it owes the user the rule, the fact that \
+                 the FOLDER is unrestricted, and the recovery route. Got: \
+                 {message}"
+            );
+        }
+
+        // The accepting direction, so the alphabet is not a predicate that
+        // refuses everything.
+        for legitimate in ["demo", "myproj-2", "a.b", "A_1", "20", "RID"] {
+            assert!(
+                Alias::new(legitimate).is_ok(),
+                "{legitimate:?} is drawn entirely from the alphabet and must \
+                 remain registrable"
+            );
+        }
+    }
+
+    /// **`derive_alias`'s residual, pinned rather than left to the sanitizer's
+    /// ordering.**
+    ///
+    /// Mapping disallowed characters INTO the alphabet is the right direction
+    /// for a DERIVED alias — a folder name is not an identity, and refusing
+    /// would drop a real project on the floor during auto-registration. But an
+    /// all-non-ASCII folder name has a failure the refusal path does not: it
+    /// sanitizes to a run of separators, so `"-"` registers as a legal-but-
+    /// meaningless alias and [`unique_alias`] then grows it into `"-2"`, `"-3"`,
+    /// queueing every such folder under one prefix. `""` would fall through the
+    /// emptiness filter instead.
+    ///
+    /// What this forbids is that silent third outcome. Either branch of the
+    /// contract is acceptable and the pin names whichever the sanitizer's
+    /// ordering produces.
+    ///
+    /// It lives in this module rather than in `tests/registry_test.rs` because
+    /// `derive_alias` is private.
+    #[test]
+    fn a_folder_named_in_a_non_latin_script_derives_a_usable_alias_or_refuses_with_the_hint() {
+        for folder in [
+            "\u{43f}\u{440}\u{43e}\u{435}\u{43a}\u{442}", // проект
+            "\u{65e5}\u{672c}\u{8a9e}",                   // 日本語
+            "\u{645}\u{634}\u{631}\u{648}\u{639}",        // مشروع
+        ] {
+            let derived = derive_alias(Path::new("/tmp").join(folder).as_path());
+
+            assert!(
+                !derived.is_empty() && derived != "-" && derived.chars().any(|c| c != '-'),
+                "a folder named {folder:?} must not derive the empty string, \
+                 {:?}, or an all-separator run — `unique_alias` would then queue \
+                 every such folder under one meaningless prefix. Got: {derived:?}",
+                "-"
+            );
+
+            let usable = derived.chars().all(crate::text::is_identity_char)
+                && derived.chars().any(|c| c.is_ascii_alphanumeric());
+            if usable {
+                assert!(
+                    Alias::new(&derived).is_ok(),
+                    "a derived value inside the alphabet must construct: \
+                     {derived:?}"
+                );
+            } else {
+                let refused = Alias::new(&derived).expect_err(
+                    "if the sanitizer did not produce a usable alias, the \
+                     downstream judgment must refuse it rather than admit a key \
+                     the envelope seam would reject",
+                );
+                assert!(
+                    refused.to_string().contains("Register it under an ASCII alias"),
+                    "and the refusal must name the explicit-alias route: \
+                     {refused}"
+                );
+            }
+        }
+
+        // The ASCII path is unchanged, including the separator mapping that
+        // used to leave a space in and get refused as `Whitespace` downstream.
+        assert_eq!(derive_alias(Path::new("/tmp/MyApp")), "myapp");
+        assert_eq!(derive_alias(Path::new("/tmp/my app")), "my-app");
     }
 
     /// The invariant, asserted rather than documented: an `Alias` can always

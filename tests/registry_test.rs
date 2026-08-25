@@ -313,4 +313,111 @@ fn end_to_end_add_then_list_via_cli() {
         "Expected 'testalias' in list output: {}",
         list_stdout
     );
+
+    // And the refusing direction end to end, with a member from OUTSIDE the
+    // pre-round-7 ranges. Pass 7 measured `add` accepting eight such aliases
+    // beside `demo`, producing nine registry keys that all rendered as `demo`.
+    let output = std::process::Command::new("cargo")
+        .args([
+            "run",
+            "--quiet",
+            "--",
+            "--config",
+            config_path.to_str().unwrap(),
+            "add",
+            project_temp.path().to_str().unwrap(),
+            "testalias\u{202e}",
+        ])
+        .output()
+        .expect("Failed to run cargo");
+
+    assert!(
+        !output.status.success(),
+        "an alias carrying U+202E renders identically to `testalias` and must \
+         not become a second registry key"
+    );
+
+    let config = load_config(&config_path).expect("the config still loads");
+    assert_eq!(
+        config.projects.len(),
+        1,
+        "the refused add must write nothing: exactly one key may exist for a \
+         name that renders one way"
+    );
+}
+
+/// **The migration recovery route, CERTIFIED rather than asserted in prose.**
+///
+/// D-19-2 rates the alphabet narrowing `costly` and explicitly NOT one-way, and
+/// T-21-19-04 accepts legacy entries failing closed — both on the strength of
+/// one claim: an entry this build refuses is still REMOVABLE, so a user is never
+/// stuck with a project they can neither use nor delete. That route is real at
+/// HEAD (`remove_project` takes a raw `&str`; neither CLI arm nor the TUI path
+/// wraps it in `Alias::new`; `judged_alias_or_exit` prints the hint), but
+/// nothing tested it — the two removal tests above only remove `"myapp"`, a
+/// value the alphabet accepts. So nothing but a comment stopped a later cleanup
+/// from wrapping the remove path in `Alias::new` and making every legacy entry
+/// permanent.
+///
+/// This goes red the day someone does that, which is the only thing that could
+/// turn D-19-2 from `costly` into one-way.
+#[test]
+fn a_legacy_alias_the_alphabet_refuses_is_still_removable() {
+    for raw in [
+        "\u{434}\u{435}\u{43c}\u{43e}", // Cyrillic — a plain non-ASCII alias an older build took
+        "demo\u{202e}",                 // and a look-alike one
+    ] {
+        let temp = TempDir::new().unwrap();
+        temp.child(".planning").create_dir_all().unwrap();
+
+        let mut config = Config::new();
+        add_project(&mut config, &visible("legacy"), temp.path()).expect("the seed registers");
+
+        // Re-key the entry under the raw value. This reaches `Config.projects`
+        // exactly as an older build's `add_project` did — behind `Alias::new`,
+        // which is the whole point — without hand-building a `RegisteredProject`
+        // literal. That literal is deliberately breakage-prone by
+        // `src/config.rs`'s design so field additions surface at the call sites
+        // that must handle them, and an integration test is not one of those.
+        let entry = config
+            .projects
+            .remove("legacy")
+            .expect("the seed entry exists");
+        config.projects.insert(raw.to_string(), entry);
+
+        // ARRIVAL BEFORE PROPERTY: the key is genuinely in the registry before
+        // anything is asserted about removing it, or this test could pass
+        // vacuously against a config that never held it.
+        assert!(
+            list_projects(&config)
+                .iter()
+                .any(|(alias, _)| alias.as_str() == raw),
+            "{raw:?} must be present before this test says anything about \
+             removing it"
+        );
+
+        // And it is genuinely a value THIS build refuses, not an incidental one.
+        let refusal = Alias::new(raw)
+            .expect_err("the fixture must be an alias this build's alphabet refuses");
+        assert!(
+            matches!(
+                refusal,
+                AliasRefusal::OutsideIdentityAlphabet { .. }
+                    | AliasRefusal::InvisibleFormatting { .. }
+            ),
+            "{raw:?} must be refused by the alphabet or the earlier, more \
+             specific invisible-formatting clause: got {refusal:?}"
+        );
+
+        // The claim D-19-2's reversibility rating rests on.
+        remove_project(&mut config, raw).expect(
+            "an entry this build refuses must still be removable — otherwise \
+             the alphabet narrowing is one-way and a user is stuck with a \
+             project they can neither use nor delete",
+        );
+        assert!(
+            !config.projects.contains_key(raw),
+            "and the key must actually be gone"
+        );
+    }
 }

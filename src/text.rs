@@ -6,7 +6,7 @@
 //! carries arbitrary script, so it is judged by a DERIVED DENY-LIST: the
 //! invisible class, read from Unicode's own data. Identities — aliases, run
 //! ids, phase tokens, envelope roots — need no script at all, so they are
-//! judged by a finite ALLOW-LIST, `is_identity_char`, which structurally
+//! judged by a finite ALLOW-LIST, [`is_identity_char`], which structurally
 //! cannot be one code point short. This phase spent six rounds discovering that
 //! a deny-list over a growing standard always can be.
 //!
@@ -126,7 +126,7 @@ pub fn carries_visible_content(value: &str) -> bool {
 /// time the next level down was still a subset. A deny-list over a growing
 /// standard can always be one code point short; the only way out of that
 /// regress is to stop writing the list. For *identities*, where the accepted set
-/// can be finite, this phase went further still — see `is_identity_char`.
+/// can be finite, this phase went further still — see [`is_identity_char`].
 ///
 /// **Maintenance obligation, so it is not inherited as timeless.** The class is
 /// exactly as current as `icu_properties`' pinned Unicode version. It refreshes
@@ -152,6 +152,59 @@ fn is_invisible_formatting_char(c: char) -> bool {
     GENERAL_CATEGORY.get(c) == GeneralCategory::Format || DEFAULT_IGNORABLE.contains(c)
 }
 
+/// The ONE spelling of the identity alphabet: `[A-Za-z0-9._-]`.
+///
+/// **This is an ALLOW-LIST, and the direction is the whole point** (D-19-2,
+/// Premise 8 — "level 5").
+///
+/// [`is_invisible_formatting_char`] answers a deny-list question over 1.1M
+/// growing code points, and a deny-list like that can always be one item short.
+/// This phase proved that empirically at three successive levels: round 3 missed
+/// arms, round 5 missed fields, rounds 4-7 missed character ranges — each time
+/// the fix enumerated the next level down and each time the next level down was
+/// still a subset. An allow-list cannot be one item short, because the accepted
+/// set is *finite*. That is a structural property, not a promise to be more
+/// careful next round, and it is the only reason to prefer this direction.
+///
+/// So every identity seam judges with this: run directories, envelope roots,
+/// credential scopes, phase tokens (via
+/// [`crate::journal::is_plain_path_component`]) and registry aliases (via
+/// `crate::registry::Alias::new`). In one clause, with no table and no
+/// dependency, it closes bidi controls (Trojan Source, CVE-2021-42574), the
+/// `U+E0000..U+E007F` tag block, variation selectors — and homoglyphs, which
+/// the deny-list explicitly could not close (a Cyrillic `а` is simply not in the
+/// alphabet).
+///
+/// **Where this must NOT go: free text.** A `--goal` or `--command`
+/// legitimately carries arbitrary script, and ZWJ/ZWNJ are load-bearing in real
+/// writing. An ASCII allow-list there would refuse legitimate input. Free text
+/// keeps [`carries_visible_content`] over the derived class. Two questions, two
+/// directions; the boundary is "does this value become a filesystem path,
+/// registry key, or comparison token?"
+///
+/// **THE RECORDED PRODUCT TRADE (D-19-2), so it is chosen rather than
+/// discovered.** An alias, run id, or phase token cannot carry a non-ASCII
+/// script. A project living at ANY path can still be registered — the alias is
+/// the tool's identifier for the project, not the project's name, and the folder
+/// itself may be called anything in any script. A non-Latin alias that an older
+/// build accepted stops working: registration refuses it, and legacy entries
+/// fail closed at the envelope seams. The recovery route is the one already
+/// shipped and named in the refusal messages — `remove <alias>`, then re-add
+/// under an ASCII alias (D-17-3). Reversibility: costly, NOT one-way. Reverting
+/// this clause restores acceptance, no data is destroyed, and legacy entries
+/// stay in `config.json` and removable throughout — which is certified by
+/// `a_legacy_alias_the_alphabet_refuses_is_still_removable`, not by this
+/// sentence.
+///
+/// **The honest bottom, recorded so it is not re-derived.** No predicate over
+/// code points is complete for "renders identically" — rendering belongs to
+/// fonts and shaping engines. The move with zero enumeration left is to stop
+/// letting user bytes BE an identity at all (generated keys, user string as
+/// display label). That is a larger change and is deliberately not made here.
+pub fn is_identity_char(c: char) -> bool {
+    matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '.' | '_' | '-')
+}
+
 /// Whether `value` carries a character that renders as nothing.
 ///
 /// **The SECOND judgment over the SAME class, and the one the emptiness judgment
@@ -172,7 +225,7 @@ fn is_invisible_formatting_char(c: char) -> bool {
 /// would be inherited as a boundary rather than as the narrow class it is. That
 /// carve-out is unchanged by D-19-1 and D-19-2. Note where the homoglyph harm
 /// IS closed and where it is not: at identity seams it is closed, not by this
-/// predicate but by the finite alphabet (`is_identity_char`), which admits no
+/// predicate but by the finite alphabet ([`is_identity_char`]), which admits no
 /// Cyrillic at all; in free text it remains open by design.
 ///
 /// Only *identity* seams consult this. Free text — a `--goal`, a `--command` —

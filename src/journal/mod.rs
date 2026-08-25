@@ -275,9 +275,32 @@ pub fn runs_root(planning_dir: &Path) -> PathBuf {
 ///   [`crate::text::carries_invisible_formatting`], the second judgment over the
 ///   same class spelling; the correction rides that commit.
 ///
-/// All four are now refused. None was ever a legitimate run id, alias, or phase
+/// * **ANY value outside the identity alphabet** — the fifth shape, and the one
+///   that subsumes every character shape above it by construction (D-19-2,
+///   Premise 8). The four corrections above were all deny-list widenings, and
+///   this phase widened the deny-list at three successive levels while each new
+///   level stayed a subset: pass 7 measured `"demo\u{202e}"`, `"2\u{202e}0"`,
+///   `"2\u{e0041}0"` and `"2\u{ad}0"` all ACCEPTED here, and `run_paths` handing
+///   back a directory for them. An identity needs no script at all, so the
+///   direction inverts: the accepted set is the finite, printable
+///   `[A-Za-z0-9._-]` ([`crate::text::is_identity_char`]), which cannot be one
+///   code point short. Bidi controls, the tag block, variation selectors and
+///   homoglyphs all fall out of one clause. The recorded product trade lives on
+///   `is_identity_char`.
+///
+/// All five are now refused. None was ever a legitimate run id, alias, or phase
 /// name; every value the suite pins as acceptable (`"20"`, `"2.1"`, real
 /// timestamped run ids, registered aliases) still passes.
+///
+/// **The clause layering, stated honestly rather than tidied.** The blank,
+/// control and invisible-formatting clauses below are now REDUNDANT for
+/// refusal — nothing they reject survives the alphabet clause. They are kept
+/// anyway, and not out of caution: message-bearing consumers read them
+/// (`crate::registry::Alias::new` gives `NotVisible` and `InvisibleFormatting`
+/// their own honest wording by asking the same questions in the same order), and
+/// the two-judgments drift pins in `crate::text` assert on them directly.
+/// Deleting them would couple those consumers to this function's internals,
+/// which is the coupling this module was split up to remove.
 ///
 /// **The named trade (D-17-1).** An identity may not carry ZWJ/ZWNJ, which are
 /// load-bearing in some scripts. Free text — goals, commands — is unaffected,
@@ -307,6 +330,13 @@ pub fn is_plain_path_component(value: &str) -> bool {
     // is a byte that renders as nothing, so it names the same thing on screen as
     // `"demo"` while naming a different directory on disk (D-17-1).
     if crate::text::carries_invisible_formatting(value) {
+        return false;
+    }
+    // The FINITE direction, and the one that structurally cannot be one code
+    // point short (D-19-2). Everything above this line is a deny-list; this is
+    // the allow-list. It subsumes them all for refusal purposes — see the doc
+    // above for why they are nonetheless kept.
+    if !value.chars().all(crate::text::is_identity_char) {
         return false;
     }
     let mut components = Path::new(value).components();
@@ -2875,6 +2905,70 @@ mod tests {
              no paths at all — pass 6 reproduced two run directories, one \
              rendering, a record no human can tell from its sibling"
         );
+    }
+
+    /// **The finite direction at this seam, and every value pass 7 measured
+    /// ACCEPTED here** (D-19-2).
+    ///
+    /// The look-alike sweep above refuses by deny-list, and pass 7 measured what
+    /// that costs: with the class spelled as three literal ranges, this
+    /// predicate returned `true` for `"demo\u{202e}"`, `"2\u{202e}0"`,
+    /// `"2\u{e0041}0"` and `"2\u{ad}0"`, and `run_paths` handed back a real
+    /// directory for each. Every one of those is outside the ranges and inside
+    /// the class the doc claimed. The alphabet ends that regress: the accepted
+    /// set is finite, so there is no "next code point" for a later pass to find.
+    ///
+    /// The phase-token case is the sharpest. `"2\u{202e}0"` was safe only
+    /// because no roadmap happens to declare it — a fact about roadmap
+    /// *contents* that the next roadmap could falsify. Here it is a property of
+    /// the value (21-17 truth 6, SAFE-08).
+    #[test]
+    fn an_identity_outside_the_alphabet_names_nothing_at_any_seam() {
+        let planning = Path::new("/p/.planning");
+        let envelope_root = Path::new("/data/envelope");
+
+        for outside in [
+            "demo\u{202e}",
+            "2\u{202e}0",
+            "2\u{e0041}0",
+            "2\u{ad}0",
+            "\u{434}\u{435}\u{43c}\u{43e}", // Cyrillic — no invisible byte at all
+            "d\u{e9}mo",                    // visible accented Latin
+        ] {
+            assert!(
+                !is_plain_path_component(outside),
+                "{outside:?} is outside the identity alphabet and must not name \
+                 a run directory, envelope root, credential scope or phase token"
+            );
+            assert!(
+                run_paths(planning, outside).is_none(),
+                "{outside:?} must yield no run paths — pass 7 measured \
+                 `run_paths` handing back a real directory for values like this"
+            );
+            assert!(
+                crate::envelope::envelope_dir_in(envelope_root, outside).is_none(),
+                "{outside:?} must not name an envelope root"
+            );
+        }
+
+        // The accepting direction, unchanged. Every value the suite pins as a
+        // legitimate identity is drawn from the alphabet already, which is why
+        // the inversion costs the tool nothing it was using.
+        for accepted in [
+            "20",
+            "2.1",
+            "2026-08-19T12-00-00Z-aaaa",
+            "demo",
+            "99",
+            "RID",
+        ] {
+            assert!(
+                is_plain_path_component(accepted),
+                "{accepted:?} is a pinned legitimate identity and must keep \
+                 being accepted — a narrowing that swallowed these would close \
+                 the harm by making the tool unusable"
+            );
+        }
     }
 
     // ---- The run lifecycle and the executor mapping (plan 16-06, Task 1) ----

@@ -1487,9 +1487,26 @@ fn a_phase_token_carrying_a_control_character_is_refused_by_name_rather_than_sto
 /// the control clause — so folding it into that array would make that test's
 /// name assert a falsehood about two of its fixtures. Same register, different
 /// harm, own name (deviation recorded in 21-17-SUMMARY).
+/// **The last three are OUTSIDE the pre-round-7 ranges, and 21-19 put them here
+/// rather than in [`HOSTILE_PHASE_TOKENS`] where its plan text said to.**
+/// 21-19's Task 2(d) asked for them in the hostile array; that array's test is
+/// named for the control-character property and asserts
+/// `!refusal.offending().chars().any(char::is_control)`, and none of these three
+/// carries a control character — so following the plan literally would have made
+/// that test's name assert a falsehood about three of its fixtures, which is the
+/// exact mistake the deviation recorded in 21-17-SUMMARY created this const to
+/// avoid. Same intent, correct home. Deviation recorded in 21-19-SUMMARY.
+///
+/// Pass 7 measured all three reaching roadmap membership at HEAD: the identity
+/// clause D-17-1 added was a 22-code-point subset, so `"2\u{202e}0"` was a plain
+/// path component and only the roadmap's contents kept it harmless. Under
+/// D-19-2's alphabet the refusal is a property of the VALUE (21-17 truth 6).
 const LOOK_ALIKE_PHASE_TOKENS: &[(&str, &str)] = &[
     ("interior U+200B", "2\u{200b}0"),
     ("trailing U+FEFF", "20\u{feff}"),
+    ("interior U+202E (bidi override)", "2\u{202e}0"),
+    ("interior U+E0041 (tag character)", "2\u{e0041}0"),
+    ("interior U+00AD (soft hyphen)", "2\u{ad}0"),
 ];
 
 /// A model-supplied phase token that renders like a declared phase is refused.
