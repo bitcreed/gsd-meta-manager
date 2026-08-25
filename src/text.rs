@@ -139,9 +139,17 @@ pub fn carries_visible_content(value: &str) -> bool {
 /// until the next refresh. It cannot reach an identity: identities are judged by
 /// the finite alphabet, which is version-independent.
 ///
-/// Private on purpose: the class is a class, not an API. Every judgment in this
-/// module reads it from here so a widening lands in all of them at once.
-fn is_invisible_formatting_char(c: char) -> bool {
+/// Crate-private on purpose: the class is a class, not a public API. Every
+/// judgment in this module reads it from here so a widening lands in all of them
+/// at once.
+///
+/// It is `pub(crate)` rather than module-private for exactly one consumer:
+/// `ui::screens::render_escape_guard`'s behavioural probe asserts that ZERO
+/// characters in a rendered terminal buffer satisfy this predicate. That
+/// assertion has to consult the ONE production spelling of the class — a probe
+/// with its own copy would be a second spelling that can silently disagree,
+/// which is the defect this function exists to remove.
+pub(crate) fn is_invisible_formatting_char(c: char) -> bool {
     // Both constructors are `const fn` over compiled data, so these are
     // borrowed static references — no allocation, no lazy-init cell.
     const GENERAL_CATEGORY: CodePointMapDataBorrowed<'static, GeneralCategory> =

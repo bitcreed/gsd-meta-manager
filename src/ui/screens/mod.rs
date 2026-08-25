@@ -11,6 +11,15 @@ pub mod help;
 pub mod normal;
 pub mod queue_delete_confirm;
 
+/// The render-surface census and its behavioural probe (CR-01).
+///
+/// Test-only, because it exists to hold the production modules above to an
+/// invariant rather than to add behaviour of its own. It is declared HERE, in
+/// the module that owns the [`Screen`] trait, because that trait is what it
+/// enumerates.
+#[cfg(test)]
+mod render_escape_guard;
+
 use crate::action::Action;
 use crate::app::DetailSubView;
 use crate::change_tracker::ChangeTracker;
@@ -1244,7 +1253,10 @@ mod tests {
     /// here on purpose: the sort and filter behaviour under test is this
     /// module's, so its fixture belongs beside it rather than being borrowed
     /// from a screen's test module.
-    fn ctx_with_aliases(aliases: &[&str]) -> AppContext {
+    /// `pub(super)` so the render-escape guard's probe fixtures reuse THIS
+    /// fixture rather than growing a sixth full-field `AppContext` literal
+    /// beside it.
+    pub(super) fn ctx_with_aliases(aliases: &[&str]) -> AppContext {
         use crate::config::{Config, RegisteredProject};
         use ratatui::widgets::TableState;
 
