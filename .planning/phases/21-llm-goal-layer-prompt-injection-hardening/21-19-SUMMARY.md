@@ -409,8 +409,16 @@ None — no external service configuration required. One maintenance obligation 
 ## Next Phase Readiness
 
 - Pass-7 gap 1 and gap 2 are closed at their shared root, and row 14 of the named-shape audit is delegated to 21-20 as planned.
-- **This plan did not touch `.planning/` at all** — no requirement was flipped, and STATE.md/ROADMAP.md are the orchestrator's to write.
+- **This plan's four task commits touch no file under `.planning/`** — no requirement was flipped. This SUMMARY is the only `.planning/` file the plan writes; STATE.md and ROADMAP.md are the orchestrator's to write.
 - **For the verifier:** the two claims worth re-deriving independently are (a) that no test asserting class membership reads the production class as its expected set, and (b) that the `format_seen >= 150` floor is committed rather than a one-time executor ritual. Both are checkable from the tree without re-running the demonstrations.
+
+## Self-Check: PASSED
+
+**Files claimed, verified present on disk:** `src/text.rs`, `src/test_support.rs`, `src/journal/mod.rs`, `src/registry.rs`, `.planning/phases/21-llm-goal-layer-prompt-injection-hardening/21-19-SUMMARY.md` — all found.
+
+**Commits claimed, verified in `git log`:** `8ca0dd1`, `f434d71`, `a3da3d1`, `e7e5572`, `6544222` — all five present between the worktree base `1be0225` and HEAD, in the stated order, with the red arm preceding its fix.
+
+**Acceptance criteria re-run:** all three tasks' criteria pass, including the plan-level `<verification>` gates recorded in the results table above. `git log --name-only 1be0225..HEAD -- .planning/` over the four task commits returns empty, confirming no REQUIREMENTS.md change.
 
 ---
 *Phase: 21-llm-goal-layer-prompt-injection-hardening*
