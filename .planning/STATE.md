@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Autonomous Orchestration
 current_phase: 21
-current_phase_name: llm-goal-layer-prompt-injection-hardening
+current_phase_name: LLM Goal Layer & Prompt-Injection Hardening
 status: executing
 stopped_at: Phase 21 gap-closure round 7 executed (21-19 wave 1, 21-20 wave 2); awaiting independent code review, then gsd-verifier pass 8
-last_updated: "2026-08-25T22:27:05.377Z"
+last_updated: "2026-08-25T22:30:40.528Z"
 last_activity: 2026-08-25
-last_activity_desc: Phase 21 round-7 gap-closure plans executed (21-19, 21-20)
-state_head: 310c093c9d69f9e95af971fbac8f48ae62e31e9a
+last_activity_desc: Phase 21 execution started
+state_head: f1a9d0dcbf74ec104b194ccba326b90ec389de8c
 progress:
   total_phases: 10
   completed_phases: 6
@@ -29,14 +29,14 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 
 ## Current Position
 
-Phase: 21 (llm-goal-layer-prompt-injection-hardening) — READY TO EXECUTE
-Plan: 20 of 20 — all plans summarized
+Phase: 21 (LLM Goal Layer & Prompt-Injection Hardening) — EXECUTING
+Plan: 1 of 22
   Round-7 gap closure (21-19, 21-20) executed and merged; build/test/clippy green
-Status: Ready to execute
+Status: Executing Phase 21
   criterion 1 FAILED (pass 6's "verified" claim was itself false), criterion 4
   PRESENT_BEHAVIOUR_UNVERIFIED pending a human Claude-subscription run.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-08-25 — Phase 21 round-7 gap-closure plans executed (21-19, 21-20)
+Last activity: 2026-08-25 — Phase 21 execution started
 
 ## Deferred Verification
 
