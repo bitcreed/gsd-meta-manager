@@ -3282,6 +3282,210 @@ fn the_raw_argv_field_scanner_sees_every_measured_silent_spelling() {
     );
 }
 
+/// **WR-01's plant: a field declared with NO visibility modifier.**
+///
+/// Pass 7 traced the control flow and measured `is_field_opener` accepting only
+/// `pub `/`pub(`. A seventh argv field spelled `goal_hint: String,` — no `pub` —
+/// is therefore skipped by the offender scan AND by the non-vacuity floor, which
+/// share that fn. The floor reads `field_lines=12 protected=6` and the scan
+/// reports `offenders=[]`: pass 6's exact silent signature, reproduced by a
+/// spelling that appeared in neither guard nine's SEEN list nor its SILENT list.
+///
+/// What USED to stop this spelling was thirteen struct-literal fixture crates —
+/// a coincidence, not a bound, and the SUMMARY reported those retired.
+///
+/// **Red arm, observed verbatim against the unfixed scanner** (this commit; the
+/// `#[ignore]` comes off in the fix commit, so the committed tree stays green
+/// while the red evidence lands in history):
+///
+/// ```text
+/// running 1 test
+/// test the_scanner_reports_a_bare_private_field ... FAILED
+///
+/// ---- the_scanner_reports_a_bare_private_field stdout ----
+///
+/// thread 'the_scanner_reports_a_bare_private_field' (664715) panicked at tests/spawn_seam_guard.rs:3315:5:
+/// assertion `left == right` failed: a field declared with NO visibility modifier is still a field, and a `String` on it is still raw argv text. `is_field_opener` accepted only `pub `/`pub(`, so this spelling was skipped by the scan AND by the floor that shares the fn — pass 6's exact silent signature (`field_lines=12 protected=6 offenders=[]`) reproduced by a spelling in neither the SEEN nor the SILENT list. Got: []
+///   left: []
+///  right: ["goal_hint: String,"]
+///
+/// test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.00s
+/// ```
+#[test]
+#[ignore = "red: pass-7 WR-01/WR-02 plants; un-ignored in the fix commit"]
+fn the_scanner_reports_a_bare_private_field() {
+    // The real twelve declarations, plus a THIRTEENTH carrying no visibility
+    // modifier at all. `goal_hint: String,` compiles, is reachable from
+    // `from_argv`'s destructure, and carries unvalidated argv text — the whole
+    // defect class, spelled in a way neither the SEEN nor the SILENT list named.
+    let planted = synthetic_file(
+        "src/driver/mod.rs",
+        &[
+            "pub struct DriveArgs {",
+            "    pub alias: payload::NonBlank,",
+            "    pub command: Option<payload::NonBlank>,",
+            "    pub target_phase: Option<payload::NonBlank>,",
+            "    pub max_steps: Option<u32>,",
+            "    pub wall_clock_cap_secs: Option<u64>,",
+            "    pub max_escalations: Option<u32>,",
+            "    pub approved_plan: Option<payload::NonBlank>,",
+            "    pub run_id: Option<payload::NonBlank>,",
+            "    pub dry_run: bool,",
+            "    pub goal: Option<payload::NonBlank>,",
+            "    pub claude_program: Option<PathBuf>,",
+            "    pub claude_args: Vec<OsString>,",
+            "    goal_hint: String,",
+            "}",
+        ],
+    );
+
+    let found = raw_string_argv_fields(&planted.1);
+    let reported: Vec<String> = found.iter().map(|(_, text)| text.clone()).collect();
+    assert_eq!(
+        reported,
+        vec!["goal_hint: String,".to_string()],
+        "a field declared with NO visibility modifier is still a field, and a \
+         `String` on it is still raw argv text. `is_field_opener` accepted only \
+         `pub `/`pub(`, so this spelling was skipped by the scan AND by the floor \
+         that shares the fn — pass 6's exact silent signature \
+         (`field_lines=12 protected=6 offenders=[]`) reproduced by a spelling in \
+         neither the SEEN nor the SILENT list. Got: {found:?}"
+    );
+
+    // The floor's own filter must see it too. One shared `is_field_opener` is
+    // what stops the scan and the floor from disagreeing; if the widening had
+    // touched only the scan, this would read 12 and the disagreement pass 6
+    // measured would be back in a new spelling.
+    let floor_visible = planted
+        .1
+        .iter()
+        .filter(|(_, line)| {
+            let trimmed = line.trim();
+            is_field_opener(trimmed) && trimmed.contains(':')
+        })
+        .count();
+    assert_eq!(
+        floor_visible, 13,
+        "the floor's field filter must count the bare declaration as a field \
+         declaration too. Got: {floor_visible}"
+    );
+
+    // The over-detection direction, bounded rather than asserted in prose. The
+    // scan runs only between the struct's braces, so the shapes that LOOK like
+    // `word:` elsewhere in a Rust file — match arms, struct-literal
+    // initialisers, labelled loops — are out of the region by construction.
+    // Inside the region, a protected bare field must still report nothing.
+    let clean_bare = synthetic_file(
+        "src/driver/mod.rs",
+        &[
+            "pub struct DriveArgs {",
+            "    alias: payload::NonBlank,",
+            "    max_steps: Option<u32>,",
+            "}",
+        ],
+    );
+    assert!(
+        raw_string_argv_fields(&clean_bare.1).is_empty(),
+        "widening the opener must not make the scan report protected \
+         declarations; got {:?}",
+        raw_string_argv_fields(&clean_bare.1)
+    );
+}
+
+/// **WR-02's plant: an allowlist entry silently repurposed.**
+///
+/// Pass 7 traced two failures that compound. `judge_declaration`'s `OsString`
+/// branch `return`s after the allowlist check, so `names_string_payload` never
+/// runs for any declaration naming `OsString` — an allowlisted name suppresses
+/// the whole judgment rather than just the OsString-presence report. And the
+/// `OSSTRING_ALLOWED` integrity pin, which exists to catch exactly a repurposed
+/// entry, was a `contains`: `"pub claude_args: (Vec<OsString>, String),"
+/// .contains("Vec<OsString>")` is **true**, so the pin passes over the very
+/// declaration it was written to refuse.
+///
+/// **Red arm, observed verbatim against the unfixed scanner** (this commit; the
+/// `#[ignore]` comes off in the fix commit):
+///
+/// ```text
+/// running 1 test
+/// test an_allowlisted_name_cannot_carry_a_raw_payload_beside_its_osstring ... FAILED
+///
+/// ---- an_allowlisted_name_cannot_carry_a_raw_payload_beside_its_osstring stdout ----
+///
+/// thread 'an_allowlisted_name_cannot_carry_a_raw_payload_beside_its_osstring' (665429) panicked at tests/spawn_seam_guard.rs:3386:5:
+/// assertion `left == right` failed: an allowlisted NAME suppresses the `OsString`-presence report only. It must never suppress a raw payload TYPE riding beside it: `judge_declaration` returned from the OsString branch before `names_string_payload` ever ran, so this declaration was silent. Got: []
+///   left: []
+///  right: ["pub claude_args: (Vec<OsString>, String),"]
+///
+/// test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.00s
+/// ```
+#[test]
+#[ignore = "red: pass-7 WR-01/WR-02 plants; un-ignored in the fix commit"]
+fn an_allowlisted_name_cannot_carry_a_raw_payload_beside_its_osstring() {
+    // `claude_args` is on OSSTRING_ALLOWED because it legitimately holds argv as
+    // `Vec<OsString>`. The suppression is by NAME, so a declaration that keeps
+    // the name and grows a raw `String` beside the `OsString` inherits the
+    // suppression for free — and the integrity pin that exists to catch exactly
+    // that was a `contains`, which this type satisfies.
+    let planted = synthetic_file(
+        "src/driver/mod.rs",
+        &[
+            "pub struct DriveArgs {",
+            "    pub alias: payload::NonBlank,",
+            "    pub claude_args: (Vec<OsString>, String),",
+            "}",
+        ],
+    );
+
+    let found = raw_string_argv_fields(&planted.1);
+    let reported: Vec<String> = found.iter().map(|(_, text)| text.clone()).collect();
+    assert_eq!(
+        reported,
+        vec!["pub claude_args: (Vec<OsString>, String),".to_string()],
+        "an allowlisted NAME suppresses the `OsString`-presence report only. It \
+         must never suppress a raw payload TYPE riding beside it: \
+         `judge_declaration` returned from the OsString branch before \
+         `names_string_payload` ever ran, so this declaration was silent. Got: \
+         {found:?}"
+    );
+
+    // The false-positive direction keeps its controls: the two legitimate
+    // carriers must still report nothing, or the widening has made the property
+    // unsatisfiable rather than stricter.
+    let legitimate = synthetic_file(
+        "src/driver/mod.rs",
+        &[
+            "pub struct DriveArgs {",
+            "    pub claude_args: Vec<OsString>,",
+            "    pub claude_program: Option<PathBuf>,",
+            "}",
+        ],
+    );
+    assert!(
+        raw_string_argv_fields(&legitimate.1).is_empty(),
+        "the legitimate allowlisted carriers must stay unreported; got {:?}",
+        raw_string_argv_fields(&legitimate.1)
+    );
+
+    // And a NON-allowlisted name carrying the same compound type is reported by
+    // the OsString rule as well as the payload rule — once, not twice.
+    let unlisted = synthetic_file(
+        "src/driver/mod.rs",
+        &[
+            "pub struct DriveArgs {",
+            "    pub goal_hint: (Vec<OsString>, String),",
+            "}",
+        ],
+    );
+    assert_eq!(
+        raw_string_argv_fields(&unlisted.1).len(),
+        1,
+        "a seventh field carrying the compound type is reported exactly once; \
+         got {:?}",
+        raw_string_argv_fields(&unlisted.1)
+    );
+}
+
 #[test]
 fn drive_args_declares_no_raw_argv_string_field() {
     let files = source_files();
