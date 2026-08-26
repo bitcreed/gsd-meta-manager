@@ -192,3 +192,138 @@ says so in its own doc.**
 | Date | `claude --version` | Result |
 |---|---|---|
 | — | — | *(never run under verification)* |
+
+---
+
+# Round-8 items (2026-08-25, plan 21-22)
+
+## TODO — four PRE-EXISTING clippy lints make `--all-targets` fail at HEAD
+
+**Recorded so that a reader who runs the all-targets gate does not read its
+failure as round-8 breakage.** They are not fixed here: `21-22`'s prohibition 5
+forbids it, and neither `src/browser.rs` nor `src/project_creator.rs` appears in
+this plan's diff.
+
+Re-measured at round 8's own tree with
+`rtk proxy cargo clippy --all-targets -- -D warnings`:
+
+| # | File:line | Lint | Offending code |
+|---|---|---|---|
+| 1 | `src/browser.rs:131` | `clippy::bool_assert_comparison` | `assert_eq!(entries[0].is_dir, true);` |
+| 2 | `src/browser.rs:132` | `clippy::bool_assert_comparison` | `assert_eq!(entries[1].is_dir, true);` |
+| 3 | `src/browser.rs:133` | `clippy::bool_assert_comparison` | `assert_eq!(entries[2].is_dir, false);` |
+| 4 | `src/project_creator.rs:146` | `clippy::cmp_owned` | `assert!(result != PathBuf::from("~") \|\| dirs::home_dir().is_none());` |
+
+`error: could not compile 'gsd-meta-manager' (lib test) due to 4 previous errors`
+— **4, unchanged**, exactly the count `21-21-SUMMARY.md`'s prohibition audit
+recorded. All four are inside `#[cfg(test)]` modules, which is why the library
+gate never sees them.
+
+**Evidence that they predate round 8, and predate this whole phase's later
+rounds:**
+
+```
+$ rtk proxy git log --oneline 2074595..HEAD -- src/browser.rs src/project_creator.rs
+(empty)
+```
+
+Neither file has been touched since `2074595`. A failure in the all-targets gate
+today is therefore *definitionally* not round-8 breakage.
+
+**The gate this phase's plans use is the LIBRARY gate, and it is clean:**
+`rtk proxy cargo clippy --lib -- -D warnings` finishes with no diagnostics.
+Whoever fixes these four should do it as its own change, not folded into a
+gap-closure round, because the fix edits test assertions in two files no phase-21
+plan owns.
+
+## STANDING — invisible-character rendering is a property of the ratatui VERSION, not of this code
+
+**Same shape as the pinned-Unicode-version obligation `src/text.rs` already
+carries** on `is_invisible_formatting_char`: a property the tree believes it has
+which actually belongs to a dependency, and which an upgrade can move silently.
+It is recorded here rather than only in a SUMMARY because a SUMMARY is read once
+and this file is read every round.
+
+**What was measured, and by whom.** Plan `21-21` measured it with a scratch
+reporter against the then-unescaped `src/ui/screens/delete_confirm.rs`, at
+**ratatui 0.30**. Quoted from `21-21-SUMMARY.md` rather than re-derived:
+
+```
+HOSTILE INPUT   : "demo\u{e0041}r\u{ad}un"
+ESCAPED FORM    : "demoU+E0041rU+00ADun"
+RENDERED ROW    : "Remove \"demo\u{e0041}run\"? This only unregisters it — project files are not deleted. [y/n]"
+INVISIBLE CHARS : ['\u{e0041}']
+CONTAINS RAW    : false
+CONTAINS ESCAPED: false
+CONTAINS CLEAN  : false
+```
+
+**What it means.** ratatui 0.30's `Buffer` **DROPS zero-width graphemes before a
+cell exists** — `U+00AD` and `U+200B` are simply gone — while the **tag block
+survives intact** (`U+E0041` reaches a cell). So the TUI does not *reorder*: it
+silently *deletes*, and a legacy key renders as a DIFFERENT string that can
+collide with a real project of that name.
+
+**Why it is load-bearing for the probe's assertions.** `CONTAINS RAW: false`
+means a probe asserting "the raw form is ABSENT from the buffer" would pass
+**vacuously against an unescaped site, forever**. That is why
+`src/ui/screens/render_escape_guard.rs`'s probe asserts *arrival of the clean
+stem* and then *presence of the escaped form*, rather than absence of the raw
+one — and why the invisible-class assertion it runs over every render state is
+what actually forces breadth.
+
+**The standing obligation.** On any **ratatui upgrade**:
+
+1. Re-run the measurement above (render a hostile identity through the real
+   `Screen::render` into a `Buffer` and report which code points reached a cell).
+2. Re-check that `render_escape_guard`'s assertions are still the **non-vacuous**
+   ones. If a future ratatui preserves zero-width graphemes in the buffer, the
+   escaped-form assertion stops being the only workable direction and the
+   *absence* assertion becomes available — and, more importantly, the probe's
+   current shape may start passing for a different reason than it does today.
+3. Record the new measurement and the ratatui version **here**, in the table
+   below.
+
+| Date | ratatui version | Zero-width graphemes | Tag block | Recorded by |
+|---|---|---|---|---|
+| 2026-08-25 | 0.30 | DROPPED before a cell exists | survives intact | `21-21` |
+
+## RE-SURFACED, UNCHANGED — ROADMAP success criterion 4
+
+**Recording, not progress.** This item is re-surfaced verbatim each round and is
+**not** closed by round 8. No agent can close it: it needs an authenticated
+Claude subscription. `21-22`'s prohibition 4 forbids planning, executing or
+claiming any work against it, and round 8 did none. The full standing item is
+above, under "Round-7 items"; this is the round-8 re-surfacing of its exact
+command and expected output, quoted from `21-VERIFICATION.md`'s
+`human_verification` frontmatter rather than paraphrased.
+
+**Command:**
+
+```
+cargo test --test driver_injection_corpus -- --ignored --nocapture
+```
+
+> "With an authenticated `claude` CLI available, run
+> `cargo test --test driver_injection_corpus -- --ignored --nocapture` from the
+> repository root and record the CLI version beside the result."
+
+**Expected:**
+
+> "10 passed, 0 failed, with arrival asserted before influence in every class arm
+> and `both_arms_of_every_class_comparison_were_really_executed` green."
+
+**Why human:**
+
+> "Requires an authenticated subscription and spawns the real model binary;
+> cannot run inside verification. This is criterion 4's only behavioural evidence
+> and no verification pass of this phase has ever produced it."
+
+**Round-8 status, measured rather than assumed.** The ten stay `#[ignore]`d and
+untouched — `rtk proxy git diff abcb367..HEAD --stat -- tests/driver_injection_corpus.rs`
+is empty — and the file's thirteen ACTIVE structural pins pass unmodified:
+`rtk proxy cargo test --test driver_injection_corpus` reports
+`13 passed; 0 failed; 10 ignored`. Presence and wiring are verified; **behaviour
+is not, and round 8 does not claim it is.** The arithmetic itself is not
+re-derived here — `the_ignored_set_is_seven_arms_two_controls_and_their_own_meta_check`
+owns it and is green.
