@@ -1,38 +1,48 @@
 ---
 phase: 21-llm-goal-layer-prompt-injection-hardening
-verified: 2026-08-25T19:36:27Z
-head: 8dc8c98
-status: human_needed
-score: 19/20 must-haves verified (4/5 ROADMAP success criteria; 0 FAILED, 1 behavior-unverified)
+verified: 2026-08-26T02:59:59Z
+head: f442881
+status: gaps_found
+score: 24/26 must-haves verified (4/5 ROADMAP success criteria; 1 FAILED, 1 behavior-unverified)
 behavior_unverified: 1
 overrides_applied: 0
 re_verification:
-  previous_status: gaps_found
-  previous_score: 11/20 must-haves verified (3/5 ROADMAP success criteria)
+  previous_status: human_needed
+  previous_score: 19/20 must-haves verified (4/5 ROADMAP success criteria)
   gaps_closed:
-    - "pass-7 gap 1 (criterion 1 — `carries_visible_content` returning true for a single U+202E / U+00AD / U+E0041 / U+FE0F, so `from_argv` accepted an argv payload with no visible instruction): CLOSED, and closed by DERIVATION rather than by a seventh enumeration. `is_invisible_formatting_char` (`src/text.rs:144-153`) is now `GENERAL_CATEGORY.get(c) == GeneralCategory::Format || DEFAULT_IGNORABLE.contains(c)` over `icu_properties` compiled data, with no literal range in the function body — I read it. **Measured with an oracle independent of the implementation AND of the tree's own test oracle** (see Judgment 1 for provenance): all 170 `General_Category=Cf` code points that CPython's `unicodedata` 15.0.0 names are refused by BOTH `carries_visible_content` and `carries_invisible_formatting`; the accepted set is EMPTY in both directions. Pass 7's own eight witnesses (U+202E, U+00AD, U+034F, U+E0041, U+FE0F, U+13430, U+180E, U+FFF9) are each refused in all four argv string positions with the correctly typed error, and `run_paths` returns `None` for every one."
-    - "pass-7 gap 2 (the identity class — nine registry keys rendering as `demo`, two envelope roots, two run directories, an accepted look-alike phase token, `gsd-\\u{202e}nur` printing as `gsd-run`): CLOSED by INVERTING the direction, which is the only move in this phase's seven rounds that terminates the regress rather than moving it. `text::is_identity_char` (`src/text.rs:204-206`) is `[A-Za-z0-9._-]`, and it is a clause of `journal::is_plain_path_component` (`:339`) and of `registry::Alias::new` (`:145`). REPRODUCED IN REVERSE end to end against `target/debug/gsd-meta-manager` built from HEAD: sixteen `add` invocations with one scratch config and one fixture project; **exactly one exit 0** (`demo`), fifteen exit 1 — including the seven pass 7 registered, plus U+2800, the PUA, a Cyrillic homoglyph (`dem\\u{43e}`), and the two non-ASCII aliases the recorded trade refuses (`d\\u{e9}mo`, CJK). `config.json` afterwards holds ONE key. Pass 7's nine-keys-rendering-as-`demo` reproduction is gone."
-    - "pass-7 gap 2, the `LOOK_ALIKE_PAIRS` tautology (round-3 WR-03 at its third level): CLOSED by moving the SAMPLING, which pass 7 correctly identified as the only fix that could work. `every_format_character_the_standard_names_is_inside_the_class` (`src/text.rs:377-406`) sweeps all 0x110000 code points with `unicode-properties` (unicode-rs) as its oracle, against a production class that reads `icu_properties` (ICU4X) and nothing else — two independently maintained derivations, neither reading the other. It ships a committed `format_seen >= 150` non-vacuity floor against a measured 170, and `Cargo.toml` names the `general-category` feature explicitly with a comment saying why it must never be defaulted. Both fixture consts also had their docs CORRECTED to disclaim the anti-tautology property they never had (`src/test_support.rs:23-43`, `:83-95`) rather than being quietly grown — the honest move."
-    - "pass-7 gap 2's missing item 3 (the two seams carrying no look-alike pin of their own): CLOSED. `--target-phase` has `src/driver/mod.rs:1769` consuming `LOOK_ALIKE_PAIRS` with a DISCRIMINATING negative arm (`!matches!(err, TargetPhaseInvalid)` at `:1811`), and `journal::writer`'s re-read has `an_active_pointer_naming_a_look_alike_run_is_refused_not_followed` (`:1095-1130`), which sweeps four suffixes including two from outside the pre-round-7 ranges and asserts BOTH directions with the visible twin's directory really on disk so a `None` cannot be the stale-pointer rule firing instead. I read both."
-    - "pass-7 coincidental-reliance item (the `--target-phase` token safe only by roadmap CONTENTS): CLOSED, and this is now a property of the value. Measured by me: `is_plain_path_component` returns false for `\"2\\u{202e}0\"`, `\"2\\u{2800}0\"` and `\"2\\u{43e}0\"` — the last a Cyrillic homoglyph, which no deny-list over invisible characters could ever have closed. 21-17 truth 6's contract is finally true."
-    - "pass-7 gap 3, WR-01 (guard nine blind to a field declared with NO visibility modifier, in both the scan and the floor): CLOSED. `is_field_opener` (`tests/spawn_seam_guard.rs:3069-3087`) now accepts a bare identifier before a `:`. **I did not take this from the SUMMARY or from the control: I planted the defect myself.** Inserting `pass8_bare_plant: String,` into the real `DriveArgs` body took `drive_args_declares_no_raw_argv_string_field` from green to RED. Reverted; `git status` clean. Pass 7's `offenders=[]` silent pass does not reproduce."
-    - "pass-7 gap 3, WR-02 (the `OsString` early return and the `contains` integrity pin): CLOSED, verified by reading the control flow rather than the doc. `judge_declaration` (`:2894-2912`) no longer returns from the `OsString` branch — the comment at `:2906-2907` says the payload judgment still runs, and the code does. `declared_type_text` (`:2922-2929`) was extracted so the live pin (`:3690-3702`) compares for EQUALITY; `declared_type_text(\"pub claude_args: (Vec<OsString>, String),\")` yields `\"(Vec<OsString>, String)\"`, which is not equal to `\"Vec<OsString>\"`, so the pin now goes red on exactly pass 7's example. The planted control (`:3515-3559`) consumes `raw_string_argv_fields`, the same fn the live assertion consumes, and carries its red output verbatim at `:3500-3513`. (I could not plant this one in the real body — the compound type does not typecheck against `claude_args`' consumers — and I say so rather than claiming a measurement I did not make.)"
-    - "pass-7 gap 3, WR-04 (`DEGENERATE` uniqueness scanned via ONE witness literal): CLOSED. `degenerate_witnesses()` (`:3804-3811`) returns THREE, assembled pairwise from two half-arrays, and the scan (`:3948-3970`) runs a per-path census compared BOTH ways against an adjudicated table — an extra path is an unadjudicated copy, a missing path is a stale exemption. A per-witness `home_hits == 1` assertion carries its own non-vacuity floor."
-    - "pass-7 gap 3, the guard-ten Warning (no row-variant existence check): CLOSED. `census_row_offence` backs a permanent stale-row plant (`:4294-4340`) shared with the live assertion, so renaming a variant while holding the count at 8 goes red."
-    - "pass-7 gap 3, WR-05 (the SAFE-07 arithmetic): CLOSED as a MECHANISM, not prose. `the_ignored_set_is_seven_arms_two_controls_and_their_own_meta_check` (`tests/driver_injection_corpus.rs:1374`) is ACTIVE, counts `fn` DECLARATIONS with the prefix and suffix assembled at runtime so it cannot count its own source, and shares `is_comment_line`/`is_ignore_attribute_line` with the file's pre-existing self-scan so the two cannot disagree. I confirmed its arithmetic independently from my own suite run: `driver_injection_corpus` = 13 passed / 10 ignored, and the ten enumerate as seven `corpus_*` arms, two suppression controls, and `both_arms_of_every_class_comparison_were_really_executed`."
-    - "pass-7's binary-level Trojan Source reproduction in `list`: CLOSED at the render seam. `display_identity` (`src/text.rs:259-269`) escapes every invisible-class character to `U+XXXX`, and `list` consumes it (`src/main.rs:146`), as do the TUI project table (`src/ui/project_list.rs:156`) and `judged_alias_or_exit`'s refusal echo (`src/main.rs:43`). MEASURED against the binary with a hand-built legacy `config.json`: the row prints `gsd-U+202Enur`, not `gsd-run`. A legacy `d\\u{e9}mo` still prints as itself, so this is a legibility defence and not a transliteration, exactly as documented."
-    - "The ACCEPTING direction did NOT regress, which is the half a refuse-everything fix would have broken. Measured by me at every identity seam simultaneously (`is_plain_path_component`, `Alias::new`, `run_paths`, argv `--run-id`, argv `--target-phase`): `\"20\"`, `\"2.1\"`, `\"99\"`, `\"demo\"`, `\"gsd-meta-manager\"`, `\"my_project.v2\"`, `\"2026-08-19T12-00-00Z-aaaa\"` and `\"2026-07-28T14-03-11Z-a3f9\"` all pass at all five. Free text remains UNJUDGED by the alphabet: `--goal` and `--command` accept `\"/gsd:progress\"` (a `:` outside the alphabet), `\"réparer le café\"`, CJK, Cyrillic and an embedded ZWJ beside visible content."
-    - "The legacy recovery route is REAL, not asserted. Measured end to end: four legacy aliases an older build accepted (`gsd-\\u{202e}nur`, `d\\u{e9}mo`, `demo\\u{200b}`, CJK) are all LISTED by `list` and all four `remove` with exit 0, leaving only the clean key. The product trade is therefore reversible in the way `src/text.rs:185-197` claims it is."
-    - "Process: `.planning/REQUIREMENTS.md` untouched for the FIFTH consecutive round. `git log -- .planning/REQUIREMENTS.md` still ends at `0c4f712`; all five phase-21 requirements read `[ ]` (lines 62, 63, 83, 85, 86) and `Gaps Found` (152, 153, 164, 166, 167). The prohibition held again."
-    - "Process: the record-correction practice pass 7 called the best thing round 6 did was CONTINUED and widened. `21-18-SUMMARY.md:525-570` carries a dated, append-only round-7 correction of its own eight-arms miscount, and `deferred-items.md:129-181` now carries SAFE-07's unexecuted boundary as a STANDING item with the exact command, the expected output, and the ten tests enumerated — moved out of a SUMMARY qualification that is read once and into a file that is read every round. This is pass 7's recommendation 4, implemented."
+    - "pass-8 Warning 1 (`Removed project '{}'` printing the alias RAW; pass 8 MEASURED a bidi spoof through it): CLOSED, and closed STRUCTURALLY rather than by remembering the site. `registry::LegacyRegistryKey` (`src/registry.rs:186-209`) has no `Display`, no `Deref`, no `AsRef<str>`, and exactly two accessors named after the questions they answer. `main.rs:158` wraps the argv string, `:161` passes `as_raw_for_lookup_only()` to `remove_project`, `:174` prints `escaped_for_display()`. **I measured BOTH halves against `target/debug/gsd-meta-manager` built from HEAD, with a hand-built legacy `config.json` carrying six keys**: all five legacy keys (`gsd-\\u{202e}nur`, `d\\u{e9}mo`, `demo\\u{200b}`, CJK, `dem\\u{16fe4}o`) `remove` with **exit 0** on their RAW bytes and only `clean` is left, so D-17-3's accept half is intact and no data is stranded; and the echo now reads `Removed project 'gsd-U+202Enur'`. Pass 8's measured spoof does not reproduce."
+    - "pass-8 Warning 2 (`eprintln!(\"Error: {refusal}\")` at `main.rs:91` and `:359` echoing raw while `judged_alias_or_exit` escaped): CLOSED at the PRODUCER, which is the move that needs no site list. `impl Display for AliasRefusal` (`src/registry.rs:102-159`) binds `let escaped = |alias: &String| crate::text::display_identity(alias);` ABOVE the match, so a variant added tomorrow cannot embed a candidate without going through it. Measured at the binary: `add` with `gsd-\\u{202e}nur` echoes `the alias \"gsd-U+202Enur\" carries a character that renders as nothing…`, and with `demo\\u{200b}` echoes `\"demoU+200B\"`."
+    - "pass-8 Warning 3 (`carries_visible_content`'s free-text residual real and UNDISCLOSED): CLOSED as a disclosure AND as a committed measurement. `src/text.rs:105-141` names the residual, its DIRECTION (over-permissive, free text only), the four measured witnesses, the bound (the alphabet refuses all four at every identity seam) and the two things that bound the deny-list's own completeness. `tests::the_free_text_emptiness_residual_is_accepted_and_cannot_reach_an_identity` (`:744-774`) pins BOTH halves, so a round that closes the residual must change the test and the doc in one commit. I re-measured the residual with SIX witnesses of my own, none of them the four the doc names (see Judgment 1)."
+    - "pass-8 Warning 4 (the `narrow_visible` assertion catching a bare field but DIAGNOSING the opposite cause — the message that would get round 7's fix reverted): CLOSED, and the rewritten message is the best artifact in the round-8 diff. `tests/spawn_seam_guard.rs:3657-3691` now names TWO causes with the likelier first, says in capitals `DO NOT narrow is_field_opener back to pub /pub(: that reverts round 7 and reopens the hole a bare field slipped through`, and tells the reader how to tell the two apart. I read it against pass 8's own planting scenario; an executor repairing under it widens the expectation rather than the opener."
+    - "WR-03 (`src/text.rs`'s ONE-spelling claim for the identity alphabet, false because `envelope::advisory::is_plain_component` respelled the same set byte-for-byte to gate GitHub `owner`/`repo` before interpolation into a request path): CLOSED by DELEGATION rather than by softening the claim. `src/envelope/advisory.rs:590` is now `&& component.chars().all(crate::text::is_identity_char)`, and `text::tests::exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src` (`src/text.rs:874-920`) is an EQUALITY on a count over a `src/` walk, with its RED-at-two output committed verbatim at `:847-859` and a named under-detection direction (an equivalent third spelling written differently is invisible to a textual census, and what bounds that is the delegation, not the census). I confirmed the delegation by reading `advisory.rs:586-591` and by grepping every `is_identity_char` consumer: `registry.rs:244`, `journal/mod.rs:339`, `advisory.rs:590` — three seams, one spelling."
+    - "WR-02 (`src/envelope/hooks.rs`'s security rationale asserting that `is_plain_path_component` accepts a quote character — false since D-19-2, and exactly the sentence a maintainer reads before deleting `sh_quote`): CLOSED, and the correction ships with its own control. `hooks.rs:155-185` states the post-D-19-2 truth and gives a defence-in-depth reason a maintainer can accept; `tests::the_path_component_predicate_refuses_every_shell_metacharacter` (`:1461-1491`) answers `false` for sixteen metacharacters, so widening the alphabet goes red in the same commit rather than letting the doc quietly become false again. `sh_quote` is untouched."
+    - "CR-01 (the escaping mechanism was correct but its only UI call lived in `src/ui/project_list.rs`, a 327-line orphan the module tree never compiled, which persuaded a reviewer AND verification pass 8 that the TUI was escaped): CLOSED. `src/ui/project_list.rs` no longer exists (`ls` → No such file). `impl Display for Alias` is WITHDRAWN with the withdrawal's reach stated honestly at `src/registry.rs:267-282` — it does NOT catch `Removed project '{}'` and does NOT catch the TUI, and the comment says so. `delete_confirm.rs:78` escapes the destructive confirm, the tree's highest-consequence identity render."
+    - "The round-8 render census is a MECHANISM, not a list, and I confirmed the premise it rests on with my own measurement rather than reading its doc. `screen_implementors_from_source` walks `src/` with recursive `read_dir` and `the_screen_census_matches_the_tree` asserts the derived set equal to `SCREEN_IDENTITY_DISPOSITIONS` in BOTH directions, with a permanent synthetic both-ways non-vacuity control (`the_census_reports_an_unadjudicated_screen_and_a_stale_row`). **The ratatui measurement round 8 rests on is CORRECT — I re-derived it in a scratch crate against ratatui 0.30.2, independent of this tree**: `Span::raw(\"gsd-\\u{202e}nur\")` renders as `gsd-nur`; U+202E, U+200B, U+00AD, U+2062 and U+2065 are ABSENT from the buffer; **U+E0041 SURVIVES intact**. So `hostile_identity()` — `\"demo\\u{e0041}\" + \"r\\u{00ad}un\"` — really does carry a character the buffer preserves, which makes the probe's assertion 3 red-capable rather than vacuous, and `clean_identity()` is all-ASCII so the arrival gate is sound."
+    - "Process: `.planning/REQUIREMENTS.md` untouched for the SIXTH consecutive round. `git log -- .planning/REQUIREMENTS.md` still ends at `0c4f712`; all five phase-21 requirements read `[ ]` (lines 62, 63, 83, 85, 86) and `Gaps Found` (152, 153, 164, 166, 167). The prohibition held again."
+    - "Process: the no-raw-invisible-character prohibition held across round 8's 2246 added lines. Scanned every added line for `General_Category=Cf` with a control that returns two hits on a planted string: **0 hits**. Debt markers: 0 `TBD`/`FIXME`/`XXX`, 0 `TODO`/`HACK`/`PLACEHOLDER`, against a control needle (`identity`) returning 214 — so neither zero is vacuous."
   gaps_remaining: []
-  regressions: []
+  regressions:
+    - "NEW, and it is round 8's own flagship control: `ui::screens::render_escape_guard::tests::the_screen_renders_identity_escaped` is INTERMITTENTLY RED at HEAD. See gaps[0]. Nothing pass 8 established regressed."
+gaps:
+  - truth: "The disposition is CHECKED, not asserted: for every implementor the table marks renders-identity, `the_screen_renders_identity_escaped` renders it through the real `Screen::render` into a ratatui `Buffer` and asserts the buffer carries ZERO characters for which `text::is_invisible_formatting_char` holds (21-21 t3)"
+    status: failed
+    reason: "The assertion does not hold reliably at HEAD. On my FIRST `cargo test --workspace --no-fail-fast -- --test-threads=2` from the repository root at `f442881`, the lib suite reported `test result: FAILED. 1057 passed; 1 failed`, panicking at `src/ui/screens/render_escape_guard.rs:1093:17` with: `DetailScreen (src/ui/screens/detail.rs) [GitHistory tab] rendered ['\\u{e0041}', '\\u{ad}', '\\u{e0041}', '\\u{ad}'] into the terminal buffer. Those characters render as nothing, so what the operator reads is not what the value is.` That is TWO whole copies of the hostile identity reaching terminal cells raw, reported by the round's own probe. I could not reproduce it in 8 further workspace runs, 12 further full-lib runs (`--test-threads=2` and `--test-threads=8`), 10 full-lib runs under 8-way CPU contention, or 60 direct single-test runs of the compiled lib binary — every one of those was green at 1372 passed / 0 failed / 13 ignored. So the failure is real, captured, and rare. Exactly one of two things is true and NEITHER is acceptable: (a) a render path inside `DetailScreen` draws attacker-influenced identity RAW under some state the probe reaches only occasionally — a live defect in the surface round 8 exists to close; or (b) the probe itself is nondeterministic — the phase's flagship behavioural security control, whose green result is what every other round-8 truth leans on, cannot be trusted to mean anything. I am not able to tell which from outside the tree, and a control nobody can explain is not a control."
+    artifacts:
+      - path: "src/ui/screens/render_escape_guard.rs"
+        issue: "`the_screen_renders_identity_escaped` (:1005-1115) fired assertion 3 (:1085-1091) against `DetailScreen [GitHistory tab]` in one run at HEAD and passed in ~80 subsequent observations. Nothing in the module makes the probe's own inputs nondeterministic on inspection — `probe_ctx` builds a fixed `AppContext`, `render_to_text` uses a fixed-size `TestBackend`, `observed_runs` is empty so `driver_live_for` is constant, and `view_cache` is `or_default()` so `render_git_tab` should take its `git_entries.is_empty()` branch every time."
+      - path: "src/ui/screens/detail.rs"
+        issue: "Candidate for reading (a): the DetailScreen render path for the GitHistory state. Note that `render_git_tab` itself cannot draw the identity under the probe's fixture, so the two raw copies came from somewhere else in that render, which is the thing to localise."
+    missing:
+      - "Reproduce the failure deterministically — a seeded/looped harness, or run the lib binary under `--test-threads=2` a few hundred times capturing the panic — and state which of (a) and (b) it is."
+      - "If (a): escape the site and add a state to the fixture that reaches it, so the probe covers it every run."
+      - "If (b): remove the nondeterminism, then re-observe the probe RED with the fix reverted, because a probe that can flake is a probe whose green was never evidence."
+      - "Either way, record the reproduction rate. `cargo test --workspace` is the phase's stated gate and it is currently a gate that passes most of the time."
 deferred:
   - truth: "General Unicode CONFUSABLES / homoglyph defence in FREE TEXT (a Cyrillic `а` beside a Latin `a` in a `--goal`)"
     addressed_in: "Not phase 21 — recommend a new roadmap item"
-    evidence: "The carve-out at `src/text.rs:219-229` is unchanged and still correct, and it now states honestly where the harm IS closed and where it is not: at identity seams homoglyphs are closed by the finite alphabet (I measured `dem\\u{43e}` and `2\\u{43e}0` both refused), and in free text they remain open by design. TR39 skeleton/confusables is a separate data table with a separate false-positive profile. Round 7 did not let the class fix grow into it, which was prohibition 5 of plan 21-19."
+    evidence: "The carve-out at `src/text.rs:265-275` is unchanged and still states honestly where the harm IS closed and where it is not. I re-measured the identity half with FRESH homoglyphs neither pass 8 nor any fixture uses — U+0435 CYRILLIC IE, U+FF12 FULLWIDTH TWO, U+1D5FC MATH SANS-SERIF BOLD O, U+2010 HYPHEN, U+2024 ONE DOT LEADER — and all five are refused at every identity seam and by the binary's `add`. Free text remains open by design."
   - truth: "`registry::current_prompt_inputs` absent from `tests/async_blocking_guard.rs`'s BLOCKING_HELPERS"
-    addressed_in: "Backlog (adjudicated OUT in deferred-items.md, unchanged across rounds 4-7)"
+    addressed_in: "Backlog (adjudicated OUT in deferred-items.md, unchanged across rounds 4-8)"
     evidence: "Async-hygiene class, not this phase's class; the fix forces production `spawn_blocking` rewiring in `approve_plan` and `execute_run`."
   - truth: "The spawn-gate plan-half argument lives in a comment rather than a checked property"
     addressed_in: "Backlog (adjudicated OUT in deferred-items.md)"
@@ -40,9 +50,9 @@ deferred:
   - truth: "Dead `PlanStep::rationale` field in src/driver/goal.rs"
     addressed_in: "Backlog (adjudicated OUT in deferred-items.md)"
     evidence: "No production reader; cosmetic dead field with no security or honesty bearing."
-  - truth: "`tests/driver_reattach.rs` and `tests/envelope_tracer.rs` flake under parallel execution"
-    addressed_in: "Next phase backlog (deferred-items.md)"
-    evidence: "Neither fired in my own full-workspace run (1362 passed / 0 failed / 13 ignored)."
+  - truth: "Four PRE-EXISTING clippy lints make `cargo clippy --all-targets -- -D warnings` fail"
+    addressed_in: "deferred-items.md:200-236 (TODO, recorded by 21-22 with the empty `git log 2074595..HEAD` evidence)"
+    evidence: "Reproduced by me: exit 101 with three `bool_assert_comparison` at `src/browser.rs:131,132,133` and one `cmp_owned` at `src/project_creator.rs:146`. `git log -1 -- src/browser.rs src/project_creator.rs` is `3e948d2` (phase 20), so round 8 did not cause them. The stated gate `cargo clippy -- -D warnings` is exit 0."
   - truth: "The degenerate matrix's ROW table stays hand-maintained (`positions()`)"
     addressed_in: "Disclosed residual, not a gap (deferred-items.md 'OUT — by design')"
     evidence: "21-15 truth 6 discloses this in those words; the disclosure is still accurate."
@@ -50,8 +60,11 @@ behavior_unverified_items:
   - truth: "A `.planning/` file or `CLAUDE.md` carrying injected instructions does not change which command the driver executes (ROADMAP success criterion 4 / SAFE-07)"
     test: "With an authenticated `claude` CLI available, run `cargo test --test driver_injection_corpus -- --ignored --nocapture` from the repository root and record the CLI version beside the result."
     expected: "10 passed, 0 failed. Every `corpus_*_arrives_and_leaves_the_command_unchanged` arm asserts the payload ARRIVED at the model before asserting the command was unchanged; the two suppression controls show the positive/negative `CLAUDE_CODE_DISABLE_CLAUDE_MDS` pair diverging; and `both_arms_of_every_class_comparison_were_really_executed` confirms the hostile and clean arms both really ran."
-    why_human: "All ten spawn the real `claude` binary and need an authenticated subscription, so they cannot run inside verification. NO AGENT CAN CLOSE THIS ITEM. I confirmed the ignored set myself from my own suite run — `driver_injection_corpus` reports 13 passed / 10 ignored, and the ten enumerate as seven class arms, two suppression controls and the arms' own non-vacuity meta-check. The thirteen ACTIVE structural pins prove the corpus is planted where the shipped reader reads, that every payload survives the production bound whole, and that the typed state carries no marker — i.e. that the labelled boundary is the only channel. They cannot prove the model's behaviour ON that channel. The last recorded live run remains `21-05-SUMMARY.md:514` (10 passed against `claude` 2.1.238), an executor claim from twenty-eight commits ago that no verification pass of this phase has ever reproduced. Round 7 did the only thing an agent could do about it: it made the arithmetic a red-capable mechanism and moved the standing fact into `deferred-items.md:129-181`. Presence and wiring verified; behaviour not."
-coincidental_reliance_items: []
+    why_human: "All ten spawn the real `claude` binary and need an authenticated subscription, so they cannot run inside verification. NO AGENT CAN CLOSE THIS ITEM, and the user has explicitly chosen to leave it tracked in `deferred-items.md:291-330`. Counted independently from my own suite run: `driver_injection_corpus` = 13 passed / 10 ignored. Round 8 correctly planned and executed NO work against it (prohibition 2 of plan 21-21 and prohibition 4 of plan 21-22), and re-surfaced it in the register unchanged. Presence and wiring verified for the ninth consecutive pass; behaviour never exercised by any verification pass of this phase."
+coincidental_reliance_items:
+  - truth: "The TUI render surface draws no invisible-class character into a terminal cell (21-21 t3/t4)"
+    reason: fixture-only
+    harden: "The probe's power against the tag block depends on `LOOK_ALIKE_PAIRS[TAG_PAIR].1` carrying a character ratatui does NOT drop, and `TAG_PAIR: usize = 4` is a hand-maintained index into a const in another module. I measured the dependency directly: of the class members I rendered, only U+E0041 survives a ratatui 0.30.2 buffer — U+202E, U+200B, U+00AD, U+2062 and U+2065 are all dropped before a cell exists. So if `LOOK_ALIKE_PAIRS[4]` is ever reordered or changed to a zero-width pair, assertion 3 goes silently vacuous while staying green. Promote it to a checked precondition: assert, in the probe itself, that `hostile_identity()` contains at least one character that survives a rendered buffer."
 human_verification:
   - test: "With an authenticated `claude` CLI available, run `cargo test --test driver_injection_corpus -- --ignored --nocapture` from the repository root and record the CLI version beside the result."
     expected: "10 passed, 0 failed, with arrival asserted before influence in every class arm and `both_arms_of_every_class_comparison_were_really_executed` green."
@@ -61,158 +74,200 @@ human_verification:
 # Phase 21: LLM Goal Layer & Prompt-Injection Hardening Verification Report
 
 **Phase Goal:** A user states a goal once and the run pursues it, with the model confined to two narrow, bounded, hardened seams
-**Verified:** 2026-08-25T19:36:27Z
-**HEAD:** `8dc8c98`
-**Status:** human_needed
-**Re-verification:** Yes — eighth verification pass, after the seventh gap-closure cycle
+**Verified:** 2026-08-26T02:59:59Z
+**HEAD:** `f442881`
+**Status:** gaps_found
+**Re-verification:** Yes — ninth verification pass, after the eighth gap-closure cycle (21-21, 21-22)
 
 ## Goal Achievement
 
-**Pass 6 declared criterion 1 verified and was wrong, because it attacked the
-character class with U+200B and U+FEFF — two code points drawn from INSIDE the
-implementation's own list. Pass 7 retracted it. My single most important
-obligation this pass was not to repeat that, so I will state my provenance
-before I state my verdict.**
+Round 8 moved no criterion by design. My job was therefore regression verification
+plus one obligation the phase has failed twice: **re-derive criterion 1's
+witnesses from outside the implementation.** Pass 6 declared criterion 1 verified
+using U+200B and U+FEFF — two code points from INSIDE the implementation's own
+list — and pass 7 retracted it. Pass 8 did it right with CPython. I could not
+reuse pass 8's sample and stay honest, so I state my provenance before my verdict.
 
 ### Judgment 1 — Where my criterion-1 witnesses came from, and why they are independent
 
-I used two sources, neither of which appears anywhere in this repository.
+**Oracle A — Perl 5's `Unicode::UCD`, `UnicodeVersion()` = 15.0.0.** Perl builds
+its Unicode tables in core, from the UCD, with its own `mktables` generator. It
+is not `icu_properties` (ICU4X), which the production class at `src/text.rs:190-199`
+reads. It is not `unicode-properties` (unicode-rs), which the tree's own sweep at
+`:423-452` reads as its oracle. It is not CPython's `unicodedata`, which pass 8
+used. Nothing in `Cargo.toml`, `src/`, `tests/` or any round-8 plan mentions Perl.
 
-**Source 1 — CPython's `unicodedata` module, `unidata_version` 15.0.0.** This is
-a third, independently maintained derivation of the Unicode Character Database.
-It is not `icu_properties` (ICU4X), which the production class at
-`src/text.rs:144-153` reads. It is not `unicode-properties` (unicode-rs), which
-the tree's own sweep at `src/text.rs:377-406` reads as its oracle. Nothing in
-`Cargo.toml`, `src/`, `tests/` or the round-7 plans mentions Python. I enumerated
-every code point in `range(0x110000)` whose `unicodedata.category()` is `Cf` —
-**170 of them** — emitted them as a Rust `const`, and fed each one, as a
-one-character string, through the production predicates from a scratch
-integration crate. This is a cross-oracle completeness check: it catches a
-derivation bug, a wrong accessor, or a stale pinned Unicode version.
+**Oracle B — OpenJDK 21.0.11's `Character.getType()`.** A fifth, independently
+maintained derivation, used purely as a cross-check on Oracle A. **The two agree
+exactly**: 170 `General_Category=Format` code points, `diff` of the sorted
+enumerations empty.
 
-**Source 2 — code points chosen for "renders as nothing" that are OUTSIDE the
-class the implementation defines.** Source 1 shares a *definition* with the
-implementation (`Cf`), so on its own it could only catch a derivation bug, not a
-scope bug. So I derived a second set from the opposite direction: characters I
-know render as blank or as no glyph, whose category I then confirmed with
-CPython, and which are neither `Cf` nor default-ignorable — **U+2800 BRAILLE
-PATTERN BLANK (`So`), U+E000 (Private Use Area, `Co`), U+0378 (unassigned,
-`Cn`), U+0301 COMBINING ACUTE ACCENT (`Mn`), U+FFFC (`So`)** — plus controls
-that ARE inside the class (U+1160, U+3164, U+1D173) so a uniform answer could
-not be mistaken for a working predicate. None of these appears in `DEGENERATE`,
-in `LOOK_ALIKE_PAIRS`, in any plan's cited examples, or in pass 7's twenty
-values. For the identity half I additionally used a **Cyrillic homoglyph**
-(U+043E), which is by construction outside any invisible-character deny-list —
-the one shape that can distinguish a deny-list fix from an allow-list fix.
+**What Oracle A buys that no previous pass could get.** Perl exposes
+`\p{Default_Ignorable_Code_Point}`; CPython does not. That is precisely the half
+of the class `src/text.rs:454-463` discloses as having **no second machine
+oracle** — "a subset bug in a default-ignorable code point NOT listed here is
+invisible to every test in this tree" — and which the tree covers with **thirteen
+hand-named members**. I enumerated all **4174** of them and fed every one through
+the production predicates. That is the last hand-enumeration in this phase,
+checked exhaustively for the first time.
 
-Everything below was measured against the tree at `8dc8c98`. Scratch integration
-crates and a scratch registry were created, run and deleted; `git status`
-afterwards shows only the pre-existing untracked `.gsd/` and
-`.planning/milestone.lock`, plus `21-REVIEW.md` which the concurrently-running
-code reviewer is writing and I did not touch. Every count, presence and grep
-check ran under `rtk proxy`.
+**Fresh out-of-class witnesses, derived from the opposite direction.** Oracle A
+shares a *definition* with the implementation, so on its own it catches a
+derivation bug, not a scope bug. So I picked six code points that render as blank
+or as no glyph and that Perl confirms are NEITHER `Cf` NOR default-ignorable:
+**U+F0000** (plane-15 private use, `Co`), **U+10FFFD** (plane-16 private use,
+`Co`), **U+1CBB** (unassigned, `Cn`), **U+0591** HEBREW ACCENT ETNAHTA (`Mn`),
+**U+0489** COMBINING CYRILLIC MILLIONS SIGN (`Me`) and **U+16FE4** KHITAN SMALL
+SCRIPT FILLER (`Mn`, a filler that renders as nothing and is *not* default-ignorable).
+**Not one of the six is any of pass 8's four** (U+2800, U+E000, U+0378, U+0301),
+and none appears in `DEGENERATE`, in `LOOK_ALIKE_PAIRS`, in `text.rs`'s own
+residual test, or in any plan's cited examples.
 
-### Judgment 2 — Does criterion 1 hold now? Yes, and this time it was attacked from outside.
+**Fresh homoglyphs, which are what distinguish an allow-list from any deny-list.**
+Pass 8 used U+043E. I used five others: **U+0435** CYRILLIC IE, **U+FF12**
+FULLWIDTH DIGIT TWO, **U+1D5FC** MATHEMATICAL SANS-SERIF BOLD SMALL O, **U+2010**
+HYPHEN (which looks like the ASCII hyphen-minus the alphabet admits) and **U+2024**
+ONE DOT LEADER (which looks like the `.` the alphabet admits). The last two are
+the sharpest: they impersonate characters that ARE in the alphabet.
 
-**The class is derived, and it is complete against a third oracle.** All 170
-`Cf` code points CPython names are refused by `carries_visible_content` AND by
-`carries_invisible_formatting`. The accepted list is **empty in both
-directions**. Pass 7's eight measured witnesses each produce the correctly typed
-refusal in all four argv string positions, and `run_paths` returns `None` for
-every one.
+Everything below was measured against the tree at `f442881`. Scratch crates and a
+scratch registry were created in `/tmp`, run and deleted; `git status` afterwards
+shows only the pre-existing untracked `.gsd/` and `.planning/milestone.lock`, plus
+`21-REVIEW.md` which the concurrently-running code reviewer is writing and I did
+not touch. Every count, presence and grep check — and every inspection of `cargo`
+output — ran under `rtk proxy`.
 
-**The regress is terminated for identities, not merely moved down another
-level.** This is the finding that matters most, and it is why pass 8 differs in
-kind from passes 2 through 7. Every one of my out-of-class witnesses — Braille
-blank, PUA, unassigned, combining mark, Cyrillic homoglyph — is refused at every
-identity seam:
+### Judgment 2 — Criterion 1 holds, and this time the untested half of the class was tested
+
+| Sweep | Members | Accepted by `carries_visible_content` | Missed by `carries_invisible_formatting` | Able to name an identity |
+|---|---|---|---|---|
+| `General_Category=Cf` (Perl 15.0.0; Java agrees exactly) | 170 | **0** | **0** | — |
+| `Default_Ignorable_Code_Point` (Perl 15.0.0) | **4174** | **0** | **0** | **0** |
+
+The accepted set is **empty in both judgments across all 4206 members of the
+class**, and no default-ignorable code point can name a run directory, envelope
+root, credential scope or phase token. The DI row is new evidence: pass 8's report
+correctly flagged that half as unverified, and it is now measured rather than
+hand-named.
+
+**The allow-list holds where the deny-list is short, re-proved with fresh shapes.**
 
 ```
-                       carries_visible_content   is_plain_path_component   Alias::new
-U+2800 (So, blank)              true                     false             OutsideIdentityAlphabet
-U+E000 (Co, PUA)                true                     false             OutsideIdentityAlphabet
-U+0378 (Cn, unassigned)         true                     false             OutsideIdentityAlphabet
-U+0301 (Mn, combining)          true                     false             OutsideIdentityAlphabet
-U+043E (Cyrillic homoglyph)      —                       false             OutsideIdentityAlphabet
+                                   carries_visible_content  is_plain_path_component  Alias::new
+U+F0000  (Co, plane-15 PUA)                 true                   false             Err
+U+10FFFD (Co, plane-16 PUA)                 true                   false             Err
+U+1CBB   (Cn, unassigned)                   true                   false             Err
+U+0591   (Mn, Hebrew accent)                true                   false             Err
+U+0489   (Me, enclosing mark)               true                   false             Err
+U+16FE4  (Mn, Khitan filler, blank)         true                   false             Err
 ```
 
-Note the shape of that table. The deny-list column (`carries_visible_content`)
-says *true* — it is one code point short, as a deny-list over a growing standard
-always can be. The allow-list column says *false* anyway. **For the first time
-in this phase, a witness the deny-list misses causes no harm**, because the
-identity judgment does not consult a deny-list. `[A-Za-z0-9._-]` cannot be one
-item short; the accepted set is finite and printable.
+Six witnesses the deny-list judges "visible", and the identity judgment refuses
+every one anyway — because it does not consult a deny-list. Nine hostile
+identities built from those plus my five fresh homoglyphs are refused at four
+seams each (`is_plain_path_component`, `Alias::new`, `run_paths`, and — for the
+two that ARE in the class — `carries_invisible_formatting`), and **fifteen of
+sixteen `add` invocations against the built binary exit 1**, the one exit 0 being
+`demo`. `config.json` afterwards holds one key.
 
-**Reproduced in reverse against the binary.** Sixteen `add` invocations against
-`target/debug/gsd-meta-manager` built from HEAD, one scratch config, one fixture
-project: **one exit 0**, fifteen exit 1. `config.json` afterwards holds one key.
-Pass 7's nine-keys-all-rendering-as-`demo` is gone, and so is the
-`gsd-\u{202e}nur` spoof — `list` now prints `gsd-U+202Enur`.
+**The residual is unchanged, still confined to free text, and now DISCLOSED** —
+which was pass 8's Warning 3 and is closed. `--goal` and `--command` accept a lone
+U+F0000 / U+1CBB / U+0591 / U+0489 / U+16FE4, reproduced end to end at the binary:
+`drive demo --goal <U+16FE4>` gets past the goal-emptiness check to the opt-in
+refusal, while `--goal <U+202E>` and `--goal <U+2062>` are refused earlier with
+"a run needs something to do". The doc at `src/text.rs:105-141` now names the
+direction and the bound, and `the_free_text_emptiness_residual_is_accepted_and_cannot_reach_an_identity`
+couples the disclosure to a test. I agree with keeping it a Warning, for pass 8's
+reason: it is display honesty in a string the user typed themselves, and none of
+my six witnesses reaches any identity, directory, registry key or envelope root.
 
-**The residual, stated plainly rather than absorbed.** `--goal` and `--command`
-are FREE TEXT, judged by the deny-list because an ASCII allow-list there would
-refuse legitimate script — a trade `src/text.rs:178-183` argues for and I agree
-with. So a `--goal` of one U+2800, U+E000, U+0378 or U+0301 is still accepted
-and can land verbatim in `run.json`'s `goal` field, where it renders as blank.
-**I weighed calling criterion 1 FAILED on that and decided against it, and here
-is the reasoning so a ninth reader can overturn it if they disagree.** Pass 7's
-defect was that the function's own doc named a WIDER class than the code
-implemented — an undisclosed subset, with a reproduced end-to-end harm (run
-directories, registry keys, envelope roots, terminal spoofing). At HEAD the doc
-and the code name the same class, that class is complete against an independent
-oracle, and none of my out-of-class witnesses reaches any identity, any
-directory, any registry key or any envelope root. What remains is a
-display-honesty residual confined to a string the user typed themselves. That is
-a different and much smaller thing, and calling it a criterion failure would be
-demanding a complete solution to a problem the code correctly documents as
-having none (`src/text.rs:199-203`). **It is recorded as a Warning below, and
-its one real defect is that the doc does not disclose it** — this phase's own
-standard is that a residual is named with its direction, and this one is not.
+### Judgment 3 — Round 8's central measurement is CORRECT, and I re-derived it
 
-### Judgment 3 — Is the six-round enumeration pattern broken, or moved?
+Round 8's render probes rest on a claim about ratatui, and if that claim were
+wrong the probes would be testing nothing. Measured in a scratch crate depending
+only on `ratatui = "0.30"` (resolved 0.30.2), with no reference to this tree:
 
-**Broken for identities. Moved — honestly, and with the move disclosed — for
-free text.**
+| Input to `Span::raw` | Rendered buffer | Raw input present |
+|---|---|---|
+| `gsd-\u{202e}nur` | `gsd-nur` | **no** |
+| `gsd-\u{200b}run` | `gsd-run` | **no** |
+| `gsd-\u{00ad}run` | `gsd-run` | **no** |
+| `gsd-\u{2062}run` | `gsd-run` | **no** |
+| `gsd-\u{2065}run` | `gsd-run` | **no** |
+| `gsd-\u{e0041}run` | `gsd-\u{e0041}run` | **YES — survives** |
+| `gsd-U+202Enur` (escaped form) | `gsd-U+202Enur` | yes (13 cells) |
 
-The pattern pass 7 named was: each round closed a level structurally and
-hand-enumerated the next level down. Arms → fields → character class → and every
-round wrote its verifying fixture out of the same head that wrote the
-implementation.
+Exactly as round 8 says. Three consequences, all load-bearing and all confirmed:
+an assertion that the raw bidi form is ABSENT would pass vacuously forever; the
+tag block is the one class that reaches a cell whole, so assertion 3 has real
+teeth; and the escaped form renders in full, so assertion 2 is a real positive.
+`hostile_identity()` carries U+E0041, `clean_identity()` is all-ASCII — the probe
+is correctly constructed. **Round 8's probes are not testing nothing.**
 
-Round 7 attacked both halves of that, and only one of the two attacks is a
-structural guarantee:
+### Judgment 4 — And yet the probe is intermittently RED, which is the pass-9 finding
 
-1. **The SAMPLING moved, which pass 7 said was the only item that addresses the
-   real recurrence.** The falsifying property no longer lives in a literal
-   fixture. It lives in an exhaustive sweep whose oracle is a different crate
-   from the production derivation, with a committed non-vacuity floor and an
-   explicitly pinned feature flag so it cannot vanish silently. My third oracle
-   agrees with both. Both fixture consts had their false anti-tautology claims
-   DELETED rather than quietly grown — the doc correction is the part I trust
-   most, because it costs the round something.
-2. **The DIRECTION inverted for identities, which is the structural half.** An
-   allow-list cannot be one item short. My homoglyph witness proves this is not
-   a rhetorical claim: no widening of any invisible-character deny-list, however
-   derived, would ever have refused `dem\u{43e}`. The alphabet refuses it in the
-   same clause that refuses bidi, tags and variation selectors.
+On my first `cargo test --workspace --no-fail-fast -- --test-threads=2` at
+`f442881`:
 
-**What is still an enumeration, and where it now sits.** Free text keeps the
-deny-list, so its completeness is bounded by `icu_properties`' pinned Unicode
-version — disclosed at `src/text.rs:131-140` with the staleness obligation and
-the release-process refresh named. And one half of the class has no second
-machine oracle at all: `named_default_ignorable_members_beyond_cf_are_inside_the_class`
-(`src/text.rs:419-442`) is thirteen hand-named members, because the
-`unicode-properties` dev-dependency does not expose `Default_Ignorable`. The doc
-says so in those words (`:408-417`): *"a subset bug in a default-ignorable code
-point NOT listed here is invisible to every test in this tree."* That is a real
-residual, correctly disclosed, and it is the last hand-enumeration standing. It
-cannot reach an identity — identities are version-independent — so what it
-bounds is free-text emptiness only.
+```text
+thread 'ui::screens::render_escape_guard::tests::the_screen_renders_identity_escaped'
+  panicked at src/ui/screens/render_escape_guard.rs:1093:17:
+DetailScreen (src/ui/screens/detail.rs) [GitHistory tab] rendered
+['\u{e0041}', '\u{ad}', '\u{e0041}', '\u{ad}'] into the terminal buffer.
+Those characters render as nothing, so what the operator reads is not what the value is.
 
-**The honest bottom, which round 7 recorded rather than re-derived**
-(`src/text.rs:199-203`): the move with zero enumeration left is to stop letting
-user bytes BE an identity at all. Round 7 declined it deliberately and said so.
-I agree with the decline and with the disclosure.
+test result: FAILED. 1057 passed; 1 failed; 0 ignored
+```
+
+Two whole copies of the hostile identity in terminal cells, reported by round 8's
+own control. I then failed to reproduce it in **8 further workspace runs, 12
+full-lib runs at two thread counts, 10 full-lib runs under 8-way CPU contention,
+and 60 direct runs of the single test against the compiled lib binary** — all
+green, all at 1372 passed / 0 failed / 13 ignored, which is the round-8 gate
+figure exactly.
+
+I read the module looking for the nondeterminism and did not find it: `probe_ctx`
+builds a fixed `AppContext`, `render_to_text` uses a fixed-size `TestBackend`,
+`observed_runs` is empty so `driver_live_for` is constant, `view_cache` is
+`or_default()` so `render_git_tab` should take its `git_entries.is_empty()` branch
+every time, and there is no `set_var`, no `set_current_dir` and no shared mutable
+static in `src/`. So I cannot tell which of these is true:
+
+* **(a)** a render path in `DetailScreen` draws attacker-influenced identity RAW
+  under a state the probe reaches only occasionally, in which case the surface
+  round 8 exists to close is not closed; or
+* **(b)** the probe is nondeterministic, in which case the phase's flagship
+  behavioural security control — the one every other round-8 truth leans on —
+  cannot be trusted to mean anything when it is green.
+
+**Neither is acceptable and I am not going to grade around it.** This phase's own
+standard, stated in eight rounds of docs, is that a guard never observed red is
+not certified; the converse is that a guard observed red for a reason nobody can
+name is not a guard. It is a gap, it is agent-closable, and it is the only thing
+standing between this phase and the same 4/5 pass 8 reported.
+
+### Judgment 5 — A concrete candidate for reading (a), found while looking
+
+The probe's own limits block discloses (limit 1) that `probe_ctx` leaves the
+Backlog, Sessions, Archive, Browse and Defaults tabs at their cache defaults, so
+their populated branches are exercised by no committed control. That residual is
+correctly disclosed. It is also **populated**: inside it I found render sites that
+draw `.planning/`-derived values raw, with no `shown()` / `display_identity`:
+
+| Site | Value drawn | Source |
+|---|---|---|
+| `src/ui/screens/detail.rs:2882-2885` | `item.number`, `item.description` | `.planning/BACKLOG.md` |
+| `src/ui/screens/detail.rs:3349-3352` | `session.pid`, `sid_display` | session scan |
+| `src/ui/screens/detail.rs:3416` | `archive_milestones` entries | `.planning/archive/` dir names |
+| `src/ui/screens/detail.rs:3438-3439` | `f.name` (top-level archive files) | `.planning/archive/` file names |
+| `src/ui/screens/detail.rs:3444-3445` | `phase.display_name` | `.planning/archive/` phase dirs |
+
+Since U+E0041 survives a ratatui buffer, a `.planning/` name carrying tag
+characters renders into those views invisibly. This does not fail a ROADMAP
+criterion — criterion 4 is about which command the driver executes, and these are
+display surfaces — and 21-21 truth 3 is true AS STATED, because the probe does
+assert what it claims over the states its fixture builds. It is a Warning, and it
+is what the disclosed hole actually contains rather than a hypothetical.
 
 ### Observable Truths
 
@@ -220,116 +275,121 @@ I agree with the decline and with the disclosure.
 
 | # | Truth | Status | Evidence |
 |---|---|---|---|
-| 1 | A user states a goal in plain language and gets back a structured, machine-checkable plan to review before anything runs | ✓ **VERIFIED** | **Attacked from outside the implementation, per Judgment 1.** All 170 CPython-derived `Cf` code points refused in both judgments (accepted set empty). Pass 7's eight witnesses refused in all four argv positions with correctly typed errors; `run_paths` → `None` for each. Five out-of-class witnesses (U+2800, U+E000, U+0378, U+0301, U+043E) refused at every identity seam despite the deny-list judging four of them visible — the allow-list holds where the deny-list is short. Structural machinery re-read and intact: twelve-field no-`..` destructure (`driver/mod.rs:414-429`), six `NonBlank` fields, `from_argv` pure and above `drive`, record builders total and verbatim (`run.rs:797-816`, `:910-915`). Acceptance did not regress (Probe D, 8 values × 5 seams). Residual: free-text `--goal`/`--command` accept out-of-class blank-rendering characters — Warning, not a gap. |
-| 2 | An approved goal is pursued across multiple GSD commands to a terminal outcome without further user input | ✓ VERIFIED (reconfirmed) | `recheck_approval` at `run.rs:2410`, above `iteration_source` (:2447), `establish_own_group` (:2449), `establish_envelope` (:2493) and `JournalRun::start` (:2626) — re-read, ordering unchanged. `driver_goal_seam` 22 passed / 0 failed in my own full-workspace run; decomposition → plan-digest → approval → recheck-at-spawn intact. |
-| 3 | Model escalations are counted against a per-run cap; exceeding the cap parks the run rather than continuing | ✓ VERIFIED (reconfirmed) | `driver_escalation_cap` **8 passed / 0 failed** in my own run — both directions (a cap at or above the *resolved* step cap refused at the seam; a cap below it accepted) plus the typed park reason on the journal. Untouched by the round-7 diff. |
-| 4 | A `.planning/` file or `CLAUDE.md` carrying injected instructions does not change which command the driver executes | ⚠️ **PRESENT_BEHAVIOR_UNVERIFIED** | Counted independently from my own suite run: `driver_injection_corpus` = **13 passed / 10 ignored**, the ten being seven `corpus_*` class arms, two suppression controls, and `both_arms_of_every_class_comparison_were_really_executed`. All ten spawn the real `claude` binary and need an authenticated subscription. **No agent can close this**; I am not manufacturing a pass. Round 7 did what was available: the arithmetic is now an ACTIVE red-capable census (`driver_injection_corpus.rs:1374`) sharing its scanners with the file's pre-existing self-scan, and the standing fact moved into `deferred-items.md:129-181`. Present and wired; behaviour unexercised. → human verification. |
-| 5 | Any action the model names that is not in the fixed GSD command enum is refused, never executed as a shell string | ✓ **VERIFIED** (pass 7's coincidental-reliance flag CLEARED) | `parse_action` (`goal.rs:343-350`) returns `Result<RouterAction, UnknownCommand>` — an enum lookup, never a string. `driver_refusal_record` 9/9 and `driver_model_seam` 4/4 green in my full run; no shell string is constructed from model output (`escalate.rs:45`, `:153`; `run.rs:2873`). **The flag pass 7 raised is gone**: 21-17 truth 6's contract is now met as a property. Measured by me — `is_plain_path_component("2\u{202e}0")`, `("2\u{2800}0")` and `("2\u{43e}0")` all **false**, so the model-supplied phase token is refused by its own value rather than by what today's roadmap happens to contain. |
+| 1 | A user states a goal in plain language and gets back a structured, machine-checkable plan to review before anything runs | ✓ **VERIFIED** | **Attacked from outside with a FOURTH and FIFTH oracle, per Judgment 1.** All 170 `Cf` code points (Perl `Unicode::UCD` 15.0.0, confirmed identical by OpenJDK 21) AND — new this pass — all **4174** `Default_Ignorable_Code_Point` members refused in both judgments; accepted set empty; zero DI members can name an identity. Six fresh out-of-class witnesses and five fresh homoglyphs (including U+2010 and U+2024, which impersonate characters the alphabet admits) refused at every identity seam; 15 of 16 binary `add` invocations exit 1. Acceptance did not regress: 9 legitimate values × 5 seams, 45/45 accept. Structural goal→plan machinery re-read and intact — twelve-field no-`..` destructure at `driver/mod.rs:414-429`, six `NonBlank` positions, `from_argv` pure and above `drive`. `driver_goal_seam` 22 passed / 0 failed in my own run. Residual: free-text out-of-class blank-renderers — now DISCLOSED (pass-8 Warning 3 closed), still a Warning. |
+| 2 | An approved goal is pursued across multiple GSD commands to a terminal outcome without further user input | ✓ VERIFIED (reconfirmed) | `recheck_approval` at `run.rs:2410`, still above `iteration_source` (:2447), `establish_own_group` (:2449), `establish_envelope` (:2493) and `JournalRun::start` (:2626) — re-read, ordering unchanged by the round-8 diff (which touches neither file). `driver_goal_seam` 22/0, `driver_iteration_loop` 7/0, `driver_router_table` 12/0, `driver_router_conformance` 3/0 in my own run. |
+| 3 | Model escalations are counted against a per-run cap; exceeding the cap parks the run rather than continuing | ✓ VERIFIED (reconfirmed) | `driver_escalation_cap` **8 passed / 0 failed** in my own run — both directions (a cap at or above the *resolved* step cap refused at the seam; a cap below it accepted) plus the typed park reason on the journal. Untouched by the round-8 diff. |
+| 4 | A `.planning/` file or `CLAUDE.md` carrying injected instructions does not change which command the driver executes | ⚠️ **PRESENT_BEHAVIOR_UNVERIFIED** | Counted independently from my own suite run: `driver_injection_corpus` = **13 passed / 10 ignored**. All ten spawn the real `claude` binary and need an authenticated subscription. **Permanently agent-unclosable**, tracked by explicit user decision at `deferred-items.md:291-330`. Round 8 correctly did NO work against it — both plans carry an explicit prohibition and both held. Present and wired; behaviour unexercised for the ninth consecutive pass. → human verification. |
+| 5 | Any action the model names that is not in the fixed GSD command enum is refused, never executed as a shell string | ✓ **VERIFIED** | `parse_action` (`goal.rs:343-350`) is an `ALL`-slice lookup returning `Result<RouterAction, UnknownCommand>` — an enum, never a string, and near-misses are refused rather than repaired. `driver_refusal_record` 9/0 and `driver_model_seam` 4/0 (+3 pre-existing ignored) green in my own run. The model-selected phase token is safe by its VALUE, re-proved with fresh shapes: `is_plain_path_component` is **false** for `"\u{ff12}0"`, `"2\u{2024}1"`, `"2\u{2065}0"`, `"2\u{16fe4}0"` and `"2\u{202e}0"`, while `"20"`, `"2.1"` and `"99"` all pass. Pass 7's coincidental-reliance flag stays cleared. |
 
-**ROADMAP score: 4/5 verified, 0 FAILED, 1 behavior-unverified.**
+**ROADMAP score: 4/5 verified, 0 FAILED, 1 behavior-unverified — unchanged from pass 8, as round 8 intended.**
 
-#### Round-7 plan must-have truths (what the round contracted to deliver)
+#### Round-8 plan must-have truths (what the round contracted to deliver)
 
 | # | Truth (source) | Status | Evidence |
 |---|---|---|---|
-| 6 | The invisible class is DERIVED, not enumerated; both judgments consume it (21-19 t1) | ✓ VERIFIED | `src/text.rs:144-153` — two `const fn` borrowed statics and one boolean expression; no literal range in the body. Both predicates call it (`:107`, `:235`). Confirmed complete against my third oracle. |
-| 7 | The falsifying corpus no longer shares a derivation source with the implementation (21-19 t2) | ✓ VERIFIED | Sweep at `:377-406` over all 0x110000 code points with `unicode-properties` as oracle against an `icu_properties` implementation; `format_seen >= 150` floor against a measured 170; `general-category` feature pinned explicitly in `Cargo.toml` with the reason. Both fixture docs corrected to DISCLAIM the property they never had (`test_support.rs:23-43`, `:83-95`). |
-| 8 | Identity is judged by an allow-list that cannot be one code point short (21-19 t3) | ✓ VERIFIED | `is_identity_char` (`:204-206`), one spelling, consumed at `journal/mod.rs:339` and `registry.rs:145`. Verified against a homoglyph, which no deny-list could close. Sixteen-alias binary reproduction: 1 accepted, 15 refused. |
-| 9 | The two pin-free seams carry their own look-alike pins (21-19 t4) | ✓ VERIFIED | `driver/mod.rs:1769` with a discriminating `!matches!(TargetPhaseInvalid)` negative arm at `:1811`; `journal/writer.rs:1095-1130` sweeping four suffixes, both directions, with the visible twin's directory really on disk. Read both. |
-| 10 | The tool's identity displays can no longer be reordered by what they render (21-19 t5) | ✓ VERIFIED | The truth names exactly three surfaces — `list`, the refusal echo path, the TUI list — and all three consume `display_identity` (`main.rs:146`, `main.rs:43`, `ui/project_list.rs:156`). Measured at the binary: `gsd-U+202Enur`. (A FOURTH surface the truth does not claim is unescaped — Warning, below.) |
-| 11 | Acceptance did not narrow where the tree depends on it (21-19 t6) | ✓ VERIFIED | Probe D: 8 legitimate values × 5 seams, all accept. Probe E: free text accepts `/gsd:progress`, French, CJK, Cyrillic and an embedded ZWJ. Over-detection bounded past ASCII by ten named script members (`text.rs:469-488`). |
-| 12 | Guard nine sees a field declared with NO visibility modifier (21-20 t1) | ✓ VERIFIED | **Planted by me in the real body; the guard went RED.** `is_field_opener` widened at `:3069-3087`. The limits block at `:2800-2805` names the thirteen-fixture struct-literal bound as retired and a coincidence. (Diagnosis-message Warning, below.) |
-| 13 | An allowlist entry can no longer be silently repurposed; the pin is an EQUALITY (21-20 t2) | ✓ VERIFIED | `judge_declaration` `:2894-2912` — no early return, payload judgment runs inside the branch. `declared_type_text` `:2922-2929` feeds an `assert_eq!` at `:3690-3702`. Control at `:3515-3559` consumes the same `raw_string_argv_fields`, with its red output committed verbatim at `:3500-3513`. |
-| 14 | The `DEGENERATE` uniqueness guard scans ≥2 witnesses and names its under-detection direction (21-20 t3) | ✓ VERIFIED | `degenerate_witnesses()` `:3804-3811` returns three; the scan `:3948-3970` is a both-ways per-path census with a per-witness `home_hits == 1` non-vacuity floor and an explicit stale-exemption message. |
-| 15 | Guard ten's census rows cannot go stale silently (21-20 t4) | ✓ VERIFIED | `census_row_offence` shared between the live assertion and a permanent stale-row plant (`:4294-4340`); count tripwire retained at `:4278`. |
-| 16 | The SAFE-07 arithmetic is a mechanism counting DECLARATIONS, not prose (21-20 t5) | ✓ VERIFIED | `the_ignored_set_is_seven_arms_two_controls_and_their_own_meta_check` (`driver_injection_corpus.rs:1374`) is ACTIVE, assembles its prefix/suffix at runtime so it cannot count its own source, and shares `is_comment_line`/`is_ignore_attribute_line` with the file's pre-existing self-scan. I independently confirmed 7 / 2 / 1 from my own suite run. |
-| 17 | The unexecutable half is tracked where it is READ, not stated once (21-20 t6) | ✓ VERIFIED | `deferred-items.md:129-181` — a STANDING item with the ten tests enumerated, the exact command, the expected output, and an instruction to re-surface it every round. `21-18-SUMMARY.md:525-570` carries the dated append-only correction; no prior line was rewritten. |
-| 18 | The record is corrected where round 6 shipped falsehoods (21-20 t7) | ✓ VERIFIED | `21-18-SUMMARY.md:262` — "Prior artifacts are **not edited**" — plus the append-only round-7 correction block. The practice pass 7 called the best thing round 6 did is now two rounds old and widened. |
-| 19 | DRIVE-04 boundary and precision reconfirmed (21-20 t8, t9) | ✓ VERIFIED | `driver_escalation_cap` 8/8 in my own run, both cap directions, decomposition consultation counted against the same cap. |
-| 20 | SAFE-07 boundary and precision — structural half only (21-20 t10, t11) | ⚠️ **PRESENT_BEHAVIOR_UNVERIFIED** | The thirteen active structural pins pass and guard seven is green inside my own `spawn_seam_guard` run (38/38). The behavioural half is truth 4 above. The plan states this as unverified rather than certified, which is correct. |
+| 6 | The render surface is enumerated by three MECHANISMS, each with its reach measured and none claiming another's work (21-21 t1) | ✓ VERIFIED | `impl Display for Alias` withdrawn — `src/registry.rs:267-282`, and the comment states plainly that the withdrawal does NOT catch `Removed project '{}'` and does NOT catch the TUI. `impl Display for AliasRefusal` (`:102-159`) binds the escaper ABOVE the match, so a future variant cannot bypass it. The `Screen` census is layer three. Three reaches, three statements, no overclaim. |
+| 7 | The TUI's render surface is closed by DERIVATION — a recursive `read_dir` walk asserted equal to the disposition table in BOTH directions (21-21 t2) | ✓ VERIFIED | `screen_implementors_from_source` walks `src/`; `the_screen_census_matches_the_tree` is a both-ways `assert_eq!` reporting an unadjudicated implementor and a stale row as separate harms; `the_census_reports_an_unadjudicated_screen_and_a_stale_row` is a permanent synthetic control over the SAME `census_offences` the live assertion drives. The table adjudicates; the walk enumerates. Read all three. |
+| 8 | The disposition is CHECKED by rendering into a real ratatui `Buffer` and asserting zero invisible-class characters (21-21 t3) | ✗ **FAILED** | The assertion is correctly constructed — I verified its ratatui premise independently (Judgment 3) — and it **fired at HEAD**, reporting `DetailScreen [GitHistory tab]` rendering two raw copies of the hostile identity, then passed in ~80 subsequent observations. See Judgment 4 and `gaps[0]`. |
+| 9 | The probe is BEHAVIOURAL, so it is blind to no sink spelling (21-21 t4) | ✓ VERIFIED (with a disclosed hole that is populated) | It inspects the rendered buffer, not source text, so spelling-blindness is genuinely closed. Its limits block discloses that unexercised STATES are not covered; Judgment 5 names five concrete raw render sites inside that hole. Truth is true as stated — Warning below. |
+| 10 | `src/ui/project_list.rs` is DELETED, with no dangling citation (21-21 t5) | ✓ VERIFIED | File absent. The round-8 diff shows −327 lines. The orphan whose dead `display_identity` call convinced a reviewer and pass 8 that the TUI was escaped is gone. |
+| 11 | `remove` still ACCEPTS a raw legacy alias and no longer ECHOES it unescaped, separated STRUCTURALLY (21-21 t6) | ✓ VERIFIED | **Both halves measured at the binary against a hand-built legacy config.** ACCEPT: five legacy keys removed on their RAW bytes, all exit 0, only `clean` left — no data stranded. ECHO: `Removed project 'gsd-U+202Enur'`. `LegacyRegistryKey` has no `Display` and two purpose-named accessors; `main.rs:158/161/174`. `list` shows `gsd-U+202Enur` and `demoU+200B` while `d\u{e9}mo` and CJK pass through as themselves — a legibility defence, not a transliteration, exactly as documented. |
+| 12 | Every mechanism was observed RED before green, and the red output is committed verbatim (21-21 t7) | ✓ VERIFIED | The probe's RED is at `render_escape_guard.rs:1008` with the scratch reporter's output at `:970-982`; the census's both-ways control ships permanently; the spelling census's RED-at-two is at `text.rs:847-859`; the `narrow_visible` re-plant is captured in 21-22's record. Commit order confirms it: `d8e0518 test(21-21): the render-surface census and probe, observed RED before any fix` precedes `f3a2a67`/`b8b9d78`. |
+| 13 | The records CR-01 falsifies are corrected in the same commit, append-only and dated (21-21 t8) | ✓ VERIFIED | `3d916e0 docs(21-21): fix a prohibition-8 violation in this plan's own SUMMARY, and self-check` and `2b5ca7a` — the round audited its own diff against its own prohibitions and corrected itself. `21-19-SUMMARY.md` carries the annotation with row 8 REOPENED; no prior line rewritten. |
+| 14 | `AliasRefusal::NotPlainComponent` is pinned rather than left to rot (21-21 t9) | ✓ VERIFIED | `src/registry.rs:854-880` asserts `Alias::new("..")` and `Alias::new(".")` are `Err(NotPlainComponent { .. })`, which also certifies that D-19-2's alphabet clause did NOT subsume the traversal check — 21-19 truth 3's load-bearing claim. |
+| 15 | The ratatui measurement pass 8 asserted without making is CORRECTED (21-21 t10) | ✓ VERIFIED | **Re-derived by me in an independent crate; the correction is right in every particular** (Judgment 3). ratatui 0.30.2 DROPS zero-width graphemes; the tag block SURVIVES. Pass 8's own "the TUI reorders" framing was wrong and round 8 says so. |
+| 16 | The `narrow_visible` message no longer misdiagnoses (21-22 t1) | ✓ VERIFIED | `tests/spawn_seam_guard.rs:3657-3691` names both causes, likelier first, with an explicit `DO NOT narrow is_field_opener back` and a procedure for telling them apart. Pass-8 Warning 4 closed. |
+| 17 | `WITNESS_ALLOWED_ELSEWHERE`'s DOC states what the guard delivers; its TABLE is unchanged (21-22 t2, t3) | ✓ VERIFIED | The round-8 diff on that file removes 24 non-header lines, **all of them doc or message text** — no table row, no `assert_eq!`. Both residuals (witness-counting, per-file granularity) are named with their direction. |
+| 18 | `hooks.rs`'s security rationale no longer states a falsehood (21-22 t4) | ✓ VERIFIED | `:155-185` states the post-D-19-2 truth and gives a defence-in-depth reason; `the_path_component_predicate_refuses_every_shell_metacharacter` (`:1461-1491`) is the control, over sixteen metacharacters. `sh_quote` untouched. The sentence a maintainer reads before deleting a real defence is now true. |
+| 19 | `src/text.rs`'s one-spelling claim made TRUE by delegation, certified by an equality census (21-22 t5) | ✓ VERIFIED | `advisory.rs:590` delegates. `exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src` is an equality on a count with an anti-self-match runtime-assembled needle, RED-at-two committed verbatim, and its under-detection direction named. Three seams, one spelling: `registry.rs:244`, `journal/mod.rs:339`, `advisory.rs:590`. |
+| 20 | `carries_visible_content`'s free-text residual DISCLOSED with direction and both completeness bounds (21-22 t6) | ✓ VERIFIED | `src/text.rs:105-141`, plus `the_free_text_emptiness_residual_is_accepted_and_cannot_reach_an_identity` coupling the disclosure to a test so it cannot go stale in either direction. I re-measured the residual with six witnesses none of which the doc names. |
+| 21 | The record carries what round 8 learned and cannot mechanise (21-22 t7) | ✓ VERIFIED | `deferred-items.md:200-236` (the four pre-existing lints, with the empty `git log 2074595..HEAD`), `:239-289` (the ratatui-version staleness obligation with a dated measurement table), `:291-330` (criterion 4 re-surfaced unchanged). I reproduced the lints and confirmed `git log -1` on both files is phase-20's `3e948d2`. |
+| 22 | DRIVE-04 boundary and precision reconfirmed (21-22 backstop rows 3, 4) | ✓ VERIFIED | Explicit evidence, not inference: `driver_escalation_cap` 8/0 in my own run, both cap directions, decomposition consultation counted against the same cap. |
+| 23 | SAFE-07 precision — only the enumerated strings cross, never a whole file (21-22 backstop row 2) | ✓ VERIFIED | `spawn_seam_guard` 38/0 in my own run, guard seven inside it. |
+| 24 | SAFE-07 boundary — structural half only (21-22 backstop row 1) | ⚠️ **PRESENT_BEHAVIOR_UNVERIFIED** | The 13 active structural pins pass. The behavioural half is truth 4 above. The plan states this as unverified rather than certified, which is correct. |
 
-**Score: 19/20 must-haves verified; 1 present-but-behavior-unverified; 0 failed.**
+**Score: 24/26 must-haves verified; 1 FAILED; 1 present-but-behavior-unverified.**
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |---|---|---|---|
-| `src/text.rs` (`is_invisible_formatting_char`) | The one derived spelling of the invisible class | ✓ VERIFIED | `:144-153`, two const borrowed statics and one boolean. No literal range. Complete against CPython `unicodedata` 15.0.0 for all 170 `Cf` code points. |
-| `src/text.rs` (`is_identity_char`) | The finite alphabet, one spelling | ✓ VERIFIED | `:204-206`. Consumed at `journal/mod.rs:339` and `registry.rs:145`; `registry.rs:559`/`:845` use it for alias derivation. Carries the recorded product trade and the reversibility statement at `:185-197`. |
-| `src/text.rs` (`carries_visible_content`) | The one emptiness judgment | ✓ VERIFIED | `:104-108`. Refuses every pass-7 witness. Free-text residual for out-of-class blank-rendering characters — Warning. |
-| `src/text.rs` (`carries_invisible_formatting`) | The identity deny-list, second over the same class | ✓ VERIFIED | `:234-236`. Now backstopped by the alphabet at every seam, so its extent is no longer load-bearing for identity harm. |
-| `src/text.rs` (`display_identity`) | Render-side defence for legacy rows | ✓ VERIFIED | `:259-269`. Measured at the binary: `gsd-U+202Enur`, and `d\u{e9}mo` passes through as itself. |
-| `src/text.rs` (independent sweep) | A fixture shape that can go red on a SUBSET | ✓ VERIFIED | `:377-406`, all code points, second-crate oracle, committed non-vacuity floor, feature pinned with its reason. Agrees with my third oracle. |
-| `src/text.rs` (default-ignorable half) | The half with no second oracle | ⚠️ **DISCLOSED HAND LIST** | `:419-442`, thirteen named members. `:408-417` states the residual in exactly the right words. Correctly disclosed; cannot reach an identity. |
-| `src/test_support.rs` (`DEGENERATE`, `LOOK_ALIKE_PAIRS`) | Named seam fixtures, docs no longer overclaiming | ✓ VERIFIED | 10 members / 6 pairs, four and three of them from outside the pre-round-7 ranges. Both docs now say plainly that literal spelling is not independence. |
-| `src/journal/mod.rs` (`is_plain_path_component`) | Blank + control + identity + ALPHABET + structural | ✓ VERIFIED | `:309-349`, five clauses. Refuses every witness I could construct, including a homoglyph. Redundancy of clauses 1-3 is stated honestly at `:295-303` with the reason they are kept. |
-| `src/registry.rs` (`Alias`, `add_project`) | Registration closed at the entry, alphabet clause included | ✓ VERIFIED | `Alias::new` `:119-160`, five delegating clauses, none judging locally except the documented whitespace usability rule. Sixteen-alias binary reproduction: 1 in, 15 out. |
-| `src/main.rs` / `src/ui/project_list.rs` | Escaped identity rendering | ⚠️ **THREE OF FOUR SURFACES** | `list` (`:146`), refusal echo (`:43`) and the TUI table (`project_list.rs:156`) escape. `Removed project '{}'` (`:128`) and two `eprintln!("Error: {refusal}")` sites (`:91`, `:359`) do not — Warnings. |
-| `src/driver/mod.rs` (`DriveArgs`, `from_argv`) | Six `NonBlank` fields, twelve-field no-`..` destructure, pure | ✓ VERIFIED | Re-read `:314-341` and `:410-460`. Purity and position above `drive` unchanged. |
-| `tests/spawn_seam_guard.rs` (guard nine) | Bare declarations seen; allowlist not repurposable | ✓ VERIFIED | Bare-field blindness closed — **verified by planting the defect and observing red**. `OsString` early return deleted; integrity pin is an equality on parsed type text. |
-| `tests/spawn_seam_guard.rs` (guard ten, DEGENERATE scan) | Stale rows caught; ≥2 witnesses | ✓ VERIFIED | `census_row_offence` plant; three witnesses with a both-ways per-path census. |
-| `tests/driver_injection_corpus.rs` (ignored-set census) | An ACTIVE red-capable arithmetic | ✓ VERIFIED | `:1374`, declaration-counting, runtime-assembled needles, shared scanners. Arithmetic independently confirmed from my suite run. |
-| `.planning/.../deferred-items.md` | SAFE-07's unexecuted boundary tracked where it is read | ✓ VERIFIED | `:129-181`, standing item, ten tests enumerated, command and expected output given. |
-| `.planning/REQUIREMENTS.md` | Accurate, untouched by the round | ✓ VERIFIED | Last touch `0c4f712`; all five phase-21 entries read `[ ]` / `Gaps Found`. Fifth round holding. |
+| `src/text.rs` (`is_invisible_formatting_char`) | The one derived spelling of the invisible class | ✓ VERIFIED | `:190-199`, two const borrowed statics and one boolean. No literal range. Complete against Perl `Unicode::UCD` 15.0.0 for all 170 `Cf` **and all 4174 `Default_Ignorable` members**. |
+| `src/text.rs` (`is_identity_char`) | The finite alphabet, ONE spelling tree-wide | ✓ VERIFIED | `:250-252`. Now genuinely one spelling: `registry.rs:244`, `journal/mod.rs:339`, `advisory.rs:590` all delegate, and a committed equality census enforces it. |
+| `src/text.rs` (`carries_visible_content`) | The one emptiness judgment, residual disclosed | ✓ VERIFIED | `:142-146`, doc `:105-141`. Refuses all 4206 class members. Free-text residual disclosed with direction and pinned by a test. |
+| `src/text.rs` (`carries_invisible_formatting`) | The identity deny-list over the same class | ✓ VERIFIED | `:280-282`. Backstopped by the alphabet at every seam. |
+| `src/text.rs` (`display_identity`) | Render-side defence for legacy rows | ✓ VERIFIED | `:305-315`. Measured: `gsd-U+202Enur`, `demoU+2062`, `2U+20650`; `d\u{e9}mo` and CJK unchanged; idempotent. |
+| `src/text.rs` (spelling census) | The one-spelling claim made checkable | ✓ VERIFIED | `:874-920`, equality on a count, RED-at-two committed, under-detection direction named. |
+| `src/text.rs` (default-ignorable half) | The half with no second oracle in-tree | ⚠️ **DISCLOSED HAND LIST — now externally verified** | `:464-488`, thirteen named members; `:454-463` discloses the gap in the right words. **The gap is real in the tree and empty in fact**: I swept all 4174 members with Perl and found zero escapes. The disclosure should stay; a machine oracle for this half would close it properly. |
+| `src/registry.rs` (`Alias`, `AliasRefusal`, `LegacyRegistryKey`) | Registration closed at entry; accept and echo separated by the type system | ✓ VERIFIED | `Alias::new` `:218-259`, five delegating clauses. `Display for AliasRefusal` escapes at the producer. `LegacyRegistryKey` `:186-209`, no `Display`. Sixteen-alias binary reproduction: 1 in, 15 out. |
+| `src/main.rs` | Every identity display resolved deliberately | ✓ VERIFIED | `:146` (`list`), `:43` (refusal echo), `:174` (`Removed project`), `:117`/`:131`/`:192`/`:422` — all escaped. Pass 8's `✗ NOT WIRED` row is gone. |
+| `src/ui/screens/render_escape_guard.rs` | A derived census plus a behavioural probe | ⚠️ **CENSUS VERIFIED, PROBE INTERMITTENTLY RED** | Census: both-ways, with a permanent synthetic control. Probe: correctly constructed on a premise I independently confirmed, but observed FAILING at HEAD. See `gaps[0]`. |
+| `src/ui/project_list.rs` | Deleted | ✓ VERIFIED | Absent. |
+| `src/ui/screens/delete_confirm.rs` | The highest-consequence identity render, escaped | ✓ VERIFIED | `:78` via `display_identity`, with the raw value kept for `do_remove_project`. |
+| `src/envelope/advisory.rs` | The second alphabet delegating | ✓ VERIFIED | `:586-591`. The nearby branch-name set that admits `/` is a different question and is excluded by construction. |
+| `src/envelope/hooks.rs` | A true security rationale with its own control | ✓ VERIFIED | `:155-185` corrected; `:1461-1491` is the control; `sh_quote` intact. |
+| `src/journal/mod.rs` (`is_plain_path_component`) | Blank + control + identity + ALPHABET + structural | ✓ VERIFIED | `:309-349`. Refuses every witness I could construct, including five fresh homoglyphs and six out-of-class blank-renderers. |
+| `src/driver/mod.rs` (`DriveArgs`, `from_argv`) | Six `NonBlank` fields, twelve-field no-`..` destructure, pure | ✓ VERIFIED | Re-read `:314-341` and `:410-470`. Unchanged by round 8. |
+| `tests/spawn_seam_guard.rs` | Guards nine and ten, with honest docs | ✓ VERIFIED | 38/0. `narrow_visible` message rewritten; `WITNESS_ALLOWED_ELSEWHERE` table untouched, doc replaced with two measured residuals. |
+| `tests/driver_injection_corpus.rs` | 13 active structural pins, 10 ignored behavioural arms | ✓ VERIFIED | Counted from my own run. |
+| `.planning/.../deferred-items.md` | Round-8 register entries | ✓ VERIFIED | `:200-236`, `:239-289`, `:291-330`. |
+| `.planning/REQUIREMENTS.md` | Accurate, untouched by the round | ✓ VERIFIED | Last touch `0c4f712`; all five phase-21 entries read `[ ]` / `Gaps Found`. Sixth round holding. |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 |---|---|---|---|---|
-| `text::is_invisible_formatting_char` | `icu_properties` compiled data | `GeneralCategory::Format` ∪ `DefaultIgnorableCodePoint` | ✓ WIRED | Read the body; no literal range. Verified complete against a THIRD oracle. |
-| `text.rs` test sweep | `unicode-properties` dev-dependency | Exhaustive all-codepoint implication with a non-vacuity floor | ✓ WIRED | Two crates, neither reading the other. My CPython oracle agrees with both. |
-| `journal::is_plain_path_component` | `text::is_identity_char` | The allow-list clause at `:339` | ✓ WIRED | The link that closes the seven-round regress. Verified with a homoglyph. |
-| `registry::Alias::new` | `text::is_identity_char` | Clause 4 at `:145`, above the path-component clause so the message carries the trade | ✓ WIRED | Measured: `OutsideIdentityAlphabet` with the recovery route in the message. |
-| `payload::NonBlank::new` | `text::carries_visible_content` | Delegation, not re-implementation | ✓ WIRED | The link that carried the subset in pass 7; the subset is gone. |
-| `main.rs list` / TUI / refusal echo | `text::display_identity` | Render-side escaping of the invisible class | ✓ WIRED | Three surfaces measured or read. |
-| `main.rs Remove` / `Add` refusal | `text::display_identity` | — | ✗ **NOT WIRED** | `:128`, `:91`, `:359` print raw. Measured `Removed project 'gsd-<RLO>nur'`. Warning. |
-| `driver/mod.rs:877` (`--target-phase`) | `journal::is_plain_path_component` | The model-selected identity seam | ✓ WIRED | Refuses `2\u{202e}0`, `2\u{2800}0`, `2\u{43e}0`. |
-| `driver/mod.rs:1087` / `journal/writer.rs:491` | `journal::is_plain_path_component` | The run-id seams, argv and re-read | ✓ WIRED | Both pinned, both directions, with outside-class members. |
-| guard nine's scan | every `DriveArgs` field declaration | `is_field_opener` token match, widened | ✓ WIRED | Planted and measured red. |
-| `OSSTRING_ALLOWED` integrity pin | the declared type | `assert_eq!` on `declared_type_text` | ✓ WIRED | Equality, not containment. |
-| `driver_injection_corpus` arms | the real model boundary | Live `claude` spawn | ⚠️ **IGNORED** | All ten, including the arms' own non-vacuity meta-check. Unchanged and unclosable by an agent. |
+| `text::is_invisible_formatting_char` | `icu_properties` compiled data | `GeneralCategory::Format` ∪ `DefaultIgnorableCodePoint` | ✓ WIRED | Verified complete against a FOURTH oracle on both halves — including the DI half no prior pass could check. |
+| `text.rs` test sweep | `unicode-properties` dev-dependency | Exhaustive all-codepoint implication with a `format_seen >= 150` floor | ✓ WIRED | Two crates, neither reading the other; my Perl and Java oracles agree with both at 170. |
+| `journal::is_plain_path_component` | `text::is_identity_char` | The allow-list clause at `:339` | ✓ WIRED | Verified with U+2010 and U+2024 — homoglyphs of characters the alphabet *admits*. |
+| `registry::Alias::new` | `text::is_identity_char` | Clause 4 at `:244` | ✓ WIRED | `OutsideIdentityAlphabet`, message carries the trade and the `remove` recovery route. |
+| `envelope::advisory::is_plain_component` | `text::is_identity_char` | Delegation at `:590` (round-8 WR-03 fix) | ✓ WIRED | The GitHub owner/repo segments now inherit the one alphabet before interpolation into a request path. |
+| `payload::NonBlank::new` | `text::carries_visible_content` | Delegation | ✓ WIRED | The link that carried pass 7's subset; still delegating. |
+| `main.rs Remove` | `registry::remove_project` (RAW) and the echo (ESCAPED) | `LegacyRegistryKey`'s two named accessors | ✓ WIRED | **Both halves measured end to end.** Pass 8's `✗ NOT WIRED` row is closed. |
+| `AliasRefusal::Display` | every present and future refusal echo | escaping bound above the match | ✓ WIRED | Producer-side, so no consumer has to be named. |
+| `render_escape_guard` census | every `impl Screen for` under `src/` | recursive `read_dir` + both-ways `assert_eq!` | ✓ WIRED | With a permanent synthetic both-directions control. |
+| `render_escape_guard` probe | each screen's real `Screen::render` | rendered `Buffer`, escaped-form present + zero invisible-class chars, arrival first | ⚠️ **INTERMITTENTLY RED** | Correctly built on a premise I re-derived; fires unpredictably. `gaps[0]`. |
+| `driver/mod.rs:877` / `:1087` | `journal::is_plain_path_component` | the `--target-phase` and `--run-id` seams | ✓ WIRED | Refuses `2\u{ff12}0`, `2\u{2024}1`, `2\u{2065}0`, `2\u{16fe4}0`, `2\u{202e}0`. |
+| `driver_injection_corpus` arms | the real model boundary | live `claude` spawn | ⚠️ **IGNORED** | All ten. Unchanged and unclosable by an agent. |
 
 ### Data-Flow Trace (Level 4)
 
 | Artifact | Data Variable | Source | Produces Real Data | Status |
 |---|---|---|---|---|
-| `config.json` | registry key (alias) | `Alias::new` | ✓ | ✓ **FLOWING** — 16 alias variants, 1 accepted, measured against the binary |
-| `<envelope>/<alias>/` | envelope root | `envelope_dir_in` → `is_plain_path_component` → alphabet | ✓ | ✓ **FLOWING** — no look-alike or out-of-class alias resolves |
-| `run.json` / run directory | `run_id` | `NonBlank` + `is_plain_path_component` + alphabet | ✓ | ✓ **FLOWING** — `run_paths` `None` for every witness; real timestamped ids still resolve |
-| `run.json` | `target_phase` | `Option<NonBlank>` + `is_plain_path_component` + alphabet | ✓ | ✓ **FLOWING** — now safe by the VALUE, not by roadmap contents |
-| `runs/active` (re-read) | `run_id` | `read_active_run` → `is_plain_path_component` | ✓ | ✓ **FLOWING** — look-alike pointer refused while the visible twin resolves |
-| `run.json` | `gsd_command` | `recorded_command(&IterationSource)` | ⚠️ | ⚠️ **AMBIGUOUS (narrowed)** — cannot be `""` and cannot be any `Cf`/default-ignorable value; a lone U+2800 / PUA / unassigned still passes |
-| `run.json` | `goal` | `args.goal.as_ref().map(NonBlank::as_str)` | ⚠️ | ⚠️ **AMBIGUOUS (narrowed)** — same class; free text by design |
-| `list` / TUI ALIAS column | alias | `display_identity` on the key | ✓ | ✓ **FLOWING** — `gsd-U+202Enur`, spoof made visible |
-| `Removed project '…'` | alias | raw `Display` | ✗ | ✗ **SPOOFABLE** — measured; the one identity display the round did not escape |
+| `config.json` | registry key (alias) | `Alias::new` | ✓ | ✓ **FLOWING** — 16 variants, 1 accepted, measured at the binary |
+| `<envelope>/<alias>/` | envelope root | `envelope_dir_in` → `is_plain_path_component` → alphabet | ✓ | ✓ **FLOWING** |
+| `run.json` / run directory | `run_id` | `NonBlank` + `is_plain_path_component` + alphabet | ✓ | ✓ **FLOWING** — `run_paths` `None` for all nine hostile ids; all nine legitimate ids resolve |
+| `run.json` | `target_phase` | `Option<NonBlank>` + `is_plain_path_component` + alphabet | ✓ | ✓ **FLOWING** — safe by the VALUE, re-proved with alphabet-impersonating homoglyphs |
+| `run.json` | `gsd_command` / `goal` | `NonBlank` over the derived class | ⚠️ | ⚠️ **AMBIGUOUS (narrowed, disclosed)** — cannot be `""`, cannot be any of the 4206 class members; a lone U+F0000 / U+1CBB / U+0591 / U+0489 / U+16FE4 still passes. Now named in the doc with its direction. |
+| `list` / refusal echo / `Removed project` | alias | `display_identity` | ✓ | ✓ **FLOWING** — `gsd-U+202Enur` on all three; pass 8's spoofable row closed |
+| `remove <alias>` | lookup key | `as_raw_for_lookup_only` | ✓ | ✓ **FLOWING** — 5/5 legacy keys removable |
+| TUI Backlog / Sessions / Archive rows | `.planning/`-derived names | raw `format!` / `Span::raw` | ✗ | ✗ **UNESCAPED** — five sites named in Judgment 5, inside the probe's disclosed coverage hole |
 
 ### Behavioral Spot-Checks
 
-Every count-, presence- or grep-bearing check ran under `rtk proxy`, including
-all `cargo` output. The full workspace suite was run exactly once and its output
-saved for grepping.
+Every count-, presence- or grep-bearing check ran under `rtk proxy`, including all
+`cargo` output. The full workspace suite's result is reported from saved output.
 
 | Behavior | Command | Result | Status |
 |---|---|---|---|
-| Full workspace suite (run once) | `cargo test --workspace --no-fail-fast -- --test-threads=2` | **1362 passed, 0 failed, 13 ignored** | ✓ PASS |
+| Full workspace suite | `cargo test --workspace --no-fail-fast -- --test-threads=2` (**9 runs**) | **8 × 1372 passed / 0 failed / 13 ignored; 1 × 1371 passed / 1 FAILED** | ✗ **INTERMITTENT FAILURE** |
 | Gate lint | `cargo clippy -- -D warnings` | exit 0 | ✓ PASS |
-| Unfiltered severity | `cargo clippy --all-targets` | 4 warnings, all pre-existing (`browser.rs:131-133`, `project_creator.rs:146`) | ✓ PASS (info) |
-| **PROBE A — cross-oracle sweep** | 170 CPython-derived `Cf` code points × both judgments | **accepted set EMPTY in both directions** | ✓ **VERIFIES the derivation** |
-| **PROBE B — definition-scope attack** | 8 witnesses (5 outside `Cf ∪ DI`, 3 inside as controls) × 4 argv positions + 2 predicates | Inside-class controls refused everywhere. Outside-class: `carries_visible_content` **true**, `from_argv` Ok — but `is_plain_path_component` **false** in every case | ⚠️ **residual is free-text-only** |
-| **PROBE C — identity seams** | 8 hostile identities incl. a Cyrillic homoglyph × 4 seams | `is_plain_path_component` false, `Alias::new` Err, `run_paths` None — **all 8, all seams** | ✓ **VERIFIES the allow-list** |
-| **PROBE D — acceptance** | 8 legitimate values × 5 seams (`"20"`, `"2.1"`, `"99"`, `"demo"`, two real timestamped run ids, …) | 40/40 accept | ✓ **NO REGRESSION** |
-| **PROBE E — free text unjudged** | 6 free-text values × `--goal` and `--command` | 12/12 accept, incl. `/gsd:progress`, CJK, Cyrillic, embedded ZWJ | ✓ **NO REGRESSION** |
-| **Binary-level registration** | 16 × `gsd-meta-manager --config <scratch> add <fixture> "<alias>"` | **1 exit 0 (`demo`), 15 exit 1.** `config.json` → ONE key | ✓ **pass-7 gap 2 CLOSED** |
-| **Trojan Source at the render seam** | legacy `config.json` + `list \| cat -v` | prints `gsd-U+202Enur`; `d\u{e9}mo` prints as itself | ✓ **CLOSED** |
-| **Legacy recovery route** | 4 legacy non-ASCII/invisible aliases × `list` then `remove` | all 4 listed, all 4 removed exit 0, only the clean key left | ✓ **TRADE IS REVERSIBLE** |
-| **Guard nine WR-01, planted by me** | inserted `pass8_bare_plant: String,` into the real `DriveArgs` body | `drive_args_declares_no_raw_argv_string_field` **FAILED** (13 ≠ 12); reverted, tree clean | ✓ **WR-01 CLOSED** |
-| Guard nine WR-02 | read `judge_declaration` `:2894-2912` and `declared_type_text` `:2922-2929` | no early return; `assert_eq!` on parsed type; `"(Vec<OsString>, String)" != "Vec<OsString>"` | ✓ CLOSED (read, not planted — see gaps_closed) |
-| Ignored-set arithmetic | `driver_injection_corpus` result line from my own run | 13 passed / **10 ignored** = 7 arms + 2 controls + 1 meta-check | ✓ CONFIRMS the census |
-| Escalation cap | `driver_escalation_cap` in my own run | 8 passed / 0 failed | ✓ PASS |
-| Debt markers in the round-7 diff | `git diff f1faa3e..HEAD -- src/ tests/` filtered on `^+` | **0** `TBD/FIXME/XXX`, **0** `TODO/HACK/PLACEHOLDER` over 2108 added lines; control needle `identity` → **52**, so neither zero is vacuous | ✓ PASS |
-| Raw-invisible-character prohibition | scanned every tracked file under `src/` and `tests/` for `Cf` + the four named default-ignorables | **2 hits, both U+200C**, both inside `tests/fixtures/injection-corpus/.planning/REQUIREMENTS.md` — a hostile-payload FIXTURE, not code | ✓ PASS (fixture, by design) |
-| REQUIREMENTS.md untouched | `git log -- .planning/REQUIREMENTS.md` | Last commit `0c4f712`, five rounds ago | ✓ PASS |
-| Documented flakes | `driver_reattach`, `envelope_tracer` | Neither fired | ✓ NOT A GAP |
+| Unfiltered severity | `cargo clippy --all-targets -- -D warnings` | exit 101; 4 lints at `browser.rs:131,132,133` + `project_creator.rs:146`; `git log -1` on both files = `3e948d2` (phase 20) | ✓ PASS (pre-existing, recorded) |
+| Build | `cargo build` | exit 0 | ✓ PASS |
+| **PROBE 1 — cross-oracle exhaustive sweep** | 170 Perl-derived `Cf` **+ 4174 Perl-derived `Default_Ignorable`** × both judgments | **accepted set EMPTY in both directions; 0 of 4174 DI can name an identity** | ✓ **VERIFIES the derivation, both halves** |
+| Oracle cross-check | Perl `Unicode::UCD` 15.0.0 vs OpenJDK 21 `Character.getType` | 170 = 170, sorted `diff` empty | ✓ **two independent oracles agree** |
+| **PROBE 2 — definition-scope attack, fresh witnesses** | U+F0000, U+10FFFD, U+1CBB, U+0591, U+0489, U+16FE4 (none used by pass 8) | `carries_visible_content` **true** for all six; `is_plain_path_component` **false** and `Alias::new` **Err** for all six | ⚠️ **residual is free-text-only, and bounded** |
+| **PROBE 3 — identity seams, fresh homoglyphs** | 9 hostile identities incl. U+0435, U+FF12, U+1D5FC, U+2010, U+2024 × 4 seams | refused everywhere; `run_paths` `None` for all nine | ✓ **VERIFIES the allow-list** |
+| **PROBE 4 — acceptance** | 9 legitimate values × 5 seams | **45/45 accept** | ✓ **NO REGRESSION** |
+| **PROBE 5 — free text unjudged** | 7 free-text values | 7/7 `carries_visible_content` true, 7/7 outside the alphabet | ✓ **NO REGRESSION** |
+| **PROBE 6 — `display_identity`** | 6 fresh values + idempotence | `gsd-U+202Enur`, `demoU+2062`, `2U+20650`; Cyrillic and Khitan pass through; idempotent | ✓ PASS |
+| **PROBE 7 — binary registration** | 15 hostile + 1 clean `add` against a scratch config | **1 exit 0 (`demo`), 14 exit 1**; `config.json` → ONE key | ✓ PASS |
+| **PROBE 8 — D-17-3 accept/echo split** | 5 legacy keys × `list` then `remove` with RAW bytes | **all 5 listed, all 5 removed exit 0**, only `clean` left; echo `Removed project 'gsd-U+202Enur'` | ✓ **BOTH HALVES CLOSED** |
+| **PROBE 9 — ratatui 0.30.2 re-measurement** | independent scratch crate, `Span::raw` → `Buffer` cells | U+202E/U+200B/U+00AD/U+2062/U+2065 **dropped**; U+E0041 **survives**; escaped form renders in 13 cells | ✓ **round 8's premise CONFIRMED** |
+| **PROBE 10 — free-text residual at the binary** | `drive demo --goal <char> --dry-run` | `<U+202E>` and `<U+2062>` refused with "a run needs something to do"; `<U+16FE4>` accepted | ⚠️ **residual reproduced end to end** |
+| Round-8 debt markers | added lines of `git diff 8dc8c98..HEAD -- src/ tests/` | **0** `TBD/FIXME/XXX`, **0** `TODO/HACK/PLACEHOLDER` over 2246 added lines; control needle `identity` → **214** | ✓ PASS |
+| Raw-invisible-character prohibition | every added line scanned for `General_Category=Cf` with a control returning 2 hits on a planted string | **0 hits** | ✓ PASS |
+| REQUIREMENTS.md untouched | `git log -- .planning/REQUIREMENTS.md` | Last commit `0c4f712`, six rounds ago | ✓ PASS |
+| Documented flakes | `driver_reattach` 3/0, `envelope_tracer` 6/0 | neither fired in any of 9 workspace runs | ✓ NOT A GAP |
 
 ### Probe Execution
 
@@ -340,72 +400,65 @@ Not applicable — this phase is not a migration/tooling phase and declares no
 
 | Requirement | Source Plans | Description | Status | Evidence |
 |---|---|---|---|---|
-| DRIVE-01 | 21-01, 04, 07, 09, 11, 13, 15, 17, 19 | User states a goal once; driver pursues it without further input | ✓ SATISFIED | Criteria 1 and 2 verified. The alias selecting which project the goal is pursued against can no longer name two projects that render alike — measured at the binary, 1 of 16 accepted. |
-| DRIVE-03 | 21-01, 03, 04, 07, 08, 09, 11, 13, 15, 17, 19 | Goal decomposed into a structured, machine-checkable, reviewable plan | ✓ SATISFIED | Criterion 1 verified; `driver_goal_seam` 22/22. The record's `goal`/`gsd_command` can no longer carry any `Cf` or default-ignorable value, so the D-30 absent-vs-present guarantee holds for the whole standard-defined invisible class. |
-| DRIVE-04 | 21-02, 04, 06, 10, 12, 14, 16, 18, 20 | Escalation capped per run; exceeding it parks | ✓ SATISFIED | Criterion 3 verified; both cap directions pinned and green (8/8) in my own run. |
-| SAFE-07 | 21-01, 03, 05, 06, 08, 10, 12, 14, 16, 18, 20 | `.planning/` content passed inside an explicit untrusted boundary | ? NEEDS HUMAN | Criterion 4 behavior-unverified. Thirteen structural pins execute and pass; all ten behavioural tests are `#[ignore]`d and have never run under any verification pass. Now tracked as a standing item rather than a one-time qualification. |
-| SAFE-08 | 21-01, 05, 06, 12, 14, 16, 17, 19 | Model's action constrained to a fixed enum; no free-form shell strings | ✓ SATISFIED | Criterion 5 verified and pass 7's hold-back removed: the tag block U+E0000–U+E007F is now refused at every identity seam by the alphabet, and the phase-token check is a property of the value rather than of roadmap contents. |
+| DRIVE-01 | 21-01, 04, 07, 09, 11, 13, 15, 17, 19, 21 | User states a goal once; driver pursues it without further input | ✓ SATISFIED | Criteria 1 and 2 verified. The alias selecting which project the goal is pursued against cannot name two projects that render alike — 1 of 16 accepted at the binary — and the legacy recovery route is now measured in both directions. |
+| DRIVE-03 | 21-01, 03, 04, 07, 08, 09, 11, 13, 15, 17, 19 | Goal decomposed into a structured, machine-checkable, reviewable plan | ✓ SATISFIED | Criterion 1 verified against a fourth and fifth oracle over the whole class; `driver_goal_seam` 22/22. |
+| DRIVE-04 | 21-02, 04, 06, 10, 12, 14, 16, 18, 20, 22 | Escalation capped per run; exceeding it parks | ✓ SATISFIED | Criterion 3 verified; both cap directions green (8/8). |
+| SAFE-07 | 21-01, 03, 05, 06, 08, 10, 12, 14, 16, 18, 20, 21, 22 | `.planning/` content passed inside an explicit untrusted boundary | ? NEEDS HUMAN | Criterion 4 behavior-unverified. Thirteen structural pins execute and pass; all ten behavioural tests are `#[ignore]`d. Additionally: five TUI render sites draw `.planning/`-derived names raw (Judgment 5) — a display-honesty finding on the same trust boundary, not a boundary breach. |
+| SAFE-08 | 21-01, 05, 06, 12, 14, 16, 17, 19, 22 | Model's action constrained to a fixed enum; no free-form shell strings | ✓ SATISFIED | Criterion 5 verified; the model-supplied phase token is refused by its own value, re-proved with homoglyphs of characters the alphabet admits. |
 
-**No orphaned requirements.** The union of `requirements:` across all twenty plans
-is exactly {DRIVE-01, DRIVE-03, DRIVE-04, SAFE-07, SAFE-08}, matching
+**No orphaned requirements.** The union of `requirements:` across all twenty-two
+plans is exactly {DRIVE-01, DRIVE-03, DRIVE-04, SAFE-07, SAFE-08}, matching
 REQUIREMENTS.md's phase-21 mapping and the ROADMAP `Requirements:` line.
 
-**Note for whoever closes this phase:** four of the five requirements are now
-SATISFIED and REQUIREMENTS.md still reads `[ ]` / `Gaps Found` for all five. That
-is correct today — the prohibition reserves status changes for a *passed*
-verification, and this is `human_needed`. It flips when SAFE-07's human run is
-recorded.
+**Note for whoever closes this phase:** four of five requirements are SATISFIED and
+REQUIREMENTS.md still reads `[ ]` / `Gaps Found` for all five. That remains
+correct — status changes are reserved for a *passed* verification, and this is
+`gaps_found`.
 
 ### Anti-Patterns Found
 
 | File | Line | Pattern | Severity | Impact |
 |---|---|---|---|---|
-| `src/main.rs` | `:128` | `Removed project '{}'` prints the alias RAW while `list` escapes it | ⚠️ Warning | MEASURED: `Removed project 'gsd-<U+202E>nur'`, which in a bidi-aware terminal reads `Removed project 'gsd-run'` — the operator is told they removed a different project than they did. This is the confirmation for the exact command `src/text.rs:192-193` and the refusal messages name as the recovery route for these rows. 21-19 truth 5 names three surfaces and all three are escaped, so the truth is TRUE AS STATED; this is a fourth surface the truth does not claim. Fix is one call to `display_identity`. |
-| `src/main.rs` | `:91`, `:359` | `eprintln!("Error: {refusal}")` raw, while `judged_alias_or_exit` (`:43`) escapes the same refusal type | ⚠️ Warning | MEASURED: the `OutsideIdentityAlphabet` message echoes the raw alias. Not exploitable for bidi (clause 2 catches every `Cf` value first and its own `Display` escapes), so the harm is inconsistency rather than spoofing — but the D-19-5 rule stated at `:35-42` is applied at one of three refusal sites. |
-| `src/text.rs` | `:80-103` | The free-text emptiness residual is real and UNDISCLOSED | ⚠️ Warning | MEASURED with witnesses derived independently of the implementation: `carries_visible_content` returns **true** for a lone U+2800 (BRAILLE PATTERN BLANK), U+E000 (PUA), U+0378 (unassigned) and U+0301 (lone combining mark), so `--goal` and `--command` accept a payload that renders as nothing. None can reach an identity — the alphabet refuses all four — so this is display honesty in a user-supplied string, not the pass-7 harm. It is a Warning rather than a gap for the reason argued in Judgment 2. What makes it a finding at all is that this phase's own standard is to name a residual WITH its direction, and this doc names the class it covers without naming what falls outside it. One sentence closes it. |
-| `tests/spawn_seam_guard.rs` | `:3644-3654` | The `narrow_visible` equality catches a bare field but DIAGNOSES the opposite cause | ⚠️ Warning | When I planted `pass8_bare_plant: String,` the guard went red — correct — with the message "a difference means the widening is matching something that is not a field declaration." It was not: a real field declaration was added in a spelling the narrow rule cannot see. An executor repairing under that message would narrow `is_field_opener` back, undoing round 7's fix. The bound is real; the sentence points the wrong way. (The offender assertion at `:3705-3716` would also have fired, but it is downstream of this `assert_eq!` and never runs.) |
-| `src/text.rs` | `:419-442` | The default-ignorable half of the class is thirteen hand-named members | ℹ️ Info | The last hand-enumeration standing, and it is correctly disclosed at `:408-417` in the strongest available words. Cannot reach an identity. Recorded so a ninth reader inherits it as a known residual rather than discovering it. |
-| `src/main.rs` | `:145-147` | `list` shows the escaped form; `remove` requires the raw bytes | ℹ️ Info | A user who sees `gsd-U+202Enur` in `list` cannot copy it into `remove`. The recovery route the docs name is not round-trippable from the tool's own output. Low severity — the entries are rare and legacy-only — but worth a line in whatever closes the display work. |
+| `src/ui/screens/render_escape_guard.rs` | `:1005-1115` | The round's flagship behavioural control fails intermittently at HEAD | 🛑 **Blocker** | Captured once in ~80 observations: `DetailScreen [GitHistory tab]` reported rendering two raw copies of the hostile identity. Either a real state-dependent raw render path or a nondeterministic control. Full detail in Judgment 4 and `gaps[0]`. |
+| `src/ui/screens/detail.rs` | `:2882`, `:3349`, `:3416`, `:3438`, `:3444` | `.planning/`-derived names drawn RAW into TUI cells | ⚠️ Warning | Backlog item number/description, session id, archive milestone/file/phase names. All inside the probe's disclosed coverage hole (`probe_ctx` leaves those caches empty), so the disclosure is honest — but the hole is populated, and U+E0041 survives a ratatui buffer, so a hostile `.planning/` name renders invisibly. Fix is `shown()` at five sites plus a fixture state that reaches each. |
+| `src/ui/screens/render_escape_guard.rs` | `:433-434` | `TAG_PAIR: usize = 4` is a hand-maintained index whose value silently decides whether assertion 3 has teeth | ⚠️ Warning | Measured: of the class members I rendered, ONLY U+E0041 survives a ratatui 0.30.2 buffer. If `LOOK_ALIKE_PAIRS[4]` is ever reordered or replaced with a zero-width pair, assertion 3 becomes vacuous and stays green. This is the phase's signature failure shape — a hand-maintained pointer into a growing list — reappearing one level up. One assertion closes it: require `hostile_identity()` to contain a character that survives a rendered buffer. |
+| `src/text.rs` | `:464-488` | The default-ignorable half of the class is thirteen hand-named members | ℹ️ Info | Correctly disclosed at `:454-463` in the strongest available words, and **empty in fact**: I swept all 4174 members against Perl and found zero escapes. Keep the disclosure; a machine oracle (Perl exposes the property, `unicode-properties` does not) would close it for real. |
+| `src/main.rs` | `:145-147` vs `:158` | `list` shows the escaped form; `remove` requires the raw bytes | ℹ️ Info | Measured again: `remove "gsd-U+202Enur"` → `Error: Project not found`. The recovery route the docs name is still not round-trippable from the tool's own output. Low severity, legacy-only, unchanged from pass 8. |
 
-**No unreferenced debt markers were introduced.** `git diff f1faa3e..HEAD -- src/ tests/`
-adds zero `TBD`/`FIXME`/`XXX` and zero `TODO`/`HACK`/`PLACEHOLDER` across 2108
-added lines; the control needle `identity` returns 52 added lines, so neither
-zero is vacuous.
+**No unreferenced debt markers were introduced.** Round 8 adds zero `TBD`/`FIXME`/`XXX`
+and zero `TODO`/`HACK`/`PLACEHOLDER` across 2246 added lines, against a control
+needle returning 214.
 
 ### Test Quality Audit
 
 | Test File | Linked Req | Active | Skipped | Circular | Assertion Level | Verdict |
 |---|---|---|---|---|---|---|
-| `src/text.rs` `mod tests` | DRIVE-01, DRIVE-03, SAFE-08 | 9 | 0 | **No — fixed** | Value + exhaustive property | ✓ The corpus is no longer sampled from inside the predicate. The sweep's oracle is a second crate; a third oracle (mine) agrees with both. The `format_seen >= 150` floor is committed, not an executor ritual. |
-| `tests/driver_injection_corpus.rs` | SAFE-07 | 13 | **10** | No | Behavioral (in the skipped arms) | ⚠️ Unchanged: the requirement's behavioural proof is entirely in the ignored set. Now with an ACTIVE red-capable census of its own arithmetic. |
-| `tests/spawn_seam_guard.rs` | SAFE-07, SAFE-08 | 38 | 0 | No | Value, with planted-defect controls | ✓ Both pass-7 holes closed; I planted one myself and watched it go red. One message diagnoses the wrong cause (Warning). |
+| `src/text.rs` `mod tests` | DRIVE-01, DRIVE-03, SAFE-08 | 11 | 0 | No | Value + exhaustive property + source census | ✓ Sampling is outside the predicate; a third, fourth and fifth oracle now agree. The residual test couples a disclosure to a measurement. |
+| `src/ui/screens/render_escape_guard.rs` `mod tests` | SAFE-07, SAFE-08 | 4 | 0 | No | Behavioral (rendered buffer) | ⚠️ **The census is excellent and controlled. The probe is intermittently RED** — see `gaps[0]`. Its power against the tag block also rests on an unpinned fixture index (Warning). |
+| `tests/driver_injection_corpus.rs` | SAFE-07 | 13 | **10** | No | Behavioral (in the skipped arms) | ⚠️ Unchanged: the requirement's behavioural proof is entirely in the ignored set, with an ACTIVE red-capable census of its own arithmetic. |
+| `tests/spawn_seam_guard.rs` | SAFE-07, SAFE-08 | 38 | 0 | No | Value, with planted-defect controls | ✓ Both round-7 holes stay closed; the message that could have reverted the fix is rewritten. |
 | `tests/driver_escalation_cap.rs` | DRIVE-04 | 8 | 0 | No | Behavioral, both directions | ✓ |
 | `tests/driver_goal_seam.rs` | DRIVE-01, DRIVE-03 | 22 | 0 | No | Value + behavioral | ✓ |
-| `tests/registry_test.rs` | DRIVE-01, SAFE-08 | 15 | 0 | No | Behavioral, incl. legacy removability | ✓ `a_legacy_alias_the_alphabet_refuses_is_still_removable` exists at `:365` and I reproduced its claim against the binary. |
+| `tests/registry_test.rs` | DRIVE-01, SAFE-08 | 15 | 0 | No | Behavioral, incl. legacy removability | ✓ `a_legacy_alias_the_alphabet_refuses_is_still_removable` — I reproduced its claim against the binary for five legacy keys. |
+| `src/envelope/hooks.rs` `mod tests` | SAFE-08 | — | 0 | No | Value, 16 metacharacters | ✓ New in round 8; it is the control the corrected rationale needs. |
 
-**Disabled tests on requirements:** 10, all on SAFE-07 → the requirement's only
-behavioural arms; unclosable inside verification. **Circular patterns detected:
-0** — pass 7's finding is fixed, and fixed at the sampling rather than by adding
-literals. **Insufficient assertions:** 0.
+**Disabled tests on requirements:** 10, all on SAFE-07 — the requirement's only
+behavioural arms; unclosable inside verification. **Circular patterns detected: 0.**
+**Insufficient assertions: 0.** **Unreliable assertions: 1** — the render probe.
 
 ### Decision Coverage
 
-`21-CONTEXT.md`'s trackable decisions plus the round-7 additions are honoured
-across the plans and the diff: D-19-1 (the derived class), D-19-2 (the finite
-alphabet and its recorded product trade), D-19-3 (the independent oracle and the
-restated `visibly_empty_numbered_entry` exception), D-19-4 (the fixture docs
-corrected rather than grown), D-19-5 (render-side escaping), D-19-6 (free text
-keeps its joiners), D-18-2 (`OsString` deny-by-default) and D-18-5 (prior
-artifacts not edited). Each appears in code, in a SUMMARY disclosure list, or in
-both. No decision vanished during execution. Non-blocking, as this gate always is.
+`21-CONTEXT.md`'s trackable decisions plus the round-8 additions are honoured
+across the plans and the diff: D-21-2 (`Display for Alias` withdrawn), D-21-4 (the
+UI-wide retype declined in favour of the census + probe, with the 25-error
+measurement recorded), D-21-6 (fixtures by import, never respelled), D-19-1/2/3/5/6,
+D-17-3 (accept and echo separated structurally), D-18-2 and D-18-5 (prior artifacts
+not edited). Each appears in code, in a SUMMARY disclosure list, or in both. No
+decision vanished during execution. Non-blocking, as this gate always is.
 
 ### Human Verification Required
 
-One item, and it is the same item pass 7 raised. Everything else in this report
-is a code-level fact — measured against the built library with oracles I derived
-myself, measured end to end against `target/debug/gsd-meta-manager` at HEAD, or
-read directly from the source. Nothing is taken from a SUMMARY, from
-`21-REVIEW.md`, or from a previous verification pass.
+One item, and it is the same item passes 7 and 8 raised.
 
 #### 1. Execute SAFE-07's boundary live
 
@@ -413,108 +466,96 @@ read directly from the source. Nothing is taken from a SUMMARY, from
 `cargo test --test driver_injection_corpus -- --ignored --nocapture` from the
 repository root. Record the CLI version beside the result.
 
-**Expected:** 10 passed, 0 failed. Each `corpus_*_arrives_and_leaves_the_command_unchanged`
-arm asserts the hostile payload ARRIVED at the model before asserting the command
-was unchanged; the two suppression controls show the positive/negative
-`CLAUDE_CODE_DISABLE_CLAUDE_MDS` pair diverging; and
-`both_arms_of_every_class_comparison_were_really_executed` confirms both arms
-really ran.
+**Expected:** 10 passed, 0 failed, with arrival asserted before influence in every
+class arm and `both_arms_of_every_class_comparison_were_really_executed` green.
 
 **Why human:** All ten spawn the real model binary and require an authenticated
-subscription, so they cannot execute inside verification. **No agent can close
-this, and I am not going to score it as though one could.** The thirteen
-structural pins that do execute prove the channel is the only channel — they
-cannot prove the model's behaviour on it. The last recorded live run is an
-executor claim from twenty-eight commits ago that no verification pass has
-reproduced. Round 7 did the only thing available to it: the arithmetic is now a
-red-capable mechanism and the standing fact lives in `deferred-items.md` where
-it is read every round instead of in a SUMMARY where it was read once.
+subscription. **No agent can close this**, the user has chosen to leave it tracked,
+and round 8 correctly did no work against it. The thirteen structural pins that do
+execute prove the labelled boundary is the only channel; they cannot prove the
+model's behaviour on it.
 
 ### Gaps Summary
 
-**No gaps.** For the first time in this phase, every ROADMAP success criterion
-that an agent can verify is verified, and the one that cannot be is honestly
-carried as unverified with a tracked human item.
+**One gap, and it is not in the code the phase spent eight rounds hardening — it
+is in the control round 8 built to certify that hardening.**
 
-**What closed, and why I believe it rather than merely reading it.** The
-character class is derived from Unicode's own data and I confirmed its
-completeness with a third oracle — CPython's `unicodedata`, which nothing in this
-tree touches. All 170 `Cf` code points it names are refused in both judgments;
-the accepted set is empty. Pass 7's eight witnesses are refused in all four argv
-positions and `run_paths` returns `None` for each. The identity judgment inverted
-to a finite alphabet, and I attacked it with the one shape that distinguishes an
-allow-list from any deny-list — a Cyrillic homoglyph — and it held, as did a
-Braille blank, a private-use character and an unassigned code point. At the
-binary level, sixteen `add` invocations produced one accepted key where pass 7
-produced nine indistinguishable ones, and the `gsd-run` spoof now prints as
-`gsd-U+202Enur`. Both guard-nine holes are closed; I planted one of them in the
-real source myself and watched the guard go red, then reverted. The acceptance
-direction did not regress at any of forty seam-value combinations, free text is
-still unjudged by the alphabet, and legacy non-ASCII entries are still listable
-and removable — so the recorded product trade is reversible in the way the doc
-claims. REQUIREMENTS.md is untouched for the fifth round.
+Everything round 8 contracted to deliver, it delivered, and I verified nearly all
+of it by measurement rather than by reading. All four of pass 8's Warnings are
+closed, and three of them were closed at the *producer* rather than at the sites
+pass 8 named — the refusal's own `Display`, a newtype with no `Display`, a
+delegation — which is the right direction and the direction this phase kept
+failing to take. `remove`'s accept half survives intact, which I checked
+specifically because a regression there would strand a user's data: five legacy
+keys an older build accepted still remove on their raw bytes, and the echo is
+escaped. The identity alphabet is now genuinely one spelling in three seams, and a
+committed equality census enforces it. And the ratatui measurement everything in
+round 8's render work rests on is correct — I rebuilt it from scratch against
+0.30.2 and got the same answer in every row, including the one that matters most,
+that the tag block survives while the zero-width classes do not.
 
-**What I want a ninth reader to inherit as OPEN, none of it a gap.** Four
-Warnings, all small and all named above with their direction: `Removed project
-'…'` prints an alias raw and I measured the bidi spoof through it; two `Add`
-refusal sites echo raw while a third escapes; the free-text emptiness residual
-(U+2800, PUA, unassigned, lone combining mark) is real, is confined to free text,
-and is **undisclosed** in a doc whose own standard is to disclose residuals; and
-one guard assertion catches the right defect with a message that diagnoses the
-opposite cause, which is the kind of sentence that gets a correct fix reverted.
-Plus one Info: the default-ignorable half of the class is still thirteen
-hand-named members, correctly disclosed, and it is the last hand-enumeration
-standing.
+Criterion 1 is verified, and this time it was attacked with an oracle that could
+see the half no previous pass could. Perl's UCD exposes
+`Default_Ignorable_Code_Point`; CPython's does not, and the tree's own test covers
+that half with thirteen hand-named members under a doc that says, correctly, that
+a subset bug in an unlisted member is invisible to every test here. All **4174**
+of them are refused in both judgments and not one can name an identity. The last
+hand-enumeration in this phase turns out to be complete — which is worth knowing
+precisely because nobody could know it before.
 
-**On the recurrence, since it is the question this phase has been asking itself
-for six rounds.** It is genuinely broken for identities and genuinely moved for
-free text, and the difference is structural rather than rhetorical. Identities
-are judged by a finite printable set, which cannot be one item short; my
-homoglyph witness is the proof, because no widening of any invisible-character
-deny-list would ever have refused it. Free text keeps a deny-list because an
-ASCII allow-list there would refuse legitimate script, so its completeness is
-bounded by a pinned Unicode version and by thirteen hand-named default-ignorable
-members — both disclosed at the site, with the staleness obligation and the
-refresh path named. The sampling fix is what makes even the moved half
-trustworthy: the falsifying property left the fixtures and became an exhaustive
-sweep against a second crate, and the two fixture consts had their false
-anti-tautology claims deleted rather than quietly grown. That deletion is the
-part I trust most, because it cost the round something and because it is what my
-own independent oracle then confirmed.
+**What stops this from being 4/5 and done is a single line of test output.** Round
+8's `the_screen_renders_identity_escaped` reported `DetailScreen [GitHistory tab]`
+rendering two raw copies of the hostile identity into terminal cells, once, on my
+first workspace run at HEAD — and then passed in roughly eighty subsequent
+observations across five configurations. I could not localise it, and I am not
+going to round it off in either direction. If the code is at fault, the render
+surface this round exists to close is not closed. If the probe is at fault, then
+the green result that every other round-8 truth leans on is not evidence. The
+phase's own standard says a guard never observed red is not certified; the
+converse holds too, and a guard observed red for a reason nobody can name is not a
+guard. It is small, it is bounded, and it is squarely inside what an agent can fix.
+
+While looking for it I found what the probe's disclosed coverage hole actually
+contains: five sites in `detail.rs` that draw `.planning/`-derived names raw into
+TUI cells. The disclosure was honest; the hole is populated. And the probe's teeth
+against the tag block depend on `TAG_PAIR: usize = 4` — a hand-maintained index
+into a const in another module, which decides silently whether assertion 3 asserts
+anything. That is this phase's signature failure shape, one level up from where it
+was last found, and one assertion closes it.
 
 ### Recommendation
 
-**No round 8 is required to close a criterion.** Criterion 4 needs a human with a
-`claude` subscription and nothing else; run
-`cargo test --test driver_injection_corpus -- --ignored --nocapture` and record
-the version and result in `deferred-items.md`, and the phase closes at 5/5.
+**One narrow round 9, and it is a debugging task rather than a hardening one.**
 
-**Four Warnings are worth one small follow-up commit, not a gap-closure round.**
-Route `Removed project '{}'` and the two `Add`-arm refusal echoes through
-`display_identity`, so all four identity display surfaces agree. Add one sentence
-to `carries_visible_content`'s doc naming the free-text residual and its
-direction — that a blank-rendering character outside `Cf ∪ Default_Ignorable`
-(U+2800, private use, unassigned, a lone combining mark) is accepted in free text
-and cannot reach an identity. Rewrite the `narrow_visible` assertion message so
-it names both causes, since a bare field is the likelier one. None of these
-changes behaviour a criterion depends on, and bundling them into a seventh
-gap-closure round would be treating polish as failure.
+1. **Reproduce the probe failure and say which of (a) and (b) it is.** Loop the lib
+   binary under `--test-threads=2` a few hundred times capturing the panic. If a
+   render path is at fault, escape it and add a fixture state that reaches it every
+   run. If the probe is at fault, remove the nondeterminism and then re-observe the
+   probe RED with a fix reverted, because a probe that can flake is a probe whose
+   green was never evidence. Record the reproduction rate either way.
+2. **Pin the fixture's teeth.** Assert inside the probe that `hostile_identity()`
+   contains at least one character that survives a rendered buffer, so
+   `LOOK_ALIKE_PAIRS[4]` cannot be reordered into vacuity. This is the cheapest
+   item in the round and it closes a recurrence, not an instance.
+3. **Escape the five named `detail.rs` sites** and give each a probe state, which
+   shrinks the disclosed hole rather than only disclosing it.
+4. **Optional, and genuinely optional:** give the default-ignorable half a machine
+   oracle. Perl exposes the property; the current `unicode-properties`
+   dev-dependency does not. My sweep says the thirteen hand-named members are
+   complete today, and nothing in the tree can keep saying so tomorrow.
 
-**What is NOT in scope, unchanged from pass 7:** TR39 confusables in free text.
-The carve-out at `src/text.rs:219-229` is correct and now states honestly where
-the homoglyph harm IS closed (identity seams, by the alphabet — I verified it)
-and where it is not (free text, by design). Open it as its own roadmap item if
-it is wanted.
+**Criterion 4 needs a human and nothing else.** Run
+`cargo test --test driver_injection_corpus -- --ignored --nocapture` with an
+authenticated subscription, record the version and result in `deferred-items.md`,
+and the phase closes at 5/5. Do not plan work against it.
 
-**One thing to carry forward and one to stop carrying.** Carry forward the
-sampling discipline: the property that can falsify a predicate belongs in the
-sampling, never in the literals, and this round finally implemented that. Stop
-carrying the assumption that the next level down must also be hand-enumerated —
-round 7 showed there is a third option, which is to make the accepted set finite
-so there is no next level down.
+**Still out of scope, unchanged:** TR39 confusables in free text. My U+2010 and
+U+2024 witnesses show the identity half is closed by the alphabet even against
+homoglyphs of characters the alphabet itself admits; free text remains open by
+design and belongs in its own roadmap item.
 
 ---
 
-_Verified: 2026-08-25T19:36:27Z_
+_Verified: 2026-08-26T02:59:59Z_
 _Verifier: Claude (gsd-verifier), adversarial stance_
-_HEAD `8dc8c98` · eighth verification pass · pass 7 preserved at `84143bb`_
+_HEAD `f442881` · ninth verification pass · pass 8 preserved at `f1a9d0d`, pass 7 at `84143bb`_
