@@ -151,9 +151,38 @@ fn write_stub(hooks_dir: &Path, binary: &Path, alias: &str, hook: &str) -> anyho
 /// The three lines git will exec.
 ///
 /// Both interpolated values are POSIX-quoted by [`sh_quote`] rather than wrapped
-/// in double quotes. An alias is a *plain path component*, which is a weaker
-/// constraint than "shell-safe" — `is_plain_path_component` accepts a quote character —
-/// and a generated script is not a place to discover that difference.
+/// in double quotes.
+///
+/// **The reason this doc used to give became FALSE at D-19-2, and it is the kind
+/// of falsehood a maintainer ACTS on** (WR-02, round 8). It said an alias is a
+/// *plain path component*, "which is a weaker constraint than shell-safe —
+/// `is_plain_path_component` accepts a quote character". It does not. Since the
+/// alphabet clause at `src/journal/mod.rs:339` that predicate accepts only
+/// `[A-Za-z0-9._-]` ([`crate::text::is_identity_char`]), so the quote, the
+/// backtick, the dollar, the semicolon, the space, the backslash, the pipe and
+/// every other shell metacharacter are refused. That is MEASURED, not asserted:
+/// `tests::the_path_component_predicate_refuses_every_shell_metacharacter` in
+/// this module answers `false` for sixteen of them and is the control the
+/// sentence rests on. A reader who checked the old claim would have found it
+/// false and concluded the quoting was redundant. Deleting a real defence
+/// because its stated reason was stale is what this correction exists to prevent.
+///
+/// **Why the quoting stays anyway, given as a reason a maintainer can accept
+/// rather than as an assertion.** Two things, and neither is caution:
+///
+/// 1. **It is the only defence here that survives a later WIDENING of the
+///    alphabet.** The alphabet is a recorded PRODUCT decision with a stated trade
+///    (`is_identity_char`: no non-ASCII alias), and its own doc calls reverting
+///    the clause "costly, NOT one-way". A future round that relaxes it makes
+///    every unquoted generated script wrong at once — in files that already sit
+///    on disk and run on every push, which no rebuild touches.
+/// 2. **A generated script is not a place to depend on a predicate defined three
+///    modules away.** These three lines are read and executed by git, in a
+///    separate process, outside this binary. The coupling would be invisible from
+///    the file that breaks, and nothing in the stub could state it.
+///
+/// The quoting itself does not rest on this paragraph either:
+/// `tests::a_quote_in_an_alias_cannot_escape_the_generated_stub` pins it directly.
 ///
 /// The hook filename **is** the subcommand name, which is why there is one stub
 /// shape rather than one per hook: a second template is a second place for the
@@ -1411,6 +1440,55 @@ mod tests {
         assert!(body.ends_with(
             "exec '/opt/gsd-meta-manager' envelope pre-commit 'demo' --hook-path \"$0\"\n"
         ));
+    }
+
+    /// **The premise [`stub_body`]'s doc rests on, MEASURED rather than
+    /// asserted** (WR-02, round 8).
+    ///
+    /// That doc used to justify the POSIX quoting by saying a plain path
+    /// component is "a weaker constraint than shell-safe —
+    /// `is_plain_path_component` accepts a quote character". Since D-19-2's
+    /// alphabet clause at `src/journal/mod.rs:339` it does not: the predicate
+    /// accepts only `[A-Za-z0-9._-]`, so every shell metacharacter is refused.
+    ///
+    /// A false security rationale is the kind of falsehood a maintainer ACTS on
+    /// — checks it, finds it false, concludes the quoting is redundant, and
+    /// deletes a real defence. The doc now states the post-D-19-2 truth and
+    /// gives a defence-in-depth reason instead, and this test is the control
+    /// that truth needs: widen the alphabet to admit any of these and this goes
+    /// red in the same commit, rather than the doc quietly becoming false again.
+    #[test]
+    fn the_path_component_predicate_refuses_every_shell_metacharacter() {
+        for (name, c) in [
+            ("single quote", '\''),
+            ("double quote", '"'),
+            ("backtick", '`'),
+            ("dollar", '$'),
+            ("semicolon", ';'),
+            ("space", ' '),
+            ("backslash", '\\'),
+            ("pipe", '|'),
+            ("ampersand", '&'),
+            ("open paren", '('),
+            ("close paren", ')'),
+            ("asterisk", '*'),
+            ("question mark", '?'),
+            ("less than", '<'),
+            ("greater than", '>'),
+            ("newline", '\n'),
+        ] {
+            let value = format!("de{c}mo");
+            let accepted = crate::journal::is_plain_path_component(&value);
+            println!("{name:<14} {c:?}  is_plain_path_component -> {accepted}");
+            assert!(
+                !accepted,
+                "`is_plain_path_component` accepted {value:?} ({name}). The \
+                 alphabet clause is the whole reason `stub_body`'s doc no longer \
+                 claims this predicate is weaker than shell-safe; if it is \
+                 widened, that doc's premise must be corrected in the same commit \
+                 and every already-generated hook stub on disk is affected."
+            );
+        }
     }
 
     #[test]

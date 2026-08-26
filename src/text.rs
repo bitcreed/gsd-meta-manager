@@ -101,6 +101,44 @@ use icu_properties::{
 /// question, answered where it belongs by
 /// [`crate::journal::is_plain_path_component`]'s own structural half. This
 /// predicate composes with those checks; it does not replace them.
+///
+/// **THE FREE-TEXT RESIDUAL, disclosed because this phase's own standard is to
+/// name a residual with its direction and this doc did not** (round 8;
+/// verification pass 8's warning). Everything above names the class this covers.
+/// This names what falls OUTSIDE it.
+///
+/// Free text is judged by a **deny-list** over the derived invisible class, and a
+/// deny-list has an outside. A value of ONE blank-rendering character that is not
+/// in the class is therefore accepted in `--goal` and `--command` and renders as
+/// nothing. Round 8 measured four such witnesses against this built library, with
+/// oracles independent of this tree — one from the symbol category
+/// (`U+2800` BRAILLE PATTERN BLANK), one private-use (`U+E000`), one unassigned
+/// (`U+0378`) and one lone combining mark (`U+0301`). All four returned `true`
+/// here. **Direction: over-permissive, in FREE TEXT ONLY.**
+///
+/// **What bounds it.** None of the four can reach an *identity*: identities are
+/// judged by the finite alphabet ([`is_identity_char`]), which refuses all four —
+/// measured in the same run, `is_plain_path_component` answered `false` for every
+/// one. So the residual is display honesty in a string the user typed themselves,
+/// not the two-values-one-name harm this phase's earlier rounds reproduced end to
+/// end. `tests::the_free_text_emptiness_residual_is_accepted_and_cannot_reach_an_identity`
+/// pins both halves, so this paragraph cannot quietly go stale in either
+/// direction.
+///
+/// **What bounds the deny-list's own completeness — two things, both already
+/// disclosed nearby rather than newly claimed.** (1) The pinned Unicode version:
+/// the class is exactly as current as `icu_properties`' data, and a code point
+/// unassigned today that a later release makes `Cf` is accepted in free text
+/// until the next refresh — see [`is_invisible_formatting_char`]. (2) The
+/// thirteen HAND-NAMED `Default_Ignorable` members in this module's test module:
+/// the `unicode-properties` oracle does not expose that property, so that half of
+/// the class has NO second machine oracle, and a subset bug in an unlisted
+/// default-ignorable code point is invisible to every test in this tree.
+///
+/// **The predicate is deliberately NOT changed.** An ASCII allow-list in free
+/// text would refuse legitimate script, which is the trade
+/// [`is_identity_char`]'s doc already argues and records — the allow-list belongs
+/// at identity seams and the deny-list belongs here.
 pub fn carries_visible_content(value: &str) -> bool {
     value
         .chars()
@@ -681,5 +719,203 @@ mod tests {
                  exactly this value"
             );
         }
+    }
+
+    /// **The free-text residual, RECORDED as a measurement rather than left to a
+    /// sentence** (round 8; verification pass 8's warning on
+    /// [`carries_visible_content`]).
+    ///
+    /// Free text is judged by a DENY-LIST over the derived invisible class, and a
+    /// deny-list has an outside. Every value below renders as nothing and is
+    /// nonetheless ACCEPTED as a `--goal` or a `--command`, because none of its
+    /// characters is `General_Category=Cf` or a `Default_Ignorable_Code_Point`.
+    /// Direction: **over-permissive, in free text only.**
+    ///
+    /// The second assertion in each row is the BOUND: the same value cannot reach
+    /// an identity, because identity seams judge with the finite alphabet
+    /// ([`is_identity_char`]) and it refuses all four. So this residual is display
+    /// honesty in a string the user typed themselves — not the two-values-one-name
+    /// harm this phase's earlier rounds reproduced end to end.
+    ///
+    /// **This test RECORDS the residual; it does not bless it.** A round that
+    /// closes it must change this test and [`carries_visible_content`]'s
+    /// disclosure in the SAME commit. That coupling is the point of pinning it
+    /// here rather than only describing it in prose.
+    #[test]
+    fn the_free_text_emptiness_residual_is_accepted_and_cannot_reach_an_identity() {
+        for (value, what) in [
+            ("\u{2800}", "BRAILLE PATTERN BLANK (So, a symbol - not a format char)"),
+            ("\u{e000}", "the first private-use code point (Co)"),
+            ("\u{0378}", "an unassigned code point (Cn) at the pinned version"),
+            ("\u{0301}", "COMBINING ACUTE ACCENT (Mn), with no base character"),
+        ] {
+            let accepted_in_free_text = carries_visible_content(value);
+            let can_name_an_identity = crate::journal::is_plain_path_component(value);
+            println!(
+                "{what}\n  carries_visible_content   -> {accepted_in_free_text}\n  \
+                 is_plain_path_component   -> {can_name_an_identity}"
+            );
+            assert!(
+                accepted_in_free_text,
+                "{value:?} ({what}) is no longer accepted in free text. That is a \
+                 released-surface NARROWING and it may well be right — but \
+                 `carries_visible_content`'s doc discloses this value as an \
+                 accepted residual, so the disclosure has to be corrected in the \
+                 same commit or the doc starts overclaiming in the other direction."
+            );
+            assert!(
+                !can_name_an_identity,
+                "{value:?} ({what}) reached an identity seam. The whole reason \
+                 this residual is disclosed as ACCEPTABLE is that the finite \
+                 alphabet refuses it, so a run directory, envelope root, \
+                 credential scope or phase token can never carry it."
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The spelling census: `is_identity_char`'s ONE-spelling claim, made
+    // checkable instead of believed
+    // -----------------------------------------------------------------------
+
+    /// The needle, assembled at RUNTIME from two halves that are meaningless
+    /// apart — the anti-self-match idiom this tree already uses at
+    /// `tests/spawn_seam_guard.rs`'s `DEGENERATE_WITNESS_HEADS` and at
+    /// `ui::screens::render_escape_guard`'s `IMPL_HEAD`/`IMPL_TAIL`.
+    ///
+    /// The census walks `src/`, and `src/text.rs` is under `src/`. Spelled as one
+    /// literal here, this const's own line would be a hit and the census would
+    /// count itself.
+    const ALPHABET_CLAUSE_HEAD: &str = "'.' |";
+    /// The tail of [`ALPHABET_CLAUSE_HEAD`].
+    const ALPHABET_CLAUSE_TAIL: &str = " '_' | '-')";
+
+    /// Every `.rs` file under `dir`, recursively, as `(relative path, lines)`.
+    ///
+    /// The recursive `read_dir` shape follows
+    /// `ui::screens::render_escape_guard::collect`: an unreadable entry is
+    /// skipped rather than panicked on, and paths are relative to
+    /// `CARGO_MANIFEST_DIR`.
+    fn collect_rs(
+        dir: &std::path::Path,
+        base: &std::path::Path,
+        out: &mut Vec<(String, Vec<(usize, String)>)>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                collect_rs(&path, base, out);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let relative = path
+                .strip_prefix(base)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let lines = text
+                .lines()
+                .enumerate()
+                .map(|(index, line)| (index + 1, line.to_string()))
+                .collect();
+            out.push((relative, lines));
+        }
+    }
+
+    /// [`is_identity_char`]'s doc claims to be **the** spelling of the identity
+    /// alphabet. This makes that claim checkable rather than believed.
+    ///
+    /// **Why an EQUALITY on a count and not a containment.** WR-03 measured the
+    /// claim false: `envelope::advisory::is_plain_component` respelled the same
+    /// character set byte-for-byte and used it to gate the GitHub `owner`/`repo`
+    /// segments that are then interpolated into a request path. A containment
+    /// check ("at least one spelling exists") could never have seen that; only an
+    /// equality on the number of executable occurrences can.
+    ///
+    /// **Committed RED, verbatim, before the delegation.** Against the tree
+    /// before `advisory.rs` delegated,
+    /// `cargo test --lib -- --ignored exactly_one_executable_spelling`:
+    ///
+    /// ```text
+    /// running 1 test
+    /// test text::tests::exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src ... FAILED
+    ///
+    /// ---- text::tests::exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src stdout ----
+    ///
+    /// thread 'text::tests::exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src' (1779910) panicked at src/text.rs:810:9:
+    /// assertion `left == right` failed: the identity alphabet's character clause is spelled 2 times in executable lines under src/, and `is_identity_char`'s doc claims to be THE one spelling. Sites: ["src/envelope/advisory.rs:569", "src/text.rs:213"]. A second spelling is a boundary that can stop agreeing with the boundary: WR-03 measured exactly that, in `envelope::advisory::is_plain_component`, gating the GitHub owner/repo segments that are interpolated into a request path. The repair is DELEGATION to `crate::text::is_identity_char`, not a softening of the claim.
+    ///   left: 2
+    ///  right: 1
+    ///
+    /// test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1055 filtered out; finished in 0.08s
+    /// ```
+    ///
+    /// **Its under-detection direction, named because a textual census has one.**
+    /// A THIRD spelling written with a different but equivalent construction — a
+    /// `match` with the same arms, a byte-range comparison, an `is_ascii_*`
+    /// composition — is invisible to this scan and always will be. What bounds
+    /// that residual is the DELEGATION itself (one function every seam calls),
+    /// not this census; the census only stops the *textual* copy from being
+    /// re-introduced silently. It is deliberately not sold as more than that.
+    ///
+    /// The nearby set in `advisory::default_branch_of`, which additionally admits
+    /// `'/'`, is genuinely a different question — a branch name legitimately
+    /// carries a separator and is not an identity — and is excluded from this
+    /// count by construction, because its clause does not end where the identity
+    /// alphabet's does.
+    #[test]
+    fn exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src() {
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        collect_rs(&base.join("src"), &base, &mut files);
+        assert!(
+            !files.is_empty(),
+            "the census walked src/ and found no Rust source at all, so a clean \
+             result here would be a walk that never looked"
+        );
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let needle = format!("{ALPHABET_CLAUSE_HEAD}{ALPHABET_CLAUSE_TAIL}");
+        let mut sites: Vec<String> = Vec::new();
+        for (path, lines) in &files {
+            for (number, line) in lines {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                for _ in line.matches(needle.as_str()) {
+                    sites.push(format!("{path}:{number}"));
+                }
+            }
+        }
+
+        assert_eq!(
+            sites.len(),
+            1,
+            "the identity alphabet's character clause is spelled {} times in \
+             executable lines under src/, and `is_identity_char`'s doc claims to \
+             be THE one spelling. Sites: {sites:?}. A second spelling is a \
+             boundary that can stop agreeing with the boundary: WR-03 measured \
+             exactly that, in `envelope::advisory::is_plain_component`, gating \
+             the GitHub owner/repo segments that are interpolated into a request \
+             path. The repair is DELEGATION to `crate::text::is_identity_char`, \
+             not a softening of the claim.",
+            sites.len()
+        );
+        assert_eq!(
+            sites[0].split(':').next(),
+            Some("src/text.rs"),
+            "the one surviving spelling must be `is_identity_char`'s own, in this \
+             module; found it at {}. A single spelling that lives somewhere else \
+             is still one spelling, but it is no longer the one the doc claims.",
+            sites[0]
+        );
     }
 }
