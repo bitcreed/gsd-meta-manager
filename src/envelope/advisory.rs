@@ -560,13 +560,34 @@ fn repo_slug(url: &str) -> Option<String> {
 }
 
 /// Whether `component` is a plain path segment safe to interpolate into a read.
+///
+/// **The character clause DELEGATES to [`crate::text::is_identity_char`]**
+/// (WR-03, round 8). It used to respell that alphabet byte-for-byte —
+/// `c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')` — while
+/// `is_identity_char`'s own doc claimed to be THE one spelling of the identity
+/// alphabet. Two spellings of one judgment is a boundary that can stop agreeing
+/// with the boundary, and this particular one gates the `owner` and `repo`
+/// segments that [`repo_slug`] then interpolates into a GitHub API request path,
+/// from a repository-controlled remote URL. The claim was closed by making it
+/// TRUE rather than by softening it;
+/// `text::tests::exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src`
+/// is the census that keeps it one, committed red at two spellings.
+///
+/// **Only the CHARACTER clause moved, and a reader should not assume otherwise.**
+/// The emptiness check and the two traversal tokens are a different question —
+/// structure, not alphabet — and are unchanged. They are also not redundant:
+/// `.` and `..` consist entirely of characters the alphabet ADMITS, so nothing
+/// in the delegated clause refuses them.
+///
+/// The nearby set in [`default_branch_of`] is left alone deliberately: it
+/// additionally admits `'/'`, because a branch name legitimately carries a path
+/// separator and is not an identity. Same-looking clause, genuinely different
+/// question, so collapsing the two would be the opposite error.
 fn is_plain_component(component: &str) -> bool {
     !component.is_empty()
         && component != "."
         && component != ".."
-        && component
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        && component.chars().all(crate::text::is_identity_char)
 }
 
 /// Whether the rulesets answer carries at least one actively enforced branch

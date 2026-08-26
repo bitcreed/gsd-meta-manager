@@ -101,6 +101,44 @@ use icu_properties::{
 /// question, answered where it belongs by
 /// [`crate::journal::is_plain_path_component`]'s own structural half. This
 /// predicate composes with those checks; it does not replace them.
+///
+/// **THE FREE-TEXT RESIDUAL, disclosed because this phase's own standard is to
+/// name a residual with its direction and this doc did not** (round 8;
+/// verification pass 8's warning). Everything above names the class this covers.
+/// This names what falls OUTSIDE it.
+///
+/// Free text is judged by a **deny-list** over the derived invisible class, and a
+/// deny-list has an outside. A value of ONE blank-rendering character that is not
+/// in the class is therefore accepted in `--goal` and `--command` and renders as
+/// nothing. Round 8 measured four such witnesses against this built library, with
+/// oracles independent of this tree — one from the symbol category
+/// (`U+2800` BRAILLE PATTERN BLANK), one private-use (`U+E000`), one unassigned
+/// (`U+0378`) and one lone combining mark (`U+0301`). All four returned `true`
+/// here. **Direction: over-permissive, in FREE TEXT ONLY.**
+///
+/// **What bounds it.** None of the four can reach an *identity*: identities are
+/// judged by the finite alphabet ([`is_identity_char`]), which refuses all four —
+/// measured in the same run, `is_plain_path_component` answered `false` for every
+/// one. So the residual is display honesty in a string the user typed themselves,
+/// not the two-values-one-name harm this phase's earlier rounds reproduced end to
+/// end. `tests::the_free_text_emptiness_residual_is_accepted_and_cannot_reach_an_identity`
+/// pins both halves, so this paragraph cannot quietly go stale in either
+/// direction.
+///
+/// **What bounds the deny-list's own completeness — two things, both already
+/// disclosed nearby rather than newly claimed.** (1) The pinned Unicode version:
+/// the class is exactly as current as `icu_properties`' data, and a code point
+/// unassigned today that a later release makes `Cf` is accepted in free text
+/// until the next refresh — see [`is_invisible_formatting_char`]. (2) The
+/// thirteen HAND-NAMED `Default_Ignorable` members in this module's test module:
+/// the `unicode-properties` oracle does not expose that property, so that half of
+/// the class has NO second machine oracle, and a subset bug in an unlisted
+/// default-ignorable code point is invisible to every test in this tree.
+///
+/// **The predicate is deliberately NOT changed.** An ASCII allow-list in free
+/// text would refuse legitimate script, which is the trade
+/// [`is_identity_char`]'s doc already argues and records — the allow-list belongs
+/// at identity seams and the deny-list belongs here.
 pub fn carries_visible_content(value: &str) -> bool {
     value
         .chars()
@@ -683,6 +721,58 @@ mod tests {
         }
     }
 
+    /// **The free-text residual, RECORDED as a measurement rather than left to a
+    /// sentence** (round 8; verification pass 8's warning on
+    /// [`carries_visible_content`]).
+    ///
+    /// Free text is judged by a DENY-LIST over the derived invisible class, and a
+    /// deny-list has an outside. Every value below renders as nothing and is
+    /// nonetheless ACCEPTED as a `--goal` or a `--command`, because none of its
+    /// characters is `General_Category=Cf` or a `Default_Ignorable_Code_Point`.
+    /// Direction: **over-permissive, in free text only.**
+    ///
+    /// The second assertion in each row is the BOUND: the same value cannot reach
+    /// an identity, because identity seams judge with the finite alphabet
+    /// ([`is_identity_char`]) and it refuses all four. So this residual is display
+    /// honesty in a string the user typed themselves — not the two-values-one-name
+    /// harm this phase's earlier rounds reproduced end to end.
+    ///
+    /// **This test RECORDS the residual; it does not bless it.** A round that
+    /// closes it must change this test and [`carries_visible_content`]'s
+    /// disclosure in the SAME commit. That coupling is the point of pinning it
+    /// here rather than only describing it in prose.
+    #[test]
+    fn the_free_text_emptiness_residual_is_accepted_and_cannot_reach_an_identity() {
+        for (value, what) in [
+            ("\u{2800}", "BRAILLE PATTERN BLANK (So, a symbol - not a format char)"),
+            ("\u{e000}", "the first private-use code point (Co)"),
+            ("\u{0378}", "an unassigned code point (Cn) at the pinned version"),
+            ("\u{0301}", "COMBINING ACUTE ACCENT (Mn), with no base character"),
+        ] {
+            let accepted_in_free_text = carries_visible_content(value);
+            let can_name_an_identity = crate::journal::is_plain_path_component(value);
+            println!(
+                "{what}\n  carries_visible_content   -> {accepted_in_free_text}\n  \
+                 is_plain_path_component   -> {can_name_an_identity}"
+            );
+            assert!(
+                accepted_in_free_text,
+                "{value:?} ({what}) is no longer accepted in free text. That is a \
+                 released-surface NARROWING and it may well be right — but \
+                 `carries_visible_content`'s doc discloses this value as an \
+                 accepted residual, so the disclosure has to be corrected in the \
+                 same commit or the doc starts overclaiming in the other direction."
+            );
+            assert!(
+                !can_name_an_identity,
+                "{value:?} ({what}) reached an identity seam. The whole reason \
+                 this residual is disclosed as ACCEPTABLE is that the finite \
+                 alphabet refuses it, so a run directory, envelope root, \
+                 credential scope or phase token can never carry it."
+            );
+        }
+    }
+
     // -----------------------------------------------------------------------
     // The spelling census: `is_identity_char`'s ONE-spelling claim, made
     // checkable instead of believed
@@ -782,7 +872,6 @@ mod tests {
     /// count by construction, because its clause does not end where the identity
     /// alphabet's does.
     #[test]
-    #[ignore = "red: WR-03 second spelling; un-ignored in the fix commit"]
     fn exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src() {
         let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let mut files = Vec::new();
