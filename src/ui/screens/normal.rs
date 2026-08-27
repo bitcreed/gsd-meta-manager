@@ -808,7 +808,52 @@ impl NormalScreen {
             } else {
                 Color::default()
             };
-            let line = Line::from(Span::styled(msg.clone(), Style::default().fg(color)));
+            // ── WR-03: THE ONE PLACE ROUND 9 ESCAPES AT THE CONSUMER ─────────
+            //
+            // Everywhere else in this round the escape lives at the PRODUCER:
+            // the value gets a `crate::text::Untrusted` field, and the compiler
+            // then names every site that draws it. That is not available here,
+            // and the reason is structural rather than a matter of effort.
+            //
+            // `ctx.status_message` is built by six `status_message = Some(..)`
+            // sites in `src/app.rs` (measured at the time this landed).
+            // `:943` builds `format!("Auto-registered: {}", alias)`, `:1218`
+            // `format!("Created project \"{}\"", alias)`, `:1870`
+            // `format!("Driving {alias} — run {run_id}")` and `:2007`
+            // `format!("Stopping {alias} — run {run_id}")`. Each of those is
+            // half a sentence THIS BUILD WROTE and half a registry key or run
+            // id it did not: **the trust boundary runs through the middle of a
+            // format string.** There is no field to give a carrier, because the
+            // thing that reaches this render is one already-composed `String`.
+            //
+            // Escaping at those producers would be wrong in two directions. It
+            // would escape the authored half too — `display_identity` is a
+            // no-op on ASCII, so that is harmless today and becomes wrong the
+            // moment a producer writes a non-ASCII sentence. And it would still
+            // miss a seventh producer, because `:2054` forwards whatever ANY
+            // screen handed to `ScreenAction::SetStatusMessage`, so the
+            // producer set is not closed and cannot be closed by inspection.
+            //
+            // WHAT THIS COSTS, stated so it is not inherited as a full closure.
+            // A seventh producer of `status_message` inherits this escape for
+            // free. A producer that puts a registry key somewhere OTHER than
+            // `status_message` does NOT — it gets whatever its own render site
+            // does. **Direction: under-protection, silent, outside this field.**
+            //
+            // WHAT WOULD REMOVE THE RESIDUAL: a `StatusMessage` type carrying
+            // its authored and untrusted halves separately, so the composition
+            // happens at the render and the carrier survives to it. That is the
+            // real answer and it is deliberately not built here (D-21-21,
+            // accepted debt). What would force it is a seventh producer, or a
+            // second untrusted value in this footer.
+            //
+            // Covered by `render_escape_guard`'s `NormalScreen` fixture state
+            // "dashboard with a status message", which was observed RED against
+            // this exact line before the escape landed.
+            let line = Line::from(Span::styled(
+                crate::text::render_for_terminal(msg),
+                Style::default().fg(color),
+            ));
             frame.render_widget(Paragraph::new(line), area);
         } else {
             render_normal_footer(frame, area, ctx);

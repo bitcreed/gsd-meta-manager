@@ -325,10 +325,24 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[DispositionRow] = &[
         RENDERS_IDENTITY,
         "The dashboard. Draws every registered key in the name column together \
          with the phase, status and milestone parsed from each project's \
-         `.planning/`, and echoes the filter text in its search footer. \
-         `row_badge`'s lookup keys off the RAW alias while the cell beside it is \
-         escaped — the worked example of the split. Fixture states: the \
-         dashboard, and the dashboard with the filter footer active.",
+         `.planning/`, echoes the filter text in its search footer, and — the \
+         surface no row named until 21-25 — draws `ctx.status_message` in its \
+         STATUS FOOTER. That message is built by six `status_message = Some(..)` \
+         sites in `src/app.rs`; four of them interpolate a registry key or a run \
+         id into a sentence this build wrote (`Auto-registered: {alias}`, \
+         `Created project \"{alias}\"`, `Driving {alias} — run {run_id}`, \
+         `Stopping {alias} — run {run_id}`), one is a literal, and the sixth \
+         forwards whatever any screen handed to `ScreenAction::SetStatusMessage` \
+         — so the producer set is not closed. **THE ESCAPE FOR THIS SURFACE \
+         LIVES AT THE RENDER SITE, NOT AT THE PRODUCER**, and a reader who \
+         assumes round 9's producer rule holds everywhere will look for it in \
+         the wrong file: the trust boundary runs through the middle of a \
+         `format!`, so there is no field a carrier could type. The argument, its \
+         residual and what would remove it are written at \
+         `src/ui/screens/normal.rs`'s status branch. `row_badge`'s lookup keys \
+         off the RAW alias while the cell beside it is escaped — the worked \
+         example of the split. Fixture states: the dashboard, the dashboard with \
+         a status message, and the dashboard with the filter footer active.",
     ),
     (
         "QueueDeleteConfirmScreen",
@@ -812,6 +826,31 @@ fn probe_ctx(identity: &str) -> AppContext {
     ctx
 }
 
+/// The authored half of the status footer's message, spelled exactly as
+/// `App::start_driver_run` builds it at `src/app.rs:1870`.
+///
+/// **A token only the status branch can produce.** `render_footer` dispatches
+/// on `searching` first and `status_message` second; the alternative branch,
+/// `render_normal_footer`, draws counts and keybinding hints and nothing
+/// containing this. Asserting on it is what tells a reached branch apart from a
+/// state that set a field the render never looks at — the failure the
+/// `searching: true` note in this module records, where an assertion passed by
+/// silence until somebody noticed.
+const STATUS_BRANCH_TOKEN: &str = "Driving ";
+
+/// A status message shaped like the ones `src/app.rs` actually builds.
+///
+/// **The whole point of WR-03 is visible in this one line**: the untrusted
+/// value is INSIDE a `format!`, interleaved with a sentence this build wrote,
+/// so there is no field to give a carrier. Measured at HEAD, six
+/// `status_message = Some(..)` sites exist in `src/app.rs`; four of them
+/// interpolate a registry key or a run id exactly like this, one is a literal,
+/// and the sixth forwards whatever any screen handed to
+/// `ScreenAction::SetStatusMessage`.
+fn status_message_like_app_builds_it(identity: &str) -> String {
+    format!("{STATUS_BRANCH_TOKEN}{identity} \u{2014} run {identity}")
+}
+
 /// The SAME `AppContext` as [`probe_ctx`] with every tab-body source emptied —
 /// the chrome baseline against which per-tab arrival is measured (D-21-23).
 ///
@@ -1243,10 +1282,28 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
             let mut filtering = probe_ctx(identity);
             filtering.filter_text = identity.to_string();
             filtering.recompute_filtered_aliases();
+            let mut with_status = probe_ctx(identity);
+            with_status.status_message = Some((
+                status_message_like_app_builds_it(identity),
+                std::time::Instant::now(),
+            ));
             vec![
                 one_state(
                     "dashboard",
                     plain,
+                    Box::new(super::normal::NormalScreen::new()),
+                ),
+                // WR-03. `render_footer` dispatches on `searching` FIRST and on
+                // `status_message` second, so this state must set the message
+                // AND leave `searching` false — `NormalScreen::new()` does, and
+                // the `searching: true` note below records what happens when a
+                // state sets a field without the field the render dispatches
+                // on. That the branch is actually reached is asserted by
+                // `the_status_footer_state_reaches_the_status_branch` rather
+                // than assumed here.
+                one_state(
+                    "dashboard with a status message",
+                    with_status,
                     Box::new(super::normal::NormalScreen::new()),
                 ),
                 // `searching: true` is not decoration. `render_footer`
@@ -2030,5 +2087,63 @@ mod tests {
                 ),
             }
         }
+    }
+
+    /// **The `NormalScreen` status-message state is proven to REACH the status
+    /// branch** (WR-03).
+    ///
+    /// This module already records what happens when a probe state sets a field
+    /// without setting the field the render dispatches on: the
+    /// `dashboard with filter footer` state set `filter_text` and left
+    /// `searching` false, `render_footer` took the NORMAL footer, and the
+    /// assertion about the filter passed by silence while the search footer
+    /// drew `ctx.filter_text` raw the whole time. The new
+    /// `dashboard with a status message` state has the same hazard one branch
+    /// along — `render_footer` dispatches on `searching` FIRST and only then on
+    /// `status_message` — so the branch is asserted rather than assumed.
+    ///
+    /// [`STATUS_BRANCH_TOKEN`] is drawn by nothing else on this screen: the
+    /// alternative branch, `render_normal_footer`, paints counts, a sort
+    /// indicator and keybinding hints.
+    ///
+    /// **The `searching: true` direction is asserted too**, because a token that
+    /// arrives under BOTH branches would prove nothing. With `searching` set,
+    /// the same context renders the search footer and the token is absent —
+    /// which is exactly what the probe would report if the fixture state were
+    /// written that way, and is the failure this test exists to make loud.
+    #[test]
+    fn the_status_footer_state_reaches_the_status_branch() {
+        let clean = clean_identity();
+        let message = status_message_like_app_builds_it(&clean);
+
+        let mut reached = probe_ctx(&clean);
+        reached.status_message = Some((message.clone(), std::time::Instant::now()));
+        let reached_text = render_to_text(&crate::ui::screens::normal::NormalScreen::new(), &reached);
+
+        assert!(
+            reached_text.contains(STATUS_BRANCH_TOKEN),
+            "the `dashboard with a status message` state did not reach \
+             `render_footer`'s status branch: {STATUS_BRANCH_TOKEN:?} is absent \
+             from the rendered buffer. Nothing else on this screen draws that \
+             token, so what rendered is `render_normal_footer` and every \
+             assertion the probe makes about the status footer is passing by \
+             silence. Check that the state leaves `searching` false. \
+             Rendered:\n{reached_text}"
+        );
+
+        let mut shadowed = probe_ctx(&clean);
+        shadowed.status_message = Some((message, std::time::Instant::now()));
+        let shadowed_text = render_to_text(
+            &crate::ui::screens::normal::NormalScreen { searching: true },
+            &shadowed,
+        );
+
+        assert!(
+            !shadowed_text.contains(STATUS_BRANCH_TOKEN),
+            "with `searching: true` the same context still drew \
+             {STATUS_BRANCH_TOKEN:?}, so the token is not specific to the status \
+             branch and the assertion above proves nothing about which branch \
+             ran. Find a token only `render_footer`'s status arm can produce."
+        );
     }
 }
