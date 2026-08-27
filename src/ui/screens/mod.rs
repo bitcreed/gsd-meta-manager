@@ -135,20 +135,29 @@ pub const DRIVER_OUTPUT_LINE_CELLS: usize = 512;
 /// [`DRIVER_OUTPUT_RING_LINES`]. Named so tuning is a one-line change.
 pub const DRIVER_OUTPUT_RECORD_MAX_LINES: usize = 64;
 
-/// The escape character, stripped unconditionally by [`sanitize_render_line`].
-const ESC: char = '\u{1b}';
-
-/// What every other C0 control character and `DEL` is replaced with: `·`.
-///
-/// A `\u{…}` escape rather than the literal glyph, following the house rule that
-/// no raw glyph appears in source (`normal.rs:69-74`).
-const CONTROL_REPLACEMENT: char = '\u{00b7}';
+// The control-class constants — `ESC`, `CONTROL_REPLACEMENT` and `TAB_WIDTH` —
+// are **defined in `crate::text`** now, beside the one production spelling of
+// the class, `crate::text::strip_terminal_controls` (D-21-9). This module has no
+// definition of its own and no second spelling.
+//
+// They are re-imported here for the TESTS ONLY, and that is deliberate: the
+// pre-existing `sanitize_render_line` tests below assert with these names, and a
+// refactor that forced their bodies to be edited would not have been
+// behaviour-preserving. Nothing in the production path of this module refers to
+// them any more, which is why the import is `#[cfg(test)]` — an unconditional
+// one would be an unused import under `-D warnings`.
+#[cfg(test)]
+use crate::text::{CONTROL_REPLACEMENT, ESC};
 
 /// The truncation marker appended to a line cut at [`DRIVER_OUTPUT_LINE_CELLS`]: `…`.
+///
+/// **Stays here, and does not move to `text.rs` with the class.** A display cap
+/// is a display concern; the class is a class. Hoisting the cap into a general
+/// escaping helper would silently truncate every CLI echo, every error message
+/// and every rendered name at [`DRIVER_OUTPUT_LINE_CELLS`], which is why the
+/// round-8 review's proposed `display_identity(&sanitize_render_line(..))`
+/// one-liner is wrong as a general composition (D-21-9).
 const ELLIPSIS: char = '\u{2026}';
-
-/// Spaces one tab expands to.
-const TAB_WIDTH: usize = 4;
 
 /// Which journal source a buffered line came from, and therefore how it renders.
 ///
@@ -337,32 +346,30 @@ impl DriverOutput {
 /// `## Untrusted Input Boundary`). Agent prose lands in `ExecEvent.text`,
 /// `Diagnostic.detail`, `RunRecord.goal` on re-read and `gsd_command`.
 ///
-/// The rules, applied in this order:
+/// **This function is now the CLASS plus the CAP, and nothing else** (D-21-9).
+/// The character-class rules moved verbatim in behaviour to
+/// [`crate::text::strip_terminal_controls`], which is the ONE production
+/// spelling of them; what remains here is the display cap. Read that function's
+/// doc for rules 1-3, including why C1 is not covered by the `ESC` rule.
 ///
-/// 1. **`ESC` (`0x1B`) is stripped unconditionally.** This is the single
-///    highest-value rule in the boundary: without it, agent prose can emit
-///    ANSI/OSC sequences that repaint the screen, forge a status line, move the
-///    cursor, or set the window title. Stripping the introducer is what makes
-///    the rest of a sequence inert text.
-/// 2. `\t` expands to [`TAB_WIDTH`] spaces.
-/// 3. Every other C0 control character (`0x00`–`0x1F`), `DEL` (`0x7F`) **and the
-///    whole C1 block (`0x80`–`0x9F`)** is replaced with
-///    [`CONTROL_REPLACEMENT`] — present, visible, and harmless.
-///
-///    **C1 is not an afterthought and rule 1 does not cover it** (WR-06).
-///    `U+009B` is the single-character CSI, `U+009D` is OSC and `U+0090` is DCS:
-///    each is a one-codepoint equivalent of an `ESC`-led introducer, so stripping
-///    `ESC` alone leaves the same capability reachable by another spelling.
-///    ratatui writes each grapheme's bytes straight to the terminal, so these
-///    arrive as `0xC2 0x9B` and terminals that honour 8-bit controls decoded from
-///    UTF-8 (xterm without `allowC1Printable`, among others) treat what follows
-///    as a control sequence — reinstating exactly the repaint-the-screen and
-///    forge-a-status-line capability rule 1 exists to remove, from agent prose,
-///    from a branch name in the dry-run report, or from a `Diagnostic.detail`.
 /// 4. The result is truncated by **`char`** count to
 ///    [`DRIVER_OUTPUT_LINE_CELLS`] and suffixed with [`ELLIPSIS`]. Byte slicing
 ///    panics on a multibyte boundary, so the truncation is a `char` operation
 ///    and there is a test for exactly that.
+///
+/// **The refactor is behaviour-preserving and that is certified, not asserted.**
+/// Every pre-existing test below passes with an UNMODIFIED body, and
+/// [`the_capped_and_uncapped_compositions_agree_below_the_cap`](tests::the_capped_and_uncapped_compositions_agree_below_the_cap)
+/// pins in both directions that the only difference between this and
+/// `strip_terminal_controls` is the cap: they agree on every input whose
+/// expansion is shorter than the cap, and they diverge above it.
+///
+/// **What it does NOT do, restated because the composition matters.** It answers
+/// only the CONTROL class. The invisible-formatting class — `U+202E`, `U+00AD`,
+/// `U+E0041` — passes through untouched, which is why `driver.rs` and
+/// `driver_confirm.rs` compose `display_identity(&sanitize_render_line(..))`.
+/// The uncapped equivalent of that composition is
+/// [`crate::text::render_for_terminal`].
 ///
 /// This is built **beside** [`crate::journal::redact::RedactedLine`] rather than
 /// on top of it: that type caps payload bytes and redacts secrets for what is
@@ -372,44 +379,16 @@ impl DriverOutput {
 /// Pure, which is what makes it testable at all.
 pub fn sanitize_render_line(raw: &str) -> String {
     let cap = DRIVER_OUTPUT_LINE_CELLS;
-    let mut out = String::new();
-    let mut n = 0usize;
-    let mut overflowed = false;
+    let expanded = crate::text::strip_terminal_controls(raw);
 
-    // Pushing through one helper is what makes the tab expansion and the cap
-    // interact correctly: a tab that would straddle the cap is cut at the cap
-    // like any other run of characters.
-    let push = |out: &mut String, n: &mut usize, ch: char| -> bool {
-        if *n >= cap {
-            return false;
-        }
-        out.push(ch);
-        *n += 1;
-        true
-    };
-
-    for ch in raw.chars() {
-        if ch == ESC {
-            continue;
-        }
-        let fitted = if ch == '\t' {
-            (0..TAB_WIDTH).all(|_| push(&mut out, &mut n, ' '))
-        } else if (ch as u32) < 0x20 || ('\u{7f}'..='\u{9f}').contains(&ch) {
-            push(&mut out, &mut n, CONTROL_REPLACEMENT)
-        } else {
-            push(&mut out, &mut n, ch)
-        };
-        if !fitted {
-            overflowed = true;
-            break;
-        }
+    if expanded.chars().count() <= cap {
+        return expanded;
     }
 
-    if overflowed {
-        // Give the marker a cell of its own so the result stays within the cap.
-        out.pop();
-        out.push(ELLIPSIS);
-    }
+    // Give the marker a cell of its own so the result stays within the cap:
+    // `cap - 1` surviving characters plus the ellipsis is exactly `cap`.
+    let mut out: String = expanded.chars().take(cap - 1).collect();
+    out.push(ELLIPSIS);
     out
 }
 
@@ -1513,6 +1492,92 @@ mod tests {
             "a    b",
             "a tab is expanded rather than replaced, because indentation carries \
              meaning in the output this pane shows"
+        );
+    }
+
+    /// **The difference between the two compositions is the CAP, and never the
+    /// CLASS** (D-21-9).
+    ///
+    /// [`sanitize_render_line`] is [`crate::text::strip_terminal_controls`] plus
+    /// the [`DRIVER_OUTPUT_LINE_CELLS`] display cap. That sentence is the entire
+    /// justification for `driver.rs` / `driver_confirm.rs` keeping their
+    /// `display_identity(&sanitize_render_line(..))` composition while every
+    /// other consumer moves to the uncapped
+    /// [`crate::text::render_for_terminal`] — so it is pinned rather than
+    /// asserted.
+    ///
+    /// **Both directions, because either alone is vacuous.** Agreement below the
+    /// cap alone would pass if the cap were removed entirely; divergence above
+    /// it alone would pass if the two functions disagreed about the class as
+    /// well. The corpus is drawn BY IMPORT from `LOOK_ALIKE_PAIRS` (D-21-6) plus
+    /// one value made of every control class this boundary judges, so a corpus
+    /// of clean ASCII could not make the agreement half pass by silence.
+    #[test]
+    fn the_capped_and_uncapped_compositions_agree_below_the_cap() {
+        use crate::text::strip_terminal_controls;
+
+        // Every control class this boundary judges, in one value: ESC, a tab,
+        // the remaining C0, DEL and the whole C1 block.
+        let every_control: String = std::iter::once('\u{1b}')
+            .chain(std::iter::once('\t'))
+            .chain((0u32..0x20).filter_map(char::from_u32))
+            .chain(std::iter::once('\u{7f}'))
+            .chain((0x80u32..=0x9f).filter_map(char::from_u32))
+            .collect();
+
+        let mut short_corpus: Vec<String> = Vec::new();
+        for (clean, hostile) in crate::test_support::LOOK_ALIKE_PAIRS {
+            short_corpus.push(clean.to_string());
+            short_corpus.push(hostile.to_string());
+        }
+        short_corpus.push(every_control.clone());
+        short_corpus.push(String::new());
+
+        let mut exercised_a_difference_from_the_input = false;
+        for value in &short_corpus {
+            let uncapped = strip_terminal_controls(value);
+            assert!(
+                uncapped.chars().count() < DRIVER_OUTPUT_LINE_CELLS,
+                "the agreement corpus must stay BELOW the cap or this half of \
+                 the pin proves nothing; {value:?} expands to {} chars",
+                uncapped.chars().count()
+            );
+            exercised_a_difference_from_the_input |= uncapped != *value;
+            assert_eq!(
+                sanitize_render_line(value),
+                uncapped,
+                "below the cap the capped and uncapped compositions must agree \
+                 exactly — any difference here is a difference in the CLASS, \
+                 which is the thing that must have exactly one spelling. Input: \
+                 {value:?}"
+            );
+        }
+        assert!(
+            exercised_a_difference_from_the_input,
+            "no member of the corpus was changed by the control class at all, so \
+             the agreement above is agreement about the identity function"
+        );
+
+        // And the other direction: above the cap they MUST diverge, or the cap
+        // has quietly been removed and every CLI echo is now uncapped.
+        let over_long: String = std::iter::repeat_n('x', DRIVER_OUTPUT_LINE_CELLS + 10).collect();
+        let capped = sanitize_render_line(&over_long);
+        let uncapped = strip_terminal_controls(&over_long);
+        assert_ne!(
+            capped, uncapped,
+            "above the cap the two compositions must diverge; if they agree, \
+             `sanitize_render_line` has stopped capping"
+        );
+        assert_eq!(
+            capped.chars().count(),
+            DRIVER_OUTPUT_LINE_CELLS,
+            "and the capped one is capped"
+        );
+        assert_eq!(
+            uncapped.chars().count(),
+            over_long.chars().count(),
+            "while the uncapped one is not — which is the whole reason \
+             `render_for_terminal` does not reuse this function"
         );
     }
 

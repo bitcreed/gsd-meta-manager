@@ -287,6 +287,71 @@ what actually forces breadth.
 | Date | ratatui version | Zero-width graphemes | Tag block | Recorded by |
 |---|---|---|---|---|
 | 2026-08-25 | 0.30 | DROPPED before a cell exists | survives intact | `21-21` |
+| 2026-08-27 | 0.30.2 (`Cargo.lock`) | **PER WIDGET** — dropped by `Paragraph` and `Paragraph`-in-`Block`; **SURVIVE** through `Block::title` and `ListItem` | survives intact through all four | `21-23` |
+
+### 2026-08-27 (`21-23`) — CORRECTION, append-only: the drop is a `Paragraph` property, NOT a `Buffer` property
+
+**The sentence this corrects, quoted verbatim from the entry above:**
+
+> **What it means.** ratatui 0.30's `Buffer` **DROPS zero-width graphemes before a
+> cell exists** — `U+00AD` and `U+200B` are simply gone — while the **tag block
+> survives intact** (`U+E0041` reaches a cell).
+
+That is true of the sink `21-21` measured (a `Paragraph`, via
+`delete_confirm.rs`) and **false as a statement about the `Buffer`**. The
+zero-width drop happens in `ratatui-core`'s `Buffer::set_stringn`, which is on
+the `Paragraph` path; `Block::title` and `ListItem` reach a cell by a different
+route and preserve the class. The generalisation was made three times in this
+phase — `21-21`'s SUMMARY, the round-8 review, and verification pass 9's
+Judgment 3, which re-derived only the `Paragraph` column — and each time it hid
+the two widget families where this tree's live leaks actually were.
+
+**Re-derived independently for `21-23`**, in a throwaway crate outside this
+repository depending only on `ratatui = "0.30"` (resolved: **0.30.2**, matching
+this tree's `Cargo.lock`) and `unicode-width`, rendering `a<CP>b` through four
+sinks into a `TestBackend` buffer. The crate was run, its output captured
+verbatim, and the crate deleted (`git status --porcelain` clean). Verbatim:
+
+```text
+ratatui per-widget cell survivorship
+cp          width | Paragraph   Block::title  ListItem    Paragraph-in-Block
+U+202E     2 | dropped     SURVIVES      SURVIVES    dropped
+U+200B     2 | dropped     SURVIVES      SURVIVES    dropped
+U+00AD     2 | dropped     SURVIVES      SURVIVES    dropped
+U+2062     2 | dropped     SURVIVES      SURVIVES    dropped
+U+2065     2 | dropped     SURVIVES      SURVIVES    dropped
+U+FEFF     2 | dropped     SURVIVES      SURVIVES    dropped
+U+E0041    2 | SURVIVES    SURVIVES      SURVIVES    SURVIVES
+
+C0 controls (probe `a<CTRL>b`)
+cp          | Paragraph   Block::title  ListItem    Paragraph-in-Block
+U+001B      | dropped     dropped       dropped     dropped
+U+000D      | dropped     dropped       dropped     dropped
+U+0007      | dropped     dropped       dropped     dropped
+```
+
+**What changes because of it.**
+
+1. `21-23` closed a live `List`/`ListItem` leak of a third-party repository's
+   commit hash, date, author and subject (`render_git_tab`) that the
+   generalisation had explained away.
+2. LIMIT 4 of `src/ui/screens/render_escape_guard.rs` declined the raw-absence
+   assertion on this premise. The premise holds for `Paragraph` sites only, so
+   the assertion is **non-vacuous** for `Block::title` and `ListItem` and was
+   reinstated in `21-23`.
+3. The C0 rows are new and are recorded for completeness, with their direction:
+   every C0 tested is dropped by every family under measurement, so a probe
+   asserting C0 absence in a `Buffer` would be **vacuous in the same way** the
+   raw-absence assertion was thought to be. `strip_terminal_controls` is
+   therefore justified by what reaches the TERMINAL, not by what reaches a
+   `Buffer` cell — the `Buffer` is not the boundary the ESC rule defends.
+
+**The residual, with its direction.** Four sinks were measured, not all of them.
+A fifth widget family with its own cell-writing route could preserve or drop
+differently and no committed control in this tree would report it.
+**Under-detection, disclosed.** What bounds it is
+`the_screen_renders_identity_escaped`, which renders through the REAL
+`Screen::render` and so inspects whatever family a screen actually used.
 
 ## RE-SURFACED, UNCHANGED — ROADMAP success criterion 4
 

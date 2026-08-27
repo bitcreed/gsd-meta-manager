@@ -95,14 +95,32 @@
 //!    `the_screen_census_matches_the_tree`, which is the control observed red
 //!    above. A new entry point that is NOT a `Screen` is reported by nothing
 //!    here.
-//! 4. **The probe cannot assert that the RAW form is absent.** ratatui 0.30
-//!    deletes zero-width graphemes before a cell exists (measured — see
-//!    `the_screen_renders_identity_escaped`'s doc), so that assertion is true of
-//!    an unescaped site too and would pass vacuously forever. **This is a
-//!    limit on the assertion, not on the code**: what replaces it is arrival of
-//!    the clean stem plus presence of the escaped form, and both were observed
-//!    red (the arrival assertion by emptying a fixture, the escaped-form
-//!    assertion against the unescaped tree at HEAD).
+//! 4. **The raw-absence assertion is AVAILABLE, and its power is per widget
+//!    family.** This limit used to read: *"The probe cannot assert that the RAW
+//!    form is absent. ratatui 0.30 deletes zero-width graphemes before a cell
+//!    exists, so that assertion is true of an unescaped site too and would pass
+//!    vacuously forever."* That was measured against a `Paragraph` and
+//!    generalised to the whole rendering stack, and the generalisation is FALSE
+//!    — re-derived per widget family in a scratch crate outside this tree
+//!    against ratatui 0.30.2 (the table is quoted in
+//!    `the_screen_renders_identity_escaped`'s doc and in `deferred-items.md`):
+//!    `Paragraph` and `Paragraph`-in-`Block` drop `U+202E`, `U+200B`, `U+00AD`,
+//!    `U+2062`, `U+2065` and `U+FEFF`; `Block::title` and `ListItem` PRESERVE
+//!    every one of them. Those two families are exactly where this tree's live
+//!    leaks were, so the assertion is NOT vacuous. It is reinstated as
+//!    assertion 4 by plan `21-23`'s next task, gated on arrival exactly as
+//!    assertion 2 is; this entry is corrected in the commit that falsifies its
+//!    premise rather than in the commit that consumes the correction.
+//!
+//!    **Where it will still have no power, with its direction.** At a
+//!    `Paragraph` site the raw zero-width form never reaches a cell whether or
+//!    not the site escapes, so assertion 4 passes there for a reason unrelated
+//!    to the code.
+//!    **Under-detection at `Paragraph` sites, silent.** What bounds THAT is
+//!    assertion 2 (the escaped form must be present) and assertion 3 (no
+//!    invisible-class character may reach a cell, which the tag block triggers
+//!    through every family). The three assertions have different blind spots by
+//!    construction, which is why all three are kept.
 
 use super::{AppContext, Screen};
 use crate::test_support::LOOK_ALIKE_PAIRS;
@@ -585,11 +603,13 @@ fn probe_ctx(identity: &str) -> AppContext {
 /// unasserted while looking like coverage.
 fn hostile_git_entry(identity: &str) -> crate::state_reader::git_ops::GitLogEntry {
     use crate::state_reader::git_ops::GitLogEntry;
+    use crate::text::Untrusted;
+    let field = || Untrusted::from_untrusted_source(identity.to_string());
     GitLogEntry {
-        hash: identity.to_string(),
-        date: identity.to_string(),
-        author: identity.to_string(),
-        message: identity.to_string(),
+        hash: field(),
+        date: field(),
+        author: field(),
+        message: field(),
     }
 }
 
@@ -1047,17 +1067,48 @@ mod tests {
     /// Two facts, both load-bearing, and both contradicting what round 7's
     /// review and verification pass 8 each asserted without measuring:
     ///
-    /// 1. **ratatui 0.30's `Buffer` DROPS zero-width graphemes before a cell
-    ///    exists.** `U+00AD` is simply gone from the rendered row. So the TUI
-    ///    does not *reorder* a hostile key — it silently *deletes* bytes, and
-    ///    the legacy key renders as a DIFFERENT string that can collide with a
-    ///    real project of that name. `CONTAINS RAW: false` is the direct
-    ///    consequence: **an assertion that the raw form is absent passes
-    ///    vacuously against an unescaped site, and would go on passing
-    ///    forever.**
+    /// 1. **A `Paragraph` drops zero-width graphemes before a cell exists.**
+    ///    `U+00AD` is simply gone from the rendered row above. So at a
+    ///    `Paragraph` site the TUI does not *reorder* a hostile key — it
+    ///    silently *deletes* bytes, and the legacy key renders as a DIFFERENT
+    ///    string that can collide with a real project of that name.
     /// 2. **The tag block SURVIVES.** `U+E0041` — the LLM ASCII-smuggling
     ///    carrier — reached a terminal cell intact. That is the one class that
-    ///    arrives whole, and it is what assertion 3 catches.
+    ///    arrives whole through every family, and it is what assertion 3 catches.
+    ///
+    /// # CORRECTED 2026-08-27 (21-23): fact 1 is a `Paragraph` property, NOT a `Buffer` property
+    ///
+    /// **The sentence this doc used to carry, verbatim:** *"ratatui 0.30's
+    /// `Buffer` DROPS zero-width graphemes before a cell exists."* That is a
+    /// generalisation of one sink's behaviour to the whole rendering stack, and
+    /// it is false. The drop happens on the `Paragraph` path; `Block::title`
+    /// and `ListItem` reach a cell by a different
+    /// route and PRESERVE the class. Three artefacts in this phase asserted the
+    /// general form without measuring it — `21-21`'s SUMMARY, the round-8
+    /// review, and verification pass 9's Judgment 3, which re-derived only the
+    /// `Paragraph` column — and each time it hid the two families where this
+    /// tree's live leaks were.
+    ///
+    /// Re-derived for `21-23` in a throwaway crate OUTSIDE this repository
+    /// depending only on `ratatui = "0.30"` (resolved 0.30.2, matching this
+    /// tree's `Cargo.lock`), rendering `a<CP>b` through four sinks into a
+    /// `TestBackend` buffer. Verbatim:
+    ///
+    /// ```text
+    /// cp          width | Paragraph   Block::title  ListItem    Paragraph-in-Block
+    /// U+202E     2 | dropped     SURVIVES      SURVIVES    dropped
+    /// U+200B     2 | dropped     SURVIVES      SURVIVES    dropped
+    /// U+00AD     2 | dropped     SURVIVES      SURVIVES    dropped
+    /// U+2062     2 | dropped     SURVIVES      SURVIVES    dropped
+    /// U+2065     2 | dropped     SURVIVES      SURVIVES    dropped
+    /// U+FEFF     2 | dropped     SURVIVES      SURVIVES    dropped
+    /// U+E0041    2 | SURVIVES    SURVIVES      SURVIVES    SURVIVES
+    /// ```
+    ///
+    /// What this costs the probe is stated in LIMIT 4 of the module doc, and
+    /// what it BUYS is the raw-absence assertion LIMIT 4 declined: non-vacuous
+    /// for the two preserving families, and reinstated as assertion 4 by this
+    /// plan's next task.
     ///
     /// What makes this probe non-vacuous is therefore assertion 1 plus
     /// assertion 2: the clean stem must ARRIVE (proving the screen renders

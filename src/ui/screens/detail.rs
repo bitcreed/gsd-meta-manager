@@ -46,8 +46,35 @@ pub(super) const PAGE_SCROLL_LINES: u16 = 20;
 ///
 /// `display_identity` is idempotent over its own output (pinned in
 /// `text::tests`), so a value that passes through here twice is unchanged.
+///
+/// # WR-02: this file answers BOTH classes now, and it does not decide which
+///
+/// This used to be `display_identity` alone, which answers only the
+/// invisible-formatting class (`Cf` ∪ `Default_Ignorable`). Everything this file
+/// draws is parsed out of a project's `.planning/` directory, and a `.planning/`
+/// file can carry a raw `ESC`, a C0 control, or a C1 introducer just as easily
+/// as a `U+202E` — those are the CONTROL class, `Cc`, and `display_identity`
+/// does not touch them. The tree's own statement of that split is at
+/// `src/ui/screens/driver.rs:874-878`; what was missing was a site that composed
+/// the two rather than picking one.
+///
+/// So this delegates to [`crate::text::render_for_terminal`], the ONE
+/// composition, and this file no longer decides which halves apply — it inherits
+/// the resolution. The deliberate second composition,
+/// `display_identity(&sanitize_render_line(..))` in `driver.rs` and
+/// `driver_confirm.rs`, differs from it ONLY by the
+/// `DRIVER_OUTPUT_LINE_CELLS` display cap those two want because they draw agent
+/// prose; that difference is pinned by
+/// `ui::screens::tests::the_capped_and_uncapped_compositions_agree_below_the_cap`.
+///
+/// It stays a `String`-returning free function rather than becoming
+/// [`crate::text::Rendered`]-returning: its ~50 call sites in this file all
+/// interpolate the result, and the type-level lever this round introduces lives
+/// on the CARRIER ([`crate::text::Untrusted`]) rather than on the escape helper.
+/// A `GitLogEntry` field reaches a cell through `entry.field.shown()` and never
+/// through here.
 fn shown(value: &str) -> String {
-    crate::text::display_identity(value)
+    crate::text::render_for_terminal(value).to_string()
 }
 
 /// Viewport metrics recorded by the last render pass of a markdown file view.
@@ -1521,7 +1548,11 @@ impl Screen for DetailScreen {
                         }
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         if let Some(entry) = cache.git_entries.get(cache.git_selected) {
-                            let hash = entry.hash.clone();
+                            // RAW: this hash becomes an argv element of
+                            // `git diff-tree ... <hash>`. A subprocess argument
+                            // is a lookup, not something a human reads, and an
+                            // escaped hash would name no commit.
+                            let hash = entry.hash.as_raw_for_logic_only().to_string();
                             cache.loading_diff = true;
                             if let (Some(project), Some(tx)) =
                                 (ctx.config.projects.get(&self.alias), &ctx.event_tx)
@@ -3005,14 +3036,22 @@ impl DetailScreen {
             .git_entries
             .iter()
             .map(|entry| {
+                // SHOWN: every field here is a human-readable cell drawn from a
+                // THIRD-PARTY repository's `git log`. This is the site whose raw
+                // form was live Trojan Source (T-21-23-01): a `List`/`ListItem`
+                // PRESERVES `U+202E` and `U+00AD` into a cell (measured per
+                // widget family), so a hostile commit subject reordered what the
+                // operator read. `Untrusted` has no `Into<Cow<str>>`, so the raw
+                // spelling of these four lines is a compile error rather than a
+                // site a reader has to notice.
                 ListItem::new(Line::from(vec![
-                    Span::styled(&entry.hash, Style::default().fg(Color::Yellow)),
+                    Span::styled(entry.hash.shown(), Style::default().fg(Color::Yellow)),
                     Span::raw(" -- "),
-                    Span::raw(&entry.date),
+                    Span::raw(entry.date.shown()),
                     Span::raw(" -- "),
-                    Span::raw(&entry.message),
+                    Span::raw(entry.message.shown()),
                     Span::raw("  "),
-                    Span::styled(&entry.author, Style::default().fg(Color::DarkGray)),
+                    Span::styled(entry.author.shown(), Style::default().fg(Color::DarkGray)),
                 ]))
             })
             .collect();
@@ -3041,11 +3080,17 @@ impl DetailScreen {
                     .block(diff_block);
                 frame.render_widget(loading, diff_area);
             } else if let Some(stat) = &cache.git_diff_stat {
+                // SHOWN: the title is what a human reads, and `Block::title` is
+                // the widget family that PRESERVES the invisible class most
+                // completely (measured — even `U+202E` reaches a cell through
+                // it). The same hash goes to `load_diff_stat` RAW, above, which
+                // is the split this carrier exists to make the compiler ask
+                // about separately.
                 let selected_hash = cache
                     .git_entries
                     .get(cache.git_selected)
-                    .map(|e| e.hash.as_str())
-                    .unwrap_or("???");
+                    .map(|e| e.hash.shown().to_string())
+                    .unwrap_or_else(|| "???".to_string());
                 let diff_block = Block::default()
                     .borders(Borders::ALL)
                     .title(format!(" Diff: {} ", selected_hash));

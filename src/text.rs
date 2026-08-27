@@ -314,6 +314,265 @@ pub fn display_identity(value: &str) -> String {
     out
 }
 
+// ---------------------------------------------------------------------------
+// The CONTROL class, the composition of the two classes, and the two carrier
+// types — the round-9 inversion (D-21-7 … D-21-10)
+// ---------------------------------------------------------------------------
+
+/// The escape character, stripped unconditionally by
+/// [`strip_terminal_controls`].
+pub(crate) const ESC: char = '\u{1b}';
+
+/// What every other C0 control character, `DEL` and the C1 block is replaced
+/// with: `·`.
+///
+/// A `\u{…}` escape rather than the literal glyph, following the house rule that
+/// no raw glyph appears in source (`ui::screens::normal.rs:69-74`).
+pub(crate) const CONTROL_REPLACEMENT: char = '\u{00b7}';
+
+/// Spaces one tab expands to.
+pub(crate) const TAB_WIDTH: usize = 4;
+
+/// The ONE production spelling of the terminal-CONTROL class.
+///
+/// **This is the class, and it is deliberately NOT the display cap** (D-21-9).
+/// These rules used to live inside `ui::screens::sanitize_render_line`, welded
+/// to a 512-character truncation. The round-8 review proposed composing
+/// `display_identity(&sanitize_render_line(v))` to answer both classes at once;
+/// that one-liner is wrong as written, because it would silently cap every CLI
+/// echo, every error message and every rendered name at
+/// `DRIVER_OUTPUT_LINE_CELLS`. Separating the class from the cap is what lets
+/// ONE composition ([`render_for_terminal`]) serve both, and
+/// `ui::screens::sanitize_render_line` is now this function plus that cap.
+///
+/// The rules, in this order, carried across unchanged in behaviour:
+///
+/// 1. **`ESC` (`0x1B`) is stripped unconditionally.** This is the single
+///    highest-value rule in the boundary: without it, text read off disk can
+///    emit ANSI/OSC sequences that repaint the screen, forge a status line, move
+///    the cursor, or set the window title. Stripping the introducer is what makes
+///    the rest of a sequence inert text.
+/// 2. `\t` expands to [`TAB_WIDTH`] spaces.
+/// 3. Every other C0 control character (`0x00`–`0x1F`), `DEL` (`0x7F`) **and the
+///    whole C1 block (`0x80`–`0x9F`)** is replaced with
+///    [`CONTROL_REPLACEMENT`] — present, visible, and harmless.
+///
+///    **C1 is not an afterthought and rule 1 does not cover it** (WR-06).
+///    `U+009B` is the single-character CSI, `U+009D` is OSC and `U+0090` is DCS:
+///    each is a one-codepoint equivalent of an `ESC`-led introducer, so stripping
+///    `ESC` alone leaves the same capability reachable by another spelling.
+///    ratatui writes each grapheme's bytes straight to the terminal, so these
+///    arrive as `0xC2 0x9B` and terminals that honour 8-bit controls decoded from
+///    UTF-8 (xterm without `allowC1Printable`, among others) treat what follows
+///    as a control sequence — reinstating exactly the repaint-the-screen and
+///    forge-a-status-line capability rule 1 exists to remove.
+///
+/// **What it does NOT do.** It does not touch the INVISIBLE-FORMATTING class:
+/// `Cf` ∪ `Default_Ignorable` is not `Cc`, so `U+202E`, `U+00AD` and `U+E0041`
+/// pass through here untouched. That is [`display_identity`]'s question, and
+/// [`render_for_terminal`] is the one place the two are composed.
+pub(crate) fn strip_terminal_controls(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch == ESC {
+            continue;
+        }
+        if ch == '\t' {
+            for _ in 0..TAB_WIDTH {
+                out.push(' ');
+            }
+        } else if (ch as u32) < 0x20 || ('\u{7f}'..='\u{9f}').contains(&ch) {
+            out.push(CONTROL_REPLACEMENT);
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// A string that has been through [`render_for_terminal`], and the ONLY string
+/// type in this tree that is both escaped and `Into<Cow<'static, str>>`.
+///
+/// **The ergonomic asymmetry is the mechanism** (D-21-8). [`Untrusted`] holds
+/// the raw bytes and implements none of the string conversions, so it cannot be
+/// interpolated or handed to a ratatui sink at all. This type implements them,
+/// so at a render site `Span::raw(v.shown())` and `format!("{}", v.shown())`
+/// compile with no ceremony while the raw path costs a deliberate,
+/// greppable `as_raw_for_logic_only()`. The short path is the escaped one.
+///
+/// **Which sinks take it directly, measured rather than asserted.** `Span::raw`
+/// and `Span::styled` take `Into<Cow<'_, str>>` and therefore take this
+/// directly. `Block::title` takes `Into<Line>`, and this type deliberately does
+/// NOT implement that: `text.rs` has no ratatui dependency and gaining one to
+/// shorten a call would put a UI crate under the module every identity seam in
+/// the tree consults. At those sinks the call is `format!("{}", v.shown())` or
+/// `Span::raw(v.shown())`, both of which go through [`Display`](std::fmt::Display)
+/// and [`Into<Cow>`](std::borrow::Cow) respectively.
+///
+/// **What being `Rendered` does and does not claim.** It is a statement about
+/// which transformations were APPLIED — control stripping and invisible-class
+/// escaping — and not a proof that the underlying value is harmless. Homoglyphs
+/// pass through untouched (Unicode TR39 is a separate question,
+/// [`carries_invisible_formatting`]'s doc records why), and a value that is a
+/// lie in plain ASCII is still a lie after escaping.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rendered(String);
+
+impl Rendered {
+    /// The only constructor, and it is **module-private on purpose**: the only
+    /// way to obtain a `Rendered` outside this module is to escape something,
+    /// through [`render_for_terminal`] or [`Untrusted::shown`].
+    fn new(escaped: String) -> Self {
+        Self(escaped)
+    }
+}
+
+impl std::fmt::Display for Rendered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for Rendered {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<Rendered> for std::borrow::Cow<'static, str> {
+    fn from(value: Rendered) -> Self {
+        std::borrow::Cow::Owned(value.0)
+    }
+}
+
+impl From<Rendered> for String {
+    fn from(value: Rendered) -> Self {
+        value.0
+    }
+}
+
+/// The ONE composition of the two classes, resolved once so that no consumer
+/// re-decides which halves apply (WR-01, WR-02).
+///
+/// **Two classes, two predicates, neither subsuming the other.**
+/// [`strip_terminal_controls`] answers the `ESC` / C0 / `DEL` / C1 *control*
+/// question; [`display_identity`] answers the *invisible-formatting* question
+/// over `General_Category=Cf` ∪ `Default_Ignorable_Code_Point`. `Cf` ∪
+/// `Default_Ignorable` is not `Cc`, and `ESC` is `Cc` and in neither of the
+/// first two — so a site that applies only one of them is open in the other
+/// direction. `src/ui/screens/driver.rs:874-878` already states exactly this;
+/// what was missing was a single place that composed them, which is why round 8
+/// found four classes of site where one half had been applied and the other had
+/// not.
+///
+/// The order is control-stripping FIRST. [`display_identity`] emits `U+XXXX`
+/// spellings made of ASCII, which the control pass would leave alone anyway, but
+/// stripping first means the invisible-class pass never sees a `\t` that has not
+/// yet become spaces.
+///
+/// **The deliberate second composition, named so it is not mistaken for drift.**
+/// `ui::screens::sanitize_render_line` is this same control class plus the
+/// `DRIVER_OUTPUT_LINE_CELLS` display cap, and `driver.rs` / `driver_confirm.rs`
+/// compose `display_identity(&sanitize_render_line(..))` because they draw agent
+/// prose that must be capped. The ONLY difference between that composition and
+/// this one is the cap, which is pinned by
+/// `ui::screens::tests::the_capped_and_uncapped_compositions_agree_below_the_cap`
+/// rather than argued here.
+pub fn render_for_terminal(value: &str) -> Rendered {
+    Rendered::new(display_identity(&strip_terminal_controls(value)))
+}
+
+/// A string this build did NOT author, in a type that cannot reach a terminal
+/// cell unescaped.
+///
+/// **The round-9 inversion, and what it generalises** (D-21-8). Round 8 built
+/// exactly the right shape in [`crate::registry::LegacyRegistryKey`] — no
+/// `Display`, two accessors named after the questions they answer — and then
+/// applied it to ONE call site while every data carrier in the tree kept bare
+/// `String` fields. The shape was right; the application was one site. This type
+/// is that correction: it is the general carrier, and `LegacyRegistryKey` is the
+/// argv-lookup variant of it.
+///
+/// **Why a carrier and not a ban on a ratatui API.** `Span::raw` takes
+/// `Into<Cow<'_, str>>` and `String: Into<Cow<'_, str>>` is a standard-library
+/// impl this project cannot un-implement, so there is no way to forbid the raw
+/// sink globally and any claim to have done so would be false. Measured at
+/// round-9 HEAD: 129 `Span::raw` and 198 `Span::styled` calls under `src/`. The
+/// lever gates NONE of them. What it gates is the values: a field of this type
+/// cannot be interpolated, coerced, or handed to a sink at all, so the compiler
+/// — not a reader working through a list of sites — names every consumer when a
+/// carrier is retyped.
+///
+/// It implements:
+///
+/// * **no `Display`** — so it cannot be interpolated,
+/// * **no `AsRef<str>`, no `Deref`, no `Borrow<str>`, no `Into<Cow<'_, str>>`**
+///   — so it cannot be coerced into one either,
+/// * **no `serde` traits** — persistence goes through
+///   [`as_raw_for_logic_only`](Self::as_raw_for_logic_only), which is a choice
+///   visible in a diff,
+/// * **no derived `Debug`.** The derive is what re-opened `{:?}` on
+///   `LegacyRegistryKey` (WR-04); the hand-written impl below prints the ESCAPED
+///   form, so a raw invisible character cannot reach a log line, a panic
+///   message, an `anyhow` chain, or the `#[derive(Debug)]` of any struct that
+///   contains one of these.
+///
+/// Those five absences are certified by
+/// `tests::an_untrusted_carrier_implements_none_of_the_string_conversions`, a
+/// runtime control observed RED by planting the impls — not by a comment quoting
+/// a compile error somebody once saw, which is precisely what
+/// `LegacyRegistryKey` had.
+///
+/// Two accessors, each named after the question it answers:
+/// [`as_raw_for_logic_only`](Self::as_raw_for_logic_only) for lookups,
+/// comparisons, map keys, path segments, subprocess arguments and persistence;
+/// [`shown`](Self::shown) for what a human reads.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Untrusted(String);
+
+impl Untrusted {
+    /// Wrap a string that came from outside this build. **No judgment is applied
+    /// and none may be added.**
+    ///
+    /// A carrier that refused values could not carry the third-party and legacy
+    /// data it exists for — a hostile commit subject must still be displayable,
+    /// and a registry key an older build accepted must still be removable
+    /// (D-17-3). Judging happens at the seams that create identities
+    /// ([`is_identity_char`]), never here.
+    pub fn from_untrusted_source(raw: String) -> Self {
+        Self(raw)
+    }
+
+    /// The raw bytes, for lookups, comparisons, map keys, path segments,
+    /// subprocess arguments and persistence ONLY.
+    ///
+    /// Deliberately unattractive to type. Reaching for it is a choice a reviewer
+    /// sees in a diff, which is what a bare `String` field never was.
+    pub fn as_raw_for_logic_only(&self) -> &str {
+        &self.0
+    }
+
+    /// What a human READS: both classes escaped, via [`render_for_terminal`].
+    pub fn shown(&self) -> Rendered {
+        render_for_terminal(&self.0)
+    }
+}
+
+/// **Hand-written, not derived** (WR-04, T-21-23-05).
+///
+/// `#[derive(Debug)]` on a carrier re-opens the raw path through `{:?}` — a log
+/// line, a panic message, an `anyhow` chain, or the derived `Debug` of any
+/// struct holding one. This prints [`shown`](Untrusted::shown), so the escape
+/// travels with the value into every one of those. Pinned over
+/// `LOOK_ALIKE_PAIRS` by
+/// `tests::a_carrier_debug_never_carries_an_invisible_character`, in both
+/// directions.
+impl std::fmt::Debug for Untrusted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Untrusted({:?})", self.shown().to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
