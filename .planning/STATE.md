@@ -6,15 +6,15 @@ current_phase: 21
 current_phase_name: LLM Goal Layer & Prompt-Injection Hardening
 status: executing
 stopped_at: Phase 21 gap-closure round 8 executed (21-21 wave 1, 21-22 wave 2); post-merge gate green (1372 passed / 0 failed / 13 ignored, clippy exit 0); awaiting independent code review, then gsd-verifier pass 9
-last_updated: "2026-08-27T20:24:35.246Z"
+last_updated: "2026-08-27T20:27:49.821Z"
 last_activity: 2026-08-27
-last_activity_desc: Phase 21 execution resumed (wave continue)
-state_head: 9da176ef3582c6cb1d6b975ae1229e97a3a6fb4d
+last_activity_desc: Phase 21 execution started
+state_head: 80bc4c1da4919d5a420645998a0a6d0fe92f4915
 progress:
   total_phases: 10
   completed_phases: 6
   total_plans: 80
-  completed_plans: 72
+  completed_plans: 76
   percent: 60
 ---
 
@@ -29,14 +29,14 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 
 ## Current Position
 
-Phase: 21 (LLM Goal Layer & Prompt-Injection Hardening) — READY TO EXECUTE
-Plan: 1 of 22
+Phase: 21 (LLM Goal Layer & Prompt-Injection Hardening) — EXECUTING
+Plan: 1 of 30
   Round-7 gap closure (21-19, 21-20) executed and merged; build/test/clippy green
-Status: Ready to execute
+Status: Executing Phase 21
   criterion 1 FAILED (pass 6's "verified" claim was itself false), criterion 4
   PRESENT_BEHAVIOUR_UNVERIFIED pending a human Claude-subscription run.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-08-27 — Phase 21 execution resumed (wave continue)
+Last activity: 2026-08-27 — Phase 21 execution started
 
 ## Deferred Verification
 
