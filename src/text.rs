@@ -1087,6 +1087,113 @@ mod tests {
     /// The tail of [`ALPHABET_CLAUSE_HEAD`].
     const ALPHABET_CLAUSE_TAIL: &str = " '_' | '-')";
 
+    /// How many physical lines a wrapped alternation may span before the join
+    /// gives up.
+    const ALPHABET_CLAUSE_JOIN_LINES: usize = 3;
+
+    /// The **bare single-character literal atoms** on `line`, sorted and
+    /// deduplicated — the normal form the census matches on (WR-05).
+    ///
+    /// # Why a normal form and not one exact byte string
+    ///
+    /// The census used to search each executable line for the single byte string
+    /// [`ALPHABET_CLAUSE_HEAD`] + [`ALPHABET_CLAUSE_TAIL`]. That made the scan's
+    /// power depend on the ORDER the author happened to type the arms in and on
+    /// the spaces they happened to leave: `matches!(c, '-' | '_' | '.')` is the
+    /// same character set and was invisible. The defect the census exists to
+    /// catch — `envelope::advisory::is_plain_component`, which respelled the
+    /// identity alphabet and used it to gate GitHub `owner`/`repo` segments
+    /// interpolated into a request path — would have been invisible too, had its
+    /// author typed the arms in any other order. A guard whose power depends on
+    /// a coin flip is not a guard.
+    ///
+    /// # What the normal form is, exactly
+    ///
+    /// Whitespace is stripped, then every `'X'` literal that is not an endpoint
+    /// of a `..=` range is collected, sorted and deduplicated. So the identity
+    /// alphabet's own clause — which spells `'A'..='Z' | 'a'..='z' | '0'..='9'`
+    /// as ranges and `'.' | '_' | '-'` as bare atoms — normalises to the same
+    /// three atoms as a copy that writes `c.is_ascii_alphanumeric()` and then the
+    /// same three punctuation arms in any order. That equivalence is what makes
+    /// the census see the WR-03 respelling and its reorderings alike.
+    ///
+    /// # The over-matching risk this creates, and how it is bounded
+    ///
+    /// Normalising loosens the needle, so over-matching becomes the new failure
+    /// direction. The bound is that the comparison is an **equality on the whole
+    /// line's atom set**, not a containment: `advisory::default_branch_of`
+    /// additionally admits `'/'`, so its atoms are four rather than three and it
+    /// is excluded. That exclusion is a genuinely different question — a branch
+    /// name legitimately carries a separator and is not an identity — and it is
+    /// ASSERTED by
+    /// [`the_normalized_needle_still_excludes_the_branch_name_set`](the_normalized_needle_still_excludes_the_branch_name_set)
+    /// rather than assumed.
+    ///
+    /// **Its own residual, with the direction.** Because the comparison is an
+    /// equality over the WHOLE line, an executable line that spells the clause
+    /// AND some unrelated character literal beside it normalises to a larger set
+    /// and is NOT counted. **Under-detection, silent.** What bounds that is the
+    /// delegation — one function every seam calls — exactly as it bounds the
+    /// non-textual constructions named below.
+    /// Whether `logical` is syntactically UNFINISHED, so the next physical line
+    /// is part of the same clause.
+    ///
+    /// **This predicate is what keeps the anti-self-match property alive under
+    /// joining, and it was added because joining broke it.** Measured, not
+    /// reasoned about: with an unconditional join, the census reported TWO sites
+    /// — `src/text.rs:251` and `src/text.rs:1086` — because
+    /// [`ALPHABET_CLAUSE_HEAD`]'s own line (atoms `['.']`) joined onto
+    /// [`ALPHABET_CLAUSE_TAIL`]'s (atoms `['-', '_']`) and the union is exactly
+    /// the clause. The two halves are meaningless apart *as strings*, but they
+    /// were not meaningless apart as ADJACENT SOURCE LINES.
+    ///
+    /// A line is unfinished when an alternation is left open (`|` at the end) or
+    /// a delimiter is still unclosed. `const ALPHABET_CLAUSE_HEAD: &str = "'.' |";`
+    /// is finished on both counts — it ends with `;` and its parens balance — so
+    /// it never starts a join.
+    fn continues_onto_the_next_line(logical: &str) -> bool {
+        let trimmed = logical.trim_end();
+        if trimmed.ends_with('|') {
+            return true;
+        }
+        let opened = trimmed.matches('(').count();
+        let closed = trimmed.matches(')').count();
+        opened > closed
+    }
+
+    fn bare_char_literal_atoms(line: &str) -> Vec<char> {
+        let compact: Vec<char> = line.chars().filter(|c| !c.is_whitespace()).collect();
+        let mut atoms = Vec::new();
+        let mut index = 0;
+        while index < compact.len() {
+            if compact[index] != '\'' {
+                index += 1;
+                continue;
+            }
+            // A bare atom is exactly `'X'`. Anything longer (an escape, a
+            // lifetime, an unterminated quote) is not one and is stepped over.
+            if index + 2 < compact.len() && compact[index + 2] == '\'' {
+                let preceded_by_range = index >= 3
+                    && compact[index - 3] == '.'
+                    && compact[index - 2] == '.'
+                    && compact[index - 1] == '=';
+                let followed_by_range = index + 6 <= compact.len()
+                    && compact[index + 3] == '.'
+                    && compact[index + 4] == '.'
+                    && compact[index + 5] == '=';
+                if !preceded_by_range && !followed_by_range {
+                    atoms.push(compact[index + 1]);
+                }
+                index += 3;
+                continue;
+            }
+            index += 1;
+        }
+        atoms.sort_unstable();
+        atoms.dedup();
+        atoms
+    }
+
     /// Every `.rs` file under `dir`, recursively, as `(relative path, lines)`.
     ///
     /// The recursive `read_dir` shape follows
@@ -1155,19 +1262,60 @@ mod tests {
     /// test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1055 filtered out; finished in 0.08s
     /// ```
     ///
-    /// **Its under-detection direction, named because a textual census has one.**
-    /// A THIRD spelling written with a different but equivalent construction — a
+    /// # CORRECTED 2026-08-27 (21-26, WR-05): the residual named only non-textual copies, and that was incomplete
+    ///
+    /// **The paragraph this doc used to carry, verbatim:** *"**Its
+    /// under-detection direction, named because a textual census has one.** A
+    /// THIRD spelling written with a different but equivalent construction — a
     /// `match` with the same arms, a byte-range comparison, an `is_ascii_*`
     /// composition — is invisible to this scan and always will be. What bounds
     /// that residual is the DELEGATION itself (one function every seam calls),
     /// not this census; the census only stops the *textual* copy from being
-    /// re-introduced silently. It is deliberately not sold as more than that.
+    /// re-introduced silently. It is deliberately not sold as more than that."*
+    ///
+    /// That named only NON-textual constructions, and the census's real blind
+    /// spot was narrower and worse: it searched each executable line for one
+    /// exact byte string, so a **textual** copy typed with the arms in a
+    /// different order — `matches!(c, '-' | '_' | '.')` — was invisible too. The
+    /// `advisory.rs` defect this census exists to have caught would have been
+    /// invisible had its author typed the same three arms in any other order.
+    /// The claim "the census stops the textual copy from being re-introduced"
+    /// was therefore false for five of the six orderings.
+    ///
+    /// **What is true now.** The census matches on a NORMAL FORM
+    /// ([`bare_char_literal_atoms`]): whitespace is stripped, the bare character
+    /// literals are collected, sorted and deduplicated, and the result compared
+    /// for EQUALITY against the same normalisation of the identity alphabet's
+    /// own clause. Arm order and spacing no longer matter, and a clause wrapped
+    /// so one arm ends a line is joined into one logical unit first. Observed
+    /// red by planting a reordered copy — and a reordered, wrapped copy — in
+    /// `src/driver/liveness.rs`: invisible to the old needle
+    /// (`grep -rn` for the exact byte string does not name the file), counted at
+    /// two by the new one.
+    ///
+    /// **What REMAINS invisible, with its direction.** Two things, and both are
+    /// under-detection, silent:
+    ///
+    /// 1. A copy written with a **genuinely different construction** — a `match`
+    ///    with the same arms, a byte-range comparison, an `is_ascii_*`
+    ///    composition. No character literals, nothing to normalise.
+    /// 2. A line that spells the clause **and some unrelated character literal
+    ///    beside it**, which normalises to a larger set and fails the equality.
+    ///
+    /// What bounds both is the DELEGATION itself — one function every seam calls
+    /// — not this census. The census's job is only to stop a textual copy from
+    /// being re-introduced silently, and it now does that for the whole family of
+    /// textual respellings rather than for one ordering of it.
     ///
     /// The nearby set in `advisory::default_branch_of`, which additionally admits
     /// `'/'`, is genuinely a different question — a branch name legitimately
-    /// carries a separator and is not an identity — and is excluded from this
-    /// count by construction, because its clause does not end where the identity
-    /// alphabet's does.
+    /// carries a separator and is not an identity — and is excluded because the
+    /// comparison is an equality on the whole line's atom set, so four atoms are
+    /// not three. **Normalising made over-matching the new failure direction, so
+    /// that exclusion is ASSERTED and not assumed:**
+    /// [`the_normalized_needle_still_excludes_the_branch_name_set`](the_normalized_needle_still_excludes_the_branch_name_set)
+    /// pins it in both directions and additionally runs the live census and
+    /// requires that no line of `envelope/advisory.rs` is counted.
     #[test]
     fn exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src() {
         let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -1180,15 +1328,65 @@ mod tests {
         );
         files.sort_by(|a, b| a.0.cmp(&b.0));
 
+        // The comparison target, still ASSEMBLED AT RUNTIME from two halves that
+        // are meaningless apart (WR-05 keeps the anti-self-match property). The
+        // two consts above normalise to `['.']` and `['-', '_']` on their own
+        // lines — neither equals the joined atom set — so this module's own
+        // source cannot become a hit.
         let needle = format!("{ALPHABET_CLAUSE_HEAD}{ALPHABET_CLAUSE_TAIL}");
+        let wanted = bare_char_literal_atoms(&needle);
+        assert_eq!(
+            wanted.len(),
+            3,
+            "the identity alphabet's punctuation arms are three atoms; the \
+             assembled needle {needle:?} normalised to {wanted:?}, so the halves \
+             have drifted and this census is now looking for the wrong thing"
+        );
+
         let mut sites: Vec<String> = Vec::new();
         for (path, lines) in &files {
-            for (number, line) in lines {
+            for (index, (number, line)) in lines.iter().enumerate() {
                 if line.trim_start().starts_with("//") {
                     continue;
                 }
-                for _ in line.matches(needle.as_str()) {
+                let atoms = bare_char_literal_atoms(line);
+                if atoms == wanted {
                     sites.push(format!("{path}:{number}"));
+                    continue;
+                }
+                // A PROPER, NON-EMPTY SUBSET is a line that looks like part of
+                // the clause, so try joining what follows it — that is how a
+                // clause wrapped so one arm ends a line is counted. The subset
+                // test is what stops the join double-counting: a line that
+                // already matches is counted above and never joined, and a line
+                // with no atoms at all (`foo(`) never starts a join, so a
+                // matching line cannot be counted once on its own and again
+                // inside an enclosing unit.
+                if atoms.is_empty() || !atoms.iter().all(|atom| wanted.contains(atom)) {
+                    continue;
+                }
+                let mut logical = line.to_string();
+                let mut taken = 1;
+                let mut ahead = index;
+                while taken < ALPHABET_CLAUSE_JOIN_LINES
+                    && ahead + 1 < lines.len()
+                    && continues_onto_the_next_line(&logical)
+                {
+                    ahead += 1;
+                    let next = lines[ahead].1.trim();
+                    if next.is_empty() {
+                        break;
+                    }
+                    taken += 1;
+                    if next.starts_with("//") {
+                        continue;
+                    }
+                    logical.push(' ');
+                    logical.push_str(next);
+                    if bare_char_literal_atoms(&logical) == wanted {
+                        sites.push(format!("{path}:{number}"));
+                        break;
+                    }
                 }
             }
         }
@@ -1213,6 +1411,149 @@ mod tests {
              module; found it at {}. A single spelling that lives somewhere else \
              is still one spelling, but it is no longer the one the doc claims.",
             sites[0]
+        );
+    }
+
+    /// The normal form the census matches on, driven directly (WR-05).
+    ///
+    /// Every arm here is a spelling the OLD single-byte-string needle missed or
+    /// would have missed. It drives the same [`bare_char_literal_atoms`] the
+    /// live census consumes, so a normalisation that stopped normalising cannot
+    /// leave this green.
+    /// One arm of the identity alphabet's punctuation set, alone on its line.
+    ///
+    /// **Assembled at runtime for the same reason the needle is** (WR-05, and it
+    /// was measured): the first draft of the test below spelled its equivalent
+    /// clauses as whole literals, and the census — which walks `src/text.rs`
+    /// like every other file — counted SEVEN of them, reporting eight sites
+    /// where one exists. A control whose fixtures are themselves hits is a
+    /// control that breaks the thing it is certifying. Each of these three lines
+    /// carries ONE atom, is a proper subset of the clause, and ends with `;` so
+    /// [`continues_onto_the_next_line`] refuses to join it to its neighbour.
+    const ATOM_DOT: &str = "'.'";
+    /// See [`ATOM_DOT`].
+    const ATOM_UNDERSCORE: &str = "'_'";
+    /// See [`ATOM_DOT`].
+    const ATOM_DASH: &str = "'-'";
+
+    #[test]
+    fn the_alphabet_needle_survives_a_reorder_and_a_respacing() {
+        let identity_atoms = bare_char_literal_atoms(&format!(
+            "{ALPHABET_CLAUSE_HEAD}{ALPHABET_CLAUSE_TAIL}"
+        ));
+        let expected = {
+            let mut atoms: Vec<char> = [ATOM_DOT, ATOM_UNDERSCORE, ATOM_DASH]
+                .iter()
+                .flat_map(|fragment| bare_char_literal_atoms(fragment))
+                .collect();
+            atoms.sort_unstable();
+            atoms.dedup();
+            atoms
+        };
+        assert_eq!(
+            identity_atoms, expected,
+            "the assembled needle must normalise to the three punctuation atoms"
+        );
+
+        let (dot, underscore, dash) = (ATOM_DOT, ATOM_UNDERSCORE, ATOM_DASH);
+        for equivalent in [
+            // The one surviving production spelling, ranges and all.
+            format!("matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | {dot} | {underscore} | {dash})"),
+            // The WR-03 respelling `advisory::is_plain_component` used to carry.
+            format!("c.is_ascii_alphanumeric() || matches!(c, {dot} | {underscore} | {dash})"),
+            // REORDERED — invisible to the old needle, which is WR-05 itself.
+            format!("matches!(c, {dash} | {underscore} | {dot})"),
+            // RE-SPACED.
+            format!("matches!(c,{dot}|{underscore}|{dash})"),
+            format!("matches!(  c ,  {dot}  |  {underscore}  |  {dash}  )"),
+            // A different range spelling around the same three atoms.
+            format!("matches!(c, '0'..='9' | {dash} | {dot} | {underscore})"),
+        ] {
+            assert_eq!(
+                bare_char_literal_atoms(&equivalent),
+                identity_atoms,
+                "{equivalent:?} spells the identity alphabet's punctuation set \
+                 and must normalise to the same atoms. A census that depends on \
+                 the order the author typed the arms in is a census whose power \
+                 is a coin flip."
+            );
+        }
+
+        // Range ENDPOINTS are not bare atoms. Without this the ranges above
+        // would contribute 'A', 'Z', 'a', 'z', '0', '9' and nothing would ever
+        // compare equal.
+        assert_eq!(
+            bare_char_literal_atoms("matches!(c, 'A'..='Z')"),
+            Vec::<char>::new(),
+            "a `..=` range contributes no bare atoms"
+        );
+    }
+
+    /// **The exclusion, ASSERTED rather than assumed.**
+    ///
+    /// Normalising the needle loosens it, so over-matching is the new failure
+    /// direction and the nearby set this census must NOT count is the one to
+    /// pin. `envelope::advisory::default_branch_of` admits `'/'` in addition to
+    /// the identity alphabet's three punctuation arms, because a branch name
+    /// legitimately carries a path separator and is not an identity —
+    /// `is_plain_component`'s doc says so and collapsing the two would be the
+    /// opposite error to WR-03.
+    ///
+    /// The comparison is an EQUALITY on the whole line's atom set, so four atoms
+    /// are not three and the line is excluded. This test drives the same helper
+    /// the live census consumes, in both directions.
+    #[test]
+    fn the_normalized_needle_still_excludes_the_branch_name_set() {
+        let identity_atoms = bare_char_literal_atoms(&format!(
+            "{ALPHABET_CLAUSE_HEAD}{ALPHABET_CLAUSE_TAIL}"
+        ));
+
+        // Spelled exactly as `advisory::default_branch_of` carries it, and
+        // assembled from the same one-atom fragments so this line is not itself
+        // a census hit.
+        let (dot, underscore, dash) = (ATOM_DOT, ATOM_UNDERSCORE, ATOM_DASH);
+        let branch_line = format!(
+            "            .all(|c| c.is_ascii_alphanumeric() || matches!(c, {dot} | {underscore} | {dash} | '/'))"
+        );
+        let branch_atoms = bare_char_literal_atoms(&branch_line);
+        assert_eq!(
+            branch_atoms.len(),
+            identity_atoms.len() + 1,
+            "the branch-name set is the identity alphabet's punctuation PLUS the \
+             path separator; normalised to {branch_atoms:?}"
+        );
+        assert!(
+            branch_atoms.contains(&'/'),
+            "the extra atom must be the path separator, got {branch_atoms:?}"
+        );
+        assert_ne!(
+            branch_atoms, identity_atoms,
+            "`default_branch_of`'s set admits `'/'` and is a different question \
+             from the identity alphabet. If the census started counting it, the \
+             normalisation has begun over-matching and the equality on a count \
+             would go red for a line that is correct — which sends the reader to \
+             delegate a boundary that must not be collapsed."
+        );
+
+        // And the census, run for real, does not name that file.
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        collect_rs(&base.join("src"), &base, &mut files);
+        let mut counted: Vec<String> = Vec::new();
+        for (path, lines) in &files {
+            for (number, line) in lines {
+                if !line.trim_start().starts_with("//")
+                    && bare_char_literal_atoms(line) == identity_atoms
+                {
+                    counted.push(format!("{path}:{number}"));
+                }
+            }
+        }
+        assert!(
+            !counted.iter().any(|site| site.contains("advisory.rs")),
+            "the census counted a line in `envelope/advisory.rs`, and the only \
+             character-set clause left in that file is `default_branch_of`'s — \
+             which must stay excluded. Counted: {counted:?}"
         );
     }
 

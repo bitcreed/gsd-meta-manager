@@ -203,12 +203,32 @@
 //!    What the walk still answers is "is this adjudicated screen rendered by any
 //!    committed control", and THAT answer is still bounded by source text: a
 //!    screen the walk cannot NAME is a screen whose fixture coverage nobody
-//!    checked. As of this commit the walk is still exactly the line-oriented
-//!    scan CR-05 measured: a `macro_rules!`-generated implementor and a wrapped
-//!    `impl` header are both invisible to it, and an implementor whose name it
-//!    cannot extract is silently `continue`d. **Under-detection, silent.** Those
-//!    three are the subject of 21-26 Task 2, and this limit is re-stated there
-//!    against what that task delivers rather than against what it intends to.
+//!    checked. Three of that residual's known shapes are closed or made loud,
+//!    each against a planted defect:
+//!
+//!    * A **wrapped `impl` header** is no longer a residual: physical lines are
+//!      joined into logical ones by [`join_logical_impl_header`] before the
+//!      needle is looked for. Controlled by
+//!      `a_wrapped_impl_header_is_one_logical_unit`, which drives the same
+//!      helper with the header split at each of the three places it can wrap and
+//!      also pins the join's bound.
+//!    * An **`impl` whose type name the scan cannot extract** — macro-generated,
+//!      or generic — is now an `UNNAMEABLE IMPLEMENTATION` offence naming file
+//!      and line, where it used to be a silent `continue`. It fails the same
+//!      assertion the other offences do.
+//!    * **Two same-named implementors in two files** no longer collapse: the
+//!      derived set and the table are both sets of `(type name, path)` PAIRS
+//!      (IN-01). Controlled by the fourth synthetic direction in
+//!      `the_census_reports_an_unadjudicated_screen_and_a_stale_row`.
+//!
+//!    **What REMAINS, with its direction.** An implementation whose source
+//!    carries no `impl` token the walk recognises at all — one emitted entirely
+//!    by a procedural macro, say — is still invisible to this walk, and so is one
+//!    whose header wraps across more than [`IMPL_HEADER_JOIN_LINES`] physical
+//!    lines. Such a screen still **cannot ship unadjudicated** (the supertrait),
+//!    and if any fixture renders it the probe's assertions still apply — but
+//!    nothing here reports that it HAS no fixture. **Under-detection, silent**,
+//!    and one step narrower than CR-05 found it.
 //!
 //! **Every bound claimed above names a committed control; every residual names
 //! its direction.** Limits 1, 2, 3 and the `Paragraph` half of 4 are residuals
@@ -296,6 +316,69 @@ const IMPL_TAIL: &str = " for ";
 /// One source file: its path relative to the crate root, and its numbered lines.
 type SourceFile = (String, Vec<(usize, String)>);
 
+/// One implementation site the walk could NAME: `(type name, path)`.
+///
+/// **The key is the pair and not the bare type name** (IN-01). Keyed by name
+/// alone, two `Screen`s with the same type name in two different files collapse
+/// to one entry — on BOTH sides, since the table was keyed the same way — and one
+/// implementor goes silently unchecked while the census reports clean. Observed
+/// by planting exactly that: see
+/// [`the_census_reports_an_unadjudicated_screen_and_a_stale_row`](tests::the_census_reports_an_unadjudicated_screen_and_a_stale_row).
+type ScreenSite = (String, String);
+
+/// What the walk found: the sites it could name, and the ones it could not.
+///
+/// **The second field is the point of this struct.** The walk used to
+/// `continue` past an `impl` line whose type name it could not extract, which
+/// is a census being silently short — the exact harm it exists to prevent, one
+/// level down. Those sites are now carried out and reported as their own
+/// offence.
+struct SourceCensus {
+    implementors: std::collections::BTreeSet<ScreenSite>,
+    /// `path:line` for every `impl` whose type name the scan could not extract.
+    unnameable: Vec<String>,
+}
+
+/// How many physical lines a wrapped `impl` header may span before the join
+/// gives up.
+///
+/// Four is generous for a header — the longest in this tree is one line — and
+/// bounded so a file with an unclosed brace cannot make the join swallow the
+/// rest of the file.
+const IMPL_HEADER_JOIN_LINES: usize = 4;
+
+/// Join physical lines from `start` into ONE logical `impl` header.
+///
+/// **A wrapped header is not two lines to the compiler and must not be two
+/// lines here** (CR-05). `impl Screen for\n    NormalScreen {` was invisible to
+/// the old single-line scan, and that invisibility was one of the two spellings
+/// that let the census report ELEVEN while thirteen implementors existed.
+///
+/// The accumulation stops at the body opener `{`, at a blank line, or after
+/// [`IMPL_HEADER_JOIN_LINES`] physical lines. Comment-only continuation lines
+/// are dropped, preserving the property that a doc comment naming the trait
+/// cannot forge a member. The caller keeps the FIRST physical line's number, so
+/// an offence names where a reader should look.
+fn join_logical_impl_header(lines: &[(usize, String)], start: usize) -> String {
+    let mut logical = lines[start].1.trim().to_string();
+    let mut taken = 1;
+    let mut index = start;
+    while !logical.contains('{') && taken < IMPL_HEADER_JOIN_LINES && index + 1 < lines.len() {
+        index += 1;
+        let next = lines[index].1.trim();
+        if next.is_empty() {
+            break;
+        }
+        taken += 1;
+        if next.starts_with("//") {
+            continue;
+        }
+        logical.push(' ');
+        logical.push_str(next);
+    }
+    logical
+}
+
 fn collect(dir: &Path, base: &Path, out: &mut Vec<SourceFile>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -329,16 +412,28 @@ fn collect(dir: &Path, base: &Path, out: &mut Vec<SourceFile>) {
 /// Every type under `src/` that implements the [`Screen`](super::Screen) trait,
 /// mapped to the file it lives in.
 ///
-/// **This is the enumeration, and it is a `read_dir` walk.** The recursive shape
-/// follows `tests/spawn_seam_guard.rs:227-294`: an unreadable entry is skipped
-/// rather than panicked on, paths are relative to `CARGO_MANIFEST_DIR`, and
-/// lines whose trimmed form opens a line comment are dropped so a doc comment
-/// naming the trait cannot forge a member.
+/// **NARROWED 2026-08-27 (21-26). This is NO LONGER what makes adjudication
+/// mandatory** — the sealed [`RenderAdjudicated`](super::RenderAdjudicated)
+/// supertrait is, and it is blind to source formatting because it is a property
+/// of the type. What this walk answers is the different question the compiler
+/// does not: which adjudicated screens have a probe FIXTURE.
+///
+/// The recursive shape follows `tests/spawn_seam_guard.rs:227-294`: an
+/// unreadable entry is skipped rather than panicked on, paths are relative to
+/// `CARGO_MANIFEST_DIR`, and lines whose trimmed form opens a line comment are
+/// dropped so a doc comment naming the trait cannot forge a member.
+///
+/// Its floor was raised in the same commit that narrowed its job, because a
+/// narrowed job can still miss: physical lines are joined by
+/// [`join_logical_impl_header`] so a wrapped header is one unit, and an `impl`
+/// whose type name cannot be extracted is carried out in
+/// [`SourceCensus::unnameable`] and REPORTED rather than skipped. LIMIT 6 of the
+/// module doc states what still gets past it and in which direction.
 ///
 /// It asserts that it found production source at all — the non-vacuity floor
 /// `source_files` already carries — so a walk that looked at nothing cannot
 /// report clean.
-fn screen_implementors_from_source() -> BTreeMap<String, String> {
+fn screen_implementors_from_source() -> SourceCensus {
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     collect(&base.join(SRC_ROOT), &base, &mut files);
@@ -351,34 +446,46 @@ fn screen_implementors_from_source() -> BTreeMap<String, String> {
     files.sort_by(|a, b| a.0.cmp(&b.0));
 
     let needle = format!("{IMPL_HEAD}{IMPL_TAIL}");
-    let mut found: BTreeMap<String, String> = BTreeMap::new();
+    let mut implementors: std::collections::BTreeSet<ScreenSite> =
+        std::collections::BTreeSet::new();
+    let mut unnameable: Vec<String> = Vec::new();
     for (path, lines) in &files {
-        for (_, line) in lines {
+        for (index, (number, line)) in lines.iter().enumerate() {
             let trimmed = line.trim_start();
             if trimmed.starts_with("//") || !trimmed.starts_with("impl") {
                 continue;
             }
-            let Some(at) = trimmed.find(&needle) else {
+            // JOINED, not the physical line (CR-05). A header wrapped across two
+            // lines is one logical unit here exactly as it is to the compiler.
+            let logical = join_logical_impl_header(lines, index);
+            let Some(at) = logical.find(&needle) else {
                 continue;
             };
-            let name: String = trimmed[at + needle.len()..]
+            let name: String = logical[at + needle.len()..]
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
             if name.is_empty() {
+                // REPORTED, never skipped. `continue` here is a census going
+                // quietly short, which is the harm this module exists to
+                // prevent.
+                unnameable.push(format!("{path}:{number}"));
                 continue;
             }
-            found.insert(name, path.clone());
+            implementors.insert((name, path.clone()));
         }
     }
     assert!(
-        !found.is_empty(),
+        !implementors.is_empty(),
         "the census walked {} source files and found no trait implementors at \
          all. Either the trait was renamed or the needle stopped matching; \
          either way this census is now enumerating nothing.",
         files.len()
     );
-    found
+    SourceCensus {
+        implementors,
+        unnameable,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -394,32 +501,57 @@ fn screen_implementors_from_source() -> BTreeMap<String, String> {
 /// `the_census_reports_an_unadjudicated_screen_and_a_stale_row` drives this same
 /// function with synthetic pairs in both directions.
 fn census_offences(
-    derived: &BTreeMap<String, String>,
-    table: &BTreeMap<String, String>,
+    derived: &std::collections::BTreeSet<ScreenSite>,
+    table: &std::collections::BTreeSet<ScreenSite>,
+    unnameable: &[String],
 ) -> Vec<String> {
     let mut offences = Vec::new();
-    for (name, path) in derived {
-        match table.get(name) {
-            None => offences.push(format!(
-                "UNADJUDICATED IMPLEMENTOR: `{name}` (in {path}) implements the \
-                 trait but no row adjudicates whether it renders identity. A \
-                 screen nobody adjudicated is a screen nobody escaped. Add a row \
-                 to SCREEN_IDENTITY_DISPOSITIONS stating which values it draws \
-                 and where they come from."
-            )),
-            Some(recorded) if recorded != path => offences.push(format!(
-                "RELOCATED IMPLEMENTOR: `{name}` is adjudicated at {recorded} but \
-                 the walk found it at {path}. The row's reason was written about \
-                 a file that no longer holds it; re-read the render and re-state \
-                 the adjudication."
-            )),
-            Some(_) => {}
+
+    let paths_recorded_for = |name: &str, set: &std::collections::BTreeSet<ScreenSite>| {
+        set.iter()
+            .filter(|(candidate, _)| candidate == name)
+            .map(|(_, path)| path.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for site in derived {
+        if table.contains(site) {
+            continue;
+        }
+        let (name, path) = site;
+        let recorded = paths_recorded_for(name, table);
+        if recorded.is_empty() {
+            offences.push(format!(
+                "UNFIXTURED IMPLEMENTOR: `{name}` (in {path}) implements the \
+                 trait but no row gives it a probe fixture, so nothing renders \
+                 it and its adjudication is never CHECKED against a real render. \
+                 Add a row to SCREEN_IDENTITY_DISPOSITIONS and an arm to \
+                 `fixture_for`. (Renamed 2026-08-27 from `UNADJUDICATED \
+                 IMPLEMENTOR`: since 21-26 an unadjudicated screen does not \
+                 compile at all, so this message can no longer be about \
+                 adjudication without lying about which mechanism failed.)"
+            ));
+        } else {
+            offences.push(format!(
+                "RELOCATED IMPLEMENTOR: `{name}` has a fixture row at {recorded:?} \
+                 but the walk found an implementation at {path}. Either the \
+                 screen moved and the row's path outlived it, or there are TWO \
+                 same-named implementors in different files and only one of them \
+                 is fixtured. The census keys on (type name, path) precisely so \
+                 the second case cannot collapse into the first and go unchecked \
+                 (IN-01); re-read the render and re-state the row."
+            ));
         }
     }
-    for (name, path) in table {
-        if !derived.contains_key(name) {
+
+    for site in table {
+        if derived.contains(site) {
+            continue;
+        }
+        let (name, path) = site;
+        if paths_recorded_for(name, derived).is_empty() {
             offences.push(format!(
-                "STALE ROW: `{name}` is adjudicated at {path} but the walk found \
+                "STALE ROW: `{name}` has a fixture row at {path} but the walk found \
                  no such implementor. Either the screen was deleted and the row \
                  outlived it, or the walk stopped reaching it — and a table that \
                  outlives its subject is how a reader is told a surface is \
@@ -427,10 +559,24 @@ fn census_offences(
             ));
         }
     }
+
+    for site in unnameable {
+        offences.push(format!(
+            "UNNAMEABLE IMPLEMENTATION: an implementation of the trait at {site} \
+             has a type name this scan cannot extract — it is macro-generated, or \
+             carries a generic parameter, or is spelled in some way the extractor \
+             does not handle. It COMPILES, so it is adjudicated: the sealed \
+             supertrait saw to that. What nobody has checked is whether it has a \
+             probe fixture, which is this walk's whole remaining job. Give it a \
+             row in SCREEN_IDENTITY_DISPOSITIONS and an arm in `fixture_for` by \
+             hand, or this census is silently short by one."
+        ));
+    }
+
     offences
 }
 
-fn disposition_table() -> BTreeMap<String, String> {
+fn disposition_table() -> std::collections::BTreeSet<ScreenSite> {
     SCREEN_IDENTITY_DISPOSITIONS
         .iter()
         .map(|(name, path)| ((*name).to_string(), (*path).to_string()))
@@ -1530,48 +1676,141 @@ mod tests {
     /// every failure this phase has found.
     #[test]
     fn the_census_reports_an_unadjudicated_screen_and_a_stale_row() {
-        let derived: BTreeMap<String, String> = [
-            ("Adjudicated".to_string(), "src/a.rs".to_string()),
-            ("NobodyJudgedMe".to_string(), "src/b.rs".to_string()),
-        ]
-        .into_iter()
-        .collect();
-        let table: BTreeMap<String, String> = [
-            ("Adjudicated".to_string(), "src/a.rs".to_string()),
-            ("IOutlivedMySubject".to_string(), "src/c.rs".to_string()),
-        ]
-        .into_iter()
-        .collect();
+        use std::collections::BTreeSet;
 
-        let offences = census_offences(&derived, &table);
+        let site = |name: &str, path: &str| (name.to_string(), path.to_string());
+
+        let derived: BTreeSet<ScreenSite> = [
+            site("Fixtured", "src/a.rs"),
+            site("NobodyFixturedMe", "src/b.rs"),
+            // IN-01: the SAME type name in a SECOND file. Keyed on the bare name
+            // this pair collapsed into the row below and the census reported
+            // clean; keyed on the pair it is reported.
+            site("Fixtured", "src/twin.rs"),
+        ]
+        .into_iter()
+        .collect();
+        let table: BTreeSet<ScreenSite> = [
+            site("Fixtured", "src/a.rs"),
+            site("IOutlivedMySubject", "src/c.rs"),
+        ]
+        .into_iter()
+        .collect();
+        let unnameable = vec!["src/macro_generated.rs:42".to_string()];
+
+        let offences = census_offences(&derived, &table, &unnameable);
 
         assert_eq!(
             offences.len(),
-            2,
-            "the comparison must report both harms and only those two, got: {offences:#?}"
+            4,
+            "the comparison must report all four harms and only those four, \
+             got: {offences:#?}"
         );
         assert!(
             offences
                 .iter()
-                .any(|o| o.starts_with("UNADJUDICATED IMPLEMENTOR") && o.contains("NobodyJudgedMe")),
-            "a derived member absent from the table is a screen nobody \
-             adjudicated and must be reported as that, got: {offences:#?}"
+                .any(|o| o.starts_with("UNFIXTURED IMPLEMENTOR")
+                    && o.contains("NobodyFixturedMe")),
+            "a derived pair whose NAME the table does not carry at all is a \
+             screen with no probe fixture and must be reported as that, got: \
+             {offences:#?}"
+        );
+        assert!(
+            offences
+                .iter()
+                .any(|o| o.starts_with("RELOCATED IMPLEMENTOR") && o.contains("src/twin.rs")),
+            "a SECOND implementor with the same type name in a different file \
+             must be reported. Under the old bare-name key it collapsed into the \
+             first and went silently unchecked — that is IN-01, and this arm is \
+             the control for it. Got: {offences:#?}"
         );
         assert!(
             offences
                 .iter()
                 .any(|o| o.starts_with("STALE ROW") && o.contains("IOutlivedMySubject")),
             "a table member absent from the tree is a stale row and must be \
-             reported as that — the two harms are different and a message that \
+             reported as that — the harms are different and a message that \
              conflates them tells the reader to fix the wrong end, got: \
              {offences:#?}"
         );
+        assert!(
+            offences
+                .iter()
+                .any(|o| o.starts_with("UNNAMEABLE IMPLEMENTATION")
+                    && o.contains("src/macro_generated.rs:42")),
+            "an `impl` whose type name the scan cannot extract must be REPORTED \
+             with its file and line, never `continue`d. A census that skips what \
+             it cannot name is a census that is silently short, which is the harm \
+             this module exists to prevent one level down. Got: {offences:#?}"
+        );
 
         // The clean direction, so "reports something" is not mistaken for
-        // "reports everything".
+        // "reports everything". Note the empty `unnameable`: a walk that named
+        // everything it found must report nothing on that axis either.
         assert!(
-            census_offences(&derived, &derived).is_empty(),
-            "a set compared against itself must report nothing"
+            census_offences(&derived, &derived, &[]).is_empty(),
+            "a set compared against itself, with nothing unnameable, must report \
+             nothing"
+        );
+    }
+
+    /// A wrapped `impl` header is ONE logical unit (CR-05).
+    ///
+    /// This drives the same [`join_logical_impl_header`] the live walk consumes,
+    /// with the header split at each of the three places it can wrap, and
+    /// asserts the needle is found in the joined form and absent from the first
+    /// physical line. The `false` direction is the point: without it the test
+    /// would pass against a join that simply concatenated the whole file.
+    #[test]
+    fn a_wrapped_impl_header_is_one_logical_unit() {
+        let needle = format!("{IMPL_HEAD}{IMPL_TAIL}");
+
+        let numbered = |source: &[&str]| -> Vec<(usize, String)> {
+            source
+                .iter()
+                .enumerate()
+                .map(|(index, line)| (index + 1, (*line).to_string()))
+                .collect()
+        };
+
+        for wrapped in [
+            vec!["impl Screen for", "    WrappedScreen {", "}"],
+            vec!["impl", "    Screen for WrappedScreen {", "}"],
+            vec!["impl Screen", "    for WrappedScreen {", "}"],
+        ] {
+            let lines = numbered(&wrapped);
+            assert!(
+                !lines[0].1.contains(&needle) || !lines[0].1.contains("WrappedScreen"),
+                "the first physical line of {wrapped:?} must not carry the whole \
+                 header, or this case is not testing a wrap at all"
+            );
+            let logical = join_logical_impl_header(&lines, 0);
+            let at = logical.find(&needle).unwrap_or_else(|| {
+                panic!("the joined header {logical:?} from {wrapped:?} does not carry the needle")
+            });
+            let name: String = logical[at + needle.len()..]
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            assert_eq!(
+                name, "WrappedScreen",
+                "the joined header {logical:?} from {wrapped:?} must yield the \
+                 implementor's name"
+            );
+        }
+
+        // The bound, so the join cannot swallow a file. A header that never
+        // opens a body stops after IMPL_HEADER_JOIN_LINES physical lines.
+        let runaway: Vec<&str> = std::iter::once("impl")
+            .chain(std::iter::repeat_n("    filler", 20))
+            .collect();
+        let joined = join_logical_impl_header(&numbered(&runaway), 0);
+        assert_eq!(
+            joined.matches("filler").count(),
+            IMPL_HEADER_JOIN_LINES - 1,
+            "the join must stop after {IMPL_HEADER_JOIN_LINES} physical lines; \
+             an unbounded join would let one unclosed brace make the census \
+             read the rest of the file as one header. Joined: {joined:?}"
         );
     }
 
@@ -1649,19 +1888,20 @@ mod tests {
     /// both ways.
     #[test]
     fn the_screen_census_matches_the_tree() {
-        let derived = screen_implementors_from_source();
+        let census = screen_implementors_from_source();
         let table = disposition_table();
 
-        let offences = census_offences(&derived, &table);
+        let offences = census_offences(&census.implementors, &table, &census.unnameable);
         assert!(
             offences.is_empty(),
-            "the derived render surface and the disposition table disagree:\n\n{}",
+            "the derived render surface and the fixture map disagree:\n\n{}",
             offences.join("\n\n")
         );
 
         assert_eq!(
-            derived, table,
-            "the walk's set and the table's set must be equal in both directions"
+            census.implementors, table,
+            "the walk's set of (type name, path) pairs and the fixture map's set \
+             must be equal in both directions"
         );
     }
 
