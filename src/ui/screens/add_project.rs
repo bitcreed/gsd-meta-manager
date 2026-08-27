@@ -237,10 +237,14 @@ fn render_input_footer(frame: &mut Frame, area: Rect, ctx: &AppContext, label: &
     // to the path canonicaliser byte-for-byte by the key handler above; only the
     // echo changes. An invisible character pasted into this field would
     // otherwise be invisible in the one place the operator could still catch it.
+    //
+    // Both halves, through the ONE composition (WR-05): a paste can carry a raw
+    // `ESC` as easily as a `U+202E`, and `ctx.error_message` is also produced by
+    // non-TUI paths. See `crate::ui::tests` for the census that keeps this true.
     let mut spans = vec![
         Span::raw(format!("{}: ", label)),
         Span::styled(
-            crate::text::display_identity(&ctx.input_buffer),
+            crate::text::render_for_terminal(&ctx.input_buffer),
             Style::default().add_modifier(Modifier::UNDERLINED),
         ),
         Span::raw("_"),
@@ -253,7 +257,7 @@ fn render_input_footer(frame: &mut Frame, area: Rect, ctx: &AppContext, label: &
         // sentence it came from.
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
-            crate::text::display_identity(err),
+            crate::text::render_for_terminal(err),
             Style::default().fg(Color::Red),
         ));
     }

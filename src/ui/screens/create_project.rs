@@ -85,8 +85,8 @@ impl Screen for CreateProjectScreen {
                 // last-chance prompt is escaped.
                 let prompt = format!(
                     "Create \"{}\" at {}? [y/n]",
-                    crate::text::display_identity(name),
-                    crate::text::display_identity(&path.display().to_string())
+                    crate::text::render_for_terminal(name),
+                    crate::text::render_for_terminal(&path.display().to_string())
                 );
                 let line = Line::from(Span::styled(prompt, Style::default().fg(Color::Yellow)));
                 frame.render_widget(Paragraph::new(line), chunks[1]);
@@ -259,10 +259,12 @@ fn render_input_footer(frame: &mut Frame, area: Rect, ctx: &AppContext, label: &
     // `ctx.input_buffer` raw, unchanged. The name becomes a directory, so an
     // invisible character in it is an identity difference the operator cannot
     // see at the one moment they could still refuse it.
+    //
+    // Both halves, through the ONE composition (WR-05). See `crate::ui::tests`.
     let mut spans = vec![
         Span::raw(format!("{}: ", label)),
         Span::styled(
-            crate::text::display_identity(&ctx.input_buffer),
+            crate::text::render_for_terminal(&ctx.input_buffer),
             Style::default().add_modifier(Modifier::UNDERLINED),
         ),
         Span::raw("_"),
@@ -271,7 +273,7 @@ fn render_input_footer(frame: &mut Frame, area: Rect, ctx: &AppContext, label: &
     if let Some(err) = &ctx.error_message {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
-            crate::text::display_identity(err),
+            crate::text::render_for_terminal(err),
             Style::default().fg(Color::Red),
         ));
     }

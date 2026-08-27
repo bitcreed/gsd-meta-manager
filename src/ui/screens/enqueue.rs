@@ -118,10 +118,14 @@ impl Screen for EnqueueScreen {
         // `ctx.input_buffer` raw. Only the echo is escaped — and this field is
         // not always something the operator typed, because `Tab` fills it from
         // `queue_md::suggest_next_commands`, a function of the project's parsed
-        // `.planning/` state.
+        // `.planning/` state — which is third-party text under SAFE-07 and can
+        // carry a raw `ESC` as easily as a `U+202E`.
+        //
+        // Both halves, through the ONE composition (WR-05). See
+        // `crate::ui::tests` for the census that keeps this true.
         let footer = Paragraph::new(Line::from(vec![
             Span::styled("  Enqueue> ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(crate::text::display_identity(&ctx.input_buffer)),
+            Span::raw(crate::text::render_for_terminal(&ctx.input_buffer)),
             Span::styled(
                 "  [Tab] suggestions  [Enter] queue  [Esc] cancel",
                 Style::default().fg(Color::DarkGray),
