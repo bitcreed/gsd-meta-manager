@@ -1234,26 +1234,52 @@ mod tests {
                      chains, so it is a route in its own right"
                 );
 
-                let expected: String = hostile
+                // **Per CHARACTER, not over a concatenation** (WR-08,
+                // D-21-46). This used to build one expected string by
+                // concatenating the marker of every invisible character in the
+                // fixture with no separator, and then assert `contains` on it.
+                // That passed only because every `LOOK_ALIKE_PAIRS` member
+                // carried exactly ONE such character, which makes the
+                // concatenation and the single marker the same string. A
+                // fixture carrying TWO makes the expected value `U+200BU+00AD`
+                // — a form a CORRECT rendering never produces, because the
+                // markers are separated by the visible characters between them
+                // — so the test went red for a right implementation. Observed:
+                // index 6 of `LOOK_ALIKE_PAIRS` produced
+                //   does not carry "U+200BU+00AD" ... It reads
+                //   "UnknownAlias { alias: Untrusted(\"dU+200BemoU+00AD\") }"
+                // against an implementation that is doing exactly the right
+                // thing.
+                //
+                // The non-vacuity assertion above is UNCHANGED and is still
+                // load-bearing: without it a fixture carrying no invisible
+                // character would make this loop body execute zero times and the
+                // test would pass by silence — which is the failure mode this
+                // whole phase is named after.
+                let invisible: Vec<char> = hostile
                     .chars()
                     .filter(|c| is_invisible_formatting_char(*c))
-                    .map(|c| format!("U+{:04X}", c as u32))
                     .collect();
                 assert!(
-                    !expected.is_empty(),
+                    !invisible.is_empty(),
                     "the fixture {hostile:?} carries no invisible-class character, \
                      so this assertion would be vacuous — LOOK_ALIKE_PAIRS' \
                      second member is supposed to be the hostile one"
                 );
-                assert!(
-                    debug.contains(&expected),
-                    "{name}'s `{{:?}}` does not carry {expected:?} — this \
-                     project's own notation for {hostile:?}. It reads {debug:?} \
-                     instead, which means the escape came from \
-                     `core::char::is_printable` (an unpinned std table that is a \
-                     second spelling of a class this project derives) rather than \
-                     from `crate::text::Untrusted`'s hand-written `Debug`"
-                );
+                for c in invisible {
+                    let expected = format!("U+{:04X}", c as u32);
+                    assert!(
+                        debug.contains(&expected),
+                        "{name}'s `{{:?}}` does not carry {expected:?} — this \
+                         project's own notation for U+{:04X} in {hostile:?}. It \
+                         reads {debug:?} instead, which means the escape came \
+                         from `core::char::is_printable` (an unpinned std table \
+                         that is a second spelling of a class this project \
+                         derives) rather than from `crate::text::Untrusted`'s \
+                         hand-written `Debug`",
+                        c as u32
+                    );
+                }
             }
         }
     }
