@@ -428,8 +428,14 @@ impl Rendered {
 }
 
 impl std::fmt::Display for Rendered {
+    /// Uses [`Formatter::pad`], **not** `write_str`, so that format specs are
+    /// honoured. `write_str` silently ignores width/fill/alignment, which made
+    /// `{:<20}` on a `Rendered` emit no padding at all — `list` printed
+    /// `clean /tmp` where it had printed `clean                /tmp` before the
+    /// carrier landed. Found by binary measurement during 21-24; no test
+    /// asserted `list`'s column alignment, so nothing went red for it.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.pad(&self.0)
     }
 }
 
@@ -576,6 +582,38 @@ impl std::fmt::Debug for Untrusted {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A control for `Display for Rendered`, in both directions.**
+    ///
+    /// `Rendered`'s `Display` must route through `Formatter::pad`, not
+    /// `write_str`. `write_str` ignores width/fill/alignment entirely, so
+    /// `{:<20}` emitted the bare string and `list`'s columns collapsed. That
+    /// regression shipped through wave 1 and was found by binary measurement
+    /// in 21-24, not by a test — nothing in the tree asserted alignment.
+    ///
+    /// Planted red: reverting the impl body to `f.write_str(&self.0)` fails the
+    /// padded assertion below. The unpadded assertion is the other direction —
+    /// it fails if `pad` were ever given a spurious default width, so this
+    /// cannot be satisfied by a formatter that pads unconditionally.
+    #[test]
+    fn rendered_display_honours_the_format_spec_in_both_directions() {
+        let r = render_for_terminal("clean");
+        assert_eq!(
+            format!("{r:<20}"),
+            "clean               ",
+            "width/alignment must be honoured — `write_str` silently drops the spec"
+        );
+        assert_eq!(
+            format!("{r:>8}"),
+            "   clean",
+            "right alignment must be honoured too, not just left"
+        );
+        assert_eq!(
+            format!("{r}"),
+            "clean",
+            "with no spec the output must be exactly the escaped string, unpadded"
+        );
+    }
 
     /// **Both directions, and the acceptances matter as much as the refusals.**
     /// A predicate that refused everything would satisfy every blank-payload pin
