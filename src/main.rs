@@ -235,21 +235,20 @@ async fn main() -> anyhow::Result<()> {
                     // alias at 512 characters and append an ellipsis, which is a
                     // display cap for agent prose, not for a project name.
                     //
-                    // **`.to_string()` is load-bearing here and is not
-                    // cosmetic.** `Rendered`'s `Display` is
-                    // `f.write_str(&self.0)`, which IGNORES the formatter's
-                    // width and fill — so `{:<20}` applied to a `Rendered`
-                    // silently emits no padding at all and this table loses its
-                    // columns. Measured: the first `render_for_terminal` here
-                    // printed `clean /tmp` where it had printed
-                    // `clean                /tmp`. The correct fix is
-                    // `f.pad(&self.0)` in `impl Display for Rendered`, but
-                    // `src/text.rs` belongs to plan `21-23` and is off-limits to
-                    // this plan's diff, so it is reported as a wave-conflict
-                    // finding and worked around at this one call site instead.
+                    // The `{:<20}` below is honoured because `Rendered`'s
+                    // `Display` uses `f.pad(&self.0)`, not `write_str` —
+                    // `write_str` ignores the formatter's width and fill, so
+                    // this table silently lost its columns (`clean /tmp` where
+                    // it had printed `clean                /tmp`). 21-24 found
+                    // that by binary measurement and worked around it here with
+                    // a `.to_string()`, because `src/text.rs` was outside its
+                    // plan's diff; commit `7bf8f6b` fixed it at the source and
+                    // added `rendered_display_honours_the_format_spec_in_both_directions`
+                    // to certify it, so the workaround is gone and the padding
+                    // is now the type's own behaviour.
                     println!(
                         "{:<20} {:<50} {}",
-                        gsd_meta_manager::text::render_for_terminal(alias).to_string(),
+                        gsd_meta_manager::text::render_for_terminal(alias),
                         project.path.display(),
                         project.added
                     );
