@@ -156,14 +156,21 @@ impl DrivableProject {
         alias: &str,
         project: &RegisteredProject,
     ) -> Result<DrivableProject, OptInError> {
+        // The three refusals below wrap the alias in `crate::text::Untrusted`
+        // (`21-24`). This function is handed a `&str` that came out of
+        // `config.projects`' keys — rows an older build may have registered
+        // before the identity alphabet existed — so it is precisely a string
+        // this build did not author. Wrapping HERE, at the construction of the
+        // error, is what makes the escape a property of the value rather than
+        // of whichever surface happens to print it.
         let Some(opt_in) = project.driver_opt_in.as_ref() else {
             return Err(OptInError::NotOptedIn {
-                alias: alias.to_string(),
+                alias: crate::text::Untrusted::from_untrusted_source(alias.to_string()),
             });
         };
         if !project.path.is_dir() {
             return Err(OptInError::RootUnusable {
-                alias: alias.to_string(),
+                alias: crate::text::Untrusted::from_untrusted_source(alias.to_string()),
                 root: project.path.clone(),
             });
         }
@@ -179,7 +186,7 @@ impl DrivableProject {
         // problem is that it has moved.
         if let Some(drift) = crate::registry::check_prompt_input_drift(&project.path, opt_in) {
             return Err(OptInError::PromptInputsDrifted {
-                alias: alias.to_string(),
+                alias: crate::text::Untrusted::from_untrusted_source(alias.to_string()),
                 drift,
             });
         }
@@ -900,8 +907,11 @@ mod tests {
             .expect_err("a project with no opt-in record must never yield a token");
         assert_eq!(
             err,
+            // Only the CONSTRUCTION changed for `21-24`'s retype — the expected
+            // variant and the expected value are byte-identical to what this
+            // assertion demanded before.
             OptInError::NotOptedIn {
-                alias: "demo".to_string()
+                alias: crate::text::Untrusted::from_untrusted_source("demo".to_string())
             },
             "registration is not opt-in; driving requires a deliberate record (D-14)"
         );
@@ -924,8 +934,9 @@ mod tests {
             .expect_err("a stale registry entry must not spawn an agent against a vanished path");
         assert_eq!(
             err,
+            // Construction only; the expectation is unchanged.
             OptInError::RootUnusable {
-                alias: "demo".to_string(),
+                alias: crate::text::Untrusted::from_untrusted_source("demo".to_string()),
                 root: missing,
             }
         );
