@@ -127,13 +127,38 @@ impl<'a> Widget for RoadmapWidget<'a> {
                 // phase name is read off disk. That was a reachable panic for as
                 // long as the slice was written that way.
                 //
+                // Both halves, through the ONE composition (WR-05): a
+                // `.planning/ROADMAP.md` this build did not author can carry a
+                // raw `ESC` exactly as easily as a `U+202E`, and this file used
+                // to apply only the invisible-formatting half. See
+                // `crate::ui::tests` for the census that keeps this true.
+                //
+                // **The width arithmetic below is DELIBERATELY UNTOUCHED.**
+                // `chars().count()` is not display width and the truncation can
+                // split a grapheme cluster; both are recorded as IN-02 and IN-03
+                // in this phase's `deferred-items.md` with their reasons, and
+                // both are outside round 10's scope. The conversion changes
+                // WHICH function escapes, not how the result is measured — read
+                // the untouched arithmetic as a deferral, not an oversight.
+                //
+                // Neither site is an `Into<Cow>` sink: both measure and truncate
+                // the escaped form by `char`. `name_shown` therefore takes the
+                // `Rendered` into a `String` through the `From<Rendered> for
+                // String` that `text.rs` provides for exactly this — the
+                // carrier's documented trait surface, not a `.to_string()`
+                // workaround.
+                //
                 // Available space for name: box_width - 2 (vert chars) - icon(1) - space(1) - "P##:"(~4) - space(1) - plan_display - space(1)
-                let prefix = format!("{} P{}: ", icon, crate::text::display_identity(&phase.number));
+                let prefix = format!(
+                    "{} P{}: ",
+                    icon,
+                    crate::text::render_for_terminal(&phase.number)
+                );
                 let suffix = format!("  {}", plan_display);
                 let inner_width = box_width.saturating_sub(2); // content between vertical bars
                 let name_max = inner_width.saturating_sub(prefix.chars().count() + suffix.chars().count());
 
-                let name_shown = crate::text::display_identity(&phase.name);
+                let name_shown: String = crate::text::render_for_terminal(&phase.name).into();
                 let name_truncated = if name_shown.chars().count() > name_max {
                     format!(
                         "{}...",

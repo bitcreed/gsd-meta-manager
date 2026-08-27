@@ -192,9 +192,12 @@ impl Screen for DriverInjectScreen {
         // `std::mem::take(&mut ctx.input_buffer)` — the raw bytes, verbatim,
         // because a steering message is free prose and the agent must receive
         // what the human wrote. Only the echo is escaped.
+        //
+        // Both halves, through the ONE composition (WR-05). See
+        // `crate::ui::tests` for the census that keeps this true.
         let footer = Paragraph::new(Line::from(vec![
             Span::styled("  Inject> ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(crate::text::display_identity(&ctx.input_buffer)),
+            Span::raw(crate::text::render_for_terminal(&ctx.input_buffer)),
             Span::raw("_"),
             Span::styled(FOOTER_HINT, Style::default().fg(Color::DarkGray)),
         ]));

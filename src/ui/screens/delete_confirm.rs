@@ -85,9 +85,14 @@ impl Screen for DeleteConfirmScreen {
         // was asked. Measured: ratatui's buffer DROPS the zero-width bytes of a
         // legacy key, so `"gsd-\u{200b}run"` reads as `gsd-run` and can collide
         // with a real project of that name.
+        //
+        // Both halves, through the ONE composition (WR-05): a registry key an
+        // older build accepted can carry a raw `ESC` as easily as a `U+200B`,
+        // and this is the last thing a human reads before an irreversible act.
+        // See `crate::ui::tests` for the census that keeps this true.
         let prompt = format!(
             "Remove \"{}\"? This only unregisters it \u{2014} project files are not deleted. [y/n]",
-            crate::text::display_identity(&self.alias)
+            crate::text::render_for_terminal(&self.alias)
         );
         let line = Line::from(Span::styled(prompt, Style::default().fg(Color::Red)));
         frame.render_widget(Paragraph::new(line), chunks[1]);
@@ -126,7 +131,7 @@ fn do_remove_project(ctx: &mut AppContext, alias: &str) {
                 "'{}' still has a driver run ({}) that is not known to be \
                  finished. Press 'x' to stop it first — unregistering now would \
                  leave it running with no way back to it from here",
-                crate::text::display_identity(alias),
+                crate::text::render_for_terminal(alias),
                 run.run_id
             ));
             ctx.needs_redraw = true;
@@ -180,7 +185,7 @@ fn do_remove_project(ctx: &mut AppContext, alias: &str) {
             // `alias`; only this toast is escaped, because only this toast is
             // read by a person.
             ctx.status_message = Some((
-                format!("Removed \"{}\"", crate::text::display_identity(alias)),
+                format!("Removed \"{}\"", crate::text::render_for_terminal(alias)),
                 std::time::Instant::now(),
             ));
 

@@ -332,12 +332,17 @@ impl Screen for DriverStartScreen {
         // byte-identical to what was typed. Only these two echo rows are
         // escaped, because a command with an invisible character in it is a
         // command the operator cannot tell apart from the one they meant.
+        //
+        // Both halves, through the ONE composition (WR-05): `self.command` can
+        // come from a `gsd-tools smart-entry` subprocess rather than from the
+        // keyboard, so a raw `ESC` is as available to it as a `U+202E`. See
+        // `crate::ui::tests` for the census that keeps this true.
         let (command_row, goal_row) = match self.step {
             StartStep::Command => (
                 // Active: prompt BOLD, buffer default, caret, hints DarkGray.
                 Line::from(vec![
                     Span::styled(COMMAND_PROMPT, bold),
-                    Span::raw(crate::text::display_identity(&ctx.input_buffer)),
+                    Span::raw(crate::text::render_for_terminal(&ctx.input_buffer)),
                     Span::raw("_"),
                     Span::styled(COMMAND_HINT, hint),
                 ]),
@@ -349,11 +354,11 @@ impl Screen for DriverStartScreen {
                 // Already answered: DarkGray, showing the committed command.
                 Line::from(vec![
                     Span::styled(COMMAND_PROMPT, hint),
-                    Span::styled(crate::text::display_identity(&self.command), hint),
+                    Span::styled(crate::text::render_for_terminal(&self.command), hint),
                 ]),
                 Line::from(vec![
                     Span::styled(GOAL_PROMPT, bold),
-                    Span::raw(crate::text::display_identity(&ctx.input_buffer)),
+                    Span::raw(crate::text::render_for_terminal(&ctx.input_buffer)),
                     Span::raw("_"),
                     Span::styled(GOAL_HINT, hint),
                 ]),

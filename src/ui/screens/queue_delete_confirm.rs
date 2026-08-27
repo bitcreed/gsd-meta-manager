@@ -87,29 +87,8 @@ impl Screen for QueueDeleteConfirmScreen {
         detail.render_main_only(frame, chunks[0], ctx);
 
         // Red confirmation prompt in footer.
-        //
-        // The split: `self.command_text` is only ever RENDERED — the removal in
-        // `handle_key` is by `self.index` into the queue file, never by this
-        // string — so escaping it changes nothing about what is deleted. It is
-        // read from the project's `.planning/queue.md`, which is third-party
-        // text under SAFE-07, and it is the name in a destructive [y/n] prompt.
-        //
-        // Escape BEFORE truncating, and truncate by `char` rather than by byte:
-        // `&s[..47]` panics when byte 47 is not a char boundary, and this string
-        // comes off disk. That was a reachable panic — a denial of service
-        // driven by a file the tool does not own — for as long as the slice was
-        // written that way.
-        const CAP: usize = 50;
-        const KEEP: usize = 47;
-        let escaped = crate::text::display_identity(&self.command_text);
-        let display_text = if escaped.chars().count() > CAP {
-            format!("{}...", escaped.chars().take(KEEP).collect::<String>())
-        } else {
-            escaped
-        };
-        let prompt = format!("  Remove \"{}\" from queue? [y/n]", display_text,);
         let line = Line::from(Span::styled(
-            prompt,
+            prompt_text(&self.command_text),
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ));
         frame.render_widget(Paragraph::new(line), footer_area);
@@ -118,4 +97,44 @@ impl Screen for QueueDeleteConfirmScreen {
     fn name(&self) -> &str {
         "queue_delete_confirm"
     }
+}
+
+/// The exact string the destructive confirm footer draws.
+///
+/// **Extracted so the two-direction conversion pin can drive it** (WR-05), in
+/// the same shape `driver_confirm::prompt_text` already has: a `Screen::render`
+/// needs a `Frame` and an `AppContext`, and the tree's only `AppContext` fixture
+/// is `pub(super)` inside `ui::screens::tests`, so a prompt built inline in
+/// `render` is not reachable from `crate::ui`'s census module. Nothing about the
+/// behaviour changed in the extraction; the escape, the cap and the truncation
+/// are carried across verbatim.
+///
+/// The split: `command_text` is only ever RENDERED — the removal in `handle_key`
+/// is by `self.index` into the queue file, never by this string — so escaping it
+/// changes nothing about what is deleted. It is read from the project's
+/// `.planning/queue.md`, which is third-party text under SAFE-07, and it is the
+/// name in a destructive [y/n] prompt.
+///
+/// Escape BEFORE truncating, and truncate by `char` rather than by byte:
+/// `&s[..47]` panics when byte 47 is not a char boundary, and this string comes
+/// off disk. That was a reachable panic — a denial of service driven by a file
+/// the tool does not own — for as long as the slice was written that way.
+///
+/// Both halves, through the ONE composition (WR-05). This site is NOT an
+/// `Into<Cow>` sink — it measures and truncates the escaped form by `char`
+/// before it becomes a prompt — so the `Rendered` is taken into a `String`
+/// through the `From<Rendered> for String` that `text.rs` provides for exactly
+/// this. That is the carrier's documented trait surface, not a `.to_string()`
+/// workaround. The census in `crate::ui::tests` is what keeps the composition
+/// true of this file.
+pub(crate) fn prompt_text(command_text: &str) -> String {
+    const CAP: usize = 50;
+    const KEEP: usize = 47;
+    let escaped: String = crate::text::render_for_terminal(command_text).into();
+    let display_text = if escaped.chars().count() > CAP {
+        format!("{}...", escaped.chars().take(KEEP).collect::<String>())
+    } else {
+        escaped
+    };
+    format!("  Remove \"{}\" from queue? [y/n]", display_text)
 }

@@ -97,11 +97,36 @@ pub const DEGENERATE: [&str; 10] = [
 /// **The last three pairs are from OUTSIDE the pre-round-7 ranges** — `U+202E`,
 /// `U+E0041` and `U+00AD` — so a seam pin cannot pass by re-confirming the old
 /// literal ranges.
-pub const LOOK_ALIKE_PAIRS: [(&str, &str); 6] = [
+///
+/// **Index 6 carries TWO invisible characters, and it is here to break a shape
+/// of control rather than to add a code point** (WR-08, D-21-46). Every pair
+/// from index 0 to 5 carries exactly ONE, and a control that builds its expected
+/// value by CONCATENATING the escaped form of every invisible character in the
+/// fixture — as `error.rs`'s Debug-notation pin did — passes on all six by
+/// accident: with one character, the concatenation IS the single marker. With
+/// two, the concatenation is `U+200BU+00AD`, a form that never appears in a
+/// CORRECT rendering, so such a control goes red for a right implementation.
+/// The trap was latent on a control this phase depends on, in a list this phase
+/// keeps extending; it is closed by making the shape unrepresentable — every
+/// consumer of this list now sees a two-character fixture — rather than by
+/// remembering not to write it again.
+///
+/// The two members are deliberately DIFFERENT code points (`U+200B` and
+/// `U+00AD`). A pair carrying the same character twice would leave the
+/// concatenation equal to a doubled marker, which is still a form a correct
+/// rendering never produces, but two distinct ones also exercise per-character
+/// iteration order.
+///
+/// **Appended, never inserted.** `ui::screens::render_escape_guard` addresses
+/// this list POSITIONALLY (`TAG_PAIR = 4`, `SOFT_HYPHEN_PAIR = 5`,
+/// `ZERO_WIDTH_PAIRS = [0, 2, 5]`), so a new pair goes at the end and the
+/// existing indices keep meaning what their names say.
+pub const LOOK_ALIKE_PAIRS: [(&str, &str); 7] = [
     ("demo", "demo\u{200b}"),
     ("abc", "a\u{200b}bc"),
     ("x", "x\u{feff}"),
     ("demo", "demo\u{202e}"),
     ("demo", "demo\u{e0041}"),
     ("run", "r\u{00ad}un"),
+    ("demo", "d\u{200b}emo\u{00ad}"),
 ];
