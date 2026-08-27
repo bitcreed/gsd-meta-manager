@@ -111,10 +111,14 @@ mod tests {
     /// than failing, because a red here would break the merged tree for a
     /// bookkeeping reason. **Direction: under-detection, one line wide,
     /// reported-not-red.** Removing a satisfied entry is a post-merge step.
-    const WAVE_PENDING: [(&str, &str); 1] = [(
-        "src/ui/screens/driver_confirm.rs:275",
-        "21-28 (prompt_text's alias escape)",
-    )];
+    ///
+    /// **Currently empty, and that is the post-merge steady state.** The one
+    /// entry this list ever held — `src/ui/screens/driver_confirm.rs:275`,
+    /// owned by `21-28` — was reported `SATISFIED WAVE-PENDING` by the census
+    /// once `21-28` merged, and removed here by the wave-1 post-merge step. The
+    /// census now hides no line at all: nothing is subtracted from the equality
+    /// below, so every un-composed site under `src/ui/` is counted.
+    const WAVE_PENDING: [(&str, &str); 0] = [];
 
     // -----------------------------------------------------------------------
     // The walk
