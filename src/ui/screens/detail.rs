@@ -4265,7 +4265,23 @@ impl DetailScreen {
                         // there is no other route from the buffer to a cell.
                         // `Span::styled(buffer.clone(), ..)` does not compile.
                         let rendered: String = cache.defaults_text_buffer.shown().into();
-                        let inner_w = rendered.len().max(title.len()).max(30) as u16;
+                        // IN-02: CHARACTERS, not bytes. This read `.len()` on a
+                        // value out of the project's `.planning/config.json`,
+                        // so a CJK value (3 bytes/char) or an emoji one (4)
+                        // sized the popup two to four times wider than the text
+                        // needs. `chars().count()` matches `section_rule` here
+                        // and `roadmap_widget.rs`'s width arithmetic.
+                        //
+                        // **A character count is still not DISPLAY width** — a
+                        // CJK character occupies two terminal cells and a
+                        // combining mark occupies none — and closing that would
+                        // need `unicode-width`, which is a transitive dependency
+                        // of ratatui rather than a direct one. That residual is
+                        // recorded beside the existing IN-02/IN-03 entry in this
+                        // phase's `deferred-items.md` rather than silently
+                        // improved.
+                        let inner_w =
+                            rendered.chars().count().max(title.chars().count()).max(30) as u16;
                         let popup_w = (inner_w + 4).min(area.width.saturating_sub(2));
                         let popup_h = 3u16;
                         let popup_x = area.x + (area.width.saturating_sub(popup_w)) / 2;

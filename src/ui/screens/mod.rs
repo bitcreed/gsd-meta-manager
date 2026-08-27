@@ -47,9 +47,43 @@ use tokio::sync::mpsc::{Sender, UnboundedSender};
 ///
 /// It is what makes [`RenderAdjudicated`] un-implementable downstream: a
 /// consumer of this crate cannot name `sealed::Sealed`, so it cannot satisfy the
-/// supertrait, so it cannot declare its own screen adjudicated. Inside the crate
-/// the only route is [`adjudicate_screen`], which is what keeps the disposition
-/// vocabulary to the two constants below.
+/// supertrait, so it cannot declare its own screen adjudicated.
+///
+/// # CORRECTED 2026-08-27 (21-30, WR-02): this doc claimed as a type property something that was convention
+///
+/// **The sentence this corrects, verbatim:** *"Inside the crate the only route
+/// is [`adjudicate_screen`], which is what keeps the disposition vocabulary to
+/// the two constants below."*
+///
+/// Both halves of that sentence were wrong, in different ways, and they are
+/// fixed differently.
+///
+/// * **"the only route" — STILL FALSE, and now narrowed to what it is.** `mod
+///   sealed` is `pub(crate)`, which the paragraph below argues for and which is
+///   right. But that is exactly what lets a screen inside this crate hand-write
+///   `impl sealed::Sealed for X {}` and `impl RenderAdjudicated for X { .. }`
+///   and skip the macro entirely. That is **convention, not a type property**,
+///   and saying otherwise would repeat the defect WR-02 reports. It is given a
+///   CONTROL instead of a claim: `render_escape_guard`'s
+///   `no_hand_written_render_adjudicated_impl_skips_the_macro` census reports
+///   any `impl .. RenderAdjudicated for` outside the macro's own definition
+///   site, and was observed red by planting one.
+/// * **"keeps the disposition vocabulary to the two constants" — now TRUE, and
+///   by the type system rather than by the macro.** [`RenderDisposition`] has
+///   exactly two variants, so a hand-written in-crate impl that skipped the
+///   macro still could not invent a third disposition: there is no third value
+///   to write. See that type's doc.
+///
+/// # What IS genuinely guaranteed here, restated as what it is
+///
+/// 1. **Adjudication is MANDATORY** — `Screen: RenderAdjudicated`, so an
+///    unadjudicated implementor does not compile (E0277, quoted verbatim in
+///    [`RenderAdjudicated`]'s doc and re-observed by planting each round).
+/// 2. **`RenderAdjudicated` is un-implementable DOWNSTREAM** — the seal, above.
+/// 3. **The vocabulary is exactly two values** — the enum, since 21-30.
+///
+/// Not guaranteed, and not claimed: that an in-crate screen goes through the
+/// macro. That one has a census.
 ///
 /// **`pub(crate)` rather than fully private, and the reason is the whole point
 /// of the mechanism.** A `Screen` may be added in ANY module of this crate —
@@ -66,17 +100,85 @@ pub(crate) mod sealed {
     pub trait Sealed {}
 }
 
+/// **The disposition vocabulary, made a TYPE so a third value is not
+/// EXPRESSIBLE** (WR-02, 21-30).
+///
+/// # The claim this closes, and why the doc was false as written
+///
+/// [`sealed`]'s doc used to say that the macro *"is what keeps the disposition
+/// vocabulary to the two constants below"*. That was **false**: a screen inside
+/// this crate can hand-write `impl Sealed` and `impl RenderAdjudicated` and
+/// return any `&'static str` it likes, because `pub(crate) mod sealed` is
+/// nameable from every module of this crate — which is exactly the property
+/// that same doc argues for, one paragraph up. Only the probe's runtime
+/// `panic!` caught a third spelling, and only for a screen the probe reaches.
+///
+/// Under this enum a third value cannot be WRITTEN, so there is nothing to
+/// catch. The two constants below keep their names and become enum-valued,
+/// which is what makes every one of the eleven `adjudicate_screen!` invocation
+/// sites byte-identical: the macro takes `$disposition:expr`, and a const path
+/// is still an expression.
+///
+/// **Declared `pub` inside a `pub(crate)` module, the same mechanism
+/// [`sealed::Sealed`] already uses.** A `pub` trait method returning a
+/// `pub(crate)` type trips `private_interfaces`; this keeps the type genuinely
+/// crate-private (nothing outside can name the module path) without that.
+///
+/// # Deliberately an enum RETURN, never an associated const
+///
+/// The whole UI is `Box<dyn Screen>`. An associated const on a supertrait makes
+/// `Screen` dyn-incompatible and would break every screen transition in the
+/// tree. An enum return type is dyn-compatible, so round 9's prohibition on
+/// associated consts still stands and this change does not touch it — re-proven
+/// at runtime by `render_escape_guard`'s `the_screen_stays_object_safe_after_the_return_type_change`.
+pub(crate) mod disposition {
+    /// Exactly two variants. See the module doc.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum RenderDisposition {
+        /// The screen draws at least one string this build did not author — a
+        /// registry key, or a workspace/phase/file/entry name read from
+        /// `.planning/`.
+        RendersAttackerInfluencedIdentity,
+        /// The screen draws only text this build authored itself.
+        RendersNoAttackerInfluencedIdentity,
+    }
+
+    impl RenderDisposition {
+        /// The stable snake_case spelling, following the `envelope/policy.rs`
+        /// typed-reason idiom: the taxonomy is stated in one place and every
+        /// consumer compares against it rather than respelling the string.
+        ///
+        /// **Byte-identical to the values the two `&'static str` constants held
+        /// before 21-30**, so no reason, message or serialized disposition
+        /// changed when the vocabulary became a type.
+        pub const fn as_str(self) -> &'static str {
+            match self {
+                Self::RendersAttackerInfluencedIdentity => "renders_attacker_influenced_identity",
+                Self::RendersNoAttackerInfluencedIdentity => {
+                    "renders_no_attacker_influenced_identity"
+                }
+            }
+        }
+    }
+}
+
+pub(crate) use disposition::RenderDisposition;
+
 /// The screen draws at least one string this build did not author — a registry
 /// key, or a workspace/phase/file/entry name read from `.planning/`.
 ///
-/// A stable snake_case constant, following the `envelope/policy.rs` typed-reason
-/// idiom: the taxonomy is stated in one place and every consumer compares
-/// against the constant rather than respelling the string.
-pub const RENDERS_ATTACKER_INFLUENCED_IDENTITY: &str = "renders_attacker_influenced_identity";
+/// **Enum-valued since 21-30 (WR-02), and it kept its name on purpose**: the
+/// eleven `adjudicate_screen!` invocation sites naming it are byte-identical
+/// across that change. Narrowed from `pub` to `pub(crate)` at the same time,
+/// which is semver-breaking on a published crate and useless downstream anyway —
+/// the trait it feeds is un-implementable there.
+pub(crate) const RENDERS_ATTACKER_INFLUENCED_IDENTITY: RenderDisposition =
+    RenderDisposition::RendersAttackerInfluencedIdentity;
 
-/// The screen draws only text this build authored itself.
-pub const RENDERS_NO_ATTACKER_INFLUENCED_IDENTITY: &str =
-    "renders_no_attacker_influenced_identity";
+/// The screen draws only text this build authored itself. Enum-valued since
+/// 21-30; see the constant above.
+pub(crate) const RENDERS_NO_ATTACKER_INFLUENCED_IDENTITY: RenderDisposition =
+    RenderDisposition::RendersNoAttackerInfluencedIdentity;
 
 /// **What a screen says about the identity it renders — carried by the screen,
 /// enforced by the compiler** (CR-05).
@@ -141,9 +243,16 @@ pub const RENDERS_NO_ATTACKER_INFLUENCED_IDENTITY: &str =
 /// *membership*, never for *content*.
 pub trait RenderAdjudicated: sealed::Sealed {
     /// One of [`RENDERS_ATTACKER_INFLUENCED_IDENTITY`] or
-    /// [`RENDERS_NO_ATTACKER_INFLUENCED_IDENTITY`], and nothing else. The probe
-    /// `panic!`s on any third value.
-    fn disposition(&self) -> &'static str;
+    /// [`RENDERS_NO_ATTACKER_INFLUENCED_IDENTITY`], and nothing else —
+    /// **because since 21-30 (WR-02) there is no third value to return.**
+    ///
+    /// This used to read `&'static str` and end *"The probe `panic!`s on any
+    /// third value."* That sentence described a runtime backstop for a hole the
+    /// type system left open. [`RenderDisposition`] closes the hole, so the
+    /// backstop has nothing left to catch and the probe's wildcard arm is gone.
+    /// **That is a strengthening, not a relaxation**: a third value is no longer
+    /// detectable at runtime because it is no longer writable.
+    fn disposition(&self) -> RenderDisposition;
 
     /// **Which values this screen draws and where their bytes come from** —
     /// never "escaped" or "safe". It is what a future reader inherits, and it
@@ -164,7 +273,7 @@ macro_rules! adjudicate_screen {
         impl $crate::ui::screens::sealed::Sealed for $type {}
 
         impl $crate::ui::screens::RenderAdjudicated for $type {
-            fn disposition(&self) -> &'static str {
+            fn disposition(&self) -> $crate::ui::screens::RenderDisposition {
                 $disposition
             }
 
@@ -1651,6 +1760,54 @@ mod tests {
                  the overlay would reopen carrying the value just written"
             );
         }
+    }
+
+    /// **IN-02: the Defaults edit popup is sized in CHARACTERS, not bytes**
+    /// (21-30 T2).
+    ///
+    /// `detail.rs`'s popup width read `.len()` on a value out of the project's
+    /// `.planning/config.json`. `str::len` is BYTES, so a CJK value (3 bytes per
+    /// character in UTF-8) sized the popup three times wider than its text, and
+    /// an emoji one four times. The measurement is now `chars().count()`,
+    /// matching `section_rule` here and `roadmap_widget.rs`'s width arithmetic.
+    ///
+    /// This drives the same two expressions the render does, over a fixture that
+    /// makes the two DIFFER — a fixture where they agreed would assert nothing.
+    ///
+    /// **The residual, stated because it is real: a character count is still not
+    /// DISPLAY width.** A CJK character occupies two terminal cells and a
+    /// combining mark occupies none. Closing that needs `unicode-width`, a
+    /// transitive dependency of ratatui rather than a direct one; the residual is
+    /// recorded beside the existing IN-02/IN-03 entry in this phase's
+    /// `deferred-items.md` rather than closed with a new dependency.
+    #[test]
+    fn the_edit_popup_is_measured_in_characters_not_bytes() {
+        // Twelve characters; 36 bytes in UTF-8.
+        let cjk = "\u{4e16}\u{754c}\u{4e16}\u{754c}\u{4e16}\u{754c}\u{4e16}\u{754c}\u{4e16}\u{754c}\u{4e16}\u{754c}";
+        let buffer = EditBuffer::seed_from_untrusted_source(cjk.to_string());
+        let rendered: String = buffer.shown().into();
+
+        let bytes = rendered.len();
+        let chars = rendered.chars().count();
+
+        assert_eq!(chars, 12, "the fixture should be twelve characters");
+        assert_eq!(bytes, 36, "…and thirty-six bytes, or the two agree and this proves nothing");
+        assert!(
+            bytes > chars,
+            "the fixture must be one where a byte count and a character count \
+             DIFFER, or an assertion that the render uses the second is vacuous"
+        );
+
+        // A clean ASCII value must be unaffected: the change is a no-op wherever
+        // the two measurements already agreed, which is every value that made
+        // the old arithmetic look correct for nine rounds.
+        let ascii = EditBuffer::seed_from_untrusted_source("interactive".to_string());
+        let ascii_rendered: String = ascii.shown().into();
+        assert_eq!(
+            ascii_rendered.len(),
+            ascii_rendered.chars().count(),
+            "an ASCII value must measure the same either way"
+        );
     }
 
     /// **Push and pop are CHARACTER operations** (21-30 T1, T-21-30-03).
