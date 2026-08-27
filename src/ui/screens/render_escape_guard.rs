@@ -186,6 +186,43 @@
 //!    counter and the missed-reason gloss are not. And the dry-run fixture sets
 //!    `report: Some(..)`, so the `None` loading branch is unprobed; it draws an
 //!    authored constant and no identity. **Under-detection, silent**, both.
+//!
+//!    **REWRITTEN AGAIN 2026-08-27 (21-30 T1), strictly narrower, with the
+//!    wording it replaces quoted verbatim so the narrowing is checkable.** The
+//!    sentence above closing the 21-28 rewrite used to read:
+//!
+//!    > *"So the Defaults string-EDIT overlay remains the residual STATE, and
+//!    > the sentence below replaces the rest of it."*
+//!
+//!    and the 21-25 wording it inherited framed that overlay purely as a
+//!    COVERAGE gap — a state "reachable only by driving the key handler into a
+//!    mode". **It was also a CORRECTNESS gap, and naming it only as coverage is
+//!    what let it stand for two more rounds.** The overlay drew
+//!    `defaults_text_buffer` raw: a plain `String` copy of the same
+//!    `entry.value` the list one render above already escaped, laundering the
+//!    escape through an untyped round trip on the surface where the operator
+//!    decides what to write to disk.
+//!
+//!    **Of that wording's two concrete residual examples, BOTH are now closed
+//!    and by what:** `driver_dry_run` by **21-28** (the `Driver tab, dry-run
+//!    preview` state), and the Defaults string-EDIT overlay by **21-30** — a
+//!    `Defaults tab, string edit` state whose index and seed are derived from
+//!    the populated `defaults_config`, plus `ProjectViewCache::defaults_text_buffer`
+//!    retyped to [`super::EditBuffer`] so the popup's `Span` is a compile error
+//!    until it goes through `shown()`.
+//!
+//!    **A residual with no example is a residual nobody can check, so here is a
+//!    NEW concrete one.** `DetailScreen`'s Defaults tab has a THIRD overlay this
+//!    fixture still does not construct: the **dropdown** branch, taken when
+//!    `defaults_editing` is `Some(idx)` at a row whose `dropdown_options` are
+//!    non-empty (`ConfigValueKind::Bool` and the enum-valued keys). It draws
+//!    `entry.key` in its title and its option strings in the list.
+//!    `first_string_entry` deliberately skips those rows, so no probe state
+//!    reaches that branch. **Under-detection, silent** — though narrower than
+//!    the overlay it replaces: the dropdown's options come from
+//!    `dropdown_options`, which returns authored `&'static str` variants rather
+//!    than anything read off disk, so what is unprobed there is the KEY in the
+//!    title, which the tab already draws escaped one render below.
 //! 2. **The probe judges the invisible class, not homoglyphs.** A Cyrillic `а`
 //!    renders like a Latin `a` and is accepted here, exactly as
 //!    [`crate::text::carries_invisible_formatting`] records for its own class.
@@ -283,7 +320,7 @@
 //! each observed red before it was observed green.
 
 use super::{
-    AppContext, Screen, RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    AppContext, RenderDisposition, Screen, RENDERS_ATTACKER_INFLUENCED_IDENTITY,
     RENDERS_NO_ATTACKER_INFLUENCED_IDENTITY,
 };
 use crate::test_support::LOOK_ALIKE_PAIRS;
@@ -356,6 +393,60 @@ const SRC_ROOT: &str = "src";
 /// reporting itself.
 const IMPL_HEAD: &str = "Screen";
 const IMPL_TAIL: &str = " for ";
+
+/// The second census's needle halves (WR-02, 21-30), assembled at runtime for
+/// the same reason [`IMPL_HEAD`]'s are: spelled as one literal, the line
+/// spelling it would itself be an `impl`-shaped match and the census would
+/// report its own definition.
+const ADJ_HEAD: &str = "RenderAdj";
+const ADJ_MID: &str = "udicated";
+
+/// **The adjudication reasons that DO use a forbidden verdict word, pinned by
+/// screen and by token** (WR-03, 21-30) — a DISCLOSURE, not a pardon.
+///
+/// `(screen type name, the token it uses, why it is not fixed here)`.
+///
+/// WR-03's step is to MEASURE before asserting, and the measurement found one:
+/// `NormalScreen`'s reason ends *"`row_badge`'s lookup keys off the RAW alias
+/// while the cell beside it is escaped — the worked example of the split."*
+/// That is the finding WR-03 predicts, and it is recorded here rather than
+/// smoothed away by narrowing the check.
+///
+/// **It is not fixed in this plan because `src/ui/screens/normal.rs` is not this
+/// plan's file** — it is 21-29's, merged in wave 1, and this plan's prohibitions
+/// fence the screen files. Rewriting a reason there would be a wave-fence
+/// violation to make a number look right.
+///
+/// **Failure direction: under-detection, ONE screen and ONE token wide, and
+/// LOUD in both other directions.** The entry pins the exact token, so a
+/// SECOND forbidden word in the same reason still goes red; every other screen
+/// is unexempted; and if the reason is ever rewritten the entry reports itself
+/// STALE on every run, so it cannot quietly outlive its subject.
+///
+/// **What would remove it:** one clause rewritten in `normal.rs`'s
+/// `adjudicate_screen!` reason to name the split by provenance — *"`row_badge`'s
+/// lookup keys off the RAW alias while the cell beside it goes through
+/// `render_for_terminal`"* — owned by whoever next edits that file.
+const REASON_VERDICT_EXEMPTIONS: &[(&str, &str, &str)] = &[(
+    "NormalScreen",
+    "escaped",
+    "the status-footer split's worked example: \"`row_badge`'s lookup keys off \
+     the RAW alias while the cell beside it is escaped\". src/ui/screens/normal.rs \
+     is 21-29's file and outside 21-30's fence; the repair is to name the split \
+     by provenance (`render_for_terminal`) rather than by verdict.",
+)];
+
+/// How the macro's OWN definition site is recognised — **structurally, not by
+/// path and line**.
+///
+/// `adjudicate_screen!`'s body contains `impl $crate::ui::screens::RenderAdjudicated
+/// for $type`, which is a legitimate match and the only one. Exempting it by
+/// `src/ui/screens/mod.rs:NNN` would go stale the first time a line moved above
+/// it, and exempting the whole file would blind the census to a hand-written
+/// impl added there. `$crate` is valid ONLY inside a macro body, so it
+/// identifies the one legitimate site and cannot be spelled by a hand-written
+/// impl anywhere.
+const MACRO_BODY_MARKER: &str = "$crate";
 
 /// One source file: its path relative to the crate root, and its numbered lines.
 type SourceFile = (String, Vec<(usize, String)>);
@@ -477,7 +568,14 @@ fn collect(dir: &Path, base: &Path, out: &mut Vec<SourceFile>) {
 /// It asserts that it found production source at all — the non-vacuity floor
 /// `source_files` already carries — so a walk that looked at nothing cannot
 /// report clean.
-fn screen_implementors_from_source() -> SourceCensus {
+/// Every Rust source file under `src/`, numbered, sorted, with the non-vacuity
+/// floor asserted.
+///
+/// Extracted in 21-30 so the two censuses that walk `src/` — the screen-
+/// implementor walk and the hand-written-adjudication census — enumerate the
+/// SAME set by construction rather than by two copies of the same six lines
+/// that can drift apart.
+fn walked_source_files() -> Vec<SourceFile> {
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     collect(&base.join(SRC_ROOT), &base, &mut files);
@@ -488,6 +586,49 @@ fn screen_implementors_from_source() -> SourceCensus {
          that never looked"
     );
     files.sort_by(|a, b| a.0.cmp(&b.0));
+    files
+}
+
+/// **Every hand-written `impl .. RenderAdjudicated for` outside the macro's own
+/// definition site** (WR-02, 21-30).
+///
+/// This is the control for the half of WR-02 that is NOT a type property. The
+/// `sealed` doc used to claim the macro is the only in-crate route to an
+/// adjudication; it is not, because `mod sealed` is `pub(crate)` so any module
+/// of this crate can satisfy the supertrait by hand. That half is CONVENTION,
+/// and this turns the convention into something that can go red.
+///
+/// It judges the same logical unit [`screen_implementors_from_source`] does —
+/// physical lines joined by [`join_logical_impl_header`], comment lines dropped
+/// — so a wrapped header is one unit here exactly as it is to the compiler. The
+/// one legitimate match is recognised by [`MACRO_BODY_MARKER`].
+///
+/// Pure over its input so the live assertion and its self-match control drive
+/// THIS function rather than two spellings of it.
+fn adjudication_impl_offences(files: &[SourceFile]) -> Vec<String> {
+    let needle = format!("{ADJ_HEAD}{ADJ_MID}{IMPL_TAIL}");
+    let mut out = Vec::new();
+    for (path, lines) in files {
+        for (index, (number, line)) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || !trimmed.starts_with("impl") {
+                continue;
+            }
+            let logical = join_logical_impl_header(lines, index);
+            if !logical.contains(&needle) {
+                continue;
+            }
+            if logical.contains(MACRO_BODY_MARKER) {
+                continue;
+            }
+            out.push(format!("{path}:{number}"));
+        }
+    }
+    out
+}
+
+fn screen_implementors_from_source() -> SourceCensus {
+    let files = walked_source_files();
 
     let needle = format!("{IMPL_HEAD}{IMPL_TAIL}");
     let mut implementors: std::collections::BTreeSet<ScreenSite> =
@@ -1257,6 +1398,19 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
          draws no identity at all. The preview REPLACES the run detail, which is why \
          this is a state of its own rather than a field set in `probe_ctx`.",
     ),
+    (
+        "Defaults tab, string edit",
+        true,
+        "Draws `defaults_text_buffer` and `entry.key` into a `Clear`ed `Paragraph` \
+         popup that overlays the list. The buffer's bytes are a copy of \
+         `entry.value` for a `ConfigValueKind::String` row of the project's \
+         `.planning/config.json` — free-form text supplied by whoever wrote that \
+         file, taken at the moment the operator pressed Enter on the row. The list \
+         underneath keeps drawing `entry.value` for every row, so this state draws \
+         the same bytes from two different sources through two different widget \
+         families. The index and the seed are derived from `defaults_config` by \
+         `detail::first_string_entry`, never spelled.",
+    ),
 ];
 
 /// How many times `clean` appears in each `DetailScreen` state rendered with
@@ -1457,6 +1611,29 @@ const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
         let cache = ctx.view_cache.entry(identity.to_string()).or_default();
         cache.browser_depth = crate::browser::BrowserDepth::View;
         cache.browser_file_content = Some(format!("# {identity}\n"));
+    }),
+    // The DEFAULTS STRING-EDIT OVERLAY (21-30 T1). LIMIT 1 named this state as
+    // the residual no fixture reached, and framed it purely as a coverage gap.
+    // It was also a CORRECTNESS gap: `render_defaults_tab` dispatches on
+    // `defaults_editing` being `Some(idx)` at a `ConfigValueKind::String` row
+    // and draws `defaults_text_buffer` — a raw copy of the very `entry.value`
+    // the list one render above already escapes — into a `Clear`ed
+    // `Paragraph` popup. That is the LAUNDERING this task closes at the type.
+    //
+    // **Both the index and the seed are DERIVED from the config the fixture
+    // populated, never spelled from `identity`** — see `detail::first_string_entry`
+    // and 21-28's measured near-miss. `chrome_ctx` has no `defaults_config`, so
+    // the helper returns `None` there, the arrange returns early, and the
+    // baseline draws chrome only.
+    ("Defaults tab, string edit", |identity, ctx| {
+        ctx.detail_sub_view_per_project
+            .insert(identity.to_string(), crate::app::DetailSubView::Defaults);
+        let cache = ctx.view_cache.entry(identity.to_string()).or_default();
+        let Some((idx, value)) = super::detail::first_string_entry(cache) else {
+            return;
+        };
+        cache.defaults_editing = Some(idx);
+        cache.defaults_text_buffer = super::EditBuffer::seed_from_untrusted_source(value);
     }),
 ];
 
@@ -2058,6 +2235,272 @@ mod tests {
         );
     }
 
+    /// **WR-02's convention half, given a control instead of a claim** (21-30).
+    ///
+    /// `RenderDisposition` makes the VOCABULARY a type property. The other half
+    /// of `sealed`'s corrected doc — that an in-crate screen goes through
+    /// `adjudicate_screen!` rather than hand-writing `impl Sealed` and `impl
+    /// RenderAdjudicated` — is genuinely convention, because `mod sealed` is
+    /// `pub(crate)` by design. This is what makes that convention able to go
+    /// red.
+    ///
+    /// Observed RED by planting a compiling hand-written impl in
+    /// `src/driver/liveness.rs`, a file this plan does not otherwise touch; the
+    /// panic named it by path and line, and the plant was removed.
+    #[test]
+    fn no_hand_written_render_adjudicated_impl_skips_the_macro() {
+        let files = walked_source_files();
+        let offences = adjudication_impl_offences(&files);
+        assert_eq!(
+            offences.len(),
+            0,
+            "these sites implement `RenderAdjudicated` by hand rather than \
+             through `crate::ui::screens::adjudicate_screen!`: {offences:?}. \
+             That is possible — `mod sealed` is `pub(crate)` so any module of \
+             this crate can satisfy the supertrait — which is exactly why this \
+             is a census and not a claim in a doc. The macro is the route \
+             because it emits the seal and the adjudication together and cannot \
+             be given a partial one. If a site here is legitimate, it belongs in \
+             the macro; if the macro cannot express it, say so at the site and \
+             widen this census deliberately."
+        );
+
+        // NON-VACUITY, two ways. The walk must have looked at something, and
+        // the needle must match the one legitimate site — otherwise a needle
+        // that matches nothing at all would report zero forever.
+        assert!(!files.is_empty());
+        let needle = format!("{ADJ_HEAD}{ADJ_MID}{IMPL_TAIL}");
+        let macro_sites = files
+            .iter()
+            .flat_map(|(path, lines)| lines.iter().map(move |(n, l)| (path, n, l)))
+            .filter(|(_, _, line)| {
+                let t = line.trim_start();
+                !t.starts_with("//") && t.contains(&needle) && t.contains(MACRO_BODY_MARKER)
+            })
+            .count();
+        assert_eq!(
+            macro_sites, 1,
+            "the needle {needle:?} matched {macro_sites} macro-body sites, not \
+             the one `adjudicate_screen!` definition. Zero would mean the needle \
+             matches nothing and the equality above is vacuous; more than one \
+             would mean a second macro emits adjudications and this census's \
+             structural exemption is now hiding it."
+        );
+    }
+
+    /// The census cannot report its OWN definition, and does not report the
+    /// macro's.
+    #[test]
+    fn the_adjudication_census_cannot_report_itself() {
+        let files = walked_source_files();
+        let this_file: Vec<SourceFile> = files
+            .iter()
+            .filter(|(path, _)| path.ends_with("render_escape_guard.rs"))
+            .cloned()
+            .collect();
+        assert_eq!(
+            this_file.len(),
+            1,
+            "the walk did not find this module's own source, so the self-match \
+             control below is checking nothing"
+        );
+        assert!(
+            adjudication_impl_offences(&this_file).is_empty(),
+            "the census reports its own definition site. The needle is assembled \
+             at runtime from halves meaningless apart for exactly this reason; \
+             something in this file now spells it whole on a line starting with \
+             `impl`."
+        );
+    }
+
+    /// **`Screen` is still object-safe after `disposition()`'s return type
+    /// changed** (21-30, WR-02), proven at RUNTIME rather than by argument.
+    ///
+    /// Round 9's design note says methods returning `&'static str` keep the
+    /// vtable and an associated const would not. Changing a return type is
+    /// exactly the change that could break that, so it is re-proven rather than
+    /// assumed: two implementors stored as `Box<dyn Screen>` in a `Vec`, both
+    /// supertrait methods called through `&dyn Screen`.
+    #[test]
+    fn the_screen_stays_object_safe_after_the_return_type_change() {
+        let alias = clean_identity();
+        let screens: Vec<Box<dyn Screen>> = vec![
+            Box::new(crate::ui::screens::detail::DetailScreen::new(alias.clone())),
+            Box::new(crate::ui::screens::help::HelpScreen::new()),
+        ];
+        assert_eq!(screens.len(), 2);
+
+        for boxed in &screens {
+            // THE CALL SITE, through the trait object's vtable.
+            let as_dyn: &dyn Screen = boxed.as_ref();
+            let disposition: RenderDisposition = as_dyn.disposition();
+            let reason: &'static str = as_dyn.adjudication_reason();
+            assert!(
+                matches!(
+                    disposition,
+                    RENDERS_ATTACKER_INFLUENCED_IDENTITY | RENDERS_NO_ATTACKER_INFLUENCED_IDENTITY
+                ),
+                "{} reported a disposition outside the two-variant vocabulary, \
+                 which the enum makes unrepresentable",
+                as_dyn.name()
+            );
+            assert!(
+                !reason.is_empty(),
+                "{} adjudicated itself with an empty reason",
+                as_dyn.name()
+            );
+            // And the snake_case mapping is reachable through the object too.
+            assert!(disposition.as_str().starts_with("renders_"));
+        }
+    }
+
+    /// **WR-03: `adjudication_reason` gets a CONTROL, so a trait method promoted
+    /// as what a future reader inherits stops being a claim nothing consumes**
+    /// (21-30).
+    ///
+    /// Before this, `adjudication_reason()` had ZERO readers in the tree: it was
+    /// asserted by nothing and quoted by nothing, while its own doc told the
+    /// next author what to write in it. A rule with no reader is a rule that
+    /// drifts silently.
+    ///
+    /// Two things are checked, both from that doc's own words — *"never
+    /// 'escaped' or 'safe'"*. A reason naming what a value IS sends a reader to
+    /// the render; a reason asserting the value is safe tells them not to look.
+    ///
+    /// **Measured before it was asserted.** Every reason in the tree was
+    /// collected and checked first; the result is recorded in this plan's
+    /// SUMMARY. Had one contained a forbidden word, that would itself have been
+    /// the finding WR-03 predicts and it would have been reported by screen name
+    /// and rewritten to name values and sources — not quietly reworded into
+    /// compliance.
+    #[test]
+    fn every_adjudication_reason_is_non_empty_and_names_values_not_verdicts() {
+        // From `RenderAdjudicated::adjudication_reason`'s own doc.
+        const FORBIDDEN: [&str; 2] = ["escaped", "safe"];
+
+        // WHOLE TOKENS, never substrings — and this is not a nicety, it is a
+        // defect this control had and shed.
+        //
+        // The first formulation asked `reason.to_lowercase().contains("safe")`
+        // and went RED against `DetailScreen`, whose reason ends *"All of it is
+        // third-party text under SAFE-07"*. `SAFE-07` is a REQUIREMENT ID. The
+        // implementation was right and the control was wrong — the exact shape
+        // WR-08 reports one file over, and the shape 21-29's first backlog
+        // assertion had. A control that goes red for a correct implementation is
+        // worse than no control, so the check was fixed rather than the reason
+        // reworded into compliance.
+        //
+        // A token is a maximal run of alphanumerics, `-` and `_`, so `safe-07`
+        // is one token and does not equal `safe`, while a bare `safe` or a
+        // `safe,` still does.
+        fn forbidden_tokens(reason: &str) -> Vec<String> {
+            reason
+                .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
+                .map(|token| token.to_ascii_lowercase())
+                .filter(|token| FORBIDDEN.contains(&token.as_str()))
+                .collect()
+        }
+
+        // The control's own control: the check must still FIRE for a bare
+        // verdict word, or the pass below would be a pass by construction.
+        assert_eq!(
+            forbidden_tokens("every value here is escaped before it reaches a cell"),
+            vec!["escaped".to_string()],
+            "the token check no longer fires for a bare verdict word, so every \
+             assertion below passes vacuously"
+        );
+        assert!(
+            forbidden_tokens("third-party text under SAFE-07 and DRIVE-01").is_empty(),
+            "the token check still reports a requirement ID as a verdict word — \
+             the substring defect this formulation exists to fix"
+        );
+
+        let clean = clean_identity();
+        let mut checked = 0usize;
+        for (name, path) in SCREEN_IDENTITY_DISPOSITIONS {
+            let Some(build) = fixture_for(name) else {
+                panic!("{name} ({path}) has no probe fixture");
+            };
+            let states = build(&clean);
+            let Some(first) = states.first() else {
+                panic!("{name} ({path}) built no states");
+            };
+            let as_dyn: &dyn Screen = first.screen.as_ref();
+            let reason = as_dyn.adjudication_reason();
+            checked += 1;
+
+            assert!(
+                !reason.trim().is_empty(),
+                "{name} ({path}) adjudicated itself with an EMPTY reason. The \
+                 reason is what a future reader inherits about which values this \
+                 screen draws and where their bytes come from; empty, the \
+                 adjudication is a disposition with no argument behind it."
+            );
+            let found = forbidden_tokens(reason);
+            let exempted = REASON_VERDICT_EXEMPTIONS
+                .iter()
+                .find(|(screen, _, _)| screen == name);
+            match exempted {
+                Some((_, token, why)) => {
+                    // A SATISFIED exemption is REPORTED, not made red — the
+                    // `WAVE_PENDING` idiom 21-29 established. A red here would
+                    // break the tree for a bookkeeping reason the moment the
+                    // reason is finally rewritten.
+                    if found.is_empty() {
+                        println!(
+                            "STALE REASON EXEMPTION: {name} ({path}) no longer \
+                             uses a verdict word, so the exemption shields \
+                             nothing and must be removed. Its recorded reason \
+                             was: {why}"
+                        );
+                    } else {
+                        assert_eq!(
+                            found,
+                            vec![token.to_string()],
+                            "{name} ({path}) is exempted for the token \
+                             {token:?} only, and it now uses {found:?}. An \
+                             exemption widened by drift is an exemption nobody \
+                             decided. Reason: {reason:?}"
+                        );
+                        println!(
+                            "KNOWN REASON VIOLATION (exempt, disclosed): {name} \
+                             ({path}) uses {token:?} — {why}"
+                        );
+                    }
+                }
+                None => assert!(
+                    found.is_empty(),
+                    "{name} ({path})'s adjudication reason uses {found:?} as a \
+                     whole word, which its own doc forbids: the reason must say \
+                     WHICH values the screen draws and WHERE THEIR BYTES COME \
+                     FROM, never that they are escaped or safe. A verdict tells \
+                     the next reader not to look; a provenance tells them where \
+                     to look. Reason: {reason:?}"
+                ),
+            }
+
+            // The MEASUREMENT this control was written to make, printed rather
+            // than only asserted, so a `--nocapture` run is the record.
+            println!(
+                "ADJUDICATION REASON: {name} ({path}) — {} chars, forbidden \
+                 tokens: {found:?}",
+                reason.chars().count()
+            );
+        }
+        assert_eq!(
+            checked,
+            SCREEN_IDENTITY_DISPOSITIONS.len(),
+            "not every adjudicated screen's reason was read, so this control is \
+             narrower than it claims"
+        );
+        assert!(
+            checked >= 11,
+            "only {checked} screens were checked; the tree has eleven adjudicated \
+             screens, so a smaller number means the fixture map shrank and this \
+             control silently narrowed with it"
+        );
+    }
+
     /// Every adjudicated implementor can actually be built and rendered.
     #[test]
     fn every_adjudicated_screen_has_a_probe_fixture() {
@@ -2230,9 +2673,22 @@ mod tests {
             // CONTENT. `clean_states[0].screen` is a `Box<dyn Screen>`, so this
             // is a virtual call through the supertrait's vtable — which is also
             // the runtime proof that `Screen` stayed object-safe.
-            let screen_disposition: &'static str = {
+            let screen_disposition: RenderDisposition = {
                 let as_dyn: &dyn Screen = clean_states[0].screen.as_ref();
                 as_dyn.disposition()
+            };
+
+            // THE REASON, READ OFF THE SAME INSTANCE (WR-03, 21-30). It is
+            // quoted in assertions 2, 3 and 4's failure messages below, so a
+            // red names what the screen CLAIMS to draw beside what it actually
+            // drew — which is the difference between "this screen leaked
+            // something" and "this screen leaked something it told you it
+            // draws". Before this, `adjudication_reason` had no readers at all:
+            // a trait method promoted as what a future reader inherits,
+            // consumed by nothing and asserted by nothing.
+            let screen_reason: &'static str = {
+                let as_dyn: &dyn Screen = clean_states[0].screen.as_ref();
+                as_dyn.adjudication_reason()
             };
 
             for (clean_state, hostile_state) in clean_states.iter().zip(hostile_states.iter()) {
@@ -2283,7 +2739,10 @@ mod tests {
                                  what a human READS through \
                                  crate::text::display_identity; the value used \
                                  for lookups, map keys, path segments, \
-                                 comparisons and persistence stays RAW."
+                                 comparisons and persistence stays RAW.\n\
+                                 \n\
+                                 What this screen CLAIMS to draw \
+                                 (adjudication_reason): {screen_reason}"
                             );
 
                             // 4. THE ASSERTION LIMIT 4 DECLINED, reinstated
@@ -2311,7 +2770,10 @@ mod tests {
                                  what a human READS through \
                                  crate::text::render_for_terminal; the raw value \
                                  belongs only in lookups, map keys, path \
-                                 segments, subprocess arguments and persistence."
+                                 segments, subprocess arguments and persistence.\n\
+                                 \n\
+                                 What this screen CLAIMS to draw \
+                                 (adjudication_reason): {screen_reason}"
                             );
                         }
                     }
@@ -2328,7 +2790,22 @@ mod tests {
                              a human reads."
                         );
                     }
-                    other => panic!("{where_} carries an unknown disposition {other:?}"),
+                    // NO WILDCARD ARM, and its removal is a STRENGTHENING.
+                    //
+                    // Round 9's prohibition on this file required, verbatim:
+                    // "the probe must `panic!` on any third value" — a runtime
+                    // backstop for a hole `&'static str` left open. Since 21-30
+                    // (WR-02) `disposition()` returns `RenderDisposition`, an
+                    // enum with exactly two variants declared in a `pub(crate)`
+                    // module. A third value is not EXPRESSIBLE, so there is
+                    // nothing left for the arm to catch, and the compiler now
+                    // enforces exhaustiveness here: adding a third variant
+                    // would make THIS match fail to compile, which is a louder
+                    // and earlier signal than a panic in one test run.
+                    //
+                    // A reader who finds the arm gone must not read it as a
+                    // weakening. It was removed because its job moved into the
+                    // type, not because the check was dropped.
                 }
 
                 // 3. Applies to EVERY state of EVERY implementor whatever its
@@ -2342,7 +2819,10 @@ mod tests {
                     invisible_chars(&hostile_text).is_empty(),
                     "{where_} rendered {:?} into the terminal buffer. Those \
                      characters render as nothing, so what the operator reads is \
-                     not what the value is.",
+                     not what the value is.\n\
+                     \n\
+                     What this screen CLAIMS to draw (adjudication_reason): \
+                     {screen_reason}",
                     invisible_chars(&hostile_text)
                 );
             }
@@ -2580,6 +3060,69 @@ mod tests {
              `DryRunPreview::report` is drawn by `render_dry_run_preview` and by \
              nothing else, so its absence means the preview rendered its \
              `None` loading branch instead. Rendered:\n{preview}"
+        );
+    }
+
+    /// **The Defaults string-edit state reaches the POPUP BRANCH, not merely
+    /// the field** (21-30 T1).
+    ///
+    /// This module records a near-miss where a state set a field the render
+    /// never dispatched on and every assertion about that state passed by
+    /// silence. `defaults_editing = Some(idx)` is exactly that shape: the popup
+    /// is drawn only if `entries.get(idx)` resolves AND that entry's kind is
+    /// `ConfigValueKind::String`, so an index pointing at a `Bool` row would set
+    /// the field, render the dropdown instead, and leave the escaping assertion
+    /// asserting nothing.
+    ///
+    /// `detail::DEFAULTS_EDIT_BRANCH_TOKEN` is the popup's own title
+    /// suffix and is drawn by no other branch of this screen — which the second
+    /// half measures rather than asserts, by rendering the SAME tab with
+    /// `defaults_editing` left `None`.
+    #[test]
+    fn the_defaults_string_edit_state_reaches_the_popup_branch() {
+        let clean = clean_identity();
+        let token = crate::ui::screens::detail::DEFAULTS_EDIT_BRANCH_TOKEN;
+
+        let build = |identity: &str, _ctx: &mut AppContext| -> Box<dyn Screen> {
+            Box::new(crate::ui::screens::detail::DetailScreen::new(identity.to_string()))
+        };
+        let edit_state = states_over_sub_views(&clean, &build)
+            .into_iter()
+            .find(|s| s.label == "Defaults tab, string edit")
+            .expect("no probe state labelled \"Defaults tab, string edit\"");
+        let edited = render_to_text(edit_state.screen.as_ref(), &edit_state.ctx);
+
+        assert!(
+            edited.contains(token),
+            "the `Defaults tab, string edit` state did not reach the popup \
+             branch: {token:?} is absent, so `render_defaults_tab` did NOT \
+             dispatch into the string-input overlay and every assertion about \
+             what the popup renders is passing by silence. Check that \
+             `detail::first_string_entry` found a `ConfigValueKind::String` row \
+             — it returns `None` for a cache with no `defaults_config`. \
+             Rendered:\n{edited}"
+        );
+
+        // THE OTHER DIRECTION: the same tab with the overlay closed. If the
+        // token appeared here too it would say nothing about which branch ran.
+        let mut closed = probe_ctx(&clean);
+        closed
+            .detail_sub_view_per_project
+            .insert(clean.clone(), crate::app::DetailSubView::Defaults);
+        closed
+            .view_cache
+            .entry(clean.clone())
+            .or_default()
+            .defaults_editing = None;
+        let closed_text = render_to_text(
+            &crate::ui::screens::detail::DetailScreen::new(clean.clone()),
+            &closed,
+        );
+        assert!(
+            !closed_text.contains(token),
+            "with `defaults_editing` left `None` the same tab still drew \
+             {token:?}, so the token is not specific to the string-edit overlay \
+             and the assertion above proves nothing about which branch ran."
         );
     }
 }
