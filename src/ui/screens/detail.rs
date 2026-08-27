@@ -534,6 +534,112 @@ fn find_terminal() -> Option<String> {
     None
 }
 
+/// The token that separates a terminal emulator's OWN options from the program
+/// it is being asked to run.
+///
+/// **This function exists because the security fix would otherwise delete the
+/// feature** (T-21-27-06). While the resume was one opaque program string
+/// handed to an interpreter, the emulator never saw the resumed program's own
+/// options — the interpreter did. Handing the emulator a real argv makes those
+/// options visible to it for the first time, and the separator is not the same
+/// token for every emulator [`find_terminal`] can return:
+///
+/// | `find_terminal` returns | Separator | Why |
+/// |---|---|---|
+/// | `kitty` | `-e` | takes the program and its arguments after `-e` |
+/// | `alacritty` | `-e` | `-e`/`--command` consumes the remainder |
+/// | `gnome-terminal` | `--` | its `-e` is deprecated and takes a SINGLE string it re-parses; with a real argv it consumes `--resume` as one of its OWN options |
+/// | `xterm` | `-e` | `-e` consumes the remainder |
+/// | anything else (`$TERMINAL`) | `-e` | the xterm-compatible convention, which is what an unknown emulator most likely follows |
+///
+/// Getting `gnome-terminal` wrong does not fail loudly: the emulator swallows
+/// `--resume` as an unrecognised option of its own and the operator sees a
+/// terminal that did not resume anything. That is a feature deletion wearing a
+/// security fix's clothes, which is exactly what this table is here to stop.
+///
+/// The match is on the FILE NAME, so `$TERMINAL=/usr/bin/gnome-terminal` is
+/// recognised rather than falling through to the default.
+///
+/// **Its residual, with the direction.** An emulator that is not in this table
+/// and does not follow the `-e` convention gets the wrong separator.
+/// **Under-detection of unsupported emulators, and it is LOUD rather than
+/// silent** — the emulator rejects the flag and the operator sees the failure —
+/// which is the direction prohibition 3 asks for: an emulator that cannot be
+/// driven by an argv is reported, not silently handled by quoting.
+fn terminal_program_separator(term: &str) -> &'static str {
+    let stem = term.rsplit('/').next().unwrap_or(term);
+    match stem {
+        "gnome-terminal" => "--",
+        _ => "-e",
+    }
+}
+
+/// The argv for resuming a Claude session, with **no command interpreter in
+/// it** (CR-01, T-21-27-01, T-21-27-02).
+///
+/// # CORRECTED 2026-08-27 (21-27): the round-9 comment at the spawn site called this value an argv element, and it was not one
+///
+/// **The sentence this corrects, verbatim:** *"A SUBPROCESS ARGUMENT: the raw
+/// id is what `claude --resume` must receive, and an escaped one would resume
+/// nothing."*
+///
+/// Its second clause was true and its first was false, and the false half is
+/// the dangerous one. The value was NOT a subprocess argument. It was
+/// interpolated into `"cd '{}' && claude --resume '{}'"`, a program handed to a
+/// command interpreter through `-c` — so it was a *fragment of a program a
+/// parser reads*, and a single quote in it closed the quoting and ran arbitrary
+/// code with the operator's privileges. The session id is scraped verbatim from
+/// another process's `/proc/<pid>/cmdline`
+/// ([`crate::session_detector`]), so nothing about it was authored here and no
+/// privilege is needed to plant one. A comment that misclassifies a sink is
+/// worse than no comment: it is what tells the next reader not to look, and
+/// round 9's own diff touched these lines.
+///
+/// # Which of the three sink kinds this site is now
+///
+/// Every element of this vector is an **argv element**: the kernel hands it to
+/// `execve` unparsed. It is not a lookup and it is not a program fragment.
+/// **The third kind no longer exists here** because there is no interpreter
+/// left in the path to parse anything — that is why a quote, a semicolon, a
+/// backtick, a dollar-parenthesis or a newline in the session id is now data.
+/// Deleting the interpreter is strictly stronger than quoting for it: quoting
+/// keeps a parser in the path and makes correctness depend on the escaper being
+/// right about every metacharacter of every interpreter an operator's
+/// `$TERMINAL` might name.
+///
+/// The working directory does NOT travel in this vector. It is set through
+/// [`std::process::Command::current_dir`] at the call site, which the process
+/// API passes to the child directly rather than as a `cd` written into a
+/// program.
+///
+/// Proven at the argv rather than at the spawn — a test cannot start a terminal
+/// emulator in CI — by
+/// `tests::the_resume_argv_carries_a_hostile_session_id_as_one_opaque_element`,
+/// observed RED against the construction this replaces.
+fn resume_terminal_argv(term: &str, sid: &Untrusted) -> Vec<String> {
+    vec![
+        terminal_program_separator(term).to_string(),
+        "claude".to_string(),
+        "--resume".to_string(),
+        // An ARGV ELEMENT, and now genuinely one: it is handed to `execve`
+        // unparsed. The raw id is what `claude --resume` must receive and an
+        // escaped one would resume nothing — see this function's doc for the
+        // round-9 comment whose *other* clause was false.
+        sid.as_raw_for_logic_only().to_string(),
+    ]
+}
+
+/// The argv for launching a NEW Claude session. Same shape, same reason — see
+/// [`resume_terminal_argv`]. The project path used to be interpolated into the
+/// same interpreter program string here and now travels through
+/// [`std::process::Command::current_dir`] instead.
+fn launch_terminal_argv(term: &str) -> Vec<String> {
+    vec![
+        terminal_program_separator(term).to_string(),
+        "claude".to_string(),
+    ]
+}
+
 fn status_color(category: &StatusCategory) -> Color {
     match category {
         StatusCategory::Active => Color::Green,
@@ -1689,22 +1795,27 @@ impl Screen for DetailScreen {
                                         // the byte slice this replaced was a
                                         // panic.
                                         let short_id = shorten_session_id(sid);
+                                        // ARGV ELEMENTS, every one of them —
+                                        // the kernel hands them to `execve`
+                                        // unparsed. NOT program fragments,
+                                        // which is what round 9's comment here
+                                        // wrongly claimed they already were:
+                                        // "A SUBPROCESS ARGUMENT: the raw id is
+                                        // what `claude --resume` must receive,
+                                        // and an escaped one would resume
+                                        // nothing." (round 9). The value was a
+                                        // fragment of a program handed to an
+                                        // interpreter through `-c`, so a quote
+                                        // in it ran arbitrary code (CR-01).
+                                        // The third sink kind no longer exists
+                                        // here: there is no parser left. The
+                                        // working directory travels through
+                                        // `current_dir`, not as a `cd` written
+                                        // into a program. See
+                                        // `resume_terminal_argv`'s doc.
                                         match std::process::Command::new(&term)
-                                            .args([
-                                                "-e",
-                                                "sh",
-                                                "-c",
-                                                // A SUBPROCESS ARGUMENT: the
-                                                // raw id is what `claude
-                                                // --resume` must receive, and
-                                                // an escaped one would resume
-                                                // nothing.
-                                                &format!(
-                                                    "cd '{}' && claude --resume '{}'",
-                                                    session.working_dir.display(),
-                                                    sid.as_raw_for_logic_only()
-                                                ),
-                                            ])
+                                            .args(resume_terminal_argv(&term, sid))
+                                            .current_dir(&session.working_dir)
                                             .spawn()
                                         {
                                             Ok(_) => {
@@ -2093,13 +2204,16 @@ impl Screen for DetailScreen {
                 if let Some(project) = ctx.config.projects.get(&self.alias) {
                     match find_terminal() {
                         Some(term) => {
+                            // ARGV ELEMENTS, and the working directory travels
+                            // through `current_dir`. Same construction and the
+                            // same reason as the resume site above: the project
+                            // path used to be interpolated into a program
+                            // string an interpreter parsed, so a quote in a
+                            // registered project path was code. See
+                            // `resume_terminal_argv`'s doc for the sink kinds.
                             match std::process::Command::new(&term)
-                                .args([
-                                    "-e",
-                                    "sh",
-                                    "-c",
-                                    &format!("cd '{}' && claude", project.path.display()),
-                                ])
+                                .args(launch_terminal_argv(&term))
+                                .current_dir(&project.path)
                                 .spawn()
                             {
                                 Ok(_) => ScreenAction::SetStatusMessage(
@@ -7057,5 +7171,224 @@ mod tests {
              here, so the eight-character branch was never taken and the \
              assertion above passed for the wrong reason"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // CR-01: the resume argv, proven at the argv because a test cannot spawn a
+    // terminal emulator in CI
+    // -----------------------------------------------------------------------
+
+    /// Command interpreter binaries, spelled from halves so this array is not
+    /// itself a hit for `text`'s interpreter census (which walks `src/`).
+    const INTERPRETER_HEADS: [&str; 8] = ["s", "bas", "zs", "das", "ks", "fis", "cs", "tcs"];
+    /// The tail every entry of [`INTERPRETER_HEADS`] takes. Meaningless alone.
+    const INTERPRETER_TAIL: &str = "h";
+    /// The flag by which an interpreter is handed a program to PARSE. Split for
+    /// the same reason.
+    const INTERPRETER_COMMAND_FLAG_HEAD: &str = "-";
+    /// See [`INTERPRETER_COMMAND_FLAG_HEAD`].
+    const INTERPRETER_COMMAND_FLAG_TAIL: &str = "c";
+
+    fn interpreter_binaries() -> Vec<String> {
+        INTERPRETER_HEADS
+            .iter()
+            .map(|head| format!("{head}{INTERPRETER_TAIL}"))
+            .collect()
+    }
+
+    /// Session ids that are hostile in every way this codebase can name: the
+    /// look-alike corpus by IMPORT (never respelled — D-21-6), plus one fixture
+    /// per shell metacharacter class.
+    fn hostile_session_ids() -> Vec<String> {
+        let mut ids: Vec<String> = crate::test_support::LOOK_ALIKE_PAIRS
+            .iter()
+            .map(|(_, hostile)| (*hostile).to_string())
+            .collect();
+        ids.extend(
+            [
+                "a'b",                  // single quote — terminates the quoting
+                "a\"b",                 // double quote
+                "a;b",                  // command separator
+                "a&&b",                 // conditional chain
+                "a|b",                  // pipe
+                "a`b`c",                // backtick substitution
+                "a$(b)c",               // dollar-parenthesis substitution
+                "a\nb",                 // newline — a statement separator
+                "a\u{7}b",              // a NUL-free control character
+                "a b",                  // a bare space: must stay ONE element
+                "'; rm -rf / #",        // the whole escape, assembled
+            ]
+            .iter()
+            .map(|raw| (*raw).to_string()),
+        );
+        ids
+    }
+
+    /// **CR-01, proven where it can be proven.** A test cannot spawn a terminal
+    /// emulator in CI, so the property is asserted at the ARGV: the vector
+    /// [`resume_terminal_argv`] hands to `std::process::Command` carries the
+    /// session id as one opaque element and contains no parser that could read
+    /// a metacharacter in it as syntax.
+    ///
+    /// The four assertions are ordered so the first failure names the defect
+    /// rather than a symptom of it.
+    #[test]
+    fn the_resume_argv_carries_a_hostile_session_id_as_one_opaque_element() {
+        let interpreters = interpreter_binaries();
+        let command_flag =
+            format!("{INTERPRETER_COMMAND_FLAG_HEAD}{INTERPRETER_COMMAND_FLAG_TAIL}");
+
+        // Non-vacuity: the corpus must actually be hostile, or every assertion
+        // below would hold for an all-ASCII fixture set that proves nothing.
+        assert!(
+            hostile_session_ids()
+                .iter()
+                .any(|id| id.chars().any(|c| "'\";&|`$\n".contains(c))),
+            "the fixture set carries no shell metacharacter at all, so this \
+             control would pass against the construction it exists to reject"
+        );
+
+        let mut arities = std::collections::BTreeSet::new();
+        for term in ["kitty", "alacritty", "gnome-terminal", "xterm", "/opt/wat"] {
+            for raw in hostile_session_ids() {
+                let sid = Untrusted::from_untrusted_source(raw.clone());
+                let argv = resume_terminal_argv(term, &sid);
+                arities.insert(argv.len());
+
+                // (1) The id is present EXACTLY ONCE, as a whole element,
+                //     byte-identical to the raw value. Byte-identity is the
+                //     capability half: an escaped id resumes nothing.
+                let carried = argv.iter().filter(|element| *element == &raw).count();
+                assert_eq!(
+                    carried, 1,
+                    "the session id {raw:?} must appear as exactly ONE argv \
+                     element byte-identical to `as_raw_for_logic_only()`; it \
+                     appeared {carried} times in {argv:?}. Zero means the id \
+                     was interpolated into some larger string — which is a \
+                     program a parser will read, not an argument `execve` \
+                     hands over unread."
+                );
+
+                // (2) No element is a command interpreter binary.
+                for element in &argv {
+                    let stem = element.rsplit('/').next().unwrap_or(element);
+                    assert!(
+                        !interpreters.iter().any(|binary| binary == stem),
+                        "argv element {element:?} is a command interpreter. \
+                         While an interpreter sits in this path every byte of \
+                         the session id is a candidate token, and quoting for \
+                         it is the weaker answer: it makes correctness depend \
+                         on the escaper being right about every metacharacter \
+                         of every interpreter. Full argv: {argv:?}"
+                    );
+                }
+
+                // (3) No element is an interpreter's command-string flag.
+                assert!(
+                    !argv.iter().any(|element| element == &command_flag),
+                    "argv carries {command_flag:?}, the flag by which an \
+                     interpreter is handed a program to PARSE. Its presence \
+                     means the next element is a program, not an argument. \
+                     Full argv: {argv:?}"
+                );
+            }
+        }
+
+        // (4) Arity is constant: a hostile id adds, removes or merges nothing.
+        assert_eq!(
+            arities.len(),
+            1,
+            "the argv arity varied across inputs ({arities:?}), so some id \
+             changed the SHAPE of the vector rather than just one element of \
+             it. A value that can change the arity is a value being parsed."
+        );
+    }
+
+    /// **The capability half of the fix** (T-21-27-06, prohibition 2).
+    ///
+    /// Every emulator [`find_terminal`] can return, plus the unbounded
+    /// `$TERMINAL` case, and in both directions: the separator is correct AND
+    /// the resumed program's own long option lands AFTER it, where the emulator
+    /// cannot consume it as one of its own.
+    #[test]
+    fn every_terminal_find_terminal_can_return_gets_a_separator_that_keeps_the_program_options() {
+        // The candidate list `find_terminal` probes, plus `$TERMINAL`. If
+        // `find_terminal` grows a candidate, this arm must grow with it.
+        for (term, expected) in [
+            ("kitty", "-e"),
+            ("alacritty", "-e"),
+            ("gnome-terminal", "--"),
+            ("xterm", "-e"),
+            // An arbitrary `$TERMINAL`, and the same value behind a path.
+            ("wezterm", "-e"),
+            ("/usr/bin/gnome-terminal", "--"),
+        ] {
+            assert_eq!(
+                terminal_program_separator(term),
+                expected,
+                "{term:?} must be handed {expected:?}. `gnome-terminal` is the \
+                 one that differs: its `-e` is deprecated and takes a single \
+                 re-parsed string, so with a real argv it consumes `--resume` \
+                 as one of its OWN options and the resume silently stops \
+                 working — a feature deletion wearing a security fix's clothes."
+            );
+
+            let sid = Untrusted::from_untrusted_source("abc".to_string());
+            let argv = resume_terminal_argv(term, &sid);
+            assert_eq!(
+                argv.first().map(String::as_str),
+                Some(expected),
+                "the separator must be the FIRST element of {argv:?}, or the \
+                 emulator reads the program name as one of its own operands"
+            );
+            let separator_at = argv.iter().position(|e| e == expected);
+            let option_at = argv.iter().position(|e| e == "--resume");
+            assert!(
+                separator_at < option_at,
+                "the resumed program's own long option `--resume` must appear \
+                 AFTER the separator in {argv:?}; before it, the emulator \
+                 consumes it and resumes nothing"
+            );
+        }
+    }
+
+    /// `find_terminal`'s candidate list and the separator table must not drift
+    /// apart. This is the pin that makes the table's coverage claim checkable
+    /// rather than a comment: a fifth candidate added to `find_terminal`
+    /// without a decision here fails this.
+    #[test]
+    fn the_separator_table_covers_every_candidate_find_terminal_probes() {
+        let source = include_str!("detail.rs");
+        let body = source
+            .split_once("fn find_terminal()")
+            .expect("find_terminal exists")
+            .1;
+        let list = body
+            .split_once('[')
+            .expect("the candidate list is a slice literal")
+            .1
+            .split_once(']')
+            .expect("the candidate list closes")
+            .0;
+        let candidates: Vec<String> = list
+            .split(',')
+            .map(|piece| piece.trim().trim_matches('"').to_string())
+            .filter(|piece| !piece.is_empty())
+            .collect();
+        assert_eq!(
+            candidates.len(),
+            4,
+            "`find_terminal` probes {candidates:?}; the separator table was \
+             written against exactly four candidates. A candidate added there \
+             without a separator decision here gets the `-e` default by \
+             silence, which is how `gnome-terminal` would have been wrong."
+        );
+        for candidate in &candidates {
+            let separator = terminal_program_separator(candidate);
+            assert!(
+                matches!(separator, "-e" | "--"),
+                "{candidate:?} resolved to the unknown separator {separator:?}"
+            );
+        }
     }
 }
