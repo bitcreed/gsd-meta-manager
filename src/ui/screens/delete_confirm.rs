@@ -124,7 +124,16 @@ fn do_remove_project(ctx: &mut AppContext, alias: &str) {
 
     let project_path = ctx.config.projects.get(alias).map(|p| p.path.clone());
 
-    match registry::remove_project(&mut ctx.config, alias) {
+    // Wrapped at the CALL, not stored: this is a registry key being looked up
+    // and thrown away, which is exactly what `LegacyRegistryKey` is for
+    // (`21-24`). The raw bytes still reach the removal through
+    // `as_raw_for_lookup_only` inside `remove_project`, so a legacy row an
+    // older build accepted is still removable from this screen (D-17-3); what
+    // the type buys is that the FAILURE echo cannot be written raw.
+    match registry::remove_project(
+        &mut ctx.config,
+        &registry::LegacyRegistryKey::from_argv(alias.to_string()),
+    ) {
         Ok(()) => {
             if let Err(e) = save_config(&ctx.config, &ctx.config_path) {
                 ctx.error_message = Some(format!("Failed to save config: {}", e));

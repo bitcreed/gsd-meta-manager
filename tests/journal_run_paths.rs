@@ -224,7 +224,13 @@ async fn a_traversing_run_id_creates_nothing_outside_the_runs_root_and_exits_non
             .expect_err("a traversing run id must refuse rather than run");
 
         assert!(
-            matches!(&error, DriveError::RunIdInvalid { run_id } if run_id == hostile),
+            // COMPARISON only, not expectation: `21-24` retyped `run_id` to
+            // `crate::text::Untrusted`, which deliberately implements no
+            // `PartialEq<&str>`. The demand is unchanged — the refusal must
+            // carry the offending id BYTE-FOR-BYTE, which is what
+            // `as_raw_for_logic_only` reads. Escaping here would have weakened
+            // the assertion to "carries something like the id".
+            matches!(&error, DriveError::RunIdInvalid { run_id } if run_id.as_raw_for_logic_only() == *hostile),
             "the refusal must be the typed one that names the offending id, so the \
              caller can act on it; got {error:?} for {hostile:?}"
         );

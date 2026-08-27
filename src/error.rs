@@ -285,14 +285,36 @@ pub enum OptInError {
     /// the registry lookup, never by the constructor, which is handed an entry.
     UnknownAlias {
         /// The alias that was asked for.
-        alias: String,
+        ///
+        /// **Carried verbatim and displayed escaped, and those are two
+        /// different questions this type asks separately** (`21-24`, CR-02).
+        /// [`crate::text::Untrusted`] holds the bytes the caller supplied with
+        /// no judgment applied — a refusal must name what was refused, exactly
+        /// — while implementing no [`Display`](std::fmt::Display) at all, so the
+        /// `Display` below cannot compile until the value goes through
+        /// [`shown`](crate::text::Untrusted::shown).
+        alias: crate::text::Untrusted,
     },
     /// The project is registered but carries no `driver_opt_in` record. A
     /// registered project is one the dashboard may *read*; driving it is a
     /// separate, deliberate act (D-14).
+    ///
+    /// **Its message carries the `o`-key affordance because it is now the ONLY
+    /// place this judgment is spelled** (`21-24`, D-21-18).
+    /// `ui::screens::driver_confirm::do_start_run` used to hand-write a second
+    /// sentence for the same refusal — and put the raw alias into a rendered
+    /// error line while doing it. Two sentences for one judgment is the defect
+    /// D-19-2 removed from `Alias::new` and WR-03 removed from `advisory.rs`;
+    /// the screen delegates here now, so the affordance had to move here with
+    /// it or delegation would have cost the user the actionable half. Pinned by
+    /// `driver_confirm`'s
+    /// `the_delegated_opt_in_refusal_still_names_the_key_to_press`.
     NotOptedIn {
         /// The alias that is registered but not opted in.
-        alias: String,
+        ///
+        /// Carried verbatim, displayed escaped — see
+        /// [`OptInError::UnknownAlias::alias`](OptInError::UnknownAlias).
+        alias: crate::text::Untrusted,
     },
     /// The registered path is not an existing directory. Checked before the
     /// process is launched, mirroring [`SpawnError::ProjectRootUnusable`]'s
@@ -300,8 +322,15 @@ pub enum OptInError {
     /// that no longer exists.
     RootUnusable {
         /// The alias whose path failed the check.
-        alias: String,
+        ///
+        /// Carried verbatim, displayed escaped — see
+        /// [`OptInError::UnknownAlias::alias`](OptInError::UnknownAlias).
+        alias: crate::text::Untrusted,
         /// The root that failed the check.
+        ///
+        /// Stays a [`PathBuf`]: it is this build's own canonicalised path, not
+        /// a string the caller supplied, and `Path::display` is the sink. The
+        /// carrier is for values this build did not author.
         root: PathBuf,
     },
     /// The opt-in record no longer covers the bytes that would reach a prompt.
@@ -316,35 +345,65 @@ pub enum OptInError {
     /// seen the new disclosure.
     PromptInputsDrifted {
         /// The alias whose disclosed inputs no longer match.
-        alias: String,
+        ///
+        /// Carried verbatim, displayed escaped — see
+        /// [`OptInError::UnknownAlias::alias`](OptInError::UnknownAlias).
+        alias: crate::text::Untrusted,
         /// Which file moved, and how.
         drift: crate::registry::OptInDrift,
     },
 }
 
+/// **The ONE producer, so no consumer has to be named** (`21-24`, CR-02).
+///
+/// The four alias-carrying variants above hold [`crate::text::Untrusted`], which
+/// implements no [`Display`](std::fmt::Display) — so this impl does not compile
+/// while any of them is interpolated raw, and the four `eprintln!("Error: {}",
+/// err)` sites in `src/main.rs` became correct **without appearing in this
+/// plan's diff**. That absence is the evidence the fix is at the producer; a
+/// list of consumers would have been four this round and five the next.
+///
+/// The escape is bound ONCE, above the `match`, exactly as
+/// `impl Display for crate::registry::AliasRefusal` binds it, so a variant added
+/// tomorrow cannot embed its alias without going through it.
 impl fmt::Display for OptInError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Bound once, above the match, so a variant added tomorrow cannot embed
+        // the alias without going through it. `shown()` is
+        // `crate::text::render_for_terminal`: BOTH the invisible-formatting
+        // class and the ESC/C0/DEL/C1 control class, composed in one place.
+        let escaped = |alias: &crate::text::Untrusted| alias.shown();
         match self {
             Self::UnknownAlias { alias } => {
+                let alias = escaped(alias);
                 write!(f, "no project is registered under the alias `{alias}`")
             }
-            Self::NotOptedIn { alias } => write!(
-                f,
-                "the project `{alias}` has not opted in to being driven; \
-                 registering a project lets the dashboard read it, driving it is a separate \
-                 deliberate opt-in"
-            ),
-            Self::RootUnusable { alias, root } => write!(
-                f,
-                "the registered path for `{alias}` is not a usable directory: {}",
-                root.display()
-            ),
-            Self::PromptInputsDrifted { alias, drift } => write!(
-                f,
-                "the driver opt-in for `{alias}` needs re-confirming: {}. \
-                 Opt in again to review what reaches a prompt and approve it",
-                drift.describe()
-            ),
+            Self::NotOptedIn { alias } => {
+                let alias = escaped(alias);
+                write!(
+                    f,
+                    "the project `{alias}` has not opted in to being driven; \
+                     registering a project lets the dashboard read it, driving it is a separate \
+                     deliberate opt-in. Press `o` on the dashboard to opt it in"
+                )
+            }
+            Self::RootUnusable { alias, root } => {
+                let alias = escaped(alias);
+                write!(
+                    f,
+                    "the registered path for `{alias}` is not a usable directory: {}",
+                    root.display()
+                )
+            }
+            Self::PromptInputsDrifted { alias, drift } => {
+                let alias = escaped(alias);
+                write!(
+                    f,
+                    "the driver opt-in for `{alias}` needs re-confirming: {}. \
+                     Opt in again to review what reaches a prompt and approve it",
+                    drift.describe()
+                )
+            }
         }
     }
 }
@@ -499,8 +558,16 @@ pub enum DriveError {
     /// untrusted value is echoed, and it is echoed to the operator's own
     /// terminal rather than into a log, a journal record or a render surface.
     RunIdInvalid {
-        /// The id that was refused, verbatim.
-        run_id: String,
+        /// The id that was refused.
+        ///
+        /// **Carried verbatim and displayed escaped, and those are two
+        /// different questions this type asks separately** (`21-24`).
+        /// [`crate::text::Untrusted`] holds the argv bytes with no judgment
+        /// applied — a refusal must name what was refused, exactly — while
+        /// implementing no [`Display`](std::fmt::Display), so the `Display`
+        /// below cannot compile until the value goes through
+        /// [`shown`](crate::text::Untrusted::shown).
+        run_id: crate::text::Untrusted,
     },
     /// `--alias` is present but carries no visible name (D-17-4).
     ///
@@ -515,8 +582,11 @@ pub enum DriveError {
     /// The boundary, the purity and the ordering are unchanged: this fires at
     /// the same seam, before any file is created. Only the claim is corrected.
     AliasNotVisible {
-        /// The value that was refused, verbatim.
-        alias: String,
+        /// The value that was refused.
+        ///
+        /// Carried verbatim, displayed escaped — see
+        /// [`DriveError::RunIdInvalid::run_id`](DriveError::RunIdInvalid).
+        alias: crate::text::Untrusted,
     },
     /// None of `--command`, `--target-phase` or `--goal` names anything to do
     /// (CTRL-06).
@@ -558,8 +628,11 @@ pub enum DriveError {
     /// `--run-id '../../../../escaped'` is what that distinction cost the last
     /// time it was left to the callers.
     TargetPhaseInvalid {
-        /// The value that was refused, verbatim.
-        target_phase: String,
+        /// The value that was refused.
+        ///
+        /// Carried verbatim, displayed escaped — see
+        /// [`DriveError::RunIdInvalid::run_id`](DriveError::RunIdInvalid).
+        target_phase: crate::text::Untrusted,
     },
     /// A run bound was asked for that a run cannot be bounded by (CTRL-06).
     ///
@@ -721,8 +794,30 @@ pub enum DriveError {
     },
 }
 
+/// **The ONE producer for this type's three argv-carrying variants** (`21-24`).
+///
+/// Same mechanism as [`impl Display for OptInError`](OptInError), and the escape
+/// is bound once above the `match` for the same reason.
+///
+/// **What the retype closed here that was NOT an invisible character reaching a
+/// terminal.** These three sites interpolated `{run_id:?}` / `{alias:?}` /
+/// `{target_phase:?}`, and `str`'s own `Debug` already escaped the class it was
+/// handed. The defect was the PROVENANCE: the guarantee rested on
+/// `core::char::is_printable`, a standard-library table that no test in this tree
+/// pins, no doc in this tree names, that moves with a toolchain upgrade, and that
+/// is a SECOND spelling of a class this project derives for itself in
+/// [`crate::text`]. `src/registry.rs:65-101` recorded that finding in round 8 and
+/// closed it for `AliasRefusal` only. It is closed here now: the escape is this
+/// project's own predicate, in this project's own notation (`U+202E`, not
+/// `\u{202e}`), and `{:?}` then adds nothing because the escaped form is ASCII.
 impl fmt::Display for DriveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Bound once, above the match, so a variant added tomorrow cannot embed
+        // an argv value without going through it. It yields a `String` rather
+        // than a `Rendered` because the three sites below quote with `{:?}` and
+        // want `str`'s quoting around the ALREADY-escaped text — the same shape
+        // `impl Display for crate::registry::AliasRefusal` uses.
+        let escaped = |value: &crate::text::Untrusted| value.shown().to_string();
         match self {
             Self::UnsupportedPlatform { detail } => write!(
                 f,
@@ -737,22 +832,28 @@ impl fmt::Display for DriveError {
                  stoppable and countable afterwards. Pass one, or use `--dry-run`, \
                  which creates no run to identify"
             ),
-            Self::RunIdInvalid { run_id } => write!(
-                f,
-                "the run id {run_id:?} is not a single directory name, so it is refused \
-                 before anything is created. A run id names one directory under \
-                 .planning/meta-manager/runs/; it may not contain a path separator, \
-                 `..`, or a leading `/`"
-            ),
+            Self::RunIdInvalid { run_id } => {
+                let run_id = escaped(run_id);
+                write!(
+                    f,
+                    "the run id {run_id:?} is not a single directory name, so it is refused \
+                     before anything is created. A run id names one directory under \
+                     .planning/meta-manager/runs/; it may not contain a path separator, \
+                     `..`, or a leading `/`"
+                )
+            }
             // True whether or not an invisible alias is sitting in someone's
             // config.json — which is exactly what the borrowed `UnknownAlias`
             // message was not (WR-06).
-            Self::AliasNotVisible { alias } => write!(
-                f,
-                "the supplied alias {alias:?} carries no visible name, so it \
-                 cannot identify any project. Pass the alias as it appears in \
-                 `gsd-meta-manager list`"
-            ),
+            Self::AliasNotVisible { alias } => {
+                let alias = escaped(alias);
+                write!(
+                    f,
+                    "the supplied alias {alias:?} carries no visible name, so it \
+                     cannot identify any project. Pass the alias as it appears in \
+                     `gsd-meta-manager list`"
+                )
+            }
             Self::NoCommandSource => write!(
                 f,
                 "a run needs something to do: pass `--command <c>` to run one GSD \
@@ -769,13 +870,16 @@ impl fmt::Display for DriveError {
                  the run bounds. Pass exactly one, so the run's terminal record names \
                  the mode you chose"
             ),
-            Self::TargetPhaseInvalid { target_phase } => write!(
-                f,
-                "the target phase {target_phase:?} is not a single plain path \
-                 component, so it is refused before anything is created. A target \
-                 phase is a phase number such as `20`; it may not contain a path \
-                 separator, `..`, or a leading `/`"
-            ),
+            Self::TargetPhaseInvalid { target_phase } => {
+                let target_phase = escaped(target_phase);
+                write!(
+                    f,
+                    "the target phase {target_phase:?} is not a single plain path \
+                     component, so it is refused before anything is created. A target \
+                     phase is a phase number such as `20`; it may not contain a path \
+                     separator, `..`, or a leading `/`"
+                )
+            }
             Self::BoundsRefused(refusal) => write!(f, "{refusal}"),
             Self::EscalationRefused(refusal) => write!(f, "{refusal}"),
             // The refusal's own `Display` already names the reason and quotes
@@ -922,5 +1026,235 @@ impl From<LockError> for DriveError {
 impl From<SpawnError> for DriveError {
     fn from(err: SpawnError) -> Self {
         Self::Spawn(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::text::is_invisible_formatting_char;
+
+    /// The ONE place this module builds an alias-carrying field, so the retype
+    /// costs one line here rather than one line per subject.
+    ///
+    /// Before `21-24` this returned `String`; it now returns
+    /// [`crate::text::Untrusted`], and **not one assertion below changed**. That
+    /// is the point of routing every construction through a single helper: the
+    /// diff of this module is the helper's return type, so a reader can see that
+    /// no expectation was weakened to make the retype pass.
+    fn carrier(raw: &str) -> crate::text::Untrusted {
+        crate::text::Untrusted::from_untrusted_source(raw.to_string())
+    }
+
+    /// Every alias-carrying variant of BOTH error types, over one value, as
+    /// `(name, Display, Debug)`.
+    ///
+    /// Both routes are returned together because they are two different escapes
+    /// of the same field and this phase has already shipped a fix to one of them
+    /// while the other stayed open (`WR-04`, `LegacyRegistryKey`'s derived
+    /// `Debug`). A subject list that returned only `to_string()` would be the
+    /// same defect in a new place.
+    fn alias_carrying_messages(value: &str) -> Vec<(&'static str, String, String)> {
+        let opt_in: Vec<(&'static str, OptInError)> = vec![
+            (
+                "OptInError::UnknownAlias",
+                OptInError::UnknownAlias {
+                    alias: carrier(value),
+                },
+            ),
+            (
+                "OptInError::NotOptedIn",
+                OptInError::NotOptedIn {
+                    alias: carrier(value),
+                },
+            ),
+            (
+                "OptInError::RootUnusable",
+                OptInError::RootUnusable {
+                    alias: carrier(value),
+                    root: PathBuf::from("/nonexistent"),
+                },
+            ),
+            (
+                "OptInError::PromptInputsDrifted",
+                OptInError::PromptInputsDrifted {
+                    alias: carrier(value),
+                    drift: crate::registry::OptInDrift::NothingDisclosed,
+                },
+            ),
+        ];
+        let drive: Vec<(&'static str, DriveError)> = vec![
+            (
+                "DriveError::AliasNotVisible",
+                DriveError::AliasNotVisible {
+                    alias: carrier(value),
+                },
+            ),
+            (
+                "DriveError::RunIdInvalid",
+                DriveError::RunIdInvalid {
+                    run_id: carrier(value),
+                },
+            ),
+            (
+                "DriveError::TargetPhaseInvalid",
+                DriveError::TargetPhaseInvalid {
+                    target_phase: carrier(value),
+                },
+            ),
+        ];
+
+        opt_in
+            .into_iter()
+            .map(|(name, err)| (name, err.to_string(), format!("{err:?}")))
+            .chain(
+                drive
+                    .into_iter()
+                    .map(|(name, err)| (name, err.to_string(), format!("{err:?}"))),
+            )
+            .collect()
+    }
+
+    /// **CR-02, closed at the producer.** Every alias-carrying variant of
+    /// [`OptInError`] and [`DriveError`] escapes the value it names, and still
+    /// names it.
+    ///
+    /// Measured at the built binary before the retype, `drive` on a hostile
+    /// argv alias printed to a terminal:
+    ///
+    /// ```text
+    /// Error: no project is registered under the alias `no^[[31msuchM-bM-^@M-.x`
+    /// ```
+    ///
+    /// — a live ANSI introducer and a raw `U+202E` from a value the caller
+    /// typed, while `add` on the same value printed it escaped one arm away.
+    ///
+    /// **Three assertions, in this order, and the order is the design.**
+    ///
+    /// 1. *Non-vacuity.* The hostile message must differ from the clean one.
+    ///    Without it, a variant whose message stopped naming the alias at all
+    ///    would satisfy assertion 3 by silence — which is exactly how six rounds
+    ///    of this phase's fixtures passed while covering nothing.
+    /// 2. *Arrival.* The clean member appears verbatim in the message. A refusal
+    ///    that does not name what was refused is not actionable, and this is the
+    ///    assertion that goes red if a future edit "fixes" the escape by
+    ///    dropping the value.
+    /// 3. *The property.* Zero characters satisfying
+    ///    [`crate::text::is_invisible_formatting_char`].
+    ///
+    /// The `ESC`/C0/C1 half of the class is deliberately NOT asserted here: it
+    /// belongs to `21-24`'s one shared control,
+    /// `registry::tests::a_refusal_never_carries_a_raw_control_or_invisible_character`,
+    /// which drives both enums AND both halves of `remove` over the same corpus.
+    /// Two spellings of one property is the defect this plan exists to remove.
+    #[test]
+    fn every_alias_carrying_variant_escapes_the_value_it_names() {
+        for (clean, hostile) in crate::test_support::LOOK_ALIKE_PAIRS {
+            let clean_messages = alias_carrying_messages(clean);
+            let hostile_messages = alias_carrying_messages(hostile);
+            assert_eq!(
+                clean_messages.len(),
+                hostile_messages.len(),
+                "the subject list must be the same for both members of a pair"
+            );
+
+            for ((name, clean_display, _), (_, hostile_display, _)) in
+                clean_messages.iter().zip(hostile_messages.iter())
+            {
+                // 1. Non-vacuity.
+                assert_ne!(
+                    clean_display, hostile_display,
+                    "{name}'s message is identical for {clean:?} and {hostile:?}, \
+                     so it either does not name the alias or does not escape it. \
+                     Either way every assertion below this one is about a message \
+                     that could not have failed"
+                );
+
+                // 2. Arrival.
+                assert!(
+                    clean_display.contains(clean),
+                    "{name}'s message does not name the clean alias {clean:?} at \
+                     all: {clean_display:?}. A refusal that drops the value it \
+                     refused is not actionable, and it would pass assertion 3 by \
+                     silence"
+                );
+
+                // 3. The property.
+                let survivors: Vec<char> = hostile_display
+                    .chars()
+                    .filter(|c| is_invisible_formatting_char(*c))
+                    .collect();
+                assert!(
+                    survivors.is_empty(),
+                    "{name}'s message carries {survivors:?} — characters that \
+                     render as nothing — from the alias {hostile:?}. What the \
+                     operator reads is not what the value is, which is Trojan \
+                     Source (CVE-2021-42574) in a refusal. The escape belongs at \
+                     the producer: the field is `crate::text::Untrusted` so this \
+                     `Display` cannot compile until every interpolation is \
+                     `shown()`"
+                );
+            }
+        }
+    }
+
+    /// The `{:?}` route, pinned separately because it is a DIFFERENT route with
+    /// a different provenance — and this phase has already been bitten by
+    /// exactly that gap.
+    ///
+    /// **What changed here is the PROVENANCE of the guarantee, and the first
+    /// assertion below does not go red before the retype.** Said plainly rather
+    /// than claimed as a fix: `str`'s own `Debug` already escaped every member
+    /// of the invisible class it was handed — `src/registry.rs:65-101` recorded
+    /// that measurement in round 8. The guarantee rested on
+    /// `core::char::is_printable`, **a standard-library table that no test in
+    /// this tree pins, no doc in this tree names, and that moves with a
+    /// toolchain upgrade** — a SECOND spelling of a class this project derives
+    /// for itself in [`crate::text`]. `WR-04` is what that costs when it is not
+    /// the same table: `LegacyRegistryKey`'s *derived* `Debug` printed raw
+    /// bytes, because a derive prints the field, not `str::fmt::Debug` of an
+    /// escaped copy.
+    ///
+    /// So the discriminating assertion is the SECOND one: the escape must be in
+    /// **this project's own notation** (`U+202E`), produced by this project's
+    /// own predicate, not in Rust's (`\u{202e}`). That assertion IS red before
+    /// the retype, and it is what proves the route now goes through
+    /// [`crate::text::Untrusted`]'s hand-written `Debug` rather than through the
+    /// standard library's table.
+    #[test]
+    fn the_debug_route_of_every_alias_carrying_variant_uses_this_projects_own_notation() {
+        for (_, hostile) in crate::test_support::LOOK_ALIKE_PAIRS {
+            for (name, _, debug) in alias_carrying_messages(hostile) {
+                let survivors: Vec<char> =
+                    debug.chars().filter(|c| is_invisible_formatting_char(*c)).collect();
+                assert!(
+                    survivors.is_empty(),
+                    "{name}'s `{{:?}}` carries {survivors:?} from {hostile:?}. \
+                     `{{:?}}` reaches log lines, panic messages and `anyhow` \
+                     chains, so it is a route in its own right"
+                );
+
+                let expected: String = hostile
+                    .chars()
+                    .filter(|c| is_invisible_formatting_char(*c))
+                    .map(|c| format!("U+{:04X}", c as u32))
+                    .collect();
+                assert!(
+                    !expected.is_empty(),
+                    "the fixture {hostile:?} carries no invisible-class character, \
+                     so this assertion would be vacuous — LOOK_ALIKE_PAIRS' \
+                     second member is supposed to be the hostile one"
+                );
+                assert!(
+                    debug.contains(&expected),
+                    "{name}'s `{{:?}}` does not carry {expected:?} — this \
+                     project's own notation for {hostile:?}. It reads {debug:?} \
+                     instead, which means the escape came from \
+                     `core::char::is_printable` (an unpinned std table that is a \
+                     second spelling of a class this project derives) rather than \
+                     from `crate::text::Untrusted`'s hand-written `Debug`"
+                );
+            }
+        }
     }
 }

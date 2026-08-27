@@ -212,14 +212,47 @@ impl std::fmt::Display for AliasRefusal {
 /// escaped form, and its two purpose-named accessors delegate. One change per
 /// commit, each with its own control: this commit corrects the CLAIM, `21-24`'s
 /// closes the ROUTE.
-#[derive(Debug)]
-pub struct LegacyRegistryKey(String);
+///
+/// # CORRECTION, 2026-08-27 (`21-24`) — the route is closed and the promote has landed
+///
+/// **The sentence this corrects, quoted verbatim from the paragraph
+/// immediately above:**
+///
+/// > **The derive is deliberately NOT removed in this commit.**
+///
+/// It is removed in `21-24`'s. `#[derive(Debug)]` is gone, and the inner value
+/// is now a [`crate::text::Untrusted`] rather than a `String`, so `{key:?}` no
+/// longer resolves at all — and if a `Debug` were ever derived again it would
+/// print the CARRIER's hand-written impl, which is
+/// [`shown`](crate::text::Untrusted::shown). Measured before it was removed:
+/// `grep -rn "LegacyRegistryKey" src/ tests/` names 14 lines, of which the only
+/// non-doc ones are this definition, `from_argv` at `src/main.rs:158` and
+/// `remove_project`'s signature. **There was no `{:?}` consumer anywhere in
+/// `src/` or `tests/`**, so the cheapest correct answer is to let the field
+/// carry the property rather than to restate it in a hand-written impl.
+///
+/// **The trait list above is likewise no longer this doc's claim to make.** The
+/// withheld conversions — no `Display`, no `AsRef<str>`, no `Deref`, no
+/// `Borrow<str>`, no `Into<Cow<'_, str>>`, no `serde` — belong to
+/// [`crate::text::Untrusted`], the general carrier this type is now the
+/// argv-lookup variant of, and they are certified by
+/// `text::tests::an_untrusted_carrier_implements_none_of_the_string_conversions`
+/// — a runtime control observed RED by planting the impls. A doc comment cannot
+/// fail; that control can. This type inherits the certificate through the
+/// wrapper rather than asserting anything of its own.
+///
+/// **Why the type survives the promote rather than being deleted.** Its two
+/// accessor names carry the D-17-3 argument at the call sites in `main.rs`, and
+/// `as_raw_for_lookup_only` says something `as_raw_for_logic_only` does not:
+/// that this particular raw use is a REGISTRY LOOKUP, keyed by exactly these
+/// bytes. Deleting it would cost the reader that (D-21-16).
+pub struct LegacyRegistryKey(crate::text::Untrusted);
 
 impl LegacyRegistryKey {
     /// Wrap an argv string. **No judgment is applied and none may be added** —
     /// see the type's own doc for why (D-17-3).
     pub fn from_argv(raw: String) -> Self {
-        Self(raw)
+        Self(crate::text::Untrusted::from_untrusted_source(raw))
     }
 
     /// The raw bytes, for the membership check and the removal ONLY.
@@ -227,15 +260,58 @@ impl LegacyRegistryKey {
     /// `config.projects` is keyed by exactly these bytes. An escaped key would
     /// miss every legacy entry, which is the regression this accessor's name
     /// exists to make visible at the call site.
+    ///
+    /// Delegates to [`crate::text::Untrusted::as_raw_for_logic_only`]. The name
+    /// differs on purpose: the general accessor says *not for display*, this
+    /// one says *and the reason is that a registry is keyed by these bytes*.
     pub fn as_raw_for_lookup_only(&self) -> &str {
-        &self.0
+        self.0.as_raw_for_logic_only()
     }
 
-    /// The form a human READS, with every invisible-class character replaced by
-    /// its visible `U+XXXX` spelling.
-    pub fn escaped_for_display(&self) -> String {
-        crate::text::display_identity(&self.0)
+    /// The form a human READS.
+    ///
+    /// **Both classes, since `21-24` (WR-01).** This used to be
+    /// [`crate::text::display_identity`] alone, which answers only the
+    /// invisible-formatting half — `Cf` ∪ `Default_Ignorable`. `ESC` is `Cc`
+    /// and in neither, so a legacy key carrying `\u{1b}[31m` printed a live
+    /// ANSI colour sequence through `Removed project '…'`; measured at the
+    /// built binary before this change. It now delegates to
+    /// [`crate::text::Untrusted::shown`], which is
+    /// [`crate::text::render_for_terminal`] — the ONE composition of the
+    /// control class and the invisible-formatting class, so this call site does
+    /// not get to decide that question for itself.
+    pub fn escaped_for_display(&self) -> crate::text::Rendered {
+        self.0.shown()
     }
+
+    /// The carrier itself, for handing to a producer that escapes.
+    ///
+    /// Exists for exactly one caller — [`project_not_found`] — and that is the
+    /// point: the not-found sentence has ONE producer, and the producer takes
+    /// the carrier rather than a string, so no call site can reach it with a
+    /// value it escaped (or forgot to escape) itself.
+    pub fn as_untrusted(&self) -> &crate::text::Untrusted {
+        &self.0
+    }
+}
+
+/// **The ONE producer of the "project not found" sentence** (D-21-15, CR-01).
+///
+/// One producer beats three consumers, and beats a list of three consumers that
+/// will be four next round — the argument `impl Display for AliasRefusal` above
+/// makes, applied to the other sentence this module spells more than once.
+/// Before this, [`record_opt_in`], [`clear_opt_in`] and [`remove_project`] each
+/// wrote `bail!("Project not found: {}", alias)`, and round 8's escape landed on
+/// none of them.
+///
+/// **It takes the carrier, not a `&str`, and that is the mechanism rather than a
+/// style choice.** A `&str` parameter would let a caller hand it a value it had
+/// already mangled, or a value it should have escaped and did not; taking
+/// [`crate::text::Untrusted`] means the only way to reach this function is to
+/// have the raw bytes in a type that cannot be interpolated, so the escape
+/// happens here and only here.
+pub fn project_not_found(key: &crate::text::Untrusted) -> anyhow::Error {
+    anyhow::anyhow!("Project not found: {}", key.shown())
 }
 
 impl Alias {
@@ -404,7 +480,19 @@ pub fn add_project_unchecked(config: &mut Config, alias: &Alias, path: &Path) ->
 /// other function in this module.
 pub fn record_opt_in(config: &mut Config, alias: &str) -> Result<()> {
     let Some(entry) = config.projects.get_mut(alias) else {
-        bail!("Project not found: {}", alias);
+        // The carrier is constructed HERE rather than being the parameter type,
+        // and the lever is smaller for it. This function has 13 callers across
+        // four plans' files, three of which `21-24` may not touch, so changing
+        // its signature would collide with a sibling plan's diff in the same
+        // wave (prohibition 2, D-21-14). **What that costs, stated rather than
+        // smuggled: this protects the MESSAGE, not the PARAMETER — a future
+        // caller that formats `alias` itself is not caught. Direction:
+        // under-protection, silent. What bounds it: every production path
+        // except the legacy rows has already passed `Alias::new`, and the
+        // legacy rows are what the escape is for.**
+        return Err(project_not_found(
+            &crate::text::Untrusted::from_untrusted_source(alias.to_string()),
+        ));
     };
 
     let prompt_inputs = current_prompt_inputs(&entry.path);
@@ -613,7 +701,12 @@ pub fn check_prompt_input_drift(project_root: &Path, opt_in: &DriverOptIn) -> Op
 /// does not persist.
 pub fn clear_opt_in(config: &mut Config, alias: &str) -> Result<()> {
     let Some(entry) = config.projects.get_mut(alias) else {
-        bail!("Project not found: {}", alias);
+        // Carrier constructed at the call rather than taken as the parameter,
+        // for the reason and with the disclosed cost written at
+        // [`record_opt_in`]'s matching site.
+        return Err(project_not_found(
+            &crate::text::Untrusted::from_untrusted_source(alias.to_string()),
+        ));
     };
     entry.driver_opt_in = None;
     Ok(())
@@ -645,9 +738,54 @@ pub fn is_opted_in(config: &Config, alias: &str) -> bool {
 ///   which drops them in the same block as `project_states` and `last_refresh`.
 /// * `App::prune_driver_maps` — the backstop, on the existing 20-tick block, for
 ///   every removal that does not go through that screen.
-pub fn remove_project(config: &mut Config, alias: &str) -> Result<()> {
-    if config.projects.remove(alias).is_none() {
-        bail!("Project not found: {}", alias);
+/// # The parameter type IS the fix, and the compiler said so (`21-24`, CR-01)
+///
+/// This took `alias: &str` and bailed `bail!("Project not found: {}", alias)`,
+/// one line below the arm in `src/main.rs` that had already been made to ask
+/// whether to escape. `remove`'s SUCCESS echo was asked; its FAILURE echo, one
+/// line above, was never asked about — and the failure path is the one with no
+/// config prerequisite at all, reachable by any operator typing any argv.
+/// Measured at the built binary before the change:
+///
+/// ```text
+/// Error: Project not found: ab^[[31msentM-bM-^@M-.x
+/// ```
+///
+/// — a live ANSI introducer AND a raw `U+202E`, straight from argv to the
+/// terminal.
+///
+/// With the parameter typed, that `bail!` is not merely discouraged but
+/// **unwritable**. It was written deliberately against this signature and
+/// compiled, and this is the error verbatim — an error this plan saw, replacing
+/// the one `src/main.rs:162-173` quoted from memory:
+///
+/// ```text
+/// error[E0277]: `LegacyRegistryKey` doesn't implement `std::fmt::Display`
+///    --> src/registry.rs:650:40
+///     |
+/// 650 |         bail!("Project not found: {}", key);
+///     |                                   --   ^^^ `LegacyRegistryKey` cannot be formatted with the default formatter
+///     |                                   |
+///     |                                   required by this formatting parameter
+///     |
+/// help: the trait `std::fmt::Display` is not implemented for `LegacyRegistryKey`
+///    --> src/registry.rs:216:1
+///     |
+/// 216 | pub struct LegacyRegistryKey(String);
+///     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/// ```
+///
+/// **D-17-3's accept half is untouched and is measured, not assumed.** The
+/// lookup and the removal still run on `as_raw_for_lookup_only()` — byte-for-
+/// byte what an older build registered — because removal is the documented
+/// recovery route for exactly those rows and a removal that could not name them
+/// would make a bad entry permanent.
+pub fn remove_project(config: &mut Config, key: &LegacyRegistryKey) -> Result<()> {
+    // RAW: this is the lookup and the removal. `config.projects` is keyed by
+    // exactly these bytes.
+    if config.projects.remove(key.as_raw_for_lookup_only()).is_none() {
+        // ESCAPED, at the one producer, which takes the carrier.
+        return Err(project_not_found(key.as_untrusted()));
     }
     Ok(())
 }
@@ -972,6 +1110,385 @@ mod tests {
         assert!(
             refusals_seen > 0,
             "no look-alike fixture produced a refusal, so this test asserted nothing"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // ONE control over BOTH error types and BOTH halves of `remove` (`21-24`)
+    // -----------------------------------------------------------------------
+
+    /// Whether `c` is in the terminal-CONTROL class — **derived from the ONE
+    /// production spelling of that class, never restated.**
+    ///
+    /// [`crate::text::strip_terminal_controls`] is the only place `ESC` / C0 /
+    /// `DEL` / C1 is written down in this tree. A test that re-listed those
+    /// ranges would be a SECOND spelling of a class the project derives for
+    /// itself — the exact defect `registry.rs:88-101` recorded about
+    /// `core::char::is_printable`, committed in a test instead of in a library.
+    /// So the question is asked of the production function: a character is in
+    /// the class exactly when stripping changes it.
+    fn is_terminal_control_char(c: char) -> bool {
+        let mut buf = [0u8; 4];
+        let one: &str = c.encode_utf8(&mut buf);
+        crate::text::strip_terminal_controls(one) != one
+    }
+
+    /// How many [`crate::text::Untrusted`] fields this variant carries.
+    ///
+    /// **The wildcard-free `match` IS the anti-recurrence mechanism**, and it is
+    /// why this function exists at all rather than the subject list below simply
+    /// naming four variants. Adding a variant to [`OptInError`] does not compile
+    /// until an arm is written here, and writing that arm is the moment the
+    /// author is asked whether the variant carries an untrusted value — which is
+    /// the moment the question is cheap. **No `_ =>` arm may be added.**
+    fn opt_in_untrusted_fields(err: &crate::error::OptInError) -> usize {
+        use crate::error::OptInError as E;
+        match err {
+            E::UnknownAlias { .. } => 1,
+            E::NotOptedIn { .. } => 1,
+            E::RootUnusable { .. } => 1,
+            E::PromptInputsDrifted { .. } => 1,
+        }
+    }
+
+    /// The sibling of [`opt_in_untrusted_fields`] for [`crate::error::DriveError`],
+    /// and the same rule applies: **no `_ =>` arm may be added.** A variant that
+    /// carries an untrusted value must return 1 AND be added to the subject list
+    /// in the control below; a variant that carries none returns 0 and the
+    /// compiler stops complaining. Nineteen arms is the cost of the guarantee.
+    fn drive_untrusted_fields(err: &crate::error::DriveError) -> usize {
+        use crate::error::DriveError as E;
+        match err {
+            E::RunIdInvalid { .. } => 1,
+            E::AliasNotVisible { .. } => 1,
+            E::TargetPhaseInvalid { .. } => 1,
+            E::UnsupportedPlatform { .. }
+            | E::RunIdRequired
+            | E::NoCommandSource
+            | E::AmbiguousCommandSource
+            | E::BoundsRefused(_)
+            | E::EscalationRefused(_)
+            | E::GoalRefused(_)
+            | E::GoalSeamUnusable { .. }
+            | E::PlanApprovalRequired { .. }
+            | E::PlanApprovalMalformed(_)
+            | E::PlanApprovalStale(_)
+            | E::OptIn(_)
+            | E::Lock(_)
+            | E::Spawn(_)
+            | E::Journal { .. }
+            | E::EnvelopeAssertionFailed { .. } => 0,
+        }
+    }
+
+    /// A registry holding exactly `key`, built without going through
+    /// [`Alias::new`] — which is the point, because every value this control
+    /// cares about is one this build's alphabet refuses.
+    fn config_holding(key: &str) -> Config {
+        let mut config = Config::new();
+        config.projects.insert(
+            key.to_string(),
+            RegisteredProject {
+                path: PathBuf::from("/tmp"),
+                added: "2026-01-01T00:00:00Z".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        config
+    }
+
+    /// Every message this plan's two error types and the `remove` path produce
+    /// for one value, as `(subject name, message)`.
+    fn messages_for(value: &str) -> Vec<(String, String)> {
+        use crate::error::{DriveError, OptInError};
+        use crate::text::Untrusted;
+
+        let carrier = || Untrusted::from_untrusted_source(value.to_string());
+        let mut out: Vec<(String, String)> = Vec::new();
+
+        for (name, err) in [
+            ("OptInError::UnknownAlias", OptInError::UnknownAlias { alias: carrier() }),
+            ("OptInError::NotOptedIn", OptInError::NotOptedIn { alias: carrier() }),
+            (
+                "OptInError::RootUnusable",
+                OptInError::RootUnusable {
+                    alias: carrier(),
+                    root: PathBuf::from("/nonexistent"),
+                },
+            ),
+            (
+                "OptInError::PromptInputsDrifted",
+                OptInError::PromptInputsDrifted {
+                    alias: carrier(),
+                    drift: OptInDrift::NothingDisclosed,
+                },
+            ),
+        ] {
+            assert_eq!(
+                opt_in_untrusted_fields(&err),
+                1,
+                "{name} is in this control's subject list but the wildcard-free \
+                 classifier says it carries no untrusted field — the list and \
+                 the classifier have drifted"
+            );
+            out.push((name.to_string(), err.to_string()));
+        }
+
+        for (name, err) in [
+            ("DriveError::AliasNotVisible", DriveError::AliasNotVisible { alias: carrier() }),
+            ("DriveError::RunIdInvalid", DriveError::RunIdInvalid { run_id: carrier() }),
+            (
+                "DriveError::TargetPhaseInvalid",
+                DriveError::TargetPhaseInvalid {
+                    target_phase: carrier(),
+                },
+            ),
+        ] {
+            assert_eq!(
+                drive_untrusted_fields(&err),
+                1,
+                "{name} is in this control's subject list but the wildcard-free \
+                 classifier says it carries no untrusted field — the list and \
+                 the classifier have drifted"
+            );
+            out.push((name.to_string(), err.to_string()));
+        }
+
+        // The real `Remove` path, BOTH halves. The MISS is CR-01's own path —
+        // the one with no config prerequisite at all, reachable by any operator
+        // typing any argv.
+        let key = LegacyRegistryKey::from_argv(value.to_string());
+
+        let mut miss = Config::new();
+        let refusal = remove_project(&mut miss, &key)
+            .expect_err("removing from an empty registry must refuse");
+        out.push(("remove (miss)".to_string(), refusal.to_string()));
+
+        let mut hit = config_holding(value);
+        remove_project(&mut hit, &key).expect(
+            "D-17-3: a legacy key an older build registered must still remove on \
+             its RAW bytes",
+        );
+        assert!(
+            !hit.projects.contains_key(value),
+            "the hit path must actually remove the key, or the echo below is \
+             about a removal that did not happen"
+        );
+        // The `Removed project '…'` echo the `Remove` arm prints on success.
+        out.push((
+            "remove (hit) echo".to_string(),
+            key.escaped_for_display().to_string(),
+        ));
+
+        // The two functions whose SIGNATURES could not change in this wave and
+        // that therefore reach the producer at a smaller lever. They are in the
+        // subject list precisely because the lever is smaller: the message half
+        // is what this control can bound, and it does.
+        let mut absent = Config::new();
+        out.push((
+            "record_opt_in (miss)".to_string(),
+            record_opt_in(&mut absent, value)
+                .expect_err("an absent alias must refuse")
+                .to_string(),
+        ));
+        out.push((
+            "clear_opt_in (miss)".to_string(),
+            clear_opt_in(&mut absent, value)
+                .expect_err("an absent alias must refuse")
+                .to_string(),
+        ));
+
+        out
+    }
+
+    /// **ONE control, so the next alias-carrying variant inherits the assertion
+    /// rather than the discipline** (`21-24`, T-21-24-06).
+    ///
+    /// Round 8 fixed `impl Display for AliasRefusal` and stopped; its two
+    /// sibling error types carried the same values on the same commands and
+    /// shipped raw. That is this phase's defining failure mode — closing a
+    /// defect class by enumerating one level down — and a per-type test would
+    /// have been the same mistake a third time. So there is one control, its
+    /// subjects are gated by a wildcard-free `match` over each enum, and both
+    /// halves of `remove` are driven through the REAL functions rather than
+    /// through a re-spelling of them.
+    ///
+    /// **Three assertions, in this order, and the order is the design.**
+    ///
+    /// 1. **Non-vacuity of the corpus, in BOTH classes separately.** At least
+    ///    one member must be changed by the invisible-formatting half and at
+    ///    least one by the control half. Without this, replacing the corpus with
+    ///    an all-ASCII one — or simply forgetting the `ESC` witness — would make
+    ///    every assertion below pass while proving nothing, which is exactly how
+    ///    six rounds of this phase's fixtures passed. **What it reports when the
+    ///    corpus IS replaced by an all-ASCII one was measured, not assumed** —
+    ///    the corpus was temporarily swapped for `[("demo","demo"),
+    ///    ("run","run")]` with both witnesses de-clawed, and this fired:
+    ///
+    ///    ```text
+    ///    no corpus member carries an invisible-formatting character, so
+    ///    assertion 3's first half is about a corpus that could not fail
+    ///    ```
+    /// 2. **Arrival.** Each clean member appears verbatim in each of its
+    ///    messages. A subject whose message stopped naming the value would
+    ///    otherwise satisfy assertion 3 by silence.
+    /// 3. **The property, BOTH classes.** For each hostile member: zero
+    ///    characters satisfying [`crate::text::is_invisible_formatting_char`],
+    ///    and zero in the terminal-control class as
+    ///    [`crate::text::strip_terminal_controls`] defines it. Neither class
+    ///    subsumes the other — `ESC` is `Cc` and in neither `Cf` nor
+    ///    `Default_Ignorable` — which is why a site applying one of them is open
+    ///    in the other direction (WR-01).
+    ///
+    /// # Observed RED against the pre-fix tree, verbatim
+    ///
+    /// The same control, with ONLY its construction adapted to the pre-retype
+    /// field types, was run against a throwaway copy of this tree at
+    /// `d712061` (created outside the repository, run, deleted):
+    ///
+    /// ```text
+    /// 58 of 88 subject/value pairs leaked a raw character (42 invisible-class, 16 control-class):
+    ///   [invisible] OptInError::UnknownAlias carried ['\u{202e}'] from "demo\u{202e}"
+    ///   [invisible] remove (miss) carried ['\u{202e}'] from "demo\u{202e}"
+    ///   [control]   OptInError::UnknownAlias carried ['\u{1b}'] from "ev\u{1b}[31mil"
+    ///   [control]   remove (hit) echo carried ['\u{1b}'] from "ev\u{1b}[31mil"
+    ///   [control]   remove (miss) carried ['\u{9b}'] from "a\u{9b}31mb"
+    /// ```
+    ///
+    /// Both classes, both error types, and both halves of `remove`. A second
+    /// red was then taken in the other direction against the FIXED tree, by
+    /// replacing exactly one `escaped(alias)` in `impl Display for OptInError`
+    /// with `alias.as_raw_for_logic_only()`:
+    ///
+    /// ```text
+    /// OptInError::UnknownAlias carried ['\u{200b}'] from "demo\u{200b}" into its own message.
+    /// ```
+    ///
+    /// # The residual, with its direction
+    ///
+    /// This covers the messages these two enums and the `remove` path PRODUCE.
+    /// It does **not** cover a caller that reads
+    /// `err.alias.as_raw_for_logic_only()` and formats the bytes itself. The
+    /// carrier makes that a deliberate, greppable act rather than an accident —
+    /// which is the property the type was built for — but this control does not
+    /// see it. **Direction: under-detection, silent. What bounds it:**
+    /// `as_raw_for_logic_only` is the only route to the bytes and it appears in
+    /// a diff.
+    ///
+    /// It also does not cover `record_opt_in`/`clear_opt_in`'s PARAMETER, only
+    /// their message: their signatures could not change in this wave, so a
+    /// future caller that formats the alias itself is not caught. **Direction:
+    /// under-protection, silent** — disclosed at both call sites in this file.
+    #[test]
+    fn a_refusal_never_carries_a_raw_control_or_invisible_character() {
+        use crate::test_support::LOOK_ALIKE_PAIRS;
+        use crate::text::{is_invisible_formatting_char, render_for_terminal};
+
+        // Imported, never respelled (D-21-6) — plus two locally-built witnesses
+        // for the class `LOOK_ALIKE_PAIRS` does not carry, each spelled as a
+        // `\u{...}` escape because no raw control character appears in this
+        // tree's source.
+        let corpus: Vec<(String, String)> = LOOK_ALIKE_PAIRS
+            .iter()
+            .map(|(clean, hostile)| ((*clean).to_string(), (*hostile).to_string()))
+            .chain([
+                // ESC — the ANSI/OSC introducer. Measured at the built binary
+                // before this plan: `list` printed `ev^[[31mil` for this exact
+                // key, a live colour sequence from a row on disk.
+                ("ev[31mil".to_string(), "ev\u{1b}[31mil".to_string()),
+                // C1 — `U+009B` is the single-character CSI, a one-codepoint
+                // equivalent of `ESC [`. Stripping `ESC` alone leaves the same
+                // capability reachable by another spelling (WR-06).
+                ("a31mb".to_string(), "a\u{9b}31mb".to_string()),
+            ])
+            .collect();
+
+        // 1. NON-VACUITY, per class. An implication over a corpus that cannot
+        //    fail is vacuously true.
+        let invisible_witnesses = corpus
+            .iter()
+            .filter(|(_, hostile)| hostile.chars().any(is_invisible_formatting_char))
+            .count();
+        let control_witnesses = corpus
+            .iter()
+            .filter(|(_, hostile)| hostile.chars().any(is_terminal_control_char))
+            .count();
+        assert!(
+            invisible_witnesses > 0,
+            "no corpus member carries an invisible-formatting character, so \
+             assertion 3's first half is about a corpus that could not fail"
+        );
+        assert!(
+            control_witnesses > 0,
+            "no corpus member carries a terminal-control character, so assertion \
+             3's second half is about a corpus that could not fail. The `ESC` \
+             and C1 witnesses are what put that class in reach — WR-01 is \
+             precisely the finding that one class had been answered and the \
+             other had not"
+        );
+        for (_, hostile) in &corpus {
+            assert_ne!(
+                render_for_terminal(hostile).to_string(),
+                *hostile,
+                "{hostile:?} passes through `render_for_terminal` unchanged, so \
+                 it is not a hostile fixture at all"
+            );
+        }
+
+        let mut subjects_seen = 0_usize;
+        for (clean, hostile) in &corpus {
+            // 2. ARRIVAL — before the property, so a subject that stopped
+            //    naming the value fails HERE rather than passing by silence.
+            for (subject, message) in messages_for(clean) {
+                assert!(
+                    message.contains(clean),
+                    "{subject} does not name the clean value {clean:?} at all: \
+                     {message:?}. A refusal that drops the value it refused is \
+                     not actionable, and it would pass the absence assertions \
+                     below by silence"
+                );
+            }
+
+            // 3. THE PROPERTY, both classes.
+            for (subject, message) in messages_for(hostile) {
+                subjects_seen += 1;
+                let invisible: Vec<char> = message
+                    .chars()
+                    .filter(|c| is_invisible_formatting_char(*c))
+                    .collect();
+                assert!(
+                    invisible.is_empty(),
+                    "{subject} carried {invisible:?} from {hostile:?} into its \
+                     own message. Those characters render as nothing, so what \
+                     the operator reads is not what the value is — Trojan \
+                     Source (CVE-2021-42574) in a refusal. Message: {message:?}"
+                );
+                let controls: Vec<char> = message
+                    .chars()
+                    .filter(|c| is_terminal_control_char(*c))
+                    .collect();
+                assert!(
+                    controls.is_empty(),
+                    "{subject} carried {controls:?} from {hostile:?} into its \
+                     own message. `ESC`, C0, `DEL` and C1 are how text read off \
+                     disk repaints the screen, forges a status line or sets the \
+                     window title. `Cf` union `Default_Ignorable` does NOT \
+                     contain them, so escaping only the invisible class leaves \
+                     this open (WR-01). Message: {message:?}"
+                );
+            }
+        }
+
+        assert!(
+            subjects_seen == corpus.len() * 11,
+            "only {subjects_seen} subject/value pairs were checked across \
+             {} corpus members. Each member must reach all ELEVEN subjects — \
+             four `OptInError` variants, three `DriveError` variants, both \
+             halves of `remove`, and the two opt-in functions — or a subject \
+             has silently dropped out of the list the wildcard-free classifiers \
+             gate",
+            corpus.len()
         );
     }
 

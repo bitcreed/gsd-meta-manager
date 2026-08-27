@@ -112,9 +112,17 @@ async fn main() -> anyhow::Result<()> {
             // form. Same value, one line apart, two different answers; that is
             // the whole split the withdrawn `Display` impl forces you to make.
             if config.projects.contains_key(alias.as_str()) {
+                // `render_for_terminal`, not `display_identity`: ONE composition
+                // for every CLI echo, so no site decides for itself which half
+                // of the class applies (WR-01, `21-24`). This particular value
+                // has already passed `Alias::new`, so the finite identity
+                // alphabet means neither class can be present and the call is a
+                // no-op today — it is here so the answer does not depend on
+                // that remaining true, and so `grep display_identity src/main.rs`
+                // has nothing to find.
                 eprintln!(
                     "Error: alias '{}' already exists. Provide an explicit alias: gsd-manager add {} <alias>",
-                    gsd_meta_manager::text::display_identity(alias.as_str()),
+                    gsd_meta_manager::text::render_for_terminal(alias.as_str()),
                     canonical_path.display()
                 );
                 std::process::exit(1);
@@ -126,9 +134,13 @@ async fn main() -> anyhow::Result<()> {
             // READ by a human, so escaped. A confirmation that renders a name
             // other than the one just written is a confirmation of the wrong
             // thing.
+            // Same composition, same reason as the duplicate-alias echo above:
+            // this value passed `Alias::new` so both classes are already
+            // impossible, and the call is here so that fact is not what the
+            // display honesty depends on.
             println!(
                 "Added project '{}' at {}",
-                gsd_meta_manager::text::display_identity(alias.as_str()),
+                gsd_meta_manager::text::render_for_terminal(alias.as_str()),
                 canonical_path.display()
             );
         }
@@ -157,20 +169,31 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Remove { alias }) => {
             let key = gsd_meta_manager::registry::LegacyRegistryKey::from_argv(alias);
             let mut config = load_config(&config_path)?;
-            // RAW — this is the lookup and the removal.
-            remove_project(&mut config, key.as_raw_for_lookup_only())?;
+            // The key goes in WHOLE, since `21-24` (CR-01). It used to be
+            // unwrapped here — `remove_project(&mut config,
+            // key.as_raw_for_lookup_only())` — which handed the function a bare
+            // `&str` and let its own failure path write `bail!("Project not
+            // found: {}", alias)` one line above this echo. So `remove`'s
+            // SUCCESS echo had been made to ask whether to escape and its
+            // FAILURE echo, one line up, had never been asked. The lookup is
+            // still on the RAW bytes; it now happens inside `remove_project`,
+            // where the type is what makes the raw `bail!` unwritable.
+            remove_project(&mut config, &key)?;
             save_config(&config, &config_path)?;
-            // ESCAPED — this is read by a person.
+            // ESCAPED — this is read by a person. `escaped_for_display` now
+            // delegates to `Untrusted::shown`, i.e. `text::render_for_terminal`:
+            // BOTH the invisible-formatting class and the ESC/C0/DEL/C1 control
+            // class. Before `21-24` it applied only the first, and a legacy key
+            // carrying `\u{1b}[31m` printed a live ANSI colour sequence through
+            // this very line — measured at the built binary (WR-01).
             //
-            // That the raw route is not merely discouraged but IMPOSSIBLE was
-            // measured, by writing `println!("Removed project '{}'", key)` here
-            // and compiling:
-            //
-            //   error[E0277]: `LegacyRegistryKey` doesn't implement `std::fmt::Display`
-            //      --> src/main.rs:164:46
-            //   164 |             println!("Removed project '{}'", key);
-            //       |                                        --    ^^^ `LegacyRegistryKey` cannot be formatted with the default formatter
-            //       = help: the trait `std::fmt::Display` is not implemented for `LegacyRegistryKey`
+            // That the raw route is not merely discouraged but IMPOSSIBLE is
+            // certified by a control that can FAIL, not by this comment:
+            // `text::tests::an_untrusted_carrier_implements_none_of_the_string_conversions`
+            // asserts the absent conversions at runtime and was observed red by
+            // planting them. The verbatim compile error for the raw `bail!` is
+            // quoted where it belongs — in `registry::remove_project`'s own doc,
+            // beside the signature that produces it.
             println!("Removed project '{}'", key.escaped_for_display());
         }
         Some(Commands::List) => {
@@ -187,9 +210,46 @@ async fn main() -> anyhow::Result<()> {
                     // are still here — and pass 7 measured this exact loop
                     // printing a legacy `gsd-\u{202e}nur` as `gsd-run`. Trojan
                     // Source (CVE-2021-42574) in the tool's own project list.
+                    // This is the ONE site in this file that reads raw
+                    // `config.projects` keys rather than an `Alias`, so it is
+                    // the one where legacy rows actually arrive.
+                    //
+                    // **BOTH classes, since `21-24` (WR-01).** This used to be
+                    // `display_identity` alone, which answers only
+                    // `General_Category=Cf` union `Default_Ignorable_Code_Point`.
+                    // `ESC` is `Cc` and in NEITHER of those, so the other half
+                    // of the class walked straight through: measured at the
+                    // built binary, a legacy key `ev\u{1b}[31mil` printed
+                    // `ev^[[31mil` here — a live ANSI colour sequence the
+                    // terminal honours, from a row on disk. The tree already
+                    // said so at `ui/screens/driver.rs:874-878`:
+                    //
+                    //   "Neither subsumes the other, and this is the only place
+                    //    a registry key is drawn on this path."
+                    //
+                    // What was missing was a single place that COMPOSED them.
+                    // `text::render_for_terminal` is that place, so this loop no
+                    // longer decides the question for itself. It is the class
+                    // WITHOUT the `DRIVER_OUTPUT_LINE_CELLS` cap on purpose:
+                    // `sanitize_render_line` would silently truncate a long
+                    // alias at 512 characters and append an ellipsis, which is a
+                    // display cap for agent prose, not for a project name.
+                    //
+                    // **`.to_string()` is load-bearing here and is not
+                    // cosmetic.** `Rendered`'s `Display` is
+                    // `f.write_str(&self.0)`, which IGNORES the formatter's
+                    // width and fill — so `{:<20}` applied to a `Rendered`
+                    // silently emits no padding at all and this table loses its
+                    // columns. Measured: the first `render_for_terminal` here
+                    // printed `clean /tmp` where it had printed
+                    // `clean                /tmp`. The correct fix is
+                    // `f.pad(&self.0)` in `impl Display for Rendered`, but
+                    // `src/text.rs` belongs to plan `21-23` and is off-limits to
+                    // this plan's diff, so it is reported as a wave-conflict
+                    // finding and worked around at this one call site instead.
                     println!(
                         "{:<20} {:<50} {}",
-                        gsd_meta_manager::text::display_identity(alias),
+                        gsd_meta_manager::text::render_for_terminal(alias).to_string(),
                         project.path.display(),
                         project.added
                     );
@@ -417,9 +477,12 @@ async fn main() -> anyhow::Result<()> {
                 // READ by a human — this entry point prints to stdout for a
                 // person, as the comment above says — so the alias is escaped.
                 // The scan itself was handed `&root`, not this string.
+                // One composition for every CLI echo (WR-01, `21-24`). Like the
+                // `add` arm's two sites, this value passed `Alias::new`, so both
+                // classes are already impossible and the call is a no-op today.
                 println!(
                     "alias={} root={}",
-                    gsd_meta_manager::text::display_identity(alias.as_str()),
+                    gsd_meta_manager::text::render_for_terminal(alias.as_str()),
                     root.display()
                 );
                 print!("{}", report.render());

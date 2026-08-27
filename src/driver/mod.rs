@@ -351,15 +351,23 @@ pub struct RawDriveArgs {
 /// One helper rather than five copies of the same three-line match: five copies
 /// is five places a later field can be given the wrong one, and the shape of
 /// this phase's whole failure history is per-site rules that drift.
+///
+/// **`refuse` receives a [`crate::text::Untrusted`], not a `String`** (`21-24`).
+/// This is the ONE place a refused argv value is handed to a refusal on this
+/// path, so wrapping it HERE means every position that already routes through
+/// this helper — and every position added to it later — carries the value in a
+/// type that cannot be interpolated. Wrapping at each of the five closures
+/// instead would be a list of five sites that would be six next round, which is
+/// the shape this phase has paid for six times.
 fn argv_visible(
     value: Option<String>,
-    refuse: impl FnOnce(String) -> DriveError,
+    refuse: impl FnOnce(crate::text::Untrusted) -> DriveError,
 ) -> Result<Option<payload::NonBlank>, DriveError> {
     match value {
         None => Ok(None),
         Some(raw) => match payload::NonBlank::new(&raw) {
             Some(payload) => Ok(Some(payload)),
-            None => Err(refuse(raw)),
+            None => Err(refuse(crate::text::Untrusted::from_untrusted_source(raw))),
         },
     }
 }
@@ -436,8 +444,11 @@ impl DriveArgs {
         // which makes the claim not merely unproven but wrong. The correction
         // rides the commit that falsifies it: same site, same purity, same
         // ordering, a refusal that describes the value instead of the registry.
-        let alias = payload::NonBlank::new(&alias)
-            .ok_or(DriveError::AliasNotVisible { alias })?;
+        // Wrapped at construction, as every other refusal on this boundary now
+        // is: `alias` is the raw argv string and the refusal echoes it.
+        let alias = payload::NonBlank::new(&alias).ok_or_else(|| DriveError::AliasNotVisible {
+            alias: crate::text::Untrusted::from_untrusted_source(alias.clone()),
+        })?;
 
         let command = argv_visible(command, |_| DriveError::NoCommandSource)?;
         let target_phase = argv_visible(target_phase, |_| DriveError::NoCommandSource)?;
@@ -451,7 +462,11 @@ impl DriveArgs {
             // the `Ok` arm below is a typed refusal too, never a fabricated
             // value, because an unreachable arm answered with a manufactured
             // value is this phase's most-repeated defect.
-            match journal::parse_approval_token(&raw) {
+            //
+            // `as_raw_for_logic_only` and not `shown()`: this value is being
+            // PARSED, not read by a human, and parsing an escaped copy would
+            // derive the refusal from a string the caller never typed.
+            match journal::parse_approval_token(raw.as_raw_for_logic_only()) {
                 Err(err) => DriveError::PlanApprovalMalformed(err),
                 Ok(_) => DriveError::PlanApprovalMalformed(
                     journal::ApprovalTokenError::SeparatorAbsent,
@@ -816,8 +831,11 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
     let entry = config
         .projects
         .get(args.alias.as_str())
+        // Wrapped at construction (`21-24`): this is the argv alias, a string
+        // this build did not author, and the refusal that echoes it is the one
+        // pass 9 measured printing a live ANSI introducer to a terminal.
         .ok_or_else(|| OptInError::UnknownAlias {
-            alias: args.alias.as_str().to_string(),
+            alias: crate::text::Untrusted::from_untrusted_source(args.alias.as_str().to_string()),
         })?;
 
     let project = DrivableProject::from_registry(args.alias.as_str(), entry)?;
@@ -876,7 +894,9 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
     if let Some(target_phase) = args.target_phase.as_ref() {
         if !journal::is_plain_path_component(target_phase.as_str()) {
             return Err(DriveError::TargetPhaseInvalid {
-                target_phase: target_phase.as_str().to_string(),
+                target_phase: crate::text::Untrusted::from_untrusted_source(
+                    target_phase.as_str().to_string(),
+                ),
             });
         }
     }
@@ -1086,7 +1106,7 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
     };
     if !journal::is_plain_path_component(run_id.as_str()) {
         return Err(DriveError::RunIdInvalid {
-            run_id: run_id.as_str().to_string(),
+            run_id: crate::text::Untrusted::from_untrusted_source(run_id.as_str().to_string()),
         });
     }
 
@@ -1209,8 +1229,13 @@ pub async fn drive(mut args: DriveArgs, config: &Config) -> Result<(), DriveErro
     // unrepresentable.
     if let Some(plan) = approved_plan.as_ref() {
         args.target_phase = Some(payload::NonBlank::new(&plan.target_phase).ok_or_else(|| {
+            // The value is a MODEL-selected target phase read back out of an
+            // approval token, so it is third-party content by the strictest
+            // reading of the term — exactly what the carrier is for.
             DriveError::TargetPhaseInvalid {
-                target_phase: plan.target_phase.clone(),
+                target_phase: crate::text::Untrusted::from_untrusted_source(
+                    plan.target_phase.clone(),
+                ),
             }
         })?);
     }
