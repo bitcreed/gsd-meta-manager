@@ -159,11 +159,25 @@ pub fn render_disclosure(prompt_inputs: &[crate::config::PromptInput]) -> String
                 .as_deref()
                 .unwrap_or("(absent at opt-in — appearing later re-confirms)");
 
+            // Two classes, two predicates, composed (WR-06) — the same shape
+            // `prompt_text` and `goal_row` use 100 lines below, and for the same
+            // reason: `sanitize_render_line` answers the CONTROL class, and the
+            // invisible-formatting class (`Cf` union `Default_Ignorable`) is a
+            // different question that neither predicate subsumes. This screen is
+            // the last thing an operator reads before an irreversible act.
+            //
+            // Held by a CALL, not by a type: `PromptInput::path` and `digest`
+            // are bare `String`s in `src/config.rs`, outside this plan's wave
+            // fence, so a NEW render of either would not fail to compile.
+            // **Under-protection, silent** — see
+            // `the_disclosure_escapes_both_classes_over_the_path_and_the_digest`,
+            // which is the committed control, and which also records why this
+            // one is at the function rather than at the screen.
             out.push_str(&format!(
                 "  {} [{}]\n    {}\n",
-                super::sanitize_render_line(&input.path),
+                crate::text::display_identity(&super::sanitize_render_line(&input.path)),
                 profile,
-                super::sanitize_render_line(digest),
+                crate::text::display_identity(&super::sanitize_render_line(digest)),
             ));
         }
     }
@@ -272,7 +286,18 @@ impl DriverConfirmScreen {
 /// Nothing dispatched changes: `do_start_run`, `do_stop_run` and
 /// `do_toggle_opt_in` all receive `&self.alias` raw.
 fn prompt_text(alias: &str, action: DriverAction, opted_in: bool, command: &str) -> String {
-    let alias = &crate::text::display_identity(alias);
+    // `render_for_terminal`, not a bare `display_identity` (21-28 T3, WR-05).
+    // This was the one BARE invisible-class call left in either of this plan's
+    // render files: it answered `Cf`/`Default_Ignorable` and said nothing about
+    // `ESC`/C0/DEL, on the prompt a human reads immediately before an
+    // irreversible act. `render_for_terminal` is the ONE composition of both
+    // classes, so this stops being a site a reader has to check.
+    //
+    // Cross-plan contract: 21-29 lands a census in this same wave asserting
+    // that no executable `display_identity` call under `src/ui/` stands outside
+    // a composition. After the worktree merge it cannot edit this file, so this
+    // conversion has to happen here.
+    let alias = &crate::text::render_for_terminal(alias);
     match action {
         DriverAction::Start => {
             let command =
@@ -839,6 +864,78 @@ pub(crate) mod tests {
                 extra: Default::default(),
             },
         ]
+    }
+
+    /// **WR-06: the disclosure composes BOTH classes over both values it draws
+    /// from its argument** (21-28 T3).
+    ///
+    /// `render_disclosure` drew `input.path` and `digest` through
+    /// `sanitize_render_line` alone, which answers only the CONTROL class — so
+    /// `U+202E`, `U+00AD` and the `U+E0000..U+E007F` tag block passed through
+    /// into the `Paragraph` on the screen an operator reads immediately before
+    /// an irreversible act. This is the committed control for that, and it was
+    /// observed RED against the one-class code (the panic is quoted in
+    /// `21-28-SUMMARY.md`).
+    ///
+    /// # Why this control is at the FUNCTION and not at the screen — a
+    /// correction to what 21-28's plan assumed
+    ///
+    /// The plan expected a probe fixture on `DriverConfirmScreen` to go red
+    /// here, on the premise that `input.path` and `digest` are "read out of the
+    /// recorded opt-in block in the user's `config.json`". **Measured, that is
+    /// not what the live screen path does.** `DriverConfirmScreen::render` calls
+    /// `registry::current_prompt_inputs(&entry.path)`, which builds every
+    /// `path` from the authored `&'static str`s in
+    /// [`registry::DISCLOSED_PROMPT_INPUTS`] and every `digest` from
+    /// `sha256_digest`, i.e. hex. **Neither value on the currently rendered path
+    /// can carry an invisible-class character**, so no fixture on that screen
+    /// could go red, and one that appeared to would be proving something else.
+    ///
+    /// The untrusted vector is this function's ARGUMENT, which is exactly what
+    /// its own doc contracts for: *"the list **recorded on the record**"* — the
+    /// opt-in block in a `config.json` this build does not exclusively own. The
+    /// function is `pub`, and its recorded-list caller is the one the doc
+    /// describes. So the control belongs where the value enters: here.
+    ///
+    /// **Residual, with its direction.** This bounds `render_disclosure` for any
+    /// caller. It does NOT bound a future caller that formats a `PromptInput`
+    /// somewhere else. **Under-detection, silent** — what would bound that is
+    /// retyping `PromptInput::path`/`digest` as `crate::text::Untrusted`, which
+    /// this plan could not do because `src/config.rs` is outside its wave fence.
+    #[test]
+    fn the_disclosure_escapes_both_classes_over_the_path_and_the_digest() {
+        for (clean, hostile) in crate::test_support::LOOK_ALIKE_PAIRS {
+            let rendered = render_disclosure(&[crate::config::PromptInput {
+                path: hostile.to_string(),
+                digest: Some(hostile.to_string()),
+                extra: Default::default(),
+            }]);
+            assert!(
+                !rendered
+                    .chars()
+                    .any(crate::text::is_invisible_formatting_char),
+                "no invisible-class character may survive into the disclosure — \
+                 this is the screen an operator reads immediately before an \
+                 irreversible act. clean={clean:?} hostile={hostile:?} \
+                 rendered={rendered:?}"
+            );
+        }
+
+        // NON-VACUITY: the escaped spelling must actually be present, or an
+        // implementation that dropped both values entirely would pass above.
+        let rendered = render_disclosure(&[crate::config::PromptInput {
+            path: "demo\u{e0041}".to_string(),
+            digest: Some("sha256:d\u{202e}f".to_string()),
+            extra: Default::default(),
+        }]);
+        assert!(
+            rendered.contains("demoU+E0041"),
+            "the path must be shown in its ESCAPED form, not dropped: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("sha256:dU+202Ef"),
+            "and so must the digest: {rendered:?}"
+        );
     }
 
     #[test]

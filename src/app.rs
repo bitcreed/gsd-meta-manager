@@ -2819,7 +2819,11 @@ mod tests {
             .map(|output| {
                 output
                     .lines()
-                    .map(|line| (line.kind, line.text.clone()))
+                    // `as_raw_for_logic_only`: these assertions ask what the
+                    // buffer STORED, which is the append-time question. `shown()`
+                    // would answer the render-time one and make every expected
+                    // string in this module a post-escape spelling.
+                    .map(|line| (line.kind, line.text.as_raw_for_logic_only().to_string()))
                     .collect()
             })
             .unwrap_or_default()
