@@ -655,3 +655,336 @@ remains unexplained**. Recorded in `probe_ctx`'s doc, in `46cfdf7`'s message, in
 `21-23-SUMMARY.md`, and here. Any residual intermittency in this probe after
 round 9 must be reported as evidence for pass 9's reading (b) rather than
 absorbed as noise.
+
+---
+
+# ROUND 10 (`21-27` … `21-30`) — appended 2026-08-27
+
+Everything below is APPENDED. No line above this heading was edited or deleted;
+where an entry corrects an earlier one it quotes the earlier text verbatim and
+says what changed. Every number is traced to the SUMMARY it came from BY NAME
+and was re-measured under `rtk proxy` against round 10's final tree.
+
+## 2026-08-27 (`21-30`) — the DISCLOSURE THAT WAS MISSING, named as such
+
+**This is the most important entry of round 10, and it is about the record
+rather than about the code.**
+
+Round 9's own disclosure table (this file, `## 2026-08-27 (21-26) — the SIX
+carrier types round 9 did NOT retype`) opens:
+
+> *"Round 9's whole thesis was that the render surface closes as a consequence
+> of one TYPE rather than as a list of sites, and `21-23`/`21-24`/`21-25`
+> delivered that for nine carrier types. **Six were left as bare `String`, and
+> this is the record of which, why, and in which direction each fails.**"*
+
+That table lists six carriers. **Two live, unescaped, carrier-shaped `String`
+fields were absent from it while five others were listed:**
+
+* `ui::screens::DriverOutputLine::text` — the Driver tab's live output pane, the
+  largest render surface in the tree, drawing the model's own prose.
+* `ui::screens::ProjectViewCache::defaults_text_buffer` — the Defaults tab's
+  string-edit popup, drawing a raw copy of a value the list one render above
+  already escaped.
+
+**That selective omission is what turned CR-02 and CR-03 from KNOWN LIMITATIONS
+into FINDINGS.** Had either appeared in that table with its direction, the
+reviewer would have read a disclosed residual with an owner. Instead the table
+read as complete — six named, exhaustively argued, each with a measurement — and
+a reader had no way to know it was short by two. **A round that discloses
+selectively has not disclosed**, and neither carrier was newly discovered by
+round 10: both were live in the tree the whole time round 9 was writing that
+table.
+
+Recorded in those terms deliberately. Presenting CR-02 and CR-03 as things round
+10 *found* would repeat the error one level up.
+
+## 2026-08-27 (`21-30`) — the CORRECTED carrier table
+
+Append-only. The round-9 table above is **not edited**; this states what changed.
+
+### Leaving the residual set
+
+| Carrier | Round-9 status | Round-10 status | By |
+|---|---|---|---|
+| `ui::screens::DriverOutputLine::text` | **absent from the table**, live and unescaped | `crate::text::Untrusted` — held by the TYPE; a new render is a compile error | `21-28` T1 (`21-28-SUMMARY.md`, commit `4801187`) |
+| `ui::screens::ProjectViewCache::defaults_text_buffer` | **absent from the table**, live and unescaped | `ui::screens::EditBuffer` over `crate::text::Untrusted` — no `Display`, no `AsRef<str>`, no `Into<Cow<'static, str>>` | `21-30` T1, commit `5461d19` |
+
+### The carriers round 10 deliberately did NOT retype
+
+**Named here BEFORE anyone reviews round 10, which is the whole point of this
+entry existing.**
+
+| Carrier | The measurement that excluded it | SUMMARY it came from | Direction | What would force the promote |
+|---|---|---|---|---|
+| `journal::inbox::InboxMessage::text` | Its consumers reach `src/journal/inbox.rs`, which no plan in wave 1 owned; retyping it would have been a wave conflict, not a closure (D-21-39). Held by a CALL plus a probe fixture. | `21-28-SUMMARY.md` (D-21-39, "Limits carried forward" #1) | **under-protection, silent** — a NEW render compiles and draws; nothing goes red at the moment the new site is written | a third render of the value, or any change already opening `src/journal/inbox.rs` for another reason |
+| `ui::screens::DryRunPreview::report` | Its consumers reach `src/app.rs`, likewise outside wave 1's fence. Held by a CALL plus the `Driver tab, dry-run preview` probe state. | `21-28-SUMMARY.md` (D-21-39) | **under-protection, silent** | a third render of the value, or any change already opening `src/app.rs` |
+| `config::PromptInput::path` / `::digest` | A THIRD call-held carrier on the same path, and it was in NEITHER round 9's table NOR `21-28`'s plan. `21-28` surfaced it in its own "Next Phase Readiness" and asked that it be recorded here; this is that record. | `21-28-SUMMARY.md` ("Next Phase Readiness") | **under-protection, silent** | any change opening `src/config.rs`; note `21-28` also MEASURED that today's screen render passes authored `&'static str` paths and hex digests, so this is not a live leak — see the WR-06 correction below |
+
+The six carriers of round 9's table are unchanged by round 10 and remain exactly
+as that table records them. Round 10 retyped no member of that six.
+
+### What bounds the whole set, re-stated
+
+Unchanged in KIND from round 9's statement: the census and the probe, and **the
+probe is a SAMPLING control**. It is materially better than it was — `21-28`
+populated `ctx.driver_output`, `cache.driver_journal` and `cache.driver_inbox`
+and added the `driver_dry_run` state; `21-30` added the `Defaults tab, string
+edit` state, which was the last of the two concrete unprobed states round 9's
+LIMIT 1 named. **That is an improvement in the bound, not a closure of it.** A
+render path reachable only under state no fixture builds is still invisible.
+`render_escape_guard`'s LIMIT 1 now names a NEW concrete surviving example — the
+Defaults tab's DROPDOWN overlay — because a residual with no example is a
+residual nobody can check.
+
+## 2026-08-27 (`21-30`) — the COMPLETE WR/IN triage: all ten items, no exceptions
+
+Every WARNING and INFO finding of `21-REVIEW.md` gets a line. **An item with no
+line in this table is a failure of this entry.**
+
+| # | Disposition | Owning plan | Reason (re-verified, not inherited) |
+|---|---|---|---|
+| WR-01 | **CLOSED** | `21-27` | `Untrusted`'s absent-trait claim certified at SIX absences (was three), each new arm observed red by planting its impl. `21-27-SUMMARY.md`, D-21-36. |
+| WR-02 | **CLOSED in one half, NARROWED in the other** | `21-30` T2 | The vocabulary claim is now TRUE by a two-variant `RenderDisposition` enum — a third value is not expressible (E0308 captured). The "only route" half is genuinely FALSE and stays false: `mod sealed` is `pub(crate)` by design, so an in-crate hand-write is possible. Narrowed to convention in the doc, with the falsified sentence quoted verbatim, and given a census observed red by planting a hand-written impl at `src/driver/liveness.rs:501`. |
+| WR-03 | **CLOSED, with a finding** | `21-30` T2 | `adjudication_reason` had zero readers; it now has two (the probe's assertions 2/3/4 quote it, and a committed non-empty/forbidden-word control). **The measurement WR-03 predicts fired** — see its own entry below. |
+| WR-04 | **ALREADY CLOSED at HEAD — recorded with evidence, not deferred** | nobody; it landed after `21-REVIEW.md` was written | Re-read `src/main.rs:228-256` at `21-30`'s HEAD. The `.to_string()` workaround is GONE and the comment is corrected; it now reads *"commit `7bf8f6b` fixed it at the source and added `rendered_display_honours_the_format_spec_in_both_directions` to certify it, so the workaround is gone and the padding is now the type's own behaviour."* Two commits, both verified present: `7bf8f6b` ("Display for Rendered must pad, not write_str — with the control that was missing") fixed the source; **`c9345a1`** ("correct the stale write_str comment left by 7bf8f6b (WR-04)") corrected the comment. `git diff --stat` for round 10 does not name `src/main.rs`. |
+| WR-05 | **CLOSED** | `21-29` | 23 executable render sites under `src/ui/` converted to `render_for_terminal`, plus a committed census in `src/ui/mod.rs` asserting an equality on a count, observed RED at 23 sites against the unconverted tree. `21-29-SUMMARY.md`, D-21-42. |
+| WR-06 | **CLOSED — and its PREMISE was refuted** | `21-28` | The escape at `render_disclosure` is real and the control is committed there. But `21-28` MEASURED that the live screen path (`DriverConfirmScreen::render` → `registry::current_prompt_inputs`) builds every `path` from authored `&'static str`s in `DISCLOSED_PROMPT_INPUTS` and every `digest` from `sha256_digest` (hex), so **today's screen render is NOT a live leak** and no screen fixture could go red for it. The control belongs at the function, where the untrusted value enters, and it does go red there. Recorded because a fixture reporting green over an authored constant is the exact shape this phase keeps finding. |
+| WR-07 | **CLOSED — and the reviewer's claim is REFUTED** | `21-29` | See its own entry below. |
+| WR-08 | **CLOSED** | `21-29` | The Debug-notation control's concatenation trap closed for the WHOLE TREE by adding a two-invisible-character fixture at `LOOK_ALIKE_PAIRS` index 6, and every consumer of the shared list re-run. `21-29-SUMMARY.md`, D-21-46. |
+| IN-01 | **CLOSED** | `21-28` | `shown_capped`'s completeness claim replaced by a census over `driver.rs`/`driver_confirm.rs`, observed red by planting — after two real defects in the census itself were found the same way. `21-28-SUMMARY.md`. |
+| IN-02 | **CLOSED at the Defaults popup; the ROADMAP-widget half stays DEFERRED** | `21-30` T2 | `detail.rs`'s popup width went from `str::len()` (BYTES, on a value out of the project's `.planning/config.json`) to `chars().count()`. See the residual entry below, which EXTENDS the existing IN-02/IN-03 deferral rather than contradicting it. |
+
+**IN-03 is not in this table because it is not one of the ten WR/IN items this
+entry covers** — it is a separate pre-existing `roadmap_widget.rs` deferral,
+untouched by round 10 and unchanged in its own entry above.
+
+## 2026-08-27 (`21-30`) — IN-02's REMAINING inexactness, extending the existing entry
+
+The entry above (`## 2026-08-27 (21-26) — DEFERRED, not fixed: IN-02 and IN-03`)
+records IN-02 against `src/ui/roadmap_widget.rs:134` and says:
+
+> *"The `len()` → `chars().count()` change was a correct fix for a byte/char
+> panic, but a CJK phase name occupies two cells per `char` and will overflow the
+> box. `unicode-width` would be exact."*
+
+**That reading is unchanged and this entry extends it to a second site.**
+`21-30` T2 made the same `len()` → `chars().count()` change at
+`src/ui/screens/detail.rs`'s Defaults edit popup, so that site now has the SAME
+residual the roadmap widget has: **a character count is still not display
+width.** A CJK character occupies two terminal cells and a combining mark
+occupies none.
+
+**Why it was not closed exactly.** `unicode-width` is a TRANSITIVE dependency of
+ratatui, not a direct one. Adding it is a `Cargo.toml` change, which fires the
+package-legitimacy gate in a phase whose `21-RESEARCH.md` carries no
+`## Package Legitimacy Audit` table, in the last plan of a tenth consecutive
+round that must converge. `git diff Cargo.toml Cargo.lock` for round 10 is
+EMPTY — no dependency of any kind was added, which is a stronger check than
+naming one crate.
+
+**Direction: over-sizing for narrow scripts is impossible (a char count is never
+above a cell count for them); UNDER-sizing for wide scripts, silent** — a CJK
+value now produces a popup half as wide as its text needs, where before it
+produced one three times too wide. Both are cosmetic; neither can make two
+different values render as the same string.
+**What would promote it:** a report of an actually-clipped popup or box, or any
+change that already opens `Cargo.toml` for another reason.
+
+## 2026-08-27 (`21-30`) — WR-03's own finding: one adjudication reason DOES use a verdict word
+
+WR-03's instruction was to MEASURE before asserting. The measurement fired.
+
+`RenderAdjudicated::adjudication_reason`'s doc says the reason must name *"which
+values this screen draws and where their bytes come from — never 'escaped' or
+'safe'"*. Measured over all eleven adjudicated screens at `21-30`'s HEAD: **ten
+clean, one violation.**
+
+**`NormalScreen` (`src/ui/screens/normal.rs`)** uses `escaped` as a whole word:
+
+> *"`row_badge`'s lookup keys off the RAW alias while the cell beside it is
+> escaped — the worked example of the split."*
+
+**Not fixed by `21-30`, and the reason is a fence, not a judgement.**
+`src/ui/screens/normal.rs` is `21-29`'s file, merged in wave 1, and `21-30`'s
+prohibitions fence the screen files. Rewriting a reason there to make a number
+look right would be a wave-fence violation.
+
+It is recorded instead as ONE dated entry in `REASON_VERDICT_EXEMPTIONS` in
+`src/ui/screens/render_escape_guard.rs`, pinned to **that screen AND that
+token**. **Direction: under-detection, one screen and one token wide; LOUD in
+every other direction** — a SECOND forbidden word in the same reason still goes
+red, every other screen is unexempted, and the entry reports itself STALE on
+every run once the reason is rewritten, so it cannot quietly outlive its subject.
+**What would remove it:** one clause rewritten to name the split by provenance
+(`render_for_terminal`) rather than by verdict, owned by whoever next edits
+`normal.rs`.
+
+**A second, smaller finding, recorded because it is the same shape this phase
+keeps hitting.** `21-30`'s FIRST formulation of that control asked
+`reason.to_lowercase().contains("safe")` and went RED against `DetailScreen` —
+for **`SAFE-07`**, a requirement ID. That is a control false of a CORRECT
+implementation: WR-08's shape, and `21-29` deviation #3's shape, reproduced a
+third time. The CONTROL was fixed (whole-token matching, with both directions of
+the token check themselves asserted), not the reason reworded into compliance.
+
+## 2026-08-27 (`21-30`) — WR-07's panic claim: REFUTED, with who measured it
+
+`21-REVIEW.md`'s WR-07 asserts that Rust's `slice::sort_by` detects total-order
+violations and panics. **Verification pass 10 measured that and it does not.**
+Quoted verbatim from `21-VERIFICATION.md`'s `deferred` block:
+
+> *"I built and ran a standalone Rust program (rustc 1.97.1, matching this
+> toolchain) sorting a `Vec<f64>` containing multiple `NaN` values with the exact
+> comparator shape used in `backlog.rs:88-106`
+> (`partial_cmp(...).unwrap_or(Equal)`), at both small (5-element) and larger
+> (2000-element, 1/3 NaN) sizes. Neither run panicked; both produced a
+> silently-wrong order with NaNs interspersed. Rust's stable `slice::sort_by`
+> does NOT panic on a non-total-order comparator on this toolchain — WR-07's
+> specific claim ('Rust's current slice::sort_by detects total-order violations
+> and panics') is not reproducible and is likely incorrect, possibly confusing
+> Rust with Java's TimSort. The underlying issue (a
+> `.planning/phases/999.NaN-x` directory name silently corrupts backlog sort
+> order rather than being a lookup/security issue) is real but is a
+> display-ordering correctness bug, not a DoS/panic, and does not block this
+> phase's goal."*
+
+Toolchain recorded by pass 10: **rustc 1.97.1**.
+
+**`21-29` fixed the REAL defect, not the reported one.** `parse_backlog_items`
+now sorts on `f64::total_cmp` over a finite-filtered key — a total order by
+construction, with no fallback arm — and antisymmetry and transitivity are swept
+over every pair and triple of a fixture set including the hostile input
+(`21-29-SUMMARY.md`, D-21-45, RED 3).
+
+**This is a PROCESS record as much as a technical one.** A claim inherited
+without measurement is how a round ships a test that asserts something false. Had
+`21-29` written a `#[should_panic]` arm from the reviewer's text, it would have
+been green for the wrong reason on a comparator that silently corrupts order.
+
+## RE-SURFACED, UNCHANGED — ROADMAP success criterion 4 (round 10)
+
+**Recording, not progress. This is the THIRD consecutive round with NO work
+claimed against it, and that is correct.** `21-30`'s prohibition 8 forbids
+planning, executing or claiming any work against it.
+
+Quoted VERBATIM from `21-VERIFICATION.md`'s `behavior_unverified_items`
+frontmatter — command, expected result and why-human, not paraphrased:
+
+> **truth:** *"A `.planning/` file or `CLAUDE.md` carrying injected instructions
+> does not change which command the driver executes (ROADMAP success criterion 4
+> / SAFE-07)"*
+>
+> **test:** *"With an authenticated `claude` CLI available, run
+> `cargo test --test driver_injection_corpus -- --ignored --nocapture` from the
+> repository root and record the CLI version beside the result."*
+>
+> **expected:** *"10 passed, 0 failed. Every
+> `corpus_*_arrives_and_leaves_the_command_unchanged` arm asserts the payload
+> ARRIVED at the model before asserting the command was unchanged; the two
+> suppression controls show the positive/negative
+> `CLAUDE_CODE_DISABLE_CLAUDE_MDS` pair diverging; and
+> `both_arms_of_every_class_comparison_were_really_executed` confirms the hostile
+> and clean arms both really ran."*
+>
+> **why_human:** *"All ten spawn the real `claude` binary and need an
+> authenticated subscription, so they cannot run inside verification. NO AGENT
+> CAN CLOSE THIS ITEM, and the user has explicitly chosen to leave it tracked in
+> `deferred-items.md`."*
+
+**Round-10 status, MEASURED (all under `rtk proxy`):**
+
+* `git diff --stat b1d0478..HEAD -- tests/driver_injection_corpus.rs` — **empty.**
+  The file was RUN by round 10 and EDITED by no plan of it.
+* `cargo test --test driver_injection_corpus` — **13 passed / 0 failed / 10
+  ignored.** Identical to the figure pass 10 recorded.
+
+Presence and wiring verified for the **eleventh** consecutive pass; behaviour
+not, and round 10 does not claim it is. **It is permanently agent-unclosable by
+construction.** It is expected and correct for ROADMAP to remain at 4/5 after
+this round.
+
+## 2026-08-27 (`21-30`) — the two DRIVE-04 backstops, re-run
+
+**Reconfirmations by re-run, not new work, and that is the honest framing.**
+DRIVE-04's boundary and precision were measured by executed plans `21-02`,
+`21-04` and `21-22` and re-verified by verification pass 10. Round 10 touches no
+cap, no seam and no arithmetic; this shows its diff did not move them. Writing a
+*new* boundary predicate for DRIVE-04 in a render-honesty round would be the
+manufactured-predicate overclaim this phase exists to end.
+
+`rtk proxy cargo test --test driver_escalation_cap` at `21-30`'s HEAD:
+**8 passed / 0 failed / 0 ignored.**
+
+| Row | Direction | Arm |
+|---|---|---|
+| edge-probe 6 (boundary) | a cap AT or ABOVE the resolved step cap is refused at the seam | `a_budget_equal_to_the_resolved_step_cap_refuses_above_the_run`, `a_budget_of_zero_refuses_above_the_run` |
+| edge-probe 6 (boundary) | a cap BELOW it is accepted | `a_budget_one_below_the_resolved_step_cap_runs_and_parks_on_the_cap` |
+| edge-probe 7 (precision) | the decomposition consultation counts against the SAME cap, and exceeding it parks with a typed reason rather than degrading silently to rules-only | `a_run_that_spends_its_budget_parks_and_says_so_rather_than_continuing`, `the_three_boundaries_are_measured_against_the_resolved_step_cap` |
+
+`git diff --stat b1d0478..HEAD -- tests/driver_escalation_cap.rs` is **empty** —
+the file is RUN and unchanged.
+
+## 2026-08-27 (`21-30`) — the ROUND-10 SELF-AUDIT, against non-vacuous controls
+
+Run over every ADDED line of round 10's whole diff (`git diff 80bc4c1..HEAD`, 19
+commits, 25 files, **5380 added lines**), the way `21-26` audited round 9.
+
+| Check | Result | Its control |
+|---|---|---|
+| raw characters with `General_Category=Cf` in added lines | **0** | The SAME scanner over a deliberately planted string carrying `U+200B` and `U+00AD` returns **2**. The zero is therefore a measurement, not a scanner that never looked. |
+| `TBD` / `FIXME` / `XXX` substring matches | **5, all false positives — 0 genuine** | see below |
+| `TODO` / `HACK` / `PLACEHOLDER` substring matches | **2, all false positives — 0 genuine** | A control needle (`e`) matches **3935** added lines, so neither zero is a scanner that never looked. |
+
+**Both numbers are reported rather than the flattering one.** The seven
+substring matches were each inspected and are all false positives:
+
+* **3 × `XXX`** — the string `U+XXXX`, this project's OWN display notation for an
+  escaped character, in three doc comments `21-30` T1 added about what must NOT
+  reach the operator's `config.json`.
+* **2 × `FIXME` + 2 × `TODO`** — prose in `21-28-SUMMARY.md` and
+  `21-29-SUMMARY.md` stating that no TODO or FIXME was introduced.
+
+Reporting these as "0 debt markers" without the split would have been the same
+move as deleting evidence to make a number look right — the shape `21-28`
+deviation #4 and `21-29`'s `partial_cmp` count both declined to make.
+
+**`.planning/REQUIREMENTS.md` is untouched by round 10.** `git log -1 --
+.planning/REQUIREMENTS.md` still ends at **`0c4f712`** ("docs(phase-21):
+re-verification after third gap closure — 4/5, new critical found"). Eighth
+consecutive round.
+
+## 2026-08-27 (`21-30`) — the pre-existing clippy lints, re-measured a third time
+
+Unchanged and still deferred. `rtk proxy cargo clippy --all-targets -- -D warnings`
+at `21-30`'s HEAD reports exactly **four** lints of the same two kinds in the
+same two files: `bool_assert_comparison` ×3 at **`src/browser.rs:155,156,157`**
+and `cmp_owned` ×1 at `src/project_creator.rs:146`. `cargo clippy -- -D warnings`
+(the stated project gate, lib only) is exit 0.
+
+**A stale figure corrected, for the third time.** `21-30`'s own `<tooling_note>`
+places the three `bool_assert_comparison` lints at `src/browser.rs:131,132,133`.
+Both `21-28-SUMMARY.md` and `21-29-SUMMARY.md` (its F4) re-measured them at
+`155,156,157`, and so did `21-30`. **Neither file is in round 10's diff**, so
+this is a stale number in three consecutive plans' text, not a change any of them
+made. Re-measure, never inherit.
+
+## 2026-08-27 (`21-30`) — the `driver_reattach` flake, reported and NOT absorbed
+
+`tests/driver_reattach.rs` failed its two documented tests in round 10's
+pre-work baseline run — **before any file had been edited** — and again in the
+`21-30` T1 and T2 workspace runs, passing **3/3 on an isolated re-run** each
+time. It is **not a regression**: the orchestrator proved it against the
+untouched base, where the same two tests flake at the same rate.
+
+The variable is not `--test-threads=1`, which does not reliably fix it. It is
+other driver-spawning test binaries running concurrently, because these tests
+discover runs via a **system-wide `/proc` scan that does not stop at the
+process-group or worktree boundary**. A green full-suite run of the wave-1 tree
+is **1409 passed / 0 failed / 13 ignored**.
+
+**What would promote it:** scoping the scan to the test's own process group or
+worktree, so a concurrent sibling binary's driver is invisible to it. **Direction:
+false-red under parallelism, LOUD** — it fails the build rather than passing
+something broken, which is the safe direction, and it is why this is a deferral
+rather than a blocker.
