@@ -511,14 +511,86 @@ fn hostile_project_state(identity: &str) -> crate::state_reader::ProjectState {
 /// Built on `super::tests::ctx_with_aliases` rather than beside it: a second
 /// full-field `AppContext` literal is a second thing to keep in step with the
 /// struct.
+///
+/// # The `git_entries` fixture hole, and why closing it makes CR-04 stop being
+/// intermittent
+///
+/// This function used to reach `git_entries` only through
+/// `view_cache.entry(..).or_default()`, so the vector was always EMPTY and
+/// `DetailScreen::render_git_tab` returned at its `if cache.git_entries.is_empty()`
+/// branch after painting the authored string `"  No commits found (or not a git
+/// repository)"`. The `List`/`ListItem` build below that branch — which draws a
+/// third-party repository's commit hash, date, author and subject — was never
+/// exercised by any committed control, and LIMIT 1 of this module's doc named
+/// exactly that class of hole without naming this instance of it.
+///
+/// Verification pass 9 reported `the_screen_renders_identity_escaped` panicking
+/// ONCE for `DetailScreen [GitHistory tab]` with
+/// `['\u{e0041}', '\u{ad}', '\u{e0041}', '\u{ad}']`, and offered "the commit
+/// cache happened to be populated" as a reconciliation. That reconciliation does
+/// not survive reading this function: `ctx_with_aliases` performs no I/O and
+/// `or_default()` cannot fill a vector. So the MECHANISM of that one sighting is
+/// still unexplained and plan 21-23 does not pretend otherwise. What it does
+/// instead is decisive — populate the cache here and the defect fires on EVERY
+/// run rather than on one run in eighty.
+///
+/// **The RED, verbatim, before any escape landed** (`cargo test --lib --
+/// ui::screens::render_escape_guard::tests::the_screen_renders_identity_escaped
+/// --exact --nocapture`, against this fixture with `GitLogEntry`'s fields still
+/// bare `String` and the `List` render still raw):
+///
+/// ```text
+/// thread 'ui::screens::render_escape_guard::tests::the_screen_renders_identity_escaped' (333264) panicked at src/ui/screens/render_escape_guard.rs:1157:17:
+/// DetailScreen (src/ui/screens/detail.rs) [GitHistory tab] rendered ['\u{e0041}', '\u{ad}', '\u{e0041}', '\u{ad}', '\u{e0041}', '\u{ad}', '\u{e0041}', '\u{ad}'] into the terminal buffer. Those characters render as nothing, so what the operator reads is not what the value is.
+/// ```
+///
+/// Note `\u{ad}` in that list. `U+00AD` reaching a cell is IMPOSSIBLE through a
+/// `Paragraph` and routine through a `ListItem` — measured per widget family, see
+/// [`the_screen_renders_identity_escaped`](tests::the_screen_renders_identity_escaped)'s
+/// doc — so the character list is itself independent evidence that the leak was a
+/// `List` row, arriving from the opposite direction to the measurement.
+///
+/// **Where this red does NOT match pass 9's sighting, said rather than
+/// smoothed.** Pass 9 reported four characters
+/// (`['\u{e0041}', '\u{ad}', '\u{e0041}', '\u{ad}']`); this fixture reports
+/// EIGHT, which is one hostile pair per `GitLogEntry` field and is what a render
+/// of all four fields must produce. Four is two fields' worth. So this fixture
+/// reproduces the CLASS of defect pass 9 saw and does not reproduce its exact
+/// count, and the mechanism of that one sighting therefore remains unexplained.
+/// Reading (a) of pass 9's dichotomy — a real leak in this tab — is settled here
+/// by construction; the count mismatch is not evidence for or against reading (b)
+/// and is recorded as an open discrepancy rather than absorbed.
+///
+/// Reproduction rate with this fixture and the escape NOT applied: **20 failures
+/// in 20 runs** of the compiled lib test binary. A defect that fires 20 out of 20
+/// is not a flake.
 fn probe_ctx(identity: &str) -> AppContext {
     let mut ctx = super::tests::ctx_with_aliases(&[identity]);
     ctx.project_states
         .insert(identity.to_string(), hostile_project_state(identity));
-    ctx.view_cache.entry(identity.to_string()).or_default();
+    let cache = ctx.view_cache.entry(identity.to_string()).or_default();
+    cache.git_entries = vec![hostile_git_entry(identity)];
+    cache.git_selected = 0;
     ctx.recompute_filtered_aliases();
     ctx.table_state.select(Some(0));
     ctx
+}
+
+/// One `git log` row whose every field carries `identity`.
+///
+/// All four fields, not just `message`: `%h`, `%ad`, `%an` and `%s` are four
+/// `splitn` slices of one line of a third-party repository's `git log` output,
+/// and the render draws all four into the same `ListItem`. A fixture that put
+/// the identity in only one of them would leave the other three's render
+/// unasserted while looking like coverage.
+fn hostile_git_entry(identity: &str) -> crate::state_reader::git_ops::GitLogEntry {
+    use crate::state_reader::git_ops::GitLogEntry;
+    GitLogEntry {
+        hash: identity.to_string(),
+        date: identity.to_string(),
+        author: identity.to_string(),
+        message: identity.to_string(),
+    }
 }
 
 /// Every detail sub-view, so a tab is a render state rather than a place the
