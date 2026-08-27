@@ -212,14 +212,47 @@ impl std::fmt::Display for AliasRefusal {
 /// escaped form, and its two purpose-named accessors delegate. One change per
 /// commit, each with its own control: this commit corrects the CLAIM, `21-24`'s
 /// closes the ROUTE.
-#[derive(Debug)]
-pub struct LegacyRegistryKey(String);
+///
+/// # CORRECTION, 2026-08-27 (`21-24`) — the route is closed and the promote has landed
+///
+/// **The sentence this corrects, quoted verbatim from the paragraph
+/// immediately above:**
+///
+/// > **The derive is deliberately NOT removed in this commit.**
+///
+/// It is removed in `21-24`'s. `#[derive(Debug)]` is gone, and the inner value
+/// is now a [`crate::text::Untrusted`] rather than a `String`, so `{key:?}` no
+/// longer resolves at all — and if a `Debug` were ever derived again it would
+/// print the CARRIER's hand-written impl, which is
+/// [`shown`](crate::text::Untrusted::shown). Measured before it was removed:
+/// `grep -rn "LegacyRegistryKey" src/ tests/` names 14 lines, of which the only
+/// non-doc ones are this definition, `from_argv` at `src/main.rs:158` and
+/// `remove_project`'s signature. **There was no `{:?}` consumer anywhere in
+/// `src/` or `tests/`**, so the cheapest correct answer is to let the field
+/// carry the property rather than to restate it in a hand-written impl.
+///
+/// **The trait list above is likewise no longer this doc's claim to make.** The
+/// withheld conversions — no `Display`, no `AsRef<str>`, no `Deref`, no
+/// `Borrow<str>`, no `Into<Cow<'_, str>>`, no `serde` — belong to
+/// [`crate::text::Untrusted`], the general carrier this type is now the
+/// argv-lookup variant of, and they are certified by
+/// `text::tests::an_untrusted_carrier_implements_none_of_the_string_conversions`
+/// — a runtime control observed RED by planting the impls. A doc comment cannot
+/// fail; that control can. This type inherits the certificate through the
+/// wrapper rather than asserting anything of its own.
+///
+/// **Why the type survives the promote rather than being deleted.** Its two
+/// accessor names carry the D-17-3 argument at the call sites in `main.rs`, and
+/// `as_raw_for_lookup_only` says something `as_raw_for_logic_only` does not:
+/// that this particular raw use is a REGISTRY LOOKUP, keyed by exactly these
+/// bytes. Deleting it would cost the reader that (D-21-16).
+pub struct LegacyRegistryKey(crate::text::Untrusted);
 
 impl LegacyRegistryKey {
     /// Wrap an argv string. **No judgment is applied and none may be added** —
     /// see the type's own doc for why (D-17-3).
     pub fn from_argv(raw: String) -> Self {
-        Self(raw)
+        Self(crate::text::Untrusted::from_untrusted_source(raw))
     }
 
     /// The raw bytes, for the membership check and the removal ONLY.
@@ -227,15 +260,58 @@ impl LegacyRegistryKey {
     /// `config.projects` is keyed by exactly these bytes. An escaped key would
     /// miss every legacy entry, which is the regression this accessor's name
     /// exists to make visible at the call site.
+    ///
+    /// Delegates to [`crate::text::Untrusted::as_raw_for_logic_only`]. The name
+    /// differs on purpose: the general accessor says *not for display*, this
+    /// one says *and the reason is that a registry is keyed by these bytes*.
     pub fn as_raw_for_lookup_only(&self) -> &str {
-        &self.0
+        self.0.as_raw_for_logic_only()
     }
 
-    /// The form a human READS, with every invisible-class character replaced by
-    /// its visible `U+XXXX` spelling.
-    pub fn escaped_for_display(&self) -> String {
-        crate::text::display_identity(&self.0)
+    /// The form a human READS.
+    ///
+    /// **Both classes, since `21-24` (WR-01).** This used to be
+    /// [`crate::text::display_identity`] alone, which answers only the
+    /// invisible-formatting half — `Cf` ∪ `Default_Ignorable`. `ESC` is `Cc`
+    /// and in neither, so a legacy key carrying `\u{1b}[31m` printed a live
+    /// ANSI colour sequence through `Removed project '…'`; measured at the
+    /// built binary before this change. It now delegates to
+    /// [`crate::text::Untrusted::shown`], which is
+    /// [`crate::text::render_for_terminal`] — the ONE composition of the
+    /// control class and the invisible-formatting class, so this call site does
+    /// not get to decide that question for itself.
+    pub fn escaped_for_display(&self) -> crate::text::Rendered {
+        self.0.shown()
     }
+
+    /// The carrier itself, for handing to a producer that escapes.
+    ///
+    /// Exists for exactly one caller — [`project_not_found`] — and that is the
+    /// point: the not-found sentence has ONE producer, and the producer takes
+    /// the carrier rather than a string, so no call site can reach it with a
+    /// value it escaped (or forgot to escape) itself.
+    pub fn as_untrusted(&self) -> &crate::text::Untrusted {
+        &self.0
+    }
+}
+
+/// **The ONE producer of the "project not found" sentence** (D-21-15, CR-01).
+///
+/// One producer beats three consumers, and beats a list of three consumers that
+/// will be four next round — the argument `impl Display for AliasRefusal` above
+/// makes, applied to the other sentence this module spells more than once.
+/// Before this, [`record_opt_in`], [`clear_opt_in`] and [`remove_project`] each
+/// wrote `bail!("Project not found: {}", alias)`, and round 8's escape landed on
+/// none of them.
+///
+/// **It takes the carrier, not a `&str`, and that is the mechanism rather than a
+/// style choice.** A `&str` parameter would let a caller hand it a value it had
+/// already mangled, or a value it should have escaped and did not; taking
+/// [`crate::text::Untrusted`] means the only way to reach this function is to
+/// have the raw bytes in a type that cannot be interpolated, so the escape
+/// happens here and only here.
+pub fn project_not_found(key: &crate::text::Untrusted) -> anyhow::Error {
+    anyhow::anyhow!("Project not found: {}", key.shown())
 }
 
 impl Alias {
@@ -404,7 +480,19 @@ pub fn add_project_unchecked(config: &mut Config, alias: &Alias, path: &Path) ->
 /// other function in this module.
 pub fn record_opt_in(config: &mut Config, alias: &str) -> Result<()> {
     let Some(entry) = config.projects.get_mut(alias) else {
-        bail!("Project not found: {}", alias);
+        // The carrier is constructed HERE rather than being the parameter type,
+        // and the lever is smaller for it. This function has 13 callers across
+        // four plans' files, three of which `21-24` may not touch, so changing
+        // its signature would collide with a sibling plan's diff in the same
+        // wave (prohibition 2, D-21-14). **What that costs, stated rather than
+        // smuggled: this protects the MESSAGE, not the PARAMETER — a future
+        // caller that formats `alias` itself is not caught. Direction:
+        // under-protection, silent. What bounds it: every production path
+        // except the legacy rows has already passed `Alias::new`, and the
+        // legacy rows are what the escape is for.**
+        return Err(project_not_found(
+            &crate::text::Untrusted::from_untrusted_source(alias.to_string()),
+        ));
     };
 
     let prompt_inputs = current_prompt_inputs(&entry.path);
@@ -613,7 +701,12 @@ pub fn check_prompt_input_drift(project_root: &Path, opt_in: &DriverOptIn) -> Op
 /// does not persist.
 pub fn clear_opt_in(config: &mut Config, alias: &str) -> Result<()> {
     let Some(entry) = config.projects.get_mut(alias) else {
-        bail!("Project not found: {}", alias);
+        // Carrier constructed at the call rather than taken as the parameter,
+        // for the reason and with the disclosed cost written at
+        // [`record_opt_in`]'s matching site.
+        return Err(project_not_found(
+            &crate::text::Untrusted::from_untrusted_source(alias.to_string()),
+        ));
     };
     entry.driver_opt_in = None;
     Ok(())
@@ -645,9 +738,54 @@ pub fn is_opted_in(config: &Config, alias: &str) -> bool {
 ///   which drops them in the same block as `project_states` and `last_refresh`.
 /// * `App::prune_driver_maps` — the backstop, on the existing 20-tick block, for
 ///   every removal that does not go through that screen.
-pub fn remove_project(config: &mut Config, alias: &str) -> Result<()> {
-    if config.projects.remove(alias).is_none() {
-        bail!("Project not found: {}", alias);
+/// # The parameter type IS the fix, and the compiler said so (`21-24`, CR-01)
+///
+/// This took `alias: &str` and bailed `bail!("Project not found: {}", alias)`,
+/// one line below the arm in `src/main.rs` that had already been made to ask
+/// whether to escape. `remove`'s SUCCESS echo was asked; its FAILURE echo, one
+/// line above, was never asked about — and the failure path is the one with no
+/// config prerequisite at all, reachable by any operator typing any argv.
+/// Measured at the built binary before the change:
+///
+/// ```text
+/// Error: Project not found: ab^[[31msentM-bM-^@M-.x
+/// ```
+///
+/// — a live ANSI introducer AND a raw `U+202E`, straight from argv to the
+/// terminal.
+///
+/// With the parameter typed, that `bail!` is not merely discouraged but
+/// **unwritable**. It was written deliberately against this signature and
+/// compiled, and this is the error verbatim — an error this plan saw, replacing
+/// the one `src/main.rs:162-173` quoted from memory:
+///
+/// ```text
+/// error[E0277]: `LegacyRegistryKey` doesn't implement `std::fmt::Display`
+///    --> src/registry.rs:650:40
+///     |
+/// 650 |         bail!("Project not found: {}", key);
+///     |                                   --   ^^^ `LegacyRegistryKey` cannot be formatted with the default formatter
+///     |                                   |
+///     |                                   required by this formatting parameter
+///     |
+/// help: the trait `std::fmt::Display` is not implemented for `LegacyRegistryKey`
+///    --> src/registry.rs:216:1
+///     |
+/// 216 | pub struct LegacyRegistryKey(String);
+///     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/// ```
+///
+/// **D-17-3's accept half is untouched and is measured, not assumed.** The
+/// lookup and the removal still run on `as_raw_for_lookup_only()` — byte-for-
+/// byte what an older build registered — because removal is the documented
+/// recovery route for exactly those rows and a removal that could not name them
+/// would make a bad entry permanent.
+pub fn remove_project(config: &mut Config, key: &LegacyRegistryKey) -> Result<()> {
+    // RAW: this is the lookup and the removal. `config.projects` is keyed by
+    // exactly these bytes.
+    if config.projects.remove(key.as_raw_for_lookup_only()).is_none() {
+        // ESCAPED, at the one producer, which takes the carrier.
+        return Err(project_not_found(key.as_untrusted()));
     }
     Ok(())
 }

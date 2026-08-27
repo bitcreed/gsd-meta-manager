@@ -448,9 +448,22 @@ impl Screen for DriverConfirmScreen {
 /// second mechanism.
 fn do_start_run(ctx: &mut AppContext, alias: &str, command: &str, goal: Option<&str>) {
     if !registry::is_opted_in(&ctx.config, alias) {
-        ctx.error_message = Some(format!(
-            "\"{alias}\" has not opted in to being driven — press `o` on the dashboard to opt it in"
-        ));
+        // **Delegated, not re-spelled** (`21-24`, D-21-18, T-21-24-05). This
+        // used to hand-write `format!("\"{alias}\" has not opted in to being
+        // driven — press `o` …")`, which put the RAW registry key into a
+        // rendered error line and gave one judgment two sentences that could
+        // drift. `OptInError::NotOptedIn` owns this refusal; its field is
+        // `crate::text::Untrusted` and its `Display` escapes, so the escape is
+        // INHERITED from the producer rather than remembered here. The `o`-key
+        // affordance the hand-written sentence carried moved into the variant's
+        // own message — one judgment, one spelling — and is pinned by
+        // `the_delegated_opt_in_refusal_still_names_the_key_to_press`.
+        ctx.error_message = Some(
+            crate::error::OptInError::NotOptedIn {
+                alias: crate::text::Untrusted::from_untrusted_source(alias.to_string()),
+            }
+            .to_string(),
+        );
         ctx.needs_redraw = true;
         return;
     }
@@ -679,6 +692,64 @@ pub(crate) mod tests {
         (ctx, rx)
     }
 
+    /// **Delegation must not cost the user the actionable half** (`21-24`,
+    /// D-21-18).
+    ///
+    /// `do_start_run` used to hand-write its own opt-in refusal, and that
+    /// sentence carried the `o`-key affordance. It now renders
+    /// [`crate::error::OptInError::NotOptedIn`]'s own `Display`, so the
+    /// affordance had to move INTO the variant — one judgment, one spelling.
+    /// This pins both halves of that trade at once:
+    ///
+    /// 1. The screen's message IS the variant's message, byte for byte. If a
+    ///    future edit re-introduces a hand-written sentence here, this fails —
+    ///    which is the whole point of a one-producer fix.
+    /// 2. That message names the key as a PHRASE. `contains('o')` would have
+    ///    been satisfied by the alias `"proj"` alone, which is exactly how the
+    ///    pre-existing assertion in the test below was vacuous.
+    ///
+    /// The escape itself is NOT re-asserted here: it is the producer's property
+    /// now, pinned by `error::tests::every_alias_carrying_variant_escapes_the_value_it_names`
+    /// and by `registry::tests::a_refusal_never_carries_a_raw_control_or_invisible_character`.
+    /// A third spelling of it here is the defect this change removes.
+    #[test]
+    fn the_delegated_opt_in_refusal_still_names_the_key_to_press() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        assert!(
+            !registry::is_opted_in(&ctx.config, ALIAS),
+            "the fixture must start NOT opted in, or this test is vacuous"
+        );
+
+        let mut screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::Start);
+        screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+        let refusal = ctx
+            .error_message
+            .as_deref()
+            .expect("the refusal must be visible, not silent")
+            .to_string();
+
+        let from_the_producer = crate::error::OptInError::NotOptedIn {
+            alias: crate::text::Untrusted::from_untrusted_source(ALIAS.to_string()),
+        }
+        .to_string();
+        assert_eq!(
+            refusal, from_the_producer,
+            "the screen must RENDER the error type's own message rather than \
+             re-spell it. Two sentences for one judgment is how the escape \
+             landed on one of them in round 8, and how a `format!` here put a \
+             raw registry key into a rendered error line"
+        );
+
+        assert!(
+            refusal.contains("press `o`"),
+            "delegating cost the user the actionable half: the variant's own \
+             message must carry the `o`-key affordance the hand-written \
+             sentence carried, named as a phrase rather than as a character \
+             that any alias containing an `o` would satisfy. Got: {refusal}"
+        );
+    }
+
     /// CTRL-03 at the affordance layer.
     ///
     /// The load-bearing half is the **second** assertion. A screen that set the
@@ -703,9 +774,15 @@ pub(crate) mod tests {
             .as_deref()
             .expect("the refusal must be visible, not silent");
         assert!(refusal.contains(ALIAS), "got: {refusal}");
+        // STRENGTHENED, not weakened, by `21-24`. This read `refusal.contains('o')`,
+        // which is vacuous against this very fixture: `ALIAS` is `"proj"` and
+        // that carries an `o`, so the assertion passed on the alias echo alone
+        // and would have kept passing if the key affordance had been deleted
+        // outright. The affordance is a PHRASE now, so it can actually fail.
         assert!(
-            refusal.contains('o'),
-            "the refusal must name the key that fixes it, got: {refusal}"
+            refusal.contains("press `o`"),
+            "the refusal must name the key that fixes it as a phrase a user can \
+             act on, got: {refusal}"
         );
 
         assert!(

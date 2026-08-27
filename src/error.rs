@@ -298,6 +298,17 @@ pub enum OptInError {
     /// The project is registered but carries no `driver_opt_in` record. A
     /// registered project is one the dashboard may *read*; driving it is a
     /// separate, deliberate act (D-14).
+    ///
+    /// **Its message carries the `o`-key affordance because it is now the ONLY
+    /// place this judgment is spelled** (`21-24`, D-21-18).
+    /// `ui::screens::driver_confirm::do_start_run` used to hand-write a second
+    /// sentence for the same refusal — and put the raw alias into a rendered
+    /// error line while doing it. Two sentences for one judgment is the defect
+    /// D-19-2 removed from `Alias::new` and WR-03 removed from `advisory.rs`;
+    /// the screen delegates here now, so the affordance had to move here with
+    /// it or delegation would have cost the user the actionable half. Pinned by
+    /// `driver_confirm`'s
+    /// `the_delegated_opt_in_refusal_still_names_the_key_to_press`.
     NotOptedIn {
         /// The alias that is registered but not opted in.
         ///
@@ -373,7 +384,7 @@ impl fmt::Display for OptInError {
                     f,
                     "the project `{alias}` has not opted in to being driven; \
                      registering a project lets the dashboard read it, driving it is a separate \
-                     deliberate opt-in"
+                     deliberate opt-in — press `o` on the dashboard to opt it in"
                 )
             }
             Self::RootUnusable { alias, root } => {

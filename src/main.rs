@@ -157,20 +157,31 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Remove { alias }) => {
             let key = gsd_meta_manager::registry::LegacyRegistryKey::from_argv(alias);
             let mut config = load_config(&config_path)?;
-            // RAW — this is the lookup and the removal.
-            remove_project(&mut config, key.as_raw_for_lookup_only())?;
+            // The key goes in WHOLE, since `21-24` (CR-01). It used to be
+            // unwrapped here — `remove_project(&mut config,
+            // key.as_raw_for_lookup_only())` — which handed the function a bare
+            // `&str` and let its own failure path write `bail!("Project not
+            // found: {}", alias)` one line above this echo. So `remove`'s
+            // SUCCESS echo had been made to ask whether to escape and its
+            // FAILURE echo, one line up, had never been asked. The lookup is
+            // still on the RAW bytes; it now happens inside `remove_project`,
+            // where the type is what makes the raw `bail!` unwritable.
+            remove_project(&mut config, &key)?;
             save_config(&config, &config_path)?;
-            // ESCAPED — this is read by a person.
+            // ESCAPED — this is read by a person. `escaped_for_display` now
+            // delegates to `Untrusted::shown`, i.e. `text::render_for_terminal`:
+            // BOTH the invisible-formatting class and the ESC/C0/DEL/C1 control
+            // class. Before `21-24` it applied only the first, and a legacy key
+            // carrying `\u{1b}[31m` printed a live ANSI colour sequence through
+            // this very line — measured at the built binary (WR-01).
             //
-            // That the raw route is not merely discouraged but IMPOSSIBLE was
-            // measured, by writing `println!("Removed project '{}'", key)` here
-            // and compiling:
-            //
-            //   error[E0277]: `LegacyRegistryKey` doesn't implement `std::fmt::Display`
-            //      --> src/main.rs:164:46
-            //   164 |             println!("Removed project '{}'", key);
-            //       |                                        --    ^^^ `LegacyRegistryKey` cannot be formatted with the default formatter
-            //       = help: the trait `std::fmt::Display` is not implemented for `LegacyRegistryKey`
+            // That the raw route is not merely discouraged but IMPOSSIBLE is
+            // certified by a control that can FAIL, not by this comment:
+            // `text::tests::an_untrusted_carrier_implements_none_of_the_string_conversions`
+            // asserts the absent conversions at runtime and was observed red by
+            // planting them. The verbatim compile error for the raw `bail!` is
+            // quoted where it belongs — in `registry::remove_project`'s own doc,
+            // beside the signature that produces it.
             println!("Removed project '{}'", key.escaped_for_display());
         }
         Some(Commands::List) => {

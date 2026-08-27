@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use gsd_meta_manager::config::{load_config, save_config, Config, CONFIG_SCHEMA_VERSION};
 use gsd_meta_manager::registry::{
     add_project, clear_opt_in, is_opted_in, list_projects, record_opt_in, remove_project, Alias,
-    AliasRefusal,
+    AliasRefusal, LegacyRegistryKey,
 };
 
 /// A fixture alias, judged the way a real one is. Since 21-17 the registration
@@ -152,7 +152,7 @@ fn remove_project_with_existing_alias_succeeds() {
     let mut config = Config::new();
     add_project(&mut config, &visible("myapp"), temp.path()).unwrap();
 
-    let result = remove_project(&mut config, "myapp");
+    let result = remove_project(&mut config, &LegacyRegistryKey::from_argv("myapp".to_string()));
     assert!(result.is_ok());
     assert!(!config.projects.contains_key("myapp"));
 }
@@ -160,7 +160,10 @@ fn remove_project_with_existing_alias_succeeds() {
 #[test]
 fn remove_project_with_nonexistent_alias_returns_error() {
     let mut config = Config::new();
-    let result = remove_project(&mut config, "nonexistent");
+    let result = remove_project(
+        &mut config,
+        &LegacyRegistryKey::from_argv("nonexistent".to_string()),
+    );
     assert!(result.is_err());
 }
 
@@ -410,7 +413,14 @@ fn a_legacy_alias_the_alphabet_refuses_is_still_removable() {
         );
 
         // The claim D-19-2's reversibility rating rests on.
-        remove_project(&mut config, raw).expect(
+        //
+        // **Only the CONSTRUCTOR CALL is wrapped for `21-24`; not one assertion
+        // below or above changed.** `LegacyRegistryKey::from_argv` judges
+        // nothing and `remove_project` looks up on
+        // `as_raw_for_lookup_only()`, so `raw` still reaches the removal
+        // byte-for-byte — which is exactly what D-17-3's accept half demands
+        // and what this test exists to pin.
+        remove_project(&mut config, &LegacyRegistryKey::from_argv(raw.to_string())).expect(
             "an entry this build refuses must still be removable — otherwise \
              the alphabet narrowing is one-way and a user is stuck with a \
              project they can neither use nor delete",
