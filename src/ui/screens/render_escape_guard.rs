@@ -12,21 +12,54 @@
 //! So this module answers exactly one question: **what performs the
 //! enumeration?**
 //!
-//! * [`screen_implementors_from_source`] walks `src/` recursively with
-//!   `std::fs::read_dir` and collects every implementation of the
-//!   [`Screen`](super::Screen) trait. It is a **filesystem walk, never a path
-//!   list**: a twelfth screen added tomorrow in a file this module has never
-//!   heard of is discovered without anybody editing anything here.
-//! * [`SCREEN_IDENTITY_DISPOSITIONS`] records, per implementor, whether it
-//!   renders attacker-influenced identity and why. **The table adjudicates; it
-//!   does not enumerate.** `the_screen_census_matches_the_tree` asserts the two
-//!   sets equal in BOTH directions, so a derived member with no row is an
-//!   unadjudicated screen and a row with no derived member is a stale row, and
-//!   each is reported as its own harm.
+//! # CORRECTED 2026-08-27 (21-26): the adjudication is a COMPILE-TIME obligation now
+//!
+//! **The sentence this doc used to carry, verbatim, and it was measured false:**
+//! *"[`screen_implementors_from_source`] walks `src/` recursively with
+//! `std::fs::read_dir` and collects every implementation of the
+//! [`Screen`](super::Screen) trait. It is a **filesystem walk, never a path
+//! list**: a twelfth screen added tomorrow in a file this module has never heard
+//! of is discovered without anybody editing anything here."*
+//!
+//! CR-05 measured that claim short in TWO source spellings at once. A
+//! `macro_rules!`-generated implementor has no `impl` line whose type name any
+//! line-oriented scan can extract, and an `impl` header wrapped across two
+//! physical lines is not one line to match. With both in the tree the walk
+//! reported ELEVEN implementors while thirteen existed, and reported it green.
+//! A scan's completeness is bounded by source FORMATTING — one level below where
+//! anybody was looking, and neither spelling appeared in the LIMITS block below.
+//!
+//! **What is true now, and what each mechanism's job is:**
+//!
+//! * [`RenderAdjudicated`](super::RenderAdjudicated) is a **sealed supertrait of
+//!   [`Screen`](super::Screen)**, so an `impl Screen for X` where `X` carries no
+//!   adjudication is `error[E0277]` and does not build. That is what makes
+//!   adjudication mandatory, it is blind to formatting entirely because it is a
+//!   property of the TYPE rather than of the text, and there is no spelling for
+//!   it to be short of. The E0277 is quoted verbatim in that trait's doc,
+//!   observed by planting an unadjudicated implementor in
+//!   `src/driver/liveness.rs`.
+//! * [`screen_implementors_from_source`] is a **second, weaker mechanism with a
+//!   narrowed job**: it walks `src/` and derives the implementors it can name, so
+//!   that an adjudicated screen with **no probe fixture** is reported. It no
+//!   longer makes adjudication mandatory — the compiler does — and it no longer
+//!   records what a screen draws — the screen does. Its own residual is stated in
+//!   LIMIT 6.
+//! * [`SCREEN_IDENTITY_DISPOSITIONS`] is now a **`(type name, path)` fixture
+//!   map** and nothing more. Its disposition and reason columns are gone; those
+//!   moved onto the screens, beside the `render` they describe.
+//!   `the_screen_census_matches_the_tree` asserts the derived set and this map
+//!   equal in BOTH directions, so a derived member with no row is a screen with
+//!   no fixture and a row with no derived member is a stale row.
 //! * `the_screen_renders_identity_escaped` then CHECKS each disposition rather
 //!   than trusting it, by rendering the screen through the real
 //!   [`Screen::render`](super::Screen::render) into a ratatui `Buffer` and
-//!   inspecting the resulting cells.
+//!   inspecting the resulting cells. It reads the disposition off the
+//!   CONSTRUCTED INSTANCE — `screen.disposition()` through `&dyn Screen` — so
+//!   the disposition it checks and the disposition the screen declares cannot
+//!   drift. The both-ways set equality could only ever catch that for
+//!   *membership*; content was never checked until the disposition became one
+//!   statement instead of two.
 //!
 //! **The probe is behavioural on purpose.** It inspects what was rendered, not
 //! what the source says, so it is blind to no sink spelling: a new render site
@@ -164,6 +197,19 @@
 //!    which drives the same helper with an all-ASCII identity and with one whose
 //!    class members a `Paragraph` drops.
 //!
+//! 6. **The WALK's residual, now that its job is only fixture coverage
+//!    (21-26).** What makes adjudication mandatory is the sealed supertrait, and
+//!    that has no residual of this shape at all — it is a property of the type.
+//!    What the walk still answers is "is this adjudicated screen rendered by any
+//!    committed control", and THAT answer is still bounded by source text: a
+//!    screen the walk cannot NAME is a screen whose fixture coverage nobody
+//!    checked. As of this commit the walk is still exactly the line-oriented
+//!    scan CR-05 measured: a `macro_rules!`-generated implementor and a wrapped
+//!    `impl` header are both invisible to it, and an implementor whose name it
+//!    cannot extract is silently `continue`d. **Under-detection, silent.** Those
+//!    three are the subject of 21-26 Task 2, and this limit is re-stated there
+//!    against what that task delivers rather than against what it intends to.
+//!
 //! **Every bound claimed above names a committed control; every residual names
 //! its direction.** Limits 1, 2, 3 and the `Paragraph` half of 4 are residuals
 //! and are marked under-detection. Limits 4 (for the preserving families) and 5
@@ -172,7 +218,10 @@
 //! `the_teeth_precondition_answers_false_when_the_class_cannot_reach_a_cell`,
 //! each observed red before it was observed green.
 
-use super::{AppContext, Screen};
+use super::{
+    AppContext, Screen, RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    RENDERS_NO_ATTACKER_INFLUENCED_IDENTITY,
+};
 use crate::test_support::LOOK_ALIKE_PAIRS;
 use crate::text::{display_identity, is_invisible_formatting_char};
 use ratatui::backend::TestBackend;
@@ -181,181 +230,58 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
-// The disposition vocabulary
+// The fixture map — NARROWED 2026-08-27 (21-26)
 // ---------------------------------------------------------------------------
 
-/// The screen draws at least one string this build did not author — a registry
-/// key, or a workspace/phase/file/entry name read from `.planning/`.
-const RENDERS_IDENTITY: &str = "renders_attacker_influenced_identity";
-
-/// The screen draws only text this build authored itself.
-const RENDERS_NO_IDENTITY: &str = "renders_no_attacker_influenced_identity";
-
-/// `(type name, file relative to the crate root, disposition, reason)`.
+/// `(type name, file relative to the crate root)`.
 ///
-/// The reason column is the adjudication, and a future reader inherits it: it
-/// states **which values the screen draws and where they come from**, never
-/// "escaped" or "safe".
+/// # This table's job is NARROWED, and the wording it replaces is quoted
 ///
-/// Rows are added here because the walk found an implementor, never the other
-/// way round.
-type DispositionRow = (&'static str, &'static str, &'static str, &'static str);
+/// **What this type's doc used to say, verbatim:** *"`(type name, file relative
+/// to the crate root, disposition, reason)`. The reason column is the
+/// adjudication, and a future reader inherits it: it states **which values the
+/// screen draws and where they come from**, never 'escaped' or 'safe'. Rows are
+/// added here because the walk found an implementor, never the other way
+/// round."*
+///
+/// Two of those four columns are gone, and neither vanished — both were
+/// PROMOTED onto the screen itself by the sealed
+/// [`RenderAdjudicated`](super::RenderAdjudicated) supertrait:
+///
+/// * The **disposition** is now [`RenderAdjudicated::disposition`], read off the
+///   constructed instance by the probe. Two authoritative statements of one fact
+///   is the drift the probe exists to detect, one level up.
+/// * The **reason** is now [`RenderAdjudicated::adjudication_reason`], carried
+///   verbatim beside the `Screen::render` it describes rather than in this file.
+///
+/// **What this table still answers, and it is a different question from what
+/// makes adjudication mandatory:** WHICH ADJUDICATED SCREENS HAVE A PROBE
+/// FIXTURE. The compiler makes adjudication mandatory; the walk plus this table
+/// catch a screen that compiles, is adjudicated, and yet is never rendered by
+/// any committed control. Deleting it once the compiler took over the first job
+/// would have traded a bounded residual for an unbounded one, so it is kept with
+/// its job stated (prohibition 4 of 21-26).
+type FixtureRow = (&'static str, &'static str);
 
-const SCREEN_IDENTITY_DISPOSITIONS: &[DispositionRow] = &[
-    (
-        "AddProjectScreen",
-        "src/ui/screens/add_project.rs",
-        RENDERS_IDENTITY,
-        "Draws the alias the operator is typing (`ctx.input_buffer`) and, beside \
-         it, `ctx.error_message` — which on this screen is an `AliasRefusal` \
-         whose Display embeds the alias it refused. The background is an empty \
-         bordered block and draws nothing. Fixture states: the alias field, and \
-         the alias field with a real refusal for the hostile identity echoed \
-         beside it.",
-    ),
-    (
-        "CreateProjectScreen",
-        "src/ui/screens/create_project.rs",
-        RENDERS_IDENTITY,
-        "Draws the project name the operator is typing, `ctx.error_message`, and \
-         in its Confirm phase the chosen name and path. The name becomes a \
-         directory, so it is an identity in the full sense. Fixture states: the \
-         name field, and the name field with an error echoed beside it.",
-    ),
-    (
-        "DeleteConfirmScreen",
-        "src/ui/screens/delete_confirm.rs",
-        RENDERS_IDENTITY,
-        "Draws the registry key of the project about to be unregistered into a \
-         destructive [y/n] prompt, again into the removal toast, and again into \
-         the live-run refusal. This is the highest-consequence identity render \
-         in the tree: the operator confirms the name they READ, so a rendered \
-         name that is not the key is a confirmation of a different thing than \
-         was asked (T-21-21-01). Fixture state: the confirm prompt for a \
-         registered hostile key.",
-    ),
-    (
-        "DetailScreen",
-        "src/ui/screens/detail.rs",
-        RENDERS_IDENTITY,
-        "The widest identity surface in the tree. Draws the registry key in its \
-         tab-bar title, and in its eleven tabs the values parsed out of the \
-         project's `.planning/`. Per tab, the values and where their bytes come \
-         from: PhaseList and RoadmapViz draw each `RoadmapPhase`'s number, name \
-         and description plus the status and milestone, all parsed from \
-         `ROADMAP.md`/`STATE.md`; Pipeline draws the current phase name, status \
-         and the HANDOFF pause context; Queue draws each `QueuedAction::command` \
-         from `queue.md`; Backlog draws a `999.*` directory's number and \
-         description in its collapsed state and that directory's NAME (through \
-         `Block::title`) plus the BODY of the first `.md` file inside it when \
-         expanded; GitHistory draws a third-party repository's commit hash, \
-         date, author and subject; Sessions draws a session id scraped from \
-         another process's `--resume` argument via `/proc`; Archive draws \
-         milestone version strings, archive file names and phase display names \
-         from `.planning/archive/` directory listings, at three different \
-         depths that are three different renders of three different names; \
-         Defaults draws the value of every key of the project's \
-         `.planning/config.json`, of which `mode`, `granularity`, \
-         `project_code`, `phase_naming` and `response_language` are free-form \
-         strings; Browse draws the browsed directory's path relative to \
-         `.planning/`, each listing entry's name, and — in its file view — the \
-         file name and the whole markdown body; Driver draws the run id suffix, \
-         goal, `gsd_command` and run directory read back out of a run's \
-         committed `run.json`. All of it is third-party text under SAFE-07 and \
-         none of it was authored by this build. Fixture states: one per \
-         sub-view, all eleven, EACH RENDERING ITS POPULATED BRANCH (21-25), plus \
-         four within-tab states for the fields that dispatch to a different \
-         render — Backlog expanded, Archive at its phase list and file list \
-         depths, Browse at its file view. Arrival is recorded per state by \
-         DETAIL_TAB_ARRIVAL against the chrome baseline, so a populated cache \
-         the render never reads is reported rather than counted.",
-    ),
-    (
-        "DriverConfirmScreen",
-        "src/ui/screens/driver_confirm.rs",
-        RENDERS_IDENTITY,
-        "Draws the registry key into four prompts — start, stop, grant opt-in, \
-         withdraw opt-in — each of which precedes an irreversible act, and draws \
-         the command and the goal (already `sanitize_render_line`d for C0/ESC, \
-         which is a different class from the invisible one). Fixture states: all \
-         four prompts.",
-    ),
-    (
-        "DriverInjectScreen",
-        "src/ui/screens/driver_inject.rs",
-        RENDERS_IDENTITY,
-        "Paints its body with `DetailScreen::render_main_only`, so it draws \
-         everything the active detail tab draws, and adds a footer echoing the \
-         steering message being typed. Fixture states: one per sub-view.",
-    ),
-    (
-        "DriverStartScreen",
-        "src/ui/screens/driver_start.rs",
-        RENDERS_IDENTITY,
-        "Paints its body with `DetailScreen::render_main_only`, and its two \
-         wizard rows draw the command being typed (Step A) and the committed \
-         command (Step B). Fixture states: one per sub-view at Step A, plus Step \
-         B reached by driving the real key handler.",
-    ),
-    (
-        "EnqueueScreen",
-        "src/ui/screens/enqueue.rs",
-        RENDERS_IDENTITY,
-        "Paints its body with `DetailScreen::render_main_only`, and its footer \
-         echoes `ctx.input_buffer` — which Tab-completion fills from \
-         `queue_md::suggest_next_commands`, a function of the project's parsed \
-         `.planning/` state, so the buffer is not always something the operator \
-         typed. Fixture states: one per sub-view.",
-    ),
-    (
-        "HelpScreen",
-        "src/ui/screens/help.rs",
-        RENDERS_NO_IDENTITY,
-        "Draws `help_lines()`, which the module doc calls a pure function of \
-         nothing: keybindings, the filter grammar and two legends, every byte of \
-         it authored in this repository. It `Clear`s its popup area and paints \
-         no background, so nothing from `AppContext` reaches a cell. Checked, \
-         not claimed: the fixture registers the hostile identity and puts a \
-         hostile project state behind it, and the probe asserts the clean stem \
-         is absent from the buffer.",
-    ),
-    (
-        "NormalScreen",
-        "src/ui/screens/normal.rs",
-        RENDERS_IDENTITY,
-        "The dashboard. Draws every registered key in the name column together \
-         with the phase, status and milestone parsed from each project's \
-         `.planning/`, echoes the filter text in its search footer, and — the \
-         surface no row named until 21-25 — draws `ctx.status_message` in its \
-         STATUS FOOTER. That message is built by six `status_message = Some(..)` \
-         sites in `src/app.rs`; four of them interpolate a registry key or a run \
-         id into a sentence this build wrote (`Auto-registered: {alias}`, \
-         `Created project \"{alias}\"`, `Driving {alias} — run {run_id}`, \
-         `Stopping {alias} — run {run_id}`), one is a literal, and the sixth \
-         forwards whatever any screen handed to `ScreenAction::SetStatusMessage` \
-         — so the producer set is not closed. **THE ESCAPE FOR THIS SURFACE \
-         LIVES AT THE RENDER SITE, NOT AT THE PRODUCER**, and a reader who \
-         assumes round 9's producer rule holds everywhere will look for it in \
-         the wrong file: the trust boundary runs through the middle of a \
-         `format!`, so there is no field a carrier could type. The argument, its \
-         residual and what would remove it are written at \
-         `src/ui/screens/normal.rs`'s status branch. `row_badge`'s lookup keys \
-         off the RAW alias while the cell beside it is escaped — the worked \
-         example of the split. Fixture states: the dashboard, the dashboard with \
-         a status message, and the dashboard with the filter footer active.",
-    ),
+const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
+    ("AddProjectScreen", "src/ui/screens/add_project.rs"),
+    ("CreateProjectScreen", "src/ui/screens/create_project.rs"),
+    ("DeleteConfirmScreen", "src/ui/screens/delete_confirm.rs"),
+    ("DetailScreen", "src/ui/screens/detail.rs"),
+    ("DriverConfirmScreen", "src/ui/screens/driver_confirm.rs"),
+    ("DriverInjectScreen", "src/ui/screens/driver_inject.rs"),
+    ("DriverStartScreen", "src/ui/screens/driver_start.rs"),
+    ("EnqueueScreen", "src/ui/screens/enqueue.rs"),
+    ("HelpScreen", "src/ui/screens/help.rs"),
+    ("NormalScreen", "src/ui/screens/normal.rs"),
     (
         "QueueDeleteConfirmScreen",
         "src/ui/screens/queue_delete_confirm.rs",
-        RENDERS_IDENTITY,
-        "Paints its body with `DetailScreen::render_main_only`, and its \
-         destructive [y/n] footer draws the queued command text read from the \
-         project's `.planning/queue.md`. Fixture states: one per sub-view.",
     ),
 ];
 
 // ---------------------------------------------------------------------------
-// The walk — what performs the enumeration
+// The walk — the second, weaker mechanism, with a narrowed job
 // ---------------------------------------------------------------------------
 
 const SRC_ROOT: &str = "src";
@@ -507,7 +433,7 @@ fn census_offences(
 fn disposition_table() -> BTreeMap<String, String> {
     SCREEN_IDENTITY_DISPOSITIONS
         .iter()
-        .map(|(name, path, _, _)| ((*name).to_string(), (*path).to_string()))
+        .map(|(name, path)| ((*name).to_string(), (*path).to_string()))
         .collect()
 }
 
@@ -1744,8 +1670,8 @@ mod tests {
     fn every_adjudicated_screen_has_a_probe_fixture() {
         let missing: Vec<&str> = SCREEN_IDENTITY_DISPOSITIONS
             .iter()
-            .filter(|(name, _, _, _)| fixture_for(name).is_none())
-            .map(|(name, _, _, _)| *name)
+            .filter(|(name, _)| fixture_for(name).is_none())
+            .map(|(name, _)| *name)
             .collect();
         assert!(
             missing.is_empty(),
@@ -1873,7 +1799,7 @@ mod tests {
              {TAG_PAIR} is enough to cause this."
         );
 
-        for (name, path, disposition, _reason) in SCREEN_IDENTITY_DISPOSITIONS {
+        for (name, path) in SCREEN_IDENTITY_DISPOSITIONS {
             let Some(build) = fixture_for(name) else {
                 panic!("{name} ({path}) has no probe fixture");
             };
@@ -1904,8 +1830,29 @@ mod tests {
             let mut all_labels: std::collections::BTreeSet<String> =
                 std::collections::BTreeSet::new();
 
+            // THE DISPOSITION, READ OFF THE CONSTRUCTED INSTANCE (21-26, CR-05).
+            // Not off a row in this file that restates what the screen does: one
+            // statement of a fact cannot disagree with itself, and the both-ways
+            // set equality below could only ever check MEMBERSHIP, never
+            // CONTENT. `clean_states[0].screen` is a `Box<dyn Screen>`, so this
+            // is a virtual call through the supertrait's vtable — which is also
+            // the runtime proof that `Screen` stayed object-safe.
+            let screen_disposition: &'static str = {
+                let as_dyn: &dyn Screen = clean_states[0].screen.as_ref();
+                as_dyn.disposition()
+            };
+
             for (clean_state, hostile_state) in clean_states.iter().zip(hostile_states.iter()) {
                 let where_ = format!("{name} ({path}) [{}]", clean_state.label);
+                let disposition: &dyn Screen = clean_state.screen.as_ref();
+                let disposition = disposition.disposition();
+                assert_eq!(
+                    disposition, screen_disposition,
+                    "{where_}: two instances of the same screen reported \
+                     different dispositions, which the sealed macro makes \
+                     impossible — so the fixture is building a different type \
+                     for this state than for the first one"
+                );
                 let clean_text = render_to_text(clean_state.screen.as_ref(), &clean_state.ctx);
                 let hostile_text =
                     render_to_text(hostile_state.screen.as_ref(), &hostile_state.ctx);
@@ -1928,8 +1875,8 @@ mod tests {
                     arrived_labels.insert(clean_state.label.clone());
                 }
 
-                match *disposition {
-                    RENDERS_IDENTITY => {
+                match disposition {
+                    RENDERS_ATTACKER_INFLUENCED_IDENTITY => {
                         // 2. PER STATE, and gated on arrival: wherever the clean
                         //    identity DID reach the buffer, the hostile one must
                         //    reach it escaped. A state that draws no identity is
@@ -1975,7 +1922,7 @@ mod tests {
                             );
                         }
                     }
-                    RENDERS_NO_IDENTITY => {
+                    RENDERS_NO_ATTACKER_INFLUENCED_IDENTITY => {
                         // The disposition is CHECKED, not claimed: if the screen
                         // really draws no identity, the clean stem — which is
                         // all-ASCII and cannot be dropped — cannot be in its
@@ -2069,8 +2016,8 @@ mod tests {
             // 1. ARRIVAL, for the screen as a whole. A screen that rendered
             //    nothing, or that was built in states showing no identity, fails
             //    HERE rather than passing by silence.
-            match *disposition {
-                RENDERS_IDENTITY => assert!(
+            match screen_disposition {
+                RENDERS_ATTACKER_INFLUENCED_IDENTITY => assert!(
                     arrived_anywhere,
                     "{name} ({path}) is adjudicated as rendering identity, but a \
                      clean identity handed to its fixture never reached the \

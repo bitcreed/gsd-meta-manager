@@ -18,6 +18,18 @@ impl DeleteConfirmScreen {
     }
 }
 
+crate::ui::screens::adjudicate_screen!(
+    DeleteConfirmScreen,
+    crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    "Draws the registry key of the project about to be unregistered into a \
+     destructive [y/n] prompt, again into the removal toast, and again into \
+     the live-run refusal. This is the highest-consequence identity render \
+     in the tree: the operator confirms the name they READ, so a rendered \
+     name that is not the key is a confirmation of a different thing than \
+     was asked (T-21-21-01). Fixture state: the confirm prompt for a \
+     registered hostile key.",
+);
+
 impl Screen for DeleteConfirmScreen {
     fn handle_key(
         &mut self,

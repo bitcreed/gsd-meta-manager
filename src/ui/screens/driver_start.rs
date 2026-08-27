@@ -190,6 +190,15 @@ impl DriverStartScreen {
     }
 }
 
+crate::ui::screens::adjudicate_screen!(
+    DriverStartScreen,
+    crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    "Paints its body with `DetailScreen::render_main_only`, and its two \
+     wizard rows draw the command being typed (Step A) and the committed \
+     command (Step B). Fixture states: one per sub-view at Step A, plus Step \
+     B reached by driving the real key handler.",
+);
+
 impl Screen for DriverStartScreen {
     fn handle_key(
         &mut self,

@@ -371,6 +371,31 @@ fn dashboard_table<'a>(rows: Vec<Row<'a>>, terminal_width: u16) -> Table<'a> {
         .highlight_symbol("> ")
 }
 
+crate::ui::screens::adjudicate_screen!(
+    NormalScreen,
+    crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    "The dashboard. Draws every registered key in the name column together \
+     with the phase, status and milestone parsed from each project's \
+     `.planning/`, echoes the filter text in its search footer, and — the \
+     surface no row named until 21-25 — draws `ctx.status_message` in its \
+     STATUS FOOTER. That message is built by six `status_message = Some(..)` \
+     sites in `src/app.rs`; four of them interpolate a registry key or a run \
+     id into a sentence this build wrote (`Auto-registered: {alias}`, \
+     `Created project \"{alias}\"`, `Driving {alias} — run {run_id}`, \
+     `Stopping {alias} — run {run_id}`), one is a literal, and the sixth \
+     forwards whatever any screen handed to `ScreenAction::SetStatusMessage` \
+     — so the producer set is not closed. **THE ESCAPE FOR THIS SURFACE \
+     LIVES AT THE RENDER SITE, NOT AT THE PRODUCER**, and a reader who \
+     assumes round 9's producer rule holds everywhere will look for it in \
+     the wrong file: the trust boundary runs through the middle of a \
+     `format!`, so there is no field a carrier could type. The argument, its \
+     residual and what would remove it are written at \
+     `src/ui/screens/normal.rs`'s status branch. `row_badge`'s lookup keys \
+     off the RAW alias while the cell beside it is escaped — the worked \
+     example of the split. Fixture states: the dashboard, the dashboard with \
+     a status message, and the dashboard with the filter footer active.",
+);
+
 impl Screen for NormalScreen {
     fn handle_key(
         &mut self,

@@ -333,6 +333,16 @@ fn prompt_color(action: DriverAction, opted_in: bool) -> Color {
     }
 }
 
+crate::ui::screens::adjudicate_screen!(
+    DriverConfirmScreen,
+    crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    "Draws the registry key into four prompts — start, stop, grant opt-in, \
+     withdraw opt-in — each of which precedes an irreversible act, and draws \
+     the command and the goal (already `sanitize_render_line`d for C0/ESC, \
+     which is a different class from the invisible one). Fixture states: all \
+     four prompts.",
+);
+
 impl Screen for DriverConfirmScreen {
     fn handle_key(
         &mut self,

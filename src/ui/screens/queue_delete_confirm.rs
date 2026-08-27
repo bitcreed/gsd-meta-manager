@@ -23,6 +23,14 @@ impl QueueDeleteConfirmScreen {
     }
 }
 
+crate::ui::screens::adjudicate_screen!(
+    QueueDeleteConfirmScreen,
+    crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    "Paints its body with `DetailScreen::render_main_only`, and its \
+     destructive [y/n] footer draws the queued command text read from the \
+     project's `.planning/queue.md`. Fixture states: one per sub-view.",
+);
+
 impl Screen for QueueDeleteConfirmScreen {
     fn handle_key(
         &mut self,
