@@ -626,6 +626,116 @@ pub fn sanitize_record_lines(raw: &str) -> (Vec<String>, bool) {
     (lines, truncated)
 }
 
+/// **The Defaults tab's in-progress edit text — a TYPE, because the defect it
+/// closes is not an unescaped render** (CR-03, 21-30).
+///
+/// # What was actually wrong
+///
+/// `entry.value` for a `ConfigValueKind::String` row of the project's
+/// `.planning/config.json` IS escaped where the Defaults list draws it:
+/// `detail.rs`'s list render calls `shown(&entry.value)`. Pressing Enter on that
+/// row copied **the same `entry.value`** into a plain `String` field and the
+/// edit popup one render away drew that field raw, through a `Clear`ed
+/// `Paragraph` where this tree measured the tag block surviving into cells.
+///
+/// So this was never a site that nobody escaped. It was **an escape that
+/// existed and was laundered by a round trip through an untyped buffer** — and
+/// escaping at the second render would have fixed this field while leaving the
+/// mechanism intact for the next one. Wrapping [`crate::text::Untrusted`] is
+/// what makes the round trip impossible instead of merely repaired:
+/// `Span::styled(buffer.clone(), ..)` does not compile, because this type has no
+/// `Display`, no `AsRef<str>` and no `Into<Cow<'static, str>>`, and the only
+/// route to a cell is [`shown`](Self::shown).
+///
+/// # The thing this fix could have made WORSE, and why there is exactly one raw take
+///
+/// The escape is for READING. What the operator types must be what gets
+/// PERSISTED. The safest-LOOKING implementation — escape once, keep the escaped
+/// form — would write a `U+XXXX` spelling into the operator's `config.json`,
+/// silently rewriting their file with a rendering of itself. That is strictly
+/// worse than the popup this closes, and it would pass every escaping assertion
+/// in this tree. Hence [`take_raw_for_persistence`](Self::take_raw_for_persistence):
+/// one take, named for the one question it answers, pinned byte-identical by
+/// `tests::what_the_operator_types_is_what_is_persisted`.
+///
+/// # Character operations, not byte operations
+///
+/// [`push_char`](Self::push_char) and [`pop_char`](Self::pop_char) are the
+/// `char` family, not the byte family. A byte-indexed edit buffer is the same
+/// shape as the `&sid[..8]` panic round 9 replaced one file over, and it is
+/// asserted over a multibyte edit by
+/// `tests::the_edit_buffer_pushes_and_pops_whole_characters` rather than assumed
+/// from `String::pop`'s documentation.
+///
+/// # Why a wrapper rather than a bare `Untrusted` field
+///
+/// [`ProjectViewCache`] derives `Default`. A bare `Untrusted` field would need
+/// `impl Default for Untrusted` — a trait ADDITION to the carrier in the same
+/// round that certified its trait surface at six absences (21-27, WR-01), made
+/// in a file this change does not own. A hand-written `Default` on the wrapper
+/// costs nothing and leaves the carrier exactly where it was certified
+/// (D-21-48).
+pub struct EditBuffer(crate::text::Untrusted);
+
+/// Hand-written rather than derived, so [`crate::text::Untrusted`] does not have
+/// to grow a `Default` — see the type's doc, D-21-48.
+impl Default for EditBuffer {
+    fn default() -> Self {
+        Self(crate::text::Untrusted::from_untrusted_source(String::new()))
+    }
+}
+
+impl EditBuffer {
+    /// Seed the buffer with a value this build did not author — the
+    /// `entry.value` the operator pressed Enter on.
+    pub fn seed_from_untrusted_source(raw: String) -> Self {
+        Self(crate::text::Untrusted::from_untrusted_source(raw))
+    }
+
+    /// Append one CHARACTER the operator typed.
+    pub fn push_char(&mut self, c: char) {
+        let mut raw = self.0.as_raw_for_logic_only().to_string();
+        raw.push(c);
+        self.0 = crate::text::Untrusted::from_untrusted_source(raw);
+    }
+
+    /// Remove the last CHARACTER — never the last byte. Returns what was
+    /// removed, or `None` for an empty buffer.
+    pub fn pop_char(&mut self) -> Option<char> {
+        let mut raw = self.0.as_raw_for_logic_only().to_string();
+        let popped = raw.pop();
+        self.0 = crate::text::Untrusted::from_untrusted_source(raw);
+        popped
+    }
+
+    /// Discard the edit (Esc).
+    pub fn clear(&mut self) {
+        self.0 = crate::text::Untrusted::from_untrusted_source(String::new());
+    }
+
+    /// **What a human READS** — both classes escaped, via
+    /// [`crate::text::render_for_terminal`]. The only route from this type to a
+    /// terminal cell.
+    pub fn shown(&self) -> crate::text::Rendered {
+        self.0.shown()
+    }
+
+    /// **The one raw take, and the one question it answers: what gets WRITTEN
+    /// BACK to the operator's `.planning/config.json`.**
+    ///
+    /// Takes by value and leaves the buffer empty, the way
+    /// `std::mem::take(&mut cache.defaults_text_buffer)` did — the Enter handler
+    /// both persists the value and closes the overlay in one step. Deliberately
+    /// unattractive to type: reaching for it is a choice a reviewer sees in a
+    /// diff. There is no second raw accessor and no `Display`, so a display
+    /// escape has no route to disk.
+    pub fn take_raw_for_persistence(&mut self) -> String {
+        let raw = self.0.as_raw_for_logic_only().to_string();
+        self.clear();
+        raw
+    }
+}
+
 #[derive(Default)]
 pub struct ProjectViewCache {
     pub backlog_items: Vec<BacklogItem>,
@@ -681,7 +791,13 @@ pub struct ProjectViewCache {
     /// Cursor position inside the open dropdown (only used for Bool/Enum).
     pub defaults_dropdown_selected: usize,
     /// In-progress text the user is typing for a String-kind entry.
-    pub defaults_text_buffer: String,
+    ///
+    /// **[`EditBuffer`], not `String`** (CR-03, 21-30). It is seeded with a copy
+    /// of an `entry.value` the list render already escapes, so as a bare
+    /// `String` it laundered that escape into a raw popup one render away. Read
+    /// the type's doc for why the fix is a type rather than a `shown()` at the
+    /// popup.
+    pub defaults_text_buffer: EditBuffer,
     // ── Docs browser tab state ────────────────────────────────────────
     pub browser_depth: crate::browser::BrowserDepth,
     /// `None` until the user first activates the Docs tab; then set to the
@@ -1463,6 +1579,127 @@ mod tests {
     use crate::driver::reconcile::ObservedRun;
     use crate::executor::RunOutcome;
     use crate::state_reader::ProjectState;
+
+    /// **What the operator TYPES is what gets PERSISTED — byte-identical**
+    /// (21-30 T1, prohibition 1, T-21-30-02).
+    ///
+    /// The escape [`EditBuffer`] adds exists for READING. This is the assertion
+    /// that stops it reaching the operator's `.planning/config.json`: the
+    /// safest-looking implementation — escape once, keep the escaped form —
+    /// would write a `U+XXXX` spelling of the value into the user's config file,
+    /// silently rewriting it with a rendering of itself. That outcome is
+    /// strictly worse than the unescaped popup this round closed, and it would
+    /// pass every escaping assertion in this tree.
+    ///
+    /// The oracle is the PRE-TYPE formulation: the same edit applied to a plain
+    /// `String`, which is exactly what `defaults_text_buffer` was. Comparing the
+    /// new code to itself would prove nothing.
+    #[test]
+    fn what_the_operator_types_is_what_is_persisted() {
+        for (clean, hostile) in crate::test_support::LOOK_ALIKE_PAIRS {
+            // NON-VACUITY FIRST. If the escaped form equalled the raw form, the
+            // byte-identity below would be an identity between two identical
+            // strings and would pass forever, for every implementation.
+            let seeded = EditBuffer::seed_from_untrusted_source(hostile.to_string());
+            let shown: String = seeded.shown().into();
+            assert_ne!(
+                shown, hostile,
+                "the fixture {hostile:?} renders to itself, so this test's \
+                 byte-identity assertion below cannot distinguish a raw take \
+                 from an escaped one and passes vacuously. LOOK_ALIKE_PAIRS' \
+                 second member is supposed to be the hostile one."
+            );
+
+            // The edit sequence: type two characters, take one back.
+            let mut buffer = EditBuffer::seed_from_untrusted_source(hostile.to_string());
+            buffer.push_char('a');
+            buffer.push_char('b');
+            buffer.pop_char();
+            let persisted = buffer.take_raw_for_persistence();
+
+            // THE ORACLE: the same edit on the plain `String` the field used to
+            // be. Not on `persisted`, and not through `EditBuffer` again.
+            let mut oracle = hostile.to_string();
+            oracle.push('a');
+            oracle.push('b');
+            oracle.pop();
+
+            assert_eq!(
+                persisted, oracle,
+                "editing {hostile:?} through EditBuffer and taking it for \
+                 persistence produced {persisted:?}, but the same edit on a raw \
+                 String produces {oracle:?}. A display escape has reached the \
+                 value written back to the operator's .planning/config.json, \
+                 which rewrites their config file with a rendering of itself."
+            );
+            assert!(
+                !persisted.contains("U+"),
+                "the persisted value {persisted:?} carries this project's own \
+                 display notation, so an escape leaked into the bytes going to \
+                 disk. The escape is for reading only."
+            );
+            let _ = clean;
+
+            // And the take leaves the buffer empty, the way `std::mem::take`
+            // did — the Enter handler persists and closes in one step.
+            let mut emptied = EditBuffer::seed_from_untrusted_source(hostile.to_string());
+            let _ = emptied.take_raw_for_persistence();
+            assert_eq!(
+                emptied.take_raw_for_persistence(),
+                String::new(),
+                "take_raw_for_persistence did not leave the buffer empty, so \
+                 the overlay would reopen carrying the value just written"
+            );
+        }
+    }
+
+    /// **Push and pop are CHARACTER operations** (21-30 T1, T-21-30-03).
+    ///
+    /// A byte-indexed edit buffer is the same family as the `&sid[..8]` panic
+    /// round 9 replaced in `detail.rs`: it panics mid-character on any multibyte
+    /// edit, and a `.planning/config.json` value is exactly where a CJK or emoji
+    /// string comes from. `String::pop` is char-wise by documentation; this
+    /// asserts it over real multibyte input rather than inheriting the claim.
+    #[test]
+    fn the_edit_buffer_pushes_and_pops_whole_characters() {
+        // Two, three and four UTF-8 bytes, plus a combining mark: every width
+        // a `char` can occupy in this encoding.
+        for c in ['\u{00e9}', '\u{4e16}', '\u{1f600}', '\u{0301}'] {
+            assert!(
+                c.len_utf8() > 1,
+                "{c:?} is one byte, so it cannot exercise a byte/character \
+                 confusion and this fixture proves nothing"
+            );
+
+            // Round trip: push then pop returns the buffer to where it was.
+            let seed = "\u{4e16}\u{754c}cfg";
+            let mut buffer = EditBuffer::seed_from_untrusted_source(seed.to_string());
+            buffer.push_char(c);
+            assert_eq!(
+                buffer.pop_char(),
+                Some(c),
+                "popping after pushing {c:?} did not return that character"
+            );
+            assert_eq!(
+                buffer.take_raw_for_persistence(),
+                seed,
+                "pushing {c:?} and popping it did not leave the buffer \
+                 byte-identical to its pre-push state, so the pop is not a \
+                 character operation"
+            );
+
+            // Popping a buffer whose LAST character is multibyte must not
+            // panic and must remove the whole character.
+            let mut trailing = EditBuffer::seed_from_untrusted_source(format!("cfg{c}"));
+            assert_eq!(trailing.pop_char(), Some(c));
+            assert_eq!(trailing.take_raw_for_persistence(), "cfg");
+        }
+
+        // An empty buffer pops to `None` rather than panicking.
+        let mut empty = EditBuffer::default();
+        assert_eq!(empty.pop_char(), None);
+        assert_eq!(empty.take_raw_for_persistence(), String::new());
+    }
 
     /// An `AppContext` with `aliases` registered and nothing else set.
     ///

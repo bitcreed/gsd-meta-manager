@@ -186,6 +186,43 @@
 //!    counter and the missed-reason gloss are not. And the dry-run fixture sets
 //!    `report: Some(..)`, so the `None` loading branch is unprobed; it draws an
 //!    authored constant and no identity. **Under-detection, silent**, both.
+//!
+//!    **REWRITTEN AGAIN 2026-08-27 (21-30 T1), strictly narrower, with the
+//!    wording it replaces quoted verbatim so the narrowing is checkable.** The
+//!    sentence above closing the 21-28 rewrite used to read:
+//!
+//!    > *"So the Defaults string-EDIT overlay remains the residual STATE, and
+//!    > the sentence below replaces the rest of it."*
+//!
+//!    and the 21-25 wording it inherited framed that overlay purely as a
+//!    COVERAGE gap — a state "reachable only by driving the key handler into a
+//!    mode". **It was also a CORRECTNESS gap, and naming it only as coverage is
+//!    what let it stand for two more rounds.** The overlay drew
+//!    `defaults_text_buffer` raw: a plain `String` copy of the same
+//!    `entry.value` the list one render above already escaped, laundering the
+//!    escape through an untyped round trip on the surface where the operator
+//!    decides what to write to disk.
+//!
+//!    **Of that wording's two concrete residual examples, BOTH are now closed
+//!    and by what:** `driver_dry_run` by **21-28** (the `Driver tab, dry-run
+//!    preview` state), and the Defaults string-EDIT overlay by **21-30** — a
+//!    `Defaults tab, string edit` state whose index and seed are derived from
+//!    the populated `defaults_config`, plus `ProjectViewCache::defaults_text_buffer`
+//!    retyped to [`super::EditBuffer`] so the popup's `Span` is a compile error
+//!    until it goes through `shown()`.
+//!
+//!    **A residual with no example is a residual nobody can check, so here is a
+//!    NEW concrete one.** `DetailScreen`'s Defaults tab has a THIRD overlay this
+//!    fixture still does not construct: the **dropdown** branch, taken when
+//!    `defaults_editing` is `Some(idx)` at a row whose `dropdown_options` are
+//!    non-empty (`ConfigValueKind::Bool` and the enum-valued keys). It draws
+//!    `entry.key` in its title and its option strings in the list.
+//!    `first_string_entry` deliberately skips those rows, so no probe state
+//!    reaches that branch. **Under-detection, silent** — though narrower than
+//!    the overlay it replaces: the dropdown's options come from
+//!    `dropdown_options`, which returns authored `&'static str` variants rather
+//!    than anything read off disk, so what is unprobed there is the KEY in the
+//!    title, which the tab already draws escaped one render below.
 //! 2. **The probe judges the invisible class, not homoglyphs.** A Cyrillic `а`
 //!    renders like a Latin `a` and is accepted here, exactly as
 //!    [`crate::text::carries_invisible_formatting`] records for its own class.
@@ -1257,6 +1294,19 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
          draws no identity at all. The preview REPLACES the run detail, which is why \
          this is a state of its own rather than a field set in `probe_ctx`.",
     ),
+    (
+        "Defaults tab, string edit",
+        true,
+        "Draws `defaults_text_buffer` and `entry.key` into a `Clear`ed `Paragraph` \
+         popup that overlays the list. The buffer's bytes are a copy of \
+         `entry.value` for a `ConfigValueKind::String` row of the project's \
+         `.planning/config.json` — free-form text supplied by whoever wrote that \
+         file, taken at the moment the operator pressed Enter on the row. The list \
+         underneath keeps drawing `entry.value` for every row, so this state draws \
+         the same bytes from two different sources through two different widget \
+         families. The index and the seed are derived from `defaults_config` by \
+         `detail::first_string_entry`, never spelled.",
+    ),
 ];
 
 /// How many times `clean` appears in each `DetailScreen` state rendered with
@@ -1457,6 +1507,29 @@ const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
         let cache = ctx.view_cache.entry(identity.to_string()).or_default();
         cache.browser_depth = crate::browser::BrowserDepth::View;
         cache.browser_file_content = Some(format!("# {identity}\n"));
+    }),
+    // The DEFAULTS STRING-EDIT OVERLAY (21-30 T1). LIMIT 1 named this state as
+    // the residual no fixture reached, and framed it purely as a coverage gap.
+    // It was also a CORRECTNESS gap: `render_defaults_tab` dispatches on
+    // `defaults_editing` being `Some(idx)` at a `ConfigValueKind::String` row
+    // and draws `defaults_text_buffer` — a raw copy of the very `entry.value`
+    // the list one render above already escapes — into a `Clear`ed
+    // `Paragraph` popup. That is the LAUNDERING this task closes at the type.
+    //
+    // **Both the index and the seed are DERIVED from the config the fixture
+    // populated, never spelled from `identity`** — see `detail::first_string_entry`
+    // and 21-28's measured near-miss. `chrome_ctx` has no `defaults_config`, so
+    // the helper returns `None` there, the arrange returns early, and the
+    // baseline draws chrome only.
+    ("Defaults tab, string edit", |identity, ctx| {
+        ctx.detail_sub_view_per_project
+            .insert(identity.to_string(), crate::app::DetailSubView::Defaults);
+        let cache = ctx.view_cache.entry(identity.to_string()).or_default();
+        let Some((idx, value)) = super::detail::first_string_entry(cache) else {
+            return;
+        };
+        cache.defaults_editing = Some(idx);
+        cache.defaults_text_buffer = super::EditBuffer::seed_from_untrusted_source(value);
     }),
 ];
 
@@ -2580,6 +2653,69 @@ mod tests {
              `DryRunPreview::report` is drawn by `render_dry_run_preview` and by \
              nothing else, so its absence means the preview rendered its \
              `None` loading branch instead. Rendered:\n{preview}"
+        );
+    }
+
+    /// **The Defaults string-edit state reaches the POPUP BRANCH, not merely
+    /// the field** (21-30 T1).
+    ///
+    /// This module records a near-miss where a state set a field the render
+    /// never dispatched on and every assertion about that state passed by
+    /// silence. `defaults_editing = Some(idx)` is exactly that shape: the popup
+    /// is drawn only if `entries.get(idx)` resolves AND that entry's kind is
+    /// `ConfigValueKind::String`, so an index pointing at a `Bool` row would set
+    /// the field, render the dropdown instead, and leave the escaping assertion
+    /// asserting nothing.
+    ///
+    /// `detail::DEFAULTS_EDIT_BRANCH_TOKEN` is the popup's own title
+    /// suffix and is drawn by no other branch of this screen — which the second
+    /// half measures rather than asserts, by rendering the SAME tab with
+    /// `defaults_editing` left `None`.
+    #[test]
+    fn the_defaults_string_edit_state_reaches_the_popup_branch() {
+        let clean = clean_identity();
+        let token = crate::ui::screens::detail::DEFAULTS_EDIT_BRANCH_TOKEN;
+
+        let build = |identity: &str, _ctx: &mut AppContext| -> Box<dyn Screen> {
+            Box::new(crate::ui::screens::detail::DetailScreen::new(identity.to_string()))
+        };
+        let edit_state = states_over_sub_views(&clean, &build)
+            .into_iter()
+            .find(|s| s.label == "Defaults tab, string edit")
+            .expect("no probe state labelled \"Defaults tab, string edit\"");
+        let edited = render_to_text(edit_state.screen.as_ref(), &edit_state.ctx);
+
+        assert!(
+            edited.contains(token),
+            "the `Defaults tab, string edit` state did not reach the popup \
+             branch: {token:?} is absent, so `render_defaults_tab` did NOT \
+             dispatch into the string-input overlay and every assertion about \
+             what the popup renders is passing by silence. Check that \
+             `detail::first_string_entry` found a `ConfigValueKind::String` row \
+             — it returns `None` for a cache with no `defaults_config`. \
+             Rendered:\n{edited}"
+        );
+
+        // THE OTHER DIRECTION: the same tab with the overlay closed. If the
+        // token appeared here too it would say nothing about which branch ran.
+        let mut closed = probe_ctx(&clean);
+        closed
+            .detail_sub_view_per_project
+            .insert(clean.clone(), crate::app::DetailSubView::Defaults);
+        closed
+            .view_cache
+            .entry(clean.clone())
+            .or_default()
+            .defaults_editing = None;
+        let closed_text = render_to_text(
+            &crate::ui::screens::detail::DetailScreen::new(clean.clone()),
+            &closed,
+        );
+        assert!(
+            !closed_text.contains(token),
+            "with `defaults_editing` left `None` the same tab still drew \
+             {token:?}, so the token is not specific to the string-edit overlay \
+             and the assertion above proves nothing about which branch ran."
         );
     }
 }

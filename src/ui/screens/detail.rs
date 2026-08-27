@@ -1991,11 +1991,19 @@ impl Screen for DetailScreen {
                                     cache.defaults_dropdown_selected = current_idx;
                                 } else if matches!(entry.kind, ConfigValueKind::String) {
                                     cache.defaults_editing = Some(selected);
+                                    // THE SEED, and the site the laundering ran
+                                    // through: `entry.value` is a free-form
+                                    // string out of the project's
+                                    // `.planning/config.json`, already escaped
+                                    // by the list render one render away. It
+                                    // enters the buffer as what it is.
                                     cache.defaults_text_buffer =
                                         if entry.value == "(unset)" {
-                                            String::new()
+                                            super::EditBuffer::default()
                                         } else {
-                                            entry.value.clone()
+                                            super::EditBuffer::seed_from_untrusted_source(
+                                                entry.value.clone(),
+                                            )
                                         };
                                 } else if matches!(entry.kind, ConfigValueKind::Integer) {
                                     if let Some(active) = active_config_mut(cache) {
@@ -2761,12 +2769,15 @@ impl DetailScreen {
         match code {
             KeyCode::Char(c) => {
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                cache.defaults_text_buffer.push(c);
+                // A CHARACTER the operator typed, never a byte.
+                cache.defaults_text_buffer.push_char(c);
                 ctx.needs_redraw = true;
             }
             KeyCode::Backspace => {
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                cache.defaults_text_buffer.pop();
+                // Backspace removes a whole CHARACTER — a byte-indexed pop is
+                // the `&sid[..8]` panic family one file over.
+                cache.defaults_text_buffer.pop_char();
                 ctx.needs_redraw = true;
             }
             KeyCode::Esc => {
@@ -2783,7 +2794,13 @@ impl DetailScreen {
                     .map(|p| p.path.clone());
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                 let target = cache.defaults_edit_target;
-                let buffer = std::mem::take(&mut cache.defaults_text_buffer);
+                // PERSISTENCE — the one question the raw take answers. These
+                // are the bytes the operator typed, going back to their
+                // `.planning/config.json` byte-identical; a `U+XXXX` display
+                // spelling reaching this line would rewrite their config file
+                // with a rendering of itself. Pinned by
+                // `ui::screens::tests::what_the_operator_types_is_what_is_persisted`.
+                let buffer = cache.defaults_text_buffer.take_raw_for_persistence();
                 cache.defaults_editing = None;
                 let entries = entries_for_cache(cache);
                 if let Some(entry) = entries.get(editing_idx).cloned() {
@@ -4242,9 +4259,13 @@ impl DetailScreen {
             if let Some(editing_idx) = cache.defaults_editing {
                 if let Some(entry) = entries.get(editing_idx) {
                     if matches!(entry.kind, ConfigValueKind::String) {
-                        let title = format!(" {} (Enter to save, Esc to cancel) ", entry.key);
-                        let buffer = &cache.defaults_text_buffer;
-                        let inner_w = buffer.len().max(title.len()).max(30) as u16;
+                        let title =
+                            format!(" {} {DEFAULTS_EDIT_BRANCH_TOKEN} ", entry.key);
+                        // READ BY A HUMAN, and the whole point of `EditBuffer`:
+                        // there is no other route from the buffer to a cell.
+                        // `Span::styled(buffer.clone(), ..)` does not compile.
+                        let rendered: String = cache.defaults_text_buffer.shown().into();
+                        let inner_w = rendered.len().max(title.len()).max(30) as u16;
                         let popup_w = (inner_w + 4).min(area.width.saturating_sub(2));
                         let popup_h = 3u16;
                         let popup_x = area.x + (area.width.saturating_sub(popup_w)) / 2;
@@ -4257,7 +4278,7 @@ impl DetailScreen {
                         };
                         frame.render_widget(ratatui::widgets::Clear, popup_area);
                         let text = Paragraph::new(Line::from(vec![
-                            Span::styled(buffer.clone(), Style::default().fg(Color::White)),
+                            Span::styled(rendered.clone(), Style::default().fg(Color::White)),
                             Span::styled("█", Style::default().fg(Color::Cyan)),
                         ]))
                         .block(
@@ -5278,6 +5299,37 @@ fn entries_for_cache(cache: &super::ProjectViewCache) -> Vec<ConfigEntry> {
 
 fn entries_count_for_cache(cache: &super::ProjectViewCache) -> usize {
     entries_for_cache(cache).len()
+}
+
+/// The Defaults string-edit popup's title suffix.
+///
+/// A named constant so the probe's branch-reached assertion compares against
+/// the string the render actually draws instead of respelling it — the
+/// `STATUS_BRANCH_TOKEN` discipline. It is drawn by this one branch and by
+/// nothing else on the screen, which is what makes its presence evidence that
+/// `render_defaults_tab` dispatched into the popup rather than merely that
+/// `defaults_editing` was set.
+pub(super) const DEFAULTS_EDIT_BRANCH_TOKEN: &str = "(Enter to save, Esc to cancel)";
+
+/// The index and value of the first `ConfigValueKind::String` row of a cache's
+/// Defaults list — **for the render-escape probe, and DERIVED rather than
+/// spelled** (21-30 T1).
+///
+/// The probe's string-edit arrange has to set `defaults_editing` to an index
+/// the render will actually dispatch on, and seed the buffer with the value the
+/// operator would be editing. Both must come from the config the fixture
+/// populated: 21-28 measured that an arrange which spells the untrusted value
+/// itself puts that value in the chrome baseline too, so the arrival difference
+/// is zero and the state reports "did not arrive" while visibly leaking. This
+/// returns `None` for a cache with no config — which is exactly what
+/// `chrome_ctx` is — so the baseline draws chrome only.
+#[cfg(test)]
+pub(super) fn first_string_entry(cache: &super::ProjectViewCache) -> Option<(usize, String)> {
+    entries_for_cache(cache)
+        .into_iter()
+        .enumerate()
+        .find(|(_, entry)| matches!(entry.kind, ConfigValueKind::String))
+        .map(|(idx, entry)| (idx, entry.value))
 }
 
 /// Get a mutable reference to whichever config the user is currently
