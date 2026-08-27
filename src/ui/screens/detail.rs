@@ -6707,4 +6707,158 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::PageUp);
         assert_eq!(screen.scroll_offset, 0);
     }
+
+    // --- T-21-25-05: the session-id truncation is a CHAR operation ---------
+    //
+    // `render_sessions_tab` shortened a session id with `sid[..8]`, which
+    // indexes BYTES. A session id is scraped from a `claude` process's
+    // `--resume` argument (`session_detector::read_session_id`), so nothing
+    // about it was authored here and nothing constrains it to ASCII. Any
+    // non-ASCII id longer than eight bytes whose eighth byte is inside a
+    // multi-byte character panics the render, and a panic in a render pass
+    // takes the whole TUI down.
+    //
+    // This is the SAME defect class as the `&s[..n]` panic round 8 fixed in
+    // `roadmap_widget.rs:138-146` — a family, not an incident.
+
+    /// A `DetailScreen` and `AppContext` parked on the Sessions tab with one
+    /// active session carrying `session_id`.
+    ///
+    /// The session's `working_dir` must equal the registered project's path or
+    /// `render_sessions_tab`'s filter drops it and the tab renders its EMPTY
+    /// branch — which would make every assertion below pass by silence.
+    fn sessions_fixture(session_id: &str) -> (DetailScreen, AppContext) {
+        use crate::config::RegisteredProject;
+        use crate::session_detector::ClaudeSession;
+        use std::path::PathBuf;
+
+        let project_path = PathBuf::from("/nonexistent").join(TEST_ALIAS);
+        let mut ctx = test_ctx();
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            RegisteredProject {
+                path: project_path.clone(),
+                added: "2026-08-27".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Sessions);
+        ctx.active_sessions = vec![ClaudeSession {
+            pid: 4242,
+            session_id: Some(session_id.to_string()),
+            working_dir: project_path,
+            start_time: Some(1),
+            tty: None,
+        }];
+
+        (DetailScreen::new(TEST_ALIAS.to_string()), ctx)
+    }
+
+    /// Render the detail screen into a `TestBackend` and join the cells.
+    fn render_detail_to_text(screen: &DetailScreen, ctx: &AppContext) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (width, height) = (120u16, 30u16);
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
+        terminal
+            .draw(|frame| screen.render(frame, frame.area(), ctx))
+            .expect("draw the detail screen");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| {
+                        buffer
+                            .cell((x, y))
+                            .map(|cell| cell.symbol())
+                            .unwrap_or(" ")
+                            .to_string()
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The panic reproduction: a five-character CJK id is fifteen BYTES, so
+    /// `len() > 8` is true and byte index 8 lands inside the third character.
+    ///
+    /// **Committed RED, verbatim, before the truncation was rewritten**
+    /// (`cargo test --lib -- ui::screens::detail::tests::a_multibyte_session_id_does_not_panic_the_render --exact --nocapture`):
+    ///
+    /// ```text
+    /// thread 'ui::screens::detail::tests::a_multibyte_session_id_does_not_panic_the_render' (594330) panicked at src/ui/screens/detail.rs:3384:32:
+    /// end byte index 8 is not a char boundary; it is inside '\u{4e2d}' (bytes 6..9 of string)
+    /// ```
+    ///
+    /// (The panic text names the character with its literal glyph; it is
+    /// written here as its `\u{...}` escape, following the house rule that no
+    /// raw glyph appears in source.) The sibling
+    /// `a_long_multibyte_session_id_is_truncated_by_characters_not_bytes`
+    /// panicked identically at the same line in the same run.
+    #[test]
+    fn a_multibyte_session_id_does_not_panic_the_render() {
+        let id = "\u{4e2d}\u{6587}\u{4e2d}\u{6587}\u{4e2d}";
+        assert!(
+            id.len() > 8 && id.chars().count() <= 8,
+            "the fixture must be longer than eight BYTES and no longer than \
+             eight CHARACTERS, or it does not exercise the boundary the byte \
+             slice got wrong"
+        );
+
+        let (screen, ctx) = sessions_fixture(id);
+        let text = render_detail_to_text(&screen, &ctx);
+
+        assert!(
+            text.contains("PID 4242"),
+            "the Sessions tab rendered its EMPTY branch, so this test proved \
+             nothing about the truncation. The session's working_dir must match \
+             the registered project's path. Rendered:\n{text}"
+        );
+        assert!(
+            text.contains(id),
+            "a session id of {} characters is at or below the eight-character \
+             cap and must render in full, not as a byte-sliced fragment. \
+             Rendered:\n{text}",
+            id.chars().count()
+        );
+    }
+
+    /// The truncation itself, as a CHAR operation: a nine-character multibyte
+    /// id renders as its first EIGHT characters.
+    ///
+    /// A byte slice cannot produce this answer even where it does not panic —
+    /// `[..8]` of a three-byte-per-character string is at most two whole
+    /// characters — so this pins the semantics and not merely the absence of a
+    /// crash.
+    #[test]
+    fn a_long_multibyte_session_id_is_truncated_by_characters_not_bytes() {
+        let id: String = "\u{4e2d}".repeat(9);
+        let expected: String = id.chars().take(8).collect();
+
+        let (screen, ctx) = sessions_fixture(&id);
+        let text = render_detail_to_text(&screen, &ctx);
+
+        assert!(
+            text.contains("PID 4242"),
+            "the Sessions tab rendered its EMPTY branch, so this test proved \
+             nothing. Rendered:\n{text}"
+        );
+        assert!(
+            text.contains(&expected),
+            "a nine-character id must be shortened to its first eight \
+             CHARACTERS ({expected:?}), not to a prefix measured in bytes. \
+             Rendered:\n{text}"
+        );
+        assert!(
+            !text.contains(&id),
+            "the id was not shortened at all — the cap is nine characters wide \
+             here, so the eight-character branch was never taken and the \
+             assertion above passed for the wrong reason"
+        );
+    }
 }
