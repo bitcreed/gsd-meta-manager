@@ -592,19 +592,49 @@ fn local_date_time(started_at: &str) -> (String, String) {
 /// The capped composition of BOTH classes, for the prose this tab draws.
 ///
 /// **The half that was missing, found by the probe rather than by reading**
-/// (21-25 T2). Every site below used `sanitize_render_line` alone, which
-/// answers only the CONTROL class (`ESC` / C0 / `DEL` / C1). The
-/// invisible-formatting class — `General_Category=Cf` union
-/// `Default_Ignorable_Code_Point` — is `Cf`, not `Cc`, so `U+202E`, `U+00AD`
-/// and the `U+E0000..U+E007F` tag block passed through untouched into a
-/// `Paragraph`. This file's own `no_runs_lines` at the bottom of this module
-/// already states that neither class subsumes the other and composes the two;
-/// what was missing was every OTHER site on this path doing the same.
+/// (21-25 T2). `sanitize_render_line` answers only the CONTROL class
+/// (`ESC` / C0 / `DEL` / C1). The invisible-formatting class —
+/// `General_Category=Cf` union `Default_Ignorable_Code_Point` — is `Cf`, not
+/// `Cc`, so `U+202E`, `U+00AD` and the `U+E0000..U+E007F` tag block passed
+/// through untouched into a `Paragraph`. This file's own `no_runs_lines` at the
+/// bottom of this module already states that neither class subsumes the other
+/// and composes the two.
 ///
 /// It was invisible for as long as it was because `probe_ctx` left
 /// `driver_runs` empty, so the Driver tab rendered `no_runs_lines` — the ONE
 /// site that was already composed — on every probe run. The red is quoted in
 /// `render_escape_guard::probe_ctx`'s doc.
+///
+/// # IN-01 — the completeness claim REPLACED by the census that checks it
+///
+/// **REMOVED 2026-08-27 (21-28).** This doc used to open with the sentence:
+///
+/// > *"Every site below used `sanitize_render_line` alone, which answers only
+/// > the CONTROL class …; what was missing was every OTHER site on this path
+/// > doing the same."*
+///
+/// It read as a statement that the conversion was complete. It was not: three
+/// sites in THIS file were never converted — the output pane at `output_line`,
+/// the injection rows, and the dry-run preview — plus two in
+/// `driver_confirm.rs`. A completeness claim is exactly the sentence that stops
+/// a reader re-checking, which is how those five survived a round whose whole
+/// subject was this composition.
+///
+/// **What a reader can CHECK instead**, replacing what they were asked to
+/// believe:
+/// [`no_executable_control_class_call_in_these_two_files_stands_outside_a_composition`](tests::no_executable_control_class_call_in_these_two_files_stands_outside_a_composition)
+/// is a committed census over `driver.rs` and `driver_confirm.rs`. It asserts
+/// an EQUALITY on a count of zero: no executable call to `sanitize_render_line`
+/// in either file stands outside a composition with `display_identity` or
+/// `render_for_terminal`. It was observed RED by planting an unconverted call,
+/// and its needle is assembled at runtime from two halves so it cannot report
+/// its own source.
+///
+/// **Its residual, with the direction.** It is a source scan over two NAMED
+/// files, so a composition assembled across separate statements, or a third
+/// file added to this path tomorrow, is invisible to it. **Under-detection,
+/// silent.** What bounds THAT is the render-escape probe — which now renders
+/// all four of this path's sites — and not this census.
 ///
 /// The cap is `sanitize_render_line`'s, deliberately: this draws agent prose
 /// and a run's own goal, which is exactly what that cap exists for. The
@@ -2015,6 +2045,242 @@ mod tests {
     /// The visible text of a `Line`, spans concatenated.
     fn text(line: &Line<'static>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// The two halves of the census needle, **meaningless apart**.
+    ///
+    /// Neither const's own declaration line contains the assembled needle, so
+    /// this module's source cannot become a hit in its own census — the
+    /// anti-self-match property `text.rs`'s alphabet census establishes, and it
+    /// is ASSERTED below rather than argued here.
+    const CENSUS_NEEDLE_HEAD: &str = "sanitize_";
+    const CENSUS_NEEDLE_TAIL: &str = "render_line(";
+
+    /// The two files the census speaks for.
+    const CENSUS_FILES: [&str; 2] = [
+        "src/ui/screens/driver.rs",
+        "src/ui/screens/driver_confirm.rs",
+    ];
+
+    /// A composition marker: naming either of these on the same logical line
+    /// means the CONTROL-class call is composed with the invisible-class one.
+    ///
+    /// `shown_capped`'s own body needs no special case — it *is*
+    /// `display_identity(&sanitize_render_line(value))`, so it satisfies the
+    /// first marker by construction rather than by exemption.
+    const CENSUS_COMPOSERS: [&str; 2] = ["display_identity", "render_for_terminal"];
+
+    /// Split source into LOGICAL lines, each paired with the number of its FIRST
+    /// physical line.
+    ///
+    /// A logical line ends where Rust's delimiters balance and the text closes a
+    /// statement or a block — so `foo(\n  bar(baz),\n)` is one unit rather than
+    /// three, and a call wrapped across five lines is judged whole.
+    ///
+    /// **Why this replaces the obvious "look at nearby lines" version.** The
+    /// first draft of this census joined FORWARD and BACKWARD until it found a
+    /// composer. That version did not go red against a planted unconverted call:
+    /// `render_disclosure` composes correctly two statements above the plant, so
+    /// the backward walk found `display_identity` belonging to a DIFFERENT
+    /// statement and reported the plant as composed. A census that cannot go red
+    /// is the exact failure this census exists to replace, so proximity was
+    /// dropped for structure.
+    ///
+    /// Characters inside string literals are not counted as delimiters; escapes
+    /// are honoured. Comment-only lines are dropped rather than accumulated.
+    fn logical_lines(source: &str) -> Vec<(usize, String)> {
+        let mut out: Vec<(usize, String)> = Vec::new();
+        let mut current = String::new();
+        let mut first = 0usize;
+        let mut depth: i32 = 0;
+        let mut in_string = false;
+        let mut escaped = false;
+
+        for (index, raw) in source.lines().enumerate() {
+            let trimmed = raw.trim();
+            if current.is_empty() && (trimmed.is_empty() || trimmed.starts_with("//")) {
+                continue;
+            }
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            if current.is_empty() {
+                first = index + 1;
+            } else {
+                current.push(' ');
+            }
+            current.push_str(trimmed);
+
+            for c in trimmed.chars() {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                // **Parens and brackets only — braces are BOUNDARIES, not
+                // continuations.** Counting `{` here was the second defect this
+                // census had: `fn f(..) {` left the depth above zero, so every
+                // statement in a function body accumulated into ONE logical
+                // line, which then contained some composer belonging to another
+                // statement and swallowed the planted call. Found by planting,
+                // not by reading.
+                match c {
+                    '\\' if in_string => escaped = true,
+                    '"' => in_string = !in_string,
+                    '(' | '[' if !in_string => depth += 1,
+                    ')' | ']' if !in_string => depth -= 1,
+                    _ => {}
+                }
+            }
+
+            let closes = trimmed.ends_with(';') || trimmed.ends_with('{') || trimmed.ends_with('}');
+            if depth <= 0 && !in_string && closes {
+                out.push((first, std::mem::take(&mut current)));
+                depth = 0;
+            }
+        }
+        if !current.is_empty() {
+            out.push((first, current));
+        }
+        out
+    }
+
+    /// Every executable call to `sanitize_render_line` in [`CENSUS_FILES`] that
+    /// stands OUTSIDE a composition, as `file:line`.
+    ///
+    /// Comment lines are dropped and wrapped logical lines are joined, keeping
+    /// the FIRST physical line's number for the report — the idiom
+    /// `crate::text`'s alphabet census established.
+    ///
+    /// **Production lines only.** The walk stops at each file's `#[cfg(test)]`
+    /// marker. The claim is about RENDER sites, and the composition-equality pin
+    /// in this very module deliberately calls `sanitize_render_line` bare in
+    /// order to compare the two compositions — counting that would make the
+    /// census red for the test that proves the thing it is checking.
+    fn composition_census() -> Vec<String> {
+        let needle = format!("{CENSUS_NEEDLE_HEAD}{CENSUS_NEEDLE_TAIL}");
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut sites = Vec::new();
+
+        for relative in CENSUS_FILES {
+            let source = std::fs::read_to_string(base.join(relative))
+                .unwrap_or_else(|e| panic!("the census must be able to read {relative}: {e}"));
+            let lines: Vec<&str> = source.lines().collect();
+            let end = lines
+                .iter()
+                .position(|l| l.trim_start().starts_with("#[cfg(test)]"))
+                .unwrap_or(lines.len());
+
+            let production = lines[..end].join("\n");
+            for (number, logical) in logical_lines(&production) {
+                if !logical.contains(&needle) {
+                    continue;
+                }
+                if CENSUS_COMPOSERS.iter().any(|c| logical.contains(c)) {
+                    continue;
+                }
+                sites.push(format!("{relative}:{number}"));
+            }
+        }
+        sites
+    }
+
+    /// **IN-01: `shown_capped`'s completeness claim, replaced by the census that
+    /// CHECKS it** (21-28 T3).
+    ///
+    /// `shown_capped`'s doc used to assert that every other site on this path had
+    /// been converted. Three sites in the same file had not been, and that
+    /// sentence is precisely what stopped a reader re-checking the file for a
+    /// whole round. A claim no committed control can falsify is the failure this
+    /// phase exists to end, so the sentence is gone and this is what stands in
+    /// its place.
+    ///
+    /// **The zero is not vacuous.** `composition_census` is asserted to have
+    /// actually read both files and to find the needle at all — the two arms
+    /// below — so a walk that silently read nothing, or a needle that matched
+    /// nothing, is red rather than green.
+    ///
+    /// **Observed RED by planting**, an unconverted call added to
+    /// `driver_confirm.rs`; the panic naming the planted file and line is quoted
+    /// in `21-28-SUMMARY.md`.
+    ///
+    /// # Residual, with its direction
+    ///
+    /// This is a SOURCE SCAN over two NAMED files. A composition assembled
+    /// across separate statements — a local bound on one line and composed three
+    /// lines later — reads as uncomposed and would be a false positive; a third
+    /// file added to this path tomorrow is simply not looked at.
+    /// **Under-detection, silent.** What bounds THAT is the render-escape probe,
+    /// which now renders all four of this path's sites, and NOT this census. The
+    /// census's only job is to stop an unconverted call being re-introduced into
+    /// these two files unnoticed.
+    #[test]
+    fn no_executable_control_class_call_in_these_two_files_stands_outside_a_composition() {
+        let needle = format!("{CENSUS_NEEDLE_HEAD}{CENSUS_NEEDLE_TAIL}");
+
+        // ANTI-SELF-MATCH, asserted directly rather than argued: neither half
+        // spells the needle, so the two const declaration lines above cannot be
+        // hits in the census that reads this very file.
+        assert!(
+            !CENSUS_NEEDLE_HEAD.contains(&needle) && !CENSUS_NEEDLE_TAIL.contains(&needle),
+            "the needle halves must be meaningless apart, or this census reports \
+             its own source"
+        );
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let own = std::fs::read_to_string(base.join(CENSUS_FILES[0])).expect("own source");
+        for line in own.lines() {
+            if line.contains("CENSUS_NEEDLE_HEAD:") || line.contains("CENSUS_NEEDLE_TAIL:") {
+                assert!(
+                    !line.contains(&needle),
+                    "a needle-half declaration line spells the whole needle, so \
+                     the census can report itself: {line:?}"
+                );
+            }
+        }
+
+        // NON-VACUITY 1: the walk read real source.
+        for relative in CENSUS_FILES {
+            let source = std::fs::read_to_string(base.join(relative))
+                .unwrap_or_else(|e| panic!("the census must be able to read {relative}: {e}"));
+            assert!(
+                source.lines().count() > 100,
+                "{relative} read as {} lines, so a clean census would be a walk \
+                 that never looked",
+                source.lines().count()
+            );
+        }
+
+        // NON-VACUITY 2: the needle matches something. If every call vanished,
+        // the zero below would mean "nothing to find" rather than "all composed".
+        let total: usize = CENSUS_FILES
+            .iter()
+            .map(|relative| {
+                std::fs::read_to_string(base.join(relative))
+                    .expect("readable")
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with("//") && l.contains(&needle))
+                    .count()
+            })
+            .sum();
+        assert!(
+            total > 0,
+            "the census found NO executable call to the control-class function in \
+             either file, so its zero below says nothing about composition"
+        );
+
+        let sites = composition_census();
+        assert_eq!(
+            sites.len(),
+            0,
+            "{} executable call(s) to the control-class sanitiser in these two \
+             files stand OUTSIDE a composition. Sites: {sites:?}. That function \
+             answers only the CONTROL class — `ESC`/C0/`DEL`/C1 — so a site \
+             using it alone lets `U+202E`, `U+00AD` and the `U+E0000..U+E007F` \
+             tag block reach a terminal cell. Compose it with `display_identity` \
+             (or use `shown_capped` / `render_for_terminal`). This is IN-01: the \
+             claim that every site was converted is checked here rather than \
+             asserted in a doc comment.",
+            sites.len()
+        );
     }
 
     /// Every input the composition-equality pin is measured over: both members
