@@ -693,8 +693,22 @@ impl NormalScreen {
                     // value keeps serving the lookups and comparisons around it
                     // (`status_color(&status_str)` below is the clearest case:
                     // it classifies the RAW status and colours the ESCAPED one).
-                    let phase_cell = match state {
-                        Some(s) => crate::text::display_identity(&format_phase_display(s)),
+                    //
+                    // **Both classes, through the ONE composition (WR-05).**
+                    // These cells used to call `crate::text::display_identity`
+                    // alone, which answers only the invisible-formatting
+                    // question (`Cf` ∪ `Default_Ignorable`) and says nothing
+                    // about `ESC` / C0 / `DEL`. A `.planning/` file can carry a
+                    // raw `ESC` exactly as easily as a `U+202E`, so this file
+                    // no longer decides which halves apply — it inherits
+                    // `crate::text::render_for_terminal`'s resolution, the same
+                    // way `detail.rs`, `main.rs`'s CLI echoes and
+                    // `LegacyRegistryKey`'s display already do. The census in
+                    // `crate::ui::tests` is what keeps that true of the tree.
+                    let phase_cell: String = match state {
+                        Some(s) => {
+                            crate::text::render_for_terminal(&format_phase_display(s)).into()
+                        }
                         None => "?".to_string(),
                     };
 
@@ -706,7 +720,7 @@ impl NormalScreen {
                             match s.workstreams.iter().find(|w| w.active) {
                                 Some(active) => format!(
                                     "  [ws:{}]",
-                                    crate::text::display_identity(&active.name)
+                                    crate::text::render_for_terminal(&active.name)
                                 ),
                                 None => format!("  [{} ws]", s.workstreams.len()),
                             }
@@ -746,7 +760,7 @@ impl NormalScreen {
                             Some(s) if !s.milestone.is_empty() => {
                                 format!(
                                     "{} Complete",
-                                    crate::text::display_identity(&s.milestone)
+                                    crate::text::render_for_terminal(&s.milestone)
                                 )
                             }
                             _ => "Complete".to_string(),
@@ -760,7 +774,7 @@ impl NormalScreen {
                         match state.and_then(|s| s.current_phase_status.as_ref()) {
                             Some(inference) => compact_pipeline(&inference.status),
                             None => Line::from(Span::styled(
-                                crate::text::display_identity(&status_str),
+                                crate::text::render_for_terminal(&status_str),
                                 Style::default().fg(row_color),
                             )),
                         }
@@ -776,7 +790,7 @@ impl NormalScreen {
                     // would miss every one of them. The cell rendered beside the
                     // badge is what a HUMAN READS, so it carries the escaped
                     // form. Same value, two questions, and the answer differs.
-                    let alias_read = crate::text::display_identity(alias);
+                    let alias_read = crate::text::render_for_terminal(alias);
                     let alias_cell: Line = match row_badge(ctx, alias) {
                         Some(badge) => Line::from(vec![
                             Span::styled(
@@ -785,7 +799,13 @@ impl NormalScreen {
                             ),
                             Span::raw(alias_read),
                         ]),
-                        None => Line::from(alias_read),
+                        // `Span::raw` rather than `Line::from(alias_read)`:
+                        // `Rendered` converts into `Cow<'static, str>`, which is
+                        // what `Span` takes, and `text.rs` deliberately does not
+                        // implement `Into<Line>` (that would put ratatui under
+                        // the module every identity seam consults). No
+                        // `.to_string()` is added at this site.
+                        None => Line::from(Span::raw(alias_read)),
                     };
 
                     let cells: Vec<Line> = if terminal_width >= 80 {
@@ -1000,7 +1020,7 @@ fn render_search_footer(frame: &mut Frame, area: Rect, ctx: &AppContext) {
     let left_spans = vec![
         Span::raw("/ "),
         Span::styled(
-            crate::text::display_identity(&ctx.filter_text),
+            crate::text::render_for_terminal(&ctx.filter_text),
             Style::default().add_modifier(Modifier::UNDERLINED),
         ),
         Span::raw("_"),
