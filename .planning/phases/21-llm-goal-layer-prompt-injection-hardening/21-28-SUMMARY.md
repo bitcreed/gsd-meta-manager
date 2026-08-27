@@ -286,6 +286,14 @@ None.
 - No file owned by 21-27 or 21-29 was touched; no wave conflict was encountered.
 - `.planning/REQUIREMENTS.md` is untouched by every commit of this plan.
 
+## Self-Check: PASSED
+
+- All five modified files exist on disk.
+- All four commits exist: `4801187`, `9107cf9`, `2fcf41b`, `bb159dc`.
+- `git status --porcelain` empty — no uncommitted work, no plant left behind.
+- Every task's `<acceptance_criteria>` re-run; the one that does not pass on its literal wording (`grep -c "pub text: String" == 0`) is reported with both numbers and its cause in Deviations #4 rather than silently skipped.
+- Plan-level `<verification>` re-run: build exit 0; workspace 1392/0/13; clippy exit 0; `--all-targets` exactly 4 pre-existing lints; both SAFE-07 backstops green and unedited; `git diff --stat` names 5 files (the plan's 4 plus `src/app.rs`, Deviation #1) and none of prohibition 3's; `.planning/REQUIREMENTS.md` untouched.
+
 ---
 *Phase: 21-llm-goal-layer-prompt-injection-hardening*
 *Completed: 2026-08-27*
