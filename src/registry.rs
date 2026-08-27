@@ -182,6 +182,36 @@ impl std::fmt::Display for AliasRefusal {
 ///
 /// The raw accessor is deliberately unattractive to type. Reaching for it is a
 /// choice a reviewer can see in a diff, which is what a bare `String` never was.
+///
+/// # CORRECTION, 2026-08-27 (`21-23`, WR-04) — `{:?}` is a route the claim above does not close
+///
+/// **The sentence this corrects, quoted verbatim from the list above:**
+///
+/// > * **no `Display`** — so it cannot be interpolated at all,
+///
+/// That is true of [`std::fmt::Display`] and **false as written**, because
+/// `#[derive(Debug)]` sits immediately below it. `{key:?}` interpolates, and the
+/// derived `Debug` prints the RAW bytes — so a bidi override or a tag character
+/// in a legacy key reaches any log line, panic message, `anyhow` chain or
+/// derived `Debug` of a containing struct, which is the same Trojan Source route
+/// the `Display` absence was written to close. "Cannot be interpolated at all"
+/// should read "cannot be interpolated through `Display`".
+///
+/// **Two further things this type claimed that it could not certify, both now
+/// fixed elsewhere rather than here.** Its absent-trait list had no control that
+/// could go red — the only evidence was a compile error quoted in a comment at
+/// `src/main.rs`, and a comment cannot fail. [`crate::text::Untrusted`] is the
+/// general form of this shape, and
+/// `text::tests::an_untrusted_carrier_implements_none_of_the_string_conversions`
+/// asserts the three absences at RUNTIME, in both directions, observed red by
+/// planting the impls.
+///
+/// **The derive is deliberately NOT removed in this commit.** Removing it
+/// belongs with the promote — plan `21-24` demotes this type onto
+/// [`crate::text::Untrusted`], whose `Debug` is hand-written and prints the
+/// escaped form, and its two purpose-named accessors delegate. One change per
+/// commit, each with its own control: this commit corrects the CLAIM, `21-24`'s
+/// closes the ROUTE.
 #[derive(Debug)]
 pub struct LegacyRegistryKey(String);
 
