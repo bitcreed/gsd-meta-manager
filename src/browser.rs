@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::state_reader::disk_status::find_phase_dir;
 use crate::state_reader::ProjectState;
+use crate::text::Untrusted;
 
 /// Two-level state for the docs browser: listing a directory or viewing a file.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -12,9 +13,21 @@ pub enum BrowserDepth {
 }
 
 /// A single entry shown in the docs browser listing.
+///
+/// **`name` is [`Untrusted`]** (D-21-19). It is a directory listing entry from
+/// the project's `.planning/` — a repository the user cloned — and
+/// `detail.rs`'s Browse tab draws it through a `ListItem`, the widget family
+/// 21-23 measured as preserving the whole invisible class.
+///
+/// This site is T-21-25-06, and it is the one verification pass 9 could NOT
+/// see by reading: the Browse tab's cache is empty in the probe fixture, so the
+/// tab renders its `(empty directory)` branch and the raw `Span::raw(e.name)`
+/// below it was exercised by no committed control. It is named here by the
+/// COMPILER, which is the argument for retyping the carrier rather than
+/// patching the five sites a reader found.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BrowserEntry {
-    pub name: String,
+    pub name: Untrusted,
     pub path: PathBuf,
     pub is_dir: bool,
 }
@@ -51,13 +64,18 @@ pub fn list_dir(dir: &Path) -> Vec<BrowserEntry> {
             .map(|t| t.is_dir())
             .unwrap_or_else(|_| path.is_dir());
 
+        let is_markdown = name.to_lowercase().ends_with(".md");
+        // The ONE place a BrowserEntry is created, so the ONE place its name
+        // is wrapped.
+        let name = Untrusted::from_untrusted_source(name);
+
         if is_dir {
             dirs.push(BrowserEntry {
                 name,
                 path,
                 is_dir: true,
             });
-        } else if name.to_lowercase().ends_with(".md") {
+        } else if is_markdown {
             files.push(BrowserEntry {
                 name,
                 path,
@@ -66,8 +84,9 @@ pub fn list_dir(dir: &Path) -> Vec<BrowserEntry> {
         }
     }
 
-    dirs.sort_by_key(|e| e.name.to_lowercase());
-    files.sort_by_key(|e| e.name.to_lowercase());
+    // Sort ORDER, not display: the raw bytes are what the ordering is over.
+    dirs.sort_by_key(|e| e.name.as_raw_for_logic_only().to_lowercase());
+    files.sort_by_key(|e| e.name.as_raw_for_logic_only().to_lowercase());
     dirs.extend(files);
     dirs
 }
@@ -126,7 +145,12 @@ mod tests {
         fs::write(dir.path().join("apple.md"), "x").unwrap();
 
         let entries = list_dir(dir.path());
-        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = entries
+            .iter()
+            // A test ORACLE comparing names, not a render: the raw bytes are
+            // what the ordering and filtering are over.
+            .map(|e| e.name.as_raw_for_logic_only())
+            .collect();
         assert_eq!(names, vec!["alpha-dir", "zeta-dir", "apple.md", "beta.md"]);
         assert_eq!(entries[0].is_dir, true);
         assert_eq!(entries[1].is_dir, true);
@@ -141,7 +165,12 @@ mod tests {
         fs::write(dir.path().join("script.sh"), "#!/bin/sh").unwrap();
 
         let entries = list_dir(dir.path());
-        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = entries
+            .iter()
+            // A test ORACLE comparing names, not a render: the raw bytes are
+            // what the ordering and filtering are over.
+            .map(|e| e.name.as_raw_for_logic_only())
+            .collect();
         assert_eq!(names, vec!["notes.md"]);
     }
 
@@ -153,7 +182,12 @@ mod tests {
         fs::write(dir.path().join("visible.md"), "x").unwrap();
 
         let entries = list_dir(dir.path());
-        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = entries
+            .iter()
+            // A test ORACLE comparing names, not a render: the raw bytes are
+            // what the ordering and filtering are over.
+            .map(|e| e.name.as_raw_for_logic_only())
+            .collect();
         assert_eq!(names, vec!["visible.md"]);
     }
 

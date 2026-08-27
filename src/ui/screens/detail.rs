@@ -12,6 +12,7 @@ use crate::state_reader::disk_status::{DiskInference, DiskStatus};
 use crate::state_reader::git_ops;
 use crate::state_reader::queue_md;
 use crate::state_reader::{self, backlog};
+use crate::text::Untrusted;
 use crate::ui::roadmap_widget::RoadmapWidget;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -75,6 +76,45 @@ pub(super) const PAGE_SCROLL_LINES: u16 = 20;
 /// through here.
 fn shown(value: &str) -> String {
     crate::text::render_for_terminal(value).to_string()
+}
+
+/// How many CHARACTERS of a session id the Sessions tab and the resume toast
+/// show.
+const SESSION_ID_DISPLAY_CHARS: usize = 8;
+
+/// A session id shortened for display — **by characters, never by bytes**
+/// (T-21-25-05).
+///
+/// # The panic this replaced
+///
+/// Both call sites used to read `if sid.len() > 8 { &sid[..8] }`. `str::len`
+/// counts BYTES and `sid[..8]` slices BYTES, so any session id longer than
+/// eight bytes whose eighth byte falls inside a multi-byte character panics.
+/// The id is scraped verbatim out of another process's `--resume` argument
+/// (`session_detector::read_session_id`), so nothing about it was authored here
+/// and nothing constrains it to ASCII — a five-character CJK id is fifteen
+/// bytes and lands mid-character at byte eight. A panic inside a render pass
+/// takes the whole TUI down.
+///
+/// **This is a family, not an incident.** It is the same defect class as the
+/// `&s[..n]` panic round 8 fixed in `ui::roadmap_widget` — a byte index used
+/// where a character count was meant, on a value read from outside this build.
+/// `a_multibyte_session_id_does_not_panic_the_render` and
+/// `a_long_multibyte_session_id_is_truncated_by_characters_not_bytes` were both
+/// observed red against the byte slice, and the panic is quoted verbatim in the
+/// first one's doc.
+///
+/// # Order of operations, and why it is this way round
+///
+/// The raw value is truncated FIRST and escaped SECOND. Escaping expands each
+/// invisible-class character into a six-character `U+XXXX` marker, so escaping
+/// first and then cutting at eight could slice a marker in half and print a
+/// fragment that reads like data. Truncating first means the cap always means
+/// "the first eight characters of the id" and the escape is applied whole.
+fn shorten_session_id(sid: &Untrusted) -> String {
+    let raw = sid.as_raw_for_logic_only();
+    let shortened: String = raw.chars().take(SESSION_ID_DISPLAY_CHARS).collect();
+    shown(&shortened)
 }
 
 /// Viewport metrics recorded by the last render pass of a markdown file view.
@@ -1526,13 +1566,21 @@ impl Screen for DetailScreen {
                                         if let Some(project) = ctx.config.projects.get(&self.alias)
                                         {
                                             let planning_dir = project.path.join(".planning");
+                                            // A PATH SEGMENT — the directory to
+                                            // read from — so the raw bytes are
+                                            // what the filesystem needs.
                                             let content = backlog::load_backlog_content(
                                                 &planning_dir,
-                                                &item.dir_name,
+                                                item.dir_name.as_raw_for_logic_only(),
                                             );
                                             if let Some(content) = content {
-                                                cache.backlog_items[selected].content =
-                                                    Some(content);
+                                                // A file BODY read off disk;
+                                                // the carrier travels with it.
+                                                cache.backlog_items[selected].content = Some(
+                                                    crate::text::Untrusted::from_untrusted_source(
+                                                        content,
+                                                    ),
+                                                );
                                             }
                                         }
                                     }
@@ -1598,16 +1646,27 @@ impl Screen for DetailScreen {
                             if let Some(ref sid) = session.session_id {
                                 match find_terminal() {
                                     Some(term) => {
-                                        let short_id = if sid.len() > 8 { &sid[..8] } else { sid };
+                                        // READ BY A HUMAN (it lands in a status
+                                        // message below), and shortened by
+                                        // CHARACTERS — see
+                                        // `shorten_session_id`'s doc for why
+                                        // the byte slice this replaced was a
+                                        // panic.
+                                        let short_id = shorten_session_id(sid);
                                         match std::process::Command::new(&term)
                                             .args([
                                                 "-e",
                                                 "sh",
                                                 "-c",
+                                                // A SUBPROCESS ARGUMENT: the
+                                                // raw id is what `claude
+                                                // --resume` must receive, and
+                                                // an escaped one would resume
+                                                // nothing.
                                                 &format!(
                                                     "cd '{}' && claude --resume '{}'",
                                                     session.working_dir.display(),
-                                                    sid
+                                                    sid.as_raw_for_logic_only()
                                                 ),
                                             ])
                                             .spawn()
@@ -1647,8 +1706,17 @@ impl Screen for DetailScreen {
                         match cache.archive_depth.clone() {
                             ArchiveDepth::MilestoneList => {
                                 let selected = cache.archive_selected[0];
-                                if let Some(milestone) =
-                                    cache.archive_milestones.get(selected).cloned()
+                                // A NAVIGATION KEY: it becomes the
+                                // `ArchiveDepth` discriminant, a
+                                // `ctx.archive_cache` map key and a path
+                                // segment under `.planning/milestones`, so the
+                                // raw bytes are what all three need. Nothing
+                                // below draws it; the render reads it back out
+                                // of the cache and escapes it there.
+                                if let Some(milestone) = cache
+                                    .archive_milestones
+                                    .get(selected)
+                                    .map(|m| m.as_raw_for_logic_only().to_string())
                                 {
                                     cache.archive_depth = ArchiveDepth::PhaseList {
                                         milestone: milestone.clone(),
@@ -2417,7 +2485,16 @@ impl Screen for DetailScreen {
                     }
                     // Not expanded: enqueue as before
                     if let Some(item) = cache.backlog_items.get(cache.backlog_selected) {
-                        ctx.input_buffer = format!("/gsd:review-backlog {}", item.dir_name);
+                        // A COMMAND ARGUMENT that is then echoed into the
+                        // enqueue footer and written to `.planning/queue.md`.
+                        // The raw directory name is what the command must
+                        // carry, and the ECHO of `ctx.input_buffer` is escaped
+                        // at its own render site (EnqueueScreen's footer),
+                        // which the probe covers.
+                        ctx.input_buffer = format!(
+                            "/gsd:review-backlog {}",
+                            item.dir_name.as_raw_for_logic_only()
+                        );
                     } else {
                         ctx.input_buffer.clear();
                     }
@@ -2910,9 +2987,14 @@ impl DetailScreen {
             .backlog_items
             .iter()
             .map(|item| {
+                // READ BY A HUMAN, through a `ListItem` — the widget family
+                // 21-23 measured as PRESERVING the entire invisible class,
+                // `U+202E` included. This is the site verification pass 9
+                // named by reading; the compiler named it here.
                 ListItem::new(Line::from(format!(
                     "{} - {}",
-                    item.number, item.description
+                    item.number.shown(),
+                    item.description.shown()
                 )))
             })
             .collect();
@@ -2937,13 +3019,23 @@ impl DetailScreen {
 
             // Content pane for selected item
             let selected_item = cache.backlog_items.get(cache.backlog_selected);
+            // READ BY A HUMAN, through `Block::title` — the family that
+            // preserves the invisible class most completely of the four
+            // measured. Pass 9 did not name this site; the compiler did.
             let title = selected_item
-                .map(|item| format!(" Content: {} ", item.dir_name))
+                .map(|item| format!(" Content: {} ", item.dir_name.shown()))
                 .unwrap_or_else(|| " Content ".to_string());
             let content_block = Block::default().borders(Borders::ALL).title(title);
 
-            let content_text = selected_item
-                .and_then(|item| item.content.as_deref())
+            // READ BY A HUMAN: the body of a `.md` file inside a `999.*`
+            // backlog directory. It reaches a `Paragraph`, which drops the
+            // zero-width half of the class but passes the tag block through
+            // intact — so escaping here is load-bearing, not belt-and-braces.
+            let escaped_content = selected_item.and_then(|item| item.content.as_ref()).map(
+                |content| content.shown().to_string(),
+            );
+            let content_text = escaped_content
+                .as_deref()
                 .unwrap_or("  Empty — no .md files in this backlog directory");
 
             let style = if selected_item
@@ -3325,6 +3417,9 @@ impl DetailScreen {
     }
 
     /// Render the sessions tab listing active Claude sessions for this project.
+    ///
+    /// The session id is drawn through [`shorten_session_id`], which is a
+    /// CHARACTER operation. See its doc for the byte-slice panic it replaced.
     fn render_sessions_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         let alias = &self.alias;
 
@@ -3376,16 +3471,12 @@ impl DetailScreen {
         let items: Vec<ListItem> = filtered_sessions
             .iter()
             .map(|session| {
+                // READ BY A HUMAN, so escaped — and shortened by CHARACTERS,
+                // never by bytes (T-21-25-05).
                 let sid_display = session
                     .session_id
                     .as_ref()
-                    .map(|sid| {
-                        if sid.len() > 8 {
-                            sid[..8].to_string()
-                        } else {
-                            sid.clone()
-                        }
-                    })
+                    .map(shorten_session_id)
                     .unwrap_or_else(|| "new session".to_string());
                 let time_display = session
                     .start_time
@@ -3458,8 +3549,11 @@ impl DetailScreen {
                     .archive_milestones
                     .iter()
                     .map(|v| {
+                        // READ BY A HUMAN, through a `ListItem` (preserves the
+                        // whole class). A milestone version string scanned out
+                        // of `.planning/archive/` directory names.
                         ListItem::new(Line::from(Span::styled(
-                            v.clone(),
+                            v.shown(),
                             Style::default().fg(Color::Yellow),
                         )))
                     })
@@ -3480,15 +3574,20 @@ impl DetailScreen {
                     let mut items: Vec<ListItem> = Vec::new();
                     // Top-level milestone files first
                     for f in &data.top_level_files {
+                        // READ BY A HUMAN, through a `ListItem`: an archive
+                        // file name read off disk.
                         items.push(ListItem::new(Line::from(Span::styled(
-                            format!("  {}", f.name),
+                            format!("  {}", f.name.shown()),
                             Style::default().fg(Color::DarkGray),
                         ))));
                     }
                     // Then phases
                     for phase in &data.phases {
+                        // READ BY A HUMAN, through a `ListItem`: a phase
+                        // directory name, Title-Cased into a sentence whose
+                        // untrusted half is the directory slug.
                         items.push(ListItem::new(Line::from(Span::raw(
-                            phase.display_name.clone(),
+                            phase.display_name.shown(),
                         ))));
                     }
                     if items.is_empty() {
@@ -3529,7 +3628,9 @@ impl DetailScreen {
                         let items: Vec<ListItem> = phase
                             .files
                             .iter()
-                            .map(|f| ListItem::new(Line::from(Span::raw(f.name.clone()))))
+                            // READ BY A HUMAN, through a `ListItem`: a phase
+                            // artifact file name read off disk.
+                            .map(|f| ListItem::new(Line::from(Span::raw(f.name.shown()))))
                             .collect();
                         let list = List::new(items)
                             .highlight_style(
@@ -3628,9 +3729,10 @@ impl DetailScreen {
         }
         if cache.browser_depth == BrowserDepth::View {
             if let Some(name) = &cache.browser_file_name {
+                // READ BY A HUMAN: the breadcrumb of the browsed file.
                 header_spans.push(Span::raw(" / "));
                 header_spans.push(Span::styled(
-                    name.clone(),
+                    name.shown(),
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
@@ -3661,6 +3763,12 @@ impl DetailScreen {
                     .browser_entries
                     .iter()
                     .map(|e| {
+                        // READ BY A HUMAN, through a `ListItem`: a directory
+                        // listing entry from the project's `.planning/`.
+                        // T-21-25-06 — the site verification pass 9 could NOT
+                        // see, because the Browse tab's cache was empty in the
+                        // probe fixture and the tab rendered its
+                        // `(empty directory)` branch. Named by the compiler.
                         if e.is_dir {
                             ListItem::new(Line::from(vec![
                                 Span::styled(
@@ -3669,10 +3777,10 @@ impl DetailScreen {
                                         .fg(Color::Blue)
                                         .add_modifier(Modifier::BOLD),
                                 ),
-                                Span::raw(e.name.clone()),
+                                Span::raw(e.name.shown()),
                             ]))
                         } else {
-                            ListItem::new(Line::from(Span::raw(e.name.clone())))
+                            ListItem::new(Line::from(Span::raw(e.name.shown())))
                         }
                     })
                     .collect();
@@ -3741,12 +3849,20 @@ impl DetailScreen {
             Style::default().fg(Color::Cyan),
         )];
 
+        // `ArchiveDepth::*::milestone` is a bare `String` and the compiler does
+        // NOT name these three sites — the value is `.planning/`-derived (it is
+        // `archive_milestones`' raw form, taken as a navigation key and a map
+        // key) but the carrier does not travel with it through `ArchiveDepth`.
+        // Found by reading the sites the compiler DID name in this function,
+        // and escaped at the render with `shown` for that reason. **Residual:
+        // `ArchiveDepth`'s `milestone` field is not typed; direction is
+        // under-protection, silent, and it is bounded only by the probe.**
         match depth {
             ArchiveDepth::MilestoneList => {}
             ArchiveDepth::PhaseList { milestone } => {
                 spans.push(Span::raw(" > "));
                 spans.push(Span::styled(
-                    milestone.clone(),
+                    shown(milestone),
                     Style::default().fg(Color::Yellow),
                 ));
             }
@@ -3756,13 +3872,13 @@ impl DetailScreen {
             } => {
                 spans.push(Span::raw(" > "));
                 spans.push(Span::styled(
-                    milestone.clone(),
+                    shown(milestone),
                     Style::default().fg(Color::Yellow),
                 ));
                 if let Some(data) = ctx.archive_cache.get(milestone) {
                     if let Some(phase) = data.phases.get(*phase_idx) {
                         spans.push(Span::raw(" > "));
-                        spans.push(Span::raw(phase.display_name.clone()));
+                        spans.push(Span::raw(phase.display_name.shown()));
                     }
                 }
             }
@@ -3773,21 +3889,21 @@ impl DetailScreen {
             } => {
                 spans.push(Span::raw(" > "));
                 spans.push(Span::styled(
-                    milestone.clone(),
+                    shown(milestone),
                     Style::default().fg(Color::Yellow),
                 ));
                 if let Some(idx) = phase_idx {
                     if let Some(data) = ctx.archive_cache.get(milestone) {
                         if let Some(phase) = data.phases.get(*idx) {
                             spans.push(Span::raw(" > "));
-                            spans.push(Span::raw(phase.display_name.clone()));
+                            spans.push(Span::raw(phase.display_name.shown()));
                         }
                     }
                 }
                 if let Some(ref name) = cache.archive_file_name {
                     spans.push(Span::raw(" > "));
                     spans.push(Span::styled(
-                        name.clone(),
+                        name.shown(),
                         Style::default().add_modifier(Modifier::BOLD),
                     ));
                 }
@@ -4404,7 +4520,10 @@ fn browse_edit_target(cache: &super::ProjectViewCache) -> Result<std::path::Path
             }
             let dir = cache.browser_current_dir.as_ref().ok_or(NO_FILE)?;
             let name = cache.browser_file_name.as_ref().ok_or(NO_FILE)?;
-            dir.join(name)
+            // A PATH SEGMENT handed to `$EDITOR`, so the raw bytes are what the
+            // filesystem needs. The root fence below is what bounds it, and it
+            // compares the same raw form.
+            dir.join(name.as_raw_for_logic_only())
         }
         crate::browser::BrowserDepth::List => {
             let entry = cache
@@ -5483,7 +5602,7 @@ mod tests {
 
     fn md_entry(name: &str) -> BrowserEntry {
         BrowserEntry {
-            name: name.to_string(),
+            name: Untrusted::from_untrusted_source(name.to_string()),
             path: PathBuf::from("/proj/.planning/phases/14-ui-fixes").join(name),
             is_dir: false,
         }
@@ -5493,7 +5612,7 @@ mod tests {
     fn test_browse_edit_target_view_depth_returns_file_path() {
         let mut cache = browse_cache();
         cache.browser_depth = BrowserDepth::View;
-        cache.browser_file_name = Some("14-02-PLAN.md".to_string());
+        cache.browser_file_name = Some(Untrusted::from_untrusted_source("14-02-PLAN.md".to_string()));
         cache.browser_file_content = Some("# Plan\n".to_string());
 
         assert_eq!(
@@ -5510,7 +5629,7 @@ mod tests {
         cache.browser_depth = BrowserDepth::List;
         cache.browser_entries = vec![
             BrowserEntry {
-                name: "sub".to_string(),
+                name: Untrusted::from_untrusted_source("sub".to_string()),
                 path: PathBuf::from("/proj/.planning/phases/14-ui-fixes/sub"),
                 is_dir: true,
             },
@@ -5531,7 +5650,7 @@ mod tests {
         let mut cache = browse_cache();
         cache.browser_depth = BrowserDepth::List;
         cache.browser_entries = vec![BrowserEntry {
-            name: "sub".to_string(),
+            name: Untrusted::from_untrusted_source("sub".to_string()),
             path: PathBuf::from("/proj/.planning/phases/14-ui-fixes/sub"),
             is_dir: true,
         }];
@@ -5556,7 +5675,7 @@ mod tests {
         cache.browser_depth = BrowserDepth::View;
         cache.browser_current_dir =
             Some(PathBuf::from("/proj/.planning/milestones/v1.2-phases"));
-        cache.browser_file_name = Some("11-SUMMARY.md".to_string());
+        cache.browser_file_name = Some(Untrusted::from_untrusted_source("11-SUMMARY.md".to_string()));
         cache.browser_file_content = Some("archived".to_string());
 
         assert_eq!(browse_edit_target(&cache), Err(READ_ONLY_MSG));
@@ -5567,7 +5686,7 @@ mod tests {
         let mut cache = browse_cache();
         cache.browser_depth = BrowserDepth::List;
         cache.browser_entries = vec![BrowserEntry {
-            name: "passwd.md".to_string(),
+            name: Untrusted::from_untrusted_source("passwd.md".to_string()),
             path: PathBuf::from("/etc/passwd.md"),
             is_dir: false,
         }];
@@ -5580,7 +5699,7 @@ mod tests {
     fn test_browse_edit_target_loading_content_is_inert() {
         let mut cache = browse_cache();
         cache.browser_depth = BrowserDepth::View;
-        cache.browser_file_name = Some("14-02-PLAN.md".to_string());
+        cache.browser_file_name = Some(Untrusted::from_untrusted_source("14-02-PLAN.md".to_string()));
         // Still in the Phase 12 `Loading...` window.
         cache.browser_file_content = None;
 
@@ -6747,7 +6866,7 @@ mod tests {
             .insert(TEST_ALIAS.to_string(), DetailSubView::Sessions);
         ctx.active_sessions = vec![ClaudeSession {
             pid: 4242,
-            session_id: Some(session_id.to_string()),
+            session_id: Some(Untrusted::from_untrusted_source(session_id.to_string())),
             working_dir: project_path,
             start_time: Some(1),
             tty: None,
@@ -6784,11 +6903,34 @@ mod tests {
             .join("\n")
     }
 
-    /// The panic reproduction: a five-character CJK id is fifteen BYTES, so
-    /// `len() > 8` is true and byte index 8 lands inside the third character.
+    /// A three-byte-per-character id whose glyphs are ONE cell wide.
+    ///
+    /// `U+0915` DEVANAGARI LETTER KA is three bytes and `unicode-width` 1, so
+    /// five of them are fifteen bytes with a character boundary nowhere near
+    /// byte eight — exactly the shape the byte slice got wrong. **The width
+    /// matters as much as the byte count**: a CJK id was the first fixture
+    /// here, and CJK glyphs are TWO cells wide, so the probe's cell-by-cell
+    /// buffer scrape produced `KA<blank>KA<blank>…` and the assertion failed
+    /// for a reason that had nothing to do with the truncation. A one-cell
+    /// character makes the scraped text the id itself.
+    const NARROW_MULTIBYTE_CHAR: &str = "\u{915}";
+
+    /// The panic reproduction: a five-character three-byte-per-character id is
+    /// fifteen BYTES, so `len() > 8` is true and byte index 8 lands inside the
+    /// third character.
     ///
     /// **Committed RED, verbatim, before the truncation was rewritten**
-    /// (`cargo test --lib -- ui::screens::detail::tests::a_multibyte_session_id_does_not_panic_the_render --exact --nocapture`):
+    /// (`cargo test --lib -- ui::screens::detail::tests::a_multibyte_session_id_does_not_panic_the_render --exact --nocapture`,
+    /// re-observed against this fixture by restoring `sid[..8]` at
+    /// `shorten_session_id` and nothing else):
+    ///
+    /// ```text
+    /// thread 'ui::screens::detail::tests::a_multibyte_session_id_does_not_panic_the_render' (658292) panicked at src/ui/screens/detail.rs:117:12:
+    /// end byte index 8 is not a char boundary; it is inside '\u{915}' (bytes 6..9 of string)
+    /// ```
+    ///
+    /// The first RED, against the ORIGINAL `render_sessions_tab` byte slice
+    /// before any of this plan's edits (commit `235c3cc`, a CJK fixture):
     ///
     /// ```text
     /// thread 'ui::screens::detail::tests::a_multibyte_session_id_does_not_panic_the_render' (594330) panicked at src/ui/screens/detail.rs:3384:32:
@@ -6802,7 +6944,8 @@ mod tests {
     /// panicked identically at the same line in the same run.
     #[test]
     fn a_multibyte_session_id_does_not_panic_the_render() {
-        let id = "\u{4e2d}\u{6587}\u{4e2d}\u{6587}\u{4e2d}";
+        let id = NARROW_MULTIBYTE_CHAR.repeat(5);
+        let id = id.as_str();
         assert!(
             id.len() > 8 && id.chars().count() <= 8,
             "the fixture must be longer than eight BYTES and no longer than \
@@ -6837,7 +6980,7 @@ mod tests {
     /// crash.
     #[test]
     fn a_long_multibyte_session_id_is_truncated_by_characters_not_bytes() {
-        let id: String = "\u{4e2d}".repeat(9);
+        let id: String = NARROW_MULTIBYTE_CHAR.repeat(9);
         let expected: String = id.chars().take(8).collect();
 
         let (screen, ctx) = sessions_fixture(&id);

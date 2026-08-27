@@ -1237,7 +1237,13 @@ impl App {
             }
             Action::ArchiveMilestonesDiscovered { alias, milestones } => {
                 let cache = self.ctx.view_cache.entry(alias).or_default();
-                cache.archive_milestones = milestones;
+                // The producer for `archive_milestones` (D-21-20): these are
+                // directory-derived names scanned out of `.planning/archive/`,
+                // and this is the one place they reach the cache.
+                cache.archive_milestones = milestones
+                    .into_iter()
+                    .map(crate::text::Untrusted::from_untrusted_source)
+                    .collect();
                 cache.archive_loading = false;
                 self.needs_redraw = true;
             }

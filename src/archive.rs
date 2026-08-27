@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use crate::text::Untrusted;
+
 /// Depth levels for archive drill-down navigation.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum ArchiveDepth {
@@ -28,18 +30,32 @@ pub struct MilestoneArchive {
 }
 
 /// A phase directory within a milestone archive.
+///
+/// **`name` and `display_name` are [`Untrusted`]** (D-21-19). `name` is the
+/// slug half of a directory name under `.planning/archive/`, and
+/// `display_name` is a `format!` over a Title-Cased rendering of that same
+/// slug — so the untrusted bytes are in both, and the authored half of
+/// `display_name` (`"Phase {:02}: "`) is escaped harmlessly along with them.
+///
+/// `number` stays a `u32`: it survived a `parse::<u32>()`, which is a stronger
+/// guarantee than any carrier could give it.
 #[derive(Debug, Clone)]
 pub struct PhaseArchive {
     pub number: u32,
-    pub name: String,
-    pub display_name: String,
+    pub name: Untrusted,
+    pub display_name: Untrusted,
     pub files: Vec<ArchiveFile>,
 }
 
 /// A single markdown file in the archive.
+///
+/// **`name` is [`Untrusted`]** (D-21-19): it is a file name read off disk from
+/// a repository the user cloned, and `detail.rs`'s Archive tab draws it through
+/// a `ListItem` — the widget family measured in 21-23 as PRESERVING the entire
+/// invisible class, including `U+202E`.
 #[derive(Debug, Clone)]
 pub struct ArchiveFile {
-    pub name: String,
+    pub name: Untrusted,
     pub path: PathBuf,
 }
 
@@ -102,13 +118,20 @@ pub fn load_milestone_archive(milestones_dir: &Path, version: &str) -> Milestone
         })
         .map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
+            // One of the two places an ArchiveFile is created, so one of the
+            // two places the name is wrapped.
             ArchiveFile {
-                name,
+                name: Untrusted::from_untrusted_source(name),
                 path: e.path().canonicalize().unwrap_or_else(|_| e.path()),
             }
         })
         .collect();
-    top_level_files.sort_by(|a, b| a.name.cmp(&b.name));
+    // A sort ORDER, not something a human reads.
+    top_level_files.sort_by(|a, b| {
+        a.name
+            .as_raw_for_logic_only()
+            .cmp(b.name.as_raw_for_logic_only())
+    });
 
     // Phases: scan {version}-phases/ directory
     let phases_dir = milestones_dir.join(format!("{}-phases", version));
@@ -175,17 +198,26 @@ fn parse_phase_dir(dir_name: &str, dir_path: &Path) -> Option<PhaseArchive> {
         .map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
             ArchiveFile {
-                name,
+                name: Untrusted::from_untrusted_source(name),
                 path: e.path().canonicalize().unwrap_or_else(|_| e.path()),
             }
         })
         .collect();
-    files.sort_by(|a, b| a.name.cmp(&b.name));
+    files.sort_by(|a, b| {
+        a.name
+            .as_raw_for_logic_only()
+            .cmp(b.name.as_raw_for_logic_only())
+    });
 
     Some(PhaseArchive {
         number,
-        name: slug.to_string(),
-        display_name,
+        name: Untrusted::from_untrusted_source(slug.to_string()),
+        // Wrapped at the END of the construction, once, rather than wrapping
+        // `title` and re-interpolating: `display_name` is a single string whose
+        // untrusted half is `title` and whose authored half is `"Phase {:02}: "`,
+        // and escaping the whole thing leaves the authored half unchanged
+        // (the invisible class contains no ASCII).
+        display_name: Untrusted::from_untrusted_source(display_name),
         files,
     })
 }
