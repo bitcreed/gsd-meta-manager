@@ -1083,9 +1083,18 @@ pub(super) fn render_dry_run_preview(frame: &mut Frame, area: Rect, preview: &Dr
     let mut lines: Vec<Line<'static>> = match preview.report.as_deref() {
         // Unknown is not "nothing would happen".
         None => vec![Line::from(Span::styled(DRY_RUN_LOADING, muted_style()))],
+        // The report interpolates paths and branch names read from the project
+        // — a repository the operator cloned, not one this build authored. Both
+        // classes, composed through `shown_capped`.
+        //
+        // **This site is held by a CALL, not by the type.** `DryRunPreview` is
+        // built in `src/app.rs`, outside this wave's fence, so `report` is
+        // still `Option<String>` and a NEW render of it would not fail to
+        // compile. What bounds that is the `Driver tab, dry-run preview` probe
+        // state, not the compiler — see LIMIT 1's residual (D-21-39).
         Some(report) => report
             .lines()
-            .map(|raw| Line::from(sanitize_render_line(raw)))
+            .map(|raw| Line::from(shown_capped(raw)))
             .collect(),
     };
 
@@ -1679,9 +1688,19 @@ pub fn injection_rows(entry: &InjectionEntry, now: DateTime<Utc>) -> Vec<Line<'s
 
     let mut rows = vec![
         Line::from(head),
+        // `message.text` is `InboxMessage::text`: the user's text stored
+        // VERBATIM and deliberately un-redacted, read back from `inbox.jsonl`
+        // on disk — a file this build does not exclusively own. Both classes,
+        // composed through `shown_capped`.
+        //
+        // **This site is held by a CALL, not by the type.** `InboxMessage`
+        // lives in `src/journal/inbox.rs`, outside this wave's fence, so its
+        // `text` field is still a bare `String` and a NEW render of it would
+        // not fail to compile. What bounds that is the probe fixture, not the
+        // compiler — see LIMIT 1's residual and its failure direction (D-21-39).
         Line::from(Span::raw(format!(
             "{INJECTION_INDENT}{}",
-            sanitize_render_line(&message.text)
+            shown_capped(&message.text)
         ))),
     ];
     if let InjectionState::Missed(reason) = state {

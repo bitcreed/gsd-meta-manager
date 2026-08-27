@@ -550,10 +550,40 @@ impl DriverOutput {
 ///
 /// **What it does NOT do, restated because the composition matters.** It answers
 /// only the CONTROL class. The invisible-formatting class — `U+202E`, `U+00AD`,
-/// `U+E0041` — passes through untouched, which is why `driver.rs` and
-/// `driver_confirm.rs` compose `display_identity(&sanitize_render_line(..))`.
-/// The uncapped equivalent of that composition is
-/// [`crate::text::render_for_terminal`].
+/// `U+E0041` — passes through untouched.
+///
+/// **CORRECTED 2026-08-27 (21-28), with the falsified sentence quoted verbatim
+/// beside its replacement.** The paragraph above used to end:
+///
+/// > *"…passes through untouched, which is why `driver.rs` and
+/// > `driver_confirm.rs` compose `display_identity(&sanitize_render_line(..))`."*
+///
+/// That clause was offered as this function's own justification for answering
+/// one class — and it was FALSE for four sites at the moment it was written:
+/// the driver output pane (through [`DriverOutput::push_record`], reaching
+/// `driver.rs`'s `output_line`), the injection rows, the dry-run preview, and
+/// `driver_confirm.rs`'s opt-in disclosure. All four applied this function
+/// alone. A reader who believed the clause had no reason to re-check the files,
+/// which is how the gap survived a round whose entire subject was this
+/// composition.
+///
+/// **What is true after 21-28, stated so a reader can check it rather than
+/// trust it.** The two classes are held in two different ways, and the
+/// difference is the point:
+///
+/// * The **output pane is held by a TYPE.** [`DriverOutputLine::text`] is
+///   [`crate::text::Untrusted`], so its render site does not compile until it is
+///   `shown()`. A new render of that value is a compile error.
+/// * The **other three sites are held by a CALL** — `driver.rs`'s `shown_capped`
+///   at the injection rows and the dry-run preview, and the same composition in
+///   `driver_confirm.rs`'s `render_disclosure`. Their carriers
+///   (`journal::inbox::InboxMessage::text`, `DryRunPreview::report`) are still
+///   bare `String`s, so a NEW render of either would not fail to compile. What
+///   bounds that is the render-escape probe and a census, not the compiler —
+///   **under-protection, silent** (D-21-39).
+///
+/// This function itself still answers exactly one class; the uncapped
+/// composition of both is [`crate::text::render_for_terminal`].
 ///
 /// This is built **beside** [`crate::journal::redact::RedactedLine`] rather than
 /// on top of it: that type caps payload bytes and redacts secrets for what is
