@@ -384,7 +384,7 @@ impl fmt::Display for OptInError {
                     f,
                     "the project `{alias}` has not opted in to being driven; \
                      registering a project lets the dashboard read it, driving it is a separate \
-                     deliberate opt-in — press `o` on the dashboard to opt it in"
+                     deliberate opt-in. Press `o` on the dashboard to opt it in"
                 )
             }
             Self::RootUnusable { alias, root } => {

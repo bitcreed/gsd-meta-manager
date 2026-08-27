@@ -742,7 +742,7 @@ pub(crate) mod tests {
         );
 
         assert!(
-            refusal.contains("press `o`"),
+            refusal.contains("`o` on the dashboard"),
             "delegating cost the user the actionable half: the variant's own \
              message must carry the `o`-key affordance the hand-written \
              sentence carried, named as a phrase rather than as a character \
@@ -780,7 +780,7 @@ pub(crate) mod tests {
         // and would have kept passing if the key affordance had been deleted
         // outright. The affordance is a PHRASE now, so it can actually fail.
         assert!(
-            refusal.contains("press `o`"),
+            refusal.contains("`o` on the dashboard"),
             "the refusal must name the key that fixes it as a phrase a user can \
              act on, got: {refusal}"
         );
