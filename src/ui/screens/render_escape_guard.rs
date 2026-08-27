@@ -12,21 +12,54 @@
 //! So this module answers exactly one question: **what performs the
 //! enumeration?**
 //!
-//! * [`screen_implementors_from_source`] walks `src/` recursively with
-//!   `std::fs::read_dir` and collects every implementation of the
-//!   [`Screen`](super::Screen) trait. It is a **filesystem walk, never a path
-//!   list**: a twelfth screen added tomorrow in a file this module has never
-//!   heard of is discovered without anybody editing anything here.
-//! * [`SCREEN_IDENTITY_DISPOSITIONS`] records, per implementor, whether it
-//!   renders attacker-influenced identity and why. **The table adjudicates; it
-//!   does not enumerate.** `the_screen_census_matches_the_tree` asserts the two
-//!   sets equal in BOTH directions, so a derived member with no row is an
-//!   unadjudicated screen and a row with no derived member is a stale row, and
-//!   each is reported as its own harm.
+//! # CORRECTED 2026-08-27 (21-26): the adjudication is a COMPILE-TIME obligation now
+//!
+//! **The sentence this doc used to carry, verbatim, and it was measured false:**
+//! *"[`screen_implementors_from_source`] walks `src/` recursively with
+//! `std::fs::read_dir` and collects every implementation of the
+//! [`Screen`](super::Screen) trait. It is a **filesystem walk, never a path
+//! list**: a twelfth screen added tomorrow in a file this module has never heard
+//! of is discovered without anybody editing anything here."*
+//!
+//! CR-05 measured that claim short in TWO source spellings at once. A
+//! `macro_rules!`-generated implementor has no `impl` line whose type name any
+//! line-oriented scan can extract, and an `impl` header wrapped across two
+//! physical lines is not one line to match. With both in the tree the walk
+//! reported ELEVEN implementors while thirteen existed, and reported it green.
+//! A scan's completeness is bounded by source FORMATTING — one level below where
+//! anybody was looking, and neither spelling appeared in the LIMITS block below.
+//!
+//! **What is true now, and what each mechanism's job is:**
+//!
+//! * [`RenderAdjudicated`](super::RenderAdjudicated) is a **sealed supertrait of
+//!   [`Screen`](super::Screen)**, so an `impl Screen for X` where `X` carries no
+//!   adjudication is `error[E0277]` and does not build. That is what makes
+//!   adjudication mandatory, it is blind to formatting entirely because it is a
+//!   property of the TYPE rather than of the text, and there is no spelling for
+//!   it to be short of. The E0277 is quoted verbatim in that trait's doc,
+//!   observed by planting an unadjudicated implementor in
+//!   `src/driver/liveness.rs`.
+//! * [`screen_implementors_from_source`] is a **second, weaker mechanism with a
+//!   narrowed job**: it walks `src/` and derives the implementors it can name, so
+//!   that an adjudicated screen with **no probe fixture** is reported. It no
+//!   longer makes adjudication mandatory — the compiler does — and it no longer
+//!   records what a screen draws — the screen does. Its own residual is stated in
+//!   LIMIT 6.
+//! * [`SCREEN_IDENTITY_DISPOSITIONS`] is now a **`(type name, path)` fixture
+//!   map** and nothing more. Its disposition and reason columns are gone; those
+//!   moved onto the screens, beside the `render` they describe.
+//!   `the_screen_census_matches_the_tree` asserts the derived set and this map
+//!   equal in BOTH directions, so a derived member with no row is a screen with
+//!   no fixture and a row with no derived member is a stale row.
 //! * `the_screen_renders_identity_escaped` then CHECKS each disposition rather
 //!   than trusting it, by rendering the screen through the real
 //!   [`Screen::render`](super::Screen::render) into a ratatui `Buffer` and
-//!   inspecting the resulting cells.
+//!   inspecting the resulting cells. It reads the disposition off the
+//!   CONSTRUCTED INSTANCE — `screen.disposition()` through `&dyn Screen` — so
+//!   the disposition it checks and the disposition the screen declares cannot
+//!   drift. The both-ways set equality could only ever catch that for
+//!   *membership*; content was never checked until the disposition became one
+//!   statement instead of two.
 //!
 //! **The probe is behavioural on purpose.** It inspects what was rendered, not
 //! what the source says, so it is blind to no sink spelling: a new render site
@@ -164,6 +197,39 @@
 //!    which drives the same helper with an all-ASCII identity and with one whose
 //!    class members a `Paragraph` drops.
 //!
+//! 6. **The WALK's residual, now that its job is only fixture coverage
+//!    (21-26).** What makes adjudication mandatory is the sealed supertrait, and
+//!    that has no residual of this shape at all — it is a property of the type.
+//!    What the walk still answers is "is this adjudicated screen rendered by any
+//!    committed control", and THAT answer is still bounded by source text: a
+//!    screen the walk cannot NAME is a screen whose fixture coverage nobody
+//!    checked. Three of that residual's known shapes are closed or made loud,
+//!    each against a planted defect:
+//!
+//!    * A **wrapped `impl` header** is no longer a residual: physical lines are
+//!      joined into logical ones by [`join_logical_impl_header`] before the
+//!      needle is looked for. Controlled by
+//!      `a_wrapped_impl_header_is_one_logical_unit`, which drives the same
+//!      helper with the header split at each of the three places it can wrap and
+//!      also pins the join's bound.
+//!    * An **`impl` whose type name the scan cannot extract** — macro-generated,
+//!      or generic — is now an `UNNAMEABLE IMPLEMENTATION` offence naming file
+//!      and line, where it used to be a silent `continue`. It fails the same
+//!      assertion the other offences do.
+//!    * **Two same-named implementors in two files** no longer collapse: the
+//!      derived set and the table are both sets of `(type name, path)` PAIRS
+//!      (IN-01). Controlled by the fourth synthetic direction in
+//!      `the_census_reports_an_unadjudicated_screen_and_a_stale_row`.
+//!
+//!    **What REMAINS, with its direction.** An implementation whose source
+//!    carries no `impl` token the walk recognises at all — one emitted entirely
+//!    by a procedural macro, say — is still invisible to this walk, and so is one
+//!    whose header wraps across more than [`IMPL_HEADER_JOIN_LINES`] physical
+//!    lines. Such a screen still **cannot ship unadjudicated** (the supertrait),
+//!    and if any fixture renders it the probe's assertions still apply — but
+//!    nothing here reports that it HAS no fixture. **Under-detection, silent**,
+//!    and one step narrower than CR-05 found it.
+//!
 //! **Every bound claimed above names a committed control; every residual names
 //! its direction.** Limits 1, 2, 3 and the `Paragraph` half of 4 are residuals
 //! and are marked under-detection. Limits 4 (for the preserving families) and 5
@@ -172,7 +238,10 @@
 //! `the_teeth_precondition_answers_false_when_the_class_cannot_reach_a_cell`,
 //! each observed red before it was observed green.
 
-use super::{AppContext, Screen};
+use super::{
+    AppContext, Screen, RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    RENDERS_NO_ATTACKER_INFLUENCED_IDENTITY,
+};
 use crate::test_support::LOOK_ALIKE_PAIRS;
 use crate::text::{display_identity, is_invisible_formatting_char};
 use ratatui::backend::TestBackend;
@@ -181,181 +250,58 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
-// The disposition vocabulary
+// The fixture map — NARROWED 2026-08-27 (21-26)
 // ---------------------------------------------------------------------------
 
-/// The screen draws at least one string this build did not author — a registry
-/// key, or a workspace/phase/file/entry name read from `.planning/`.
-const RENDERS_IDENTITY: &str = "renders_attacker_influenced_identity";
-
-/// The screen draws only text this build authored itself.
-const RENDERS_NO_IDENTITY: &str = "renders_no_attacker_influenced_identity";
-
-/// `(type name, file relative to the crate root, disposition, reason)`.
+/// `(type name, file relative to the crate root)`.
 ///
-/// The reason column is the adjudication, and a future reader inherits it: it
-/// states **which values the screen draws and where they come from**, never
-/// "escaped" or "safe".
+/// # This table's job is NARROWED, and the wording it replaces is quoted
 ///
-/// Rows are added here because the walk found an implementor, never the other
-/// way round.
-type DispositionRow = (&'static str, &'static str, &'static str, &'static str);
+/// **What this type's doc used to say, verbatim:** *"`(type name, file relative
+/// to the crate root, disposition, reason)`. The reason column is the
+/// adjudication, and a future reader inherits it: it states **which values the
+/// screen draws and where they come from**, never 'escaped' or 'safe'. Rows are
+/// added here because the walk found an implementor, never the other way
+/// round."*
+///
+/// Two of those four columns are gone, and neither vanished — both were
+/// PROMOTED onto the screen itself by the sealed
+/// [`RenderAdjudicated`](super::RenderAdjudicated) supertrait:
+///
+/// * The **disposition** is now [`RenderAdjudicated::disposition`], read off the
+///   constructed instance by the probe. Two authoritative statements of one fact
+///   is the drift the probe exists to detect, one level up.
+/// * The **reason** is now [`RenderAdjudicated::adjudication_reason`], carried
+///   verbatim beside the `Screen::render` it describes rather than in this file.
+///
+/// **What this table still answers, and it is a different question from what
+/// makes adjudication mandatory:** WHICH ADJUDICATED SCREENS HAVE A PROBE
+/// FIXTURE. The compiler makes adjudication mandatory; the walk plus this table
+/// catch a screen that compiles, is adjudicated, and yet is never rendered by
+/// any committed control. Deleting it once the compiler took over the first job
+/// would have traded a bounded residual for an unbounded one, so it is kept with
+/// its job stated (prohibition 4 of 21-26).
+type FixtureRow = (&'static str, &'static str);
 
-const SCREEN_IDENTITY_DISPOSITIONS: &[DispositionRow] = &[
-    (
-        "AddProjectScreen",
-        "src/ui/screens/add_project.rs",
-        RENDERS_IDENTITY,
-        "Draws the alias the operator is typing (`ctx.input_buffer`) and, beside \
-         it, `ctx.error_message` — which on this screen is an `AliasRefusal` \
-         whose Display embeds the alias it refused. The background is an empty \
-         bordered block and draws nothing. Fixture states: the alias field, and \
-         the alias field with a real refusal for the hostile identity echoed \
-         beside it.",
-    ),
-    (
-        "CreateProjectScreen",
-        "src/ui/screens/create_project.rs",
-        RENDERS_IDENTITY,
-        "Draws the project name the operator is typing, `ctx.error_message`, and \
-         in its Confirm phase the chosen name and path. The name becomes a \
-         directory, so it is an identity in the full sense. Fixture states: the \
-         name field, and the name field with an error echoed beside it.",
-    ),
-    (
-        "DeleteConfirmScreen",
-        "src/ui/screens/delete_confirm.rs",
-        RENDERS_IDENTITY,
-        "Draws the registry key of the project about to be unregistered into a \
-         destructive [y/n] prompt, again into the removal toast, and again into \
-         the live-run refusal. This is the highest-consequence identity render \
-         in the tree: the operator confirms the name they READ, so a rendered \
-         name that is not the key is a confirmation of a different thing than \
-         was asked (T-21-21-01). Fixture state: the confirm prompt for a \
-         registered hostile key.",
-    ),
-    (
-        "DetailScreen",
-        "src/ui/screens/detail.rs",
-        RENDERS_IDENTITY,
-        "The widest identity surface in the tree. Draws the registry key in its \
-         tab-bar title, and in its eleven tabs the values parsed out of the \
-         project's `.planning/`. Per tab, the values and where their bytes come \
-         from: PhaseList and RoadmapViz draw each `RoadmapPhase`'s number, name \
-         and description plus the status and milestone, all parsed from \
-         `ROADMAP.md`/`STATE.md`; Pipeline draws the current phase name, status \
-         and the HANDOFF pause context; Queue draws each `QueuedAction::command` \
-         from `queue.md`; Backlog draws a `999.*` directory's number and \
-         description in its collapsed state and that directory's NAME (through \
-         `Block::title`) plus the BODY of the first `.md` file inside it when \
-         expanded; GitHistory draws a third-party repository's commit hash, \
-         date, author and subject; Sessions draws a session id scraped from \
-         another process's `--resume` argument via `/proc`; Archive draws \
-         milestone version strings, archive file names and phase display names \
-         from `.planning/archive/` directory listings, at three different \
-         depths that are three different renders of three different names; \
-         Defaults draws the value of every key of the project's \
-         `.planning/config.json`, of which `mode`, `granularity`, \
-         `project_code`, `phase_naming` and `response_language` are free-form \
-         strings; Browse draws the browsed directory's path relative to \
-         `.planning/`, each listing entry's name, and — in its file view — the \
-         file name and the whole markdown body; Driver draws the run id suffix, \
-         goal, `gsd_command` and run directory read back out of a run's \
-         committed `run.json`. All of it is third-party text under SAFE-07 and \
-         none of it was authored by this build. Fixture states: one per \
-         sub-view, all eleven, EACH RENDERING ITS POPULATED BRANCH (21-25), plus \
-         four within-tab states for the fields that dispatch to a different \
-         render — Backlog expanded, Archive at its phase list and file list \
-         depths, Browse at its file view. Arrival is recorded per state by \
-         DETAIL_TAB_ARRIVAL against the chrome baseline, so a populated cache \
-         the render never reads is reported rather than counted.",
-    ),
-    (
-        "DriverConfirmScreen",
-        "src/ui/screens/driver_confirm.rs",
-        RENDERS_IDENTITY,
-        "Draws the registry key into four prompts — start, stop, grant opt-in, \
-         withdraw opt-in — each of which precedes an irreversible act, and draws \
-         the command and the goal (already `sanitize_render_line`d for C0/ESC, \
-         which is a different class from the invisible one). Fixture states: all \
-         four prompts.",
-    ),
-    (
-        "DriverInjectScreen",
-        "src/ui/screens/driver_inject.rs",
-        RENDERS_IDENTITY,
-        "Paints its body with `DetailScreen::render_main_only`, so it draws \
-         everything the active detail tab draws, and adds a footer echoing the \
-         steering message being typed. Fixture states: one per sub-view.",
-    ),
-    (
-        "DriverStartScreen",
-        "src/ui/screens/driver_start.rs",
-        RENDERS_IDENTITY,
-        "Paints its body with `DetailScreen::render_main_only`, and its two \
-         wizard rows draw the command being typed (Step A) and the committed \
-         command (Step B). Fixture states: one per sub-view at Step A, plus Step \
-         B reached by driving the real key handler.",
-    ),
-    (
-        "EnqueueScreen",
-        "src/ui/screens/enqueue.rs",
-        RENDERS_IDENTITY,
-        "Paints its body with `DetailScreen::render_main_only`, and its footer \
-         echoes `ctx.input_buffer` — which Tab-completion fills from \
-         `queue_md::suggest_next_commands`, a function of the project's parsed \
-         `.planning/` state, so the buffer is not always something the operator \
-         typed. Fixture states: one per sub-view.",
-    ),
-    (
-        "HelpScreen",
-        "src/ui/screens/help.rs",
-        RENDERS_NO_IDENTITY,
-        "Draws `help_lines()`, which the module doc calls a pure function of \
-         nothing: keybindings, the filter grammar and two legends, every byte of \
-         it authored in this repository. It `Clear`s its popup area and paints \
-         no background, so nothing from `AppContext` reaches a cell. Checked, \
-         not claimed: the fixture registers the hostile identity and puts a \
-         hostile project state behind it, and the probe asserts the clean stem \
-         is absent from the buffer.",
-    ),
-    (
-        "NormalScreen",
-        "src/ui/screens/normal.rs",
-        RENDERS_IDENTITY,
-        "The dashboard. Draws every registered key in the name column together \
-         with the phase, status and milestone parsed from each project's \
-         `.planning/`, echoes the filter text in its search footer, and — the \
-         surface no row named until 21-25 — draws `ctx.status_message` in its \
-         STATUS FOOTER. That message is built by six `status_message = Some(..)` \
-         sites in `src/app.rs`; four of them interpolate a registry key or a run \
-         id into a sentence this build wrote (`Auto-registered: {alias}`, \
-         `Created project \"{alias}\"`, `Driving {alias} — run {run_id}`, \
-         `Stopping {alias} — run {run_id}`), one is a literal, and the sixth \
-         forwards whatever any screen handed to `ScreenAction::SetStatusMessage` \
-         — so the producer set is not closed. **THE ESCAPE FOR THIS SURFACE \
-         LIVES AT THE RENDER SITE, NOT AT THE PRODUCER**, and a reader who \
-         assumes round 9's producer rule holds everywhere will look for it in \
-         the wrong file: the trust boundary runs through the middle of a \
-         `format!`, so there is no field a carrier could type. The argument, its \
-         residual and what would remove it are written at \
-         `src/ui/screens/normal.rs`'s status branch. `row_badge`'s lookup keys \
-         off the RAW alias while the cell beside it is escaped — the worked \
-         example of the split. Fixture states: the dashboard, the dashboard with \
-         a status message, and the dashboard with the filter footer active.",
-    ),
+const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
+    ("AddProjectScreen", "src/ui/screens/add_project.rs"),
+    ("CreateProjectScreen", "src/ui/screens/create_project.rs"),
+    ("DeleteConfirmScreen", "src/ui/screens/delete_confirm.rs"),
+    ("DetailScreen", "src/ui/screens/detail.rs"),
+    ("DriverConfirmScreen", "src/ui/screens/driver_confirm.rs"),
+    ("DriverInjectScreen", "src/ui/screens/driver_inject.rs"),
+    ("DriverStartScreen", "src/ui/screens/driver_start.rs"),
+    ("EnqueueScreen", "src/ui/screens/enqueue.rs"),
+    ("HelpScreen", "src/ui/screens/help.rs"),
+    ("NormalScreen", "src/ui/screens/normal.rs"),
     (
         "QueueDeleteConfirmScreen",
         "src/ui/screens/queue_delete_confirm.rs",
-        RENDERS_IDENTITY,
-        "Paints its body with `DetailScreen::render_main_only`, and its \
-         destructive [y/n] footer draws the queued command text read from the \
-         project's `.planning/queue.md`. Fixture states: one per sub-view.",
     ),
 ];
 
 // ---------------------------------------------------------------------------
-// The walk — what performs the enumeration
+// The walk — the second, weaker mechanism, with a narrowed job
 // ---------------------------------------------------------------------------
 
 const SRC_ROOT: &str = "src";
@@ -369,6 +315,69 @@ const IMPL_TAIL: &str = " for ";
 
 /// One source file: its path relative to the crate root, and its numbered lines.
 type SourceFile = (String, Vec<(usize, String)>);
+
+/// One implementation site the walk could NAME: `(type name, path)`.
+///
+/// **The key is the pair and not the bare type name** (IN-01). Keyed by name
+/// alone, two `Screen`s with the same type name in two different files collapse
+/// to one entry — on BOTH sides, since the table was keyed the same way — and one
+/// implementor goes silently unchecked while the census reports clean. Observed
+/// by planting exactly that: see
+/// [`the_census_reports_an_unadjudicated_screen_and_a_stale_row`](tests::the_census_reports_an_unadjudicated_screen_and_a_stale_row).
+type ScreenSite = (String, String);
+
+/// What the walk found: the sites it could name, and the ones it could not.
+///
+/// **The second field is the point of this struct.** The walk used to
+/// `continue` past an `impl` line whose type name it could not extract, which
+/// is a census being silently short — the exact harm it exists to prevent, one
+/// level down. Those sites are now carried out and reported as their own
+/// offence.
+struct SourceCensus {
+    implementors: std::collections::BTreeSet<ScreenSite>,
+    /// `path:line` for every `impl` whose type name the scan could not extract.
+    unnameable: Vec<String>,
+}
+
+/// How many physical lines a wrapped `impl` header may span before the join
+/// gives up.
+///
+/// Four is generous for a header — the longest in this tree is one line — and
+/// bounded so a file with an unclosed brace cannot make the join swallow the
+/// rest of the file.
+const IMPL_HEADER_JOIN_LINES: usize = 4;
+
+/// Join physical lines from `start` into ONE logical `impl` header.
+///
+/// **A wrapped header is not two lines to the compiler and must not be two
+/// lines here** (CR-05). `impl Screen for\n    NormalScreen {` was invisible to
+/// the old single-line scan, and that invisibility was one of the two spellings
+/// that let the census report ELEVEN while thirteen implementors existed.
+///
+/// The accumulation stops at the body opener `{`, at a blank line, or after
+/// [`IMPL_HEADER_JOIN_LINES`] physical lines. Comment-only continuation lines
+/// are dropped, preserving the property that a doc comment naming the trait
+/// cannot forge a member. The caller keeps the FIRST physical line's number, so
+/// an offence names where a reader should look.
+fn join_logical_impl_header(lines: &[(usize, String)], start: usize) -> String {
+    let mut logical = lines[start].1.trim().to_string();
+    let mut taken = 1;
+    let mut index = start;
+    while !logical.contains('{') && taken < IMPL_HEADER_JOIN_LINES && index + 1 < lines.len() {
+        index += 1;
+        let next = lines[index].1.trim();
+        if next.is_empty() {
+            break;
+        }
+        taken += 1;
+        if next.starts_with("//") {
+            continue;
+        }
+        logical.push(' ');
+        logical.push_str(next);
+    }
+    logical
+}
 
 fn collect(dir: &Path, base: &Path, out: &mut Vec<SourceFile>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -403,16 +412,28 @@ fn collect(dir: &Path, base: &Path, out: &mut Vec<SourceFile>) {
 /// Every type under `src/` that implements the [`Screen`](super::Screen) trait,
 /// mapped to the file it lives in.
 ///
-/// **This is the enumeration, and it is a `read_dir` walk.** The recursive shape
-/// follows `tests/spawn_seam_guard.rs:227-294`: an unreadable entry is skipped
-/// rather than panicked on, paths are relative to `CARGO_MANIFEST_DIR`, and
-/// lines whose trimmed form opens a line comment are dropped so a doc comment
-/// naming the trait cannot forge a member.
+/// **NARROWED 2026-08-27 (21-26). This is NO LONGER what makes adjudication
+/// mandatory** — the sealed [`RenderAdjudicated`](super::RenderAdjudicated)
+/// supertrait is, and it is blind to source formatting because it is a property
+/// of the type. What this walk answers is the different question the compiler
+/// does not: which adjudicated screens have a probe FIXTURE.
+///
+/// The recursive shape follows `tests/spawn_seam_guard.rs:227-294`: an
+/// unreadable entry is skipped rather than panicked on, paths are relative to
+/// `CARGO_MANIFEST_DIR`, and lines whose trimmed form opens a line comment are
+/// dropped so a doc comment naming the trait cannot forge a member.
+///
+/// Its floor was raised in the same commit that narrowed its job, because a
+/// narrowed job can still miss: physical lines are joined by
+/// [`join_logical_impl_header`] so a wrapped header is one unit, and an `impl`
+/// whose type name cannot be extracted is carried out in
+/// [`SourceCensus::unnameable`] and REPORTED rather than skipped. LIMIT 6 of the
+/// module doc states what still gets past it and in which direction.
 ///
 /// It asserts that it found production source at all — the non-vacuity floor
 /// `source_files` already carries — so a walk that looked at nothing cannot
 /// report clean.
-fn screen_implementors_from_source() -> BTreeMap<String, String> {
+fn screen_implementors_from_source() -> SourceCensus {
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     collect(&base.join(SRC_ROOT), &base, &mut files);
@@ -425,34 +446,46 @@ fn screen_implementors_from_source() -> BTreeMap<String, String> {
     files.sort_by(|a, b| a.0.cmp(&b.0));
 
     let needle = format!("{IMPL_HEAD}{IMPL_TAIL}");
-    let mut found: BTreeMap<String, String> = BTreeMap::new();
+    let mut implementors: std::collections::BTreeSet<ScreenSite> =
+        std::collections::BTreeSet::new();
+    let mut unnameable: Vec<String> = Vec::new();
     for (path, lines) in &files {
-        for (_, line) in lines {
+        for (index, (number, line)) in lines.iter().enumerate() {
             let trimmed = line.trim_start();
             if trimmed.starts_with("//") || !trimmed.starts_with("impl") {
                 continue;
             }
-            let Some(at) = trimmed.find(&needle) else {
+            // JOINED, not the physical line (CR-05). A header wrapped across two
+            // lines is one logical unit here exactly as it is to the compiler.
+            let logical = join_logical_impl_header(lines, index);
+            let Some(at) = logical.find(&needle) else {
                 continue;
             };
-            let name: String = trimmed[at + needle.len()..]
+            let name: String = logical[at + needle.len()..]
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
             if name.is_empty() {
+                // REPORTED, never skipped. `continue` here is a census going
+                // quietly short, which is the harm this module exists to
+                // prevent.
+                unnameable.push(format!("{path}:{number}"));
                 continue;
             }
-            found.insert(name, path.clone());
+            implementors.insert((name, path.clone()));
         }
     }
     assert!(
-        !found.is_empty(),
+        !implementors.is_empty(),
         "the census walked {} source files and found no trait implementors at \
          all. Either the trait was renamed or the needle stopped matching; \
          either way this census is now enumerating nothing.",
         files.len()
     );
-    found
+    SourceCensus {
+        implementors,
+        unnameable,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -468,32 +501,57 @@ fn screen_implementors_from_source() -> BTreeMap<String, String> {
 /// `the_census_reports_an_unadjudicated_screen_and_a_stale_row` drives this same
 /// function with synthetic pairs in both directions.
 fn census_offences(
-    derived: &BTreeMap<String, String>,
-    table: &BTreeMap<String, String>,
+    derived: &std::collections::BTreeSet<ScreenSite>,
+    table: &std::collections::BTreeSet<ScreenSite>,
+    unnameable: &[String],
 ) -> Vec<String> {
     let mut offences = Vec::new();
-    for (name, path) in derived {
-        match table.get(name) {
-            None => offences.push(format!(
-                "UNADJUDICATED IMPLEMENTOR: `{name}` (in {path}) implements the \
-                 trait but no row adjudicates whether it renders identity. A \
-                 screen nobody adjudicated is a screen nobody escaped. Add a row \
-                 to SCREEN_IDENTITY_DISPOSITIONS stating which values it draws \
-                 and where they come from."
-            )),
-            Some(recorded) if recorded != path => offences.push(format!(
-                "RELOCATED IMPLEMENTOR: `{name}` is adjudicated at {recorded} but \
-                 the walk found it at {path}. The row's reason was written about \
-                 a file that no longer holds it; re-read the render and re-state \
-                 the adjudication."
-            )),
-            Some(_) => {}
+
+    let paths_recorded_for = |name: &str, set: &std::collections::BTreeSet<ScreenSite>| {
+        set.iter()
+            .filter(|(candidate, _)| candidate == name)
+            .map(|(_, path)| path.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for site in derived {
+        if table.contains(site) {
+            continue;
+        }
+        let (name, path) = site;
+        let recorded = paths_recorded_for(name, table);
+        if recorded.is_empty() {
+            offences.push(format!(
+                "UNFIXTURED IMPLEMENTOR: `{name}` (in {path}) implements the \
+                 trait but no row gives it a probe fixture, so nothing renders \
+                 it and its adjudication is never CHECKED against a real render. \
+                 Add a row to SCREEN_IDENTITY_DISPOSITIONS and an arm to \
+                 `fixture_for`. (Renamed 2026-08-27 from `UNADJUDICATED \
+                 IMPLEMENTOR`: since 21-26 an unadjudicated screen does not \
+                 compile at all, so this message can no longer be about \
+                 adjudication without lying about which mechanism failed.)"
+            ));
+        } else {
+            offences.push(format!(
+                "RELOCATED IMPLEMENTOR: `{name}` has a fixture row at {recorded:?} \
+                 but the walk found an implementation at {path}. Either the \
+                 screen moved and the row's path outlived it, or there are TWO \
+                 same-named implementors in different files and only one of them \
+                 is fixtured. The census keys on (type name, path) precisely so \
+                 the second case cannot collapse into the first and go unchecked \
+                 (IN-01); re-read the render and re-state the row."
+            ));
         }
     }
-    for (name, path) in table {
-        if !derived.contains_key(name) {
+
+    for site in table {
+        if derived.contains(site) {
+            continue;
+        }
+        let (name, path) = site;
+        if paths_recorded_for(name, derived).is_empty() {
             offences.push(format!(
-                "STALE ROW: `{name}` is adjudicated at {path} but the walk found \
+                "STALE ROW: `{name}` has a fixture row at {path} but the walk found \
                  no such implementor. Either the screen was deleted and the row \
                  outlived it, or the walk stopped reaching it — and a table that \
                  outlives its subject is how a reader is told a surface is \
@@ -501,13 +559,27 @@ fn census_offences(
             ));
         }
     }
+
+    for site in unnameable {
+        offences.push(format!(
+            "UNNAMEABLE IMPLEMENTATION: an implementation of the trait at {site} \
+             has a type name this scan cannot extract — it is macro-generated, or \
+             carries a generic parameter, or is spelled in some way the extractor \
+             does not handle. It COMPILES, so it is adjudicated: the sealed \
+             supertrait saw to that. What nobody has checked is whether it has a \
+             probe fixture, which is this walk's whole remaining job. Give it a \
+             row in SCREEN_IDENTITY_DISPOSITIONS and an arm in `fixture_for` by \
+             hand, or this census is silently short by one."
+        ));
+    }
+
     offences
 }
 
-fn disposition_table() -> BTreeMap<String, String> {
+fn disposition_table() -> std::collections::BTreeSet<ScreenSite> {
     SCREEN_IDENTITY_DISPOSITIONS
         .iter()
-        .map(|(name, path, _, _)| ((*name).to_string(), (*path).to_string()))
+        .map(|(name, path)| ((*name).to_string(), (*path).to_string()))
         .collect()
 }
 
@@ -1604,48 +1676,141 @@ mod tests {
     /// every failure this phase has found.
     #[test]
     fn the_census_reports_an_unadjudicated_screen_and_a_stale_row() {
-        let derived: BTreeMap<String, String> = [
-            ("Adjudicated".to_string(), "src/a.rs".to_string()),
-            ("NobodyJudgedMe".to_string(), "src/b.rs".to_string()),
-        ]
-        .into_iter()
-        .collect();
-        let table: BTreeMap<String, String> = [
-            ("Adjudicated".to_string(), "src/a.rs".to_string()),
-            ("IOutlivedMySubject".to_string(), "src/c.rs".to_string()),
-        ]
-        .into_iter()
-        .collect();
+        use std::collections::BTreeSet;
 
-        let offences = census_offences(&derived, &table);
+        let site = |name: &str, path: &str| (name.to_string(), path.to_string());
+
+        let derived: BTreeSet<ScreenSite> = [
+            site("Fixtured", "src/a.rs"),
+            site("NobodyFixturedMe", "src/b.rs"),
+            // IN-01: the SAME type name in a SECOND file. Keyed on the bare name
+            // this pair collapsed into the row below and the census reported
+            // clean; keyed on the pair it is reported.
+            site("Fixtured", "src/twin.rs"),
+        ]
+        .into_iter()
+        .collect();
+        let table: BTreeSet<ScreenSite> = [
+            site("Fixtured", "src/a.rs"),
+            site("IOutlivedMySubject", "src/c.rs"),
+        ]
+        .into_iter()
+        .collect();
+        let unnameable = vec!["src/macro_generated.rs:42".to_string()];
+
+        let offences = census_offences(&derived, &table, &unnameable);
 
         assert_eq!(
             offences.len(),
-            2,
-            "the comparison must report both harms and only those two, got: {offences:#?}"
+            4,
+            "the comparison must report all four harms and only those four, \
+             got: {offences:#?}"
         );
         assert!(
             offences
                 .iter()
-                .any(|o| o.starts_with("UNADJUDICATED IMPLEMENTOR") && o.contains("NobodyJudgedMe")),
-            "a derived member absent from the table is a screen nobody \
-             adjudicated and must be reported as that, got: {offences:#?}"
+                .any(|o| o.starts_with("UNFIXTURED IMPLEMENTOR")
+                    && o.contains("NobodyFixturedMe")),
+            "a derived pair whose NAME the table does not carry at all is a \
+             screen with no probe fixture and must be reported as that, got: \
+             {offences:#?}"
+        );
+        assert!(
+            offences
+                .iter()
+                .any(|o| o.starts_with("RELOCATED IMPLEMENTOR") && o.contains("src/twin.rs")),
+            "a SECOND implementor with the same type name in a different file \
+             must be reported. Under the old bare-name key it collapsed into the \
+             first and went silently unchecked — that is IN-01, and this arm is \
+             the control for it. Got: {offences:#?}"
         );
         assert!(
             offences
                 .iter()
                 .any(|o| o.starts_with("STALE ROW") && o.contains("IOutlivedMySubject")),
             "a table member absent from the tree is a stale row and must be \
-             reported as that — the two harms are different and a message that \
+             reported as that — the harms are different and a message that \
              conflates them tells the reader to fix the wrong end, got: \
              {offences:#?}"
         );
+        assert!(
+            offences
+                .iter()
+                .any(|o| o.starts_with("UNNAMEABLE IMPLEMENTATION")
+                    && o.contains("src/macro_generated.rs:42")),
+            "an `impl` whose type name the scan cannot extract must be REPORTED \
+             with its file and line, never `continue`d. A census that skips what \
+             it cannot name is a census that is silently short, which is the harm \
+             this module exists to prevent one level down. Got: {offences:#?}"
+        );
 
         // The clean direction, so "reports something" is not mistaken for
-        // "reports everything".
+        // "reports everything". Note the empty `unnameable`: a walk that named
+        // everything it found must report nothing on that axis either.
         assert!(
-            census_offences(&derived, &derived).is_empty(),
-            "a set compared against itself must report nothing"
+            census_offences(&derived, &derived, &[]).is_empty(),
+            "a set compared against itself, with nothing unnameable, must report \
+             nothing"
+        );
+    }
+
+    /// A wrapped `impl` header is ONE logical unit (CR-05).
+    ///
+    /// This drives the same [`join_logical_impl_header`] the live walk consumes,
+    /// with the header split at each of the three places it can wrap, and
+    /// asserts the needle is found in the joined form and absent from the first
+    /// physical line. The `false` direction is the point: without it the test
+    /// would pass against a join that simply concatenated the whole file.
+    #[test]
+    fn a_wrapped_impl_header_is_one_logical_unit() {
+        let needle = format!("{IMPL_HEAD}{IMPL_TAIL}");
+
+        let numbered = |source: &[&str]| -> Vec<(usize, String)> {
+            source
+                .iter()
+                .enumerate()
+                .map(|(index, line)| (index + 1, (*line).to_string()))
+                .collect()
+        };
+
+        for wrapped in [
+            vec!["impl Screen for", "    WrappedScreen {", "}"],
+            vec!["impl", "    Screen for WrappedScreen {", "}"],
+            vec!["impl Screen", "    for WrappedScreen {", "}"],
+        ] {
+            let lines = numbered(&wrapped);
+            assert!(
+                !lines[0].1.contains(&needle) || !lines[0].1.contains("WrappedScreen"),
+                "the first physical line of {wrapped:?} must not carry the whole \
+                 header, or this case is not testing a wrap at all"
+            );
+            let logical = join_logical_impl_header(&lines, 0);
+            let at = logical.find(&needle).unwrap_or_else(|| {
+                panic!("the joined header {logical:?} from {wrapped:?} does not carry the needle")
+            });
+            let name: String = logical[at + needle.len()..]
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            assert_eq!(
+                name, "WrappedScreen",
+                "the joined header {logical:?} from {wrapped:?} must yield the \
+                 implementor's name"
+            );
+        }
+
+        // The bound, so the join cannot swallow a file. A header that never
+        // opens a body stops after IMPL_HEADER_JOIN_LINES physical lines.
+        let runaway: Vec<&str> = std::iter::once("impl")
+            .chain(std::iter::repeat_n("    filler", 20))
+            .collect();
+        let joined = join_logical_impl_header(&numbered(&runaway), 0);
+        assert_eq!(
+            joined.matches("filler").count(),
+            IMPL_HEADER_JOIN_LINES - 1,
+            "the join must stop after {IMPL_HEADER_JOIN_LINES} physical lines; \
+             an unbounded join would let one unclosed brace make the census \
+             read the rest of the file as one header. Joined: {joined:?}"
         );
     }
 
@@ -1723,19 +1888,20 @@ mod tests {
     /// both ways.
     #[test]
     fn the_screen_census_matches_the_tree() {
-        let derived = screen_implementors_from_source();
+        let census = screen_implementors_from_source();
         let table = disposition_table();
 
-        let offences = census_offences(&derived, &table);
+        let offences = census_offences(&census.implementors, &table, &census.unnameable);
         assert!(
             offences.is_empty(),
-            "the derived render surface and the disposition table disagree:\n\n{}",
+            "the derived render surface and the fixture map disagree:\n\n{}",
             offences.join("\n\n")
         );
 
         assert_eq!(
-            derived, table,
-            "the walk's set and the table's set must be equal in both directions"
+            census.implementors, table,
+            "the walk's set of (type name, path) pairs and the fixture map's set \
+             must be equal in both directions"
         );
     }
 
@@ -1744,8 +1910,8 @@ mod tests {
     fn every_adjudicated_screen_has_a_probe_fixture() {
         let missing: Vec<&str> = SCREEN_IDENTITY_DISPOSITIONS
             .iter()
-            .filter(|(name, _, _, _)| fixture_for(name).is_none())
-            .map(|(name, _, _, _)| *name)
+            .filter(|(name, _)| fixture_for(name).is_none())
+            .map(|(name, _)| *name)
             .collect();
         assert!(
             missing.is_empty(),
@@ -1873,7 +2039,7 @@ mod tests {
              {TAG_PAIR} is enough to cause this."
         );
 
-        for (name, path, disposition, _reason) in SCREEN_IDENTITY_DISPOSITIONS {
+        for (name, path) in SCREEN_IDENTITY_DISPOSITIONS {
             let Some(build) = fixture_for(name) else {
                 panic!("{name} ({path}) has no probe fixture");
             };
@@ -1904,8 +2070,29 @@ mod tests {
             let mut all_labels: std::collections::BTreeSet<String> =
                 std::collections::BTreeSet::new();
 
+            // THE DISPOSITION, READ OFF THE CONSTRUCTED INSTANCE (21-26, CR-05).
+            // Not off a row in this file that restates what the screen does: one
+            // statement of a fact cannot disagree with itself, and the both-ways
+            // set equality below could only ever check MEMBERSHIP, never
+            // CONTENT. `clean_states[0].screen` is a `Box<dyn Screen>`, so this
+            // is a virtual call through the supertrait's vtable — which is also
+            // the runtime proof that `Screen` stayed object-safe.
+            let screen_disposition: &'static str = {
+                let as_dyn: &dyn Screen = clean_states[0].screen.as_ref();
+                as_dyn.disposition()
+            };
+
             for (clean_state, hostile_state) in clean_states.iter().zip(hostile_states.iter()) {
                 let where_ = format!("{name} ({path}) [{}]", clean_state.label);
+                let disposition: &dyn Screen = clean_state.screen.as_ref();
+                let disposition = disposition.disposition();
+                assert_eq!(
+                    disposition, screen_disposition,
+                    "{where_}: two instances of the same screen reported \
+                     different dispositions, which the sealed macro makes \
+                     impossible — so the fixture is building a different type \
+                     for this state than for the first one"
+                );
                 let clean_text = render_to_text(clean_state.screen.as_ref(), &clean_state.ctx);
                 let hostile_text =
                     render_to_text(hostile_state.screen.as_ref(), &hostile_state.ctx);
@@ -1928,8 +2115,8 @@ mod tests {
                     arrived_labels.insert(clean_state.label.clone());
                 }
 
-                match *disposition {
-                    RENDERS_IDENTITY => {
+                match disposition {
+                    RENDERS_ATTACKER_INFLUENCED_IDENTITY => {
                         // 2. PER STATE, and gated on arrival: wherever the clean
                         //    identity DID reach the buffer, the hostile one must
                         //    reach it escaped. A state that draws no identity is
@@ -1975,7 +2162,7 @@ mod tests {
                             );
                         }
                     }
-                    RENDERS_NO_IDENTITY => {
+                    RENDERS_NO_ATTACKER_INFLUENCED_IDENTITY => {
                         // The disposition is CHECKED, not claimed: if the screen
                         // really draws no identity, the clean stem — which is
                         // all-ASCII and cannot be dropped — cannot be in its
@@ -2069,8 +2256,8 @@ mod tests {
             // 1. ARRIVAL, for the screen as a whole. A screen that rendered
             //    nothing, or that was built in states showing no identity, fails
             //    HERE rather than passing by silence.
-            match *disposition {
-                RENDERS_IDENTITY => assert!(
+            match screen_disposition {
+                RENDERS_ATTACKER_INFLUENCED_IDENTITY => assert!(
                     arrived_anywhere,
                     "{name} ({path}) is adjudicated as rendering identity, but a \
                      clean identity handed to its fixture never reached the \

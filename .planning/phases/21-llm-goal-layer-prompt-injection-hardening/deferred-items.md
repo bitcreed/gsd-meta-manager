@@ -392,3 +392,266 @@ is empty — and the file's thirteen ACTIVE structural pins pass unmodified:
 is not, and round 8 does not claim it is.** The arithmetic itself is not
 re-derived here — `the_ignored_set_is_seven_arms_two_controls_and_their_own_meta_check`
 owns it and is green.
+
+---
+
+# Round 9 — the record (2026-08-27, plan `21-26`, append-only)
+
+Round 9's four plans are `21-23` (the carrier `crate::text::Untrusted`), `21-24`
+(the error and lookup layers), `21-25` (the eight `.planning/` carriers and the
+fixture hole) and `21-26` (this one: CR-05, WR-05 and the record). What follows
+is what round 9 LEARNED and cannot mechanise. Nothing above this line is
+rewritten or deleted; every entry below quotes verbatim any text it corrects.
+
+## 2026-08-27 (`21-26`) — the SIX carrier types round 9 did NOT retype
+
+Round 9's whole thesis was that the render surface closes as a consequence of one
+TYPE rather than as a list of sites, and `21-23`/`21-24`/`21-25` delivered that
+for nine carrier types. **Six were left as bare `String`, and this is the record
+of which, why, and in which direction each fails.** Recorded here rather than
+only in a SUMMARY because a SUMMARY is read once and this file is read every
+round.
+
+**Every count below is RE-MEASURED at `21-26`'s HEAD under `rtk proxy`, not
+inherited** — see the IN-04 lesson two entries down, which is exactly about
+inheriting a number. Where the re-measurement disagrees with the SUMMARY that
+first reported it, BOTH are given.
+
+| # | Carrier | Bare `String` fields | The measurement that excluded it | SUMMARY it came from | Direction |
+|---|---|---|---|---|---|
+| 1 | `state_reader::ProjectState` | 5 (`status`, `current_phase`, `current_phase_name`, `current_plan`, `milestone`; plus `pause_context: Option<String>`) | `rtk proxy grep -rno "\.status" src/` = **175** at `21-26` HEAD. `21-23-SUMMARY.md:289` reported **135 mentions** for the type; the figures measure different things (that one is the type, this one is the single hottest field) and neither is wrong — they are recorded side by side rather than reconciled. `.status` is additionally a `HashMap` key and a decision-router input, so a carrier here is a retype of the routing layer, not of a field. | `21-23` | under-protection, silent |
+| 2 | `state_reader::roadmap_md::RoadmapPhase` | 4 (`number`, `name`, `description`, `depends_on: Vec<String>`) | Reached exclusively THROUGH `ProjectState.phases`, so it cannot be retyped before #1 without splitting the parse. Field count re-measured at HEAD: 4. | `21-23`, `21-25` | under-protection, silent |
+| 3 | `state_reader::queue_md::QueuedAction` | 1 (`command`) | Compared against `SAFE_COMMAND_ALPHABET` before dispatch, so the VALUE is already alphabet-bounded at the seam that matters; what is unbounded is only its RENDER. Field count re-measured at HEAD: 1. | `21-25` | under-protection, silent |
+| 4 | `AppContext::filtered_aliases` / `selected_alias` | `Vec<String>` / `Option<String>` | `rtk proxy grep -rn "filtered_aliases\|selected_alias" src/` = **94** at `21-26` HEAD (`21-23-SUMMARY.md:289` reported **93**; the round's own diff added one). D-21-4 measured a 25-error cascade from retyping it. | `21-23` | under-protection, silent |
+| 5 | `AppContext::status_message` | `Option<(String, Instant)>` | **There is no field a carrier could type.** The trust boundary runs through the middle of a `format!`: `rtk proxy grep -c "status_message = Some" src/app.rs` = **6** at HEAD, four of which interpolate a registry key or a run id into a sentence this build wrote, one is a literal, and the sixth forwards whatever any screen handed to `ScreenAction::SetStatusMessage` — so the producer set is **open by construction**. `21-25` escaped it AT THE RENDER SITE instead. What would force a `StatusMessage` type: closing `SetStatusMessage` so every producer must hand over a structured value rather than a formatted one. | `21-25` | under-protection, silent, and OUTSIDE the field |
+| 6 | `state_reader::config_json::GsdConfig` **plus the file-BODY fields** `ProjectViewCache::archive_file_content` and `::browser_file_content` | `GsdConfig`: 6 string-ish (`mode`, `granularity`, `model_profile`, `project_code`, `phase_naming`, `response_language`, the last three `Option`). Bodies: 2 `Option<String>` | A file BODY is not a name: it goes through `archive::render_markdown_lines`, a whole markdown pipeline with its own question about what escaping means for a document. `21-25` escaped **per line** at that render instead, and the probe goes red without it. `hostile_gsd_config` names only three of `GsdConfig`'s string keys; a fourth added tomorrow is not in the fixture. | `21-25` | under-protection at the FIELD; the two bodies are bounded AT THE RENDER |
+
+**What bounds the set as a whole, said plainly.** The census
+(`the_screen_census_matches_the_tree`) and the behavioural probe
+(`the_screen_renders_identity_escaped`). **The probe is a SAMPLING control**: it
+renders each screen in the states its fixture constructs and inspects the cells.
+`21-25` populated every one of the eleven `DetailScreen` tabs plus four
+within-tab states, so the sampling is **materially better** than it was — that
+population found four live leaks no reader had found in nine rounds. **That is an
+improvement in the bound, not a closure of it.** A render path reachable only
+under state no fixture builds is still invisible, and `render_escape_guard`'s
+LIMIT 1 names two concrete surviving examples (the Defaults tab's string-edit
+overlay, the Driver tab's `driver_dry_run` preview).
+
+## 2026-08-27 (`21-26`) — STANDING: the per-widget ratatui obligation, in its own right
+
+This is **not** a new measurement. The measurement is the second row of the table
+in the STANDING ratatui entry above (`2026-08-27 | 0.30.2 | PER WIDGET | … |
+21-23`), and the correction beneath it. This entry states the standing
+OBLIGATION that row creates, because an obligation buried inside a correction is
+an obligation a future upgrader will not see.
+
+**On any ratatui upgrade:**
+
+1. Re-run the survivorship measurement **per widget family** — `Paragraph`,
+   `Paragraph`-in-`Block`, `Block::title`, `ListItem` — and not through one sink.
+2. Re-check that `render_escape_guard`'s four assertions are still the
+   **non-vacuous** ones. Assertion 4 (raw-absence) has power only for the
+   preserving families; if a future ratatui made `Paragraph` preserve zero-width
+   graphemes, assertion 4 gains power there and LIMIT 4 must be re-stated.
+3. Add a row to the table above with the version and the date.
+
+**And the direction the previous generalisation was wrong in, restated because
+this is the part that cost three rounds.** The zero-width drop is a **`Paragraph`
+property, not a `Buffer` property**. `Block::title` and `ListItem` PRESERVE
+`U+202E`, `U+200B`, `U+00AD`, `U+2062`, `U+2065` and `U+FEFF` — and those two
+families are exactly where this tree's live leaks were. Three artefacts asserted
+the general form without measuring it (`21-21`'s SUMMARY, the round-8 review, and
+verification pass 9's Judgment 3, which re-derived only the `Paragraph` column),
+and each time the generalisation hid the two families that mattered. **A future
+upgrade must be measured per widget family. Measuring through one sink and
+generalising is the specific mistake this entry exists to prevent.**
+
+There is an in-repo tripwire for it now:
+`the_teeth_precondition_answers_false_when_the_class_cannot_reach_a_cell` drives
+`zero_width_only_identity()` through both `ProbeSink::Paragraph` (must answer
+`false`) and `ProbeSink::ListItem` (must answer `true`). If a ratatui upgrade
+moves either family, that test goes red and points here. It is a tripwire, not a
+substitute for the per-family re-measurement: it covers two of the four families.
+
+## 2026-08-27 (`21-26`) — PROCESS LESSON from IN-04: an exemption is where a prohibition gets falsified
+
+Recorded beside the ratatui obligation because it is the lesson learned FROM it.
+
+**Quoted verbatim from `21-REVIEW.md`'s IN-04**, which quotes `21-22-SUMMARY.md:422`:
+
+> Prohibition 7's audit reads: *"every number here is a command output… No number
+> is inherited… the one number quoted from 21-21 (the ratatui buffer measurement)
+> is quoted as 21-21's measurement, explicitly, because the plan directs that it
+> be quoted rather than re-derived."* That exemption was granted by the plan and
+> honoured exactly, and it is the number CR-03 falsifies. Recording it here as a
+> process observation for round 9's plan: a prohibition against inheriting
+> numbers that carries one named exemption will be falsified at the exemption. If
+> the plan directs that a measurement be quoted rather than re-derived, the wave
+> that quotes it should still re-derive it.
+
+**The rule round 9 adopted, and it belongs here rather than in a SUMMARY read
+once:** *if a plan directs that a measurement be quoted rather than re-derived,
+the wave that quotes it re-derives it anyway.* The cost of a redundant
+re-measurement is minutes; the cost of the one exempted number being the wrong
+one was a Critical finding two rounds later.
+
+Round 9 applied it, and it paid twice in this plan alone:
+
+* The standing brief and the round-8 review both say the tree holds **13**
+  `Screen` implementors. Re-measured at HEAD:
+  `rtk proxy grep -rn "impl.*Screen for " src/ --include=*.rs` returns **11**.
+  The thirteen was eleven real ones plus the round-8 reviewer's own two plants,
+  counted while the plants were in the tree. A plan that inherited it would have
+  spent the round hunting a twelfth and thirteenth screen that do not exist.
+* `21-23-SUMMARY.md:289` reports **93** mentions of
+  `filtered_aliases`/`selected_alias`; re-measured at `21-26` HEAD it is **94**,
+  because round 9's own diff added one. Small, and exactly the kind of drift an
+  inherited number hides.
+
+## 2026-08-27 (`21-26`) — DEFERRED, not fixed: IN-02 and IN-03 (`src/ui/roadmap_widget.rs`)
+
+Both are **pre-existing**, both are **cosmetic**, and neither has a security or
+honesty bearing. `21-26`'s prohibition 8 forbids fixing them in the last plan of a
+round that must converge, and this plan does not modify `src/ui/roadmap_widget.rs`.
+
+**IN-02 — width is measured by `chars().count()`, which is not display width.**
+`src/ui/roadmap_widget.rs:134`. The `len()` → `chars().count()` change was a
+correct fix for a byte/char panic, but a CJK phase name occupies two cells per
+`char` and will overflow the box. `unicode-width` would be exact.
+**What would promote it:** a report of an actually-overflowing box — i.e. a real
+`.planning/ROADMAP.md` with a wide-script phase name, rendered.
+
+**IN-03 — truncation can exceed its own budget when `name_max < 3`.**
+`src/ui/roadmap_widget.rs:139-145`. `format!("{}...", name.chars().take(name_max.saturating_sub(3)))`
+emits three characters when `name_max` is 0, 1 or 2. Pre-existing and faithfully
+preserved by the round-8 edit; a `if name_max <= 3 { … }` guard is the fix.
+**What would promote it:** a render path where `name_max` can actually reach 0, 1
+or 2 — nobody has shown one, which is why it is cosmetic today.
+
+Both are **display-honesty adjacent but not identity-honesty**: neither can make
+two different values render as the same string in a way an operator would act on,
+which is the harm this phase exists to close.
+
+## RE-SURFACED, UNCHANGED — ROADMAP success criterion 4 (round 9)
+
+**Recording, not progress. This is the second consecutive round with NO work
+claimed against it, and that is correct.** No agent can close it: it needs an
+authenticated Claude subscription. `21-26`'s prohibition 6 forbids planning,
+executing or claiming any work against it, and round 9 did none — the two test
+files are RUN by round 9 and EDITED by nothing in it.
+
+Quoted verbatim from `21-VERIFICATION.md`'s frontmatter rather than paraphrased.
+
+**Command:**
+
+```
+cargo test --test driver_injection_corpus -- --ignored --nocapture
+```
+
+> "With an authenticated `claude` CLI available, run
+> `cargo test --test driver_injection_corpus -- --ignored --nocapture` from the
+> repository root and record the CLI version beside the result."
+
+**Expected:**
+
+> "10 passed, 0 failed. Every `corpus_*_arrives_and_leaves_the_command_unchanged`
+> arm asserts the payload ARRIVED at the model before asserting the command was
+> unchanged; the two suppression controls show the positive/negative
+> `CLAUDE_CODE_DISABLE_CLAUDE_MDS` pair diverging; and
+> `both_arms_of_every_class_comparison_were_really_executed` confirms the hostile
+> and clean arms both really ran."
+
+**Why human:**
+
+> "All ten spawn the real `claude` binary and need an authenticated subscription,
+> so they cannot run inside verification. NO AGENT CAN CLOSE THIS ITEM, and the
+> user has explicitly chosen to leave it tracked in `deferred-items.md:291-330`.
+> … Presence and wiring verified for the ninth consecutive pass; behaviour never
+> exercised by any verification pass of this phase."
+
+**Round-9 status, MEASURED rather than assumed.** The ten stay `#[ignore]`d and
+the file is untouched by the whole round:
+`rtk proxy git diff --stat dfa11c6..HEAD -- tests/driver_injection_corpus.rs` is
+EMPTY. The thirteen ACTIVE structural pins pass unmodified —
+`rtk proxy cargo test --test driver_injection_corpus` reports
+`13 passed; 0 failed; 10 ignored`. **Presence and wiring verified for the tenth
+consecutive pass; behaviour not, and round 9 does not claim it is.**
+
+## 2026-08-27 (`21-26`) — DRIVE-04's two backstops, RE-RUN rather than inferred
+
+**These are reconfirmations that round 9's diff did not move them, not new
+evidence, and the framing matters.** DRIVE-04's boundary and precision were
+measured by executed plans `21-02`, `21-04` and `21-22` and verified by pass 9.
+Round 9 touches no cap, no seam and no arithmetic. Writing a *new* boundary
+predicate for DRIVE-04 inside a render-honesty round would be the
+manufactured-predicate overclaim this phase exists to end, so what is recorded is
+a re-run.
+
+`rtk proxy cargo test --test driver_escalation_cap --no-fail-fast` at `21-26`
+HEAD: **8 passed; 0 failed; 0 ignored**. Both cap directions green, named:
+
+* **Boundary** — a per-run escalation cap at or above the resolved step cap is
+  refused at the seam (`a_budget_equal_to_the_resolved_step_cap_refuses_above_the_run`,
+  `a_budget_of_zero_refuses_above_the_run`), and one below it is accepted
+  (`a_budget_one_below_the_resolved_step_cap_runs_and_parks_on_the_cap`).
+* **Precision** — the decomposition consultation is counted against the SAME cap
+  as the escalations, and exceeding it parks with a typed reason on the journal
+  rather than silently degrading to rules-only
+  (`a_run_that_spends_its_budget_parks_and_says_so_rather_than_continuing`,
+  `the_fixture_really_reaches_the_state_the_rule_table_does_not_cover`).
+
+`rtk proxy git diff --stat dfa11c6..HEAD -- tests/driver_escalation_cap.rs` is
+EMPTY: the file is unchanged across the whole round.
+
+## 2026-08-27 (`21-26`) — the round-9 self-audit, with its controls
+
+Run against round 9's own diff, the way `21-22` audited round 8.
+
+**Scope, stated exactly because a self-audit that hides its range is worthless:**
+`git diff 98610bf..08605b3`, **6244 added lines** — every commit of round 9's four
+plans plus the orchestrator's `Display for Rendered` fix and both tracking
+commits, up to and including `21-26`'s two code commits. **This entry's own
+commit is excluded by construction:** a debt-marker count cannot measure the file
+it is being written into, because writing the count changes it. The `Cf` half IS
+extended to this entry and reported separately below, since that scan is not
+self-referential — nothing here writes a `Cf` character.
+
+| Check | Result | The control that makes it non-vacuous |
+|---|---|---|
+| Raw `General_Category=Cf` characters in added lines | **0** | The same scan, with one `U+200B` appended to the input, returns **1**. Delta `+1`, so the zero is a measurement rather than a broken scan. |
+| `TBD` / `FIXME` / `XXX` debt markers | **0** (3 raw grep hits, all false positives) | Control needle `the` over the same added lines returns **1819**, so the grep is reaching the input. The three hits are all the literal `U+XXXX` escape-marker format string in prose about `display_identity`. |
+| `TODO` / `HACK` / `PLACEHOLDER` debt markers | **0** (3 raw grep hits, all false positives) | Same control. The three hits are the SUMMARY template's own sentence *"No hardcoded empty value, placeholder string, TODO or unwired component was introduced."*, once per wave SUMMARY. |
+| `.planning/REQUIREMENTS.md` last touched | `0c4f712` | `rtk proxy git log --oneline -3 -- .planning/REQUIREMENTS.md` — unchanged for the seventh consecutive round. |
+
+**The false positives are reported rather than filtered away.** A grep tuned
+until it returns zero is a grep that has been taught not to look; the honest form
+is the raw count plus what each hit actually is.
+
+**The `Cf` scan extended to THIS entry**, run over its own 256 added lines before
+it was committed: **0** raw `Cf` characters, control `+1` on a planted `U+200B`.
+Note that the debt-marker rows above cannot be extended the same way — this entry
+itself contains the literal strings `U+XXXX` and `TODO` while explaining that the
+round's three hits of each were exactly those two false positives, so a
+re-measurement including this file would count them again and mean nothing new.
+
+## 2026-08-27 (`21-26`) — OPEN: verification pass 9's four-character sighting is still unexplained
+
+Not a deferral of work — a deferral of an EXPLANATION, and it is recorded because
+`21-23` was explicit that it did not close it and a later reader should not read
+the fixture's red as having done so.
+
+Verification pass 9 reported `the_screen_renders_identity_escaped` panicking ONCE
+for `DetailScreen [GitHistory tab]` with
+`['\u{e0041}', '\u{ad}', '\u{e0041}', '\u{ad}']` — **four** characters. `21-23`
+populated `probe_ctx`'s `git_entries` and the defect then fired **20 runs out of
+20**, reporting **eight** characters, which is one hostile pair per `GitLogEntry`
+field and is what a render of all four fields must produce. Four is two fields'
+worth.
+
+So: the CLASS of defect pass 9 saw is reproduced and settled by construction; its
+exact COUNT is not reproduced, and **the mechanism of that single sighting
+remains unexplained**. Recorded in `probe_ctx`'s doc, in `46cfdf7`'s message, in
+`21-23-SUMMARY.md`, and here. Any residual intermittency in this probe after
+round 9 must be reported as evidence for pass 9's reading (b) rather than
+absorbed as noise.

@@ -39,7 +39,154 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use tokio::sync::mpsc::{Sender, UnboundedSender};
 
-pub trait Screen {
+// ---------------------------------------------------------------------------
+// The render adjudication — a COMPILE-TIME obligation, not a source census
+// ---------------------------------------------------------------------------
+
+/// The seal.
+///
+/// It is what makes [`RenderAdjudicated`] un-implementable downstream: a
+/// consumer of this crate cannot name `sealed::Sealed`, so it cannot satisfy the
+/// supertrait, so it cannot declare its own screen adjudicated. Inside the crate
+/// the only route is [`adjudicate_screen`], which is what keeps the disposition
+/// vocabulary to the two constants below.
+///
+/// **`pub(crate)` rather than fully private, and the reason is the whole point
+/// of the mechanism.** A `Screen` may be added in ANY module of this crate —
+/// that is what the census walking all of `src/` is for — so the macro that
+/// expands the seal has to be invocable from any module of this crate. A
+/// private `mod sealed` is reachable only from `ui::screens` and its
+/// descendants, which was measured: the macro-generated plant in
+/// `src/driver/liveness.rs` failed with `error[E0603]: module `sealed` is
+/// private`. A seal that only seals the directory the screens happen to live in
+/// today would push the next screen outside the mechanism rather than into it.
+/// `pub(crate)` keeps the downstream property intact — nothing outside this
+/// crate can name it.
+pub(crate) mod sealed {
+    pub trait Sealed {}
+}
+
+/// The screen draws at least one string this build did not author — a registry
+/// key, or a workspace/phase/file/entry name read from `.planning/`.
+///
+/// A stable snake_case constant, following the `envelope/policy.rs` typed-reason
+/// idiom: the taxonomy is stated in one place and every consumer compares
+/// against the constant rather than respelling the string.
+pub const RENDERS_ATTACKER_INFLUENCED_IDENTITY: &str = "renders_attacker_influenced_identity";
+
+/// The screen draws only text this build authored itself.
+pub const RENDERS_NO_ATTACKER_INFLUENCED_IDENTITY: &str =
+    "renders_no_attacker_influenced_identity";
+
+/// **What a screen says about the identity it renders — carried by the screen,
+/// enforced by the compiler** (CR-05).
+///
+/// # Why this is a trait bound and not a better scan
+///
+/// Eight rounds of this phase closed the render surface by naming sites, and
+/// each time the named set turned out to be a subset of the set that existed.
+/// Round 8 moved the enumeration into a filesystem walk, which was better — and
+/// the round-8 review then measured that walk short in TWO source spellings at
+/// once: a `macro_rules!`-generated implementor, whose name no line-oriented
+/// scan can extract, and an `impl` header wrapped across two physical lines,
+/// which is not one line to match. The census reported ELEVEN while the tree
+/// held THIRTEEN, and reported it green.
+///
+/// A scan's completeness is bounded by source FORMATTING. That is one level
+/// below where anybody was looking, and it is exactly the level CR-05 found. So
+/// the property moved into the type system:
+///
+/// ```text
+/// pub trait Screen: RenderAdjudicated { … }
+/// ```
+///
+/// An `impl Screen for X` where `X` carries no adjudication does not compile.
+/// Observed, not argued — a throwaway implementor was added to
+/// `src/driver/liveness.rs`, a file two directory levels down with nothing to do
+/// with the UI, and `cargo build` said:
+///
+/// ```text
+/// error[E0277]: the trait bound `TwelfthScreenNobodyAdjudicated: RenderAdjudicated` is not satisfied
+///    --> src/driver/liveness.rs:349:18
+///     |
+/// 349 | impl Screen for TwelfthScreenNobodyAdjudicated {
+///     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `RenderAdjudicated` is not implemented for `TwelfthScreenNobodyAdjudicated`
+///     |
+/// note: required by a bound in `Screen`
+/// ```
+///
+/// Both of the round-8 reviewer's plants are covered by that one bound. The
+/// macro-generated implementor must expand an adjudication or it does not
+/// compile; the wrapped header is not a text pattern at all. And a third
+/// spelling nobody has invented is covered too, because under a type bound there
+/// is no spelling to be short of.
+///
+/// # Two shapes this deliberately is NOT
+///
+/// * **Methods, never associated consts.** The whole UI is `Box<dyn Screen>`,
+///   and [`ScreenAction::Push`] and [`ScreenAction::Replace`] both carry one. An
+///   associated const on a supertrait makes `Screen` dyn-incompatible and would
+///   break every screen transition in the tree. Methods returning `&'static str`
+///   keep the vtable, and the probe calls both of them through `&dyn Screen`.
+/// * **Sealed, never publicly implementable.** See [`sealed`].
+///
+/// # What this buys beyond CR-05
+///
+/// The disposition stops being a row in another file that *restates* what a
+/// screen does and becomes something the screen *carries*, beside the
+/// [`Screen::render`] it describes. `render_escape_guard`'s probe reads
+/// [`disposition`](RenderAdjudicated::disposition) off the constructed instance,
+/// so the disposition it checks and the disposition the screen declares cannot
+/// drift — a class of defect the both-ways set equality could only catch for
+/// *membership*, never for *content*.
+pub trait RenderAdjudicated: sealed::Sealed {
+    /// One of [`RENDERS_ATTACKER_INFLUENCED_IDENTITY`] or
+    /// [`RENDERS_NO_ATTACKER_INFLUENCED_IDENTITY`], and nothing else. The probe
+    /// `panic!`s on any third value.
+    fn disposition(&self) -> &'static str;
+
+    /// **Which values this screen draws and where their bytes come from** —
+    /// never "escaped" or "safe". It is what a future reader inherits, and it
+    /// lives beside the `render` it describes rather than in another file.
+    fn adjudication_reason(&self) -> &'static str;
+}
+
+/// The only route to an adjudication.
+///
+/// It emits the [`sealed::Sealed`] impl and the [`RenderAdjudicated`] impl
+/// together, so a screen inside this crate cannot hand-write an adjudication
+/// that skips the two-constant vocabulary, and a crate outside cannot write one
+/// at all.
+///
+/// Invoked once per screen, beside that screen's `impl Screen`.
+macro_rules! adjudicate_screen {
+    ($type:ty, $disposition:expr, $reason:expr $(,)?) => {
+        impl $crate::ui::screens::sealed::Sealed for $type {}
+
+        impl $crate::ui::screens::RenderAdjudicated for $type {
+            fn disposition(&self) -> &'static str {
+                $disposition
+            }
+
+            fn adjudication_reason(&self) -> &'static str {
+                $reason
+            }
+        }
+    };
+}
+
+// Path-addressable rather than textually scoped: the `pub mod` declarations at
+// the top of this file come BEFORE the macro definition, so textual scoping
+// would leave it invisible in every screen module that has to invoke it.
+pub(crate) use adjudicate_screen;
+
+/// A screen of the TUI.
+///
+/// **`RenderAdjudicated` is a supertrait and that is load-bearing** (CR-05): an
+/// implementor with no adjudication does not compile. Read that trait's doc for
+/// the E0277 this was observed producing and for why a source census could not
+/// deliver the same property.
+pub trait Screen: RenderAdjudicated {
     fn handle_key(
         &mut self,
         code: KeyCode,

@@ -271,6 +271,18 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
     lines
 }
 
+crate::ui::screens::adjudicate_screen!(
+    HelpScreen,
+    crate::ui::screens::RENDERS_NO_ATTACKER_INFLUENCED_IDENTITY,
+    "Draws `help_lines()`, which the module doc calls a pure function of \
+     nothing: keybindings, the filter grammar and two legends, every byte of \
+     it authored in this repository. It `Clear`s its popup area and paints \
+     no background, so nothing from `AppContext` reaches a cell. Checked, \
+     not claimed: the fixture registers the hostile identity and puts a \
+     hostile project state behind it, and the probe asserts the clean stem \
+     is absent from the buffer.",
+);
+
 impl Screen for HelpScreen {
     fn handle_key(
         &mut self,

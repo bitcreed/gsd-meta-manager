@@ -27,6 +27,15 @@ impl CreateProjectScreen {
     }
 }
 
+crate::ui::screens::adjudicate_screen!(
+    CreateProjectScreen,
+    crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    "Draws the project name the operator is typing, `ctx.error_message`, and \
+     in its Confirm phase the chosen name and path. The name becomes a \
+     directory, so it is an identity in the full sense. Fixture states: the \
+     name field, and the name field with an error echoed beside it.",
+);
+
 impl Screen for CreateProjectScreen {
     fn handle_key(
         &mut self,

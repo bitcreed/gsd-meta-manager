@@ -28,6 +28,17 @@ impl AddProjectScreen {
     }
 }
 
+crate::ui::screens::adjudicate_screen!(
+    AddProjectScreen,
+    crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    "Draws the alias the operator is typing (`ctx.input_buffer`) and, beside \
+     it, `ctx.error_message` — which on this screen is an `AliasRefusal` \
+     whose Display embeds the alias it refused. The background is an empty \
+     bordered block and draws nothing. Fixture states: the alias field, and \
+     the alias field with a real refusal for the hostile identity echoed \
+     beside it.",
+);
+
 impl Screen for AddProjectScreen {
     fn handle_key(
         &mut self,

@@ -119,6 +119,14 @@ impl DriverInjectScreen {
     }
 }
 
+crate::ui::screens::adjudicate_screen!(
+    DriverInjectScreen,
+    crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    "Paints its body with `DetailScreen::render_main_only`, so it draws \
+     everything the active detail tab draws, and adds a footer echoing the \
+     steering message being typed. Fixture states: one per sub-view.",
+);
+
 impl Screen for DriverInjectScreen {
     fn handle_key(
         &mut self,

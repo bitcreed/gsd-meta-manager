@@ -784,6 +784,42 @@ fn queue_mutate_and_save(
     Ok(())
 }
 
+crate::ui::screens::adjudicate_screen!(
+    DetailScreen,
+    crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    "The widest identity surface in the tree. Draws the registry key in its \
+     tab-bar title, and in its eleven tabs the values parsed out of the \
+     project's `.planning/`. Per tab, the values and where their bytes come \
+     from: PhaseList and RoadmapViz draw each `RoadmapPhase`'s number, name \
+     and description plus the status and milestone, all parsed from \
+     `ROADMAP.md`/`STATE.md`; Pipeline draws the current phase name, status \
+     and the HANDOFF pause context; Queue draws each `QueuedAction::command` \
+     from `queue.md`; Backlog draws a `999.*` directory's number and \
+     description in its collapsed state and that directory's NAME (through \
+     `Block::title`) plus the BODY of the first `.md` file inside it when \
+     expanded; GitHistory draws a third-party repository's commit hash, \
+     date, author and subject; Sessions draws a session id scraped from \
+     another process's `--resume` argument via `/proc`; Archive draws \
+     milestone version strings, archive file names and phase display names \
+     from `.planning/archive/` directory listings, at three different \
+     depths that are three different renders of three different names; \
+     Defaults draws the value of every key of the project's \
+     `.planning/config.json`, of which `mode`, `granularity`, \
+     `project_code`, `phase_naming` and `response_language` are free-form \
+     strings; Browse draws the browsed directory's path relative to \
+     `.planning/`, each listing entry's name, and — in its file view — the \
+     file name and the whole markdown body; Driver draws the run id suffix, \
+     goal, `gsd_command` and run directory read back out of a run's \
+     committed `run.json`. All of it is third-party text under SAFE-07 and \
+     none of it was authored by this build. Fixture states: one per \
+     sub-view, all eleven, EACH RENDERING ITS POPULATED BRANCH (21-25), plus \
+     four within-tab states for the fields that dispatch to a different \
+     render — Backlog expanded, Archive at its phase list and file list \
+     depths, Browse at its file view. Arrival is recorded per state by \
+     DETAIL_TAB_ARRIVAL against the chrome baseline, so a populated cache \
+     the render never reads is reported rather than counted.",
+);
+
 impl Screen for DetailScreen {
     fn handle_key(
         &mut self,

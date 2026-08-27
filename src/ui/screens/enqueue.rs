@@ -17,6 +17,16 @@ impl EnqueueScreen {
     }
 }
 
+crate::ui::screens::adjudicate_screen!(
+    EnqueueScreen,
+    crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    "Paints its body with `DetailScreen::render_main_only`, and its footer \
+     echoes `ctx.input_buffer` — which Tab-completion fills from \
+     `queue_md::suggest_next_commands`, a function of the project's parsed \
+     `.planning/` state, so the buffer is not always something the operator \
+     typed. Fixture states: one per sub-view.",
+);
+
 impl Screen for EnqueueScreen {
     fn handle_key(
         &mut self,
