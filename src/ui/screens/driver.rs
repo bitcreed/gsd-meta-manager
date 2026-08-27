@@ -1729,7 +1729,11 @@ fn output_line(line: &DriverOutputLine, terminal_color: Color) -> Line<'static> 
     };
     Line::from(vec![
         Span::styled(marker, marker_style),
-        Span::styled(line.text.clone(), text_style),
+        // `line.text` is `crate::text::Untrusted` — the agent's own prose, read
+        // back off disk. `shown()` is not a courtesy here: it is the only way
+        // this value can reach a `Span` at all, because the carrier implements
+        // none of the string conversions (21-28 T1, CR-02).
+        Span::styled(line.text.shown(), text_style),
     ])
 }
 
@@ -1992,6 +1996,158 @@ mod tests {
     /// The visible text of a `Line`, spans concatenated.
     fn text(line: &Line<'static>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// Every input the composition-equality pin is measured over: both members
+    /// of every `LOOK_ALIKE_PAIRS` entry, the control-class fixtures this tree
+    /// already carries, and two above-the-cap inputs so the cap's placement is
+    /// inside the comparison rather than beside it.
+    ///
+    /// Hostile characters are drawn BY IMPORT from `LOOK_ALIKE_PAIRS` and never
+    /// respelled (D-21-6).
+    fn composition_fixtures() -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for (clean, hostile) in crate::test_support::LOOK_ALIKE_PAIRS {
+            out.push(clean.to_string());
+            out.push(hostile.to_string());
+        }
+        // The CONTROL class, spelled as the tests in `super::super` spell it:
+        // ESC-introduced CSI, the three C1 introducers, NUL, TAB and DEL.
+        for control in [
+            "\u{1b}[31mred\u{1b}[0m",
+            "\u{9b}31m",
+            "\u{9d}0;title\u{9c}",
+            "\u{90}payload\u{9c}",
+            "a\u{0}b",
+            "tab\there",
+            "del\u{7f}gone",
+        ] {
+            out.push(control.to_string());
+        }
+        // Clean prose, so the pin also covers the case prohibition 1 protects.
+        out.push("an ordinary line of agent prose".to_string());
+        // Above the cap, with and without a hostile character past it — the two
+        // inputs where "cap then escape" and "escape then cap" could diverge.
+        let over = super::super::DRIVER_OUTPUT_LINE_CELLS + 50;
+        out.push("x".repeat(over));
+        out.push(format!("{}\u{e0041}", "y".repeat(over)));
+        out.push(format!("\u{e0041}{}", "z".repeat(over)));
+        out
+    }
+
+    /// **The retype is behaviour-preserving, and that is PINNED in both
+    /// directions rather than assumed** (21-28 T1, D-21-38).
+    ///
+    /// `DriverOutputLine::text` became `crate::text::Untrusted`, which moved the
+    /// invisible-class escape from the render CALL (`shown_capped`) to the
+    /// carrier's `shown()`. Those are two different orderings of the same two
+    /// operations plus a cap, and nothing would have gone red if they disagreed:
+    /// the pane would simply have started showing something else.
+    ///
+    /// So this asserts the equality directly, over every fixture in
+    /// [`composition_fixtures`] — both classes, above and below the cap.
+    ///
+    /// **The non-vacuity arm is why this is not two identity functions agreeing
+    /// forever.** An equality between two functions that both return their input
+    /// passes on every fixture ever added. The second assertion names a specific
+    /// fixture the composition CHANGES and pins what it changes into, so a
+    /// future refactor that made both sides the identity is red here rather than
+    /// silently green.
+    ///
+    /// If the two ever diverge this reports the raw input, the carrier's answer
+    /// and `shown_capped`'s answer side by side — which of the two moved is then
+    /// a diff away, and the pane's visible behaviour is the thing that changed.
+    #[test]
+    fn the_wrapped_line_composition_equals_shown_capped() {
+        for raw in composition_fixtures() {
+            let via_carrier =
+                crate::text::Untrusted::from_untrusted_source(super::super::sanitize_render_line(
+                    &raw,
+                ))
+                .shown()
+                .to_string();
+            let via_call = shown_capped(&raw);
+            assert_eq!(
+                via_carrier, via_call,
+                "the buffered line's carrier and the render-site call must agree \
+                 on every input, or the retype silently changed what the output \
+                 pane shows. input={raw:?}"
+            );
+        }
+
+        // NON-VACUITY. `LOOK_ALIKE_PAIRS[4].1` is `demo` followed by the tag
+        // character `U+E0041` — the carrier this phase is named for, and the one
+        // the probe caught reaching a cell in this very pane.
+        let (_, tag_bearing) = crate::test_support::LOOK_ALIKE_PAIRS[4];
+        assert_ne!(
+            shown_capped(tag_bearing),
+            tag_bearing,
+            "the composition must CHANGE at least one fixture, or the equality \
+             above is two identity functions agreeing and would pass forever"
+        );
+        assert_eq!(
+            shown_capped(tag_bearing),
+            "demoU+E0041",
+            "and what it changes it into is the escaped spelling, not merely \
+             something different"
+        );
+    }
+
+    /// **The ring's accounting is unmoved by the retype** (21-28 T1 step (f)).
+    ///
+    /// The retype touched the type of what `push_record` stores, and it must not
+    /// have touched what the buffer COUNTS. `dropped` is the operator's only
+    /// evidence that earlier output existed at all, and `record_truncated` is
+    /// the only evidence a single record was cut — a retype that quietly moved
+    /// either would remove the admission while leaving the pane looking right.
+    ///
+    /// The two numbers below are the pre-retype values, computed the same way
+    /// the pre-retype code computed them: the ring holds
+    /// `DRIVER_OUTPUT_RING_LINES` and drops the overshoot, and a record with
+    /// more lines than `DRIVER_OUTPUT_RECORD_MAX_LINES` is cut and says so.
+    #[test]
+    fn the_retype_left_the_rings_accounting_where_it_was() {
+        use super::super::{
+            DriverLineKind, DriverOutput, DRIVER_OUTPUT_RECORD_MAX_LINES, DRIVER_OUTPUT_RING_LINES,
+        };
+
+        let overshoot = 37usize;
+        let mut buf = DriverOutput::default();
+        for i in 0..(DRIVER_OUTPUT_RING_LINES + overshoot) {
+            buf.push_record(DriverLineKind::Output, &format!("line {i}"));
+        }
+        assert_eq!(
+            buf.len(),
+            DRIVER_OUTPUT_RING_LINES,
+            "the ring is still bounded at its cap after the retype"
+        );
+        assert_eq!(
+            buf.dropped(),
+            overshoot as u64,
+            "dropped must still count every evicted line: the count is the whole \
+             mechanism the render layer has for admitting the loss"
+        );
+        assert!(
+            !buf.record_truncated(),
+            "no single record here exceeded the per-record cap"
+        );
+
+        let mut cut = DriverOutput::default();
+        let long: String = (0..(DRIVER_OUTPUT_RECORD_MAX_LINES + 10))
+            .map(|i| format!("row {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        cut.push_record(DriverLineKind::Output, &long);
+        assert!(
+            cut.record_truncated(),
+            "record_truncated must still fire when one record is cut at the \
+             per-record cap"
+        );
+        assert_eq!(
+            cut.len(),
+            DRIVER_OUTPUT_RECORD_MAX_LINES,
+            "and the cut must still be at exactly the per-record cap"
+        );
     }
 
     #[test]
@@ -2391,7 +2547,12 @@ mod tests {
 
         let chosen = output_for_run(&ctx, alias, Some(&cache), "run-a")
             .expect("the journal is on disk and must be shown");
-        let rendered: String = chosen.lines().map(|line| line.text.clone()).collect();
+        // `as_raw_for_logic_only`: this asks WHICH BUFFER was chosen, not what
+        // it renders as, so the raw stored bytes are the right question.
+        let rendered: String = chosen
+            .lines()
+            .map(|line| line.text.as_raw_for_logic_only())
+            .collect();
         assert!(
             rendered.contains("what the journal on disk holds"),
             "an empty live ring must fall THROUGH to the journal, not \

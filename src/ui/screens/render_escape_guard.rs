@@ -893,6 +893,26 @@ fn probe_ctx(identity: &str) -> AppContext {
     }];
     cache.driver_selected_run = 0;
 
+    // The Driver tab's LIVE OUTPUT PANE — the pane that displays the agent's own
+    // prose, and the one this whole phase is named for (21-28 T1).
+    //
+    // `output_for_run` takes the live ring only when its run id equals the
+    // selected run's AND it is non-empty, so both of those are properties of
+    // this fixture rather than accidents of it. Without this the pane fell
+    // through to `NO_JOURNAL_ENTRIES` — an authored `&'static str` — and every
+    // assertion about the pane passed by drawing a string this build wrote.
+    //
+    // The text goes in through `push_record`, not by constructing a
+    // `DriverOutputLine` literal: `push_record` is the one place the buffer's
+    // sanitisation and its ring accounting happen, and a fixture that bypassed
+    // it would probe a value the production path cannot produce.
+    let mut live = super::DriverOutput::for_run(identity);
+    live.push_record(super::DriverLineKind::Output, identity);
+    live.push_record(super::DriverLineKind::Stderr, identity);
+    live.push_record(super::DriverLineKind::Diagnostic, identity);
+    live.push_record(super::DriverLineKind::Terminal, identity);
+    ctx.driver_output.insert(identity.to_string(), live);
+
     ctx.recompute_filtered_aliases();
     ctx.table_state.select(Some(0));
     ctx
@@ -1116,7 +1136,13 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
         "Draws the run list row and run header built from `driver_runs[0]`'s `run_id`, \
          `goal` and `gsd_command` — populated by 21-25 T2. Before that the tab rendered \
          `no_runs_lines`, which was the ONE already-composed site on this path, and the \
-         four half-escaped ones below it were exercised by nothing.",
+         four half-composed ones below it were exercised by nothing. \
+         ALSO draws, since 21-28 T1, the LIVE OUTPUT PANE: `DriverOutputLine::text` for \
+         each line of `ctx.driver_output[alias]`, whose bytes are the `exec_event` text \
+         a run's journal holds on disk — the agent's own prose, written by the model and \
+         read back by `crate::app::driver_line_for_record`. Four lines are pushed through \
+         `DriverOutput::push_record`, one per `DriverLineKind` the pane styles \
+         differently, so the marker arms are drawn rather than assumed.",
     ),
     (
         "Backlog tab, expanded",

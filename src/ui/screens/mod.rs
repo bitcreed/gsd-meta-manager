@@ -325,13 +325,45 @@ pub enum DriverLineKind {
     Terminal,
 }
 
-/// One sanitised, already-truncated line of live driver output.
+/// One line of live driver output, control-stripped and capped at append time,
+/// carried in a type that cannot reach a terminal cell unescaped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverOutputLine {
     /// Which journal source produced it.
     pub kind: DriverLineKind,
-    /// The rendered text, already through [`sanitize_render_line`].
-    pub text: String,
+    /// The line's text — **the agent's own prose, read back off disk**.
+    ///
+    /// **What the TYPE guarantees, replacing what a caller used to promise**
+    /// (21-28 T1, CR-02). This field read `pub text: String` with a doc saying
+    /// it was "already through [`sanitize_render_line`]". That was true and it
+    /// was not enough: `sanitize_render_line` answers only the CONTROL class
+    /// (`ESC` / C0 / `DEL` / C1), so `U+202E`, `U+00AD` and the
+    /// `U+E0000..U+E007F` tag block passed through it untouched — and
+    /// `driver.rs`'s `output_line` handed the `String` straight to
+    /// `Span::styled`. The tag block SURVIVES a `Paragraph` (measured per widget
+    /// family; see `render_escape_guard`'s LIMIT 4), so those characters reached
+    /// cells in the pane that displays what the model wrote, in a phase named
+    /// for prompt-injection hardening.
+    ///
+    /// The two halves now live where each can be enforced:
+    ///
+    /// * **Control class + display cap, at APPEND time**, in
+    ///   [`push_record`](DriverOutput::push_record) — the cap has to be applied
+    ///   where the ring is bounded, or the ring stores unbounded lines (D-21-38).
+    /// * **Invisible-formatting class, at RENDER time**, because
+    ///   [`crate::text::Untrusted`] implements no `Display`, no `AsRef<str>` and
+    ///   no `Into<Cow<'_, str>>`. There is no way to hand this to a ratatui sink
+    ///   except [`shown`](crate::text::Untrusted::shown), so the render site is
+    ///   a compile error until it escapes. A reader working through a list of
+    ///   sites is not what holds this; the compiler is.
+    ///
+    /// The split is behaviour-preserving and that is PINNED, not asserted:
+    /// `driver::tests::the_wrapped_line_composition_equals_shown_capped` shows
+    /// `Untrusted::from_untrusted_source(sanitize_render_line(raw)).shown()`
+    /// equals `shown_capped(raw)` over every `LOOK_ALIKE_PAIRS` fixture and the
+    /// tree's control-class fixtures, with a non-vacuity arm so an equality
+    /// between two identity functions cannot pass forever.
+    pub text: crate::text::Untrusted,
 }
 
 /// One alias's bounded live-output ring (D-18).
@@ -428,6 +460,11 @@ impl DriverOutput {
             self.record_truncated = true;
         }
         for text in lines {
+            // **The ONE wrap site.** `push_record` is the only place a
+            // `DriverOutputLine` is constructed, so wrapping here is what makes
+            // the carrier's guarantee hold for every line in the ring rather
+            // than for the lines one caller remembered to wrap (21-28 T1).
+            let text = crate::text::Untrusted::from_untrusted_source(text);
             self.lines.push_back(DriverOutputLine { kind, text });
             while self.lines.len() > DRIVER_OUTPUT_RING_LINES {
                 self.lines.pop_front();
@@ -1508,7 +1545,10 @@ mod tests {
             .next()
             .expect("the ring is at its cap, so it has a first line");
         assert_eq!(
-            first.text, "line 50",
+            // `as_raw_for_logic_only`: this asks WHICH line survived the ring's
+            // eviction, an append-time identity question, not what it renders as.
+            first.text.as_raw_for_logic_only(),
+            "line 50",
             "the oldest lines are the ones dropped, so the survivor at the front \
              is the first line past the overshoot"
         );
@@ -1582,7 +1622,12 @@ mod tests {
         let mut buf = DriverOutput::default();
         buf.push_record(DriverLineKind::Output, hostile);
         assert!(
-            buf.lines().all(|l| !l.text.contains(ESC)),
+            // `as_raw_for_logic_only` deliberately: the claim is that no ESC
+            // ENTERS the buffer. Asserting on `shown()` would let an ESC sit in
+            // the ring and pass because the render escaped it, which is a
+            // weaker property than the one this test is named for.
+            buf.lines()
+                .all(|l| !l.text.as_raw_for_logic_only().contains(ESC)),
             "no ESC may enter the buffer through the append path either"
         );
         assert!(
@@ -1645,8 +1690,14 @@ mod tests {
             let mut buf = DriverOutput::default();
             buf.push_record(DriverLineKind::Output, hostile);
             assert!(
-                buf.lines()
-                    .all(|l| !l.text.chars().any(|c| ('\u{80}'..='\u{9f}').contains(&c))),
+                // `as_raw_for_logic_only` for the same reason as the ESC arm
+                // above: the claim is that no C1 introducer ENTERS the buffer.
+                buf.lines().all(|l| {
+                    !l.text
+                        .as_raw_for_logic_only()
+                        .chars()
+                        .any(|c| ('\u{80}'..='\u{9f}').contains(&c))
+                }),
                 "nor through the append path: {hostile:?}"
             );
         }
