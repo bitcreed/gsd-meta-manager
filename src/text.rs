@@ -523,11 +523,35 @@ pub fn render_for_terminal(value: &str) -> Rendered {
 ///   message, an `anyhow` chain, or the `#[derive(Debug)]` of any struct that
 ///   contains one of these.
 ///
-/// Those five absences are certified by
+/// # CORRECTED 2026-08-27 (21-27, WR-01): the count named neither the list nor the certificate
+///
+/// **The sentence this corrects, verbatim:** *"Those five absences are
+/// certified by `tests::an_untrusted_carrier_implements_none_of_the_string_conversions`,
+/// a runtime control observed RED by planting the impls."*
+///
+/// It said **five**; the bullets above enumerate **six** absent conversions
+/// (`Display`, `AsRef<str>`, `Deref<Target = str>`, `Borrow<str>`,
+/// `Into<Cow<'_, str>>`, `serde`); and the control certified **three**. Three
+/// different numbers for one claim, and the gap was not cosmetic:
+/// `Deref<Target = str>` was among the uncertified three, and it is the one
+/// impl that silently rewrites code that is already written — auto-deref
+/// restores the raw path at every call site in the tree at once, invisible in a
+/// diff, with every test still green.
+///
+/// **What is true now:** all **SIX** absences above are certified by
 /// `tests::an_untrusted_carrier_implements_none_of_the_string_conversions`, a
-/// runtime control observed RED by planting the impls — not by a comment quoting
-/// a compile error somebody once saw, which is precisely what
-/// `LegacyRegistryKey` had.
+/// runtime control in which each absence has its own `String` presence arm (so
+/// a broken probe fails loudly instead of certifying nothing) and each was
+/// observed RED by planting the impl — not by a comment quoting a compile error
+/// somebody once saw, which is precisely what `LegacyRegistryKey` had. The
+/// hand-written `Debug` is pinned separately by
+/// `tests::a_carrier_debug_never_carries_an_invisible_character` and is not one
+/// of the six.
+///
+/// Six is what the doc claims and what the control certifies; it is **not** the
+/// closed set of ways a raw `&str` could escape. `PartialEq<str>`,
+/// `Into<String>` and any trait a dependency adds by blanket impl are not
+/// probed — **under-detection, silent**, and named in that test's own doc.
 ///
 /// Two accessors, each named after the question it answers:
 /// [`as_raw_for_logic_only`](Self::as_raw_for_logic_only) for lookups,
@@ -2011,6 +2035,59 @@ mod tests {
                 false
             }
         }
+
+        // ── WR-01: the three absences the doc claimed and nothing certified ──
+
+        pub trait DerefStrYes {
+            fn implements_deref_str(&self) -> bool;
+        }
+        impl<T: std::ops::Deref<Target = str>> DerefStrYes for &Wrap<T> {
+            fn implements_deref_str(&self) -> bool {
+                true
+            }
+        }
+        pub trait DerefStrNo {
+            fn implements_deref_str(&self) -> bool;
+        }
+        impl<T> DerefStrNo for Wrap<T> {
+            fn implements_deref_str(&self) -> bool {
+                false
+            }
+        }
+
+        pub trait BorrowStrYes {
+            fn implements_borrow_str(&self) -> bool;
+        }
+        impl<T: std::borrow::Borrow<str>> BorrowStrYes for &Wrap<T> {
+            fn implements_borrow_str(&self) -> bool {
+                true
+            }
+        }
+        pub trait BorrowStrNo {
+            fn implements_borrow_str(&self) -> bool;
+        }
+        impl<T> BorrowStrNo for Wrap<T> {
+            fn implements_borrow_str(&self) -> bool {
+                false
+            }
+        }
+
+        pub trait SerializeYes {
+            fn implements_serialize(&self) -> bool;
+        }
+        impl<T: serde::Serialize> SerializeYes for &Wrap<T> {
+            fn implements_serialize(&self) -> bool {
+                true
+            }
+        }
+        pub trait SerializeNo {
+            fn implements_serialize(&self) -> bool;
+        }
+        impl<T> SerializeNo for Wrap<T> {
+            fn implements_serialize(&self) -> bool {
+                false
+            }
+        }
     }
 
     /// Does the value's type implement [`std::fmt::Display`]?
@@ -2040,15 +2117,56 @@ mod tests {
         }};
     }
 
-    /// **Eight facts in one test, and the both-directions shape is what stops it
-    /// going vacuous** (WR-04, D-21-8).
+    /// Does the value's type implement `Deref<Target = str>`?
+    macro_rules! implements_deref_str {
+        ($value:expr) => {{
+            #[allow(unused_imports)]
+            use $crate::text::tests::trait_probe::{DerefStrNo, DerefStrYes, Wrap};
+            (&&Wrap($value)).implements_deref_str()
+        }};
+    }
+
+    /// Does the value's type implement `Borrow<str>`?
+    macro_rules! implements_borrow_str {
+        ($value:expr) => {{
+            #[allow(unused_imports)]
+            use $crate::text::tests::trait_probe::{BorrowStrNo, BorrowStrYes, Wrap};
+            (&&Wrap($value)).implements_borrow_str()
+        }};
+    }
+
+    /// Does the value's type implement `serde::Serialize`?
+    macro_rules! implements_serialize {
+        ($value:expr) => {{
+            #[allow(unused_imports)]
+            use $crate::text::tests::trait_probe::{SerializeNo, SerializeYes, Wrap};
+            (&&Wrap($value)).implements_serialize()
+        }};
+    }
+
+    /// **Fourteen facts in one test, and the both-directions shape is what stops
+    /// it going vacuous** (WR-04, WR-01, D-21-8, D-21-36).
     ///
-    /// Three ABSENCES for [`Untrusted`] — the carrier cannot be interpolated or
-    /// coerced — and three PRESENCES for `String`, which is the control arm: if
-    /// the probe were broken (wrong receiver, a bound that never selects, a
-    /// trait not in scope) it would answer `false` for everything, and asserting
-    /// only the absences would pass forever while certifying nothing. That is
-    /// exactly the failure this phase has shipped at three levels.
+    /// SIX ABSENCES for [`Untrusted`] — the carrier cannot be interpolated,
+    /// coerced, borrowed or persisted — and SIX PRESENCES for `String`, which is
+    /// the control arm: if a probe were broken (wrong receiver, a bound that
+    /// never selects, a trait not in scope) it would answer `false` for
+    /// everything, and asserting only the absences would pass forever while
+    /// certifying nothing. That is exactly the failure this phase has shipped at
+    /// three levels, which is why **each of the three new presence arms was
+    /// confirmed answering `true` for `String` BEFORE its absence arm was
+    /// written**, not after.
+    ///
+    /// # WR-01: the certificate was three-sixths of the claim
+    ///
+    /// [`Untrusted`]'s doc listed six absent conversions, said "five", and this
+    /// control certified three. `Deref<Target = str>` is the one that mattered:
+    /// add it tomorrow and auto-deref restores the raw path at every existing
+    /// call site in the tree at once — no diff at any of them, every test in
+    /// this repository still green, and the doc still claiming the absence.
+    /// The review offered softening the doc's count as the alternative; that is
+    /// honest and weaker, and this phase's own history is that a
+    /// disclosed-but-unclosed residual returns as a Critical two rounds later.
     ///
     /// Then two PRESENCES for [`Rendered`], which is the other half of the
     /// design (D-21-8): the ESCAPED type is the convenient one, so at a render
@@ -2073,8 +2191,47 @@ mod tests {
     /// `Untrusted` implements `AsRef<str>`. A carrier that can be coerced to `&str` can be handed to any sink that takes one, which is the raw path restored everywhere at once and invisible in a diff. Remove the impl; the raw path is `as_raw_for_logic_only()` and it is meant to be conspicuous.
     /// ```
     ///
-    /// Both impls were removed and `git status --porcelain` confirmed clean
-    /// afterwards. A control never observed red is not a certificate.
+    /// **`impl std::ops::Deref<Target = str> for Untrusted`** returning
+    /// `&self.0` (21-27, WR-01):
+    ///
+    /// ```text
+    /// thread 'text::tests::an_untrusted_carrier_implements_none_of_the_string_conversions' (2050107) panicked at src/text.rs:2194:9:
+    /// `Untrusted` implements `Deref<Target = str>`. This is the one that silently rewrites code that is ALREADY WRITTEN: auto-deref restores the raw path at every existing call site in the tree at once, with no diff at any of them and every test in this repository still green. Remove the impl; the raw path is `as_raw_for_logic_only()` and it is meant to be conspicuous.
+    /// ```
+    ///
+    /// **`impl std::borrow::Borrow<str> for Untrusted`** returning `&self.0`:
+    ///
+    /// ```text
+    /// thread 'text::tests::an_untrusted_carrier_implements_none_of_the_string_conversions' (2053239) panicked at src/text.rs:2202:9:
+    /// `Untrusted` implements `Borrow<str>`. A carrier that borrows as `&str` is usable as a `&str` map key and can be handed to any sink that takes one — the same hole as `AsRef<str>`, through a second door.
+    /// ```
+    ///
+    /// **`impl serde::Serialize for Untrusted`** writing `serialize_str(&self.0)`:
+    ///
+    /// ```text
+    /// thread 'text::tests::an_untrusted_carrier_implements_none_of_the_string_conversions' (2055074) panicked at src/text.rs:2209:9:
+    /// `Untrusted` implements `serde::Serialize`. Persistence must go through `as_raw_for_logic_only()`, which is a choice a reviewer sees in a diff; a derived `Serialize` writes the raw bytes to disk from any struct that happens to contain one, invisibly.
+    /// ```
+    ///
+    /// Every impl was planted ONE AT A TIME, its red captured, then removed with
+    /// `git status --porcelain` confirming a clean tree before the next.
+    /// A control never observed red is not a certificate.
+    ///
+    /// # What is STILL not certified, with the direction
+    ///
+    /// Six traits are probed. `PartialEq<str>`, `Into<String>`,
+    /// `ToString` via some other route, a future INHERENT method returning
+    /// `&str` under a different name, and any trait a dependency adds to
+    /// [`Untrusted`] by blanket impl are **not** probed. **Under-detection,
+    /// silent.** These six are the ones whose absence the doc claims — they are
+    /// not the closed set of ways a raw `&str` could escape, and this test does
+    /// not claim to be one.
+    ///
+    /// The probe also answers for the type as THIS test binary sees it, so an
+    /// impl behind a Cargo feature this build does not enable is invisible to
+    /// it. What bounds that is coherence: [`Untrusted`] is defined in this crate
+    /// and all six traits are foreign, so any impl of them for it must live in
+    /// this crate — the orphan rule leaves nowhere else to put one.
     #[test]
     fn an_untrusted_carrier_implements_none_of_the_string_conversions() {
         // ── The carrier: three absences ───────────────────────────────────
@@ -2104,6 +2261,29 @@ mod tests {
              be handed straight to a ratatui sink and the retype would gate \
              nothing at all."
         );
+        assert!(
+            !implements_deref_str!(carrier()),
+            "`Untrusted` implements `Deref<Target = str>`. This is the one that \
+             silently rewrites code that is ALREADY WRITTEN: auto-deref \
+             restores the raw path at every existing call site in the tree at \
+             once, with no diff at any of them and every test in this \
+             repository still green. Remove the impl; the raw path is \
+             `as_raw_for_logic_only()` and it is meant to be conspicuous."
+        );
+        assert!(
+            !implements_borrow_str!(carrier()),
+            "`Untrusted` implements `Borrow<str>`. A carrier that borrows as \
+             `&str` is usable as a `&str` map key and can be handed to any sink \
+             that takes one — the same hole as `AsRef<str>`, through a second \
+             door."
+        );
+        assert!(
+            !implements_serialize!(carrier()),
+            "`Untrusted` implements `serde::Serialize`. Persistence must go \
+             through `as_raw_for_logic_only()`, which is a choice a reviewer \
+             sees in a diff; a derived `Serialize` writes the raw bytes to disk \
+             from any struct that happens to contain one, invisibly."
+        );
 
         // ── The control arm: three presences, so a broken probe cannot pass ──
         assert!(
@@ -2119,6 +2299,22 @@ mod tests {
         assert!(
             implements_into_cow_str!(String::from("demo")),
             "`String` implements `Into<Cow<'static, str>>` and the probe said \
+             otherwise, so the probe is broken"
+        );
+        assert!(
+            implements_deref_str!(String::from("demo")),
+            "`String` implements `Deref<Target = str>` and the probe said \
+             otherwise, so the probe is broken and the absence asserted above \
+             proved nothing"
+        );
+        assert!(
+            implements_borrow_str!(String::from("demo")),
+            "`String` implements `Borrow<str>` and the probe said otherwise, so \
+             the probe is broken"
+        );
+        assert!(
+            implements_serialize!(String::from("demo")),
+            "`String` implements `serde::Serialize` and the probe said \
              otherwise, so the probe is broken"
         );
 
