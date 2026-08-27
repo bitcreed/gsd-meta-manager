@@ -240,11 +240,40 @@ pub fn read_archive_file(path: &Path) -> String {
 ///
 /// Supports: `#`/`##`/`###` headings, `**bold**` inline, triple-backtick
 /// code blocks (DarkGray), and `- ` list items (rendered as-is).
+///
+/// # Every line is escaped here, and this is the ONE place it happens
+///
+/// This function is the single render for BOTH file viewers — the Archive tab's
+/// `FileView` depth and the Browse tab's `View` depth — and what it draws is the
+/// BODY of a markdown file read off disk from a repository the user cloned.
+/// `ProjectViewCache::{archive_file_content, browser_file_content}` are
+/// deliberately still `String` rather than `crate::text::Untrusted`, because a
+/// file body is not a name and the carrier's accessors do not fit a value that
+/// is split into lines and pattern-matched for markdown prefixes. **What closes
+/// the gap that leaves is this function**, which every byte of both bodies flows
+/// through.
+///
+/// Found by POPULATING `browser_file_content` in the render probe (21-25 T2),
+/// not by reading. Verbatim, before this escape landed:
+///
+/// ```text
+/// thread 'ui::screens::render_escape_guard::tests::the_screen_renders_identity_escaped' (719875) panicked at src/ui/screens/render_escape_guard.rs:1670:17:
+/// DetailScreen (src/ui/screens/detail.rs) [Browse tab, file view] rendered ['\u{e0041}'] into the terminal buffer. Those characters render as nothing, so what the operator reads is not what the value is.
+/// ```
+///
+/// **Escaped per LINE, never over the whole document**, because
+/// `crate::text::strip_terminal_controls` replaces every C0 control with a
+/// visible marker and `\n` is `0x0A` — escaping first and splitting second
+/// would collapse the entire file into one row. Splitting first and escaping
+/// each line leaves the markdown prefixes (`#`, backticks, `-`) untouched:
+/// none of them is in either class.
 pub fn render_markdown_lines(content: &str) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut in_code_block = false;
 
-    for line in content.lines() {
+    for raw_line in content.lines() {
+        let escaped = crate::text::render_for_terminal(raw_line).to_string();
+        let line = escaped.as_str();
         if line.starts_with("```") {
             in_code_block = !in_code_block;
             // Render the backtick delimiter itself in code block style

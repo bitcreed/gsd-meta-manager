@@ -3721,9 +3721,15 @@ impl DetailScreen {
             Span::styled(".planning", Style::default().fg(Color::Yellow)),
         ];
         if !rel_path.is_empty() {
+            // READ BY A HUMAN: the breadcrumb is the browsed directory's path
+            // relative to `.planning/`, so every segment of it is a directory
+            // name read off disk. The compiler cannot name this site — the
+            // value is a `PathBuf`, not a carrier — and it was found by
+            // POPULATING `browser_current_dir` in the probe fixture (21-25 T2).
+            // The red is quoted in `probe_ctx`'s doc.
             header_spans.push(Span::raw("/"));
             header_spans.push(Span::styled(
-                rel_path,
+                shown(&rel_path),
                 Style::default().fg(Color::Yellow),
             ));
         }
@@ -4031,7 +4037,19 @@ impl DetailScreen {
                         .add_modifier(Modifier::ITALIC),
                     _ => Style::default().fg(Color::Yellow),
                 };
-                let val_span = Span::styled(entry.value.clone(), val_style);
+                // READ BY A HUMAN, through a `ListItem`: `entry.value` is the
+                // value of a key parsed out of the project's
+                // `.planning/config.json`, and its string-valued keys (`mode`,
+                // `granularity`, `project_code`, `phase_naming`,
+                // `response_language`) are free-form text this build did not
+                // author. `category` and `key` beside it are `&'static str`
+                // literals from `build_defaults_entries` and need nothing.
+                //
+                // Found by POPULATING the fixture, not by reading (21-25 T2):
+                // `defaults_config` was `None` under probe, so this tab painted
+                // "No config loaded" and this `Span` was exercised by no
+                // committed control. The red is quoted in the fixture's doc.
+                let val_span = Span::styled(shown(&entry.value), val_style);
                 let mut spans = vec![
                     Span::raw("  "),
                     cat_span,
