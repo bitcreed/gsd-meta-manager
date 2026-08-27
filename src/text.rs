@@ -523,16 +523,47 @@ pub fn render_for_terminal(value: &str) -> Rendered {
 ///   message, an `anyhow` chain, or the `#[derive(Debug)]` of any struct that
 ///   contains one of these.
 ///
-/// Those five absences are certified by
+/// # CORRECTED 2026-08-27 (21-27, WR-01): the count named neither the list nor the certificate
+///
+/// **The sentence this corrects, verbatim:** *"Those five absences are
+/// certified by `tests::an_untrusted_carrier_implements_none_of_the_string_conversions`,
+/// a runtime control observed RED by planting the impls."*
+///
+/// It said **five**; the bullets above enumerate **six** absent conversions
+/// (`Display`, `AsRef<str>`, `Deref<Target = str>`, `Borrow<str>`,
+/// `Into<Cow<'_, str>>`, `serde`); and the control certified **three**. Three
+/// different numbers for one claim, and the gap was not cosmetic:
+/// `Deref<Target = str>` was among the uncertified three, and it is the one
+/// impl that silently rewrites code that is already written — auto-deref
+/// restores the raw path at every call site in the tree at once, invisible in a
+/// diff, with every test still green.
+///
+/// **What is true now:** all **SIX** absences above are certified by
 /// `tests::an_untrusted_carrier_implements_none_of_the_string_conversions`, a
-/// runtime control observed RED by planting the impls — not by a comment quoting
-/// a compile error somebody once saw, which is precisely what
-/// `LegacyRegistryKey` had.
+/// runtime control in which each absence has its own `String` presence arm (so
+/// a broken probe fails loudly instead of certifying nothing) and each was
+/// observed RED by planting the impl — not by a comment quoting a compile error
+/// somebody once saw, which is precisely what `LegacyRegistryKey` had. The
+/// hand-written `Debug` is pinned separately by
+/// `tests::a_carrier_debug_never_carries_an_invisible_character` and is not one
+/// of the six.
+///
+/// Six is what the doc claims and what the control certifies; it is **not** the
+/// closed set of ways a raw `&str` could escape. `PartialEq<str>`,
+/// `Into<String>` and any trait a dependency adds by blanket impl are not
+/// probed — **under-detection, silent**, and named in that test's own doc.
 ///
 /// Two accessors, each named after the question it answers:
 /// [`as_raw_for_logic_only`](Self::as_raw_for_logic_only) for lookups,
-/// comparisons, map keys, path segments, subprocess arguments and persistence;
+/// comparisons, map keys, path segments, **argv elements** and persistence;
 /// [`shown`](Self::shown) for what a human reads.
+///
+/// **Two accessors, THREE questions** (21-27, CR-01). This line used to say
+/// *"subprocess arguments"*, which collapsed an argv element — inert, because
+/// nothing parses it — with a fragment spliced into a program an interpreter
+/// will parse, which is not inert at all. The third question gets no accessor
+/// of its own on purpose; it gets a rule (`shell_command_fragment`) and a
+/// census. See [`as_raw_for_logic_only`](Self::as_raw_for_logic_only)'s doc.
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Untrusted(String);
 
@@ -549,11 +580,59 @@ impl Untrusted {
         Self(raw)
     }
 
-    /// The raw bytes, for lookups, comparisons, map keys, path segments,
-    /// subprocess arguments and persistence ONLY.
+    /// The raw bytes. **Three questions, not two** — and the third one has no
+    /// site left in this codebase.
     ///
     /// Deliberately unattractive to type. Reaching for it is a choice a reviewer
     /// sees in a diff, which is what a bare `String` field never was.
+    ///
+    /// # CORRECTED 2026-08-27 (21-27, CR-01): this doc used to collapse two different questions into one phrase
+    ///
+    /// **The sentence this corrects, verbatim:** *"The raw bytes, for lookups,
+    /// comparisons, map keys, path segments, subprocess arguments and
+    /// persistence ONLY."*
+    ///
+    /// It listed *subprocess arguments* as one accepted use. Two genuinely
+    /// different things hide under that phrase, and only one of them is inert.
+    /// **That collapse is why round 9's compiler-named-sites methodology — the
+    /// strongest mechanism this phase has built — could not see CR-01**: the
+    /// Sessions-tab resume in `ui::screens::detail` interpolated a
+    /// `/proc`-scraped session id into a program string handed to a command
+    /// interpreter, and because the value was, *in this doc's own words*, a
+    /// subprocess argument, the site was never retyped away from being answered.
+    /// The vocabulary was short by one question, so the site looked answered.
+    ///
+    /// # The three questions
+    ///
+    /// 1. **A lookup** — a map key, a comparison, a path segment, a persisted
+    ///    field. Inert: nothing parses it.
+    /// 2. **An argv element** — one element of a vector handed to
+    ///    [`std::process::Command`], which the kernel passes to `execve`
+    ///    unparsed. Also inert, and for the same reason: nothing parses it.
+    /// 3. **A fragment of a program an interpreter will parse** — a string
+    ///    interpolated into something handed to `sh -c` or an equivalent.
+    ///    **NOT inert.** Every metacharacter in the value is a candidate token,
+    ///    so a quote, a semicolon, a backtick, a dollar-parenthesis or a
+    ///    newline is code.
+    ///
+    /// # The rule: `shell_command_fragment`
+    ///
+    /// **A value reaching a subprocess goes in as its own argv element, and
+    /// never into a program string an interpreter will parse.** Quoting for the
+    /// interpreter is a correct technique and it is the WEAKER answer: it keeps
+    /// a parser in the path, so the property depends on the escaper being right
+    /// about every metacharacter of every interpreter. Deleting the interpreter
+    /// makes the question not arise. If an external program genuinely cannot be
+    /// driven without a program string, that program is reported as an
+    /// unsupported case by name rather than silently handled by quoting.
+    ///
+    /// There is deliberately **no third accessor** for question 3. Minting an
+    /// `as_raw_for_a_shell` would mint a supported way to do the unsafe thing.
+    /// The rule is checked instead of offered: see
+    /// [`no_executable_line_under_src_hands_an_interpreter_an_interpolated_program`](tests::no_executable_line_under_src_hands_an_interpreter_an_interpolated_program),
+    /// the census that reports any executable line under `src/` where question 3
+    /// would have to be asked. It returns zero, and it was observed red by
+    /// planting.
     pub fn as_raw_for_logic_only(&self) -> &str {
         &self.0
     }
@@ -1558,6 +1637,300 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // The interpreter census: `shell_command_fragment`, made checkable instead
+    // of written (21-27, CR-01, T-21-27-04)
+    // -----------------------------------------------------------------------
+
+    /// The stems of the command-interpreter binaries, each **missing its last
+    /// letter** so no line of this module spells one.
+    ///
+    /// The anti-self-match idiom this tree already uses at
+    /// [`ALPHABET_CLAUSE_HEAD`] / [`ALPHABET_CLAUSE_TAIL`] and at
+    /// `ui::screens::render_escape_guard`'s `IMPL_HEAD`/`IMPL_TAIL`. The census
+    /// walks `src/`, and `src/text.rs` is under `src/`; spelled whole, these
+    /// lines would be hits and the census would report itself.
+    ///
+    /// Splitting on the LAST letter rather than in the middle is deliberate:
+    /// a middle split would leave `"sh"` sitting in this array as the tail of
+    /// `bash`, `zsh`, `dash`, `ksh` and `fish`, which is exactly the token the
+    /// census looks for.
+    const INTERPRETER_STEMS: [&str; 8] = ["s", "bas", "zs", "das", "ks", "fis", "cs", "tcs"];
+    /// The letter every entry of [`INTERPRETER_STEMS`] is missing. Meaningless
+    /// alone, which is the whole point.
+    const INTERPRETER_STEM_TAIL: &str = "h";
+
+    /// How many physical lines a wrapped call may span before the join gives
+    /// up. Larger than [`ALPHABET_CLAUSE_JOIN_LINES`] because the construction
+    /// this census looks for is a `.args([...])` block, not a `matches!` arm:
+    /// the pre-fix `ui::screens::detail` site spanned fifteen physical lines
+    /// with the interpreter on one and the interpolation on another.
+    const INTERPRETER_JOIN_LINES: usize = 16;
+
+    /// The interpreter binary names, assembled at runtime.
+    fn interpreter_binary_names() -> Vec<String> {
+        INTERPRETER_STEMS
+            .iter()
+            .map(|stem| format!("{stem}{INTERPRETER_STEM_TAIL}"))
+            .collect()
+    }
+
+    /// Does `logical` NAME a command-interpreter binary?
+    ///
+    /// The name must appear as a **quoted token** (`"sh"`) or as the last
+    /// segment of a quoted path (`"/bin/sh"`) — which is how a binary is
+    /// actually named to [`std::process::Command`]. Matching a bare substring
+    /// would catch `shown`, `shorten_session_id` and `dash` used as a local
+    /// variable, none of which spawn anything.
+    fn names_an_interpreter(logical: &str) -> bool {
+        interpreter_binary_names().iter().any(|name| {
+            logical.contains(&format!("\"{name}\"")) || logical.contains(&format!("/{name}\""))
+        })
+    }
+
+    /// Does `logical` INTERPOLATE a value into a string?
+    ///
+    /// The formatting macros this codebase builds strings with, plus `&`-string
+    /// concatenation. Both halves must hold for a line to be reported: naming
+    /// an interpreter with a FIXED command is not the defect, and a census that
+    /// reported it would be a ban on a word rather than a check on a
+    /// construction — at which point the next author works around it by
+    /// renaming.
+    fn interpolates_into_a_string(logical: &str) -> bool {
+        ["format!", "write!", "writeln!", "+ &", "push_str(&"]
+            .iter()
+            .any(|marker| logical.contains(marker))
+    }
+
+    /// Whether `logical` has an unclosed `(` or `[`, so the next physical line
+    /// belongs to the same call.
+    ///
+    /// Deliberately NOT a method-chain follower. A rule that chased `.method()`
+    /// onto the next line would join
+    /// `Command::new("/bin/sh")` in `driver::liveness`'s test fixture to the
+    /// `.args([.., &format!(..)])` three lines below it and report a fixture
+    /// that spawns a FIXED command — a false positive on correct code. The
+    /// price is stated as a residual on the census itself.
+    fn has_an_unclosed_delimiter(logical: &str) -> bool {
+        logical.matches('(').count() > logical.matches(')').count()
+            || logical.matches('[').count() > logical.matches(']').count()
+    }
+
+    /// Every executable logical line under `src/` that hands a command
+    /// interpreter an interpolated program, as `path:line`.
+    ///
+    /// Extracted so the live assertion and its planted-defect control consume
+    /// the SAME function — a control that exercises a re-implementation
+    /// certifies the re-implementation.
+    fn interpreter_program_sites(root: &std::path::Path) -> Vec<String> {
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        collect_rs(root, &base, &mut files);
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut sites = Vec::new();
+        for (path, lines) in &files {
+            for (index, (number, line)) in lines.iter().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                let mut logical = line.to_string();
+                let mut ahead = index;
+                let mut taken = 1;
+                loop {
+                    if names_an_interpreter(&logical) && interpolates_into_a_string(&logical) {
+                        sites.push(format!("{path}:{number}"));
+                        break;
+                    }
+                    if taken >= INTERPRETER_JOIN_LINES
+                        || ahead + 1 >= lines.len()
+                        || !has_an_unclosed_delimiter(&logical)
+                    {
+                        break;
+                    }
+                    ahead += 1;
+                    taken += 1;
+                    let next = lines[ahead].1.trim();
+                    if next.starts_with("//") {
+                        continue;
+                    }
+                    logical.push(' ');
+                    logical.push_str(next);
+                }
+            }
+        }
+        sites
+    }
+
+    /// **`shell_command_fragment`, checked rather than written** (CR-01,
+    /// T-21-27-04).
+    ///
+    /// [`Untrusted::as_raw_for_logic_only`]'s doc states the rule — a value
+    /// reaching a subprocess goes in as its own argv element, never into a
+    /// program string an interpreter will parse. A doc cannot go red. This can.
+    /// It reports every executable line under `src/` where the doc's THIRD
+    /// question would have to be asked, and the answer must be none.
+    ///
+    /// **Why an EQUALITY on a count and not an `is_empty()`.** The same reason
+    /// [`exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src`]
+    /// uses one: the failure message can then name the offending sites and the
+    /// count, which is what sends the reader to the line rather than to the
+    /// census.
+    ///
+    /// # Observed RED by planting
+    ///
+    /// A function added to `src/driver/liveness.rs`, a file 21-27 does not
+    /// otherwise touch, spawning an interpreter with an interpolated program.
+    /// **The plant was the multi-line `.args([..])` shape CR-01 itself had** —
+    /// interpreter on one physical line, `format!` on another — so this red is
+    /// also the evidence that the join reaches across them and that the census
+    /// would have caught CR-01:
+    ///
+    /// ```text
+    /// thread 'text::tests::no_executable_line_under_src_hands_an_interpreter_an_interpolated_program' (2006122) panicked at src/text.rs:1799:9:
+    /// assertion `left == right` failed: 1 executable line(s) under src/ hand a command interpreter a program string with a value interpolated into it. Sites: ["src/driver/liveness.rs:281"]. Every metacharacter of that value is a candidate token there — a quote, a semicolon, a backtick, a dollar-parenthesis or a newline is CODE. The repair is to delete the interpreter: build an argv vector and let `execve` receive the bytes unparsed. Quoting for the interpreter is the weaker answer and `Untrusted::as_raw_for_logic_only`'s doc says why.
+    ///   left: 1
+    ///  right: 0
+    /// ```
+    ///
+    /// The plant was removed and `git status --porcelain` confirmed clean
+    /// afterwards (`M src/text.rs` alone). A control never observed red is not
+    /// a certificate — this module's own doc says so and this census is held to
+    /// it.
+    ///
+    /// # What it does NOT see, with the direction
+    ///
+    /// It is a SOURCE SCAN over one logical call at a time, so a construction
+    /// **assembled across statements** — a program string built into a local on
+    /// one line and handed to an interpreter three lines later — is invisible
+    /// to it. **Under-detection, silent.** So is a spawn whose interpreter is
+    /// named by a variable rather than a literal, and so is
+    /// `project_creator::execute_hook`, which spawns an interpreter on one line
+    /// and interpolates only into its ERROR message on another (correctly: the
+    /// hook command is a shell command by design, supplied by the operator's own
+    /// config).
+    ///
+    /// What bounds those is [`Untrusted::as_raw_for_logic_only`]'s rule and code
+    /// review, **not this census**. The census's job is to stop the single-call
+    /// form from being re-introduced silently, and it is deliberately not sold
+    /// as more than that.
+    #[test]
+    fn no_executable_line_under_src_hands_an_interpreter_an_interpolated_program() {
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut probe = Vec::new();
+        collect_rs(&base.join("src"), &base, &mut probe);
+        assert!(
+            !probe.is_empty(),
+            "the census walked src/ and found no Rust source at all, so a clean \
+             result here would be a walk that never looked"
+        );
+
+        let sites = interpreter_program_sites(&base.join("src"));
+        assert_eq!(
+            sites.len(),
+            0,
+            "{} executable line(s) under src/ hand a command interpreter a \
+             program string with a value interpolated into it. Sites: \
+             {sites:?}. Every metacharacter of that value is a candidate token \
+             there — a quote, a semicolon, a backtick, a dollar-parenthesis or \
+             a newline is CODE. The repair is to delete the interpreter: build \
+             an argv vector and let `execve` receive the bytes unparsed. \
+             Quoting for the interpreter is the weaker answer and \
+             `Untrusted::as_raw_for_logic_only`'s doc says why.",
+            sites.len()
+        );
+    }
+
+    /// **The census cannot report itself, ASSERTED rather than assumed.**
+    ///
+    /// `src/text.rs` is the file that builds the needle, and it is under `src/`.
+    /// This is not vacuous only because [`INTERPRETER_STEMS`] carries stems with
+    /// their last letter removed and the names are assembled at runtime — so no
+    /// line of this module spells a quoted interpreter binary, and the lines
+    /// that DO interpolate (this census's own `format!` calls) name none.
+    ///
+    /// Both directions: the module is clean, AND the needle it assembles is the
+    /// real one — a stem list that had drifted into meaninglessness would leave
+    /// the first assertion green while certifying nothing.
+    #[test]
+    fn the_interpreter_census_does_not_report_the_module_that_builds_its_needle() {
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let sites = interpreter_program_sites(&base.join("src").join("text.rs"));
+        assert!(
+            sites.is_empty(),
+            "the census reported its own module at {sites:?}. The needle must \
+             be assembled at runtime from halves that are meaningless apart, or \
+             the census counts itself and every real hit is buried in noise."
+        );
+
+        let names = interpreter_binary_names();
+        assert_eq!(
+            names.len(),
+            INTERPRETER_STEMS.len(),
+            "every stem must assemble to a name"
+        );
+        assert!(
+            names.iter().all(|name| name.len() >= 2
+                && name.ends_with(INTERPRETER_STEM_TAIL)
+                && !INTERPRETER_STEMS.contains(&name.as_str())),
+            "the assembled names {names:?} must differ from the stems that \
+             build them; if a stem already equalled its name, that stem's own \
+             line would spell an interpreter and the anti-self-match property \
+             above would be an accident rather than a construction"
+        );
+    }
+
+    /// **The NON-BAN direction** (21-27 T2(d)).
+    ///
+    /// A line that names an interpreter binary with a **fixed, non-interpolated**
+    /// command is not the defect and must not be reported. Without this arm the
+    /// census would be a ban on a word rather than a check on a construction,
+    /// and the next author would work around it by renaming the binary.
+    ///
+    /// The in-tree fixture is `src/driver/liveness.rs:414`,
+    /// `std::process::Command::new("/bin/sh")` with `.args(["-c", "sleep 300;
+    /// :", ..])` — a real spawn of a real interpreter with a fixed program,
+    /// which the census leaves alone. Both directions are driven through the
+    /// same predicates the live census consumes: the fixed form is silent, and
+    /// the same line with an interpolation added is reported.
+    #[test]
+    fn the_interpreter_census_does_not_report_a_fixed_non_interpolated_invocation() {
+        // Assembled at runtime for the same reason the needle is — spelled
+        // whole, these fixture lines would become live census hits in this very
+        // file. The SPAWN CONSTRUCTOR is split for the same reason against a
+        // DIFFERENT census: `tests/spawn_seam_guard.rs` scans `src/` for the
+        // literal `Command::new(`, and a fixture that spelled it whole put
+        // `src/text.rs` on that guard's unexpected-spawn-site list. Measured,
+        // not anticipated — it went red on the first full run.
+        let interpreter = interpreter_binary_names()[0].clone();
+        let quoted = format!("\"/bin/{interpreter}\"");
+        let spawn = format!("Comm{}::new(", "and");
+
+        let fixed = format!("let c = {spawn}{quoted}).args([\"-c\", \"sleep 300; :\"]);");
+        assert!(
+            names_an_interpreter(&fixed),
+            "the fixture {fixed:?} must NAME an interpreter, or the arm below \
+             passes because the fixture is inert rather than because the census \
+             is precise"
+        );
+        assert!(
+            !interpolates_into_a_string(&fixed),
+            "the fixture {fixed:?} interpolates, so it is the wrong fixture for \
+             the non-ban arm"
+        );
+
+        // The same line with a value interpolated in IS reported. Without this
+        // arm, a predicate that answered `false` for everything would leave the
+        // assertion above green while certifying nothing.
+        let hostile =
+            format!("let c = {spawn}{quoted}).args([\"-c\", &format!(\"echo {{v}}\")]);");
+        assert!(
+            names_an_interpreter(&hostile) && interpolates_into_a_string(&hostile),
+            "the hostile twin {hostile:?} must satisfy BOTH halves, or the \
+             census cannot see the defect it exists for"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // The carrier's ABSENT traits, certified by a control that goes red
     // (WR-04, T-21-23-06)
     // -----------------------------------------------------------------------
@@ -1662,6 +2035,59 @@ mod tests {
                 false
             }
         }
+
+        // ── WR-01: the three absences the doc claimed and nothing certified ──
+
+        pub trait DerefStrYes {
+            fn implements_deref_str(&self) -> bool;
+        }
+        impl<T: std::ops::Deref<Target = str>> DerefStrYes for &Wrap<T> {
+            fn implements_deref_str(&self) -> bool {
+                true
+            }
+        }
+        pub trait DerefStrNo {
+            fn implements_deref_str(&self) -> bool;
+        }
+        impl<T> DerefStrNo for Wrap<T> {
+            fn implements_deref_str(&self) -> bool {
+                false
+            }
+        }
+
+        pub trait BorrowStrYes {
+            fn implements_borrow_str(&self) -> bool;
+        }
+        impl<T: std::borrow::Borrow<str>> BorrowStrYes for &Wrap<T> {
+            fn implements_borrow_str(&self) -> bool {
+                true
+            }
+        }
+        pub trait BorrowStrNo {
+            fn implements_borrow_str(&self) -> bool;
+        }
+        impl<T> BorrowStrNo for Wrap<T> {
+            fn implements_borrow_str(&self) -> bool {
+                false
+            }
+        }
+
+        pub trait SerializeYes {
+            fn implements_serialize(&self) -> bool;
+        }
+        impl<T: serde::Serialize> SerializeYes for &Wrap<T> {
+            fn implements_serialize(&self) -> bool {
+                true
+            }
+        }
+        pub trait SerializeNo {
+            fn implements_serialize(&self) -> bool;
+        }
+        impl<T> SerializeNo for Wrap<T> {
+            fn implements_serialize(&self) -> bool {
+                false
+            }
+        }
     }
 
     /// Does the value's type implement [`std::fmt::Display`]?
@@ -1691,15 +2117,56 @@ mod tests {
         }};
     }
 
-    /// **Eight facts in one test, and the both-directions shape is what stops it
-    /// going vacuous** (WR-04, D-21-8).
+    /// Does the value's type implement `Deref<Target = str>`?
+    macro_rules! implements_deref_str {
+        ($value:expr) => {{
+            #[allow(unused_imports)]
+            use $crate::text::tests::trait_probe::{DerefStrNo, DerefStrYes, Wrap};
+            (&&Wrap($value)).implements_deref_str()
+        }};
+    }
+
+    /// Does the value's type implement `Borrow<str>`?
+    macro_rules! implements_borrow_str {
+        ($value:expr) => {{
+            #[allow(unused_imports)]
+            use $crate::text::tests::trait_probe::{BorrowStrNo, BorrowStrYes, Wrap};
+            (&&Wrap($value)).implements_borrow_str()
+        }};
+    }
+
+    /// Does the value's type implement `serde::Serialize`?
+    macro_rules! implements_serialize {
+        ($value:expr) => {{
+            #[allow(unused_imports)]
+            use $crate::text::tests::trait_probe::{SerializeNo, SerializeYes, Wrap};
+            (&&Wrap($value)).implements_serialize()
+        }};
+    }
+
+    /// **Fourteen facts in one test, and the both-directions shape is what stops
+    /// it going vacuous** (WR-04, WR-01, D-21-8, D-21-36).
     ///
-    /// Three ABSENCES for [`Untrusted`] — the carrier cannot be interpolated or
-    /// coerced — and three PRESENCES for `String`, which is the control arm: if
-    /// the probe were broken (wrong receiver, a bound that never selects, a
-    /// trait not in scope) it would answer `false` for everything, and asserting
-    /// only the absences would pass forever while certifying nothing. That is
-    /// exactly the failure this phase has shipped at three levels.
+    /// SIX ABSENCES for [`Untrusted`] — the carrier cannot be interpolated,
+    /// coerced, borrowed or persisted — and SIX PRESENCES for `String`, which is
+    /// the control arm: if a probe were broken (wrong receiver, a bound that
+    /// never selects, a trait not in scope) it would answer `false` for
+    /// everything, and asserting only the absences would pass forever while
+    /// certifying nothing. That is exactly the failure this phase has shipped at
+    /// three levels, which is why **each of the three new presence arms was
+    /// confirmed answering `true` for `String` BEFORE its absence arm was
+    /// written**, not after.
+    ///
+    /// # WR-01: the certificate was three-sixths of the claim
+    ///
+    /// [`Untrusted`]'s doc listed six absent conversions, said "five", and this
+    /// control certified three. `Deref<Target = str>` is the one that mattered:
+    /// add it tomorrow and auto-deref restores the raw path at every existing
+    /// call site in the tree at once — no diff at any of them, every test in
+    /// this repository still green, and the doc still claiming the absence.
+    /// The review offered softening the doc's count as the alternative; that is
+    /// honest and weaker, and this phase's own history is that a
+    /// disclosed-but-unclosed residual returns as a Critical two rounds later.
     ///
     /// Then two PRESENCES for [`Rendered`], which is the other half of the
     /// design (D-21-8): the ESCAPED type is the convenient one, so at a render
@@ -1724,8 +2191,47 @@ mod tests {
     /// `Untrusted` implements `AsRef<str>`. A carrier that can be coerced to `&str` can be handed to any sink that takes one, which is the raw path restored everywhere at once and invisible in a diff. Remove the impl; the raw path is `as_raw_for_logic_only()` and it is meant to be conspicuous.
     /// ```
     ///
-    /// Both impls were removed and `git status --porcelain` confirmed clean
-    /// afterwards. A control never observed red is not a certificate.
+    /// **`impl std::ops::Deref<Target = str> for Untrusted`** returning
+    /// `&self.0` (21-27, WR-01):
+    ///
+    /// ```text
+    /// thread 'text::tests::an_untrusted_carrier_implements_none_of_the_string_conversions' (2050107) panicked at src/text.rs:2194:9:
+    /// `Untrusted` implements `Deref<Target = str>`. This is the one that silently rewrites code that is ALREADY WRITTEN: auto-deref restores the raw path at every existing call site in the tree at once, with no diff at any of them and every test in this repository still green. Remove the impl; the raw path is `as_raw_for_logic_only()` and it is meant to be conspicuous.
+    /// ```
+    ///
+    /// **`impl std::borrow::Borrow<str> for Untrusted`** returning `&self.0`:
+    ///
+    /// ```text
+    /// thread 'text::tests::an_untrusted_carrier_implements_none_of_the_string_conversions' (2053239) panicked at src/text.rs:2202:9:
+    /// `Untrusted` implements `Borrow<str>`. A carrier that borrows as `&str` is usable as a `&str` map key and can be handed to any sink that takes one — the same hole as `AsRef<str>`, through a second door.
+    /// ```
+    ///
+    /// **`impl serde::Serialize for Untrusted`** writing `serialize_str(&self.0)`:
+    ///
+    /// ```text
+    /// thread 'text::tests::an_untrusted_carrier_implements_none_of_the_string_conversions' (2055074) panicked at src/text.rs:2209:9:
+    /// `Untrusted` implements `serde::Serialize`. Persistence must go through `as_raw_for_logic_only()`, which is a choice a reviewer sees in a diff; a derived `Serialize` writes the raw bytes to disk from any struct that happens to contain one, invisibly.
+    /// ```
+    ///
+    /// Every impl was planted ONE AT A TIME, its red captured, then removed with
+    /// `git status --porcelain` confirming a clean tree before the next.
+    /// A control never observed red is not a certificate.
+    ///
+    /// # What is STILL not certified, with the direction
+    ///
+    /// Six traits are probed. `PartialEq<str>`, `Into<String>`,
+    /// `ToString` via some other route, a future INHERENT method returning
+    /// `&str` under a different name, and any trait a dependency adds to
+    /// [`Untrusted`] by blanket impl are **not** probed. **Under-detection,
+    /// silent.** These six are the ones whose absence the doc claims — they are
+    /// not the closed set of ways a raw `&str` could escape, and this test does
+    /// not claim to be one.
+    ///
+    /// The probe also answers for the type as THIS test binary sees it, so an
+    /// impl behind a Cargo feature this build does not enable is invisible to
+    /// it. What bounds that is coherence: [`Untrusted`] is defined in this crate
+    /// and all six traits are foreign, so any impl of them for it must live in
+    /// this crate — the orphan rule leaves nowhere else to put one.
     #[test]
     fn an_untrusted_carrier_implements_none_of_the_string_conversions() {
         // ── The carrier: three absences ───────────────────────────────────
@@ -1755,6 +2261,29 @@ mod tests {
              be handed straight to a ratatui sink and the retype would gate \
              nothing at all."
         );
+        assert!(
+            !implements_deref_str!(carrier()),
+            "`Untrusted` implements `Deref<Target = str>`. This is the one that \
+             silently rewrites code that is ALREADY WRITTEN: auto-deref \
+             restores the raw path at every existing call site in the tree at \
+             once, with no diff at any of them and every test in this \
+             repository still green. Remove the impl; the raw path is \
+             `as_raw_for_logic_only()` and it is meant to be conspicuous."
+        );
+        assert!(
+            !implements_borrow_str!(carrier()),
+            "`Untrusted` implements `Borrow<str>`. A carrier that borrows as \
+             `&str` is usable as a `&str` map key and can be handed to any sink \
+             that takes one — the same hole as `AsRef<str>`, through a second \
+             door."
+        );
+        assert!(
+            !implements_serialize!(carrier()),
+            "`Untrusted` implements `serde::Serialize`. Persistence must go \
+             through `as_raw_for_logic_only()`, which is a choice a reviewer \
+             sees in a diff; a derived `Serialize` writes the raw bytes to disk \
+             from any struct that happens to contain one, invisibly."
+        );
 
         // ── The control arm: three presences, so a broken probe cannot pass ──
         assert!(
@@ -1770,6 +2299,22 @@ mod tests {
         assert!(
             implements_into_cow_str!(String::from("demo")),
             "`String` implements `Into<Cow<'static, str>>` and the probe said \
+             otherwise, so the probe is broken"
+        );
+        assert!(
+            implements_deref_str!(String::from("demo")),
+            "`String` implements `Deref<Target = str>` and the probe said \
+             otherwise, so the probe is broken and the absence asserted above \
+             proved nothing"
+        );
+        assert!(
+            implements_borrow_str!(String::from("demo")),
+            "`String` implements `Borrow<str>` and the probe said otherwise, so \
+             the probe is broken"
+        );
+        assert!(
+            implements_serialize!(String::from("demo")),
+            "`String` implements `serde::Serialize` and the probe said \
              otherwise, so the probe is broken"
         );
 
