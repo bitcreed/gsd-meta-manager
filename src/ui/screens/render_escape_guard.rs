@@ -69,17 +69,46 @@
 //!
 //! 1. **The probe sees only what a screen renders under the states its fixture
 //!    constructs.** A render path reachable only under state the fixture does
-//!    not build is invisible to it. **Under-detection, and silent.** Partially
-//!    bounded — each disposition row NAMES the states its fixture puts the
-//!    screen in, so what was and was not looked at is readable rather than
-//!    assumed, and `DetailScreen` is rendered in all eleven of its sub-views
-//!    rather than only its default. Not bounded at all within a state: the
+//!    not build is invisible to it. **Under-detection, and silent.**
+//!
+//!    **REWRITTEN 2026-08-27 (21-25), and the wording it replaces is quoted so
+//!    the narrowing is checkable rather than asserted.** This limit used to
+//!    read, after the sentence above: *"Not bounded at all within a state: the
 //!    Backlog, Sessions, Archive, Browse and Defaults tabs, and the Driver
 //!    tab's run list and run detail, draw from `view_cache` / `archive_cache` /
 //!    `active_sessions` entries that `probe_ctx` leaves at their defaults, so
 //!    those tabs render their empty branch and their populated branches are
 //!    **not** exercised by any committed control. That residual is disclosed,
-//!    not closed.
+//!    not closed."*
+//!
+//!    Every one of those caches is now populated by [`probe_ctx`], so all
+//!    eleven tabs render a POPULATED branch on every run, and three of them are
+//!    additionally probed in the second state their own dispatch field selects
+//!    (`backlog_expanded`, `archive_depth` at two further depths,
+//!    `browser_depth`). Populating them was not bookkeeping: it produced four
+//!    live leaks that no reader had found in nine rounds — the Defaults tab's
+//!    `entry.value`, the Browse tab's breadcrumb path, four half-escaped sites
+//!    on the Driver tab (control class applied, invisible class not), and the
+//!    markdown body both file viewers draw.
+//!
+//!    **What is bounded now, and by what.** Arrival is recorded PER STATE by
+//!    [`DETAIL_TAB_ARRIVAL`] and asserted as a set equality in both directions,
+//!    measured against the chrome baseline [`chrome_ctx`] renders rather than
+//!    by containment — so a populated cache whose render the tab never reads is
+//!    reported by name instead of counted as coverage. That check was observed
+//!    red by planting in both directions (an emptied `backlog_items`; a row
+//!    flipped to `false`).
+//!
+//!    **What REMAINS, with a concrete example, because a residual with no
+//!    example is a residual nobody can check.** The residual is now *states no
+//!    fixture constructs* rather than *tabs no fixture populates*. Concretely:
+//!    the Defaults tab's string-EDIT overlay — `defaults_editing = Some(idx)`
+//!    on a `ConfigValueKind::String` entry — draws `defaults_text_buffer` and
+//!    `entry.key` into a `Clear`ed popup through a code path no probe state
+//!    reaches, and the Driver tab's `driver_dry_run` preview is another. Both
+//!    are reachable only by driving the key handler into a mode, which is the
+//!    shape `DriverStartScreen`'s "goal step" fixture uses and which is not
+//!    done for these. **Under-detection, silent.**
 //! 2. **The probe judges the invisible class, not homoglyphs.** A Cyrillic `а`
 //!    renders like a Latin `a` and is accepted here, exactly as
 //!    [`crate::text::carries_invisible_formatting`] records for its own class.
@@ -211,11 +240,35 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[DispositionRow] = &[
         RENDERS_IDENTITY,
         "The widest identity surface in the tree. Draws the registry key in its \
          tab-bar title, and in its eleven tabs the values parsed out of the \
-         project's `.planning/` — status, milestone, phase numbers and names, \
-         HANDOFF pause context, queued commands, backlog and session entries, \
-         git log text, file names. All of it is third-party text under SAFE-07 \
-         and none of it was authored by this build. Fixture states: one per \
-         sub-view, all eleven.",
+         project's `.planning/`. Per tab, the values and where their bytes come \
+         from: PhaseList and RoadmapViz draw each `RoadmapPhase`'s number, name \
+         and description plus the status and milestone, all parsed from \
+         `ROADMAP.md`/`STATE.md`; Pipeline draws the current phase name, status \
+         and the HANDOFF pause context; Queue draws each `QueuedAction::command` \
+         from `queue.md`; Backlog draws a `999.*` directory's number and \
+         description in its collapsed state and that directory's NAME (through \
+         `Block::title`) plus the BODY of the first `.md` file inside it when \
+         expanded; GitHistory draws a third-party repository's commit hash, \
+         date, author and subject; Sessions draws a session id scraped from \
+         another process's `--resume` argument via `/proc`; Archive draws \
+         milestone version strings, archive file names and phase display names \
+         from `.planning/archive/` directory listings, at three different \
+         depths that are three different renders of three different names; \
+         Defaults draws the value of every key of the project's \
+         `.planning/config.json`, of which `mode`, `granularity`, \
+         `project_code`, `phase_naming` and `response_language` are free-form \
+         strings; Browse draws the browsed directory's path relative to \
+         `.planning/`, each listing entry's name, and — in its file view — the \
+         file name and the whole markdown body; Driver draws the run id suffix, \
+         goal, `gsd_command` and run directory read back out of a run's \
+         committed `run.json`. All of it is third-party text under SAFE-07 and \
+         none of it was authored by this build. Fixture states: one per \
+         sub-view, all eleven, EACH RENDERING ITS POPULATED BRANCH (21-25), plus \
+         four within-tab states for the fields that dispatch to a different \
+         render — Backlog expanded, Archive at its phase list and file list \
+         depths, Browse at its file view. Arrival is recorded per state by \
+         DETAIL_TAB_ARRIVAL against the chrome baseline, so a populated cache \
+         the render never reads is reported rather than counted.",
     ),
     (
         "DriverConfirmScreen",
@@ -272,10 +325,24 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[DispositionRow] = &[
         RENDERS_IDENTITY,
         "The dashboard. Draws every registered key in the name column together \
          with the phase, status and milestone parsed from each project's \
-         `.planning/`, and echoes the filter text in its search footer. \
-         `row_badge`'s lookup keys off the RAW alias while the cell beside it is \
-         escaped — the worked example of the split. Fixture states: the \
-         dashboard, and the dashboard with the filter footer active.",
+         `.planning/`, echoes the filter text in its search footer, and — the \
+         surface no row named until 21-25 — draws `ctx.status_message` in its \
+         STATUS FOOTER. That message is built by six `status_message = Some(..)` \
+         sites in `src/app.rs`; four of them interpolate a registry key or a run \
+         id into a sentence this build wrote (`Auto-registered: {alias}`, \
+         `Created project \"{alias}\"`, `Driving {alias} — run {run_id}`, \
+         `Stopping {alias} — run {run_id}`), one is a literal, and the sixth \
+         forwards whatever any screen handed to `ScreenAction::SetStatusMessage` \
+         — so the producer set is not closed. **THE ESCAPE FOR THIS SURFACE \
+         LIVES AT THE RENDER SITE, NOT AT THE PRODUCER**, and a reader who \
+         assumes round 9's producer rule holds everywhere will look for it in \
+         the wrong file: the trust boundary runs through the middle of a \
+         `format!`, so there is no field a carrier could type. The argument, its \
+         residual and what would remove it are written at \
+         `src/ui/screens/normal.rs`'s status branch. `row_badge`'s lookup keys \
+         off the RAW alias while the cell beside it is escaped — the worked \
+         example of the split. Fixture states: the dashboard, the dashboard with \
+         a status message, and the dashboard with the filter footer active.",
     ),
     (
         "QueueDeleteConfirmScreen",
@@ -626,16 +693,240 @@ fn hostile_project_state(identity: &str) -> crate::state_reader::ProjectState {
 /// Reproduction rate with this fixture and the escape NOT applied: **20 failures
 /// in 20 runs** of the compiled lib test binary. A defect that fires 20 out of 20
 /// is not a flake.
+/// # The rest of the fixture hole, closed in 21-25 rather than re-disclosed
+///
+/// 21-23 closed `git_entries`. The same hole was still open for five more of
+/// `DetailScreen`'s eleven tabs, and LIMIT 1 named them by name: **Backlog,
+/// Sessions, Archive, Browse and Defaults** all reached their caches only
+/// through `view_cache.entry(..).or_default()`, so each rendered its EMPTY
+/// branch under probe and every render site below that branch was exercised by
+/// no committed control. The Driver tab was in the same position through
+/// `driver_runs`.
+///
+/// Everything below populates those caches with the identity the probe handed
+/// in, so each tab takes its POPULATED branch on every run. The measured
+/// consequence, recorded rather than promised: with these caches populated and
+/// the escapes of this plan's Task 1 NOT applied, the probe goes red naming the
+/// specific tab. Four such reds are quoted in
+/// `21-25-SUMMARY.md`, one per newly covered tab, each produced by reverting
+/// exactly one `shown()` and restoring it immediately.
+///
+/// **What this does NOT do**, said here because a populated cache the render
+/// path never reads makes every new assertion pass by silence. Arrival is
+/// RECORDED PER TAB by [`DETAIL_TAB_ARRIVAL`] and asserted as a set equality,
+/// so a tab whose cache is populated but whose identity does not reach the
+/// buffer is reported by name instead of counted as coverage.
 fn probe_ctx(identity: &str) -> AppContext {
+    use crate::browser::{BrowserDepth, BrowserEntry};
+    use crate::state_reader::backlog::BacklogItem;
+    use crate::text::Untrusted;
+    use std::path::PathBuf;
+
     let mut ctx = super::tests::ctx_with_aliases(&[identity]);
     ctx.project_states
         .insert(identity.to_string(), hostile_project_state(identity));
+
+    // `ctx_with_aliases` registers the project at this path; the Sessions tab
+    // filters on equality with it and the Browse tab's breadcrumb is computed
+    // relative to it, so both are derived from it rather than respelled.
+    let project_path = ctx
+        .config
+        .projects
+        .get(identity)
+        .map(|project| project.path.clone())
+        .unwrap_or_else(|| PathBuf::from("/nonexistent").join(identity));
+    let planning_root = project_path.join(".planning");
+
+    // The Sessions tab: a session whose `working_dir` matches the registered
+    // project, or the tab's filter drops it and it renders "No active Claude
+    // sessions" — the empty branch this fixture exists to leave.
+    ctx.active_sessions = vec![crate::session_detector::ClaudeSession {
+        pid: 4242,
+        session_id: Some(Untrusted::from_untrusted_source(identity.to_string())),
+        working_dir: project_path.clone(),
+        start_time: Some(1),
+        tty: None,
+    }];
+
+    // The Archive tab at its PhaseList and FileList depths: both read
+    // `ctx.archive_cache`, which is keyed by the RAW milestone string because
+    // that is what the navigation key is.
+    ctx.archive_cache.insert(
+        identity.to_string(),
+        hostile_milestone_archive(identity),
+    );
+
     let cache = ctx.view_cache.entry(identity.to_string()).or_default();
     cache.git_entries = vec![hostile_git_entry(identity)];
     cache.git_selected = 0;
+
+    // The Backlog tab, in its COLLAPSED state here. The expanded split pane —
+    // whose `Block::title` draws `item.dir_name` — is a separate probe state
+    // built by `states_over_sub_views`, because `backlog_expanded` selects
+    // between two different renders of two different values.
+    cache.backlog_items = vec![BacklogItem {
+        dir_name: Untrusted::from_untrusted_source(identity.to_string()),
+        number: Untrusted::from_untrusted_source(identity.to_string()),
+        description: Untrusted::from_untrusted_source(identity.to_string()),
+        content: Some(Untrusted::from_untrusted_source(identity.to_string())),
+        path: Some(planning_root.join("phases").join(identity)),
+    }];
+    cache.backlog_selected = 0;
+
+    // The Archive tab at its MilestoneList depth (the default), which reads
+    // `archive_milestones` rather than `archive_cache`.
+    cache.archive_milestones = vec![Untrusted::from_untrusted_source(identity.to_string())];
+    cache.archive_file_name = Some(Untrusted::from_untrusted_source(identity.to_string()));
+
+    // The Browse tab. `browser_root` and `browser_current_dir` are BOTH needed:
+    // the breadcrumb draws the path of the second relative to the first, and
+    // `browser_entries` is what the list below it draws.
+    cache.browser_depth = BrowserDepth::List;
+    cache.browser_root = Some(planning_root.clone());
+    cache.browser_current_dir = Some(planning_root.join(identity));
+    cache.browser_entry_dir = Some(planning_root.clone());
+    cache.browser_entries = vec![
+        BrowserEntry {
+            name: Untrusted::from_untrusted_source(identity.to_string()),
+            path: planning_root.join(identity),
+            is_dir: true,
+        },
+        BrowserEntry {
+            name: Untrusted::from_untrusted_source(format!("{identity}.md")),
+            path: planning_root.join(format!("{identity}.md")),
+            is_dir: false,
+        },
+    ];
+    cache.browser_selected = 0;
+    cache.browser_file_name = Some(Untrusted::from_untrusted_source(format!("{identity}.md")));
+
+    // The Defaults tab. It renders `entry.value` for every key of a parsed
+    // `.planning/config.json`, and the string-valued keys are the ones a
+    // fixture can influence — `mode`, `granularity`, `project_code`. If the
+    // config is `None` the tab paints "No config loaded" and nothing else,
+    // which is the empty branch.
+    cache.defaults_config = Some(hostile_gsd_config(identity));
+
+    // The Driver tab's run list. A `RunSummary` is read back out of a run's
+    // committed `run.json`, so its `run_id`, `goal` and `gsd_command` are all
+    // third-party text. Reaching the list does NOT require a live run — the
+    // render only asks whether `driver_runs` is empty.
+    cache.driver_runs = vec![crate::journal::RunSummary {
+        run_id: identity.to_string(),
+        started_at: "2026-08-27T00:00:00Z".to_string(),
+        ended_at: None,
+        goal: identity.to_string(),
+        gsd_command: format!("/{identity}"),
+        outcome: None,
+    }];
+    cache.driver_selected_run = 0;
+
     ctx.recompute_filtered_aliases();
     ctx.table_state.select(Some(0));
     ctx
+}
+
+/// The authored half of the status footer's message, spelled exactly as
+/// `App::start_driver_run` builds it at `src/app.rs:1870`.
+///
+/// **A token only the status branch can produce.** `render_footer` dispatches
+/// on `searching` first and `status_message` second; the alternative branch,
+/// `render_normal_footer`, draws counts and keybinding hints and nothing
+/// containing this. Asserting on it is what tells a reached branch apart from a
+/// state that set a field the render never looks at — the failure the
+/// `searching: true` note in this module records, where an assertion passed by
+/// silence until somebody noticed.
+const STATUS_BRANCH_TOKEN: &str = "Driving ";
+
+/// A status message shaped like the ones `src/app.rs` actually builds.
+///
+/// **The whole point of WR-03 is visible in this one line**: the untrusted
+/// value is INSIDE a `format!`, interleaved with a sentence this build wrote,
+/// so there is no field to give a carrier. Measured at HEAD, six
+/// `status_message = Some(..)` sites exist in `src/app.rs`; four of them
+/// interpolate a registry key or a run id exactly like this, one is a literal,
+/// and the sixth forwards whatever any screen handed to
+/// `ScreenAction::SetStatusMessage`.
+fn status_message_like_app_builds_it(identity: &str) -> String {
+    format!("{STATUS_BRANCH_TOKEN}{identity} \u{2014} run {identity}")
+}
+
+/// The SAME `AppContext` as [`probe_ctx`] with every tab-body source emptied —
+/// the chrome baseline against which per-tab arrival is measured (D-21-23).
+///
+/// # Why a baseline is needed at all, and what it caught
+///
+/// `DetailScreen` draws the registry key into its bordered block's title on
+/// EVERY tab. So `clean_text.contains(clean)` is true for all fifteen probe
+/// states whatever the tab body renders, and a per-tab arrival record built on
+/// it would be a table of fifteen `true`s that stays green when a cache is
+/// emptied. **That was measured, not reasoned about**: with
+/// `probe_ctx`'s `backlog_items` cleared and nothing else changed, the naive
+/// containment check still reported the Backlog tab as arriving.
+///
+/// The alias is deliberately left registered here, because the chrome that
+/// draws it is exactly what this baseline is measuring. Everything a TAB reads
+/// is emptied: the project state, the sessions, the archive cache and the whole
+/// `ProjectViewCache`.
+///
+/// Measured chrome counts at the time this landed, so a future reader can see
+/// the size of the effect rather than take it on trust: 1 occurrence for the
+/// Backlog, GitHistory, Pipeline, Queue, Sessions, Archive, Defaults and Browse
+/// tabs; 2 for PhaseList, RoadmapViz, Driver and the three states whose
+/// breadcrumb draws a depth-derived milestone. Against populated counts of 2 to
+/// 7. **These numbers are NOT pinned** — the assertion compares against the
+/// baseline it measures on the same run, so a chrome change moves both sides.
+fn chrome_ctx(identity: &str) -> AppContext {
+    let mut ctx = super::tests::ctx_with_aliases(&[identity]);
+    ctx.recompute_filtered_aliases();
+    ctx.table_state.select(Some(0));
+    ctx
+}
+
+/// One milestone archive whose every name carries `identity`.
+///
+/// A top-level file AND a phase (with its own file), because the Archive tab
+/// renders those two through different code paths at different depths: the
+/// `PhaseList` depth draws `top_level_files[..].name` and
+/// `phases[..].display_name`, the `FileList` depth draws
+/// `phases[..].files[..].name`.
+fn hostile_milestone_archive(identity: &str) -> crate::archive::MilestoneArchive {
+    use crate::archive::{ArchiveFile, MilestoneArchive, PhaseArchive};
+    use crate::text::Untrusted;
+    use std::path::PathBuf;
+
+    let file = |name: &str| ArchiveFile {
+        name: Untrusted::from_untrusted_source(name.to_string()),
+        path: PathBuf::from("/nonexistent").join(name),
+    };
+
+    MilestoneArchive {
+        version: identity.to_string(),
+        top_level_files: vec![file(identity)],
+        phases: vec![PhaseArchive {
+            number: 1,
+            name: Untrusted::from_untrusted_source(identity.to_string()),
+            display_name: Untrusted::from_untrusted_source(format!("Phase 01: {identity}")),
+            files: vec![file(identity)],
+        }],
+    }
+}
+
+/// A parsed `.planning/config.json` whose string-valued keys carry `identity`.
+///
+/// The Defaults tab draws `entry.value` for every key it knows about. Most of
+/// those values are booleans and numbers, which a fixture cannot make hostile;
+/// the three below are the free-form strings a project's own config supplies,
+/// and they are what makes the tab render identity at all.
+fn hostile_gsd_config(identity: &str) -> crate::state_reader::config_json::GsdConfig {
+    use crate::state_reader::config_json::GsdConfig;
+
+    GsdConfig {
+        mode: identity.to_string(),
+        granularity: identity.to_string(),
+        project_code: Some(identity.to_string()),
+        ..Default::default()
+    }
 }
 
 /// One `git log` row whose every field carries `identity`.
@@ -667,6 +958,157 @@ const ALL_SUB_VIEWS: [crate::app::DetailSubView; 11] = {
     ]
 };
 
+/// **Per-state arrival for `DetailScreen`, RECORDED rather than assumed**
+/// (D-21-23).
+///
+/// A populated cache the render path never reads makes every assertion about
+/// that tab pass by silence — the tab renders nothing of the identity, so
+/// assertion 2 is skipped (it is gated on arrival) and assertion 3 is trivially
+/// satisfied. That is the sharpest failure shape this phase has, one level up
+/// from where round 8 found it, and the only defence is to state per state
+/// whether the clean identity ARRIVED and check it.
+///
+/// The `bool` is the claim; the string is the reason a reader inherits. For a
+/// `false` row the reason must say WHICH of the two causes applies — the
+/// fixture does not reach that render, or the tab genuinely draws no identity —
+/// and how that was determined, because those two are fixed in different places
+/// and confusing them sends the reader to the wrong file.
+///
+/// The set equality runs in both directions: an unexpected arrival is reported
+/// too, since a tab that starts drawing identity is a tab whose row must be
+/// re-read rather than a happy accident.
+const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
+    (
+        "PhaseList tab",
+        true,
+        "Draws the phase number, name and description out of `hostile_project_state`'s \
+         `phases`, plus the status and milestone.",
+    ),
+    (
+        "RoadmapViz tab",
+        true,
+        "Draws the same `RoadmapPhase` names through `ui::roadmap_widget`.",
+    ),
+    (
+        "Backlog tab",
+        true,
+        "Draws `backlog_items[..].number` and `.description` — populated by 21-25 T2; \
+         before that this tab rendered `No backlog items found.`",
+    ),
+    (
+        "GitHistory tab",
+        true,
+        "Draws all four `GitLogEntry` fields — populated by 21-23.",
+    ),
+    (
+        "Pipeline tab",
+        true,
+        "Draws the current phase name, status and pause context.",
+    ),
+    (
+        "Queue tab",
+        true,
+        "Draws `queued_actions[..].command` from `.planning/queue.md`.",
+    ),
+    (
+        "Sessions tab",
+        true,
+        "Draws the session id of a `ClaudeSession` whose `working_dir` matches the \
+         registered project — populated by 21-25 T2; before that the tab's filter \
+         admitted nothing and it rendered `No active Claude sessions`.",
+    ),
+    (
+        "Archive tab",
+        true,
+        "At its default `MilestoneList` depth, draws `archive_milestones` — populated \
+         by 21-25 T2; before that it rendered `No archived milestones found.`",
+    ),
+    (
+        "Defaults tab",
+        true,
+        "Draws `entry.value` for every key of `defaults_config` — populated by 21-25 T2; \
+         before that it rendered `No config loaded`. Only the string-valued keys can \
+         carry identity; the booleans and numbers cannot, which is why the fixture sets \
+         `mode`, `granularity` and `project_code`.",
+    ),
+    (
+        "Browse tab",
+        true,
+        "Draws the breadcrumb path relative to `.planning/` and `browser_entries[..].name` \
+         — populated by 21-25 T2; before that it rendered `(empty directory)` and an \
+         empty breadcrumb.",
+    ),
+    (
+        "Driver tab",
+        true,
+        "Draws the run list row and run header built from `driver_runs[0]`'s `run_id`, \
+         `goal` and `gsd_command` — populated by 21-25 T2. Before that the tab rendered \
+         `no_runs_lines`, which was the ONE already-composed site on this path, and the \
+         four half-escaped ones below it were exercised by nothing.",
+    ),
+    (
+        "Backlog tab, expanded",
+        true,
+        "The split pane: `Block::title` draws `item.dir_name` and the `Paragraph` below \
+         draws `item.content`. Neither value is drawn at all in the collapsed state.",
+    ),
+    (
+        "Archive tab, phase list",
+        true,
+        "Draws `archive_cache[..].top_level_files[..].name` and `phases[..].display_name`, \
+         plus the milestone in the breadcrumb.",
+    ),
+    (
+        "Archive tab, file list",
+        true,
+        "Draws `phases[0].files[..].name`, plus the milestone and phase display name in \
+         the breadcrumb.",
+    ),
+    (
+        "Browse tab, file view",
+        true,
+        "Draws `browser_file_name` in the breadcrumb and `browser_file_content` through \
+         `archive::render_markdown_lines`.",
+    ),
+];
+
+/// How many times `clean` appears in each `DetailScreen` state rendered with
+/// every tab-body source emptied — the chrome contribution, MEASURED on this
+/// run rather than pinned as a number somebody wrote down.
+///
+/// `None` for every screen but `DetailScreen`: the per-state arrival equality
+/// is scoped to that one, and building fifteen extra renders for screens the
+/// equality does not consult would cost time for nothing.
+fn detail_chrome_baseline(
+    type_name: &str,
+    clean: &str,
+) -> Option<BTreeMap<String, usize>> {
+    if type_name != "DetailScreen" {
+        return None;
+    }
+    let states = states_over_sub_views_with(clean, chrome_ctx, &|identity, _ctx| {
+        Box::new(super::detail::DetailScreen::new(identity.to_string()))
+    });
+    Some(
+        states
+            .iter()
+            .map(|state| {
+                let text = render_to_text(state.screen.as_ref(), &state.ctx);
+                (state.label.clone(), text.matches(clean).count())
+            })
+            .collect(),
+    )
+}
+
+/// Which of [`DETAIL_TAB_ARRIVAL`]'s states claim the identity arrives.
+fn detail_tabs_expected_to_arrive() -> std::collections::BTreeSet<String> {
+    DETAIL_TAB_ARRIVAL
+        .iter()
+        .filter(|(_, arrives, _)| *arrives)
+        .map(|(label, _, _)| (*label).to_string())
+        .collect()
+}
+
 fn sub_view_label(view: &crate::app::DetailSubView) -> &'static str {
     use crate::app::DetailSubView::*;
     match view {
@@ -695,10 +1137,26 @@ fn states_over_sub_views(
     identity: &str,
     build: &dyn Fn(&str, &mut AppContext) -> Box<dyn Screen>,
 ) -> Vec<ProbeState> {
-    ALL_SUB_VIEWS
+    states_over_sub_views_with(identity, probe_ctx, build)
+}
+
+/// [`states_over_sub_views`] with the context builder made a parameter, so the
+/// SAME fifteen states can be built against [`chrome_ctx`] to measure the
+/// baseline the per-tab arrival record is compared against.
+///
+/// Parameterised rather than duplicated: a second copy of this walk could
+/// silently drift from the one the live probe uses, and a baseline measured
+/// through a different set of states is a baseline that answers a different
+/// question.
+fn states_over_sub_views_with(
+    identity: &str,
+    make_ctx: fn(&str) -> AppContext,
+    build: &dyn Fn(&str, &mut AppContext) -> Box<dyn Screen>,
+) -> Vec<ProbeState> {
+    let mut states: Vec<ProbeState> = ALL_SUB_VIEWS
         .iter()
         .map(|view| {
-            let mut ctx = probe_ctx(identity);
+            let mut ctx = make_ctx(identity);
             ctx.detail_sub_view_per_project
                 .insert(identity.to_string(), view.clone());
             let screen = build(identity, &mut ctx);
@@ -708,8 +1166,74 @@ fn states_over_sub_views(
                 screen,
             }
         })
-        .collect()
+        .collect();
+
+    // A TAB IS NOT ONE PICTURE EITHER (21-25). Three of the eleven dispatch on
+    // a second field to a genuinely different render of a genuinely different
+    // value, and probing only the default value of that field is the same hole
+    // one level down from the one this fixture just closed.
+    for (label, arrange) in DETAIL_SUB_STATES {
+        let mut ctx = make_ctx(identity);
+        arrange(identity, &mut ctx);
+        let screen = build(identity, &mut ctx);
+        states.push(ProbeState {
+            label: (*label).to_string(),
+            ctx,
+            screen,
+        });
+    }
+
+    states
 }
+
+/// How one extra render state within a sub-view is arranged.
+type SubStateArrange = fn(&str, &mut AppContext);
+
+/// The extra within-tab states, each named after the field it dispatches on.
+///
+/// * **Backlog, expanded** — `backlog_expanded` selects between a full-height
+///   list and a split pane whose `Block::title` draws `item.dir_name` and whose
+///   `Paragraph` draws `item.content`. Neither of those two values is drawn at
+///   all in the collapsed state.
+/// * **Archive, phase list / file list** — `archive_depth` selects between
+///   three different renders of three different names:
+///   `archive_milestones` (MilestoneList), `top_level_files[..].name` plus
+///   `phases[..].display_name` (PhaseList), and `phases[..].files[..].name`
+///   (FileList).
+/// * **Browse, file view** — `browser_depth` selects between the entry list and
+///   the file view, and only the file view draws `browser_file_name`.
+const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
+    ("Backlog tab, expanded", |identity, ctx| {
+        ctx.detail_sub_view_per_project
+            .insert(identity.to_string(), crate::app::DetailSubView::Backlog);
+        let cache = ctx.view_cache.entry(identity.to_string()).or_default();
+        cache.backlog_expanded = true;
+    }),
+    ("Archive tab, phase list", |identity, ctx| {
+        ctx.detail_sub_view_per_project
+            .insert(identity.to_string(), crate::app::DetailSubView::Archive);
+        let cache = ctx.view_cache.entry(identity.to_string()).or_default();
+        cache.archive_depth = crate::archive::ArchiveDepth::PhaseList {
+            milestone: identity.to_string(),
+        };
+    }),
+    ("Archive tab, file list", |identity, ctx| {
+        ctx.detail_sub_view_per_project
+            .insert(identity.to_string(), crate::app::DetailSubView::Archive);
+        let cache = ctx.view_cache.entry(identity.to_string()).or_default();
+        cache.archive_depth = crate::archive::ArchiveDepth::FileList {
+            milestone: identity.to_string(),
+            phase_idx: 0,
+        };
+    }),
+    ("Browse tab, file view", |identity, ctx| {
+        ctx.detail_sub_view_per_project
+            .insert(identity.to_string(), crate::app::DetailSubView::Browse);
+        let cache = ctx.view_cache.entry(identity.to_string()).or_default();
+        cache.browser_depth = crate::browser::BrowserDepth::View;
+        cache.browser_file_content = Some(format!("# {identity}\n"));
+    }),
+];
 
 fn one_state(label: &str, ctx: AppContext, screen: Box<dyn Screen>) -> ProbeState {
     ProbeState {
@@ -758,10 +1282,28 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
             let mut filtering = probe_ctx(identity);
             filtering.filter_text = identity.to_string();
             filtering.recompute_filtered_aliases();
+            let mut with_status = probe_ctx(identity);
+            with_status.status_message = Some((
+                status_message_like_app_builds_it(identity),
+                std::time::Instant::now(),
+            ));
             vec![
                 one_state(
                     "dashboard",
                     plain,
+                    Box::new(super::normal::NormalScreen::new()),
+                ),
+                // WR-03. `render_footer` dispatches on `searching` FIRST and on
+                // `status_message` second, so this state must set the message
+                // AND leave `searching` false — `NormalScreen::new()` does, and
+                // the `searching: true` note below records what happens when a
+                // state sets a field without the field the render dispatches
+                // on. That the branch is actually reached is asserted by
+                // `the_status_footer_state_reaches_the_status_branch` rather
+                // than assumed here.
+                one_state(
+                    "dashboard with a status message",
+                    with_status,
                     Box::new(super::normal::NormalScreen::new()),
                 ),
                 // `searching: true` is not decoration. `render_footer`
@@ -1353,6 +1895,14 @@ mod tests {
 
             let mut arrived_anywhere = false;
             let mut drew_anything = false;
+            // The per-state arrival record (D-21-23), measured against the
+            // CHROME BASELINE rather than by containment — see `chrome_ctx`
+            // for why containment cannot tell a tab body from a block title.
+            let baseline = detail_chrome_baseline(name, &clean);
+            let mut arrived_labels: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            let mut all_labels: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
 
             for (clean_state, hostile_state) in clean_states.iter().zip(hostile_states.iter()) {
                 let where_ = format!("{name} ({path}) [{}]", clean_state.label);
@@ -1363,6 +1913,20 @@ mod tests {
                 let arrived = clean_text.contains(clean.as_str());
                 arrived_anywhere |= arrived;
                 drew_anything |= clean_text.chars().any(|c| !c.is_whitespace());
+                all_labels.insert(clean_state.label.clone());
+                // ARRIVAL IN THE TAB BODY: strictly more occurrences of the
+                // clean stem than the same state renders with every tab-body
+                // source emptied. Plain containment would count the block
+                // title, which draws the registry key on every tab.
+                if let Some(baseline) = baseline.as_ref() {
+                    let occurrences = clean_text.matches(clean.as_str()).count();
+                    let chrome = baseline.get(&clean_state.label).copied().unwrap_or(0);
+                    if occurrences > chrome {
+                        arrived_labels.insert(clean_state.label.clone());
+                    }
+                } else if arrived {
+                    arrived_labels.insert(clean_state.label.clone());
+                }
 
                 match *disposition {
                     RENDERS_IDENTITY => {
@@ -1443,6 +2007,65 @@ mod tests {
                 );
             }
 
+            // 1b. ARRIVAL, PER STATE, for `DetailScreen` (D-21-23). The
+            //     whole-screen arrival check below passes as soon as ONE of
+            //     fifteen states draws the identity, so it cannot tell a
+            //     fixture that reaches every tab from one that reaches one. A
+            //     populated cache the render path never reads would otherwise
+            //     make every assertion about that tab pass by silence, which is
+            //     the vacuity hazard the ROADMAP names as this phase's sharpest
+            //     risk.
+            //
+            //     Scoped to `DetailScreen` deliberately: the four screens that
+            //     paint their body with `render_main_only` render the same tabs
+            //     PLUS their own footer, so the identity arrives in all of their
+            //     states for a reason that says nothing about the tab.
+            if *name == "DetailScreen" {
+                let expected = detail_tabs_expected_to_arrive();
+                let missing: Vec<&String> = expected.difference(&arrived_labels).collect();
+                let unexpected: Vec<&String> = arrived_labels.difference(&expected).collect();
+                let unlisted: Vec<&String> = all_labels
+                    .iter()
+                    .filter(|label| {
+                        !DETAIL_TAB_ARRIVAL
+                            .iter()
+                            .any(|(recorded, _, _)| *recorded == label.as_str())
+                    })
+                    .collect();
+
+                assert!(
+                    unlisted.is_empty(),
+                    "{name} ({path}) was probed in states DETAIL_TAB_ARRIVAL does not \
+                     record: {unlisted:?}. A state nobody adjudicated is a state whose \
+                     arrival nobody checked; add a row saying whether the identity is \
+                     expected to reach that render and why."
+                );
+                assert!(
+                    missing.is_empty(),
+                    "{name} ({path}): DETAIL_TAB_ARRIVAL claims the clean identity \
+                     reaches {missing:?}, and it did not. TWO CAUSES, in order of \
+                     likelihood. (1) The fixture does not reach that render — the cache \
+                     `probe_ctx` populates is not the one the tab reads, or a second \
+                     field gates the branch (`backlog_expanded`, `archive_depth`, \
+                     `browser_depth`, `searching`). Tell this apart by rendering the \
+                     state and looking for the tab's EMPTY-branch string in the buffer; \
+                     if it is there, the fixture is the problem. (2) The tab genuinely \
+                     draws no identity — then the row is wrong and must be flipped to \
+                     `false` with that reason. Do NOT delete the row: a populated cache \
+                     whose render is never reached is a fixture that proved nothing, and \
+                     it must be reported rather than counted as coverage. Arrived: \
+                     {arrived_labels:?}"
+                );
+                assert!(
+                    unexpected.is_empty(),
+                    "{name} ({path}): the clean identity reached {unexpected:?}, which \
+                     DETAIL_TAB_ARRIVAL records as drawing none. The row was written \
+                     about a render that has since changed; re-read it, say which value \
+                     the tab now draws and where its bytes come from, and flip the row \
+                     to `true`."
+                );
+            }
+
             // 1. ARRIVAL, for the screen as a whole. A screen that rendered
             //    nothing, or that was built in states showing no identity, fails
             //    HERE rather than passing by silence.
@@ -1464,5 +2087,63 @@ mod tests {
                 ),
             }
         }
+    }
+
+    /// **The `NormalScreen` status-message state is proven to REACH the status
+    /// branch** (WR-03).
+    ///
+    /// This module already records what happens when a probe state sets a field
+    /// without setting the field the render dispatches on: the
+    /// `dashboard with filter footer` state set `filter_text` and left
+    /// `searching` false, `render_footer` took the NORMAL footer, and the
+    /// assertion about the filter passed by silence while the search footer
+    /// drew `ctx.filter_text` raw the whole time. The new
+    /// `dashboard with a status message` state has the same hazard one branch
+    /// along — `render_footer` dispatches on `searching` FIRST and only then on
+    /// `status_message` — so the branch is asserted rather than assumed.
+    ///
+    /// [`STATUS_BRANCH_TOKEN`] is drawn by nothing else on this screen: the
+    /// alternative branch, `render_normal_footer`, paints counts, a sort
+    /// indicator and keybinding hints.
+    ///
+    /// **The `searching: true` direction is asserted too**, because a token that
+    /// arrives under BOTH branches would prove nothing. With `searching` set,
+    /// the same context renders the search footer and the token is absent —
+    /// which is exactly what the probe would report if the fixture state were
+    /// written that way, and is the failure this test exists to make loud.
+    #[test]
+    fn the_status_footer_state_reaches_the_status_branch() {
+        let clean = clean_identity();
+        let message = status_message_like_app_builds_it(&clean);
+
+        let mut reached = probe_ctx(&clean);
+        reached.status_message = Some((message.clone(), std::time::Instant::now()));
+        let reached_text = render_to_text(&crate::ui::screens::normal::NormalScreen::new(), &reached);
+
+        assert!(
+            reached_text.contains(STATUS_BRANCH_TOKEN),
+            "the `dashboard with a status message` state did not reach \
+             `render_footer`'s status branch: {STATUS_BRANCH_TOKEN:?} is absent \
+             from the rendered buffer. Nothing else on this screen draws that \
+             token, so what rendered is `render_normal_footer` and every \
+             assertion the probe makes about the status footer is passing by \
+             silence. Check that the state leaves `searching` false. \
+             Rendered:\n{reached_text}"
+        );
+
+        let mut shadowed = probe_ctx(&clean);
+        shadowed.status_message = Some((message, std::time::Instant::now()));
+        let shadowed_text = render_to_text(
+            &crate::ui::screens::normal::NormalScreen { searching: true },
+            &shadowed,
+        );
+
+        assert!(
+            !shadowed_text.contains(STATUS_BRANCH_TOKEN),
+            "with `searching: true` the same context still drew \
+             {STATUS_BRANCH_TOKEN:?}, so the token is not specific to the status \
+             branch and the assertion above proves nothing about which branch \
+             ran. Find a token only `render_footer`'s status arm can produce."
+        );
     }
 }

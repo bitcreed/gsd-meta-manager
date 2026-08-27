@@ -428,12 +428,32 @@ pub struct ProjectViewCache {
     pub queue_selected: usize,
     pub sessions_selected: usize,
     pub archive_depth: crate::archive::ArchiveDepth,
-    pub archive_milestones: Vec<String>,
+    /// Milestone version strings scanned out of `.planning/archive/`.
+    ///
+    /// **`Untrusted`, not `String`** (D-21-20). These are directory-derived
+    /// names read off disk, drawn by the Archive tab's `MilestoneList` depth
+    /// through a `ListItem`. Leaving this one a bare `String` while
+    /// `ArchiveFile::name` and `PhaseArchive::{name, display_name}` carry the
+    /// type would put one raw carrier in the middle of a set that is otherwise
+    /// closed — which is the shape that let one of three `display_identity`
+    /// call sites be dead for four rounds.
+    pub archive_milestones: Vec<crate::text::Untrusted>,
     pub archive_selected: [usize; 4],
     pub archive_scroll_offset: u16,
     pub archive_loading: bool,
+    /// The BODY of the archive file being viewed.
+    ///
+    /// Deliberately still a `String`, and this is a disclosure rather than an
+    /// omission: a file body is not a name. It is rendered through
+    /// `archive::render_markdown_lines`, a whole markdown pipeline with its own
+    /// question about what escaping means for a document, and half-retyping it
+    /// here would claim a bound this plan does not deliver. Named in the
+    /// remainder instead. **Direction: under-protection, silent.**
     pub archive_file_content: Option<String>,
-    pub archive_file_name: Option<String>,
+    /// The NAME of the archive file being viewed, drawn into the tab header.
+    ///
+    /// **`Untrusted`** (D-21-20), for the same reason as `archive_milestones`.
+    pub archive_file_name: Option<crate::text::Untrusted>,
     pub defaults_config: Option<crate::state_reader::config_json::GsdConfig>,
     /// Parsed contents of ~/.gsd/defaults.json — layered under
     /// `defaults_config` for display and editable via the [d] toggle.
@@ -462,8 +482,12 @@ pub struct ProjectViewCache {
     pub browser_entries: Vec<crate::browser::BrowserEntry>,
     pub browser_selected: usize,
     pub browser_scroll_offset: u16,
+    /// The BODY of the browsed file. Still a `String`, for the same reason and
+    /// with the same disclosed direction as `archive_file_content` above.
     pub browser_file_content: Option<String>,
-    pub browser_file_name: Option<String>,
+    /// The NAME of the browsed file, drawn into the Browse tab's breadcrumb
+    /// header. **`Untrusted`** (D-21-20).
+    pub browser_file_name: Option<crate::text::Untrusted>,
     // ── Driver tab view state (D-18) ──────────────────────────────────
     //
     // View state lives here rather than beside the ring buffer on

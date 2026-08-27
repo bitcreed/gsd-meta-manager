@@ -1,11 +1,30 @@
 use std::path::{Path, PathBuf};
 
+use crate::text::Untrusted;
+
+/// One `999.*` directory under a project's `.planning/phases/`.
+///
+/// **Every text field is [`Untrusted`]** (D-21-19). Each of them is read off
+/// disk from a repository the user cloned: `dir_name` is a directory name,
+/// `number` and `description` are parsed out of it and out of the first
+/// heading of a `.md` file inside it, and `content` is that file's body. None
+/// of it was authored by this build, which is SAFE-07's own trust boundary.
+///
+/// The carrier is what makes that checkable rather than remembered: it
+/// implements no `Display`, no `AsRef<str>`, no `Into<Cow<str>>`, so a render
+/// site cannot interpolate one of these fields or hand it to a ratatui sink at
+/// all. Retyping the struct is therefore what makes the COMPILER name every
+/// consumer, instead of a reader working through a list of sites — which is how
+/// `detail.rs:2882`'s raw `format!` survived nine rounds of review.
+///
+/// `path` stays a `PathBuf`: a path is not display text, and what may be done
+/// with one is a different question with a different answer.
 #[derive(Debug, Clone)]
 pub struct BacklogItem {
-    pub dir_name: String,
-    pub number: String,
-    pub description: String,
-    pub content: Option<String>,
+    pub dir_name: Untrusted,
+    pub number: Untrusted,
+    pub description: Untrusted,
+    pub content: Option<Untrusted>,
     /// Path to the first .md file in the backlog item directory.
     pub path: Option<PathBuf>,
 }
@@ -53,10 +72,12 @@ pub fn parse_backlog_items(planning_dir: &Path) -> Vec<BacklogItem> {
             // Try to find description from first .md file's first heading
             let description = find_first_heading(&e.path()).unwrap_or_else(|| humanize_slug(&slug));
 
+            // The ONE place these four values are created, so the ONE place
+            // they are wrapped. Everything downstream inherits the carrier.
             Some(BacklogItem {
-                dir_name,
-                number,
-                description,
+                dir_name: Untrusted::from_untrusted_source(dir_name),
+                number: Untrusted::from_untrusted_source(number),
+                description: Untrusted::from_untrusted_source(description),
                 content: None,
                 path: Some(md_path),
             })
@@ -65,13 +86,17 @@ pub fn parse_backlog_items(planning_dir: &Path) -> Vec<BacklogItem> {
 
     // Sort by number ascending (999.1, 999.2, etc.)
     items.sort_by(|a, b| {
+        // A sort key is a COMPARISON, not something a human reads, so the raw
+        // bytes are the right answer here.
         let a_num: f64 = a
             .number
+            .as_raw_for_logic_only()
             .strip_prefix("999.")
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.0);
         let b_num: f64 = b
             .number
+            .as_raw_for_logic_only()
             .strip_prefix("999.")
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.0);

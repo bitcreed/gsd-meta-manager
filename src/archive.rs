@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use crate::text::Untrusted;
+
 /// Depth levels for archive drill-down navigation.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum ArchiveDepth {
@@ -28,18 +30,32 @@ pub struct MilestoneArchive {
 }
 
 /// A phase directory within a milestone archive.
+///
+/// **`name` and `display_name` are [`Untrusted`]** (D-21-19). `name` is the
+/// slug half of a directory name under `.planning/archive/`, and
+/// `display_name` is a `format!` over a Title-Cased rendering of that same
+/// slug — so the untrusted bytes are in both, and the authored half of
+/// `display_name` (`"Phase {:02}: "`) is escaped harmlessly along with them.
+///
+/// `number` stays a `u32`: it survived a `parse::<u32>()`, which is a stronger
+/// guarantee than any carrier could give it.
 #[derive(Debug, Clone)]
 pub struct PhaseArchive {
     pub number: u32,
-    pub name: String,
-    pub display_name: String,
+    pub name: Untrusted,
+    pub display_name: Untrusted,
     pub files: Vec<ArchiveFile>,
 }
 
 /// A single markdown file in the archive.
+///
+/// **`name` is [`Untrusted`]** (D-21-19): it is a file name read off disk from
+/// a repository the user cloned, and `detail.rs`'s Archive tab draws it through
+/// a `ListItem` — the widget family measured in 21-23 as PRESERVING the entire
+/// invisible class, including `U+202E`.
 #[derive(Debug, Clone)]
 pub struct ArchiveFile {
-    pub name: String,
+    pub name: Untrusted,
     pub path: PathBuf,
 }
 
@@ -102,13 +118,20 @@ pub fn load_milestone_archive(milestones_dir: &Path, version: &str) -> Milestone
         })
         .map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
+            // One of the two places an ArchiveFile is created, so one of the
+            // two places the name is wrapped.
             ArchiveFile {
-                name,
+                name: Untrusted::from_untrusted_source(name),
                 path: e.path().canonicalize().unwrap_or_else(|_| e.path()),
             }
         })
         .collect();
-    top_level_files.sort_by(|a, b| a.name.cmp(&b.name));
+    // A sort ORDER, not something a human reads.
+    top_level_files.sort_by(|a, b| {
+        a.name
+            .as_raw_for_logic_only()
+            .cmp(b.name.as_raw_for_logic_only())
+    });
 
     // Phases: scan {version}-phases/ directory
     let phases_dir = milestones_dir.join(format!("{}-phases", version));
@@ -175,17 +198,26 @@ fn parse_phase_dir(dir_name: &str, dir_path: &Path) -> Option<PhaseArchive> {
         .map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
             ArchiveFile {
-                name,
+                name: Untrusted::from_untrusted_source(name),
                 path: e.path().canonicalize().unwrap_or_else(|_| e.path()),
             }
         })
         .collect();
-    files.sort_by(|a, b| a.name.cmp(&b.name));
+    files.sort_by(|a, b| {
+        a.name
+            .as_raw_for_logic_only()
+            .cmp(b.name.as_raw_for_logic_only())
+    });
 
     Some(PhaseArchive {
         number,
-        name: slug.to_string(),
-        display_name,
+        name: Untrusted::from_untrusted_source(slug.to_string()),
+        // Wrapped at the END of the construction, once, rather than wrapping
+        // `title` and re-interpolating: `display_name` is a single string whose
+        // untrusted half is `title` and whose authored half is `"Phase {:02}: "`,
+        // and escaping the whole thing leaves the authored half unchanged
+        // (the invisible class contains no ASCII).
+        display_name: Untrusted::from_untrusted_source(display_name),
         files,
     })
 }
@@ -208,11 +240,40 @@ pub fn read_archive_file(path: &Path) -> String {
 ///
 /// Supports: `#`/`##`/`###` headings, `**bold**` inline, triple-backtick
 /// code blocks (DarkGray), and `- ` list items (rendered as-is).
+///
+/// # Every line is escaped here, and this is the ONE place it happens
+///
+/// This function is the single render for BOTH file viewers — the Archive tab's
+/// `FileView` depth and the Browse tab's `View` depth — and what it draws is the
+/// BODY of a markdown file read off disk from a repository the user cloned.
+/// `ProjectViewCache::{archive_file_content, browser_file_content}` are
+/// deliberately still `String` rather than `crate::text::Untrusted`, because a
+/// file body is not a name and the carrier's accessors do not fit a value that
+/// is split into lines and pattern-matched for markdown prefixes. **What closes
+/// the gap that leaves is this function**, which every byte of both bodies flows
+/// through.
+///
+/// Found by POPULATING `browser_file_content` in the render probe (21-25 T2),
+/// not by reading. Verbatim, before this escape landed:
+///
+/// ```text
+/// thread 'ui::screens::render_escape_guard::tests::the_screen_renders_identity_escaped' (719875) panicked at src/ui/screens/render_escape_guard.rs:1670:17:
+/// DetailScreen (src/ui/screens/detail.rs) [Browse tab, file view] rendered ['\u{e0041}'] into the terminal buffer. Those characters render as nothing, so what the operator reads is not what the value is.
+/// ```
+///
+/// **Escaped per LINE, never over the whole document**, because
+/// `crate::text::strip_terminal_controls` replaces every C0 control with a
+/// visible marker and `\n` is `0x0A` — escaping first and splitting second
+/// would collapse the entire file into one row. Splitting first and escaping
+/// each line leaves the markdown prefixes (`#`, backticks, `-`) untouched:
+/// none of them is in either class.
 pub fn render_markdown_lines(content: &str) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let mut in_code_block = false;
 
-    for line in content.lines() {
+    for raw_line in content.lines() {
+        let escaped = crate::text::render_for_terminal(raw_line).to_string();
+        let line = escaped.as_str();
         if line.starts_with("```") {
             in_code_block = !in_code_block;
             // Render the backtick delimiter itself in code block style

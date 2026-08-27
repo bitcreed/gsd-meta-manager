@@ -1,10 +1,23 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::text::Untrusted;
+
+/// One live `claude` process, as seen through `/proc`.
+///
+/// **`session_id` is [`Untrusted`]** (D-21-19). It is scraped verbatim out of
+/// another process's `--resume` argument in [`read_session_id`], so nothing
+/// about it was authored by this build and nothing constrains it to ASCII —
+/// which is exactly why the Sessions tab's `sid[..8]` byte slice could panic
+/// the whole TUI (T-21-25-05).
+///
+/// `tty` is deliberately NOT retyped: it is compared against tmux's
+/// `#{pane_tty}` and is a `/dev/` path component the kernel produced, not
+/// something read out of a repository.
 #[derive(Debug, Clone)]
 pub struct ClaudeSession {
     pub pid: u32,
-    pub session_id: Option<String>,
+    pub session_id: Option<Untrusted>,
     pub working_dir: PathBuf,
     pub start_time: Option<u64>,
     /// Controlling TTY in tmux-friendly form (e.g. "pts/3"). The leading
@@ -80,7 +93,7 @@ fn read_tty(pid: u32) -> Option<String> {
     }
 }
 
-fn read_session_id(pid: u32) -> Option<String> {
+fn read_session_id(pid: u32) -> Option<Untrusted> {
     let cmdline = std::fs::read(format!("/proc/{}/cmdline", pid)).ok()?;
     let args: Vec<&[u8]> = cmdline.split(|&b| b == 0).collect();
 
@@ -89,7 +102,9 @@ fn read_session_id(pid: u32) -> Option<String> {
             let val = String::from_utf8_lossy(window[1]);
             let val = val.trim();
             if !val.is_empty() {
-                return Some(val.to_string());
+                // The ONE place a session id enters this build, so the ONE
+                // place it is wrapped.
+                return Some(Untrusted::from_untrusted_source(val.to_string()));
             }
         }
     }
