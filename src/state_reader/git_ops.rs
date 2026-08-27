@@ -1,3 +1,4 @@
+use crate::text::Untrusted;
 use std::path::Path;
 
 /// Read a project's last-activity timestamp from its most recent git commit
@@ -520,12 +521,33 @@ pub fn push_refspecs(project_root: &Path) -> PushPreview {
     preview
 }
 
+/// One row of a THIRD-PARTY repository's `git log`, in a type that cannot reach
+/// a terminal cell unescaped.
+///
+/// **Every field is [`crate::text::Untrusted`], and that is the mechanism**
+/// (D-21-10, T-21-23-01). This tool exists to watch other people's
+/// repositories, so a commit subject here is attacker-controlled in the
+/// strongest sense available — and a commit subject is the canonical Trojan
+/// Source carrier (CVE-2021-42574). Until round 9 these were bare `String`s
+/// rendered raw through a `List`/`ListItem`, which (measured per widget family)
+/// PRESERVES `U+202E` and `U+00AD` all the way into a cell.
+///
+/// The retype is what makes the render sites compile errors rather than sites a
+/// reader has to find: `Untrusted` implements no `Display`, `AsRef<str>`,
+/// `Deref`, `Borrow<str>` or `Into<Cow<'_, str>>`, so `Span::raw(&entry.message)`
+/// does not compile and `entry.message.shown()` is the only ergonomic
+/// resolution. Where a field is genuinely wanted raw — the `git show` argument —
+/// the call reads `as_raw_for_logic_only()` and is visible in a diff.
+///
+/// **Public-API note (D-21-10, `costly`).** These fields are `pub` on a crate
+/// published to crates.io, so this is a semver-breaking change and lands in the
+/// next minor. Fully revertible from git; no on-disk format changes.
 #[derive(Debug, Clone)]
 pub struct GitLogEntry {
-    pub hash: String,
-    pub date: String,
-    pub author: String,
-    pub message: String,
+    pub hash: crate::text::Untrusted,
+    pub date: crate::text::Untrusted,
+    pub author: crate::text::Untrusted,
+    pub message: crate::text::Untrusted,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -569,11 +591,14 @@ pub async fn load_git_log(
         .filter_map(|line| {
             let parts: Vec<&str> = line.splitn(4, '\x1f').collect();
             if parts.len() == 4 {
+                // THE one producer. Wrapping here rather than at each consumer
+                // is what makes the carrier's guarantee structural: there is no
+                // other route from `git log` stdout into a `GitLogEntry`.
                 Some(GitLogEntry {
-                    hash: parts[0].to_string(),
-                    date: parts[1].to_string(),
-                    author: parts[2].to_string(),
-                    message: parts[3].to_string(),
+                    hash: Untrusted::from_untrusted_source(parts[0].to_string()),
+                    date: Untrusted::from_untrusted_source(parts[1].to_string()),
+                    author: Untrusted::from_untrusted_source(parts[2].to_string()),
+                    message: Untrusted::from_untrusted_source(parts[3].to_string()),
                 })
             } else {
                 None

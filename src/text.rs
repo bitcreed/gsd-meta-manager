@@ -314,6 +314,265 @@ pub fn display_identity(value: &str) -> String {
     out
 }
 
+// ---------------------------------------------------------------------------
+// The CONTROL class, the composition of the two classes, and the two carrier
+// types — the round-9 inversion (D-21-7 … D-21-10)
+// ---------------------------------------------------------------------------
+
+/// The escape character, stripped unconditionally by
+/// [`strip_terminal_controls`].
+pub(crate) const ESC: char = '\u{1b}';
+
+/// What every other C0 control character, `DEL` and the C1 block is replaced
+/// with: `·`.
+///
+/// A `\u{…}` escape rather than the literal glyph, following the house rule that
+/// no raw glyph appears in source (`ui::screens::normal.rs:69-74`).
+pub(crate) const CONTROL_REPLACEMENT: char = '\u{00b7}';
+
+/// Spaces one tab expands to.
+pub(crate) const TAB_WIDTH: usize = 4;
+
+/// The ONE production spelling of the terminal-CONTROL class.
+///
+/// **This is the class, and it is deliberately NOT the display cap** (D-21-9).
+/// These rules used to live inside `ui::screens::sanitize_render_line`, welded
+/// to a 512-character truncation. The round-8 review proposed composing
+/// `display_identity(&sanitize_render_line(v))` to answer both classes at once;
+/// that one-liner is wrong as written, because it would silently cap every CLI
+/// echo, every error message and every rendered name at
+/// `DRIVER_OUTPUT_LINE_CELLS`. Separating the class from the cap is what lets
+/// ONE composition ([`render_for_terminal`]) serve both, and
+/// `ui::screens::sanitize_render_line` is now this function plus that cap.
+///
+/// The rules, in this order, carried across unchanged in behaviour:
+///
+/// 1. **`ESC` (`0x1B`) is stripped unconditionally.** This is the single
+///    highest-value rule in the boundary: without it, text read off disk can
+///    emit ANSI/OSC sequences that repaint the screen, forge a status line, move
+///    the cursor, or set the window title. Stripping the introducer is what makes
+///    the rest of a sequence inert text.
+/// 2. `\t` expands to [`TAB_WIDTH`] spaces.
+/// 3. Every other C0 control character (`0x00`–`0x1F`), `DEL` (`0x7F`) **and the
+///    whole C1 block (`0x80`–`0x9F`)** is replaced with
+///    [`CONTROL_REPLACEMENT`] — present, visible, and harmless.
+///
+///    **C1 is not an afterthought and rule 1 does not cover it** (WR-06).
+///    `U+009B` is the single-character CSI, `U+009D` is OSC and `U+0090` is DCS:
+///    each is a one-codepoint equivalent of an `ESC`-led introducer, so stripping
+///    `ESC` alone leaves the same capability reachable by another spelling.
+///    ratatui writes each grapheme's bytes straight to the terminal, so these
+///    arrive as `0xC2 0x9B` and terminals that honour 8-bit controls decoded from
+///    UTF-8 (xterm without `allowC1Printable`, among others) treat what follows
+///    as a control sequence — reinstating exactly the repaint-the-screen and
+///    forge-a-status-line capability rule 1 exists to remove.
+///
+/// **What it does NOT do.** It does not touch the INVISIBLE-FORMATTING class:
+/// `Cf` ∪ `Default_Ignorable` is not `Cc`, so `U+202E`, `U+00AD` and `U+E0041`
+/// pass through here untouched. That is [`display_identity`]'s question, and
+/// [`render_for_terminal`] is the one place the two are composed.
+pub(crate) fn strip_terminal_controls(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch == ESC {
+            continue;
+        }
+        if ch == '\t' {
+            for _ in 0..TAB_WIDTH {
+                out.push(' ');
+            }
+        } else if (ch as u32) < 0x20 || ('\u{7f}'..='\u{9f}').contains(&ch) {
+            out.push(CONTROL_REPLACEMENT);
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// A string that has been through [`render_for_terminal`], and the ONLY string
+/// type in this tree that is both escaped and `Into<Cow<'static, str>>`.
+///
+/// **The ergonomic asymmetry is the mechanism** (D-21-8). [`Untrusted`] holds
+/// the raw bytes and implements none of the string conversions, so it cannot be
+/// interpolated or handed to a ratatui sink at all. This type implements them,
+/// so at a render site `Span::raw(v.shown())` and `format!("{}", v.shown())`
+/// compile with no ceremony while the raw path costs a deliberate,
+/// greppable `as_raw_for_logic_only()`. The short path is the escaped one.
+///
+/// **Which sinks take it directly, measured rather than asserted.** `Span::raw`
+/// and `Span::styled` take `Into<Cow<'_, str>>` and therefore take this
+/// directly. `Block::title` takes `Into<Line>`, and this type deliberately does
+/// NOT implement that: `text.rs` has no ratatui dependency and gaining one to
+/// shorten a call would put a UI crate under the module every identity seam in
+/// the tree consults. At those sinks the call is `format!("{}", v.shown())` or
+/// `Span::raw(v.shown())`, both of which go through [`Display`](std::fmt::Display)
+/// and [`Into<Cow>`](std::borrow::Cow) respectively.
+///
+/// **What being `Rendered` does and does not claim.** It is a statement about
+/// which transformations were APPLIED — control stripping and invisible-class
+/// escaping — and not a proof that the underlying value is harmless. Homoglyphs
+/// pass through untouched (Unicode TR39 is a separate question,
+/// [`carries_invisible_formatting`]'s doc records why), and a value that is a
+/// lie in plain ASCII is still a lie after escaping.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rendered(String);
+
+impl Rendered {
+    /// The only constructor, and it is **module-private on purpose**: the only
+    /// way to obtain a `Rendered` outside this module is to escape something,
+    /// through [`render_for_terminal`] or [`Untrusted::shown`].
+    fn new(escaped: String) -> Self {
+        Self(escaped)
+    }
+}
+
+impl std::fmt::Display for Rendered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for Rendered {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<Rendered> for std::borrow::Cow<'static, str> {
+    fn from(value: Rendered) -> Self {
+        std::borrow::Cow::Owned(value.0)
+    }
+}
+
+impl From<Rendered> for String {
+    fn from(value: Rendered) -> Self {
+        value.0
+    }
+}
+
+/// The ONE composition of the two classes, resolved once so that no consumer
+/// re-decides which halves apply (WR-01, WR-02).
+///
+/// **Two classes, two predicates, neither subsuming the other.**
+/// [`strip_terminal_controls`] answers the `ESC` / C0 / `DEL` / C1 *control*
+/// question; [`display_identity`] answers the *invisible-formatting* question
+/// over `General_Category=Cf` ∪ `Default_Ignorable_Code_Point`. `Cf` ∪
+/// `Default_Ignorable` is not `Cc`, and `ESC` is `Cc` and in neither of the
+/// first two — so a site that applies only one of them is open in the other
+/// direction. `src/ui/screens/driver.rs:874-878` already states exactly this;
+/// what was missing was a single place that composed them, which is why round 8
+/// found four classes of site where one half had been applied and the other had
+/// not.
+///
+/// The order is control-stripping FIRST. [`display_identity`] emits `U+XXXX`
+/// spellings made of ASCII, which the control pass would leave alone anyway, but
+/// stripping first means the invisible-class pass never sees a `\t` that has not
+/// yet become spaces.
+///
+/// **The deliberate second composition, named so it is not mistaken for drift.**
+/// `ui::screens::sanitize_render_line` is this same control class plus the
+/// `DRIVER_OUTPUT_LINE_CELLS` display cap, and `driver.rs` / `driver_confirm.rs`
+/// compose `display_identity(&sanitize_render_line(..))` because they draw agent
+/// prose that must be capped. The ONLY difference between that composition and
+/// this one is the cap, which is pinned by
+/// `ui::screens::tests::the_capped_and_uncapped_compositions_agree_below_the_cap`
+/// rather than argued here.
+pub fn render_for_terminal(value: &str) -> Rendered {
+    Rendered::new(display_identity(&strip_terminal_controls(value)))
+}
+
+/// A string this build did NOT author, in a type that cannot reach a terminal
+/// cell unescaped.
+///
+/// **The round-9 inversion, and what it generalises** (D-21-8). Round 8 built
+/// exactly the right shape in [`crate::registry::LegacyRegistryKey`] — no
+/// `Display`, two accessors named after the questions they answer — and then
+/// applied it to ONE call site while every data carrier in the tree kept bare
+/// `String` fields. The shape was right; the application was one site. This type
+/// is that correction: it is the general carrier, and `LegacyRegistryKey` is the
+/// argv-lookup variant of it.
+///
+/// **Why a carrier and not a ban on a ratatui API.** `Span::raw` takes
+/// `Into<Cow<'_, str>>` and `String: Into<Cow<'_, str>>` is a standard-library
+/// impl this project cannot un-implement, so there is no way to forbid the raw
+/// sink globally and any claim to have done so would be false. Measured at
+/// round-9 HEAD: 129 `Span::raw` and 198 `Span::styled` calls under `src/`. The
+/// lever gates NONE of them. What it gates is the values: a field of this type
+/// cannot be interpolated, coerced, or handed to a sink at all, so the compiler
+/// — not a reader working through a list of sites — names every consumer when a
+/// carrier is retyped.
+///
+/// It implements:
+///
+/// * **no `Display`** — so it cannot be interpolated,
+/// * **no `AsRef<str>`, no `Deref`, no `Borrow<str>`, no `Into<Cow<'_, str>>`**
+///   — so it cannot be coerced into one either,
+/// * **no `serde` traits** — persistence goes through
+///   [`as_raw_for_logic_only`](Self::as_raw_for_logic_only), which is a choice
+///   visible in a diff,
+/// * **no derived `Debug`.** The derive is what re-opened `{:?}` on
+///   `LegacyRegistryKey` (WR-04); the hand-written impl below prints the ESCAPED
+///   form, so a raw invisible character cannot reach a log line, a panic
+///   message, an `anyhow` chain, or the `#[derive(Debug)]` of any struct that
+///   contains one of these.
+///
+/// Those five absences are certified by
+/// `tests::an_untrusted_carrier_implements_none_of_the_string_conversions`, a
+/// runtime control observed RED by planting the impls — not by a comment quoting
+/// a compile error somebody once saw, which is precisely what
+/// `LegacyRegistryKey` had.
+///
+/// Two accessors, each named after the question it answers:
+/// [`as_raw_for_logic_only`](Self::as_raw_for_logic_only) for lookups,
+/// comparisons, map keys, path segments, subprocess arguments and persistence;
+/// [`shown`](Self::shown) for what a human reads.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Untrusted(String);
+
+impl Untrusted {
+    /// Wrap a string that came from outside this build. **No judgment is applied
+    /// and none may be added.**
+    ///
+    /// A carrier that refused values could not carry the third-party and legacy
+    /// data it exists for — a hostile commit subject must still be displayable,
+    /// and a registry key an older build accepted must still be removable
+    /// (D-17-3). Judging happens at the seams that create identities
+    /// ([`is_identity_char`]), never here.
+    pub fn from_untrusted_source(raw: String) -> Self {
+        Self(raw)
+    }
+
+    /// The raw bytes, for lookups, comparisons, map keys, path segments,
+    /// subprocess arguments and persistence ONLY.
+    ///
+    /// Deliberately unattractive to type. Reaching for it is a choice a reviewer
+    /// sees in a diff, which is what a bare `String` field never was.
+    pub fn as_raw_for_logic_only(&self) -> &str {
+        &self.0
+    }
+
+    /// What a human READS: both classes escaped, via [`render_for_terminal`].
+    pub fn shown(&self) -> Rendered {
+        render_for_terminal(&self.0)
+    }
+}
+
+/// **Hand-written, not derived** (WR-04, T-21-23-05).
+///
+/// `#[derive(Debug)]` on a carrier re-opens the raw path through `{:?}` — a log
+/// line, a panic message, an `anyhow` chain, or the derived `Debug` of any
+/// struct holding one. This prints [`shown`](Untrusted::shown), so the escape
+/// travels with the value into every one of those. Pinned over
+/// `LOOK_ALIKE_PAIRS` by
+/// `tests::a_carrier_debug_never_carries_an_invisible_character`, in both
+/// directions.
+impl std::fmt::Debug for Untrusted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Untrusted({:?})", self.shown().to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -917,5 +1176,304 @@ mod tests {
              is still one spelling, but it is no longer the one the doc claims.",
             sites[0]
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The carrier's ABSENT traits, certified by a control that goes red
+    // (WR-04, T-21-23-06)
+    // -----------------------------------------------------------------------
+
+    /// Answer, at runtime, whether a concrete type implements a given trait —
+    /// **autoref specialization**, the only way to ask that question on stable
+    /// Rust.
+    ///
+    /// # Why a control at all, and why not a comment
+    ///
+    /// [`crate::registry::LegacyRegistryKey`]'s doc claims "no `Display` — so it
+    /// cannot be interpolated at all", and its only evidence is a compile error
+    /// somebody once saw, quoted in a comment at `src/main.rs`. A comment cannot
+    /// go red. Add `impl Display` tomorrow and the doc keeps claiming the
+    /// absence while the tree no longer has it — which is this phase's defining
+    /// failure shape, one level up: a guard whose green result is not evidence.
+    ///
+    /// # How it works
+    ///
+    /// For each trait there is a `Yes` half implemented for `&Wrap<T> where T:
+    /// ThatTrait` and a `No` half implemented blanket for `Wrap<T>`. The call is
+    /// written `(&&Wrap(value)).implements_x()` and **the second `&` is
+    /// load-bearing**: every method here takes `&self`, so at receiver type
+    /// `&&Wrap<T>` the first candidate step solves `&Self == &&Wrap<T>`, giving
+    /// `Self = &Wrap<T>` and selecting the `Yes` half when its bound holds. Drop
+    /// one `&` and the first step instead solves `Self = Wrap<T>`, which matches
+    /// the `No` half for EVERY type — the probe then answers `false`
+    /// unconditionally and the control is worthless. That was observed here
+    /// before it was fixed: with a single `&`, the `String` arm went red with
+    /// *"`String` implements `Display` and the probe said otherwise, so the
+    /// probe is broken and every absence asserted above proved nothing"*, which
+    /// is the control arm doing exactly the job it exists for.
+    ///
+    /// When the bound does not hold, resolution autoderefs to `&Wrap<T>` and
+    /// finds the `No` half.
+    ///
+    /// **It must be invoked at a MONOMORPHIC call site**, which is why the three
+    /// entry points below are macros rather than generic functions: inside a
+    /// generic `fn f<T>(v: T)` the parameter carries no `Display` bound, so the
+    /// `Yes` half could never be selected and the probe would answer `false` for
+    /// everything — a control that is always `false` certifies nothing.
+    ///
+    /// # What it certifies, and its direction — disclosed
+    ///
+    /// It answers the question for the type **as the test binary sees it**, so
+    /// it certifies the absence of an inherent or in-crate impl. An impl added
+    /// behind a Cargo feature this test build does not enable would be invisible
+    /// to it. **Direction: under-detection, disclosed.** What bounds it is
+    /// coherence: [`Untrusted`] is defined in this crate and all three traits
+    /// are foreign, so any impl of them for it MUST live in this crate — the
+    /// orphan rule leaves nowhere else to put one.
+    mod trait_probe {
+        pub struct Wrap<T>(pub T);
+
+        pub trait DisplayYes {
+            fn implements_display(&self) -> bool;
+        }
+        impl<T: std::fmt::Display> DisplayYes for &Wrap<T> {
+            fn implements_display(&self) -> bool {
+                true
+            }
+        }
+        pub trait DisplayNo {
+            fn implements_display(&self) -> bool;
+        }
+        impl<T> DisplayNo for Wrap<T> {
+            fn implements_display(&self) -> bool {
+                false
+            }
+        }
+
+        pub trait AsRefStrYes {
+            fn implements_as_ref_str(&self) -> bool;
+        }
+        impl<T: AsRef<str>> AsRefStrYes for &Wrap<T> {
+            fn implements_as_ref_str(&self) -> bool {
+                true
+            }
+        }
+        pub trait AsRefStrNo {
+            fn implements_as_ref_str(&self) -> bool;
+        }
+        impl<T> AsRefStrNo for Wrap<T> {
+            fn implements_as_ref_str(&self) -> bool {
+                false
+            }
+        }
+
+        pub trait IntoCowYes {
+            fn implements_into_cow_str(&self) -> bool;
+        }
+        impl<T: Into<std::borrow::Cow<'static, str>>> IntoCowYes for &Wrap<T> {
+            fn implements_into_cow_str(&self) -> bool {
+                true
+            }
+        }
+        pub trait IntoCowNo {
+            fn implements_into_cow_str(&self) -> bool;
+        }
+        impl<T> IntoCowNo for Wrap<T> {
+            fn implements_into_cow_str(&self) -> bool {
+                false
+            }
+        }
+    }
+
+    /// Does the value's type implement [`std::fmt::Display`]?
+    macro_rules! implements_display {
+        ($value:expr) => {{
+            #[allow(unused_imports)]
+            use $crate::text::tests::trait_probe::{DisplayNo, DisplayYes, Wrap};
+            (&&Wrap($value)).implements_display()
+        }};
+    }
+
+    /// Does the value's type implement `AsRef<str>`?
+    macro_rules! implements_as_ref_str {
+        ($value:expr) => {{
+            #[allow(unused_imports)]
+            use $crate::text::tests::trait_probe::{AsRefStrNo, AsRefStrYes, Wrap};
+            (&&Wrap($value)).implements_as_ref_str()
+        }};
+    }
+
+    /// Does the value's type implement `Into<Cow<'static, str>>`?
+    macro_rules! implements_into_cow_str {
+        ($value:expr) => {{
+            #[allow(unused_imports)]
+            use $crate::text::tests::trait_probe::{IntoCowNo, IntoCowYes, Wrap};
+            (&&Wrap($value)).implements_into_cow_str()
+        }};
+    }
+
+    /// **Eight facts in one test, and the both-directions shape is what stops it
+    /// going vacuous** (WR-04, D-21-8).
+    ///
+    /// Three ABSENCES for [`Untrusted`] — the carrier cannot be interpolated or
+    /// coerced — and three PRESENCES for `String`, which is the control arm: if
+    /// the probe were broken (wrong receiver, a bound that never selects, a
+    /// trait not in scope) it would answer `false` for everything, and asserting
+    /// only the absences would pass forever while certifying nothing. That is
+    /// exactly the failure this phase has shipped at three levels.
+    ///
+    /// Then two PRESENCES for [`Rendered`], which is the other half of the
+    /// design (D-21-8): the ESCAPED type is the convenient one, so at a render
+    /// site the short path is the safe path and the raw path costs a deliberate
+    /// `as_raw_for_logic_only()`. That asymmetry is a checked property here
+    /// rather than a design intention stated in a doc.
+    ///
+    /// # Observed RED by planting, twice
+    ///
+    /// **`impl std::fmt::Display for Untrusted`** added to this module's parent,
+    /// writing `self.0`:
+    ///
+    /// ```text
+    /// thread 'text::tests::an_untrusted_carrier_implements_none_of_the_string_conversions' (459964) panicked at src/text.rs:1361:9:
+    /// `Untrusted` implements `Display`. The whole mechanism is that a carrier cannot be interpolated: with `Display` present, `format!("{}", untrusted)` and `Span::raw(untrusted.to_string())` compile again at every site in the tree, and the compiler stops naming the consumers. Remove the impl; if a human needs to read the value, that is `shown()`.
+    /// ```
+    ///
+    /// **`impl AsRef<str> for Untrusted`** returning `&self.0`:
+    ///
+    /// ```text
+    /// thread 'text::tests::an_untrusted_carrier_implements_none_of_the_string_conversions' (460706) panicked at src/text.rs:1370:9:
+    /// `Untrusted` implements `AsRef<str>`. A carrier that can be coerced to `&str` can be handed to any sink that takes one, which is the raw path restored everywhere at once and invisible in a diff. Remove the impl; the raw path is `as_raw_for_logic_only()` and it is meant to be conspicuous.
+    /// ```
+    ///
+    /// Both impls were removed and `git status --porcelain` confirmed clean
+    /// afterwards. A control never observed red is not a certificate.
+    #[test]
+    fn an_untrusted_carrier_implements_none_of_the_string_conversions() {
+        // ── The carrier: three absences ───────────────────────────────────
+        let carrier = || Untrusted::from_untrusted_source("demo".to_string());
+
+        assert!(
+            !implements_display!(carrier()),
+            "`Untrusted` implements `Display`. The whole mechanism is that a \
+             carrier cannot be interpolated: with `Display` present, \
+             `format!(\"{{}}\", untrusted)` and `Span::raw(untrusted.to_string())` \
+             compile again at every site in the tree, and the compiler stops \
+             naming the consumers. Remove the impl; if a human needs to read the \
+             value, that is `shown()`."
+        );
+        assert!(
+            !implements_as_ref_str!(carrier()),
+            "`Untrusted` implements `AsRef<str>`. A carrier that can be coerced \
+             to `&str` can be handed to any sink that takes one, which is the \
+             raw path restored everywhere at once and invisible in a diff. \
+             Remove the impl; the raw path is `as_raw_for_logic_only()` and it \
+             is meant to be conspicuous."
+        );
+        assert!(
+            !implements_into_cow_str!(carrier()),
+            "`Untrusted` implements `Into<Cow<'static, str>>`. That is precisely \
+             the bound `Span::raw` and `Span::styled` take, so the carrier could \
+             be handed straight to a ratatui sink and the retype would gate \
+             nothing at all."
+        );
+
+        // ── The control arm: three presences, so a broken probe cannot pass ──
+        assert!(
+            implements_display!(String::from("demo")),
+            "`String` implements `Display` and the probe said otherwise, so the \
+             probe is broken and every absence asserted above proved nothing"
+        );
+        assert!(
+            implements_as_ref_str!(String::from("demo")),
+            "`String` implements `AsRef<str>` and the probe said otherwise, so \
+             the probe is broken"
+        );
+        assert!(
+            implements_into_cow_str!(String::from("demo")),
+            "`String` implements `Into<Cow<'static, str>>` and the probe said \
+             otherwise, so the probe is broken"
+        );
+
+        // ── The other half of the design: the ESCAPED type is the easy one ──
+        assert!(
+            implements_display!(render_for_terminal("demo")),
+            "`Rendered` must implement `Display`, or `format!(\"{{}}\", \
+             v.shown())` stops compiling and the escaped path stops being the \
+             short one — which is the entire reason the raw path is a \
+             deliberate choice rather than the convenient default"
+        );
+        assert!(
+            implements_into_cow_str!(render_for_terminal("demo")),
+            "`Rendered` must implement `Into<Cow<'static, str>>`, or \
+             `Span::raw(v.shown())` stops compiling and every render site grows \
+             a `.to_string()` — friction on the SAFE path is how a rule stops \
+             being followed"
+        );
+    }
+
+    /// **`{:?}` is a render surface, and the derive is what re-opened it**
+    /// (WR-04, T-21-23-05).
+    ///
+    /// [`Untrusted`] has a hand-written [`std::fmt::Debug`] that prints
+    /// [`shown`](Untrusted::shown), so a raw invisible character cannot reach a
+    /// log line, a panic message, an `anyhow` chain, or the derived `Debug` of
+    /// any struct that contains one — `GitLogEntry` derives `Debug`, and so does
+    /// `Action`, which carries a `Vec<GitLogEntry>`.
+    ///
+    /// **Both directions over the whole corpus.** The hostile member must come
+    /// out escaped and carrying nothing invisible; the clean member must come
+    /// out VERBATIM, which is the arrival arm — without it this test would pass
+    /// against a `Debug` that printed the empty string.
+    ///
+    /// The non-vacuity guard runs FIRST and follows the shape
+    /// `registry.rs`'s idempotence pin already uses: a corpus of all-ASCII
+    /// fixtures would satisfy "carries nothing invisible" trivially, so at least
+    /// one pair must actually be changed by [`display_identity`].
+    ///
+    /// Fixtures are drawn BY IMPORT from
+    /// [`LOOK_ALIKE_PAIRS`](crate::test_support::LOOK_ALIKE_PAIRS) (D-21-6) and
+    /// never respelled here.
+    #[test]
+    fn a_carrier_debug_never_carries_an_invisible_character() {
+        let corpus_is_actually_hostile = crate::test_support::LOOK_ALIKE_PAIRS
+            .iter()
+            .any(|(_, hostile)| display_identity(hostile) != *hostile);
+        assert!(
+            corpus_is_actually_hostile,
+            "no member of LOOK_ALIKE_PAIRS is changed by `display_identity`, so \
+             every assertion below would hold for a `Debug` that did nothing at \
+             all. The corpus, not this test, is what needs fixing."
+        );
+
+        for (clean, hostile) in crate::test_support::LOOK_ALIKE_PAIRS {
+            let carrier = Untrusted::from_untrusted_source(hostile.to_string());
+            let debugged = format!("{carrier:?}");
+
+            assert!(
+                !debugged.chars().any(is_invisible_formatting_char),
+                "`{{:?}}` on a carrier holding {hostile:?} produced \
+                 {debugged:?}, which still carries an invisible-class \
+                 character. `#[derive(Debug)]` is how this hole gets re-opened; \
+                 the impl must print `shown()`."
+            );
+            assert!(
+                debugged.contains(&display_identity(hostile)),
+                "`{{:?}}` on a carrier holding {hostile:?} must contain the \
+                 `U+`-escaped spelling {:?}, got {debugged:?}. Carrying nothing \
+                 invisible is satisfied by printing nothing at all, so the \
+                 escaped form has to be there too.",
+                display_identity(hostile)
+            );
+
+            let clean_carrier = Untrusted::from_untrusted_source(clean.to_string());
+            let clean_debugged = format!("{clean_carrier:?}");
+            assert!(
+                clean_debugged.contains(clean),
+                "`{{:?}}` on a carrier holding the CLEAN member {clean:?} must \
+                 show it verbatim, got {clean_debugged:?}. This is the arrival \
+                 arm: without it the assertions above would hold for a `Debug` \
+                 that printed the empty string."
+            );
+        }
     }
 }

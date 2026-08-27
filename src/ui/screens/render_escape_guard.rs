@@ -95,14 +95,53 @@
 //!    `the_screen_census_matches_the_tree`, which is the control observed red
 //!    above. A new entry point that is NOT a `Screen` is reported by nothing
 //!    here.
-//! 4. **The probe cannot assert that the RAW form is absent.** ratatui 0.30
-//!    deletes zero-width graphemes before a cell exists (measured — see
-//!    `the_screen_renders_identity_escaped`'s doc), so that assertion is true of
-//!    an unescaped site too and would pass vacuously forever. **This is a
-//!    limit on the assertion, not on the code**: what replaces it is arrival of
-//!    the clean stem plus presence of the escaped form, and both were observed
-//!    red (the arrival assertion by emptying a fixture, the escaped-form
-//!    assertion against the unescaped tree at HEAD).
+//! 4. **The raw-absence assertion is PRESENT, and its power is per widget
+//!    family.** This limit used to read: *"The probe cannot assert that the RAW
+//!    form is absent. ratatui 0.30 deletes zero-width graphemes before a cell
+//!    exists, so that assertion is true of an unescaped site too and would pass
+//!    vacuously forever."* That was measured against a `Paragraph` and
+//!    generalised to the whole rendering stack, and the generalisation is FALSE
+//!    — re-derived per widget family in a scratch crate outside this tree
+//!    against ratatui 0.30.2 (the table is quoted in
+//!    `the_screen_renders_identity_escaped`'s doc and in `deferred-items.md`):
+//!    `Paragraph` and `Paragraph`-in-`Block` drop `U+202E`, `U+200B`, `U+00AD`,
+//!    `U+2062`, `U+2065` and `U+FEFF`; `Block::title` and `ListItem` PRESERVE
+//!    every one of them. Those two families are exactly where this tree's live
+//!    leaks were, so the assertion is NOT vacuous — it is assertion 4, gated on
+//!    arrival exactly as assertion 2 is, and it was observed RED for
+//!    `DetailScreen [GitHistory tab]` against a tree where only the git-history
+//!    `shown()` was reverted.
+//!
+//!    **Where it still has no power, with its direction.** At a `Paragraph`
+//!    site the raw zero-width form never reaches a cell whether or not the site
+//!    escapes, so assertion 4 passes there for a reason unrelated to the code.
+//!    **Under-detection at `Paragraph` sites, silent.** What bounds THAT is
+//!    assertion 2 (the escaped form must be present) and assertion 3 (no
+//!    invisible-class character may reach a cell, which the tag block triggers
+//!    through every family). The three assertions have different blind spots by
+//!    construction, which is why all three are kept.
+//! 5. **Assertion 3's teeth are a property of the FIXTURE, and that property is
+//!    now checked rather than assumed.** `TAG_PAIR: usize = 4` is a hand-
+//!    maintained index into `LOOK_ALIKE_PAIRS`, and a reorder that put a
+//!    dropped-before-a-cell pair at that index would leave assertion 3 green
+//!    and empty. Assertion 0 renders `hostile_identity()` through a `ListItem`
+//!    and requires that at least one invisible-class character arrives, so the
+//!    probe REFUSES TO RUN when the teeth are gone and names the fixture rather
+//!    than a screen. The index itself is deliberately NOT pinned (D-21-12): an
+//!    equality on `TAG_PAIR` would be red on a harmless reorder and green on a
+//!    harmful content change, which is wrong in both directions. The
+//!    precondition's own `false` direction is certified by
+//!    `the_teeth_precondition_answers_false_when_the_class_cannot_reach_a_cell`,
+//!    which drives the same helper with an all-ASCII identity and with one whose
+//!    class members a `Paragraph` drops.
+//!
+//! **Every bound claimed above names a committed control; every residual names
+//! its direction.** Limits 1, 2, 3 and the `Paragraph` half of 4 are residuals
+//! and are marked under-detection. Limits 4 (for the preserving families) and 5
+//! are bounds, and the controls are `the_screen_renders_identity_escaped`'s
+//! assertions 0 and 4 plus
+//! `the_teeth_precondition_answers_false_when_the_class_cannot_reach_a_cell`,
+//! each observed red before it was observed green.
 
 use super::{AppContext, Screen};
 use crate::test_support::LOOK_ALIKE_PAIRS;
@@ -447,6 +486,29 @@ fn hostile_identity() -> String {
     )
 }
 
+/// An identity whose every invisible-class member is one a `Paragraph` DROPS
+/// before a cell exists — `U+200B`, `U+FEFF` and `U+00AD`, and no tag character.
+///
+/// Drawn BY IMPORT from three pairs of [`LOOK_ALIKE_PAIRS`] (D-21-6), never
+/// respelled: a hand copy can silently disagree with the const, and a new
+/// invisible literal in this file would collide with the `DEGENERATE` uniqueness
+/// scan.
+///
+/// It exists for exactly one purpose — the `false` direction of
+/// [`survives_a_rendered_buffer`]. Through [`ProbeSink::Paragraph`] this value's
+/// class members never reach a cell, so the helper must answer `false`; through
+/// [`ProbeSink::ListItem`] every one of them does, so it must answer `true`. One
+/// value, two answers, is what proves the helper is measuring the RENDER rather
+/// than the string.
+const ZERO_WIDTH_PAIRS: [usize; 3] = [0, 2, SOFT_HYPHEN_PAIR];
+
+fn zero_width_only_identity() -> String {
+    ZERO_WIDTH_PAIRS
+        .iter()
+        .map(|index| LOOK_ALIKE_PAIRS[*index].1)
+        .collect()
+}
+
 /// One render state a probe run puts a screen in.
 ///
 /// A screen is not one picture. `DetailScreen` has eleven tabs;
@@ -511,14 +573,88 @@ fn hostile_project_state(identity: &str) -> crate::state_reader::ProjectState {
 /// Built on `super::tests::ctx_with_aliases` rather than beside it: a second
 /// full-field `AppContext` literal is a second thing to keep in step with the
 /// struct.
+///
+/// # The `git_entries` fixture hole, and why closing it makes CR-04 stop being
+/// intermittent
+///
+/// This function used to reach `git_entries` only through
+/// `view_cache.entry(..).or_default()`, so the vector was always EMPTY and
+/// `DetailScreen::render_git_tab` returned at its `if cache.git_entries.is_empty()`
+/// branch after painting the authored string `"  No commits found (or not a git
+/// repository)"`. The `List`/`ListItem` build below that branch — which draws a
+/// third-party repository's commit hash, date, author and subject — was never
+/// exercised by any committed control, and LIMIT 1 of this module's doc named
+/// exactly that class of hole without naming this instance of it.
+///
+/// Verification pass 9 reported `the_screen_renders_identity_escaped` panicking
+/// ONCE for `DetailScreen [GitHistory tab]` with
+/// `['\u{e0041}', '\u{ad}', '\u{e0041}', '\u{ad}']`, and offered "the commit
+/// cache happened to be populated" as a reconciliation. That reconciliation does
+/// not survive reading this function: `ctx_with_aliases` performs no I/O and
+/// `or_default()` cannot fill a vector. So the MECHANISM of that one sighting is
+/// still unexplained and plan 21-23 does not pretend otherwise. What it does
+/// instead is decisive — populate the cache here and the defect fires on EVERY
+/// run rather than on one run in eighty.
+///
+/// **The RED, verbatim, before any escape landed** (`cargo test --lib --
+/// ui::screens::render_escape_guard::tests::the_screen_renders_identity_escaped
+/// --exact --nocapture`, against this fixture with `GitLogEntry`'s fields still
+/// bare `String` and the `List` render still raw):
+///
+/// ```text
+/// thread 'ui::screens::render_escape_guard::tests::the_screen_renders_identity_escaped' (333264) panicked at src/ui/screens/render_escape_guard.rs:1157:17:
+/// DetailScreen (src/ui/screens/detail.rs) [GitHistory tab] rendered ['\u{e0041}', '\u{ad}', '\u{e0041}', '\u{ad}', '\u{e0041}', '\u{ad}', '\u{e0041}', '\u{ad}'] into the terminal buffer. Those characters render as nothing, so what the operator reads is not what the value is.
+/// ```
+///
+/// Note `\u{ad}` in that list. `U+00AD` reaching a cell is IMPOSSIBLE through a
+/// `Paragraph` and routine through a `ListItem` — measured per widget family, see
+/// [`the_screen_renders_identity_escaped`](tests::the_screen_renders_identity_escaped)'s
+/// doc — so the character list is itself independent evidence that the leak was a
+/// `List` row, arriving from the opposite direction to the measurement.
+///
+/// **Where this red does NOT match pass 9's sighting, said rather than
+/// smoothed.** Pass 9 reported four characters
+/// (`['\u{e0041}', '\u{ad}', '\u{e0041}', '\u{ad}']`); this fixture reports
+/// EIGHT, which is one hostile pair per `GitLogEntry` field and is what a render
+/// of all four fields must produce. Four is two fields' worth. So this fixture
+/// reproduces the CLASS of defect pass 9 saw and does not reproduce its exact
+/// count, and the mechanism of that one sighting therefore remains unexplained.
+/// Reading (a) of pass 9's dichotomy — a real leak in this tab — is settled here
+/// by construction; the count mismatch is not evidence for or against reading (b)
+/// and is recorded as an open discrepancy rather than absorbed.
+///
+/// Reproduction rate with this fixture and the escape NOT applied: **20 failures
+/// in 20 runs** of the compiled lib test binary. A defect that fires 20 out of 20
+/// is not a flake.
 fn probe_ctx(identity: &str) -> AppContext {
     let mut ctx = super::tests::ctx_with_aliases(&[identity]);
     ctx.project_states
         .insert(identity.to_string(), hostile_project_state(identity));
-    ctx.view_cache.entry(identity.to_string()).or_default();
+    let cache = ctx.view_cache.entry(identity.to_string()).or_default();
+    cache.git_entries = vec![hostile_git_entry(identity)];
+    cache.git_selected = 0;
     ctx.recompute_filtered_aliases();
     ctx.table_state.select(Some(0));
     ctx
+}
+
+/// One `git log` row whose every field carries `identity`.
+///
+/// All four fields, not just `message`: `%h`, `%ad`, `%an` and `%s` are four
+/// `splitn` slices of one line of a third-party repository's `git log` output,
+/// and the render draws all four into the same `ListItem`. A fixture that put
+/// the identity in only one of them would leave the other three's render
+/// unasserted while looking like coverage.
+fn hostile_git_entry(identity: &str) -> crate::state_reader::git_ops::GitLogEntry {
+    use crate::state_reader::git_ops::GitLogEntry;
+    use crate::text::Untrusted;
+    let field = || Untrusted::from_untrusted_source(identity.to_string());
+    GitLogEntry {
+        hash: field(),
+        date: field(),
+        author: field(),
+        message: field(),
+    }
 }
 
 /// Every detail sub-view, so a tab is a render state rather than a place the
@@ -825,14 +961,25 @@ const PROBE_HEIGHT: u16 = 60;
 /// Render `screen` through the real [`Screen::render`](super::Screen::render)
 /// and join the resulting buffer's cell symbols, one line per terminal row.
 fn render_to_text(screen: &dyn Screen, ctx: &AppContext) -> String {
+    render_into_probe_buffer(|frame, area| screen.render(frame, area, ctx))
+}
+
+/// Draw through a `TestBackend` at the probe's dimensions and join the resulting
+/// buffer's cell symbols, one line per terminal row.
+///
+/// Extracted so [`survives_a_rendered_buffer`] inspects cells by exactly the
+/// same route the live probe does. A precondition that measured survivorship
+/// through a *different* harness could disagree with the assertion it is meant
+/// to protect, which is the shape of defect this module exists to remove.
+fn render_into_probe_buffer(draw: impl FnOnce(&mut ratatui::Frame, ratatui::layout::Rect)) -> String {
     let mut terminal =
         Terminal::new(TestBackend::new(PROBE_WIDTH, PROBE_HEIGHT)).expect("TestBackend terminal");
     terminal
         .draw(|frame| {
             let area = frame.area();
-            screen.render(frame, area, ctx);
+            draw(frame, area);
         })
-        .expect("draw the screen under probe");
+        .expect("draw the widget under probe");
     let buffer = terminal.backend().buffer().clone();
     (0..PROBE_HEIGHT)
         .map(|y| {
@@ -852,6 +999,47 @@ fn render_to_text(screen: &dyn Screen, ctx: &AppContext) -> String {
 
 fn invisible_chars(text: &str) -> Vec<char> {
     text.chars().filter(|c| is_invisible_formatting_char(*c)).collect()
+}
+
+/// Which widget family a survivorship measurement goes through.
+///
+/// The two are not interchangeable and that is the whole point: measured against
+/// ratatui 0.30.2 in a scratch crate outside this tree, `Paragraph` DROPS
+/// `U+202E`, `U+200B`, `U+00AD`, `U+2062`, `U+2065` and `U+FEFF` before a cell
+/// exists, while `ListItem` preserves every one of them. Both preserve the tag
+/// block. See `the_screen_renders_identity_escaped`'s doc for the full table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProbeSink {
+    /// The family the live leak used, and the one that preserves most.
+    ListItem,
+    /// The family whose behaviour was wrongly generalised to the whole
+    /// rendering stack for three rounds.
+    Paragraph,
+}
+
+/// Whether any character of `value` that is in the invisible class SURVIVES all
+/// the way to a rendered cell through `sink`.
+///
+/// **This is a property of the fixture's rendered BEHAVIOUR, not of an index**
+/// (D-21-12). `TAG_PAIR: usize = 4` silently decides whether assertion 3 has
+/// teeth: reorder [`LOOK_ALIKE_PAIRS`] so index 4 holds a pair whose hostile
+/// member is dropped before a cell exists, and assertion 3 goes on passing while
+/// asserting nothing. Pinning `TAG_PAIR == 4` would be the wrong instrument in
+/// both directions — red on a harmless reorder, green on a harmful content
+/// change. Rendering the fixture and asking whether the class arrives is red
+/// exactly when the teeth are gone and green exactly when they are there.
+fn survives_a_rendered_buffer(sink: ProbeSink, value: &str) -> bool {
+    use ratatui::text::Line;
+    use ratatui::widgets::{List, ListItem, Paragraph};
+
+    let owned = value.to_string();
+    let rendered = render_into_probe_buffer(|frame, area| match sink {
+        ProbeSink::ListItem => {
+            frame.render_widget(List::new(vec![ListItem::new(Line::from(owned))]), area)
+        }
+        ProbeSink::Paragraph => frame.render_widget(Paragraph::new(owned), area),
+    });
+    !invisible_chars(&rendered).is_empty()
 }
 
 // ---------------------------------------------------------------------------
@@ -919,6 +1107,76 @@ mod tests {
         );
     }
 
+    /// The teeth precondition's permanent non-vacuity control, in **both**
+    /// directions and through **both** widget families.
+    ///
+    /// [`survives_a_rendered_buffer`] is a precondition, and a precondition that
+    /// only ever answers `true` is indistinguishable from `fn f() -> bool { true }`.
+    /// So this drives the SAME helper the live probe consumes and asserts it
+    /// answers `false` where it must.
+    ///
+    /// **A note on how the `false` direction is built, because the obvious
+    /// construction does not exist.** The plan for this task asked for an
+    /// identity "made only of characters the measurement shows are dropped by
+    /// every family under probe". No such identity exists for the invisible
+    /// class: the per-widget measurement shows `ListItem` preserving every one
+    /// of `U+202E`, `U+200B`, `U+00AD`, `U+2062`, `U+2065`, `U+FEFF` and
+    /// `U+E0041`. The only code points dropped by every family are C0 controls,
+    /// and those are `Cc` — outside the class this helper measures — so an
+    /// identity built from them would answer `false` for two reasons at once and
+    /// certify neither. The `false` direction is therefore delivered by the two
+    /// mechanisms that actually make the precondition fire, both asserted here:
+    ///
+    /// 1. **The fixture carries no class member at all** — the shape a reorder
+    ///    of `LOOK_ALIKE_PAIRS` toward all-clean pairs would produce.
+    ///    [`clean_identity`] is all-ASCII, so nothing can arrive.
+    /// 2. **The fixture's class members are DROPPED by the family under
+    ///    measurement** — the shape the original LIMIT 4 was written about.
+    ///    [`zero_width_only_identity`] answers `false` through
+    ///    [`ProbeSink::Paragraph`] and `true` through [`ProbeSink::ListItem`],
+    ///    which is one value giving two answers and is the strongest available
+    ///    proof that the helper measures the RENDER rather than the string.
+    ///
+    /// Arm 2 doubles as this tree's own in-repo re-derivation of the per-widget
+    /// correction: if a future ratatui made `ListItem` drop zero-width
+    /// graphemes, or `Paragraph` preserve them, this test goes red and the
+    /// STANDING obligation in `deferred-items.md` is what it points at.
+    #[test]
+    fn the_teeth_precondition_answers_false_when_the_class_cannot_reach_a_cell() {
+        assert!(
+            survives_a_rendered_buffer(ProbeSink::ListItem, &hostile_identity()),
+            "the live fixture must have teeth, or the precondition guarding \
+             assertion 3 is itself vacuous"
+        );
+
+        assert!(
+            !survives_a_rendered_buffer(ProbeSink::ListItem, &clean_identity()),
+            "an all-ASCII identity carries no invisible-class character, so \
+             nothing can arrive and the precondition must answer false — a \
+             helper that answered true here would be reporting on something \
+             other than the fixture"
+        );
+
+        let zero_width = zero_width_only_identity();
+        assert!(
+            !survives_a_rendered_buffer(ProbeSink::Paragraph, &zero_width),
+            "{zero_width:?} carries only class members a `Paragraph` DROPS \
+             before a cell exists, so the precondition must answer false \
+             through that family. If this went true, `Paragraph` has started \
+             preserving zero-width graphemes and the STANDING ratatui entry in \
+             deferred-items.md needs re-measuring."
+        );
+        assert!(
+            survives_a_rendered_buffer(ProbeSink::ListItem, &zero_width),
+            "{zero_width:?} is the SAME value, and through a `ListItem` every \
+             one of its class members reaches a cell. One value, two answers: \
+             that is what proves this helper measures the render rather than \
+             the string, and it is the per-widget correction re-derived inside \
+             this tree. If this went false, `ListItem` has started dropping \
+             zero-width graphemes and LIMIT 4 must be re-stated."
+        );
+    }
+
     /// The live census: the walk's derived set equals the disposition table,
     /// both ways.
     #[test]
@@ -975,17 +1233,62 @@ mod tests {
     /// Two facts, both load-bearing, and both contradicting what round 7's
     /// review and verification pass 8 each asserted without measuring:
     ///
-    /// 1. **ratatui 0.30's `Buffer` DROPS zero-width graphemes before a cell
-    ///    exists.** `U+00AD` is simply gone from the rendered row. So the TUI
-    ///    does not *reorder* a hostile key — it silently *deletes* bytes, and
-    ///    the legacy key renders as a DIFFERENT string that can collide with a
-    ///    real project of that name. `CONTAINS RAW: false` is the direct
-    ///    consequence: **an assertion that the raw form is absent passes
-    ///    vacuously against an unescaped site, and would go on passing
-    ///    forever.**
+    /// 1. **A `Paragraph` drops zero-width graphemes before a cell exists.**
+    ///    `U+00AD` is simply gone from the rendered row above. So at a
+    ///    `Paragraph` site the TUI does not *reorder* a hostile key — it
+    ///    silently *deletes* bytes, and the legacy key renders as a DIFFERENT
+    ///    string that can collide with a real project of that name.
     /// 2. **The tag block SURVIVES.** `U+E0041` — the LLM ASCII-smuggling
     ///    carrier — reached a terminal cell intact. That is the one class that
-    ///    arrives whole, and it is what assertion 3 catches.
+    ///    arrives whole through every family, and it is what assertion 3 catches.
+    ///
+    /// # CORRECTED 2026-08-27 (21-23): fact 1 is a `Paragraph` property, NOT a `Buffer` property
+    ///
+    /// **The sentence this doc used to carry, verbatim:** *"ratatui 0.30's
+    /// `Buffer` DROPS zero-width graphemes before a cell exists."* That is a
+    /// generalisation of one sink's behaviour to the whole rendering stack, and
+    /// it is false. The drop happens on the `Paragraph` path; `Block::title`
+    /// and `ListItem` reach a cell by a different
+    /// route and PRESERVE the class. Three artefacts in this phase asserted the
+    /// general form without measuring it — `21-21`'s SUMMARY, the round-8
+    /// review, and verification pass 9's Judgment 3, which re-derived only the
+    /// `Paragraph` column — and each time it hid the two families where this
+    /// tree's live leaks were.
+    ///
+    /// Re-derived for `21-23` in a throwaway crate OUTSIDE this repository
+    /// depending only on `ratatui = "0.30"` (resolved 0.30.2, matching this
+    /// tree's `Cargo.lock`), rendering `a<CP>b` through four sinks into a
+    /// `TestBackend` buffer. Verbatim:
+    ///
+    /// ```text
+    /// cp          width | Paragraph   Block::title  ListItem    Paragraph-in-Block
+    /// U+202E     2 | dropped     SURVIVES      SURVIVES    dropped
+    /// U+200B     2 | dropped     SURVIVES      SURVIVES    dropped
+    /// U+00AD     2 | dropped     SURVIVES      SURVIVES    dropped
+    /// U+2062     2 | dropped     SURVIVES      SURVIVES    dropped
+    /// U+2065     2 | dropped     SURVIVES      SURVIVES    dropped
+    /// U+FEFF     2 | dropped     SURVIVES      SURVIVES    dropped
+    /// U+E0041    2 | SURVIVES    SURVIVES      SURVIVES    SURVIVES
+    /// ```
+    ///
+    /// What this costs the probe is stated in LIMIT 4 of the module doc, and
+    /// what it BUYS is the raw-absence assertion LIMIT 4 declined: non-vacuous
+    /// for the two preserving families, and present below as assertion 4.
+    ///
+    /// # The RED assertion 4 was observed at, verbatim
+    ///
+    /// Against the tree with EXACTLY ONE `shown()` reverted — the git-history
+    /// `List` row's `message` span — and nothing else changed:
+    ///
+    /// ```text
+    /// thread 'ui::screens::render_escape_guard::tests::the_screen_renders_identity_escaped' (432171) panicked at src/ui/screens/render_escape_guard.rs:1399:29:
+    /// DetailScreen (src/ui/screens/detail.rs) [GitHistory tab] rendered the RAW hostile identity "demo\u{e0041}r\u{ad}un" into the terminal buffer. What the operator reads is therefore a value the terminal may reorder, hide characters in, or render as a different string entirely — this is Trojan Source (CVE-2021-42574) in a cell. Route what a human READS through crate::text::render_for_terminal; the raw value belongs only in lookups, map keys, path segments, subprocess arguments and persistence.
+    /// ```
+    ///
+    /// The site was restored immediately and `git status --porcelain` confirmed
+    /// clean. Note that assertion 4 fires BEFORE assertion 3 here: the raw form
+    /// arriving is the more specific finding, and reporting it first tells the
+    /// reader which value leaked rather than only which characters did.
     ///
     /// What makes this probe non-vacuous is therefore assertion 1 plus
     /// assertion 2: the clean stem must ARRIVE (proving the screen renders
@@ -1006,6 +1309,27 @@ mod tests {
         let clean = clean_identity();
         let hostile = hostile_identity();
         let escaped = display_identity(&hostile);
+
+        // 0. THE TEETH, checked before any screen is probed (D-21-12, pass-9
+        //    Warning). Assertion 3 asserts that no invisible-class character
+        //    reaches a cell. That is only a claim about anything if the hostile
+        //    fixture CAN put one there. `TAG_PAIR: usize = 4` is a hand-
+        //    maintained index into `LOOK_ALIKE_PAIRS`, and a reorder that made
+        //    index 4 a zero-width pair would leave assertion 3 green and empty.
+        //    Deciding this by RENDERING rather than by pinning the index is what
+        //    makes it red on a harmful content change and quiet on a harmless
+        //    reorder.
+        assert!(
+            survives_a_rendered_buffer(ProbeSink::ListItem, &hostile),
+            "assertion 3 has lost its teeth: no character of the hostile \
+             fixture {hostile:?} both satisfies `text::is_invisible_formatting_char` \
+             AND survives into a rendered cell, so `invisible_chars` can only \
+             ever return empty and assertion 3 passes vacuously while staying \
+             green. Look at `LOOK_ALIKE_PAIRS` in src/test_support.rs and at \
+             `TAG_PAIR`/`SOFT_HYPHEN_PAIR` above: a reorder that put a pair \
+             whose hostile member is dropped before a cell exists at index \
+             {TAG_PAIR} is enough to cause this."
+        );
 
         for (name, path, disposition, _reason) in SCREEN_IDENTITY_DISPOSITIONS {
             let Some(build) = fixture_for(name) else {
@@ -1056,6 +1380,34 @@ mod tests {
                                  crate::text::display_identity; the value used \
                                  for lookups, map keys, path segments, \
                                  comparisons and persistence stays RAW."
+                            );
+
+                            // 4. THE ASSERTION LIMIT 4 DECLINED, reinstated
+                            //    (D-21-11). It was declined on the premise that
+                            //    ratatui deletes zero-width graphemes before a
+                            //    cell exists, which is TRUE of `Paragraph` and
+                            //    FALSE of `Block::title` and `ListItem` — the
+                            //    two families this tree's live leaks used. Gated
+                            //    on `arrived` exactly as assertion 2 is, so a
+                            //    state that draws no identity cannot pass by
+                            //    silence.
+                            //
+                            //    Its power is per family and LIMIT 4 says so: at
+                            //    a `Paragraph` site it passes for a reason
+                            //    unrelated to the code, and assertions 2 and 3
+                            //    are what bound that.
+                            assert!(
+                                !hostile_text.contains(hostile.as_str()),
+                                "{where_} rendered the RAW hostile identity \
+                                 {hostile:?} into the terminal buffer. What the \
+                                 operator reads is therefore a value the \
+                                 terminal may reorder, hide characters in, or \
+                                 render as a different string entirely — this is \
+                                 Trojan Source (CVE-2021-42574) in a cell. Route \
+                                 what a human READS through \
+                                 crate::text::render_for_terminal; the raw value \
+                                 belongs only in lookups, map keys, path \
+                                 segments, subprocess arguments and persistence."
                             );
                         }
                     }
