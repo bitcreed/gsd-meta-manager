@@ -3125,4 +3125,162 @@ mod tests {
              and the assertion above proves nothing about which branch ran."
         );
     }
+
+    /// The alias the S1 spot-check registers its project under.
+    ///
+    /// **Deliberately shares no substring with either member of the fixture
+    /// pair.** The arrival assertion below looks for the clean value in the
+    /// rendered buffer; if the alias contained it, the alias's own render would
+    /// satisfy that assertion and the echo could stop arriving entirely without
+    /// anything going red.
+    const ECHO_SPOT_CHECK_ALIAS: &str = "s1-spot-check-project";
+
+    /// Type `typed` into the Enqueue screen and return the rendered buffer's
+    /// cell symbols, through the real [`super::super::Screen::render`].
+    fn enqueue_echo_text(typed: &str) -> String {
+        // `super::super::tests` — this nested module's grandparent is
+        // `ui::screens`, so the same `pub(super) fn ctx_with_aliases` the
+        // module level reaches at :982 and :1191 is reachable here too, with
+        // no visibility change anywhere (F3, D-21-60).
+        let mut ctx = super::super::tests::ctx_with_aliases(&[ECHO_SPOT_CHECK_ALIAS]);
+        ctx.input_buffer = typed.to_string();
+        let screen = crate::ui::screens::enqueue::EnqueueScreen::new(
+            ECHO_SPOT_CHECK_ALIAS.to_string(),
+        );
+        render_to_text(&screen, &ctx)
+    }
+
+    /// **21-29's S1, delivered: two directions at an INPUT-ECHO screen.**
+    ///
+    /// # Why this screen, and why S1 needed it
+    ///
+    /// `21-29` asked for a two-direction spot-check on a screen whose rendered
+    /// value is **what the operator TYPED**, and both spot-checks it delivered
+    /// landed on `.planning/`-derived values instead (`roadmap_widget.rs`'s
+    /// phase name, `queue_delete_confirm.rs`'s queued command). `21-29`
+    /// self-disclosed that as not met; `21-30` deferred it. The subject here is
+    /// [`EnqueueScreen`](crate::ui::screens::enqueue::EnqueueScreen), whose
+    /// footer at `src/ui/screens/enqueue.rs:126-133` echoes `ctx.input_buffer`
+    /// — the characters the operator pressed, arriving through no file at all.
+    ///
+    /// # The widget family, NAMED — and why it decides the fixture
+    ///
+    /// That footer is a **`Paragraph`**. This module has already measured
+    /// (see [`ProbeSink`]) that against ratatui 0.30.2 a `Paragraph` **DROPS**
+    /// `U+200B`, `U+FEFF`, `U+00AD`, `U+202E`, `U+2062` and `U+2065` before a
+    /// cell exists, while both families preserve the **tag block**.
+    ///
+    /// That measurement is not a footnote here, it is what makes this control
+    /// able to fail at all. Had this test used a zero-width pair, the hostile
+    /// direction would assert the absence of characters the widget discards on
+    /// its own, and it would pass identically **whether or not the escape ran**
+    /// — a control that cannot go red, which is precisely this round's own
+    /// subject. So the fixture is [`TAG_PAIR`], whose hostile member carries
+    /// `U+E0041`: a character this family PRESERVES, so its absence from the
+    /// cells is evidence that the escape acted rather than that ratatui
+    /// swallowed it.
+    ///
+    /// # Arrival before property
+    ///
+    /// The clean direction runs first and does double duty: it proves the
+    /// fixture reaches the buffer at all, and it proves the escape did not
+    /// rewrite a value that needed no rewriting. A fixture that never arrives
+    /// would otherwise satisfy the hostile assertion trivially and be counted
+    /// as coverage — the failure mode this whole module exists to remove.
+    ///
+    /// # The committed RED, verbatim
+    ///
+    /// Captured by `21-33`'s executor by temporarily reverting the escape at
+    /// the echo — `Span::raw(ctx.input_buffer.clone())` in place of
+    /// `Span::raw(crate::text::render_for_terminal(&ctx.input_buffer))` at
+    /// `src/ui/screens/enqueue.rs:128` — then restoring it, with
+    /// `git status --porcelain` clean afterwards:
+    ///
+    /// ```text
+    /// thread 'ui::screens::render_escape_guard::tests::an_input_echo_screen_escapes_a_hostile_value_and_leaves_a_clean_one_alone' (3019460) panicked at src/ui/screens/render_escape_guard.rs:3252:9:
+    /// EnqueueScreen rendered 1 invisible-formatting character(s) into the buffer: ['\u{e0041}']. What the operator typed reached a terminal cell unescaped, through the Paragraph footer at src/ui/screens/enqueue.rs:126-133.
+    /// ```
+    ///
+    /// Note what that red proves beyond "the escape ran": the surviving
+    /// character is `U+E0041`, a **tag** character, which is exactly the class
+    /// the `Paragraph` family preserves. Had the fixture been a zero-width
+    /// pair, the reverted escape would have produced no red at all — the
+    /// widget would have dropped the character itself and the control would
+    /// have been green against broken code.
+    ///
+    /// # What this does NOT cover, with its direction
+    ///
+    /// **One screen and one fixture pair.** `EnqueueScreen` was chosen because
+    /// S1 named the input-echo CLASS, not because one screen stands for five:
+    /// `AddProjectScreen`, `CreateProjectScreen`, `DriverInjectScreen` and
+    /// `DriverStartScreen` are covered only by this module's per-screen
+    /// behavioural probes, which assert arrival and escaping but not this
+    /// test's clean-value no-over-escaping direction. **Direction:
+    /// under-detection, silent, bounded by those probes and not by this test.**
+    /// A single spot-check must not acquire a class-wide claim — that is this
+    /// round's own subject, one level down.
+    #[test]
+    fn an_input_echo_screen_escapes_a_hostile_value_and_leaves_a_clean_one_alone() {
+        // Imported BY INDEX, never respelled (D-21-6): a hand copy can drift
+        // from the const, and this module's DEGENERATE uniqueness scan would
+        // collide with a new invisible literal in this file.
+        let (clean, hostile) = LOOK_ALIKE_PAIRS[TAG_PAIR];
+
+        // The fixture is only meaningful if the hostile member actually carries
+        // a member of the class. Asserted, not assumed.
+        assert!(
+            !invisible_chars(hostile).is_empty(),
+            "the hostile member of LOOK_ALIKE_PAIRS[{TAG_PAIR}] ({hostile:?}) \
+             carries no character satisfying `text::is_invisible_formatting_char`, \
+             so the hostile direction below would pass on an empty property. \
+             LOOK_ALIKE_PAIRS is addressed positionally and a reorder is enough \
+             to cause this."
+        );
+
+        // ---- Direction 1: ARRIVAL, and no over-escaping. ----
+        //
+        // Asserted FIRST. A clean value must reach the cells byte-identical:
+        // the escape is for hostile input, and a version that rewrote ordinary
+        // typing would be a regression the hostile direction alone cannot see.
+        let clean_text = enqueue_echo_text(clean);
+        assert!(
+            clean_text.contains(clean),
+            "the clean value {clean:?} did not reach the rendered buffer at \
+             all, so nothing below is evidence of anything. Either the fixture \
+             never arrived — the echo stopped rendering `ctx.input_buffer`, or \
+             the footer moved — or the escape REWROTE a clean value that \
+             needed no rewriting. Those are different defects and both are \
+             failures; check the buffer to tell them apart."
+        );
+
+        // ---- Direction 2: the hostile property. ----
+        let hostile_text = enqueue_echo_text(hostile);
+        let survivors = invisible_chars(&hostile_text);
+        assert!(
+            survivors.is_empty(),
+            "EnqueueScreen rendered {} invisible-formatting character(s) into \
+             the buffer: {survivors:?}. What the operator typed reached a \
+             terminal cell unescaped, through the Paragraph footer at \
+             src/ui/screens/enqueue.rs:126-133.",
+            survivors.len()
+        );
+
+        // The escape must have ACTED, not merely produced a clean buffer. The
+        // expected escaped form is computed with the same `display_identity`
+        // this module already uses as its oracle, rather than by a second
+        // spelling that could disagree with it.
+        let expected = display_identity(hostile);
+        assert!(
+            hostile_text.contains(&expected),
+            "the buffer carries no invisible-formatting character, but it does \
+             not carry the expected escaped form {expected:?} either. That \
+             combination means the hostile value was DROPPED rather than \
+             escaped, and an absence assertion over a dropped value is vacuous. \
+             Buffer excerpt: {:?}",
+            hostile_text
+                .lines()
+                .find(|line| line.contains("Enqueue>"))
+                .unwrap_or("<no footer line found>")
+        );
+    }
 }
