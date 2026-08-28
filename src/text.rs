@@ -1960,6 +1960,18 @@ mod tests {
     /// quoted command flag. Same idiom as [`INTERPRETER_STEMS`], same reason.
     const FIXTURE_FLAG_STEMS: [&str; 2] = ["e", "c"];
 
+    /// The CR-01 opener, **split across the spawn seam's own needle** so no
+    /// executable line of this module spells `Command::new(`.
+    ///
+    /// `tests/spawn_seam_guard.rs` walks `src/` for exactly that substring and
+    /// requires every file carrying it to be on its allowlist. `src/text.rs`
+    /// spawns nothing and must not join that allowlist to accommodate a test
+    /// fixture — the allowlist is the record of which files really do spawn.
+    /// Same anti-self-match idiom as [`INTERPRETER_STEMS`], applied to a
+    /// SIBLING census rather than to this one.
+    const FIXTURE_SPAWN_HEAD: &str = "std::process::Comman";
+    const FIXTURE_SPAWN_TAIL: &str = "d::new(&term)";
+
     /// The CR-01 construction, built IN MEMORY: a `.args([..])` block whose
     /// interpreter name is separated from its interpolation by `comments`
     /// comment lines and `filler` executable filler lines.
@@ -1978,7 +1990,7 @@ mod tests {
         let name = interpreter_binary_names()[0].clone();
         let quote = '"';
         let mut lines: Vec<String> = vec![
-            "match std::process::Command::new(&term)".to_string(),
+            format!("match {FIXTURE_SPAWN_HEAD}{FIXTURE_SPAWN_TAIL}"),
             ".args([".to_string(),
             format!("{quote}-{}{quote},", FIXTURE_FLAG_STEMS[0]),
             format!("{quote}{name}{quote},"),
