@@ -751,10 +751,68 @@ pub fn sanitize_record_lines(raw: &str) -> (Vec<String>, bool) {
 /// existed and was laundered by a round trip through an untyped buffer** — and
 /// escaping at the second render would have fixed this field while leaving the
 /// mechanism intact for the next one. Wrapping [`crate::text::Untrusted`] is
-/// what makes the round trip impossible instead of merely repaired:
-/// `Span::styled(buffer.clone(), ..)` does not compile, because this type has no
-/// `Display`, no `AsRef<str>` and no `Into<Cow<'static, str>>`, and the only
-/// route to a cell is [`shown`](Self::shown).
+/// what makes the round trip impossible instead of merely repaired: this type
+/// has no `Display`, no `AsRef<str>` and no `Into<Cow<'static, str>>`, and the
+/// only route to a cell is [`shown`](Self::shown).
+///
+/// # The construction that actually fails, MEASURED (WR-04, T-21-33-03)
+///
+/// `21-33`'s executor wrote the failing call into a scratch edit and captured
+/// the compiler's answer verbatim. Handing the buffer to ratatui directly —
+/// `Span::styled(buffer, Style::default())` — is refused at the bound the three
+/// absences are about:
+///
+/// ```text
+/// error[E0277]: the trait bound `Cow<'_, str>: std::convert::From<screens::EditBuffer>` is not satisfied
+///     --> src/ui/screens/mod.rs:1774:37
+///      |
+/// 1774 |         ratatui::text::Span::styled(buffer, ratatui::style::Style::default())
+///      |         --------------------------- ^^^^^^ the trait `std::convert::From<screens::EditBuffer>` is not implemented for `Cow<'_, str>`
+///      |         |
+///      |         required by a bound introduced by this call
+///      |
+///      = note: required for `screens::EditBuffer` to implement `Into<Cow<'_, str>>`
+/// note: required by a bound in `ratatui::prelude::Span::<'a>::styled`
+///     --> ratatui-core-0.1.2/src/text/span.rs:163:12
+///      |
+///  161 |     pub fn styled<T, S>(content: T, style: S) -> Self
+///      |            ------ required by a bound in this associated function
+///  162 |     where
+///  163 |         T: Into<Cow<'a, str>>,
+///      |            ^^^^^^^^^^^^^^^^^^ required by this bound in `Span::<'a>::styled`
+/// ```
+///
+/// **Correction, dated and left legible rather than made silently.** Until
+/// `21-33` this paragraph argued from `Span::styled(buffer.clone(), ..)`. That
+/// example named a method this type does not have — `EditBuffer` derives
+/// nothing at all, `Clone` included — so it never described a reachable call.
+/// Measured, it fails at a different error entirely, before the trait bound is
+/// ever consulted:
+///
+/// ```text
+/// error[E0599]: no method named `clone` found for struct `screens::EditBuffer` in the current scope
+///     --> src/ui/screens/mod.rs:1778:44
+///      |
+///  787 | pub struct EditBuffer(crate::text::Untrusted);
+///      | --------------------- method `clone` not found for this struct
+/// ```
+///
+/// The old example therefore demonstrated a missing `Clone`, not the three
+/// absences it was cited for. A maintainer who tested the claim would have
+/// found the example wrong and might reasonably have concluded the claim was
+/// too — which is why this is corrected in place with both errors on the
+/// record rather than quietly rewritten.
+///
+/// # The absences are CERTIFIED, not asserted in prose
+///
+/// Verification pass 11 measured this doc's trait-absence claim as prose-only
+/// (`grep -c "implements_"` in this file returned **0**), the same standard
+/// 21-27 had already applied to [`crate::text::Untrusted`]. All three absences
+/// are now driven by
+/// [`an_edit_buffer_implements_none_of_the_string_conversions`](tests::an_edit_buffer_implements_none_of_the_string_conversions),
+/// an autoref-specialization probe with a matching `String` presence arm per
+/// absence, each observed RED by planting its impl. Adding any one of the three
+/// now fails that test instead of passing silently.
 ///
 /// # The thing this fix could have made WORSE, and why there is exactly one raw take
 ///
@@ -1688,6 +1746,215 @@ mod tests {
     use crate::driver::reconcile::ObservedRun;
     use crate::executor::RunOutcome;
     use crate::state_reader::ProjectState;
+
+    // -----------------------------------------------------------------------
+    // WR-04: the certificate [`EditBuffer`]'s doc claimed and nothing checked
+    // -----------------------------------------------------------------------
+
+    /// Autoref specialization, asking the COMPILER whether a type implements a
+    /// trait and getting a `bool` back.
+    ///
+    /// `impl<T: Trait> Yes for &Wrap<T>` and `impl<T> No for Wrap<T>` both
+    /// apply to `&&Wrap(value)`; method resolution prefers the one needing
+    /// fewer autorefs, so the `Yes` arm wins exactly when the bound holds.
+    ///
+    /// **Replicated here rather than imported (D-21-58).** The identical
+    /// pattern lives at `src/text.rs`'s `mod trait_probe`, but that module is
+    /// private and `src/text.rs` belongs to `21-32` in this same wave, so
+    /// importing it would need a visibility change in a file this plan may not
+    /// edit. Forty test-only lines keep the wave parallel.
+    ///
+    /// # What it certifies, and its direction — disclosed
+    ///
+    /// It answers the question for the type **as the test binary sees it**, so
+    /// it certifies the absence of an inherent or in-crate impl. An impl added
+    /// behind a Cargo feature this test build does not enable would be
+    /// invisible to it. **Direction: under-detection, disclosed.** What bounds
+    /// it is coherence: [`EditBuffer`] is defined in this crate and all three
+    /// traits are foreign, so any impl of them for it MUST live in this crate
+    /// — the orphan rule leaves nowhere else to put one.
+    mod trait_probe {
+        pub struct Wrap<T>(pub T);
+
+        pub trait DisplayYes {
+            fn implements_display(&self) -> bool;
+        }
+        impl<T: std::fmt::Display> DisplayYes for &Wrap<T> {
+            fn implements_display(&self) -> bool {
+                true
+            }
+        }
+        pub trait DisplayNo {
+            fn implements_display(&self) -> bool;
+        }
+        impl<T> DisplayNo for Wrap<T> {
+            fn implements_display(&self) -> bool {
+                false
+            }
+        }
+
+        pub trait AsRefStrYes {
+            fn implements_as_ref_str(&self) -> bool;
+        }
+        impl<T: AsRef<str>> AsRefStrYes for &Wrap<T> {
+            fn implements_as_ref_str(&self) -> bool {
+                true
+            }
+        }
+        pub trait AsRefStrNo {
+            fn implements_as_ref_str(&self) -> bool;
+        }
+        impl<T> AsRefStrNo for Wrap<T> {
+            fn implements_as_ref_str(&self) -> bool {
+                false
+            }
+        }
+
+        pub trait IntoCowYes {
+            fn implements_into_cow_str(&self) -> bool;
+        }
+        impl<T: Into<std::borrow::Cow<'static, str>>> IntoCowYes for &Wrap<T> {
+            fn implements_into_cow_str(&self) -> bool {
+                true
+            }
+        }
+        pub trait IntoCowNo {
+            fn implements_into_cow_str(&self) -> bool;
+        }
+        impl<T> IntoCowNo for Wrap<T> {
+            fn implements_into_cow_str(&self) -> bool {
+                false
+            }
+        }
+    }
+
+    /// Does the value's type implement [`std::fmt::Display`]?
+    macro_rules! implements_display {
+        ($value:expr) => {{
+            #[allow(unused_imports)]
+            use $crate::ui::screens::tests::trait_probe::{DisplayNo, DisplayYes, Wrap};
+            (&&Wrap($value)).implements_display()
+        }};
+    }
+
+    /// Does the value's type implement `AsRef<str>`?
+    macro_rules! implements_as_ref_str {
+        ($value:expr) => {{
+            #[allow(unused_imports)]
+            use $crate::ui::screens::tests::trait_probe::{AsRefStrNo, AsRefStrYes, Wrap};
+            (&&Wrap($value)).implements_as_ref_str()
+        }};
+    }
+
+    /// Does the value's type implement `Into<Cow<'static, str>>`?
+    macro_rules! implements_into_cow_str {
+        ($value:expr) => {{
+            #[allow(unused_imports)]
+            use $crate::ui::screens::tests::trait_probe::{IntoCowNo, IntoCowYes, Wrap};
+            (&&Wrap($value)).implements_into_cow_str()
+        }};
+    }
+
+    /// **`EditBuffer`'s three claimed absences, CERTIFIED — and three presences
+    /// for `String`, which is what stops the certificate going vacuous**
+    /// (WR-04, T-21-33-02).
+    ///
+    /// [`EditBuffer`]'s doc has claimed since 21-30 that the type has no
+    /// `Display`, no `AsRef<str>` and no `Into<Cow<'static, str>>`, and that
+    /// this is what makes the laundering round trip CR-03 closed impossible
+    /// rather than merely repaired. Verification pass 11 measured that claim as
+    /// **prose only**: `grep -c "implements_" src/ui/screens/mod.rs` returned
+    /// **0**. The identical standard had been applied to
+    /// [`crate::text::Untrusted`] in the same round (21-27, WR-01) and simply
+    /// was not applied here.
+    ///
+    /// That is not a theoretical gap. Adding `impl Display for EditBuffer`
+    /// tomorrow restores the laundering path — the value becomes interpolable
+    /// into a `format!`, a `Span`, a `Paragraph` — and **every existing test in
+    /// this repository stays green while it does**, because nothing asserts the
+    /// absence. A one-line addition, invisible in review as a "convenience
+    /// impl", reopens a closed defect class.
+    ///
+    /// # Why the `String` arms are not padding
+    ///
+    /// A probe can break silently: a wrong receiver, a bound that never
+    /// selects, a trait not in scope. Every one of those failure modes makes
+    /// the probe answer `false` to EVERYTHING, and a test asserting only the
+    /// absences would then pass forever while checking nothing. `String`
+    /// implements all three, so the presence arms fail if the mechanism is
+    /// broken. Three absences and three presences, driven through the same
+    /// macros.
+    ///
+    /// # Three committed REDs, each observed by planting the impl
+    ///
+    /// Captured by `21-33`'s executor, one trait at a time, each impl removed
+    /// and `git status --porcelain` confirmed clean before the next was
+    /// planted. Verbatim — note the panic line numbers are offset by the
+    /// planted impl's own lines, which is why they differ between the three
+    /// and from this file as committed:
+    ///
+    /// ```text
+    /// ---- 1. `impl std::fmt::Display for EditBuffer` planted ----
+    /// thread 'ui::screens::tests::an_edit_buffer_implements_none_of_the_string_conversions' (2968942) panicked at src/ui/screens/mod.rs:1857:9:
+    /// EditBuffer implements Display. That restores the round trip CR-03 closed: the value becomes interpolable into a format!, a Span or a Paragraph with no escape, which is exactly the laundering path the type exists to make impossible. If this impl is wanted, the type's doc and this control must both be revised deliberately — not left green.
+    ///
+    /// ---- 2. `impl AsRef<str> for EditBuffer` planted ----
+    /// thread 'ui::screens::tests::an_edit_buffer_implements_none_of_the_string_conversions' (2970294) panicked at src/ui/screens/mod.rs:1866:9:
+    /// EditBuffer implements AsRef<str>. Anything taking `impl AsRef<str>` then accepts the raw buffer directly, so the escape is bypassed at every such call site at once.
+    ///
+    /// ---- 3. `impl From<EditBuffer> for Cow<'static, str>` planted ----
+    /// thread 'ui::screens::tests::an_edit_buffer_implements_none_of_the_string_conversions' (2971327) panicked at src/ui/screens/mod.rs:1872:9:
+    /// EditBuffer implements Into<Cow<'static, str>>. ratatui's Span, Line and Paragraph constructors take exactly that bound, so this impl alone would let the raw buffer reach a terminal cell.
+    /// ```
+    ///
+    /// The third plant is written as `From<EditBuffer> for Cow` rather than as
+    /// `Into` directly, because the blanket `impl<T, U: From<T>> Into<U> for T`
+    /// is how such an impl would actually arrive in this crate — and the probe
+    /// caught it through the blanket, which is the arrival route that matters.
+    #[test]
+    fn an_edit_buffer_implements_none_of_the_string_conversions() {
+        // ---- The three ABSENCES, for the type that must not convert. ----
+        assert!(
+            !implements_display!(EditBuffer::default()),
+            "EditBuffer implements Display. That restores the round trip CR-03 \
+             closed: the value becomes interpolable into a format!, a Span or a \
+             Paragraph with no escape, which is exactly the laundering path the \
+             type exists to make impossible. If this impl is wanted, the type's \
+             doc and this control must both be revised deliberately — not left \
+             green."
+        );
+        assert!(
+            !implements_as_ref_str!(EditBuffer::default()),
+            "EditBuffer implements AsRef<str>. Anything taking `impl \
+             AsRef<str>` then accepts the raw buffer directly, so the escape is \
+             bypassed at every such call site at once."
+        );
+        assert!(
+            !implements_into_cow_str!(EditBuffer::default()),
+            "EditBuffer implements Into<Cow<'static, str>>. ratatui's Span, \
+             Line and Paragraph constructors take exactly that bound, so this \
+             impl alone would let the raw buffer reach a terminal cell."
+        );
+
+        // ---- The three PRESENCES, so a broken probe cannot pass. ----
+        assert!(
+            implements_display!(String::new()),
+            "String does not implement Display, which cannot be true. The probe \
+             is broken — a wrong receiver, a bound that never selects, or a \
+             trait not in scope — and the three absence assertions above are \
+             therefore vacuous rather than certified."
+        );
+        assert!(
+            implements_as_ref_str!(String::new()),
+            "String does not implement AsRef<str>, which cannot be true. The \
+             absence arm for AsRef<str> above is vacuous."
+        );
+        assert!(
+            implements_into_cow_str!(String::new()),
+            "String does not implement Into<Cow<'static, str>>, which cannot be \
+             true. The absence arm for Into<Cow<'static, str>> above is vacuous."
+        );
+    }
 
     /// **What the operator TYPES is what gets PERSISTED — byte-identical**
     /// (21-30 T1, prohibition 1, T-21-30-02).
