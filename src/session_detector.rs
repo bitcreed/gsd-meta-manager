@@ -145,6 +145,57 @@ fn read_tty(pid: u32) -> Option<String> {
 /// `Untrusted::as_raw_for_logic_only`'s three-question rule and by the
 /// interpreter census over `src/`, and NOT by this function.
 ///
+/// # CORRECTED 2026-08-28 (21-35): the section below is right about the SECURITY property, and being right about it is what hid the FUNCTIONAL one
+///
+/// **The reasoning this corrects, verbatim:** *"The property that matters is a
+/// property of the SINK — that the id cannot become an option of the resumed
+/// program — and it is asserted at the sink by
+/// `tests::the_resume_argv_never_lets_a_session_id_become_an_option_of_the_resumed_program`.
+/// A second assertion here would certify a claim this function does not make,
+/// and would let the class be counted as closed twice."*
+///
+/// **What it got right, and what is NOT being retracted.** The security
+/// property genuinely IS a property of the sink. A hostile id cannot become an
+/// option of the resumed program, and that is asserted where it is true — at
+/// the argv, by fusion, in [`crate::ui::screens::detail`]. Adding a second
+/// *security* assertion here would still certify a claim this function does not
+/// make, and would still let the class be counted as closed twice. That half of
+/// the reasoning survives this round intact.
+///
+/// **What it missed.** The **functional** property is a property of the
+/// **pair**, not of either side: *what this build emits, this build must be
+/// able to read back.* Round 11 fused the id to its option name at the producer
+/// (`--resume=<id>`) and thereby changed the wire format this function parses.
+/// Every control lived on one side or the other — the producer's controls
+/// asserted the argv's shape, and this function had **none at all** — so **no
+/// control spanned both**. The result: this function returned `None` for every
+/// session the TUI itself had resumed. The row went dead in the Sessions tab
+/// with no error and no log, and a build that had silently lost its resume
+/// detection passed the whole gate green for a full verification pass.
+///
+/// The mechanism is worth naming, because "no control here" is what allowed it:
+/// the two modules spell the same option name **independently**, across a
+/// module boundary, and nothing coupled them. What couples them now is the
+/// round trip,
+/// `crate::ui::screens::detail::tests::the_argv_this_build_emits_is_an_argv_this_build_can_read_back`,
+/// which drives the real producer's output through the real parser rather than
+/// re-spelling either.
+///
+/// **The line this correction must not blur.** What has been added is
+/// **wire-format parsing and its functional control**, never value validation.
+/// The validator declined above stays declined, for the reasons already
+/// recorded: the CLI resumes by session *title*, so a rule tight enough to
+/// refuse a leading-hyphen id would silently delete legitimate sessions from
+/// the Sessions tab. The new tests assert which SHAPES carry an id; they assert
+/// nothing whatever about which VALUES are acceptable.
+///
+/// **Where the wrap now lives** (D-21-67). This function remains the one place
+/// a session id **enters this build from another process**;
+/// [`session_id_in_cmdline`], the pure half split out of it, is the one place
+/// the id is **wrapped** — which is why that half returns `Option<Untrusted>`
+/// and never `Option<String>`. That is a restatement of where the boundary
+/// sits, not a loosening of it.
+///
 /// # No control is added in this file, deliberately
 ///
 /// The property that matters is a property of the SINK — that the id cannot
@@ -154,18 +205,92 @@ fn read_tty(pid: u32) -> Option<String> {
 /// and would let the class be counted as closed twice.
 fn read_session_id(pid: u32) -> Option<Untrusted> {
     let cmdline = std::fs::read(format!("/proc/{}/cmdline", pid)).ok()?;
+    session_id_in_cmdline(&cmdline)
+}
+
+/// The resume long option's **bare name**, as it appears on the wire when the
+/// option and its value travel as two separate argv elements — the SPLIT form,
+/// which is what a human typing `claude --resume <id>` by hand produces.
+const RESUME_OPTION_NAME: &[u8] = b"--resume";
+
+/// The same option name with the **fusion character appended** — the prefix of
+/// the SINGLE argv element this build's own producer emits since round 11
+/// (`crate::ui::screens::detail::RESUME_OPTION_FUSED_PREFIX`).
+///
+/// The two modules spell this option name independently, across a module
+/// boundary. The only thing coupling them is the round-trip control
+/// `crate::ui::screens::detail::tests::the_argv_this_build_emits_is_an_argv_this_build_can_read_back`;
+/// when that coupling did not exist, they drifted and the drift was silent.
+const RESUME_OPTION_FUSED_PREFIX: &[u8] = b"--resume=";
+
+/// The PURE half of the pair: the `/proc/<pid>/cmdline` bytes → session id
+/// parse, with no I/O in it (D-21-67).
+///
+/// It is split out of [`read_session_id`] because a round trip cannot be
+/// asserted against a function that reads `/proc`: a test can hand this one the
+/// exact bytes the kernel would present, which is what lets the argv this build
+/// EMITS be driven back through the parser this build READS with.
+///
+/// # BOTH wire forms are read, because both are legitimate on the wire
+///
+/// - **Fused** — one element beginning with [`RESUME_OPTION_FUSED_PREFIX`], the
+///   value being everything after that prefix. This is what this TUI emits.
+/// - **Split** — an element equal to [`RESUME_OPTION_NAME`], the value being
+///   the element after it. This is what a human typing the command by hand, or
+///   any launcher that is not this TUI, still produces. Dropping it would
+///   re-break detection for every session not started here.
+///
+/// The leftmost id-bearing element wins, deterministically, by argv index.
+///
+/// # What is added here is WIRE-FORMAT PARSING, never value validation
+///
+/// The only condition on the VALUE remains non-emptiness after `trim()`,
+/// unchanged from before this function existed; an empty value does not stop
+/// the scan, so a later well-formed element is still found. Nothing constrains
+/// the id's first byte, character set or length — see [`read_session_id`]'s doc
+/// for why a validator was considered and declined.
+///
+/// # Where the boundary sits, restated rather than loosened
+///
+/// [`read_session_id`] remains the one place a session id **enters this build
+/// from another process**; this function is the one place it is **wrapped**.
+/// That is why it returns `Option<Untrusted>` and never `Option<String>` — the
+/// wrap sits at the innermost point of the pair, so there is no arrangement of
+/// callers in which an unwrapped id escapes this module.
+pub(crate) fn session_id_in_cmdline(cmdline: &[u8]) -> Option<Untrusted> {
     let args: Vec<&[u8]> = cmdline.split(|&b| b == 0).collect();
 
-    for window in args.windows(2) {
-        if window[0] == b"--resume" {
-            let val = String::from_utf8_lossy(window[1]);
+    let mut index = 0;
+    while index < args.len() {
+        // The ONLY new condition is on the ARGUMENT'S SHAPE — which of the two
+        // wire forms this element is, if either. Nothing here inspects what the
+        // value IS.
+        let candidate: Option<&[u8]> =
+            if let Some(suffix) = args[index].strip_prefix(RESUME_OPTION_FUSED_PREFIX) {
+                Some(suffix)
+            } else if args[index] == RESUME_OPTION_NAME {
+                // The split form's value is the NEXT element; step over it so
+                // it is not re-examined as an option in its own right. A
+                // trailing option name with nothing after it yields nothing
+                // and does not panic.
+                let next = args.get(index + 1).copied();
+                index += 1;
+                next
+            } else {
+                None
+            };
+
+        if let Some(candidate) = candidate {
+            let val = String::from_utf8_lossy(candidate);
             let val = val.trim();
             if !val.is_empty() {
-                // The ONE place a session id enters this build, so the ONE
-                // place it is wrapped.
+                // The ONE place a session id is WRAPPED, which is the
+                // innermost point of the pair rather than the outermost.
                 return Some(Untrusted::from_untrusted_source(val.to_string()));
             }
         }
+
+        index += 1;
     }
 
     None
@@ -203,5 +328,144 @@ mod tests {
     #[test]
     fn test_read_start_time_nonexistent_pid() {
         assert!(read_start_time(999_999_999).is_none());
+    }
+
+    /// NUL-join argv elements into the `/proc/<pid>/cmdline` encoding, with the
+    /// trailing NUL the kernel emits.
+    fn cmdline(elements: &[&str]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for element in elements {
+            bytes.extend_from_slice(element.as_bytes());
+            bytes.push(0);
+        }
+        bytes
+    }
+
+    /// What [`session_id_in_cmdline`] recovers from a cmdline built out of
+    /// `elements`, as a plain `String` for comparison.
+    fn parsed(elements: &[&str]) -> Option<String> {
+        session_id_in_cmdline(&cmdline(elements)).map(|id| id.as_raw_for_logic_only().to_string())
+    }
+
+    /// **Which SHAPES on the wire carry a session id — and which do not.**
+    ///
+    /// These arms exercise the parser ALONE and need no producer, which is why
+    /// they live beside the function they test rather than in `detail.rs`: the
+    /// next reader of `session_id_in_cmdline` looks here.
+    ///
+    /// This is a **functional** control over wire-format parsing. It is NOT a
+    /// second assertion of the security property — that one is a property of
+    /// the SINK, it is asserted at the sink in `detail.rs`, and asserting it
+    /// again here would let the class be counted as closed twice. See the
+    /// correction block above [`read_session_id`], which draws that line
+    /// explicitly.
+    ///
+    /// Every arm below is about the argument's SHAPE. None is about its VALUE:
+    /// the only condition on the value is non-emptiness after `trim()`.
+    #[test]
+    fn session_id_in_cmdline_reads_both_wire_forms_and_no_other_shape() {
+        // --- The two forms that DO carry an id -----------------------------
+        assert_eq!(
+            parsed(&["claude", "--resume=abc"]).as_deref(),
+            Some("abc"),
+            "the FUSED form is one argv element whose value is everything after \
+             the fusion character. This is the shape this build's own producer \
+             emits, so failing here means the TUI cannot read its own sessions."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume", "abc"]).as_deref(),
+            Some("abc"),
+            "the SPLIT form is the two-element window a hand-typed \
+             `claude --resume <id>` puts on the wire. This build no longer \
+             emits it, but every session not started by this TUI arrives in it."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume=a=b"]).as_deref(),
+            Some("a=b"),
+            "a fused value containing the fusion character must arrive WHOLE: \
+             the prefix is stripped once, not split on the LAST `=`, which \
+             would truncate the id `a=b` to `b` and resume nothing."
+        );
+
+        // --- An empty value yields nothing, and the scan CONTINUES ----------
+        assert_eq!(
+            parsed(&["claude", "--resume="]).as_deref(),
+            None,
+            "a fused element with an EMPTY suffix carries no id. This is the \
+             pre-existing non-empty-after-trim() condition, unchanged."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume=", "--resume=later"]).as_deref(),
+            Some("later"),
+            "an empty value must not STOP the scan — a later well-formed \
+             element is still found. Returning None here would be a new \
+             behaviour the pre-fix parser did not have."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume=   "]).as_deref(),
+            None,
+            "a whitespace-only fused suffix carries no id, by the same trim() \
+             as the empty one"
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume=  ", "--resume=later"]).as_deref(),
+            Some("later"),
+            "a whitespace-only value must not stop the scan either"
+        );
+
+        // --- The option name with nothing after it -------------------------
+        assert_eq!(
+            parsed(&["claude", "--resume"]).as_deref(),
+            None,
+            "a trailing bare option name has no value element after it, so it \
+             carries no id"
+        );
+        // The same shape WITHOUT the kernel's trailing NUL, so the final
+        // element genuinely has no successor at all. This is the arm that
+        // reaches the `args.get(index + 1) == None` branch; it must yield None
+        // rather than panicking on an out-of-bounds index.
+        assert_eq!(
+            session_id_in_cmdline(b"claude\0--resume")
+                .map(|id| id.as_raw_for_logic_only().to_string()),
+            None,
+            "a bare option name as the FINAL element, with nothing after it at \
+             all, must yield no id and must NOT panic: an index that walks off \
+             the end of the argument list would take the whole TUI down on a \
+             cmdline any local process can plant."
+        );
+
+        // --- Shapes that carry no id at all --------------------------------
+        assert_eq!(
+            parsed(&["claude", "--print", "hello"]).as_deref(),
+            None,
+            "a cmdline with no resume option at all carries no id"
+        );
+        assert_eq!(
+            parsed(&["claude", "--resumes", "abc"]).as_deref(),
+            None,
+            "`--resumes` merely BEGINS with the resume spelling; it is neither \
+             the bare option name nor the fused prefix, so it carries no id. A \
+             starts_with() on the bare name would wrongly claim `abc` here."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume-session", "abc"]).as_deref(),
+            None,
+            "`--resume-session` is a different option that shares a prefix; its \
+             value is not this option's value"
+        );
+
+        // --- Precedence: the LEFTMOST id-bearing element wins ---------------
+        assert_eq!(
+            parsed(&["claude", "--resume", "first", "--resume=second"]).as_deref(),
+            Some("first"),
+            "split-then-fused: the leftmost id-bearing element wins, by argv \
+             index. Which form it is must not affect precedence."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume=first", "--resume", "second"]).as_deref(),
+            Some("first"),
+            "fused-then-split: same rule, opposite order. Precedence is \
+             deterministic by position, not by wire form."
+        );
     }
 }

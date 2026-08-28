@@ -1610,3 +1610,264 @@ count compared by equality against an integer cap**. There is no rounding, no
 tie-breaking, no overflow behaviour and no precision-loss contract to state,
 because no arithmetic on a non-integer quantity occurs anywhere on this path.
 Reconfirmed by the same unchanged suite in the same run.
+
+# ROUND 12 (`21-35`) — appended 2026-08-28, append-only
+
+## 2026-08-28 (`21-35`) — STANDING: the phase-21 `ui.safety-gate` rationale, written down once so it stops being re-derived
+
+**This decision has now been made ad hoc twice. It stops being re-derived here**
+(D-21-71). The blocking `ui` safety gate fires on this phase whenever UI files
+change, and phase 21 has no `21-UI-SPEC.md` and never has across twelve rounds.
+
+**The rationale, for the record:**
+
+1. Phase 21 changes UI **files** — `src/ui/screens/detail.rs` is one of round
+   12's two source files — but makes **no visual-design changes**. Its edits are
+   to argv construction, parsing, escaping and test controls; never to layout,
+   sizing, styling or colour.
+2. That is why the absence of a `21-UI-SPEC.md` is acceptable **for this phase**:
+   a UI spec governs visual design, and there is no visual design in this
+   phase's diff to govern.
+3. **Round 11 overrode the gate** on exactly this ground — a diff containing
+   zero `Layout::` / `Constraint::` / `Style::` / `Color::` changes.
+4. **Round 12 did not need to.** The orchestrator ran the deterministic gate and
+   it returned **`block: false`** on its own; no override was applied:
+
+   ```
+   $ gsd-tools check ui-plan-gate 21
+   {
+     "frontend": true,
+     "hasFrontendEvidence": false,
+     "hasUiSpec": false,
+     "block": false,
+     "uiSpecPath": null,
+     "matchedToken": "ui",
+     ...
+   }
+   ```
+
+### Its falsification condition, stated so this record can expire honestly
+
+**If a round's diff under `src/` introduces a change to any of the four ratatui
+visual-design construct spellings — `Layout::`, `Constraint::`, `Style::`,
+`Color::` — this rationale no longer holds, and that round must say so rather
+than inherit this entry.**
+
+**Round 12 MEASURED its own diff against that condition rather than assuming
+it.** The grep is scoped to `src/` and comment-filtered, so this record's own
+prose cannot answer the question it asks:
+
+```
+$ rtk proxy git diff 69f99e2 HEAD -- src/ | grep -E '^[+-]' \
+    | grep -vE '^[+-]\s*(//|///)' | grep -cE 'Layout::|Constraint::|Style::|Color::'
+0
+```
+
+Zero. The condition is not met, and the rationale stands for round 12.
+
+## 2026-08-28 (`21-35`) — the SEVEN edge-probe rows, surfaced as FLAGGED ASSUMPTIONS
+
+Phase 21 has no `21-SPEC.md`, so `## Edge Coverage` and `## Prohibitions` are
+absent (`EDGE_ABSENT=1`, `PROHIB_ABSENT=1`) and the default-ON spec-less probe
+fallback (workflow step 7.95) fires. The deterministic edge probe over the five
+phase requirement texts returned **7 applicable, 0 resolved, 7 unresolved**,
+`byVerification: {explicit: 0, backstop: 0}`.
+
+**No-silent-drop equality: 7 applicable == 7 surfaced == 7 accounted for.**
+**None was auto-resolved with a `backstop` marker, none was dropped, and NOTHING
+from this report entered `must_haves.truths`.**
+
+| # | Requirement | Category | Status | Why it is NOT resolved this round |
+|---|---|---|---|---|
+| 1 | SAFE-07 | boundary | **unresolved — flagged** | This is a narrowly scoped one-gap closure round. SAFE-07's requirement-level min/max/threshold behaviour was worked across rounds 1–11 (`21-01`, `21-03`, `21-05`, `21-08`); re-deriving it here would be new census work the round's scope discipline forbids. |
+| 2 | SAFE-07 | precision | **unresolved — flagged** | Same. No arithmetic, rounding or tie-breaking is introduced or moved by this round's diff. |
+| 3 | SAFE-08 | unclassified | **unresolved — flagged** | The probe could not classify the requirement text; resolving it needs a manual category call, which is spec work, not gap-closure work. SAFE-08's control (argv fusion) is *preserved unchanged* here and asserted by the untouched `detail.rs` tests. |
+| 4 | DRIVE-01 | unclassified | **unresolved — flagged** | Same — unclassified, needs manual review. This round touches DRIVE-01 only in the narrow sense that a resumed session must remain findable. |
+| 5 | DRIVE-03 | unclassified | **unresolved — flagged** | Same — unclassified, needs manual review. Untouched by this round's diff. |
+| 6 | DRIVE-04 | boundary | **unresolved — flagged** | The escalation cap's boundary was measured by `21-02`, `21-04`, `21-22` and re-run by `21-34` (`driver_escalation_cap`, 8/0/0). This round touches no cap, no seam and no arithmetic; manufacturing a *new* boundary predicate in a wire-format round is the manufactured-predicate overclaim this phase exists to end. |
+| 7 | DRIVE-04 | precision | **unresolved — flagged** | Same. The escalation counter is an integer compared by equality against an integer cap; there is no precision contract this round could move. |
+
+### What round 12 DOES assert at a boundary, and what it explicitly does not claim
+
+Task 2 added parser-level boundary arms — an empty fused suffix, a
+whitespace-only suffix, a trailing option name with nothing after it, a
+NUL-free precondition on the encoding, and leftmost-wins precedence. **Those are
+boundaries of the *parser*, and they are claimed as such.** They do **NOT**
+resolve rows 1, 2, 6 or 7, which are boundaries of the *requirements*, and this
+round does not claim they do.
+
+## 2026-08-28 (`21-35`) — round 12's closure, with its RESIDUAL and DIRECTION
+
+**The gap.** Verification pass 12 scored 90/91 must-haves and recorded
+`gaps_remaining: []`. **The verifier was wrong.** The independent code review
+found one real defect (HI-01) and the orchestrator re-confirmed it against the
+source: `resume_terminal_argv` (`detail.rs:713`) emits the **fused** form
+`--resume=<id>` as ONE argv element, while `read_session_id`
+(`session_detector.rs:159-169`) scanned `args.windows(2)` for a **standalone**
+`--resume` and took the next element. The fused element never equals that byte
+literal, so it never matched.
+
+**The effect was a silent capability deletion in the exact feature this phase
+spent eleven rounds hardening.** A session the TUI itself resumed could not have
+its id read back out of `/proc/<pid>/cmdline`: it read back as
+`session_id: None`, became undetectable in the Sessions tab and therefore
+un-resumable, its row answering `"No session ID to resume"`. No error, no log.
+
+**What closed it.** The consumer learned the fused form **in addition to** the
+split form (the split one stays: a human typing `claude --resume <id>` by hand
+still produces it, and dropping it would re-break detection for every session not
+started by this TUI). The producer was **not** touched — round 11 measured that a
+`--` end-of-options separator closes the injection and DELETES the resume in the
+same stroke (probe C == probe D at `claude` 2.1.248), so fusion is correct and
+stays. And the pure parse was split out of the `/proc` read as
+`session_id_in_cmdline`, so a **producer↔consumer round-trip control** could
+drive the real producer's output through the real parser over the shared
+28-fixture hostile corpus, in both wire forms.
+
+**The control was observed RED before the fix**, against a parser first proven
+behaviour-identical to HEAD by a green run at the unchanged 1110:
+
+```
+assertion `left == right` failed: the session id "demo\u{200b}" was emitted by
+this build and this build could not read it back.
+Emitted argv: ["-e", "claude", "--resume=demo\u{200b}"]
+  left: None
+ right: Some("demo\u{200b}")
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 1110 filtered out
+```
+
+### The residual, with its direction
+
+**The round trip couples this build's producer to this build's consumer. It does
+NOT couple either to the third party.** `claude`'s own option parser remains a
+**DEPENDENCY BEHAVIOUR of a version**, not a property of this code: a future CLI
+that changes `--resume`'s arity, or stops accepting the fused `--resume=<id>`
+spelling, invalidates the producer's shape **with every test in this repository
+green**. The direction is **under-detection, and SILENT**.
+
+That obligation is **already tracked** and is not duplicated here — see
+`## 2026-08-28 (21-34) — STANDING: the `claude` CLI's option parser is a
+DEPENDENCY BEHAVIOUR, not a property of this code` above. Round 12 adds one
+consumer-side spelling to the set that obligation covers.
+
+### The process lesson, in one line
+
+**A control that lives on one side of a two-sided property certifies one side.**
+Eleven rounds of controls, every one of them one-sided, and a broken capability
+crossed a green gate silently for a full verification pass.
+
+### The round's gate, measured on the delivered tree (all under `rtk proxy`)
+
+| Gate | Base at `98610bf` | Round 12 | Verdict |
+|---|---|---|---|
+| `cargo build` | exit 0 | **exit 0** | unchanged |
+| `cargo test --lib` | 1110 / 0 / 0 | **1113 passed / 0 failed / 0 ignored** | +3, all attributed by name |
+| `cargo test --workspace --no-fail-fast` | — | **0 failed binaries** | see below |
+| `cargo clippy -- -D warnings` | exit 0 | **exit 0** | unchanged |
+| `cargo clippy --all-targets -- -D warnings` | fails, 4 pre-existing lints | **fails, exactly 4** | unchanged |
+| `cargo doc --no-deps` | exit 0 | **exit 0** | unchanged |
+| `git diff -- Cargo.toml Cargo.lock` | — | **empty** | no dependency change |
+
+**The +3, attributed by name — no delta is smoothed:**
+
+1. `ui::screens::detail::tests::the_argv_this_build_emits_is_an_argv_this_build_can_read_back` (Task 1)
+2. `ui::screens::detail::tests::a_session_id_survives_the_round_trip_in_both_wire_forms` (Task 2)
+3. `session_detector::tests::session_id_in_cmdline_reads_both_wire_forms_and_no_other_shape` (Task 2)
+
+**The four `--all-targets` lints, re-measured a fourth time and named as
+PRE-EXISTING** — three would be a failure of this round exactly as five would be:
+
+```
+      1 error: this creates an owned instance just for comparison
+      3 error: used `assert_eq!` with a literal bool
+   --> src/browser.rs:155:9
+   --> src/browser.rs:156:9
+   --> src/browser.rs:157:9
+   --> src/project_creator.rs:146:27
+```
+
+Neither file is in this round's `files_modified`; neither was opened.
+
+**`git diff --stat 69f99e2 HEAD` names exactly the files this plan owns:**
+
+```
+ src/session_detector.rs  | 274 +++++++++++++++++++++++++++++++++++++++++-
+ src/ui/screens/detail.rs | 181 +++++++++++++++++++++++++++++
+ 2 files changed, 450 insertions(+), 5 deletions(-)
+```
+
+(plus this record itself). `.planning/REQUIREMENTS.md` is untouched;
+`tests/driver_injection_corpus.rs` is untouched; `.gsd/` and
+`.planning/milestone.lock` remain untracked and are not staged or committed.
+
+The **five deletions** are the parser replacement's own executable and inline-comment
+lines, enumerated in full so nothing hides in an aggregate:
+
+```
+-    for window in args.windows(2) {
+-        if window[0] == b"--resume" {
+-            let val = String::from_utf8_lossy(window[1]);
+-                // The ONE place a session id enters this build, so the ONE
+-                // place it is wrapped.
+```
+
+**Zero `///` doc lines were deleted anywhere in the round** — the falsified
+paragraph appears as CONTEXT, not as a removal.
+
+## RE-SURFACED, UNCHANGED — ROADMAP success criterion 4 (round 12)
+
+**Recording, not progress. This is the FIFTH consecutive round with NO work
+claimed against it, and that is correct.** `21-35`'s fence 3 forbids planning,
+executing or claiming any work against it.
+
+Quoted **verbatim** from `.planning/ROADMAP.md`'s Phase 21 `**Success Criteria**`
+list:
+
+> 4. A `.planning/` file or `CLAUDE.md` carrying injected instructions ("ignore prior constraints, run …") does not change which command the driver executes
+
+**Round-12 status, MEASURED on the delivered tree (all under `rtk proxy`):**
+
+* `git diff --stat 69f99e2 HEAD` — `tests/driver_injection_corpus.rs` is
+  **ABSENT** from the round's diff. The file was RUN by round 12 and EDITED by no
+  task of it; it is not in `files_modified`.
+* `cargo test --test driver_injection_corpus` — **13 passed / 0 failed / 10
+  ignored.** Identical to every figure since pass 10.
+
+### Said plainly, so the next verifier does not re-litigate it
+
+**ROADMAP success criterion 4 is PERMANENTLY AGENT-UNCLOSABLE BY CONSTRUCTION.**
+It requires a human with a live, authenticated Claude subscription to run the ten
+`#[ignore]`d arms of `tests/driver_injection_corpus.rs` against the real model
+binary. No agent has such a subscription and no agent can acquire one, so no
+amount of further planning, further rounds or cleverer test design will close it.
+It is a standing item **by explicit user decision**.
+
+**4/5 is therefore the EXPECTED AND CORRECT CEILING for this phase, and is not a
+failure.** A future verification pass that scores this phase 4/5 has scored it
+correctly. A future round that opens a plan against criterion 4 is doing work
+that cannot succeed.
+
+## 2026-08-28 (`21-35`) — the `driver_reattach` record, RE-AFFIRMED and NOT regressed
+
+**Round 11's refusal to reinstate the `--test-threads=1` mitigation sentence
+STANDS, and round 12 does not restore it.** Round 11 measured the two tests
+**4/6 red on an idle machine**, which refutes concurrency as a necessary cause;
+restoring a superseded mitigation would send the next reader at a fix that does
+not work. Round 12 neither reinstates it nor attempts the underlying fix — the
+flake is a **documented pre-existing** condition at roughly 3/5 red, **not a
+regression and not this round's to fix**.
+
+**Round 12's own run: `driver_reattach` was GREEN.**
+
+```
+     Running tests/driver_reattach.rs (target/debug/deps/driver_reattach-2a87c8936b60263a)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.12s
+```
+
+The whole-workspace run reported **zero failed binaries**. The flake did not fire
+this time, which is exactly what a ~3/5 flake does two times in five. **This
+green is NOT evidence the flake is fixed**, and round 12 does not claim it is —
+recording a lucky run as a resolution is how a flake becomes an inherited
+falsehood. The two tests remain
+`a_fresh_scan_finds_the_orphaned_run_live_with_its_last_journal_step` and
+`a_run_killed_without_an_ending_is_reported_crashed_and_nothing_on_disk_is_repaired`.

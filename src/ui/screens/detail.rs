@@ -7719,6 +7719,187 @@ mod tests {
         );
     }
 
+    /// The `/proc/<pid>/cmdline` wire encoding of an argv this build built.
+    ///
+    /// Element 0 of a terminal argv is the emulator's own program separator
+    /// (`-e` / `--`). The EMULATOR consumes it and it never reaches the child,
+    /// so it is dropped here. Element 1 — the literal program name — becomes
+    /// the child's `argv[0]`, and it is taken from the PRODUCER'S OUTPUT rather
+    /// than re-spelled, so this encoding cannot drift from what is emitted.
+    ///
+    /// The kernel presents `/proc/<pid>/cmdline` as NUL-separated with a
+    /// trailing NUL, which is what is reproduced here.
+    fn proc_cmdline_encoding(argv: &[String]) -> Vec<u8> {
+        let elements: Vec<&str> = argv.iter().skip(1).map(String::as_str).collect();
+        nul_join_cmdline(&elements)
+    }
+
+    /// NUL-join argv elements into the `/proc/<pid>/cmdline` byte encoding,
+    /// with the trailing NUL the kernel emits.
+    ///
+    /// Used by both round-trip arms: the FUSED arm reaches it through
+    /// [`proc_cmdline_encoding`] with the producer's real output, and the SPLIT
+    /// arm calls it directly with an explicitly constructed cmdline. Sharing it
+    /// means both arms carry the same NUL-free precondition.
+    fn nul_join_cmdline(elements: &[&str]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for element in elements {
+            // A NUL-bearing element would TRUNCATE this encoding, and the
+            // round trip would then assert on a value it never actually
+            // round-tripped — passing vacuously (T-21-35-07). Fail loudly
+            // instead, at the fixture that did it.
+            assert!(
+                !element.as_bytes().contains(&0),
+                "the argv element {element:?} carries a NUL byte. NUL is the \
+                 SEPARATOR of this encoding, so the element would be split in \
+                 two and everything after the NUL would be read as a separate \
+                 argument: the assertion below would then be checking a value \
+                 this test invented rather than one that survived the wire."
+            );
+            bytes.extend_from_slice(element.as_bytes());
+            bytes.push(0);
+        }
+        bytes
+    }
+
+    // ======================================================================
+    // THE ROUND-TRIP CONTROLS — and why a one-sided control missed this class
+    //
+    // The property these two tests assert is a property of the PAIR, not of
+    // either function: *what this build emits, this build must be able to read
+    // back.* Neither `resume_terminal_argv` nor `session_id_in_cmdline` can be
+    // wrong on its own here — each is individually correct — and that is
+    // precisely why no control over either one could see the defect.
+    //
+    // What happened: round 11 FUSED the id to its option name at the producer
+    // (`--resume=<id>`), correctly, to close CWE-88. That changed the WIRE
+    // FORMAT the consumer parses. Every control in this repository lived on one
+    // side or the other — the producer's controls asserted the argv's shape,
+    // and the consumer had no parser control at all — so NO CONTROL SPANNED
+    // BOTH. A build that had silently lost its resume detection passed the
+    // whole gate green, for a full verification pass.
+    //
+    // The two modules spell the same option name INDEPENDENTLY:
+    // `RESUME_OPTION_FUSED_PREFIX` here, and `RESUME_OPTION_NAME` /
+    // `RESUME_OPTION_FUSED_PREFIX` in `crate::session_detector`. Nothing in the
+    // type system couples them and nothing ever will — they are two byte
+    // literals in two modules. These tests are the ONLY thing coupling them
+    // (T-21-35-02), which is why they consume the real producer's output rather
+    // than re-spelling the option name a third time.
+    //
+    // A control exercising only one side will miss the next instance of this.
+    // ======================================================================
+
+    /// **The round trip: what this build EMITS, this build must be able to
+    /// READ BACK** (T-21-35-01, D-21-68).
+    ///
+    /// Every fixture of the shared hostile corpus is handed to the REAL
+    /// producer, [`resume_terminal_argv`], its output is encoded into the
+    /// `/proc/<pid>/cmdline` wire format, and those bytes are driven through
+    /// the REAL consumer, `crate::session_detector::session_id_in_cmdline`.
+    /// The id that comes back must be byte-identical to the fixture.
+    ///
+    /// Neither side is re-spelled: the corpus is imported (D-21-6), the argv
+    /// comes from the producer and the parse comes from the consumer. That is
+    /// the whole point — see the class doc above for why a control that
+    /// exercises only one side missed this.
+    #[test]
+    fn the_argv_this_build_emits_is_an_argv_this_build_can_read_back() {
+        for term in ["kitty", "alacritty", "gnome-terminal", "xterm", "/opt/wat"] {
+            for raw in hostile_session_ids() {
+                let sid = Untrusted::from_untrusted_source(raw.clone());
+                let argv = resume_terminal_argv(term, &sid);
+                let cmdline = proc_cmdline_encoding(&argv);
+
+                let read_back = crate::session_detector::session_id_in_cmdline(&cmdline);
+                let read_back = read_back.as_ref().map(|id| id.as_raw_for_logic_only());
+
+                assert_eq!(
+                    read_back,
+                    Some(raw.as_str()),
+                    "the session id {raw:?} was emitted by this build and this \
+                     build could not read it back. Emitted argv: {argv:?}; \
+                     wire bytes: {cmdline:?}. The producer FUSES the id to its \
+                     option name in one element (`--resume=<id>`) while the \
+                     consumer scans for a STANDALONE `--resume` element and \
+                     takes the one after it — the two modules spell the same \
+                     option name independently, across a module boundary, and \
+                     they have drifted. The consequence is not a test failure: \
+                     the id this TUI hands `claude` is INVISIBLE to the \
+                     detector that finds the session again, so a session this \
+                     TUI itself resumed reads back as `session_id: None`, its \
+                     Sessions-tab row answers `No session ID to resume`, and \
+                     nothing anywhere reports it. Teach the CONSUMER the fused \
+                     form; do NOT un-fuse the producer, which was measured at \
+                     `claude` 2.1.248 to re-open the argument injection."
+                );
+            }
+        }
+    }
+
+    /// **Both wire forms, because both are legitimate on the wire.**
+    ///
+    /// The FUSED arm is driven from the REAL producer, unchanged — that is the
+    /// shape this TUI emits. The SPLIT arm is constructed EXPLICITLY, because
+    /// no producer in this build emits it any more: it is what a human typing
+    /// `claude --resume <id>` by hand, or any launcher that is not this TUI,
+    /// still produces. Inferring it from the fused arm would assert *about* the
+    /// claim rather than asserting it, and dropping it would silently re-break
+    /// detection for every session not started here (D-21-66).
+    #[test]
+    fn a_session_id_survives_the_round_trip_in_both_wire_forms() {
+        let corpus = hostile_session_ids();
+
+        // Non-vacuity: the corpus shape, asserted rather than assumed, so a
+        // corpus that shrank to nothing could not make this pass silently.
+        assert_eq!(
+            corpus.len(),
+            28,
+            "hostile_session_ids() must carry 28 fixtures: 7 imported \
+             LOOK_ALIKE_PAIRS + 11 shell-metacharacter fixtures + 10 \
+             option-lookalikes. A corpus that shrank would make both arms below \
+             pass over fewer shapes than they claim."
+        );
+
+        for raw in &corpus {
+            // --- FUSED: the real producer's own output ----------------------
+            for term in ["kitty", "alacritty", "gnome-terminal", "xterm", "/opt/wat"] {
+                let sid = Untrusted::from_untrusted_source(raw.clone());
+                let argv = resume_terminal_argv(term, &sid);
+                let wire = proc_cmdline_encoding(&argv);
+                let read_back = crate::session_detector::session_id_in_cmdline(&wire);
+
+                assert_eq!(
+                    read_back.as_ref().map(|id| id.as_raw_for_logic_only()),
+                    Some(raw.as_str()),
+                    "FUSED form: the id {raw:?} was emitted by \
+                     resume_terminal_argv({term:?}) as {argv:?} and could not \
+                     be read back out of the wire bytes it produces. This is \
+                     the shape this TUI itself emits, so a failure here means \
+                     the TUI cannot re-resume its own session."
+                );
+            }
+
+            // --- SPLIT: constructed explicitly, not inferred ------------------
+            // Program name, bare option name, then the fixture: the two-element
+            // window a hand-typed `claude --resume <id>` puts on the wire.
+            let wire = nul_join_cmdline(&["claude", "--resume", raw.as_str()]);
+            let read_back = crate::session_detector::session_id_in_cmdline(&wire);
+
+            assert_eq!(
+                read_back.as_ref().map(|id| id.as_raw_for_logic_only()),
+                Some(raw.as_str()),
+                "SPLIT form: the id {raw:?} on the wire as \
+                 [\"claude\", \"--resume\", {raw:?}] could not be read back. \
+                 This build no longer EMITS this shape, but it is still what a \
+                 human typing the command by hand produces, and it is the shape \
+                 every session not started by this TUI arrives in. Dropping it \
+                 would delete those sessions from the Sessions tab with no \
+                 message to the operator — under-detection, and SILENT."
+            );
+        }
+    }
+
     /// **`launch_terminal_argv` pinned rather than changed** (D-21-49).
     ///
     /// The sibling builder carries NO untrusted element: the separator comes
