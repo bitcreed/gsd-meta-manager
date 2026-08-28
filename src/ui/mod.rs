@@ -21,7 +21,8 @@ mod tests {
     // literal un-composed call construction in every `.rs` file under `src/ui/`,
     // and `src/ui/mod.rs` is one of those files — a direct call here would make
     // the census report itself. The alias is also this census's first named
-    // residual; see `every_render_site_under_ui_composes_both_classes`.
+    // residual; see
+    // `no_display_identity_call_under_ui_stands_outside_a_composition`.
     use crate::text::display_identity as invisible_class_half;
     use crate::text::{render_for_terminal, strip_terminal_controls};
 
@@ -272,13 +273,169 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // The census's REACH, measured and pinned (D-21-57)
+    // -----------------------------------------------------------------------
+
+    /// Executable occurrences of the call needle per file under `src/ui/`, as
+    /// `(path, count)` sorted by path, for every file carrying at least one.
+    ///
+    /// **This measures the census's REACH, not its verdict.** [`census`] reports
+    /// the occurrences that stand OUTSIDE a composition; this reports how many
+    /// occurrences exist at all, composed or not. The difference is the whole
+    /// point of pinning it: the census can only ever speak about lines carrying
+    /// this needle, so this is the size of the set it can speak about — and a
+    /// file that carries no needle is a file the census is silent on rather
+    /// than a file it has cleared.
+    ///
+    /// Comment lines are dropped by the same rule [`census`] uses, so the
+    /// number is about what EXECUTES.
+    fn needle_distribution(files: &[(String, Vec<(usize, String)>)]) -> Vec<(String, usize)> {
+        let call = format!("{CALL_HEAD}{CALL_TAIL}");
+        let mut distribution: Vec<(String, usize)> = files
+            .iter()
+            .filter_map(|(path, lines)| {
+                let count = lines
+                    .iter()
+                    .filter(|(_, line)| !line.trim_start().starts_with("//"))
+                    .filter(|(_, line)| line.contains(&call))
+                    .count();
+                (count > 0).then(|| (path.clone(), count))
+            })
+            .collect();
+        distribution.sort_by(|a, b| a.0.cmp(&b.0));
+        distribution
+    }
+
+    /// **The census's measured reach, as a checked number rather than a
+    /// sentence (D-21-57).**
+    ///
+    /// Re-measured by `21-33`'s executor over all sixteen `.rs` files under
+    /// `src/ui/`: **eight** executable occurrences of the needle, in **three**
+    /// files, **two** of them inside the `render_escape_guard.rs` exemption —
+    /// so **six non-exempt occurrences, in two of sixteen files**, drive the
+    /// census's assertion. The other thirteen files, including
+    /// `screens/detail.rs` (7 463 lines) and `screens/normal.rs` (2 167
+    /// lines), contribute nothing at all.
+    ///
+    /// **This constant went RED once during `21-33` itself, and the record is
+    /// kept because it is the pin's whole justification.** The executor first
+    /// measured seven occurrences (`render_escape_guard.rs` 1) and wrote that
+    /// into this constant and into the doc table below. `21-33`'s Task 3 then
+    /// added the S1 spot-check to `render_escape_guard.rs`, whose oracle line
+    /// `let expected = display_identity(hostile);` is an eighth occurrence —
+    /// and the pin failed on its own author, inside the same plan, forcing the
+    /// number and the disclosed table to be re-measured together exactly as
+    /// its failure message prescribes. A prose-only disclosure would have
+    /// shipped stale within one plan of being written.
+    ///
+    /// Both `render_escape_guard.rs` occurrences (`:2615` and `:3272`) are
+    /// ORACLES computing the expected escaped form of a hostile fixture, which
+    /// is precisely the reason that file is exempt; neither is a render site.
+    /// The load-bearing figure — six NON-EXEMPT occurrences in two of sixteen
+    /// files — is unchanged by the addition.
+    ///
+    /// The pin is a `Vec` equality, so it fails in BOTH directions: a file
+    /// leaving the distribution is as much a red as a file entering it. That
+    /// is deliberate — the shrink is the property the census's doc discloses,
+    /// and a disclosed property that cannot go red when it happens is prose.
+    const MEASURED_REACH: [(&str, usize); 3] = [
+        ("src/ui/screens/driver.rs", 2),
+        ("src/ui/screens/driver_confirm.rs", 4),
+        ("src/ui/screens/render_escape_guard.rs", 2),
+    ];
+
+    /// How many `.rs` files the walk must find under `src/ui/` for the reach
+    /// pin to mean anything.
+    ///
+    /// Without this, a walk that read nothing would produce an empty
+    /// distribution, and the pin would be comparing two things neither of
+    /// which came from the tree.
+    const UI_SOURCE_FLOOR: usize = 16;
+
+    // -----------------------------------------------------------------------
     // The claim, as a control
     // -----------------------------------------------------------------------
 
-    /// `crate::text::render_for_terminal`'s doc calls itself **the ONE
-    /// composition of the two classes, resolved once so that no consumer
-    /// re-decides which halves apply**. This makes that claim checkable over
-    /// `src/ui/` rather than believed.
+    /// **What this checks, stated as narrowly as it is true (D-21-56).**
+    ///
+    /// Every executable occurrence of the escape call under `src/ui/` is
+    /// composed with the control-class call on the same logical unit, within
+    /// [`CALL_JOIN_LINES`] physical lines. That is a statement about CALLS to
+    /// the escape. It is **not** a statement about render SITES, and this test
+    /// was renamed by `21-33` because its previous name asserted that **every
+    /// render site under `src/ui/` composes both classes** — the second thing
+    /// — while checking only the first. Pass 11 of this phase scored that name
+    /// FAILED as a completeness claim (gaps[3]). What follows is the narrowed
+    /// claim plus the residual that was missing, not a softer wording of the
+    /// same implication. (The old identifier is quoted in full in
+    /// `21-33-SUMMARY.md`; it is spelled out there rather than here so that a
+    /// grep for it over `src/` stays at zero and the rename cannot half-land.)
+    ///
+    /// # The MEASURED reach — what actually drives this assertion
+    ///
+    /// Over all **sixteen** `.rs` files under `src/ui/`:
+    ///
+    /// | File | Executable needle occurrences |
+    /// |---|---|
+    /// | `src/ui/screens/driver_confirm.rs` | 4 |
+    /// | `src/ui/screens/driver.rs` | 2 |
+    /// | `src/ui/screens/render_escape_guard.rs` | 2 (the exempt probe module — both are oracles, not render sites) |
+    /// | the other **13** files, incl. `detail.rs` and `normal.rs` | 0 |
+    /// | **total** | **8** — six non-exempt, in **two of sixteen files** |
+    ///
+    /// **These numbers are PINNED, not asserted here.** [`MEASURED_REACH`] and
+    /// [`UI_SOURCE_FLOOR`] are checked by this test below, as a `Vec` equality
+    /// that fails in both directions. If the table above and the tree ever
+    /// disagree, the pin goes red and forces both to be re-measured in the same
+    /// commit. A disclosure that is only prose is precisely what this phase has
+    /// spent eleven passes learning not to trust.
+    ///
+    /// # The shrinking-coverage property — the residual that was missing
+    ///
+    /// A render site that applies NEITHER class carries no needle, so it is
+    /// **invisible to this census** — silence, not clearance. And every render
+    /// site successfully converted to the single composed call REMOVES a
+    /// needle, so **this census's reach shrinks monotonically as the very work
+    /// it certifies succeeds**. **Direction: under-detection, silent, and
+    /// growing over time.** This is the property that made the old name false,
+    /// and no previous version of this doc stated it.
+    ///
+    /// # This census carries NO completeness claim. Here is what does.
+    ///
+    /// The completeness claim is not dropped, it is HANDED to the two
+    /// mechanisms that actually carry it, by name, so a reader who loses this
+    /// census's reach knows where the guarantee lives:
+    ///
+    /// 1. **The sealed `RenderAdjudicated` supertrait on
+    ///    [`super::screens::Screen`]** (21-26). `impl Screen for X` on an
+    ///    unadjudicated `X` is a COMPILE ERROR. A trait bound has no spelling
+    ///    to be short of, so it cannot be evaded by a rename or missed by a
+    ///    needle — which is exactly the shape a textual census cannot have.
+    /// 2. **The per-screen behavioural probes in
+    ///    [`super::screens::render_escape_guard`]**, which render each screen
+    ///    through its real `Screen::render` into a `ratatui::buffer::Buffer`
+    ///    over hostile and clean twins and assert arrival before property.
+    ///
+    /// Neither is duplicated here; both are pointed at, so there is one place
+    /// to keep current. **A fourth census would move this over-claim rather
+    /// than end it**, which is why `21-33` narrowed the claim instead of
+    /// widening the mechanism (D-21-56).
+    ///
+    /// # Pass 11's hand-trace: a false claim, NOT a live leak
+    ///
+    /// Recorded with attribution rather than quietly relied on. Phase 21's
+    /// verification pass 11 sampled **63** `Span::raw`/`Span::styled` sites
+    /// under `src/ui/` whose argument is neither a literal nor an obvious
+    /// escape — outside this census's needle entirely — and hand-traced the
+    /// risky ones: `normal.rs:734`, `:800`, `:808`, `driver.rs:841`, `:883`,
+    /// `detail.rs:2887`, `:3064`, `:2957`, `:4297`, `:4346-4347`,
+    /// `driver_confirm.rs:441`. **Every one was either an authored
+    /// `&'static str`/const or escaped one to three lines upstream.**
+    ///
+    /// So gaps[3] is **a false completeness claim with an undisclosed
+    /// residual, not a live leak**, and this doc says so in those words.
+    /// Inflating it into a vulnerability would be the same overclaim pointing
+    /// the other way.
     ///
     /// # Why an EQUALITY on a count and not an `is_empty()`
     ///
@@ -291,11 +448,19 @@ mod tests {
     ///
     /// # Committed RED, verbatim
     ///
+    /// **One elision, declared.** These reds were captured while this test
+    /// still carried its old name. The `thread '<path>'` token that named it
+    /// is elided below as `<renamed by 21-33>` so the rename leaves no stale
+    /// reference to grep up; that token is the ONLY alteration, and every site
+    /// list, count and `left`/`right` value is byte-verbatim. Deleting the
+    /// reds instead would be deleting evidence, which is not narrowing.
+    ///
     /// Against the tree at `80bc4c1`, before any conversion,
-    /// `cargo test --lib -- ui::tests::every_render_site --nocapture`:
+    /// `cargo test --lib -- ui::tests::no_display_identity_call --nocapture`
+    /// (the filter, updated to the current name):
     ///
     /// ```text
-    /// thread 'ui::tests::every_render_site_under_ui_composes_both_classes' (1996514) panicked at src/ui/mod.rs:374:9:
+    /// thread 'ui::tests::<renamed by 21-33>' (1996514) panicked at src/ui/mod.rs:374:9:
     /// assertion `left == right` failed: 23 executable call sites under src/ui/ apply the invisible-formatting half alone, and `crate::text::render_for_terminal`'s doc claims to be THE one composition of the two classes. Sites: ["src/ui/roadmap_widget.rs:131", "src/ui/roadmap_widget.rs:136", "src/ui/screens/add_project.rs:243", "src/ui/screens/add_project.rs:256", "src/ui/screens/create_project.rs:88", "src/ui/screens/create_project.rs:89", "src/ui/screens/create_project.rs:265", "src/ui/screens/create_project.rs:274", "src/ui/screens/delete_confirm.rs:90", "src/ui/screens/delete_confirm.rs:129", "src/ui/screens/delete_confirm.rs:183", "src/ui/screens/driver_inject.rs:197", "src/ui/screens/driver_start.rs:340", "src/ui/screens/driver_start.rs:352", "src/ui/screens/driver_start.rs:356", "src/ui/screens/enqueue.rs:124", "src/ui/screens/normal.rs:697", "src/ui/screens/normal.rs:709", "src/ui/screens/normal.rs:749", "src/ui/screens/normal.rs:763", "src/ui/screens/normal.rs:779", "src/ui/screens/normal.rs:1003", "src/ui/screens/queue_delete_confirm.rs:104"]. ...
     ///   left: 23
     ///  right: 0
@@ -310,7 +475,7 @@ mod tests {
     /// ```text
     /// CENSUS raw un-composed sites under src/ui/ (3): ["src/ui/screens/driver_confirm.rs:275", "src/ui/screens/help.rs:182", "src/ui/screens/render_escape_guard.rs:2019"]
     ///
-    /// thread 'ui::tests::every_render_site_under_ui_composes_both_classes' (2088034) panicked at src/ui/mod.rs:377:9:
+    /// thread 'ui::tests::<renamed by 21-33>' (2088034) panicked at src/ui/mod.rs:377:9:
     /// assertion `left == right` failed: 1 executable call sites under src/ui/ apply the invisible-formatting half alone ... Sites: ["src/ui/screens/help.rs:182"]
     ///   left: 1
     ///  right: 0
@@ -355,12 +520,59 @@ mod tests {
     ///    physical lines** reads as un-composed. **Over-detection, loud** — it
     ///    fails the build and names the site, which is the safe direction.
     #[test]
-    fn every_render_site_under_ui_composes_both_classes() {
+    fn no_display_identity_call_under_ui_stands_outside_a_composition() {
         let files = ui_sources();
         assert!(
             !files.is_empty(),
             "the census walked src/ui/ and found no Rust source at all, so a \
              clean result here would be a walk that never looked"
+        );
+
+        // ------------------------------------------------------------------
+        // The reach pin (D-21-57): the disclosed reach, as a checked number.
+        // ------------------------------------------------------------------
+        assert!(
+            files.len() >= UI_SOURCE_FLOOR,
+            "the walk collected {} .rs files under src/ui/, below the measured \
+             floor of {UI_SOURCE_FLOOR}. A walk that reads less than it did when \
+             the reach was measured would match a shrunken distribution \
+             trivially, so the pin below would be certifying a walk that stopped \
+             looking rather than a tree that stopped violating.",
+            files.len()
+        );
+
+        let reach = needle_distribution(&files);
+        let pinned: Vec<(String, usize)> = MEASURED_REACH
+            .iter()
+            .map(|(path, count)| ((*path).to_string(), *count))
+            .collect();
+
+        // Printed as well as asserted: the reach is the number this test's doc
+        // discloses in words, and a number nobody can reproduce is the shape
+        // this phase exists to end.
+        println!(
+            "CENSUS reach — executable needle occurrences per file ({} files, \
+             {} occurrences): {reach:?}",
+            reach.len(),
+            reach.iter().map(|(_, count)| count).sum::<usize>()
+        );
+
+        assert_eq!(
+            reach, pinned,
+            "THE CENSUS'S REACH CHANGED. This is a BOOKKEEPING red with a \
+             one-line repair: re-measure the distribution, update \
+             `MEASURED_REACH`, and update the disclosed reach table in this \
+             test's doc — all in the SAME commit, so the sentence and the \
+             measurement cannot drift apart. Never relax this assertion.\n\
+             \n\
+             A SHRINK here is the property this doc describes actually \
+             happening: a render site was converted to the single composed \
+             call, which removes a needle and narrows what this census can \
+             speak about at all. A GROWTH is a new escape call somewhere under \
+             src/ui/ that did not exist when the reach was measured.\n\
+             \n\
+             The equality is checked in both directions on purpose, so a file \
+             LEAVING the distribution is as much a finding as one entering it."
         );
 
         let raw = census(&files);

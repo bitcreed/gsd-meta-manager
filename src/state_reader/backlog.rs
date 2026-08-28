@@ -150,10 +150,37 @@ fn backlog_sort_key(number: &str) -> f64 {
 /// would have propagated a measured-false statement.
 ///
 /// [`f64::total_cmp`] is a total order over ALL `f64` values including `NaN`, so
-/// there is no fallback arm here. A fallback on a total order is dead code that
-/// tells the next reader the order might not be total.
+/// there is no fallback arm on the KEY comparison. A fallback on a total order
+/// is dead code that tells the next reader the order might not be total.
+///
+/// # What was STILL wrong after that, and what the tiebreak fixes (WR-05)
+///
+/// The comparison above is total over **keys**. It was not total over
+/// **elements**, and that distinction is not academic here: [`backlog_sort_key`]
+/// maps every unusable suffix — `999.NaN`, `999.nan`, `999.inf`, `999.x`,
+/// `999.` — onto the SAME fallback key. `slice::sort_by` is stable, so a whole
+/// group of tied elements kept whatever relative order it was handed, and what
+/// hands it that order is `read_dir`. The Backlog tab's display order was
+/// therefore still a function of the filesystem for exactly those entries —
+/// **which is the defect this function's own failure message describes**, still
+/// present in the function that describes it.
+///
+/// Appending a tiebreak on the ELEMENT closes it: when two keys compare equal,
+/// the numbers themselves decide. The order is now total over elements, it is
+/// reproducible from any input permutation, and
+/// [`tied_keys_are_ordered_by_the_element_so_read_dir_cannot_decide_the_display_order`](tests::tied_keys_are_ordered_by_the_element_so_read_dir_cannot_decide_the_display_order)
+/// asserts it — observed RED against the pre-tiebreak body, whose red is quoted
+/// on that test.
+///
+/// **Scope: display ordering only.** No persisted artifact and no on-disk
+/// format depends on this order; it decides the sequence of rows the Backlog
+/// tab draws. Entries with distinct numeric keys are unaffected, which
+/// [`well_formed_backlog_numbers_keep_the_order_they_had_before_the_total_order_fix`](tests::well_formed_backlog_numbers_keep_the_order_they_had_before_the_total_order_fix)
+/// pins.
 fn backlog_number_ordering(a: &str, b: &str) -> std::cmp::Ordering {
-    backlog_sort_key(a).total_cmp(&backlog_sort_key(b))
+    backlog_sort_key(a)
+        .total_cmp(&backlog_sort_key(b))
+        .then_with(|| a.cmp(b))
 }
 
 /// Load the full content of a backlog item's first .md file.
@@ -305,15 +332,23 @@ mod tests {
              leaves it"
         );
 
-        // **Three non-numeric entries, which TIE.** The element sequence is
-        // deliberately NOT asserted here, and the reason is a property of the
-        // sort rather than of the comparator: `slice::sort_by` is STABLE, so
-        // elements with equal keys keep the relative order the input had, and
-        // rotating the input therefore reorders the tied group. That is correct
-        // behaviour and asserting against it would be asserting a falsehood.
-        // What a total order DOES guarantee is that the sequence of KEYS is the
-        // same from every permutation, and that is what goes red for the
-        // pre-fix comparator — under which `999.1` itself moved.
+        // **Three non-numeric entries, which TIE on the KEY.** This block
+        // asserts the sequence of KEYS, which is the property the WR-07 total
+        // -order fix delivered, and it is what goes red for the pre-fix
+        // comparator — under which `999.1` itself moved.
+        //
+        // **Corrected by 21-33 (WR-05).** This comment used to argue that the
+        // element sequence could not be asserted, because `slice::sort_by` is
+        // stable and rotating the input therefore reorders a tied group. That
+        // was true of the comparator as it stood, and it was precisely the
+        // defect: the elements' order was inherited from `read_dir`. It is no
+        // longer true. `backlog_number_ordering` now appends a tiebreak on the
+        // element, so tied keys are ordered by the numbers themselves and the
+        // ELEMENT sequence is permutation-independent too — asserted by
+        // `tied_keys_are_ordered_by_the_element_so_read_dir_cannot_decide_the_display_order`.
+        // The key-sequence assertion is kept here rather than widened, so the
+        // two controls stay separable: this one fails if the KEY order regresses,
+        // that one fails if the tiebreak is removed.
         let with_ties = [
             "999.1", "999.NaN", "999.2", "999.3", "999.NaN", "999.10", "999.nan", "999.4",
         ];
@@ -332,6 +367,74 @@ mod tests {
             "every non-finite suffix takes the fallback key and the finite ones \
              ascend; a `NaN` surviving into this list would mean the finite \
              filter stopped filtering"
+        );
+    }
+
+    /// **WR-05: the order is total over ELEMENTS, not merely over KEYS.**
+    ///
+    /// The control above asserts that the sequence of KEYS is
+    /// permutation-independent, and deliberately does not assert the element
+    /// sequence for the tied group — because before the tiebreak that would
+    /// have been asserting a falsehood. That gap IS the defect verification
+    /// pass 11 recorded as WR-05: every unusable suffix maps to the same
+    /// fallback key, `slice::sort_by` is stable, so tied ELEMENTS kept
+    /// whatever order `read_dir` handed them in. The Backlog tab's order was
+    /// still a function of the filesystem — the very thing
+    /// [`super::backlog_number_ordering`]'s own failure message describes as
+    /// the defect.
+    ///
+    /// This asserts the ELEMENT sequence, which is what an operator actually
+    /// sees, over two entries whose keys tie and whose names do not.
+    ///
+    /// **The committed RED, verbatim**, produced by this test against the
+    /// pre-tiebreak comparator body
+    /// (`backlog_sort_key(a).total_cmp(&backlog_sort_key(b))`, with no
+    /// `.then_with(..)` arm):
+    ///
+    /// ```text
+    /// thread 'state_reader::backlog::tests::tied_keys_are_ordered_by_the_element_so_read_dir_cannot_decide_the_display_order' (2961201) panicked at src/state_reader/backlog.rs:370:13:
+    /// assertion `left == right` failed: two items whose keys tie came out in a different ELEMENT order from rotation 1 than from rotation 0 (["999.alpha", "999.zebra"] vs ["999.zebra", "999.alpha"]). The key sequence being permutation-independent is not enough: the operator reads elements, and a tied group that inherits `read_dir`'s order is the filesystem deciding the display order.
+    ///   left: ["999.alpha", "999.zebra"]
+    ///  right: ["999.zebra", "999.alpha"]
+    /// ```
+    ///
+    /// Two entries, two rotations, two different answers — and nothing
+    /// complained. That is what "total over keys but not over elements" costs
+    /// an operator.
+    #[test]
+    fn tied_keys_are_ordered_by_the_element_so_read_dir_cannot_decide_the_display_order() {
+        // Both suffixes are unusable, so both take the same fallback key. The
+        // names are chosen so alphabetical order is the REVERSE of the input
+        // order, which is what makes rotation 0 and rotation 1 disagree under
+        // a comparator that is total only over keys.
+        let tied = ["999.zebra", "999.alpha"];
+        assert_eq!(
+            backlog_sort_key(tied[0]),
+            backlog_sort_key(tied[1]),
+            "the fixture is only meaningful if the two keys actually TIE; if \
+             these ever differ, this control is exercising the numeric path \
+             and proves nothing about tied elements"
+        );
+
+        let reference = sorted_from(&tied, 0);
+        for rotate in 1..tied.len() {
+            assert_eq!(
+                sorted_from(&tied, rotate),
+                reference,
+                "two items whose keys tie came out in a different ELEMENT order \
+                 from rotation {rotate} than from rotation 0 ({:?} vs \
+                 {reference:?}). The key sequence being permutation-independent \
+                 is not enough: the operator reads elements, and a tied group \
+                 that inherits `read_dir`'s order is the filesystem deciding \
+                 the display order.",
+                sorted_from(&tied, rotate)
+            );
+        }
+        assert_eq!(
+            reference,
+            vec!["999.alpha", "999.zebra"],
+            "tied keys must fall back to comparing the elements themselves, so \
+             the order is total over elements and reproducible"
         );
     }
 
