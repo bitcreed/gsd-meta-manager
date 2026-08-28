@@ -716,4 +716,406 @@ mod tests {
              `claude` 2.1.250, and that measurement expires with the dependency."
         );
     }
+
+    // ======================================================================
+    // THE `claude` ARGV CENSUS — the PRODUCER SET, measured instead of
+    // remembered (21-37, G2, D-21-74, T-21-37-01)
+    //
+    // G1 was the VALUE axis and G3 the ENCODING axis. This is the PRODUCER
+    // axis, and it is the same failure on a third one. Round 12 wrote the
+    // round-trip claim as a property of THIS BUILD — *what this build emits,
+    // this build can read back* — and asserted it over ONE of this build's
+    // TWO `claude` argv producers, with nothing anywhere saying which. The
+    // second producer is `crate::executor::claude::build_argv`, which emits
+    // `--session-id <uuid>`; measured before this round, `claude -p
+    // --session-id <uuid>` read back as `None`, so EVERY driver-launched
+    // session was invisible to the detector that finds it again.
+    //
+    // A prose sentence naming the two producers would be the same artefact
+    // that failed: a set somebody remembers. So the set is DERIVED FROM THE
+    // TREE and adjudicated against a table, and a producer added by a later
+    // phase becomes an unadjudicated site and a RED rather than a producer
+    // somebody forgot to remember.
+    //
+    // # What this census does NOT see, with its direction
+    //
+    // The needle is a QUOTED OPTION LITERAL, not "an argv destined for
+    // `claude`". A producer that assembled its option name from fragments,
+    // read it out of a config value, or spelled it inside a macro is
+    // INVISIBLE here and always will be. **Under-detection, and SILENT.**
+    //
+    // The residual is accepted rather than closed, for the reason
+    // `crate::text`'s interpreter census gives for its own five interpolation
+    // markers: every widening of the needle adds false positives to a control
+    // whose entire value is that its zero — and here, its per-file counts —
+    // can be trusted, and a census that reports correct code is a census the
+    // next author disables. What bounds the residual is not this walk but the
+    // round-trip requirement below: a `Producer` row that no test drives is a
+    // RED, so a producer that IS adjudicated cannot stay uncoupled.
+    // ======================================================================
+
+    /// Every `.rs` file under `dir`, recursively, as `(relative path, lines)`.
+    ///
+    /// The recursive `read_dir` shape follows `crate::text`'s `collect_rs` and
+    /// `ui::screens::render_escape_guard`'s `collect`: an unreadable entry is
+    /// SKIPPED rather than panicked on, and paths are relative to
+    /// `CARGO_MANIFEST_DIR` so the reported sites are the paths a reader can
+    /// open.
+    fn collect_rs(
+        dir: &std::path::Path,
+        base: &std::path::Path,
+        out: &mut Vec<(String, Vec<(usize, String)>)>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                collect_rs(&path, base, out);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let relative = path
+                .strip_prefix(base)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let lines = text
+                .lines()
+                .enumerate()
+                .map(|(index, line)| (index + 1, line.to_string()))
+                .collect();
+            out.push((relative, lines));
+        }
+    }
+
+    /// The option tokens' HEADS, each **missing its last character** so that no
+    /// line of this module spells a token whole.
+    ///
+    /// The same anti-self-match idiom as `crate::text`'s `INTERPRETER_STEMS`
+    /// and `ui::screens::render_escape_guard`'s `IMPL_HEAD`/`IMPL_TAIL`, and
+    /// for the same reason: this census walks `src/`, and `src/session_detector.rs`
+    /// is under `src/`. Spelled whole, these lines would be hits and the census
+    /// would be reporting itself.
+    ///
+    /// **Split on the LAST character, deliberately.** A middle split would
+    /// leave a fragment sitting in the array that is itself one of the tokens
+    /// being looked for. So would the obvious-looking five-entry spelling
+    /// `["--resum", "--resume", "-", "--session-i", "--session-id"]`, which
+    /// pairs each token with a tail: two of those heads (`--resume` and
+    /// `--session-id`) ARE tokens, so the array would match itself. The two
+    /// fused spellings are therefore derived by appending
+    /// [`OPTION_NEEDLE_FUSION`] to the assembled bare token instead of being
+    /// stored.
+    const OPTION_NEEDLE_HEADS: [&str; 3] = ["--resum", "-", "--session-i"];
+
+    /// The last character each entry of [`OPTION_NEEDLE_HEADS`] is missing,
+    /// paired with it positionally. Meaningless apart, which is the point.
+    const OPTION_NEEDLE_TAILS: [&str; 3] = ["e", "r", "d"];
+
+    /// The fusion character, appended to each assembled LONG token to give its
+    /// fused spelling. The short option has no fused spelling of its own: its
+    /// attached form is matched by PREFIX rather than by name, so `-r=abc` is
+    /// the attached form and not a sixth token.
+    const OPTION_NEEDLE_FUSION: &str = "=";
+
+    /// The five tokens this parser recognises, each in both quoted forms:
+    /// `"tok"` and `b"tok"`.
+    ///
+    /// The byte-string form is listed even though it is strictly subsumed —
+    /// `b"--resume"` CONTAINS `"--resume"`, so the `str` needle already
+    /// matches it. It is here so that a reader asking "does this census see a
+    /// byte-string literal?" gets the answer from the list rather than from an
+    /// argument about substrings.
+    ///
+    /// The needle carries BOTH quotes, so it matches a literal that IS the
+    /// token and not one that merely begins with it: `"--resume=abc"` is a
+    /// fixture VALUE, not an option spelling, and counting it would make the
+    /// per-file numbers move every time somebody added a test arm.
+    fn assembled_option_needles() -> Vec<String> {
+        let mut needles = Vec::new();
+        for (head, tail) in OPTION_NEEDLE_HEADS.iter().zip(OPTION_NEEDLE_TAILS.iter()) {
+            let bare = format!("{head}{tail}");
+            let mut tokens = vec![bare.clone()];
+            if bare.starts_with("--") {
+                tokens.push(format!("{bare}{OPTION_NEEDLE_FUSION}"));
+            }
+            for token in tokens {
+                needles.push(format!("\"{token}\""));
+                needles.push(format!("b\"{token}\""));
+            }
+        }
+        needles
+    }
+
+    /// Is `line` a SITE — a NON-COMMENT line spelling one of the assembled
+    /// tokens as a quoted literal?
+    ///
+    /// Comments are filtered because that is what makes a per-file COUNT stable
+    /// enough to be an assertion rather than a tripwire: this phase's files
+    /// carry more prose about these option names than code, and a census whose
+    /// number moved every time a paragraph was edited would be disabled within
+    /// one round.
+    fn is_option_literal_site(line: &str, needles: &[String]) -> bool {
+        if line.trim_start().starts_with("//") {
+            return false;
+        }
+        needles.iter().any(|needle| line.contains(needle.as_str()))
+    }
+
+    /// What a site's file IS, with respect to the round-trip invariant.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum SiteDisposition {
+        /// It BUILDS a `claude` argv. The invariant is about this file, so it
+        /// must be named by a round-trip test in [`CLAUDE_ARGV_ROUND_TRIPS`].
+        Producer,
+        /// It READS a `claude` argv — this parser and its own arms.
+        Consumer,
+        /// A same-spelled token that is not a `claude` option at all.
+        NotClaude,
+        /// In scope for the needle, out of scope for the invariant, with a
+        /// reason and a DIRECTION.
+        ///
+        /// **Deliberately unconstructed today, and kept anyway.** No site in
+        /// this tree needs it: the four measured files are two producers, one
+        /// consumer and one same-spelled non-`claude` flag. It stays because
+        /// the vocabulary is the census's contract — the next adjudicator who
+        /// meets a genuine exclusion must be able to say so, and a vocabulary
+        /// missing the honest answer is a vocabulary that gets a site filed
+        /// under a wrong one. Its reason is additionally required to name a
+        /// direction, below.
+        #[allow(dead_code)]
+        Excluded,
+    }
+
+    /// Every file under `src/` carrying an option-literal site, its MEASURED
+    /// non-comment count, its disposition, and the reason.
+    ///
+    /// The counts are measured on the tree, never inherited from a plan. The
+    /// pre-wave-1 baseline was **18 sites across these same four files** —
+    /// `src/executor/claude.rs` 5, `src/session_detector.rs` 8,
+    /// `src/ui/screens/detail.rs` 4, `src/state_reader/git_ops.rs` 1 — and
+    /// 21-36 added parser arms to two of them.
+    const CLAUDE_ARGV_SITES: [(&str, usize, SiteDisposition, &str); 4] = [
+        (
+            "src/executor/claude.rs",
+            5,
+            SiteDisposition::Producer,
+            "build_argv emits `--session-id <uuid>` for every driver-launched \
+             run, and `--resume <id>` when resuming. This is the producer the \
+             round-trip invariant was written about and never asserted over.",
+        ),
+        (
+            "src/session_detector.rs",
+            13,
+            SiteDisposition::Consumer,
+            "this file is the CONSUMER: the option constants themselves plus \
+             the parser arms that pin which shapes carry an id. It builds no \
+             argv for anything to execute.",
+        ),
+        (
+            "src/state_reader/git_ops.rs",
+            1,
+            SiteDisposition::NotClaude,
+            "its `-r` is `git diff-tree`'s RECURSIVE flag, on a `git` argv. It \
+             names no `claude` option, and it is kept in this table rather than \
+             filtered out of the needle because a false positive that has to be \
+             adjudicated is proof the needle matches more than what it was \
+             aimed at.",
+        ),
+        (
+            "src/ui/screens/detail.rs",
+            7,
+            SiteDisposition::Producer,
+            "resume_terminal_argv fuses the id to its option name and emits \
+             `--resume=<id>` into a terminal emulator's argv. Also carries the \
+             round-trip harness and the generator's option-shaped prefixes.",
+        ),
+    ];
+
+    /// The round-trip test that drives each `Producer` file's real argv through
+    /// the real parser.
+    ///
+    /// A `Producer` row with no entry here is a file whose argv the invariant
+    /// CLAIMS to cover and no test actually drives — which is precisely the
+    /// state round 12 shipped in, and precisely what this census exists to make
+    /// impossible to ship again.
+    const CLAUDE_ARGV_ROUND_TRIPS: [(&str, &str); 1] = [(
+        "src/ui/screens/detail.rs",
+        "a_session_id_survives_the_round_trip_in_both_wire_forms",
+    )];
+
+    /// **Every `claude` argv option site under `src/` is adjudicated** (21-37,
+    /// D-21-74, T-21-37-01, T-21-37-04).
+    ///
+    /// Walks `src/`, reports every non-comment line spelling one of this
+    /// parser's option tokens as a quoted literal, and requires each such file
+    /// to appear in [`CLAUDE_ARGV_SITES`] with a matching count and a
+    /// disposition — and each `Producer` to be driven through the parser by a
+    /// named test.
+    ///
+    /// # Why the rubber-stamp guards are here
+    ///
+    /// A disposition table in which every row is an exclusion reports nothing
+    /// while LOOKING like a control, and a reason field left empty converts a
+    /// decision into an omission. So three properties of the TABLE itself are
+    /// asserted, not reviewed: at least one row is a `Producer`; both known
+    /// producers are `Producer` rather than `Excluded`; and every non-`Producer`
+    /// row carries a non-empty reason (T-21-37-04).
+    #[test]
+    fn every_claude_argv_option_site_under_src_is_adjudicated() {
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        collect_rs(&base.join("src"), &base, &mut files);
+        assert!(
+            !files.is_empty(),
+            "the census walked src/ and found no Rust source at all, so a clean \
+             report here would be a walk that never looked"
+        );
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let needles = assembled_option_needles();
+        assert_eq!(
+            needles.len(),
+            10,
+            "the needle assembly produced {needles:?}. Five tokens in two quoted \
+             forms is ten; a different number means the heads and tails have \
+             drifted apart and this census is looking for the wrong thing."
+        );
+
+        // --- The measured set ------------------------------------------------
+        let mut measured: Vec<(String, Vec<usize>)> = Vec::new();
+        for (path, lines) in &files {
+            let hits: Vec<usize> = lines
+                .iter()
+                .filter(|(_, line)| is_option_literal_site(line, &needles))
+                .map(|(number, _)| *number)
+                .collect();
+            if !hits.is_empty() {
+                measured.push((path.clone(), hits));
+            }
+        }
+
+        // --- Every measured file must be adjudicated -------------------------
+        let unadjudicated: Vec<&str> = measured
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .filter(|path| !CLAUDE_ARGV_SITES.iter().any(|(known, ..)| known == path))
+            .collect();
+        assert!(
+            unadjudicated.is_empty(),
+            "these files spell a `claude` argv option token and appear in no row \
+             of CLAUDE_ARGV_SITES: {unadjudicated:?}. A new file here is a new \
+             `claude` argv site nobody has decided about — adjudicate it as \
+             Producer, Consumer, NotClaude or Excluded WITH a reason, and if it \
+             is a Producer, give it a round trip. Do not delete this assertion."
+        );
+
+        // --- Every adjudicated file must still exist and still match ---------
+        for (path, expected, _, _) in CLAUDE_ARGV_SITES {
+            let hits = measured
+                .iter()
+                .find(|(measured_path, _)| measured_path == path)
+                .map(|(_, hits)| hits.clone())
+                .unwrap_or_default();
+            assert_eq!(
+                hits.len(),
+                expected,
+                "{path} carries {} non-comment option-literal site(s), and \
+                 CLAUDE_ARGV_SITES says {expected}: a delta of {}. Sites found \
+                 at lines {hits:?}. Re-MEASURE the count and update the row in \
+                 the same commit that moved it — a count that is quietly \
+                 widened to whatever the tree says is a tripwire, not a census.",
+                hits.len(),
+                hits.len() as i64 - expected as i64
+            );
+        }
+
+        // --- The table is not a rubber stamp (T-21-37-04) --------------------
+        assert!(
+            CLAUDE_ARGV_SITES
+                .iter()
+                .any(|(.., disposition, _)| *disposition == SiteDisposition::Producer),
+            "no row of CLAUDE_ARGV_SITES is a Producer. A census whose every row \
+             is an exclusion reports nothing while looking like a control."
+        );
+        for known_producer in ["src/ui/screens/detail.rs", "src/executor/claude.rs"] {
+            let row = CLAUDE_ARGV_SITES
+                .iter()
+                .find(|(path, ..)| *path == known_producer);
+            assert_eq!(
+                row.map(|(.., disposition, _)| *disposition),
+                Some(SiteDisposition::Producer),
+                "{known_producer} builds a `claude` argv and its row says \
+                 {:?}. Both of this build's producers must be adjudicated \
+                 Producer: excluding one is exactly how the invariant came to \
+                 be wider than its evidence.",
+                row.map(|(.., disposition, _)| *disposition)
+            );
+        }
+        for (path, _, disposition, reason) in CLAUDE_ARGV_SITES {
+            if disposition != SiteDisposition::Producer {
+                assert!(
+                    !reason.trim().is_empty(),
+                    "{path} is adjudicated {disposition:?} with an EMPTY reason. \
+                     An unreasoned exclusion is an omission wearing a decision's \
+                     clothes."
+                );
+            }
+            if disposition == SiteDisposition::Excluded {
+                assert!(
+                    reason.contains("detection"),
+                    "{path} is Excluded and its reason names no DIRECTION. An \
+                     exclusion is a decision to not see something, and the only \
+                     honest form of it says which way the blindness runs — \
+                     under-detection (silent) or mis-detection. This phase's \
+                     whole record is written in those two words; a reason \
+                     carrying neither is a reason that has not been thought \
+                     through."
+                );
+            }
+        }
+
+        // --- Every Producer is driven through this parser by a named test ----
+        for (path, _, disposition, _) in CLAUDE_ARGV_SITES {
+            if disposition != SiteDisposition::Producer {
+                continue;
+            }
+            assert!(
+                CLAUDE_ARGV_ROUND_TRIPS
+                    .iter()
+                    .any(|(producer, _)| *producer == path),
+                "{path} is adjudicated a `claude` argv Producer and NO round-trip \
+                 test names it in CLAUDE_ARGV_ROUND_TRIPS. The invariant `what \
+                 this build emits, this build can read back` is stated over THIS \
+                 BUILD's producers, so a producer with no round trip makes the \
+                 claim wider than its evidence — which is the defect this census \
+                 exists to report. Measured: `claude -p --session-id <uuid>` \
+                 reads back None, so every driver-launched session is invisible \
+                 to the detector that finds it again."
+            );
+        }
+
+        // --- A named round trip must actually exist --------------------------
+        // Named last, deliberately: a doc or a table pointing at a test that
+        // does not exist is the WR-05 hazard, and it must be caught by a walk
+        // rather than by a reader.
+        for (producer, test_name) in CLAUDE_ARGV_ROUND_TRIPS {
+            let definition = format!("fn {test_name}(");
+            assert!(
+                files
+                    .iter()
+                    .any(|(_, lines)| lines.iter().any(|(_, line)| line.contains(&definition))),
+                "CLAUDE_ARGV_ROUND_TRIPS names `{test_name}` as {producer}'s \
+                 round trip and no file under src/ defines it. A table naming a \
+                 test that does not exist certifies nothing at all."
+            );
+        }
+    }
 }
