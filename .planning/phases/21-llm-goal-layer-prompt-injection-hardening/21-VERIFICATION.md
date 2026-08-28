@@ -1,171 +1,136 @@
 ---
 phase: 21-llm-goal-layer-prompt-injection-hardening
-verified: 2026-08-28T03:00:28Z
-head: 34bcb49
+verified: 2026-08-28T05:33:06Z
+head: 89285fd
 status: gaps_found
-score: 98/100 must-haves verified (4/5 ROADMAP success criteria; 0 ROADMAP criteria FAILED, 1 behavior-unverified; round-12 scored 8/9 — truth 1 FAILED)
+score: "22/24 must-haves verified (round-13 truths: 14 from 21-36 + 10 from 21-37; 4/5 ROADMAP success criteria unchanged, 1 behavior-unverified; 2 NEW gaps distinct from criterion 4)"
 roadmap_criteria: 4/5
-new_gaps_distinct_from_criterion_4: 3
+new_gaps_distinct_from_criterion_4: 2
 behavior_unverified: 1
 overrides_applied: 0
-prohibitions_checked: 3
-prohibitions_flagged: 0
+prohibitions_checked: 9
+prohibitions_flagged: 1
 re_verification:
-  previous_status: human_needed
-  previous_score: 90/91 must-haves verified (4/5 ROADMAP success criteria)
+  previous_status: gaps_found
+  previous_score: 98/100 must-haves verified (4/5 ROADMAP success criteria; pass 13, round-12 gaps G1/G2/G3 open)
   gaps_closed:
-    - "The round-11 producer/consumer wire-format mismatch (the defect pass 12 MISSED and the code review found): CLOSED for the shapes the corpus carries. `session_id_in_cmdline` (`src/session_detector.rs:260-297`) now reads the FUSED single element via `strip_prefix(RESUME_OPTION_FUSED_PREFIX)` AND the SPLIT two-element window via `== RESUME_OPTION_NAME`. I verified the RED-before-GREEN ordering myself rather than trusting the SUMMARY: at commit `6cca4ca` the round-trip test is present (`git show 6cca4ca:src/ui/screens/detail.rs | grep -c the_argv_this_build_emits_...` == 1) while the parser still reads `for window in args.windows(2)` with no fused prefix anywhere in the file — so the committed RED is real and reproducible from history, not a narrated one. Fix landed at `68a9ff2`."
-    - "The producer fence held, measured by me: `git diff --numstat 69f99e2 HEAD -- src/ui/screens/detail.rs` == 181 insertions / 0 deletions, ONE hunk `@@ -7719,6 +7719,187 @@ mod tests`, and `mod tests` opens at line 5877 — so `resume_terminal_argv` (:703) and `RESUME_OPTION_FUSED_PREFIX` (:585) are untouched. The measured `--` end-of-options alternative (which DELETES the resume at `claude` 2.1.248) was correctly not taken."
-    - "The falsified `# No control is added in this file, deliberately` reasoning is corrected AT the sentence and left standing: I diffed the surviving paragraph (`src/session_detector.rs:199-205`) against `69f99e2:150-154` — identical — and counted 0 deleted `///` lines across the round's `src/session_detector.rs` diff. The correction (lines 148-197) states what the reasoning got right (the SECURITY property is a sink property) and what it missed (the FUNCTIONAL property is a property of the PAIR)."
-    - "The standing phase-21 `ui.safety-gate` rationale is written down once, durably, with its own falsification condition and that condition MEASURED (`deferred-items.md:1616-1666`) — `gsd-tools check ui-plan-gate 21` returned `block: false`, so no override was applied."
-    - "ROADMAP criterion 4 re-surfaced verbatim for the fifth consecutive round with zero work claimed against it: `deferred-items.md:1826` matches `.planning/ROADMAP.md:450`; `git diff --stat 69f99e2 HEAD -- tests/` is EMPTY; `cargo test --test driver_injection_corpus` re-run by me == 13 passed / 0 failed / 10 ignored, unchanged."
-  gaps_remaining:
-    - "gaps[0] / G1 — `trim()` is a TRANSFORMATION, not a condition: the round-trip byte-identity this round asserts is false for any id carrying leading or trailing whitespace, and the 28-fixture corpus is structurally incapable of failing on it."
-    - "gaps[1] / G2 — the 'what this build emits, this build must be able to read back' invariant is asserted over ONE of this build's TWO `claude` argv producers, and the documented wire-form coverage omits the CLI's short spelling `-r`."
-    - "gaps[2] / G3 — `String::from_utf8_lossy` fabricates or corrupts the id from non-UTF-8 wire bytes, and the new `&str`-typed round-trip harness cannot express that class by construction; the limit is unstated."
-  regressions:
-    - "None. Round 12's `src/` diff is exactly two files (`session_detector.rs` 274+/5-, `ui/screens/detail.rs` 181+/0-) and no other. `git diff --stat 69f99e2 HEAD -- tests/ .planning/REQUIREMENTS.md Cargo.toml Cargo.lock` is EMPTY (the only `.planning/ROADMAP.md` change is the orchestrator's own tracking commit `7924961`). Zero `TBD|FIXME|XXX|TODO|HACK|PLACEHOLDER` in the round's added `src/` lines. ROADMAP criteria 3 and 5 re-run by me (`driver_escalation_cap` 8/0, `driver_refusal_record` 9/0); criteria 1 and 2 regression-checked by diff scope (`src/driver/` absent). Every finding below is a PRE-EXISTING behaviour that round 12 newly CERTIFIED with a claim wider than its control — not a behaviour round 12 introduced."
+    - "G1 (whitespace round-trip byte-identity, pass-13 gaps[0]): CLOSED. `session_detector.rs:573-595` now tests emptiness on a TRIMMED COPY (`text.trim().is_empty()`) while wrapping the UNTRIMMED `text`. I confirmed no `.trim()` rewrite remains on the return path and the generated property (`the_round_trip_property_holds_for_every_generated_byte_string`, `detail.rs:8210`) asserts byte-identity or one of two named refusal classes over a 4096-case fixed-seed mixture generator including a `whitespace_padded` arm."
+    - "G2 (single-producer coverage, pass-13 gaps[1]): CLOSED for the SPELLING axis and the PRODUCER axis both. `-r`, `-r<value>`, `--session-id`, `--session-id=<value>` are all now recognised (`session_detector.rs:528-560`), and `executor::claude::build_argv`'s real `Vec<OsString>` is driven through the real parser by `the_executors_own_argv_is_an_argv_this_build_can_read_back` (`session_detector.rs:1405-1455`), which I confirmed exists and is `#[test]`-annotated (with the WR-02 caveat noted below as a new warning, not a gap)."
+    - "G3 (non-UTF-8 harness, pass-13 gaps[2]): CLOSED. `generated_session_id_bytes` (`detail.rs:8067`) is `Vec<Vec<u8>>`-typed and `nul_join_cmdline` takes `&[&[u8]]`; `from_utf8` in `session_detector.rs:573` is strict (no `_lossy`), confirmed by direct read — no `from_utf8_lossy` call remains anywhere in the file (`rtk proxy grep -c from_utf8_lossy src/session_detector.rs` == 0)."
+    - "WR-05 (subsumed duplicate control): CLOSED. `the_argv_this_build_emits_is_an_argv_this_build_can_read_back` is deleted per 21-37's plan; I did not find it in the current tree."
+    - "IN-07 (precedence reading pinned): CLOSED. `the_split_forms_successor_is_a_value_by_position_even_when_it_is_option_shaped` (`detail.rs:1052-1079`) pins the fused-successor-outranks reading with three positive assertions."
+  gaps_remaining: []
+  regressions: []
+prohibitions_flagged_detail:
+  - statement: "21-37 prohibition: \"MUST NOT report a session id this build's own producers could not have produced, and MUST NOT claim a dependency's option-binding behaviour as a property of this code.\""
+    status: violated
+    evidence: "See gap CR-01 below. The `--resume`/`-r` successor rule is asserted as measured `claude` 2.1.250 behaviour in a test citation, and re-measurement on this machine at the same version shows the opposite: `claude --resume --version` and `claude -r --version` both print the version and exit 0 (successor read as a NEW option, not bound as this option's value), while the code and its pinning test assert the successor IS always bound as the value."
 gaps:
-  - truth: "**The shape this build EMITS is a shape this build can READ** — the argv `resume_terminal_argv` produces is parsed back to a session id **byte-identical** to the fixture (21-35 must_haves.truths[0], DRIVE-01)"
+  - truth: "**CR-01 — The parser's model of `-r`/`--resume`'s arity is wrong, and round 13's new rank rule turns the error into silent shadowing of a real, driver-launched session id.** (falsifies 21-37 must_haves.truths[3] 'The parser learns the CLI's own remaining spellings, each MEASURED at a named version' and prohibition 3; DRIVE-01, DRIVE-04, SAFE-07)"
     status: failed
     reason: >-
-      `trim()` at `src/session_detector.rs:285` SHADOWS the value with the trimmed slice and line 289
-      returns `val.to_string()` — the TRIMMED value, not the wire bytes. Byte-identity therefore fails
-      for every id with leading or trailing whitespace, and a whitespace-only id emitted by this build's
-      own producer reads back as `None`, which is verbatim the silent row-death this round exists to
-      close, one shape over. I proved this rather than inferring it: I extracted lines 260-297 VERBATIM
-      into a scratch binary and ran the producer's own wire format through it —
-      `--resume=" abc "` reads back `Some("abc")` (byte-identical: FALSE);
-      `--resume="\tboth\t"` reads back `Some("both")` (FALSE);
-      `--resume="   "` reads back `None`.
-      **The control cannot go RED on this.** `hostile_session_ids()` (`detail.rs:7400-7443`) is 7 imported
-      `LOOK_ALIKE_PAIRS` + 11 shell-metacharacter fixtures + 10 option lookalikes; I checked all 28 and
-      not one carries leading or trailing `White_Space`. The 7 imported look-alikes are U+200B, U+FEFF,
-      U+202E, U+E0041, U+00AD — all `General_Category=Cf`, `White_Space=No`, so `str::trim` leaves them
-      alone; `"a b"` has an INTERIOR space only. This is the same vacuous-control species as round 11's
-      missing leading-hyphen fixture and round 10's fixture-only census. Direction of the residual:
-      **under-detection AND wrong-value re-resume, both SILENT.**
-      Two doc sentences this round newly wrote are false as a consequence:
-      `session_detector.rs:247` ("The only condition on the VALUE remains non-emptiness after `trim()`")
-      and `detail.rs:7795` ("The id that comes back must be byte-identical to the fixture").
+      `-r, --resume [value]` is an OPTIONAL-value option at `claude` 2.1.250 — the project's own
+      prior record already says so (`deferred-items.md:1404`, `21-31-SUMMARY.md:141`) — so `claude`
+      does NOT bind an option-shaped successor to it. I independently re-ran the probe on this
+      machine rather than trusting the review: `claude --version` reports `2.1.250 (Claude Code)`;
+      `claude --resume --version < /dev/null` prints the version and exits 0; `claude -r --version
+      < /dev/null` prints the version and exits 0 — in both cases `--version` was parsed as a NEW
+      option of `claude`, not consumed as `--resume`'s value. By contrast `claude --session-id
+      --version < /dev/null` prints `Error: Invalid session ID. Must be a valid UUID.` and exits 1,
+      confirming `--session-id` DOES bind a required successor. The parser at
+      `src/session_detector.rs:530-537` applies the `--session-id` rule to `--resume`/`-r` too:
+      `let next = args.get(index + 1).copied(); index += 1; next.map(|value| (value,
+      SessionIdRank::Resume))` — unconditional, no filter on the successor's shape. The pinning
+      test `the_split_forms_successor_is_a_value_by_position_even_when_it_is_option_shaped`
+      (`detail.rs:1052-1079`) still asserts `parsed(&["claude", "--resume", "-h"]).as_deref() ==
+      Some("-h")`, citing "measured at claude 2.1.250" — a citation my own re-measurement falsifies.
+      Consequence 1 (mis-detection): a same-user `claude --resume --dangerously-skip-permissions`
+      process now reports `--dangerously-skip-permissions` as that session's id — a Sessions-tab
+      row offering to resume a conversation that does not exist. Consequence 2 (shadowing, new in
+      round 13): `claude -r -p --session-id <real-uuid>` fills the Resume slot with `-p` (wrongly),
+      steps past it, then fills the Assigned slot with the genuine uuid; `first_resume.or
+      (first_assigned)` (`session_detector.rs:607`) returns `-p`, discarding the real id — the exact
+      population G2/DRIVE-01 exists to make visible can be silently hidden again by round 13's own
+      rank rule. Consequence 3: the generated round-trip property cannot catch this, because
+      `encode_split`/`encode_short_split` (`detail.rs:8103-8134`) share the same wrong model of the
+      option's arity as the parser, so the "total" property agrees with the parser by construction
+      on exactly this axis — it is independent about encoding (R1/R2 from `std`) and not independent
+      about option binding.
     artifacts:
       - path: "src/session_detector.rs"
-        issue: "lines 283-291: `let val = val.trim();` then `Untrusted::from_untrusted_source(val.to_string())` returns the TRIMMED slice. Emptiness must be TESTED on a trimmed copy while the value RETURNED is the wire bytes verbatim."
+        issue: "lines 530-537: the Resume-rank branch takes `args.get(index + 1)` unconditionally with no filter on the successor being option-shaped, unlike `--session-id`'s branch which is correctly unconditional because that option takes a REQUIRED value."
+      - path: "src/session_detector.rs"
+        issue: "lines 468-482 (the IN-07 doc paragraph): states the option-shaped-successor-is-always-a-value rule as a measured fact for BOTH options; it is only true for `--session-id`."
       - path: "src/ui/screens/detail.rs"
-        issue: "`hostile_session_ids()` at 7400-7443 carries no leading/trailing-whitespace fixture, so `a_session_id_survives_the_round_trip_in_both_wire_forms` and `the_argv_this_build_emits_is_an_argv_this_build_can_read_back` are green against a build that violates the property they name."
+        issue: "lines 1052-1079: `the_split_forms_successor_is_a_value_by_position_even_when_it_is_option_shaped` asserts `Some(\"-h\")` for `[\"claude\", \"--resume\", \"-h\"]`, citing a `claude` 2.1.250 measurement that this pass's own re-run of the same probe contradicts."
     missing:
-      - "Return the wire bytes verbatim: `if !val.trim().is_empty() { return Some(Untrusted::from_untrusted_source(val.into_owned())); }` — this makes the parser STRICTLY LESS opinionated about the value, so it does not touch D-21-48's declined validator."
-      - "Extend `hostile_session_ids()` with `\" leading\"`, `\"trailing \"`, `\"\\tboth\\t\"` so the round-trip control can actually fail, and bump the asserted corpus size from 28 (it is hard-coded in three places — see IN-04)."
-      - "State the one shape that genuinely cannot round-trip as a NAMED limit with its direction: a whitespace-only id emitted by the producer reads back `None` (under-detection, silent), either in `session_id_in_cmdline`'s doc or by testing emptiness on the raw bytes."
-  - truth: "**Both wire forms are accepted, because both are legitimate on the wire** — the SPLIT form is 'what a human typing the command by hand, or any launcher that is not this TUI, still produces' (21-35 must_haves.truths[1] and `session_detector.rs:238-241`; DRIVE-01, DRIVE-03)"
-    status: partial
+      - "Filter the Resume-rank successor: reject a successor that starts with `-` and is not the single byte `-`, since `-r, --resume [value]` is measured optional-value while `--session-id <uuid>` is measured required-value; keep `--session-id`'s branch unconditional."
+      - "Rewrite the pinning test to assert `None` for the `-h` / `--resume` / `--version` successors under `--resume`/`-r`, with a positive arm kept for `--session-id` where the unconditional behaviour is real; record the three re-measured probe transcripts beside it."
+      - "Exclude option-shaped `s` from the `split` and `short-split` arms of the generated property (or give those two forms their own oracle branch) so the certificate stops agreeing with the wrong model by construction."
+  - truth: "**CR-02 — The 'total, no third outcome' round-trip certificate is stated over six recognised spellings and certified over four; the two omitted spellings are `--session-id`, the one this build's own executor emits on every driver-launched run.** (falsifies 21-36 must_haves.truths[0] 'the claim becomes a TOTAL property... for every wire form registered in `wire_forms()`'; DRIVE-01, SAFE-07)"
+    status: failed
     reason: >-
-      The two NAMED forms are genuinely accepted and genuinely asserted (I ran
-      `session_id_in_cmdline_reads_both_wire_forms_and_no_other_shape` — 1 passed — and its
-      `parsed(&["claude","--resume=abc"])` / `parsed(&["claude","--resume","abc"])` arms would go RED if
-      either were dropped). What FAILS is the COMPLETENESS the round-12 doc and the round-trip class
-      comment newly claim over "this build" and over "any launcher that is not this TUI".
-      Measured with the verbatim-extracted parser:
-      `claude -r abc` -> `None`; `claude -r=abc` -> `None`;
-      `claude -p --session-id <uuid>` -> `None`.
-      (a) `-r` is the CLI's documented short spelling — quoted in this very codebase at
-      `detail.rs:654` (`-r, --resume [value]`) — and `hostile_session_ids()` even carries `"-r"` as a
-      fixture annotated "the SHORT spelling of the option being injected into" (`detail.rs:7432`). One
-      module knows `-r` exists; the other does not. That is the identical
-      independent-spelling-across-a-module-boundary mechanism the round-12 doc names as the root cause,
-      still live.
-      (b) This build has a SECOND `claude` argv producer that `pgrep -x claude` does return:
-      `src/executor/claude.rs:370` sets `program: PathBuf::from("claude")`, and `:255-256` pushes
-      `--session-id <uuid>`. Every executor/driver-launched session therefore appears in the Sessions tab
-      with `session_id: None` and a row that answers "No session ID to resume" — the identical symptom
-      from the identical cause, on the producer the new round trip does not reach. (Its `--resume` at
-      `:270` IS split-form and IS now readable — that half is genuinely fixed.)
-      Recognising `-r` and `--session-id` is SHAPE, not value validation, so neither touches D-21-48.
-      Direction: **under-detection, SILENT.**
+      `session_id_in_cmdline`'s doc (`session_detector.rs:411-447`) states a contract with no escape
+      hatch — every byte string either round-trips byte-identically or falls in exactly one of R1/R2
+      — and names its certificate as covering "every registered wire form". I read `wire_forms()`
+      (`detail.rs:8150-8169`) directly: it registers exactly four rows — `fused`, `split`,
+      `short-split`, `short-attached`. I then read the parser's own correction block
+      (`session_detector.rs:365-374`), which enumerates SIX recognised spellings itself:
+      `--resume=<id>`, `--resume <id>`, `-r<id>`, `-r <id>`, `--session-id=<id>`, `--session-id
+      <id>`. The two `--session-id` spellings — added by this same round 13 (21-37) — have no row in
+      `wire_forms()`. Since `the_round_trip_property_holds_for_every_generated_byte_string` and the
+      non-vacuity floor `the_generator_reaches_every_named_class_and_both_branches_of_the_property`
+      both iterate `wire_forms()` (confirmed by reading both loops), neither test exercises a
+      whitespace-padded, ill-formed-UTF-8, option-shaped, or empty value through either
+      `--session-id` spelling — the two forms `executor::claude::build_argv` emits on every
+      driver-launched run (`src/executor/claude.rs:255-256`, confirmed present), which is exactly
+      the population DRIVE-01 is about. What actually exercises `--session-id` in the whole tree is
+      two one-character fixtures (`session_detector.rs:916-930`) and one UUID plus one benign string
+      in `the_executors_own_argv_is_an_argv_this_build_can_read_back`. The producer-census control
+      (`every_claude_argv_option_site_under_src_is_adjudicated`) couples PRODUCERS to round-trip
+      tests but does not couple the parser's recognised SPELLING set to `wire_forms()`'s row count,
+      so a spelling taught to the parser without a corresponding row silently narrows the
+      certificate while every gate stays green — the identical "closed claim over an open set"
+      failure round 13's own correction block states it fixed, reintroduced one level up in the same
+      commit as the correction.
     artifacts:
-      - path: "src/session_detector.rs"
-        issue: "lines 214, 224, 269-271: only `--resume` / `--resume=` are spelled. No `-r` / `-r=`, no `--session-id`. The doc's coverage claim at 238-241 is wider than the parser."
       - path: "src/ui/screens/detail.rs"
-        issue: "The round-trip class comment (7763-7788) states the invariant as a property of THIS BUILD but the control drives exactly one of this build's two `claude` argv producers."
-    missing:
-      - "Add `RESUME_OPTION_SHORT = b\"-r\"` and `RESUME_OPTION_SHORT_FUSED_PREFIX = b\"-r=\"` to the shape check, plus `parsed(&[\"claude\",\"-r\",\"abc\"]) == Some(\"abc\")` and `parsed(&[\"claude\",\"-rx\",\"abc\"]) == None` arms."
-      - "EITHER teach the consumer `--session-id` (shape only, same non-validating rule) and drive `executor::claude`'s argv builder through `session_id_in_cmdline` in the round trip, OR state explicitly in the class comment which producers the invariant is asserted over, which are knowingly excluded, and the direction of the residual."
-  - truth: "The `Untrusted` boundary carries the id the process actually has (21-35 must_haves.truths[3], SAFE-07)"
-    status: partial
-    reason: >-
-      `String::from_utf8_lossy` at `src/session_detector.rs:284` replaces every invalid UTF-8 sequence
-      with U+FFFD. Measured with the verbatim-extracted parser: `--resume=\xff\xfe` reads back
-      `Some("\u{fffd}\u{fffd}")` — a non-empty id for a value the process does not carry
-      (**over-detection, silent**), and a partially-invalid id is returned CORRUPTED and then re-emitted
-      by `resume_terminal_argv`, resuming nothing with no message (**under-detection, silent**). This
-      file's own type doc states the premise that makes it reachable (`session_detector.rs:8-12`:
-      "nothing constrains it to ASCII"), and the `Untrusted`/`shown()` escape layer at 136-140 is
-      defending a value that was already rewritten upstream of it.
-      The new harness cannot reach this class BY CONSTRUCTION: `nul_join_cmdline` takes `&[&str]`
-      (`detail.rs:7744`) and `hostile_session_ids()` returns `Vec<String>`, so every byte that can enter
-      the harness is valid UTF-8 by the type system. That limitation is stated nowhere in the two new
-      tests' docs, which otherwise enumerate their own gaps carefully.
-    artifacts:
+        issue: "lines 8150-8169: `wire_forms()` registers 4 rows (fused, split, short-split, short-attached); the parser recognises 6 spellings. No `assigned-split`/`assigned-fused` (or equivalent `--session-id` rows) exist."
       - path: "src/session_detector.rs"
-        issue: "line 284: lossy conversion of arbitrary `/proc` bytes, with no arm asserting what it does."
-      - path: "src/ui/screens/detail.rs"
-        issue: "line 7744: the `&str`-typed harness makes the non-UTF-8 class inexpressible; the limit is undisclosed."
+        issue: "lines 411-447: states the round-trip contract as total over 'every registered wire form' with no disclosed exception for the two `--session-id` spellings the register omits."
     missing:
-      - "Name the limit where the control is defined, and add a direct non-UTF-8 parser arm in `session_detector::tests` that bypasses the `&str` harness — e.g. `session_id_in_cmdline(b\"claude\\0--resume=\\xff\\xfe\\0\")` asserted with its direction stated."
-      - "Better (optional, larger): carry the id as `Vec<u8>`/`OsString` inside `Untrusted` so the wire bytes survive to the argv, and lossy-convert only at render."
+      - "Add two rows to `wire_forms()` — `--session-id <s>` split and `--session-id=<s>` fused — encoded from the module's own `SESSION_ID_OPTION_NAME`/`SESSION_ID_OPTION_FUSED_PREFIX` constants, the same way the existing rows derive from `RESUME_OPTION_FUSED_PREFIX`."
+      - "Pin the row count against the parser's recognised-spelling count (e.g. a `RECOGNISED_SPELLINGS: usize = 6` constant plus `assert_eq!(wire_forms().len(), RECOGNISED_SPELLINGS)`), so a spelling taught to the parser without a wire-form row is a RED rather than a silent narrowing."
+      - "Correct `session_detector.rs:411-447` so the contract's stated scope matches the register at the moment it is written, or explicitly disclose the two-spelling exception with its direction."
 deferred:
   - truth: "A `.planning/` file or `CLAUDE.md` carrying injected instructions does not change which command the driver executes — the BEHAVIOURAL half (ROADMAP success criterion 4 / SAFE-07)"
-    addressed_in: "Not any phase — permanently agent-unclosable by explicit user decision; re-surfaced verbatim by `21-35` for the fifth consecutive round"
-    evidence: "THIRTEENTH consecutive pass unchanged. My own run: `cargo test --test driver_injection_corpus` == 13 passed / 0 failed / 10 ignored. `git diff --stat 69f99e2 HEAD -- tests/` is EMPTY, so round 12 did zero work against it, as its own fence 3 requires. `deferred-items.md:1826` quotes `.planning/ROADMAP.md:450` byte-identically. **4/5 is the EXPECTED and correct ceiling and is NOT scored as a failure.**"
-  - truth: "General Unicode CONFUSABLES / homoglyph (TR39) defence in FREE TEXT"
-    addressed_in: "Not phase 21 — recommend a new roadmap item"
-    evidence: "Unchanged from passes 9-12. Out of scope by design."
-  - truth: "Four PRE-EXISTING clippy lints make `cargo clippy --all-targets -- -D warnings` fail"
-    addressed_in: "deferred-items.md, re-affirmed a sixth time"
-    evidence: "Orchestrator's measured gate: exit 101 with exactly the four known lints (3x `bool_assert_comparison` `src/browser.rs:155-157`, 1x `cmp_owned` `src/project_creator.rs:146`). Neither file appears in round 12's diff. `cargo clippy -- -D warnings` (the project gate) exits 0."
-  - truth: "`tests/driver_reattach.rs`'s two nondeterministic tests (~3/5 red)"
-    addressed_in: "deferred-items.md's standing entry, re-affirmed by `21-35` at `deferred-items.md:1850-1869`"
-    evidence: "Green in this round's gate run — which the record itself states is NOT evidence the flake is fixed. Established across rounds 10-12 as pre-existing; `--test-threads=1` measured 4/6 red and is correctly NOT reinstated (I checked: both `--test-threads=1` occurrences in the round's added lines are refusals-to-reinstate, not restorations). Not scored as a regression."
-  - truth: "`src/terminal_switch.rs:57` matches a pane by UNANCHORED substring, so `read_tty`'s `\"pts/3\"` matches `/dev/pts/31` and the TUI can steal focus onto an unrelated pane (code review WR-04, CONFIRMED by me)"
-    addressed_in: "Backlog / a quick task — OUT of phase 21's requirement scope (DRIVE-01/03/04, SAFE-07/08). It is a focus-stealing UX defect, not an injection or goal-layer defect."
-    evidence: "I read `src/session_detector.rs:84-94` (returns `\"pts/3\"`, `/dev/` stripped deliberately per the `tty` field doc at 23-26) and `src/terminal_switch.rs:57` (`if pane_tty.contains(tty)`). `\"/dev/pts/31\".contains(\"pts/3\")` is true, and nothing in the loop prefers an exact match. Real on any host with 10+ ptys — the normal case for the tmux user this path only runs for. Same producer also passes `fd/0`'s `\"pipe:[12345]\"` through as a TTY when stdin is redirected. Recorded, not scored as a phase-21 gap."
-  - truth: "`registry::current_prompt_inputs` absent from BLOCKING_HELPERS; the spawn-gate plan-half comment; dead `PlanStep::rationale`"
-    addressed_in: "Backlog (adjudicated OUT in deferred-items.md, unchanged across rounds 4-12)"
-    evidence: "No round-12 plan touched any of the three."
+    addressed_in: "Not any phase — permanently agent-unclosable by explicit user decision; re-surfaced verbatim for the sixth consecutive round"
+    evidence: "FOURTEENTH consecutive pass unchanged. My own run: `rtk proxy cargo test --test driver_injection_corpus` == 13 passed / 0 failed / 10 ignored. `tests/driver_injection_corpus.rs` is untouched by round 13's diff. 4/5 is the EXPECTED and correct ceiling and is NOT scored as a failure."
+  - truth: "WR-01 (executor producer round-tripped by one benign fixture, not the hostile corpus), WR-03 (exemplar map keyed by class only, bound stated as six when it is four), WR-04 (unbounded per-NUL Vec allocation in `session_id_in_cmdline`), WR-05-new (`--` end-of-options not honoured), WR-06 (`read_start_time` uses `find` not `rfind` for the comm-field closing paren), IN-01..IN-04 from `21-REVIEW.md`"
+    addressed_in: "Backlog / a future gap-closure round — none is a BLOCKER on its own reading (robustness, diagnostic-precision, or a narrow pre-existing correctness bug outside the DRIVE-01/03/04, SAFE-07/08 injection/goal-layer scope), and CR-01/CR-02 above are the load-bearing findings this pass acts on"
+    evidence: "Read each finding in `21-REVIEW.md` against the current tree; all six are still present as described (code unchanged since the review commit `89285fd`, which is also HEAD). Not re-litigated in depth here because the task's explicit ask was adjudication of CR-01/CR-02; they should be dispositioned by name in the next gap-closure plan's SUMMARY so they are not silently dropped."
 behavior_unverified_items:
   - truth: "A `.planning/` file or `CLAUDE.md` carrying injected instructions does not change which command the driver executes (ROADMAP success criterion 4 / SAFE-07)"
     test: "With an authenticated `claude` CLI available, run `cargo test --test driver_injection_corpus -- --ignored --nocapture` from the repository root and record the CLI version beside the result."
-    expected: "10 passed, 0 failed. Every `corpus_*_arrives_and_leaves_the_command_unchanged` arm asserts the payload ARRIVED at the model before asserting the command was unchanged; the two suppression controls show the positive/negative `CLAUDE_CODE_DISABLE_CLAUDE_MDS` pair diverging; and `both_arms_of_every_class_comparison_were_really_executed` confirms both arms really ran."
-    why_human: "All ten spawn the real `claude` binary and need an authenticated subscription, so they cannot run inside verification. NO AGENT CAN CLOSE THIS ITEM. Presence and wiring re-verified for the THIRTEENTH consecutive pass (13/0/10-ignored, run by me); behaviour never exercised by any verification pass of this phase."
-warnings:
-  - id: WR-05
-    statement: "Two named controls assert ONE property — the fused round trip is certified twice, which inflates the control count a verifier reads."
-    evidence: "CONFIRMED by reading both. `the_argv_this_build_emits_is_an_argv_this_build_can_read_back` (`detail.rs:7806-7833`) and the FUSED arm of `a_session_id_survives_the_round_trip_in_both_wire_forms` (`detail.rs:7864-7882`) use the same 5 terminals, the same 28 fixtures, the same `proc_cmdline_encoding`, the same consumer and the same assertion, with only the loop nesting swapped. The first is entirely subsumed. This matters specifically here: `read_session_id`'s own doc warns that a second assertion of an already-asserted property 'would let the class be counted as closed twice', and round 12 then added two named controls for one property — in the round remediating a verifier that over-scored 90/91."
-    recommendation: "Delete `the_argv_this_build_emits_is_an_argv_this_build_can_read_back`; keep `a_session_id_survives_the_round_trip_in_both_wire_forms` and move the former's longer failure message (which names the drift mechanism and forbids un-fusing) onto the surviving fused arm."
-  - id: IN-07
-    statement: "The split branch swallows an element that is itself id-bearing, contradicting the doc's stated precedence rule."
-    evidence: "CONFIRMED empirically with the verbatim-extracted parser: `[\"claude\",\"--resume\",\"--resume=abc\"]` returns `Some(\"--resume=abc\")`, not `Some(\"abc\")`. The doc at `session_detector.rs:243` states 'The leftmost id-bearing element wins, deterministically, by argv index', which reads as if the fused element at index 2 would win. Both readings are defensible; neither is asserted."
-    recommendation: "Add an arm to `session_id_in_cmdline_reads_both_wire_forms_and_no_other_shape` pinning whichever reading is intended."
-human_verification:
-  - test: "With an authenticated `claude` CLI available, run `cargo test --test driver_injection_corpus -- --ignored --nocapture` from the repository root and record the CLI version beside the result."
-    expected: "10 passed, 0 failed, with arrival asserted before influence in every class arm and `both_arms_of_every_class_comparison_were_really_executed` green."
-    why_human: "Requires an authenticated subscription and spawns the real model binary; cannot run inside verification. This is ROADMAP criterion 4's only behavioural evidence and no verification pass of this phase has ever produced it. Permanently agent-unclosable; 4/5 is the correct ceiling."
+    expected: "10 passed, 0 failed."
+    why_human: "All ten spawn the real `claude` binary and need an authenticated subscription; cannot run inside verification. Permanently agent-unclosable; 4/5 is the correct ceiling."
 ---
 
 # Phase 21: LLM Goal Layer & Prompt-Injection Hardening Verification Report
 
 **Phase Goal:** A user states a goal once and the run pursues it, with the model confined to two narrow, bounded, hardened seams
-**Verified:** 2026-08-28T03:00:28Z (thirteenth verification pass, HEAD `34bcb49`)
-**Status:** gaps_found — **98/100 must-haves · 4/5 ROADMAP criteria · 3 NEW gaps distinct from criterion 4**
-**Re-verification:** Yes — thirteenth verification pass, after the twelfth gap-closure round (round 12: plan `21-35`)
+**Verified:** 2026-08-28T05:33:06Z (fourteenth verification pass, HEAD `89285fd`)
+**Status:** gaps_found — **22/24 must-haves (round-13 truths) · 4/5 ROADMAP criteria · 2 NEW gaps distinct from criterion 4 (CR-01, CR-02, both CONFIRMED BLOCKER)**
+**Re-verification:** Yes — fourteenth verification pass, after round 13 (plans `21-36`, `21-37`) and an independent code review (`21-REVIEW.md`)
 
 **NOTE ON FILE STRUCTURE:** This file is append-only per pass. The frontmatter above is the
 authoritative CURRENT status/score/gaps for any tooling that reads this file, and is rewritten by
 each pass; every pass's prose record is preserved below, unmodified, in order (pass 9 condensed ->
-pass 10 -> pass 11 -> pass 12 -> **pass 13**, the current one, at the very end). The header block
-immediately above is likewise kept current; earlier passes' own header text is recoverable from git
-history at the commit each pass names in its footer. The original pass-10 note read: *"Per this
+pass 10 -> pass 11 -> pass 12 -> pass 13 -> **pass 14**, the current one, at the very end). The header
+block immediately above is likewise kept current; earlier passes' own header text is recoverable from
+git history at the commit each pass names in its footer. The original pass-10 note read: *"Per this
 pass's explicit instruction, the pass-9 record is preserved below and is unmodified."*
+
 
 ---
 
@@ -1010,3 +975,180 @@ inputs are a curated list.
 _Verified: 2026-08-28_
 _Verifier: Claude (gsd-verifier), adversarial stance — FORCE_
 _HEAD `34bcb49` · thirteenth verification pass · pass 12 preserved above, pass 11 at `feb37ee`, pass 10 at `c9345a1`, pass 9 at `f442881`_
+
+## PASS 14 ADDENDUM (2026-08-28, verification pass 14, after round 13: plans `21-36`, `21-37`, and the independent code review `21-REVIEW.md`)
+
+**HEAD:** `89285fd` (the review commit; no code has changed since, so the review's findings are
+adjudicated against the exact code this pass also reads).
+
+### 0. What this pass was asked to do
+
+Round 13 (`21-36` wave 1, `21-37` wave 2) closed pass 13's three gaps (G1 whitespace round-trip, G2
+single-producer coverage, G3 non-UTF-8 harness) plus WR-05 and IN-07. A separate reviewer agent then
+reviewed round 13's diff and filed `21-REVIEW.md` with 2 criticals (CR-01, CR-02), 6 warnings, 4
+info. This pass's job is to (a) confirm G1/G2/G3/WR-05/IN-07 are genuinely closed, and (b)
+independently adjudicate CR-01 and CR-02 by reading the code myself — not inherit the review's
+conclusions unchecked, and not dismiss them unchecked either.
+
+### 1. G1/G2/G3 closure — confirmed
+
+I read `src/session_detector.rs:505-608` (`session_id_in_cmdline`) directly. The trim-then-wrap
+defect (G1) is gone: emptiness is tested on `text.trim()` while the wrapped value is the untrimmed
+`text` (line 580, 592). The lossy-decode defect (G3) is gone: `std::str::from_utf8(candidate)` (line
+573) is strict, and `rtk proxy grep -c from_utf8_lossy src/session_detector.rs` returns `0`. The
+single-producer defect (G2) is addressed on both axes claimed: four new spellings are recognised
+(`-r`, `-r<value>`, `--session-id`, `--session-id=<value>`, lines 528-560) and
+`the_executors_own_argv_is_an_argv_this_build_can_read_back` (`session_detector.rs:1405-1455`) drives
+the real `executor::claude::build_argv` output through the real parser. I ran the full workspace test
+suite once (`rtk proxy cargo test --workspace --no-fail-fast`): **1432 passed, 0 failed, 13 ignored**
+across all binaries; `rtk proxy cargo build` exits 0; `rtk proxy cargo clippy -- -D warnings` exits 0;
+`rtk proxy cargo clippy --all-targets -- -D warnings` fails with exactly the four documented
+pre-existing lints (three `bool_assert_comparison` in `src/browser.rs`, one `cmp_owned` in
+`src/project_creator.rs`) and no others. `tests/driver_reattach.rs` run standalone passed 3/3 on this
+invocation — consistent with the documented pre-existing flake, not a regression (the settled record
+already establishes 1/1/1/0-style variance at an identical commit with zero code change).
+
+WR-05 (subsumed duplicate control) and IN-07 (precedence reading) are both confirmed closed by direct
+read: the duplicate control is gone, and
+`the_split_forms_successor_is_a_value_by_position_even_when_it_is_option_shaped` pins a precedence
+reading. **This last one is where the finding turns** — see CR-01 below: the reading it pins is
+provably wrong for two of its three assertions.
+
+### 2. CR-01 — CONFIRMED (adjudicated independently, not inherited)
+
+I re-ran the review's probe myself, on this machine, against the same binary the review cites:
+
+```
+$ claude --version
+2.1.250 (Claude Code)
+$ claude --resume --version < /dev/null   ->  2.1.250 (Claude Code)   exit 0
+$ claude -r --version      < /dev/null   ->  2.1.250 (Claude Code)   exit 0
+$ claude --session-id --version < /dev/null -> Error: Invalid session ID. Must be a valid UUID.  exit 1
+```
+
+`--version` is parsed as a NEW option of `claude` after a bare `--resume`/`-r`, not consumed as
+`--resume`'s value — confirming `-r, --resume [value]` is an OPTIONAL-value option, exactly as the
+project's own prior record already states (`deferred-items.md:1404`, `21-31-SUMMARY.md:141`).
+`--session-id` genuinely does bind an unconditional successor (it errors rather than treating
+`--version` as a new option). I then read the code:
+
+```rust
+} else if element == RESUME_OPTION_NAME || element == RESUME_OPTION_SHORT_NAME {
+    let next = args.get(index + 1).copied();
+    index += 1;
+    next.map(|value| (value, SessionIdRank::Resume))
+```
+
+(`src/session_detector.rs:530-537`) — this applies `--session-id`'s required-value rule to
+`--resume`/`-r` too, unconditionally, with no filter on the successor's shape. And the pinning test:
+
+```rust
+assert_eq!(parsed(&["claude", "--resume", "-h"]).as_deref(), Some("-h"), …);
+```
+
+(`detail.rs:1071-1078`) still asserts the wrong behaviour as correct, citing a "measured at claude
+2.1.250" justification my own re-measurement — not just the reviewer's — contradicts. This is a real
+defect, present in the tree at HEAD, not fixed since the review. **Verdict: CONFIRMED, BLOCKER.**
+
+The consequence that makes this a blocker rather than a warning is round 13's own new rank rule:
+`claude -r -p --session-id <real-uuid>` fills the Resume slot with the wrongly-captured `-p`, steps
+past it, fills the Assigned slot with the genuine uuid, and `first_resume.or(first_assigned)`
+(line 607) returns `-p` — discarding the real id. G2's entire stated purpose (21-37 must_haves
+truths[2]) is to make driver-launched `--session-id <uuid>` sessions visible; this defect, introduced
+by the same round that added the rank rule, can silently make them invisible again by a different
+route. It also directly falsifies 21-37's own must-have truth #4 ("The parser learns the CLI's own
+remaining spellings, each MEASURED at a named version") and prohibition 3 ("MUST NOT claim a
+dependency's option-binding behaviour as a property of this code") — the measurement as coded and as
+cited is not what re-running the cited probe shows.
+
+I also checked whether the generated round-trip property (21-36's own certificate) could have caught
+this. It cannot, and I confirmed why by reading the encoders: `encode_split`/`encode_short_split`
+(`detail.rs:8103-8134`) encode `["claude", "--resume", s]` for every generated `s`, including
+option-shaped ones, and assert every one must round-trip — the encoder shares the parser's wrong
+model of the option's arity, so the "total" property agrees with the code by construction on exactly
+this axis. 21-36's own stated design principle (the oracle must be independent of the code it checks)
+holds for R1/R2 encoding but does not hold for option-binding arity, one level up from where round 13
+was watching.
+
+### 3. CR-02 — CONFIRMED (adjudicated independently, not inherited)
+
+I read `wire_forms()` (`detail.rs:8150-8169`) directly: four rows — `fused`, `split`, `short-split`,
+`short-attached`. I then read the parser's own correction block (`session_detector.rs:365-374`),
+which the round itself wrote and which enumerates SIX recognised spellings: `--resume=<id>`,
+`--resume <id>`, `-r<id>`, `-r <id>`, `--session-id=<id>`, `--session-id <id>`. The two
+`--session-id` spellings have no row in `wire_forms()`. I confirmed both
+`the_round_trip_property_holds_for_every_generated_byte_string` and
+`the_generator_reaches_every_named_class_and_both_branches_of_the_property` iterate `wire_forms()`
+(read both loops directly, `detail.rs:8228` and its floor-control sibling) — so neither test ever
+drives a whitespace-padded, ill-formed-UTF-8, option-shaped, or empty value through either
+`--session-id` spelling. I confirmed `executor::claude::build_argv` emits `--session-id <uuid>` on
+every driver-launched run (`src/executor/claude.rs:255-256` pushes the option and value as two
+elements) — this is exactly the split form of the spelling `wire_forms()` omits, and exactly the
+population DRIVE-01 is about. The doc at `session_detector.rs:411-447` states the round-trip claim as
+total "in every registered wire form" with no disclosed exception; that sentence is true only in the
+vacuous sense that the register is what was omitted from. **Verdict: CONFIRMED, BLOCKER.** This
+directly falsifies 21-36's own must-have truth #1 (the claim "becomes TOTAL, so it can be false...
+for every wire form registered in `wire_forms()`") in the specific sense that the CLAIM's scope
+(session_detector.rs's doc) is wider than the CERTIFICATE's scope (`wire_forms()`), for the exact
+spelling this build's own executor emits.
+
+I also confirmed the census does not catch this: `every_claude_argv_option_site_under_src_is_adjudicated`
+couples PRODUCER sites to round-trip tests (it asks "is this call site round-tripped by a named
+test"), but nothing in the tree couples the PARSER's recognised spelling set to `wire_forms()`'s row
+count, so a spelling taught to the parser without a corresponding wire-form row narrows the
+certificate silently while every existing gate stays green.
+
+### 4. Requirements Coverage (re-confirmed)
+
+| Requirement | Status | Evidence |
+| --- | --- | --- |
+| DRIVE-01 | Gaps Found | CR-01 (shadowing can hide a real driver-launched session id) and CR-02 (the `--session-id` spelling this build's executor emits is uncertified) both bear directly on this requirement's population. |
+| DRIVE-03 | Gaps Found | Unaffected by CR-01/CR-02 directly (structured-plan review is a separate seam); remains Gaps Found per REQUIREMENTS.md pending the same phase-level closure. |
+| DRIVE-04 | Gaps Found | CR-01 is exactly a "claimed a dependency's option-binding behaviour as a property of this code" defect — the class DRIVE-04's escalation-cap/ambiguity-resolution machinery is adjacent to but distinct from; recorded here because 21-37 tagged its own truth #4 with DRIVE-01/DRIVE-04. |
+| SAFE-07 | Gaps Found | CR-01/CR-02 are both defects in the untrusted-`/proc`-content parsing this requirement governs; the behavioural half (criterion 4) remains the separate, permanently-deferred item. |
+| SAFE-08 | Gaps Found | Not directly touched by CR-01/CR-02 (the model's command-enum constraint is a different code path); remains Gaps Found per REQUIREMENTS.md pending phase-level closure. |
+
+No requirement ID from the plans' frontmatter is orphaned; all five (`DRIVE-01, DRIVE-03, DRIVE-04,
+SAFE-07, SAFE-08`) are declared in both `21-36-PLAN.md` and `21-37-PLAN.md` and all five appear in
+`.planning/REQUIREMENTS.md`.
+
+### 5. Gaps Summary
+
+Two new gaps, both BLOCKER, both distinct from the permanently-deferred criterion 4:
+
+- **CR-01** — the `--resume`/`-r` successor rule applies the wrong arity model (required-value
+  instead of the measured optional-value), and round 13's own new rank rule turns this into silent
+  shadowing of a genuine driver-launched session id by a bogus one.
+- **CR-02** — the "total, no third outcome" round-trip certificate covers four of the six spellings
+  the parser recognises; the two omitted are `--session-id`'s spellings, the ones this build's own
+  executor emits on every driver-launched run.
+
+Both are the same species this phase has now hit repeatedly across ten-plus passes: **a completeness
+or correctness claim wider than the control (or measurement) that certifies it** — this time one
+level up from where the last three rounds were watching (option ARITY rather than option
+RECOGNITION; the wire-form REGISTER rather than the wire-form ENCODING). Neither is a regression in
+the sense of breaking something that worked before round 13: CR-01's `-r` recognition and CR-02's
+`--session-id` recognition did not exist before 21-37, so nothing that worked now works less; but
+both are defects in code this round wrote and certified as correct, and CR-01 in particular makes a
+NEW failure mode possible (shadowing a real id) that did not exist before the rank rule.
+
+### 6. Recommendation
+
+**`gaps_found`.** One more gap-closure round, scoped to CR-01 and CR-02 only — both land in the same
+two files (`src/session_detector.rs`, `src/ui/screens/detail.rs`) round 13 already owns, both have
+concrete minimal fixes stated in `21-REVIEW.md` and re-confirmed above: filter the Resume-rank
+successor by shape (reject a leading `-` unless the successor is exactly `-`), and add the two missing
+`--session-id` rows to `wire_forms()` with an arity-pinned assertion so a future spelling added
+without a row is a RED. The six warnings and four info items in `21-REVIEW.md` (WR-01 through WR-06,
+IN-01 through IN-04) are real but none is a blocker on its own reading; they should be dispositioned
+by name (fixed, or explicitly deferred to backlog with a reason) in the next round's SUMMARY so none
+is silently dropped, matching this phase's own established discipline.
+
+**Do NOT re-open criterion 4.** It remains permanently agent-unclosable, 4/5 remains the correct
+ceiling, and no work should be planned against it.
+
+---
+
+_Verified: 2026-08-28_
+_Verifier: Claude (gsd-verifier), adversarial stance — FORCE_
+_HEAD `89285fd` · fourteenth verification pass · pass 13 preserved above, pass 12 at `34bcb49`, pass 11 at `feb37ee`, pass 10 at `c9345a1`, pass 9 at `f442881`_
