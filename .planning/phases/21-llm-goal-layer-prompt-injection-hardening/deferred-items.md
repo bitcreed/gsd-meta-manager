@@ -23,6 +23,58 @@ returned ok three times out of three. The failing runs finish in ~0.5s against
 it waits for exists. `envelope_tracer` failed once inside a full-suite run and
 passed immediately when run alone.
 
+> ### CORRECTION (2026-08-28, `21-34`, round 11) — READ THIS BEFORE ACTING ON THE PARAGRAPH ABOVE
+>
+> **The superseded sentence, quoted verbatim from the paragraph immediately above:**
+>
+> > "the same binary with `-- --test-threads=1` returned ok three times out of three"
+>
+> **That mitigation does NOT work and must not be reached for.** It is corrected
+> HERE, at the sentence, rather than only in the three later sections of this file
+> that qualify it — because a reader who stops at the first section is exactly the
+> reader the wrong sentence reaches. The three facts that stand:
+>
+> 1. **PRE-EXISTING, NOT A REGRESSION.** Round 10's orchestrator measured the
+>    untouched base and the round's HEAD at the SAME rate — **3/5 red at the base,
+>    3/5 red at HEAD**. A `driver_reattach` failure is therefore not a regression
+>    signal from any phase-21 plan and must not be chased as one; equally it must
+>    not be allowed to mask a real failure, which is what `--no-fail-fast` is for.
+> 2. **`--test-threads=1` does NOT reliably fix it.** Round 4 already measured it
+>    failing intermittently *under* `-- --test-threads=1` (see the round-4 update
+>    below), and round 10 confirmed it. The three-out-of-three above is a true
+>    record of ONE session in round 2 and is left unedited for that reason; it is
+>    not a mitigation and was never re-reproduced. `.planning/todos/pending/2026-08-18-driver-reattach-spawn-artifact-race.md:28`
+>    independently says the same thing and gives the better reason: serialising
+>    **hides** the race rather than closing it.
+> 3. **The mechanism is recorded in the `21-30` entry at the END of this file**
+>    ("the `driver_reattach` flake, reported and NOT absorbed"), which carries the
+>    promote condition and the direction. It is pointed at rather than duplicated
+>    here, so there is one place to correct next time. **Round 11 adds that the
+>    mechanism record is not settled — two measured candidate mechanisms are on
+>    file and no experiment has discriminated them.** See the round-11 entry at
+>    the end of this file.
+>
+> **Also corrected, in the same breath, because they are standing claims in this
+> same section that a reader would act on:**
+>
+> * **line 33's** `rtk proxy cargo test -- --test-threads=2` **is no longer the
+>   phase gate.** Rounds 9, 10 and 11 measure the workspace at cargo's DEFAULT
+>   thread count with `--no-fail-fast`; the `1193 passing` figure beside it is a
+>   round-2 measurement of a tree that no longer exists (round 11's merged tree is
+>   1424). The `--test-threads=2` recommendation is retained below as the dated
+>   record of what rounds 5-8 used, not as an instruction.
+> * **line 37's** *"Neither `tests/envelope_tracer.rs` nor `tests/driver_reattach.rs`
+>   is in any `21-*` plan's `<files>`"* **is now FALSE.** `21-34` (this plan) puts
+>   `tests/driver_reattach.rs` in its `<files>` — for a **comment-only** note, not
+>   a fix. The fix is still not attempted and is still a standing item.
+>
+> **Not fixed here, and deliberately so.** The fix — scoping the run discovery to
+> the test's own process group or worktree, or synchronising on the written
+> artifact rather than on the process — is a synchronisation change to a
+> live-process probe, not a record correction. Its failure direction is
+> **false-red under parallelism: LOUD**, which is the safe direction to be wrong
+> in, and is why deferring it is defensible.
+
 **Evidence that plan 21-10 cannot be the cause.** `21-10` changed only the
 *second* `run.json` write (the terminal one) and the TUI's opt-in revert. Both
 failing `driver_reattach` assertions are about the run record's existence and
@@ -61,6 +113,28 @@ The untouched baseline flakes *worse* than the round-4 tree. The run ids it uses
 `is_plain_path_component` pins as accepted, so that change cannot be the cause.
 `--test-threads=2` remains reliably green for the whole workspace. Raising the
 priority of the carried item rather than adding a new one.
+
+> **CORRECTION (2026-08-28, `21-34`, round 11) — the two standing claims in the
+> round-5 and round-4 updates above.**
+>
+> **Superseded, quoted verbatim:**
+>
+> > "the honest whole-suite gate is `--test-threads=2` with `--no-fail-fast`"
+>
+> > "`--test-threads=2` remains reliably green for the whole workspace."
+>
+> **Neither is the gate any more, and neither should be reinstated.** Rounds 9, 10
+> and 11 all measure the workspace with `cargo test --workspace --no-fail-fast` at
+> cargo's DEFAULT thread count. Round 11's merged-tree measurement at base
+> `f5b548b` on a quiet tree is **1424 passed / 0 failed / 13 ignored**, with no
+> `--test-threads` setting applied at all. `--no-fail-fast` is kept, and it is the
+> half that was always load-bearing: it stops one flaky binary from masking a real
+> failure elsewhere in the suite.
+>
+> **What round 4 got RIGHT and round 11 keeps:** the sentence above it —
+> *"its documented mitigation no longer works"* — is correct and is the reason the
+> round-2 `--test-threads=1` line is corrected at its own sentence at the top of
+> this file rather than only here, three sections down.
 
 ---
 
@@ -988,3 +1062,136 @@ worktree, so a concurrent sibling binary's driver is invisible to it. **Directio
 false-red under parallelism, LOUD** — it fails the build rather than passing
 something broken, which is the safe direction, and it is why this is a deferral
 rather than a blocker.
+
+---
+
+# ROUND 11 (`21-31` … `21-34`) — appended 2026-08-28, append-only
+
+## 2026-08-28 (`21-34`) — STANDING: the `driver_reattach` flake record, corrected and made checkable
+
+This entry supersedes nothing above it; it is where the corrections placed at the
+stale sentences point, and it is the one place to edit next round.
+
+### The three facts that stand
+
+1. **Pre-existing, not a regression.** Measured by round 10's orchestrator
+   against the untouched base and against the round's HEAD: **3/5 red at the
+   base, 3/5 red at HEAD** — the same rate. Every phase-21 round since has
+   re-observed it without any of them being able to cause it.
+2. **`--test-threads=1` does NOT fix it.** Round 4 measured it failing
+   intermittently *under* that setting; round 10 confirmed. The round-2
+   three-out-of-three that this file opens with is a true record of one session
+   and is left unedited, corrected in place rather than deleted.
+3. **It is not always the same test.** NEW in round 11, and the reason this
+   paragraph exists. The binary has three tests; two of them flake, and *which*
+   one fires varies run to run:
+
+   | Observer | Which arm fired | Isolated re-run |
+   |---|---|---|
+   | round-10 / `21-34` planner baseline at `343c408` | `a_fresh_scan_finds_the_orphaned_run_live_with_its_last_journal_step` | — |
+   | `21-31` (wave-1 worktree, Task 3 run) | `a_run_killed_without_an_ending_is_reported_crashed_and_nothing_on_disk_is_repaired` — **a different arm** | 3 passed / 0 failed |
+   | `21-32` (wave-1 worktree) | `a_run_killed_without_an_ending_...` again, with `a_fresh_scan_...` **passing** in the same run | 3 passed / 0 failed |
+   | `21-33` (wave-1 worktree) | **2 of 3** failed in the full-workspace run | 3 passed / 0 failed |
+   | orchestrator, post-merge, **quiet tree** (no concurrent suites) | **none — fully green** | n/a |
+   | `21-34` merged-tree gate, this entry's own run | see the round-11 gate entry below | see below |
+
+   **Three sibling executors ran concurrently in separate worktrees in wave 1 and
+   the flake fired in all three runs, on different arms.** The orchestrator's
+   post-merge run on a quiet tree came back fully green. **A green quiet-tree run
+   is consistent with the mechanism and is NOT evidence the flake is fixed** —
+   recording it as a fix would be exactly the absorption this entry exists to
+   prevent.
+
+### The mechanism is NOT settled — two measured candidates, no discriminating experiment
+
+This is a correction to the confidence of the record, not to either measurement.
+Both of the following were measured, by different phases, and **they are not
+mutually exclusive**:
+
+| # | Candidate mechanism | Measured by | Evidence for it | Evidence against it being the WHOLE story |
+|---|---|---|---|---|
+| M1 | The tests discover runs via a **system-wide `/proc` scan that does not stop at the process-group or worktree boundary**, so a concurrent driver-spawning sibling binary is visible to them | round 10 (`21-30` entry above) | wave-1's three concurrent worktrees all flaked; isolated re-runs green 3/3 each; quiet-tree post-merge run fully green | phase 19 reproduced the failure **4/4 in a clean `git archive` tree at `0a84023`**, single binary, nothing else running |
+| M2 | A **spawn/write race inside the test itself**: `live_within(pid, RUN_ID, …)` waits for the driver's *process* (matching its cmdline) and the test then asserts on `run.json` / journal records the driver has not necessarily written yet | phase 19 wave-4 gate, recorded at `.planning/todos/pending/2026-08-18-driver-reattach-spawn-artifact-race.md` | the ~0.5s-vs-~6.1s runtime tell; 4/4 reproduction in isolation; `WINDOWS.md:27` recorded 3/3 failing **in isolation** during phase 20 | wave-1's isolated re-runs in round 11 were green 3/3 three times over, so isolation alone does not reliably reproduce it now |
+
+**The honest synthesis, stated as a hypothesis and NOT as a measurement:** M2 is a
+real race window and M1 (or any system load) widens it. Nothing on file
+discriminates them, and this entry does not claim to.
+
+**The discriminating experiment, as the promote condition.** Run the binary N
+times at `0a84023` and at HEAD, on an otherwise idle machine, with and without a
+concurrently running second driver-spawning binary, and record the four rates. If
+the isolated rate is non-zero, M2 is live independently of M1 and the fix is to
+synchronise on the written artifact — **not** to scope the `/proc` scan, and
+**never** to serialise with `--test-threads=1`, which hides it either way.
+
+**Direction:** false-red under parallelism, **LOUD**. It fails the build rather
+than passing something broken, which is the safe direction and is why this stays
+a deferral rather than a blocker. **Not attempted by `21-34`** — prohibition 4 of
+its plan forbids it, because a synchronisation change to a live-process probe is
+not a record correction.
+
+### The correction's completeness, established by inventory rather than by memory
+
+Correcting *some* locations and not others reproduces this round's own species —
+a claim wider than the evidence certifying it — one level up, inside the record.
+So the correction is bounded by a committed grep inventory rather than by an
+author's sweep (D-21-61).
+
+**Commands, both run under `rtk proxy` so RTK's line filtering cannot make a
+count read low:**
+
+```
+rtk proxy grep -rn "test-threads"     .planning/ tests/ src/   ->  133 hits
+rtk proxy grep -rn "driver_reattach"  .planning/ tests/ src/   ->  255 hits
+                                                        TOTAL  ->  388 hits
+```
+
+**The classification predicate, stated as a command so it is re-runnable rather
+than trusted.** A hit is a **DATED OBSERVATION** if it sits in an executed or
+superseded artifact — `*-PLAN.md`, `*-SUMMARY.md`, `*-VERIFICATION.md`,
+`*-REVIEW.md`, `*-FIXES.md`, `*-RESEARCH.md`, `*-UAT.md`, `*-PATTERNS.md`,
+`.continue-here.md` — and a **LIVING** hit otherwise. Living hits are the ones a
+future reader consults for how to run or mitigate the binary, so they are the
+ones read individually and corrected where they carry a standing claim:
+
+```
+rtk proxy grep -vE '(-PLAN\.md|-SUMMARY\.md|-VERIFICATION\.md|-REVIEW\.md|-FIXES\.md|-RESEARCH\.md|-UAT\.md|-PATTERNS\.md|\.continue-here\.md):'
+```
+
+| Class | Hits | Treatment |
+|---|---|---|
+| DATED OBSERVATION (executed / superseded artifacts) | **354** | left byte-unedited; see the policy paragraph below |
+| LIVING (this file, `ROADMAP.md`, `WINDOWS.md`, `todos/pending/`, `codebase/`, `src/`, phase-19 `deferred-items.md`) | **34** | each read individually; the **7** carrying a standing mitigation claim corrected in place |
+
+354 + 34 = 388, which is the measured total, so the classification accounts for
+every hit. The full line-level enumeration with the per-hit verdicts is in
+`21-34-SUMMARY.md`.
+
+### Why the DATED OBSERVATIONS are left unedited, and named anyway (D-21-62)
+
+A sentence in an executed SUMMARY recording that a particular run passed 3/3
+under a particular setting **is a true record of that run**. Editing it would
+falsify a historical observation in order to make a general point — which is the
+same move, pointed the other way, as leaving the stale claim standing. They are
+therefore left byte-identical and **named** in the inventory, so the record is
+complete rather than selective. The distinction the inventory turns on is not
+"old versus new"; it is **"a claim a future reader would act on" versus "a report
+of what happened once"**.
+
+**One dated observation is worth flagging because a reader could mistake it for a
+standing claim.** `.planning/WINDOWS.md:27` (phase-20 wave-2 gate) records
+*"it now fails 3/3 in ISOLATION (0.53s), whereas phase 19 recorded it passing in
+isolation"*. That is a true record of that gate's runs and is left unedited — but
+round 11 measured isolated re-runs **green 3/3 in three separate worktrees**, so
+the isolation rate is itself unstable and that line must not be read as the
+current rate. It is evidence for M2 in the table above, not a standing
+instruction.
+
+### Where the correction is placed
+
+| Location | What was placed there |
+|---|---|
+| `deferred-items.md`, immediately after the stale `--test-threads=1` sentence | the CORRECTION block, so a reader who stops at the first section reads it |
+| `deferred-items.md`, after the round-5/round-4 updates | the `--test-threads=2` correction |
+| `deferred-items.md` (here) | the standing entry the other two point at |
+| `tests/driver_reattach.rs`, module header | a **comment-only** note carrying the same three facts, where the reader of the failing test will actually look |

@@ -21,6 +21,60 @@
 //
 // Unix-only by construction: `process_group` is `std::os::unix`, and driving is
 // a Unix capability (D-05).
+//
+// ----------------------------------------------------------------------------
+// THIS FILE IS FLAKY, AND `--test-threads=1` WILL NOT HELP YOU (21-34, round 11)
+// ----------------------------------------------------------------------------
+//
+// If you got here because a test below went red, read these three facts before
+// you change anything. They are the corrected record; the standing item with the
+// promote condition lives in
+// `.planning/phases/21-llm-goal-layer-prompt-injection-hardening/deferred-items.md`.
+//
+// 1. IT IS PRE-EXISTING, NOT A REGRESSION. Round 10 measured the untouched base
+//    and the round's HEAD at the same rate: 3/5 red at the base, 3/5 red at HEAD.
+//    A red here is not a signal that your change broke something. It is equally
+//    not permission to ignore a red elsewhere, which is what `--no-fail-fast` on
+//    the workspace gate is for.
+//
+// 2. `-- --test-threads=1` DOES NOT FIX IT. `deferred-items.md` opens with a
+//    round-2 note recording that it passed three times out of three under that
+//    setting; that is a true record of one session and nothing more. Round 4
+//    measured it failing intermittently UNDER that setting and round 10
+//    confirmed. Serialising hides the race rather than closing it. Do not add a
+//    fixed `sleep` either.
+//
+// 3. THE MECHANISM IS NOT SETTLED — two measured candidates, neither ruled out:
+//    (M1) these tests discover runs through a system-wide `/proc` scan that does
+//    NOT stop at the process-group or worktree boundary, so a concurrently
+//    running sibling test binary that spawns a driver is visible to them; and
+//    (M2) a spawn/write race inside the tests themselves — `live_within` waits
+//    for the driver's PROCESS (it matches the cmdline) and the assertions then
+//    read `run.json` and journal records the driver may not have written yet.
+//    The ~0.5s-versus-~6.1s runtime difference on a failing run is M2's tell.
+//    The fix direction for M2 is to poll for the ARTIFACT with the same bounded
+//    wait style `live_within` already uses; for M1 it is to scope the scan to
+//    this test's own process group. Neither is attempted here.
+//
+// WHICH TEST FIRES VARIES. `a_fresh_scan_finds_the_orphaned_run_live_with_its_
+// last_journal_step` and `a_run_killed_without_an_ending_is_reported_crashed_
+// and_nothing_on_disk_is_repaired` are the two that flake, and round 11 observed
+// each of them firing while the other passed, plus a run where two of three
+// failed. Do not assume the arm named in an older note is the arm you will see.
+//
+// DATA POINTS, so the rate is not guessed at:
+//   * pre-round-11 HEAD `343c408`, one `cargo test --workspace --no-fail-fast`
+//     run, no `--test-threads` setting, before any file was edited:
+//     1416 passed / 1 failed / 13 ignored, the single failure being one of the
+//     two tests above.
+//   * round 11 wave 1, three executors in concurrent worktrees: the flake fired
+//     in all three runs; every isolated `cargo test --test driver_reattach`
+//     re-run was green 3/3.
+//   * round 11 post-merge on a quiet tree: fully green. A green quiet-tree run
+//     is consistent with the mechanism and is NOT evidence the flake is fixed.
+//
+// This note is comment-only by construction: 21-34 changed no executable line in
+// this file, so the binary behaves exactly as it did before the note existed.
 // ============================================================================
 
 #![cfg(unix)]
