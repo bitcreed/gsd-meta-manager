@@ -8278,6 +8278,195 @@ mod tests {
         );
     }
 
+    /// **The generator's reach is a COMMITTED FLOOR, asserted, not hoped for**
+    /// (21-36).
+    ///
+    /// Replacing an enumeration with a generator buys reach and introduces
+    /// exactly one new way to lie: the generator quietly stops producing a
+    /// class, and the property above then passes over a space SMALLER than the
+    /// one it names — green, and certifying nothing. That is the same failure
+    /// shape as the enumerated corpus it replaces, one level up, and it would
+    /// be invisible without this test.
+    ///
+    /// So the reach is committed as numbers. Each threshold gets its OWN
+    /// assertion naming which class fell short, because a generator bug and a
+    /// parser bug are different bugs with different fixes and one combined
+    /// assertion would conflate them. That is also why this is a separate test
+    /// function from
+    /// [`the_round_trip_property_holds_for_every_generated_byte_string`]: a
+    /// failure here means the INPUTS are wrong, not the parser.
+    ///
+    /// # The precedent this follows
+    ///
+    /// `src/text.rs`'s exhaustive Unicode sweep carries a committed
+    /// `format_seen >= 150` floor for precisely this reason — an implication
+    /// over a filtered set is vacuously TRUE when the filter matches nothing,
+    /// and with the oracle's feature flag off that sweep would have passed
+    /// green forever while asserting nothing. See the `unicode-properties`
+    /// entry in `Cargo.toml`, whose comment names the floor as part of the
+    /// two-crate rationale. This is the same device applied to a generated
+    /// input space instead of a filtered one.
+    ///
+    /// # The honest limit, written where it has to be read
+    ///
+    /// **A generator does not abolish enumeration.** It MOVES the enumeration
+    /// from VALUES to a GRAMMAR and a DISTRIBUTION, and a grammar can still
+    /// miss a class — nobody should read the property above as covering every
+    /// byte string a `/proc` cmdline could carry, because it does not.
+    ///
+    /// What it removes is narrower and is the thing that actually failed three
+    /// times here: the ability of the claim to pass with **no input anywhere
+    /// near the boundary**. Two devices do that work, and they are named so a
+    /// later reader can tell whether a "simplification" deleted them:
+    ///
+    /// 1. the **`uniform` arm** — unrestricted random bytes, constrained to no
+    ///    alphabet and no character class, which is what reaches classes nobody
+    ///    enumerated; and
+    /// 2. the **`>= 200` distinct-byte-values floor**, which fails if that arm
+    ///    is ever narrowed to a restricted alphabet.
+    ///
+    /// A grammar arm that stops firing, or a uniform arm quietly replaced by a
+    /// friendlier one, turns this test red rather than turning the property
+    /// vacuous.
+    #[test]
+    fn the_generator_reaches_every_named_class_and_both_branches_of_the_property() {
+        let corpus = generated_session_id_bytes(GENERATOR_SEED, GENERATOR_CASES);
+
+        // --- The classes, with every predicate spelled from `std` -----------
+        let empty = corpus.iter().filter(|s| s.is_empty()).count();
+
+        let whitespace_padded = corpus
+            .iter()
+            .filter(|s| {
+                let Ok(text) = std::str::from_utf8(s) else {
+                    return false;
+                };
+                let edge_whitespace = text.chars().next().is_some_and(char::is_whitespace)
+                    || text.chars().next_back().is_some_and(char::is_whitespace);
+                edge_whitespace && !text.trim().is_empty()
+            })
+            .count();
+
+        let whitespace_only = corpus
+            .iter()
+            .filter(|s| {
+                !s.is_empty()
+                    && std::str::from_utf8(s).is_ok_and(|text| text.trim().is_empty())
+            })
+            .count();
+
+        let ill_formed = corpus
+            .iter()
+            .filter(|s| std::str::from_utf8(s).is_err())
+            .count();
+
+        let hyphen_leading = corpus.iter().filter(|s| s.first() == Some(&b'-')).count();
+
+        let distinct_bytes: std::collections::BTreeSet<u8> =
+            corpus.iter().flat_map(|s| s.iter().copied()).collect();
+
+        assert!(
+            empty >= 1,
+            "the generator produced {empty} EMPTY inputs, below the floor of 1. \
+             The property above is passing over a space that no longer contains \
+             the empty input — the degenerate end of refusal class R2, and the \
+             shape a fused `--resume=` with nothing after it puts on the wire."
+        );
+        assert!(
+            whitespace_padded >= 20,
+            "the generator produced {whitespace_padded} WHITESPACE-PADDED inputs \
+             (leading or trailing `char::is_whitespace` around a non-whitespace \
+             core), below the floor of 20. The property above is passing over a \
+             space that no longer contains the class G1 lives in — the class \
+             round 12's 28-fixture corpus did not contain either, which is how a \
+             build whose parser rewrote every padded id certified itself green. \
+             Uniform random bytes essentially never produce this shape; the \
+             `padded` grammar arm is the only thing that does."
+        );
+        assert!(
+            whitespace_only >= 5,
+            "the generator produced {whitespace_only} non-empty WHITESPACE-ONLY \
+             inputs, below the floor of 5. The property above is passing over a \
+             space that no longer contains refusal class R2's interesting half \
+             — the values that are non-empty on the wire and empty after trim."
+        );
+        assert!(
+            ill_formed >= 100,
+            "the generator produced {ill_formed} inputs that fail \
+             `std::str::from_utf8`, below the floor of 100. The property above \
+             is passing over a space that no longer contains refusal class R1 — \
+             the encoding class that was not an unenumerated fixture but an \
+             UNREPRESENTABLE one until the harness stopped being `&str`-typed. \
+             Check the `uniform` arm first: it is what produces these."
+        );
+        assert!(
+            hyphen_leading >= 50,
+            "the generator produced {hyphen_leading} inputs whose FIRST BYTE is \
+             `-`, below the floor of 50. The property above is passing over a \
+             space that no longer contains the option-lookalike class — the \
+             class round 10's corpus missed entirely, which let a CWE-88 fix be \
+             certified by fixtures incapable of exercising it."
+        );
+        assert!(
+            distinct_bytes.len() >= 200,
+            "the generator emitted only {} DISTINCT byte values across all \
+             inputs, below the floor of 200 (of 255 possible; NUL is excluded \
+             because it is this encoding's separator). This is the floor that \
+             fails if the `uniform` arm is ever narrowed to a restricted \
+             alphabet or a character class — which would silently turn the \
+             property above back into an enumeration with extra ceremony.",
+            distinct_bytes.len()
+        );
+
+        // --- BOTH branches of the disjunction, actually exercised -----------
+        // A disjunction whose second branch never fires passes vacuously, so
+        // the property is run once more here purely to TALLY which branch each
+        // case took.
+        let mut round_tripped = 0_usize;
+        let mut refused_r1 = 0_usize;
+        let mut refused_r2 = 0_usize;
+
+        for form in wire_forms() {
+            for s in &corpus {
+                let wire = (form.encode)(s);
+                let read_back = crate::session_detector::session_id_in_cmdline(&wire);
+                let decoded = std::str::from_utf8(s);
+
+                match read_back {
+                    Some(ref id) if id.as_raw_for_logic_only().as_bytes() == s.as_slice() => {
+                        round_tripped += 1;
+                    }
+                    Some(_) => {}
+                    None if decoded.is_err() => refused_r1 += 1,
+                    None if decoded.is_ok_and(|text| text.trim().is_empty()) => refused_r2 += 1,
+                    None => {}
+                }
+            }
+        }
+
+        assert!(
+            round_tripped >= 1,
+            "not one generated input ROUND-TRIPPED ({round_tripped} observed). \
+             The property above is then satisfied entirely by its refusal \
+             branch — a parser that returned None for everything would pass it. \
+             The capability half of the claim is asserted by nothing."
+        );
+        assert!(
+            refused_r1 >= 1,
+            "not one generated input was refused as R1 ({refused_r1} observed), \
+             so the ill-formed-UTF-8 branch of the disjunction never fired and \
+             is certified by nothing. Either the generator stopped producing \
+             ill-formed bytes or the parser stopped refusing them."
+        );
+        assert!(
+            refused_r2 >= 1,
+            "not one generated input was refused as R2 ({refused_r2} observed), \
+             so the empty-after-trim branch of the disjunction never fired and \
+             is certified by nothing. Either the generator stopped producing \
+             whitespace-only inputs or the parser stopped refusing them."
+        );
+    }
+
     /// **`launch_terminal_argv` pinned rather than changed** (D-21-49).
     ///
     /// The sibling builder carries NO untrusted element: the separator comes
