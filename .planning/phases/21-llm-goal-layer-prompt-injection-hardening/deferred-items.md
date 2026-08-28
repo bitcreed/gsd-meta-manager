@@ -1130,6 +1130,79 @@ a deferral rather than a blocker. **Not attempted by `21-34`** — prohibition 4
 its plan forbids it, because a synchronisation change to a live-process probe is
 not a record correction.
 
+### CORRECTION to the paragraph above, made by `21-34` against its OWN measurement, hours after writing it
+
+The table above records wave 1's *"every isolated re-run was green 3/3"* and the
+orchestrator's fully-green quiet-tree run. Both are true records of those runs.
+**`21-34`'s own merged-tree gate then contradicted the generalisation they
+invite,** and the finding is recorded here rather than absorbed, because a record
+plan that smooths its own contradicting measurement has failed at the one thing
+it exists to do.
+
+**Measured by `21-34` on the merged tree at `a1342a1`, on an idle machine with no
+sibling suite running:**
+
+| Run | Command | Result |
+|---|---|---|
+| workspace gate | `cargo test --workspace --no-fail-fast` | **1422 passed / 2 failed / 13 ignored** — BOTH flaking arms fired together, a third distinct pattern |
+| isolated 1 (before the workspace run) | `cargo test --test driver_reattach` | **ok. 3 passed** (6.12s) |
+| isolated 2 | same | **FAILED. 1 passed / 2 failed** (0.53s) |
+| isolated 3 | same | **ok. 3 passed** (6.12s) |
+| isolated 4 | same | **FAILED. 2 passed / 1 failed** (0.53s) |
+| isolated 5 | same | **FAILED. 2 passed / 1 failed** (0.54s) |
+| isolated 6 | same | **FAILED. 2 passed / 1 failed** (0.53s) |
+| **isolated total** | | **2 green / 4 red out of 6** |
+
+**What this refutes: M1 CANNOT BE THE WHOLE STORY.** Round 10's mechanism
+sentence names *"other driver-spawning test binaries running concurrently"* as
+the variable. Four of those six reds happened with **no other test binary running
+at all**. A concurrent sibling therefore is not necessary for the failure, and
+any future fix that only scopes the `/proc` scan to the process group may leave
+the rate where it is.
+
+**A THIRD candidate mechanism, M3, which the record did not have.** The
+parallelism that remains when nothing else is running is **inside this process**:
+the three tests run on separate threads by default, and `isolate_envelope_root()`
+sets a **process-wide** environment variable (`std::env::set_var`) from whichever
+thread reaches it first, while the sibling threads are already executing.
+**M3 is NAMED, NOT MEASURED** — no experiment here attributes the failure to it,
+and it is written down so the discriminating experiment covers it rather than to
+claim a cause.
+
+### The serialised sample, and why it is NOT a reinstatement of `--test-threads=1`
+
+**`21-34` also ran `-- --test-threads=1` five times back to back: 5 green, at
+~6.67s each.** That number is reported because suppressing an inconvenient
+measurement is the same failure as inflating a convenient one. **It does NOT
+reinstate the mitigation, and the correction at the top of this file stands
+unchanged.** Three independent reasons:
+
+1. **Round 4 measured this binary FAILING under `-- --test-threads=1`.** A
+   five-run green streak does not overturn a recorded failure under the same
+   flag; it just means five runs did not hit it.
+2. **n = 5 is the same kind of evidence that produced the original false claim,
+   which was n = 3.** Recording "5/5 green under the flag" as a fix would be
+   committing the round-2 error again with a slightly larger sample — inside the
+   very entry that exists to correct it.
+3. **Serialising HIDES the race rather than closing it**
+   (`.planning/todos/pending/2026-08-18-driver-reattach-spawn-artifact-race.md:28`).
+   A green obtained by removing the concurrency is not evidence the artifact
+   synchronisation is correct; it is evidence the window was not entered.
+
+**What the pairing legitimately establishes**, and this is the only claim made
+from it: **parallelism matters even with no other binary running.** That is a
+fact about the three tests in this one process — evidence for M2 and M3 — and it
+is why the discriminating experiment below must vary intra-binary parallelism as
+well as inter-binary load.
+
+**The discriminating experiment, updated.** Run the binary N times in each of
+four conditions — (i) default threads, idle machine; (ii) `--test-threads=1`,
+idle machine; (iii) default threads with a concurrent second driver-spawning
+binary; (iv) `--test-threads=1` with the same concurrent load — at HEAD and at
+`0a84023`, and record all eight rates with N large enough that a five-run streak
+cannot decide it. **Direction is unchanged: false-red, LOUD.** The fix is still
+not attempted here.
+
 ### The correction's completeness, established by inventory rather than by memory
 
 Correcting *some* locations and not others reproduces this round's own species —

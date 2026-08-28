@@ -56,6 +56,16 @@
 //    wait style `live_within` already uses; for M1 it is to scope the scan to
 //    this test's own process group. Neither is attempted here.
 //
+//    (M3) ADDED BY 21-34, and it makes M1 insufficient on its own: the failures
+//    reproduce on a completely idle machine with no other test binary running
+//    at all (4 of 6 isolated runs red), so "a concurrent SIBLING binary" cannot
+//    explain them. The remaining parallelism is INSIDE this process — the three
+//    tests here run on separate threads by default, and `isolate_envelope_root`
+//    sets a PROCESS-WIDE environment variable from whichever thread reaches it
+//    first while the others are already running. That is a candidate the record
+//    did not previously have. It is NOT measured to be the cause; it is named
+//    so the discriminating experiment covers it.
+//
 // WHICH TEST FIRES VARIES. `a_fresh_scan_finds_the_orphaned_run_live_with_its_
 // last_journal_step` and `a_run_killed_without_an_ending_is_reported_crashed_
 // and_nothing_on_disk_is_repaired` are the two that flake, and round 11 observed
@@ -70,8 +80,25 @@
 //   * round 11 wave 1, three executors in concurrent worktrees: the flake fired
 //     in all three runs; every isolated `cargo test --test driver_reattach`
 //     re-run was green 3/3.
-//   * round 11 post-merge on a quiet tree: fully green. A green quiet-tree run
-//     is consistent with the mechanism and is NOT evidence the flake is fixed.
+//   * round 11 post-merge on a quiet tree, orchestrator's run: fully green. A
+//     green quiet-tree run is consistent with the mechanism and is NOT evidence
+//     the flake is fixed.
+//   * 21-34's OWN merged-tree gate, on an idle machine with no sibling suite
+//     running: the workspace run went 1422 passed / 2 failed / 13 ignored, with
+//     BOTH flaking arms firing together — a third distinct pattern. Six
+//     back-to-back isolated runs of this binary at the default thread count
+//     then gave 2 green (6.12s) / 4 red (0.53s). NOTHING ELSE WAS RUNNING, so
+//     a concurrent sibling binary cannot be the whole story.
+//
+// A WARNING ABOUT THE SERIALISED SAMPLE, because this file's history is a
+// lesson in it. 21-34 also ran `-- --test-threads=1` five times back to back and
+// got 5 green, at ~6.67s each. That is NOT a fix and must not be recorded as
+// one: round 4 measured this binary FAILING under that same flag, and the stale
+// claim this note corrects was itself born of a three-out-of-three green sample.
+// A small green sample under a flag is exactly the evidence that manufactured
+// the wrong answer the first time. What the pairing does establish is that
+// PARALLELISM MATTERS EVEN WITH NO OTHER BINARY RUNNING — which is a fact about
+// the three tests in THIS process, not about the rest of the suite.
 //
 // This note is comment-only by construction: 21-34 changed no executable line in
 // this file, so the binary behaves exactly as it did before the note existed.
