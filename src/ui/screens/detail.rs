@@ -7730,7 +7730,7 @@ mod tests {
     /// The kernel presents `/proc/<pid>/cmdline` as NUL-separated with a
     /// trailing NUL, which is what is reproduced here.
     fn proc_cmdline_encoding(argv: &[String]) -> Vec<u8> {
-        let elements: Vec<&str> = argv.iter().skip(1).map(String::as_str).collect();
+        let elements: Vec<&[u8]> = argv.iter().skip(1).map(String::as_bytes).collect();
         nul_join_cmdline(&elements)
     }
 
@@ -7741,7 +7741,19 @@ mod tests {
     /// [`proc_cmdline_encoding`] with the producer's real output, and the SPLIT
     /// arm calls it directly with an explicitly constructed cmdline. Sharing it
     /// means both arms carry the same NUL-free precondition.
-    fn nul_join_cmdline(elements: &[&str]) -> Vec<u8> {
+    ///
+    /// # Why this takes `&[&[u8]]` and not `&[&str]` (21-36)
+    ///
+    /// It took `&[&str]` until round 13, and that TYPE was the defect rather
+    /// than any fixture missing from a list. `/proc/<pid>/cmdline` is a byte
+    /// string — the kernel imposes no encoding on it — and
+    /// [`crate::session_detector::session_id_in_cmdline`] has taken `&[u8]` all
+    /// along. A `&str`-typed harness cannot CONSTRUCT an ill-formed-UTF-8
+    /// cmdline at all, so the whole encoding class was not "an unenumerated
+    /// fixture": it was unrepresentable, and no amount of adding fixtures to a
+    /// `&str` list could ever have reached it. The harness was the narrower
+    /// type, and the harness is what changed.
+    fn nul_join_cmdline(elements: &[&[u8]]) -> Vec<u8> {
         let mut bytes = Vec::new();
         for element in elements {
             // A NUL-bearing element would TRUNCATE this encoding, and the
@@ -7749,14 +7761,14 @@ mod tests {
             // round-tripped — passing vacuously (T-21-35-07). Fail loudly
             // instead, at the fixture that did it.
             assert!(
-                !element.as_bytes().contains(&0),
+                !element.contains(&0),
                 "the argv element {element:?} carries a NUL byte. NUL is the \
                  SEPARATOR of this encoding, so the element would be split in \
                  two and everything after the NUL would be read as a separate \
                  argument: the assertion below would then be checking a value \
                  this test invented rather than one that survived the wire."
             );
-            bytes.extend_from_slice(element.as_bytes());
+            bytes.extend_from_slice(element);
             bytes.push(0);
         }
         bytes
@@ -7883,7 +7895,8 @@ mod tests {
             // --- SPLIT: constructed explicitly, not inferred ------------------
             // Program name, bare option name, then the fixture: the two-element
             // window a hand-typed `claude --resume <id>` puts on the wire.
-            let wire = nul_join_cmdline(&["claude", "--resume", raw.as_str()]);
+            let wire =
+                nul_join_cmdline(&[b"claude".as_slice(), b"--resume".as_slice(), raw.as_bytes()]);
             let read_back = crate::session_detector::session_id_in_cmdline(&wire);
 
             assert_eq!(
