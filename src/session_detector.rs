@@ -281,12 +281,31 @@ pub(crate) fn session_id_in_cmdline(cmdline: &[u8]) -> Option<Untrusted> {
             };
 
         if let Some(candidate) = candidate {
-            let val = String::from_utf8_lossy(candidate);
-            let val = val.trim();
-            if !val.is_empty() {
-                // The ONE place a session id is WRAPPED, which is the
-                // innermost point of the pair rather than the outermost.
-                return Some(Untrusted::from_untrusted_source(val.to_string()));
+            // R1 — the ENCODING boundary. Ill-formed UTF-8 is REFUSED and the
+            // scan CONTINUES; it is never substituted through. The decode here
+            // used to be `String::from_utf8_lossy`, which replaced each
+            // ill-formed sequence with U+FFFD and then returned the result as
+            // an id: a FABRICATION, a non-empty id for a value no process
+            // carries, which put a Sessions-tab row on screen offering to
+            // resume a conversation that does not exist. Refusing costs no
+            // capability — both of this build's producers take `String` and can
+            // never emit a non-UTF-8 id, and a lossily-substituted id could
+            // never have resumed the session it named.
+            if let Ok(text) = std::str::from_utf8(candidate) {
+                // R2 — the emptiness condition, unchanged in effect and moved
+                // onto a TRIMMED COPY. `text.trim()` is the TEST; `text` is
+                // what is returned. That distinction is the whole of the value
+                // fix: the return used to be the trimmed value, so
+                // `--resume=" abc "` read back as `"abc"` — a different id,
+                // which resumes a different conversation or none.
+                if !text.trim().is_empty() {
+                    // The ONE place a session id is WRAPPED, which is the
+                    // innermost point of the pair rather than the outermost.
+                    // What is wrapped is the candidate's own wire bytes: no
+                    // value is rewritten upstream of the boundary that is
+                    // supposed to be the first thing to touch it.
+                    return Some(Untrusted::from_untrusted_source(text.to_string()));
+                }
             }
         }
 
@@ -466,6 +485,83 @@ mod tests {
             Some("first"),
             "fused-then-split: same rule, opposite order. Precedence is \
              deterministic by position, not by wire form."
+        );
+
+        // --- The VALUE arrives UNTRIMMED (21-36, G1) ------------------------
+        // The emptiness condition is a test on a trimmed COPY. The returned
+        // value is the wire bytes. Until round 13 the trimmed value was what
+        // was returned, so the two arms below read back a DIFFERENT id than
+        // the one on the wire.
+        assert_eq!(
+            parsed(&["claude", "--resume= abc "]).as_deref(),
+            Some(" abc "),
+            "a fused value with leading and trailing whitespace must arrive \
+             BYTE-IDENTICALLY. Returning `\"abc\"` here is not a cosmetic \
+             difference: it is a different id, and it resumes a different \
+             conversation or none at all. The trim is the emptiness TEST, never \
+             the returned value."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume", " abc "]).as_deref(),
+            Some(" abc "),
+            "the SPLIT form carries the value untrimmed for the same reason. \
+             Both wire forms must agree: which form an id arrived in must not \
+             change what the id IS."
+        );
+
+        // --- Both sides of the emptiness threshold, one step either side ----
+        assert_eq!(
+            parsed(&["claude", "--resume=\t"]).as_deref(),
+            None,
+            "ONE whitespace byte is still empty after trim, so it carries no \
+             id — refusal class R2, unchanged from before this round."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume=x"]).as_deref(),
+            Some("x"),
+            "ONE non-whitespace byte is the smallest value that is NOT empty \
+             after trim, and it must arrive whole. This is the far side of the \
+             same threshold the arm above tests the near side of."
+        );
+
+        // --- A candidate at the FIRST argv index ---------------------------
+        assert_eq!(
+            parsed(&["--resume=abc"]).as_deref(),
+            Some("abc"),
+            "the scan starts at index 0, not at index 1: nothing about the \
+             parse depends on a program name preceding the option. A loop that \
+             began at 1 would miss a cmdline whose very first element carries \
+             the id."
+        );
+
+        // --- Ill-formed UTF-8 is REFUSED, not fabricated (21-36, G3) -------
+        // This arm needs a direct `&[u8]` call: the `&str` helpers above
+        // CANNOT construct it, which is the whole of why the encoding class
+        // went three rounds unnoticed. It was never a missing fixture; it was
+        // unrepresentable in the harness's type.
+        assert_eq!(
+            session_id_in_cmdline(b"claude\0--resume=\xff\xfe\0")
+                .map(|id| id.as_raw_for_logic_only().to_string()),
+            None,
+            "a fused suffix of the two bytes 0xFF 0xFE is not valid UTF-8 and \
+             must carry NO id — refusal class R1, with the scan continuing. \
+             Before this round the decode was lossy and this returned \
+             `Some(\"\\u{{fffd}}\\u{{fffd}}\")`: a FABRICATION, a non-empty id \
+             for \
+             a value no process carries, which puts a row in the Sessions tab \
+             offering to resume a conversation that does not exist. Refusal \
+             costs no capability here — both of this build's producers take \
+             `String` and can never emit a non-UTF-8 id."
+        );
+        assert_eq!(
+            session_id_in_cmdline(b"claude\0--resume=\xff\xfe\0--resume=later\0")
+                .map(|id| id.as_raw_for_logic_only().to_string())
+                .as_deref(),
+            Some("later"),
+            "an ill-formed candidate must not STOP the scan either — refusing \
+             it and returning early would delete every later well-formed \
+             element, which is a second under-detection bought with the fix \
+             for the first."
         );
     }
 }
