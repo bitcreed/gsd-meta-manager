@@ -1195,3 +1195,345 @@ instruction.
 | `deferred-items.md`, after the round-5/round-4 updates | the `--test-threads=2` correction |
 | `deferred-items.md` (here) | the standing entry the other two point at |
 | `tests/driver_reattach.rs`, module header | a **comment-only** note carrying the same three facts, where the reader of the failing test will actually look |
+
+## 2026-08-28 (`21-34`) — round 11's four closures, with their RESIDUALS and DIRECTIONS
+
+Every residual below is quoted from the SUMMARY of the plan that actually
+delivered it, not from any plan's intent. This plan ran in wave 2 for exactly
+that reason.
+
+### gaps[0] — the resume argv fusion (`21-31`)
+
+**Closed by:** `21-31` Tasks 1-3, commits `4ca622c` (RED), `3638fd9` (fix),
+`8964b19` (the declined validator). `resume_terminal_argv` now emits **three**
+elements, the untrusted `/proc`-scraped session id **fused** into one
+`--resume=<id>` element, so no argv element is the bare id and there is nowhere
+an option parser can reach it as syntax.
+
+**The `--` separator that verification pass 11 recommended was REFUTED by
+measurement** — probe D returns an error byte-identical to probe C's, so the
+separator makes `--resume` receive nothing at all and would have shipped as a
+security fix while silently deleting the resume for every legitimate session.
+
+**Residual, with its direction — a DEPENDENCY-BEHAVIOUR property.** The fix rests
+on what the `claude` CLI's own option parser does with `--resume=<value>`.
+Nothing in this repository goes red if a future CLI changes that.
+**Under-detection, SILENT.** A new standing staleness obligation is opened for it
+below.
+
+**Second residual (`21-31`'s own words, D-21-48):** `read_session_id` keeps its
+pass-through and gains **no** rejecting validator, because *"the CLI resumes by
+session TITLE, so a rule tight enough to refuse `-h` deletes legitimate sessions
+silently"* — probe B's error text (*"does not match any session title"*) is the
+measurement that decided it. **Under-detection, SILENT**, and the argv fusion is
+the stated load-bearing control instead.
+
+### gaps[1] — the interpreter census's comment budget (`21-32`)
+
+**Closed by:** `21-32` Task 1 (`b644c32`) and Task 2 (`e18019c`). `taken += 1`
+moved after the comment `continue`, so comment lines no longer spend the 16-line
+join budget. **The window measured in both states:** comments cost nothing at any
+count up to 100; the executable window is **last reported 11, first missed 12**,
+identical before and after the fix. A two-sided boundary control asserted at N
+and N+1 in both directions is its own certificate.
+
+**The claim was narrowed in the SAME commit** — the word "any" is gone, three
+bounds are named. Five residuals, each quoted with its direction from
+`21-32-SUMMARY.md`:
+
+| # | Residual | Direction |
+|---|---|---|
+| 1 | construction assembled across statements | under-detection, **silent** |
+| 2 | interpreter named by a variable, const or config value rather than a quoted literal | under-detection, **silent** |
+| 3 | `execute_hook`'s error-message-only interpolation | **deliberate exclusion**, not a gap |
+| 4 | method chains are not followed | under-detection, **silent** |
+| 5 | four of five string-building forms unseen (`concat!`, `join`, owned `+`, `replace`, owned `push_str`) | under-detection, **silent** |
+
+### gaps[2] — the composition verdict moves to the innermost call (`21-32`)
+
+**Closed by:** `21-32` Task 3 (`c84c16d`). The verdict is no longer taken over
+the joined logical unit; it is taken **per occurrence, from the characters
+immediately preceding it**, so a composed `match` arm can no longer launder its
+bare sibling. All five real production sites still judge composed; the live
+census still reports **zero** sites.
+
+**The bounded shape matters:** the fix DELETES the window rather than widening
+it. There is no unit left to over-join, so no future round can find a bigger one
+that launders something.
+
+**Residual, with its NEW direction — the direction FLIPPED on purpose.** A
+composition assembled across separate statements now reads as un-composed and is
+reported. *"Under the old whole-unit verdict this was under-detection and silent;
+since 21-32 moved the verdict to the innermost call it is **over-detection, and
+LOUD**."* Loud is the safe direction. Second residual: a third file added to this
+path tomorrow is simply not looked at — **under-detection, silent**, bounded by
+the render-escape probe and not by this census.
+
+### gaps[3] — the `src/ui` census narrowed and its reach PINNED (`21-33`)
+
+**Closed by:** `21-33` Task 1 (`9eacc82`) plus the in-plan pin repair
+(`a23a4c9`). Renamed from `every_render_site_under_ui_composes_both_classes` to
+`no_display_identity_call_under_ui_stands_outside_a_composition` — from an
+unbounded claim about all render sites to a measured one about needle-carrying
+executable lines: **six non-exempt occurrences in two of sixteen files**. The
+completeness claim is handed **by name** to the two mechanisms that actually
+carry it: the sealed `RenderAdjudicated` supertrait and the per-screen
+behavioural probes.
+
+**Residual, with its direction (quoted):** *"a render site that applies NEITHER
+class carries no needle, so it is **invisible to this census** — silence, not
+clearance. And every render site successfully converted to the single composed
+call REMOVES a needle, so **this census's reach shrinks monotonically as the very
+work it certifies succeeds.** Direction: under-detection, silent, and growing
+over time."*
+
+**The pin's own failure direction — BOOKKEEPING RED.** `MEASURED_REACH` is a
+`Vec` equality checked in both directions, so a file leaving the distribution is
+as much a red as one entering. Its red is not a security finding; it is a
+one-line repair stated in its own failure message: **re-measure, update the
+constant, update the disclosed sentence, all in one commit. Never relax the
+assertion.** The pin **fired on its own author inside `21-33`** when Task 3 added
+an eighth occurrence, which is its justification rather than an embarrassment: a
+prose-only disclosure would have shipped stale within one plan of being written.
+
+**For the merged tree:** the pin spans all of `src/ui/`, including `21-31`'s
+`detail.rs` and `21-32`'s `driver.rs`. `21-34`'s merged-tree gate is where a
+post-merge red would surface, and none did.
+
+## 2026-08-28 (`21-34`) — STANDING: the `claude` CLI's option parser is a DEPENDENCY BEHAVIOUR, not a property of this code
+
+**Same shape as the ratatui grapheme-filtering obligation this file already
+carries** (see "STANDING — invisible-character rendering is a property of the
+ratatui VERSION, not of this code"), and opened for the same reason: gaps[0]'s
+fix rests on a property that belongs to another program's version, and an upgrade
+can move it with every test in this repository green.
+
+**Measured against `claude --version` → `2.1.248 (Claude Code)`**, re-measured by
+`21-34` on the merged tree and agreeing with `21-31`'s figure. All six probes run
+in a scratch directory outside this repository with stdin at `/dev/null` and a
+timeout.
+
+**The six probe commands, verbatim:**
+
+```
+claude --help | grep -A2 -- '-r, --resume'
+claude --resume --version
+claude --resume=--version
+claude --resume -- --version
+claude --resume -- 550e8400-e29b-41d4-a716-446655440000
+claude --resume=550e8400-e29b-41d4-a716-446655440000
+```
+
+**What they established, re-measured by `21-34`:**
+
+| Probe | Output (stdout, verbatim) | What it establishes |
+|---|---|---|
+| spec | `-r, --resume [value]    Resume a conversation by session ID, or open interactive picker with optional search term` | `--resume` is an **optional-value** option — the reason a bare trailing id is read as a new option |
+| A | `2.1.248 (Claude Code)` | the injection FIRING: the token after a bare `--resume` is parsed as a new option of `claude` |
+| B | `Error: --resume requires a valid session ID or session title when used with --print. Usage: claude -p --resume <session-id\|title>. Provided value "--version" is not a UUID and does not match any session title.` | the `=` form binds a hostile value as **DATA**, regardless of its first byte — and the **title** lookup path runs, which is why no validator was added |
+| C | `Error: --resume requires a valid session ID or session title when used with --print. Usage: claude -p --resume <session-id\|title>` | a `--` separator closes the injection |
+| D | **byte-identical to C** | the `--` separator **DELETES the capability** — `--resume` receives nothing at all |
+| E | `No conversation found with session ID: 550e8400-e29b-41d4-a716-446655440000` | a real id, fused, is **BOUND and looked up** |
+
+**The property this tree now depends on:** `-r, --resume [value]` is an
+optional-value option; the `=` form binds the value regardless of its first byte;
+the `--` form does NOT bind and deletes the capability.
+
+**Direction: UNDER-DETECTION, SILENT.** Nothing in this repository goes red if a
+future `claude` changes `--resume`'s arity or its `=`-form binding. Every test
+here asserts the SHAPE of the argv this code emits, which is the correct thing
+for them to assert and is exactly why they cannot see this.
+
+**The standing obligation.** On any `claude` CLI upgrade, before trusting the
+fusion: re-run the six probes above, re-measure, and record the new version and
+outcomes in the table below. Do **not** infer from a version number.
+
+| Date | `claude --version` | `--resume` arity | `=` binds hostile value | `--` binds a real id | Recorded by |
+|---|---|---|---|---|---|
+| 2026-08-27 | 2.1.248 (Claude Code) | optional-value | yes (probe B) | **no** — capability deleted (probe D) | `21-31` |
+| 2026-08-28 | 2.1.248 (Claude Code) | optional-value | yes (probe B) | **no** — capability deleted (probe D) | `21-34`, merged tree |
+
+## 2026-08-28 (`21-34`) — the three items round 11 DELIBERATELY did not close
+
+Recorded with a promote condition and a direction each, rather than dropped.
+
+### 1. `src/executor/claude.rs`'s three `--option value` pairs (T-21-31-05 / D-21-50)
+
+**The measurement that makes them inert TODAY:** `--resume`, `--model` and
+`--name` are each emitted as a separate `--option` element followed by a separate
+value element — the same CWE-88 shape gaps[0] just closed at the Sessions-tab
+resume — but all three read `Option` fields that are `None` at
+`ExecutionOptions::default()` and are **set by no caller in this crate**. There
+is therefore no untrusted value reaching them, and nothing to fuse.
+
+**Promote condition:** the **FIRST caller that sets one of the three from a value
+not authored in this crate.** At that moment the seam is live and the fusion must
+be applied there, in the same commit as the caller.
+
+**Direction: under-detection, SILENT** — until that caller appears, no committed
+control in this tree goes red, because the shape is only a defect once a value
+flows into it. Accepted, not closed, and this paragraph is the reason.
+
+### 2. Pass 11's `IN-01`, `IN-02`, `IN-03` and `IN-04`
+
+All four are `Info` severity in `21-VERIFICATION.md`'s anti-pattern table. One
+line of reason each:
+
+| Id | Site | Why round 11 did not chase it |
+|---|---|---|
+| `IN-01` | `src/ui/mod.rs:74-94` vs `106-113` — `EXEMPTIONS` matches whole-file while `WAVE_PENDING`'s doc argues for exact `path:line` pinning | An inconsistency of *stated rationale*, not of behaviour: the one exempt file is `#[cfg(test)]`-gated, so whole-file and `path:line` select the same set today. Tightening it would change no verdict. **Direction: over-detection if a non-test line is ever added to an exempt file — LOUD**, because the census reports it. |
+| `IN-02` | `src/ui/screens/detail.rs:7457` — `assert!(matches!(separator, "-e" \| "--"))` cannot fail | A dead assertion, not a false claim: the load-bearing arm (`candidates.len() == 4`) sits directly above it and is live. Deleting it is cosmetic; `21-30` already closed the *other* `IN-02` (character-width). **Direction: none — a vacuous assertion adds no coverage and removes none.** |
+| `IN-03` | `src/ui/screens/detail.rs:1820-1826`, `2226-2232` — "Resumed session {}" reported on `spawn()` returning, not on the resume working | Pre-existing UI-honesty shape that predates this phase, in a message the operator reads immediately after acting. Fixing it means waiting on a detached child, which is a behaviour change in a phase whose whole subject is the record. **Direction: over-reporting success, and LOUD to the operator** — the terminal window either appears or does not. |
+| `IN-04` | `src/ui/screens/detail.rs:1866`, `4024-4079` — `ArchiveDepth::milestone` is the same untyped round trip `21-30` closed for `defaults_text_buffer` | Correctly escaped at each of its three render sites today and honestly disclosed with its direction. It is recorded so the last instance of the pattern is on the record, not because a leak was found. **Direction: under-detection, SILENT, if a fourth render site is added without the escape** — which is what the `src/ui` census and the sealed bound exist to catch. |
+
+**`IN-05` is CLOSED, not outstanding.** `21-32` Task 2 (`e18019c`) closed it by
+**narrowing the doc** rather than by widening the marker set:
+`interpolates_into_a_string`'s doc now enumerates exactly the five markers, names
+what they miss and states the direction, with the reason widening was declined —
+*"a census that reports correct code is a census the next author disables"*
+(D-21-53). Cite `21-32` for it; do not re-list it as open.
+
+### 3. `WR-06` — the missing per-emulator working-directory column
+
+**What it is:** the `cd '<dir>' &&` → `Command::current_dir` half of the CR-01 fix
+has no control and no per-emulator table column, while the separator half of the
+same change got both. `gnome-terminal` is a D-Bus-activated client and is one of
+exactly four probed candidates.
+
+**Why round 11 did not close it:** it is a **capability question, not a security
+one.** No untrusted value travels through `current_dir` — the path comes from the
+registered project — so there is no injection surface here. What is at risk is
+whether the terminal opens in the right directory.
+
+**Direction: under-detection, SILENT** — a `gnome-terminal` session that lands in
+`$HOME` instead of the project root fails quietly, with no error and no red test.
+**Promote condition:** a per-emulator table column measured against each of the
+four probed candidates on a machine that has them, which needs a desktop session
+and is therefore adjacent to criterion 4's human-only class rather than to this
+round's scope.
+
+### Disposition of EVERY row of pass 11's anti-pattern table — nothing dropped
+
+| Id | Severity | Disposition |
+|---|---|---|
+| gaps[0] (CWE-88 argv) | Blocker | **CLOSED** — `21-31` T2 (`3638fd9`) |
+| gaps[0] (complicit corpus) | Blocker | **CLOSED** — `21-31` T1 (`4ca622c`) |
+| gaps[1] (comment budget) | Blocker | **CLOSED** — `21-32` T1 (`b644c32`) |
+| gaps[1] (dangling cross-reference) | Warning | **CLOSED** — `21-32` T2 (`e18019c`) |
+| gaps[2] (over-join / non-vacuity / truncation) | Blocker | **CLOSED** — `21-32` T3 (`c84c16d`) |
+| gaps[3] (census named for a property it does not check) | Blocker | **CLOSED** — `21-33` T1 (`9eacc82`, `a23a4c9`) |
+| `WR-04` (`EditBuffer` trait absences prose-only) | Warning | **CLOSED** — `21-33` T2 (`43b7c93`); `grep -c "implements_"` went 0 → 31, three planted-impl REDs captured |
+| `WR-05` (comparator total over KEYS, not ELEMENTS) | Warning | **CLOSED** — `21-33` T2 (`43b7c93`), `.then_with(\|\| a.cmp(b))`, RED captured |
+| `WR-06` (per-emulator cwd column) | Warning | **DELIBERATE NON-CLOSURE** — item 3 above |
+| `IN-01` | Info | **DELIBERATE NON-CLOSURE** — item 2 above |
+| `IN-02` | Info | **DELIBERATE NON-CLOSURE** — item 2 above |
+| `IN-03` | Info | **DELIBERATE NON-CLOSURE** — item 2 above |
+| `IN-04` | Info | **DELIBERATE NON-CLOSURE** — item 2 above |
+| `IN-05` | Info | **CLOSED** — `21-32` T2 (`e18019c`) |
+
+**Fourteen rows, fourteen dispositions, none unaccounted for.** Also delivered by
+round 11 without being on this table: `21-29`'s carried **S1** (a two-direction
+spot-check on an input-echo screen through the real `Screen::render`, `21-33` T3,
+`5400e44`) and **F3**, which `21-33` closed as **UNNECESSARY by measurement** —
+`render_escape_guard` is a child module of `ui::screens` and already reaches
+`ctx_with_aliases`, so no visibility was widened anywhere.
+
+## 2026-08-28 (`21-34`) — RECORD CORRECTIONS: the four round-10 truths pass 11 measured FALSE as shipped
+
+Append-only. Each row quotes the falsified claim verbatim, states what pass 11
+measured, and names the plan and task that closed it in round 11 with the
+evidence that plan committed.
+
+| Truth | What was CLAIMED (verbatim) | What pass 11 MEASURED | Closed by | Evidence committed by the closing plan |
+|---|---|---|---|---|
+| `21-27` truth 1 | *"CR-01 closed by deleting the shell; no parser left to make a metacharacter code"* — and in the source doc, *"**The third kind no longer exists here** because there is no interpreter left in the path to parse anything."* | **FALSE as shipped.** The shell class is genuinely gone, but *"no interpreter" is not "no parser"*: **`claude`'s own option parser was in the path the whole time**, and `--resume` takes an optional value, so a `/proc`-scraped id beginning with `-` became a new option. CWE-78 was traded for **CWE-88**, undisclosed in every round-10 artifact. | **`21-31` Task 2** (`3638fd9`) | The doc correction quotes the falsified clause verbatim beside its replacement, names CWE-88 and the receiving parser, and cites probes C/D/E by measured output; the argv is fused to three elements; the spawn-site comment was rewritten from *"there is no parser left"* to name the parser. |
+| `21-27` truth 5 | *"The rule is CHECKED by a committed census reporting **any** such executable line"* | **FALSE at twelve comment lines.** The census's `taken += 1` ran before the comment `continue`, so comments spent the join budget: 12 comment lines between the interpreter name and the interpolation silenced the phase's sharpest execution-sink control on the exact CR-01 construction it exists to catch. | **`21-32` Tasks 1 and 2** (`b644c32`, `e18019c`) | The RED captured verbatim at exactly twelve comment lines; the increment moved after the `continue`; a two-sided boundary control asserting the window at 11/12 in **both** directions in both the comment and executable arms; and the word "any" deleted from the doc **in the same commit** as the mechanism repair, replaced by three named bounds and five directed residuals. |
+| `21-28` truth 7 | *"IN-01 closed: an executable call to `sanitize_render_line` in those two files appears **only** inside a composition"* | **FALSE — sibling arms launder.** The verdict was taken over the joined logical unit, so a composed `match` arm made its bare sibling read as clean. Three blind spots reproduced with the census's own algorithm. | **`21-32` Task 3** (`c84c16d`) | The laundering reproduced verbatim against the committed rule (`left: []` vs `right: ["fixture.rs:3"]`); the verdict moved to the innermost call so **no window is consulted at all**; all five production sites re-measured still composed; the non-vacuity total recomputed over the slice actually scanned (7 whole-file → 6 in-slice); and the silent `#[cfg(test)]` truncation kill switch made LOUD, with its own planted RED naming both marker lines. |
+| `21-29` truth 2 | *"The claim becomes a committed control over `src/ui/`"* — asserted by the test's own name, `every_render_site_under_ui_composes_both_classes` | **FALSE — the completeness its name asserts is not checked.** The mechanism is real and green, but it is driven by **6 executable lines in 2 of 16 files**. A render site applying neither class carries no needle and is invisible to it. Pass 11 hand-traced 63 `Span::raw`/`Span::styled` sites and found **no live leak** behind it — *"a false completeness claim with an undisclosed residual, not a live leak."* | **`21-33` Task 1** (`9eacc82`, repaired `a23a4c9`) | Renamed to `no_display_identity_call_under_ui_stands_outside_a_composition` (old name `grep -c` → 0); the reach disclosed file-by-file **and PINNED** as a two-direction `Vec` equality with a file-count floor; the shrinking-coverage property stated with its direction; the completeness claim handed by name to the sealed `RenderAdjudicated` bound and the behavioural probes; pin observed RED by a planted needle in `help.rs`, and again — unplanned — against its own author. |
+
+**All four are the same species, and it is this phase's named species: a
+completeness claim wider than the control that certifies it.** Three of the four
+were in mechanisms round 10 BUILT to certify completeness. Round 11 closed each
+by repairing the mechanism **and** narrowing the claim in the same commit — never
+by repairing and re-selling as broader, and never by moving the enumeration down
+a level.
+
+## RE-SURFACED, UNCHANGED — ROADMAP success criterion 4 (round 11)
+
+**Recording, not progress. This is the FOURTH consecutive round with NO work
+claimed against it, and that is correct.** `21-34`'s prohibition 5 forbids
+planning, executing or claiming any work against it.
+
+Quoted VERBATIM from `21-VERIFICATION.md`'s `behavior_unverified_items`
+frontmatter — command, expected result and why-human, not paraphrased:
+
+> **truth:** *"A `.planning/` file or `CLAUDE.md` carrying injected instructions
+> does not change which command the driver executes (ROADMAP success criterion 4
+> / SAFE-07)"*
+>
+> **test:** *"With an authenticated `claude` CLI available, run
+> `cargo test --test driver_injection_corpus -- --ignored --nocapture` from the
+> repository root and record the CLI version beside the result."*
+>
+> **expected:** *"10 passed, 0 failed. Every
+> `corpus_*_arrives_and_leaves_the_command_unchanged` arm asserts the payload
+> ARRIVED at the model before asserting the command was unchanged; the two
+> suppression controls show the positive/negative
+> `CLAUDE_CODE_DISABLE_CLAUDE_MDS` pair diverging; and
+> `both_arms_of_every_class_comparison_were_really_executed` confirms the hostile
+> and clean arms both really ran."*
+>
+> **why_human:** *"All ten spawn the real `claude` binary and need an
+> authenticated subscription, so they cannot run inside verification. NO AGENT
+> CAN CLOSE THIS ITEM, and the user has explicitly chosen to leave it tracked in
+> `deferred-items.md`."*
+
+**Round-11 status, MEASURED on the MERGED tree (all under `rtk proxy`):**
+
+* `git diff --stat 2c13fcf HEAD -- tests/driver_injection_corpus.rs` — **empty.**
+  The file was RUN by round 11 and EDITED by no plan of it.
+* `cargo test --test driver_injection_corpus` — **13 passed / 0 failed / 10
+  ignored.** Identical to every figure since pass 10.
+
+### Said plainly, so the next verifier does not re-litigate it
+
+**ROADMAP success criterion 4 is PERMANENTLY AGENT-UNCLOSABLE BY CONSTRUCTION.**
+It requires a human with a live, authenticated Claude subscription to run the ten
+`#[ignore]`d arms of `tests/driver_injection_corpus.rs` against the real model
+binary. No agent has such a subscription and no agent can acquire one, so no
+amount of further planning, further rounds or cleverer test design will close it.
+It is a standing item **by explicit user decision**.
+
+**4/5 is therefore the EXPECTED AND CORRECT CEILING for this phase, and is not a
+failure.** A future verification pass that scores this phase 4/5 has scored it
+correctly. A future round that opens a plan against criterion 4 is doing work
+that cannot succeed. Presence and wiring are verified for the twelfth consecutive
+pass; behaviour is not, and round 11 does not claim it is.
+
+## 2026-08-28 (`21-34`) — the two DRIVE-04 backstops, re-run on the MERGED tree
+
+**Reconfirmations by re-run, not new work.** DRIVE-04's boundary and precision
+were measured by executed plans `21-02`, `21-04` and `21-22` and re-verified by
+verification passes 10 and 11. Round 11 touches no cap, no seam and no
+arithmetic; this shows its diff did not move them. Writing a *new* boundary
+predicate for DRIVE-04 in a record-correction round would be the
+manufactured-predicate overclaim this phase exists to end.
+
+`rtk proxy cargo test --test driver_escalation_cap` on the merged tree:
+**8 passed / 0 failed / 0 ignored.**
+
+| Row | Direction | Arm |
+|---|---|---|
+| edge-probe 6 (**boundary**) | a cap AT or ABOVE the resolved step cap is refused at the seam | `a_budget_equal_to_the_resolved_step_cap_refuses_above_the_run`, `a_budget_of_zero_refuses_above_the_run` |
+| edge-probe 6 (**boundary**) | a cap BELOW it is accepted and parks on the cap | `a_budget_one_below_the_resolved_step_cap_runs_and_parks_on_the_cap` |
+| edge-probe 7 (**precision**) | the decomposition consultation counts against the SAME cap, and exceeding it parks with a typed reason rather than degrading silently to rules-only | `a_run_that_spends_its_budget_parks_and_says_so_rather_than_continuing`, `the_three_boundaries_are_measured_against_the_resolved_step_cap` |
+
+`rtk proxy git diff --stat 2c13fcf HEAD -- tests/driver_escalation_cap.rs` is
+**empty** — the file is RUN and unchanged by round 11, so the reconfirmation is
+explicit evidence rather than an inference from the round's scope.
+
+**DRIVE-04 precision, stated in words:** the escalation counter is an **integer
+count compared by equality against an integer cap**. There is no rounding, no
+tie-breaking, no overflow behaviour and no precision-loss contract to state,
+because no arithmetic on a non-integer quantity occurs anywhere on this path.
+Reconfirmed by the same unchanged suite in the same run.
