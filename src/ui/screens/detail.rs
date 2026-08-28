@@ -7265,8 +7265,26 @@ mod tests {
     }
 
     /// Session ids that are hostile in every way this codebase can name: the
-    /// look-alike corpus by IMPORT (never respelled — D-21-6), plus one fixture
-    /// per shell metacharacter class.
+    /// look-alike corpus by IMPORT (never respelled — D-21-6), one fixture per
+    /// shell metacharacter class, and — since round 11 — one fixture per
+    /// OPTION-LOOKALIKE class.
+    ///
+    /// # Why the option-lookalike block exists (gaps[0]'s second half, D-21-46)
+    ///
+    /// Until round 11 this corpus carried eighteen fixtures and **not one of
+    /// them began with a hyphen**. Every fixture named a shell metacharacter
+    /// class, because the defect the corpus was written against was a shell
+    /// interpreter in the path. Round 10 deleted that interpreter and traded
+    /// CWE-78 for CWE-88 — and this corpus could not tell, because
+    /// `-r, --resume [value]` is an OPTIONAL-value option and only an
+    /// id whose first byte is `-` can exercise it. The control it certified
+    /// therefore passed against a build shipping the defect, which is not a
+    /// certificate at all.
+    ///
+    /// The complicity was proven rather than asserted: these ten fixtures were
+    /// added FIRST, with no production line touched, and
+    /// `the_resume_argv_carries_a_hostile_session_id_as_one_opaque_element` was
+    /// captured still GREEN against the unfixed construction.
     fn hostile_session_ids() -> Vec<String> {
         let mut ids: Vec<String> = crate::test_support::LOOK_ALIKE_PAIRS
             .iter()
@@ -7285,6 +7303,26 @@ mod tests {
                 "a\u{7}b",              // a NUL-free control character
                 "a b",                  // a bare space: must stay ONE element
                 "'; rm -rf / #",        // the whole escape, assembled
+            ]
+            .iter()
+            .map(|raw| (*raw).to_string()),
+        );
+        ids.extend(
+            [
+                // --- Option lookalikes (round 11, CWE-88) -------------------
+                // Each is a value that a receiving option parser reads as an
+                // OPTION when it arrives as its own argv element.
+                "-h",                             // the shortest possible option lookalike
+                "--version",                      // probe A's payload: measured to FIRE at claude 2.1.248
+                "--dangerously-skip-permissions", // the payload probe A stands in for
+                "--print",                        // an option that changes the program's whole mode
+                "-",                              // a bare hyphen: the degenerate case
+                "-r",                             // the SHORT spelling of the option being injected into
+                "--resume",                       // the option's own name, so the id can impersonate it
+                "--settings=/tmp/x.json",         // an option that already carries a fused value
+                "a=b",                            // NOT an option: the fusion character inside an id,
+                // which must still arrive WHOLE (capability direction)
+                "--add-dir", // an option taking a path the attacker chooses
             ]
             .iter()
             .map(|raw| (*raw).to_string()),
@@ -7369,6 +7407,106 @@ mod tests {
             "the argv arity varied across inputs ({arities:?}), so some id \
              changed the SHAPE of the vector rather than just one element of \
              it. A value that can change the arity is a value being parsed."
+        );
+    }
+
+    /// **CWE-88 closed at the SHAPE of the vector** (T-21-31-01, T-21-31-03,
+    /// D-21-47).
+    ///
+    /// # The property, and why it is not a list of forbidden characters
+    ///
+    /// The assertion is CONTENT INDEPENDENCE: the number of argv elements that
+    /// begin with `-` must be the SAME for every session id in the corpus. A
+    /// list of forbidden first bytes is an enumeration and can always be one
+    /// entry short — that is the defect this control exists to close, arriving
+    /// one level up — whereas a property over the whole vector cannot be. A
+    /// value able to add an option-shaped element to a vector is a value the
+    /// receiving parser will read as an option.
+    ///
+    /// # The parser this is about
+    ///
+    /// Not a shell — round 10 removed that one. `claude`'s OWN option parser,
+    /// which was in the path the whole time. Measured at `claude` 2.1.248 with
+    /// stdin at `/dev/null`:
+    ///
+    /// | Probe | Command | Observed |
+    /// |---|---|---|
+    /// | A | `claude --resume --version` | `2.1.248 (Claude Code)`, exit 0 — **the injection firing** |
+    /// | E | `claude --resume=<uuid>` | `No conversation found with session ID: <uuid>` — **the id bound as a value** |
+    ///
+    /// # Non-vacuity is asserted FIRST, and that is the point
+    ///
+    /// The corpus this control consumes was, until round 11, incapable of
+    /// failing it: eighteen fixtures, not one beginning with a hyphen. The
+    /// non-vacuity arm is what stops that state recurring silently.
+    #[test]
+    fn the_resume_argv_never_lets_a_session_id_become_an_option_of_the_resumed_program() {
+        let corpus = hostile_session_ids();
+
+        // --- Non-vacuity, asserted before anything else --------------------
+        assert!(
+            corpus.iter().any(|id| id.starts_with('-')),
+            "the fixture set contains NO id beginning with a hyphen, so this \
+             control cannot fail for the defect it names (CWE-88) and proves \
+             nothing. That is the exact complicity round 11 found in the \
+             committed corpus: eighteen hostile fixtures, every one of them a \
+             shell metacharacter class, certifying a claim about \
+             option-shaped inputs."
+        );
+        assert!(
+            corpus
+                .iter()
+                .any(|id| id.chars().any(|c| "'\";&|`$\n".contains(c))),
+            "the fixture set carries no shell metacharacter at all, so the \
+             interpreter-absence class this same corpus certifies would be \
+             proven by nothing."
+        );
+
+        // The corpus shape, asserted rather than counted by hand.
+        assert_eq!(
+            corpus.len(),
+            28,
+            "hostile_session_ids() must carry 28 fixtures: 7 imported \
+             LOOK_ALIKE_PAIRS + 11 shell-metacharacter fixtures + 10 \
+             option-lookalikes."
+        );
+        // MEASURED, not inherited: nine of the ten option lookalikes begin
+        // with a hyphen. The tenth, `a=b`, is the fusion-character fixture and
+        // deliberately does not — it exists for the CAPABILITY direction, to
+        // prove an id containing `=` still arrives whole.
+        let hyphen_leading = corpus.iter().filter(|id| id.starts_with('-')).count();
+        assert!(
+            hyphen_leading >= 9,
+            "only {hyphen_leading} fixtures begin with a hyphen; the \
+             option-lookalike block contributes nine and every one of them is \
+             a value `claude`'s parser reads as an option when it arrives as \
+             its own argv element."
+        );
+
+        // --- Content independence ------------------------------------------
+        let mut by_count: std::collections::BTreeMap<usize, std::collections::BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        for term in ["kitty", "alacritty", "gnome-terminal", "xterm", "/opt/wat"] {
+            for raw in &corpus {
+                let sid = Untrusted::from_untrusted_source(raw.clone());
+                let argv = resume_terminal_argv(term, &sid);
+                let leading = argv.iter().filter(|e| e.starts_with('-')).count();
+                by_count.entry(leading).or_default().insert(raw.clone());
+            }
+        }
+        let observed: std::collections::BTreeSet<usize> = by_count.keys().copied().collect();
+        assert_eq!(
+            observed.len(),
+            1,
+            "the number of argv elements beginning with `-` DEPENDS ON THE \
+             SESSION ID. Observed counts {observed:?}; the ids that produced \
+             each: {by_count:?}. A value able to add an option-shaped element \
+             to a vector is a value the receiving parser will read as an \
+             option — measured at `claude` 2.1.248, `claude --resume \
+             --version` prints `2.1.248 (Claude Code)` and exits 0, which is \
+             CWE-88 firing. Fuse the id to its option name in ONE element \
+             (`--resume=<id>`); do NOT insert a `--` separator, which was \
+             measured to delete the resume capability entirely."
         );
     }
 
