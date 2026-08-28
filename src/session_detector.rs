@@ -145,6 +145,57 @@ fn read_tty(pid: u32) -> Option<String> {
 /// `Untrusted::as_raw_for_logic_only`'s three-question rule and by the
 /// interpreter census over `src/`, and NOT by this function.
 ///
+/// # CORRECTED 2026-08-28 (21-35): the section below is right about the SECURITY property, and being right about it is what hid the FUNCTIONAL one
+///
+/// **The reasoning this corrects, verbatim:** *"The property that matters is a
+/// property of the SINK — that the id cannot become an option of the resumed
+/// program — and it is asserted at the sink by
+/// `tests::the_resume_argv_never_lets_a_session_id_become_an_option_of_the_resumed_program`.
+/// A second assertion here would certify a claim this function does not make,
+/// and would let the class be counted as closed twice."*
+///
+/// **What it got right, and what is NOT being retracted.** The security
+/// property genuinely IS a property of the sink. A hostile id cannot become an
+/// option of the resumed program, and that is asserted where it is true — at
+/// the argv, by fusion, in [`crate::ui::screens::detail`]. Adding a second
+/// *security* assertion here would still certify a claim this function does not
+/// make, and would still let the class be counted as closed twice. That half of
+/// the reasoning survives this round intact.
+///
+/// **What it missed.** The **functional** property is a property of the
+/// **pair**, not of either side: *what this build emits, this build must be
+/// able to read back.* Round 11 fused the id to its option name at the producer
+/// (`--resume=<id>`) and thereby changed the wire format this function parses.
+/// Every control lived on one side or the other — the producer's controls
+/// asserted the argv's shape, and this function had **none at all** — so **no
+/// control spanned both**. The result: this function returned `None` for every
+/// session the TUI itself had resumed. The row went dead in the Sessions tab
+/// with no error and no log, and a build that had silently lost its resume
+/// detection passed the whole gate green for a full verification pass.
+///
+/// The mechanism is worth naming, because "no control here" is what allowed it:
+/// the two modules spell the same option name **independently**, across a
+/// module boundary, and nothing coupled them. What couples them now is the
+/// round trip,
+/// `crate::ui::screens::detail::tests::the_argv_this_build_emits_is_an_argv_this_build_can_read_back`,
+/// which drives the real producer's output through the real parser rather than
+/// re-spelling either.
+///
+/// **The line this correction must not blur.** What has been added is
+/// **wire-format parsing and its functional control**, never value validation.
+/// The validator declined above stays declined, for the reasons already
+/// recorded: the CLI resumes by session *title*, so a rule tight enough to
+/// refuse a leading-hyphen id would silently delete legitimate sessions from
+/// the Sessions tab. The new tests assert which SHAPES carry an id; they assert
+/// nothing whatever about which VALUES are acceptable.
+///
+/// **Where the wrap now lives** (D-21-67). This function remains the one place
+/// a session id **enters this build from another process**;
+/// [`session_id_in_cmdline`], the pure half split out of it, is the one place
+/// the id is **wrapped** — which is why that half returns `Option<Untrusted>`
+/// and never `Option<String>`. That is a restatement of where the boundary
+/// sits, not a loosening of it.
+///
 /// # No control is added in this file, deliberately
 ///
 /// The property that matters is a property of the SINK — that the id cannot
