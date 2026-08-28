@@ -7800,54 +7800,41 @@ mod tests {
     // than re-spelling the option name a third time.
     //
     // A control exercising only one side will miss the next instance of this.
+    //
+    // ----------------------------------------------------------------------
+    // 2026-08-28 (21-37, WR-05): one of the two controls this block described
+    // was a DUPLICATE, and it is gone. The safety of that was OBSERVED, not
+    // argued.
+    //
+    // `the_argv_this_build_emits_is_an_argv_...` (named in truncated form here
+    // and in `session_detector`'s two re-pointed citations, so that no whole
+    // spelling of a test that no longer exists survives in the tree) iterated
+    // five terminals x the 28 fixtures through the real producer, the real
+    // encoder and the real consumer and asserted byte-identity. The FUSED arm
+    // of `a_session_id_survives_the_round_trip_in_both_wire_forms` iterates the
+    // same 28 fixtures x the same five terminals through the same three
+    // functions and asserts the same thing, with the loop nesting swapped. The
+    // first was entirely subsumed by the second.
+    //
+    // A subsumption ARGUMENT is not what removed it. Deleting a control in the
+    // round that exists because controls could not fail is precisely the move
+    // that requires proof, so the defect the pair exists to catch was PLANTED —
+    // the parser's fused-long-resume branch made unreachable — and BOTH
+    // survivors were observed red before anything was deleted:
+    //
+    //   * `a_session_id_survives_the_round_trip_in_both_wire_forms`
+    //       FUSED form: the id "demo\u{200b}" ... could not be read back
+    //       left: None   right: Some("demo\u{200b}")
+    //   * `the_round_trip_property_holds_for_every_generated_byte_string`
+    //       [refused-a-value-that-must-round-trip] 2655 occurrence(s)
+    //
+    // The defect was then restored and both went green again. The verbatim
+    // output is in this round's SUMMARY.
+    //
+    // The two survivors certify DIFFERENT things and both are load-bearing:
+    // the enumerated one pins NAMED shapes, and the generated one reaches
+    // shapes nobody named. Neither replaces the other.
     // ======================================================================
-
-    /// **The round trip: what this build EMITS, this build must be able to
-    /// READ BACK** (T-21-35-01, D-21-68).
-    ///
-    /// Every fixture of the shared hostile corpus is handed to the REAL
-    /// producer, [`resume_terminal_argv`], its output is encoded into the
-    /// `/proc/<pid>/cmdline` wire format, and those bytes are driven through
-    /// the REAL consumer, `crate::session_detector::session_id_in_cmdline`.
-    /// The id that comes back must be byte-identical to the fixture.
-    ///
-    /// Neither side is re-spelled: the corpus is imported (D-21-6), the argv
-    /// comes from the producer and the parse comes from the consumer. That is
-    /// the whole point — see the class doc above for why a control that
-    /// exercises only one side missed this.
-    #[test]
-    fn the_argv_this_build_emits_is_an_argv_this_build_can_read_back() {
-        for term in ["kitty", "alacritty", "gnome-terminal", "xterm", "/opt/wat"] {
-            for raw in hostile_session_ids() {
-                let sid = Untrusted::from_untrusted_source(raw.clone());
-                let argv = resume_terminal_argv(term, &sid);
-                let cmdline = proc_cmdline_encoding(&argv);
-
-                let read_back = crate::session_detector::session_id_in_cmdline(&cmdline);
-                let read_back = read_back.as_ref().map(|id| id.as_raw_for_logic_only());
-
-                assert_eq!(
-                    read_back,
-                    Some(raw.as_str()),
-                    "the session id {raw:?} was emitted by this build and this \
-                     build could not read it back. Emitted argv: {argv:?}; \
-                     wire bytes: {cmdline:?}. The producer FUSES the id to its \
-                     option name in one element (`--resume=<id>`) while the \
-                     consumer scans for a STANDALONE `--resume` element and \
-                     takes the one after it — the two modules spell the same \
-                     option name independently, across a module boundary, and \
-                     they have drifted. The consequence is not a test failure: \
-                     the id this TUI hands `claude` is INVISIBLE to the \
-                     detector that finds the session again, so a session this \
-                     TUI itself resumed reads back as `session_id: None`, its \
-                     Sessions-tab row answers `No session ID to resume`, and \
-                     nothing anywhere reports it. Teach the CONSUMER the fused \
-                     form; do NOT un-fuse the producer, which was measured at \
-                     `claude` 2.1.248 to re-open the argument injection."
-                );
-            }
-        }
-    }
 
     /// **Both wire forms, because both are legitimate on the wire.**
     ///
