@@ -1,581 +1,433 @@
 ---
-phase: 21-llm-goal-layer-prompt-injection-hardening
-reviewed: 2026-08-27T00:00:00Z
-depth: standard
-range: 80bc4c1..HEAD
-files_reviewed: 20
+status: issues_found
+phase: 21
+round: 11
+reviewed: 2026-08-27
+depth: standard (per-file, plus targeted simulation of the four censuses and a base-vs-HEAD argv trace)
+range: 2c13fcf..HEAD
+files_reviewed: 9
 files_reviewed_list:
-  - src/app.rs
-  - src/error.rs
+  - src/session_detector.rs
   - src/state_reader/backlog.rs
-  - src/test_support.rs
   - src/text.rs
   - src/ui/mod.rs
-  - src/ui/roadmap_widget.rs
-  - src/ui/screens/add_project.rs
-  - src/ui/screens/create_project.rs
-  - src/ui/screens/delete_confirm.rs
   - src/ui/screens/detail.rs
   - src/ui/screens/driver.rs
-  - src/ui/screens/driver_confirm.rs
-  - src/ui/screens/driver_inject.rs
-  - src/ui/screens/driver_start.rs
-  - src/ui/screens/enqueue.rs
   - src/ui/screens/mod.rs
-  - src/ui/screens/normal.rs
-  - src/ui/screens/queue_delete_confirm.rs
   - src/ui/screens/render_escape_guard.rs
+  - tests/driver_reattach.rs
 findings:
-  critical: 1
-  warning: 6
-  info: 6
-  total: 13
-status: issues_found
+  critical: 0
+  high: 1
+  medium: 2
+  low: 4
+  total: 7
 ---
 
-# Phase 21 (round 10): Code Review Report
+# Phase 21 (round 11): Independent Code Review
 
-**Reviewed:** 2026-08-27
-**Depth:** standard (per-file, with targeted simulation of the three new censuses)
-**Range:** `80bc4c1..HEAD`
-**Files Reviewed:** 20
-**Status:** issues_found
+**Range:** `2c13fcf..HEAD` (plans 21-31, 21-32, 21-33, 21-34)
+**Verdict:** `issues_found` — 0 CRITICAL, 1 HIGH, 2 MEDIUM, 4 LOW.
 
-## Summary
+## What was checked and how
 
-The four round-10 claims were checked against the code rather than against their prose.
+| Check | Method | Result |
+|---|---|---|
+| Every construction site of the resume argv | `grep -rn -- "--resume"` over `src/` + `tests/`, then read each hit | Two builders exist; one is the live path and is fused, the other is unreachable (LOW-1) |
+| Can any path still emit `--resume` and the id as two argv elements | Read `resume_terminal_argv`, `launch_terminal_argv`, `executor::claude::build_argv`; traced `resume_session` producers | Live path: no. Executor path: yes, but no `Some` producer exists (LOW-1) |
+| Are the round-11 controls falsifiable | Hand-traced each new assertion against the pre-fix body | All four planted-defect controls are genuinely red pre-fix |
+| 21-33's census pin | Re-measured independently: `find src/ui -name '*.rs' \| wc -l` = 16; per-file non-comment `display_identity(` counts | Pin is CORRECT: driver.rs 2, driver_confirm.rs 4, render_escape_guard.rs 2; six non-exempt in two of sixteen |
+| 21-32's non-vacuity pin | Re-measured `sanitize_render_line(` across both census files | `(5, 6, 7)` is CORRECT; the cited line number is not (MEDIUM-1) |
+| 21-32's `taken += 1` relocation | Hand-traced the loop; verified the boundary arithmetic `16 - 5 = 11` / `16 - 4 = 12` | Correct, terminating, and the executable window is genuinely unchanged |
+| Build health | `rtk proxy cargo test --workspace --no-fail-fast`, `rtk proxy cargo clippy -- -D warnings` | 1110 lib + all integration tests green; clippy clean. The `driver_reattach` flake did not fire this run |
 
-**What is true.**
-
-- **21-27 (CR-01) — the interpreter is genuinely gone.** `sh -c` no longer appears in
-  either Sessions-tab spawn path. `src/ui/screens/detail.rs:1817-1818` and `:2223-2224`
-  both build an argv vector and pass the working directory through
-  `Command::current_dir`. A tree-wide grep for `Command::new` / `"-c"` finds no other
-  shell-interpolation site introduced by this round; the only remaining `sh -c` is
-  `project_creator::execute_hook` (`src/project_creator.rs:69-71`), which runs an
-  operator-authored `hooks.post_create` from the user's own `config.json` and is
-  correctly named as an out-of-scope case in the census doc.
-- I independently ran the 21-27 census's algorithm against the pre-fix
-  `src/ui/screens/detail.rs` (extracted from `80bc4c1`). It reports both original sites
-  (`:1693` and `:2097`). The "it would have caught CR-01" claim is real, not asserted.
-- **21-28 (CR-02)** is type-held as advertised. `DriverOutputLine::text` is
-  `crate::text::Untrusted` (`src/ui/screens/mod.rs:475`), `push_record` is the single
-  construction site (`src/ui/screens/mod.rs:566-583`), and `driver.rs`'s pane renders it through `.shown()`.
-- **21-29's backlog fix** is a correct total order: `f64::total_cmp` over a key that
-  filters non-finite values, with antisymmetry and transitivity swept in tests.
-- **`WAVE_PENDING` is `[(&str, &str); 0]`** (`src/ui/mod.rs:121`) — empty, as required.
-- `cargo test --lib` is 1103/0 green; `cargo clippy --all-targets -- -D warnings`
-  reports only the four known pre-existing lints (`browser.rs:155-157`,
-  `project_creator.rs:146`). Both run through `rtk proxy`.
-
-**What is not.** One live injection residual survives the CR-01 fix in the exact
-function that claims to close it, and three of this round's four new guard mechanisms
-have measured blind spots that are wider than the residuals their docs disclose. Each
-blind spot below was reproduced by running the guard's own algorithm against a fixture,
-not inferred from reading.
+All count-bearing checks ran through `rtk proxy` per the tooling constraint.
 
 ---
 
-## Critical Issues
+## HIGH
 
-### CR-01: `resume_terminal_argv` turns shell injection into argument injection — a hyphen-leading session id is an unintended option, and the control's fixture set contains none
+### HI-01 — 21-31's fusion silently deleted the resume capability's own feedback loop: `read_session_id` cannot parse the argv shape the app now emits
 
-**File:** `src/ui/screens/detail.rs:619-632` (the argv), `:1817` (the spawn),
-`src/session_detector.rs:96-113` (the source), `:7270-7293` (the control's fixture set)
+**Files:** `src/session_detector.rs:155-172` ↔ `src/ui/screens/detail.rs:703-715`
+**Severity:** HIGH (silent capability regression in the exact feature being hardened; not a security hole)
 
-**Issue:**
-
-`resume_terminal_argv` builds:
+`resume_terminal_argv` now emits **one** argv element:
 
 ```rust
-vec![
-    terminal_program_separator(term).to_string(),  // "-e" or "--"
-    "claude".to_string(),
-    "--resume".to_string(),
-    sid.as_raw_for_logic_only().to_string(),       // untrusted, unvalidated
-]
+format!("{RESUME_OPTION_FUSED_PREFIX}{}", sid.as_raw_for_logic_only())   // detail.rs:713
 ```
 
-`sid` is scraped verbatim from another process's `/proc/<pid>/cmdline`
-(`session_detector::read_session_id`, `src/session_detector.rs:96-113`). Nothing
-validates its shape: the only filter is `!val.is_empty()` after a `trim()`. It may
-therefore begin with `-`.
+`read_session_id` — the *only* place a session id enters this build — still matches the **separated** form only:
 
-Deleting the interpreter removed the *shell* metacharacter class. It did not remove the
-*option* metacharacter class, and there are still two option parsers in the path:
+```rust
+for window in args.windows(2) {
+    if window[0] == b"--resume" {          // session_detector.rs:160
+```
 
-1. the terminal emulator, and
-2. `claude` itself, whose `--resume [sessionId]` takes an **optional** value — so a
-   following `-`-leading token is parsed as a new option of `claude` rather than as
-   `--resume`'s argument.
+For a child whose `/proc/<pid>/cmdline` is `claude\0--resume=<id>\0`, `args` is
+`["claude", "--resume=<id>", ""]`; no `windows(2)` element equals `--resume`, so the
+function returns `None`.
 
-A planted session id of `--dangerously-skip-permissions` (or any other `claude` flag)
-therefore becomes an option the operator did not type, in a working directory
-(`current_dir(&session.working_dir)`) the operator also did not choose. This is CWE-88
-(argument injection), the standard successor defect to CWE-78 when a fix converts a
-shell string into an argv without adding an end-of-options marker.
+**Base-vs-HEAD trace, confirmed against `git show 2c13fcf:src/ui/screens/detail.rs`:**
 
-The function's own doc asserts the opposite, in terms that are now too strong:
+| | argv the TUI spawns | child cmdline | `read_session_id` |
+|---|---|---|---|
+| base `2c13fcf` | `[sep, "claude", "--resume", "<id>"]` | `claude --resume <id>` | recovers `<id>` |
+| HEAD | `[sep, "claude", "--resume=<id>"]` | `claude --resume=<id>` | **`None`** |
 
-> *"**The third kind no longer exists here** because there is no interpreter left in
-> the path to parse anything — that is why a quote, a semicolon, a backtick, a
-> dollar-parenthesis or a newline in the session id is now data."*
+**Consequence.** A session the TUI itself resumed now appears in the Sessions tab with
+`session_id: None`. Pressing Enter on that row returns
+`"No session ID to resume"` (`detail.rs:1954-1957`). The resume loop that worked at
+`2c13fcf` — resume a session, see it, resume it again — is broken, and it fails
+*silently*: no error, no log, just a row that can no longer be acted on. This is
+precisely the "feature deletion wearing a security fix's clothes" shape that
+`terminal_program_separator`'s and `resume_terminal_argv`'s own docs are written to
+prevent, arriving one file over from where those docs are looking.
 
-Every character in that list is now data. `-` is not, and it is the one that still
-matters. The list is the same list as the fixture set in
-`hostile_session_ids()` (`src/ui/screens/detail.rs:7270-7293`): `a'b`, `a"b`, `a;b`,
-`a&&b`, `a|b`, backticks, `$( )`, newline, `\u{7}`, a bare space, and
-`'; rm -rf / #`. **Not one fixture begins with a hyphen**, so
-`the_resume_argv_carries_a_hostile_session_id_as_one_opaque_element` passes today and
-would pass unchanged against a build that shipped this defect. Per this phase's own
-standard, a control whose fixture set omits the live case is not a certificate for it.
+**Why nothing caught it.**
 
-Exploitability caveat, stated so the rating is not read as wider than it is: the
-attacker must be able to run a process named `claude` *as the same user* — a
-different user's `/proc/<pid>/cwd` readlink fails and `build_session` drops the row
-(`src/session_detector.rs:63`). No privilege boundary is crossed. It is rated Critical
-because it is a live injection path inside the function this plan created to close
-injection, because the plan's doc makes a completeness claim that is false of it, and
-because the fix is one array element.
+1. The option spelling has **two independent sources of truth**:
+   `RESUME_OPTION_FUSED_PREFIX` (`detail.rs:585`, private to that module) and the byte
+   literal `b"--resume"` (`session_detector.rs:160`). Nothing couples them, and 21-31's
+   T-21-31-01 rationale ("the option name and the `=` that binds its value cannot drift
+   apart between the builder and the controls that check it") stops at the module
+   boundary.
+2. `src/session_detector.rs`'s only relevant test is
+   `test_read_session_id_nonexistent_pid` (`:197-201`), which passes because the
+   `/proc` read fails. It certifies nothing about the parser. See LOW-4.
+3. 21-31's summary explicitly declares "No control is added in this file, deliberately"
+   (`session_detector.rs:148-154`), on the argument that the property that matters is a
+   property of the sink. That argument is right about *security* and wrong about
+   *capability*: the round-trip property (what this build emits, this build can read
+   back) is a property of the pair, and no plan in the round owned it.
+4. Neither `21-31-PLAN.md` nor `21-31-SUMMARY.md` mentions the round trip at all —
+   `grep -n "cmdline"` over the four summaries returns only the threat-model direction
+   (attacker → us), never the emit direction (us → us).
+
+**Recommended fix** (in `src/session_detector.rs`, accept both shapes — the separated
+form must stay, because a human running `claude --resume <id>` by hand still produces
+it):
+
+```rust
+const RESUME_OPT: &[u8] = b"--resume";
+const RESUME_OPT_FUSED: &[u8] = b"--resume=";
+
+fn read_session_id(pid: u32) -> Option<Untrusted> {
+    let cmdline = std::fs::read(format!("/proc/{}/cmdline", pid)).ok()?;
+    let args: Vec<&[u8]> = cmdline.split(|&b| b == 0).collect();
+
+    for (index, arg) in args.iter().enumerate() {
+        // FUSED: `--resume=<id>`, the shape THIS build emits since 21-31.
+        let candidate: &[u8] = if let Some(rest) = arg.strip_prefix(RESUME_OPT_FUSED) {
+            rest
+        // SEPARATED: `--resume <id>`, what a human typing the command produces.
+        } else if *arg == RESUME_OPT {
+            match args.get(index + 1) { Some(next) => next, None => continue }
+        } else {
+            continue;
+        };
+        let val = String::from_utf8_lossy(candidate);
+        let val = val.trim();
+        if !val.is_empty() {
+            return Some(Untrusted::from_untrusted_source(val.to_string()));
+        }
+    }
+    None
+}
+```
+
+**And add the control that would have caught it** — a round-trip assertion driving both
+committed functions, not a re-spelling of either. It needs the parse split out of the
+`/proc` read (e.g. `fn session_id_in(cmdline: &[u8]) -> Option<Untrusted>`), which is
+the same "the live assertion and the control must consume the SAME function" split
+21-32 already made twice this round:
+
+```rust
+// The shape this build EMITS must be a shape this build can READ.
+// Red against HEAD: resume_terminal_argv fuses, read_session_id parses only the
+// separated form, so the id the TUI hands `claude` is invisible to the detector
+// that finds it again — the Sessions tab cannot re-resume its own session.
+for raw in hostile_session_ids() {                      // the same corpus, imported
+    let argv = resume_terminal_argv("kitty", &Untrusted::from_untrusted_source(raw.clone()));
+    let cmdline = std::iter::once("claude")
+        .chain(argv.iter().skip(2).map(String::as_str))  // program + its own options
+        .flat_map(|a| a.as_bytes().iter().copied().chain(std::iter::once(0u8)))
+        .collect::<Vec<u8>>();
+    assert_eq!(
+        session_id_in(&cmdline).map(|u| u.as_raw_for_logic_only().to_string()),
+        Some(raw.clone()),
+        "read_session_id cannot recover the id from the argv resume_terminal_argv \
+         emits. The two spell `--resume` independently and have drifted."
+    );
+}
+```
+
+Whatever the exact form, the acceptance bar is: it must go **red on HEAD as committed**.
+
+---
+
+## MEDIUM
+
+### ME-01 — 21-32 shipped three present-tense line citations that are stale by exactly the number of lines its own wave inserted
+
+**Files:** `src/ui/screens/driver.rs:2189-2192`, `src/ui/screens/driver.rs:2513-2518`
+**Severity:** MEDIUM (measured-false claims in the load-bearing rationale of a control, in a phase whose stated subject is that prose without a measurement is untrustworthy)
+
+Three claims about the committed tree, all wrong, all off by exactly the size of a
+change that landed in the same wave:
+
+| Claim (verbatim) | Actual | Off by |
+|---|---|---|
+| `driver.rs:2189` — "`src/ui/screens/detail.rs` carries two column-zero test attributes, at `:5342` (a `pub(super) fn` helper)" | `detail.rs:5454` | 112 = the lines 21-31 added above it |
+| `driver.rs:2191` — "and `:5764` (`mod tests`)" | `detail.rs:5876` | 112 |
+| `driver.rs:2516` — "the difference being `driver.rs`'s own test-module call at `:2349`, which the census never scans" | `driver.rs:2651` | 302 = the lines 21-32 itself inserted at `:2157` |
+
+Verified with `grep -n "^#\[cfg(test)\]" src/ui/screens/detail.rs` → `5454`, `5876`,
+and `grep -n 'sanitize_render_line(' src/ui/screens/driver.rs` → the only test-module
+hit is `:2651`. The *substance* of all three is correct (detail.rs really does carry a
+non-module test attribute above its `mod tests`; the whole-file/production-slice
+difference really is that one call). Only the coordinates are wrong.
+
+The third one is the one that matters: it is the stated justification for the pinned
+constant `WHOLE_FILE_NEEDLE_LINES = 7`, and the assertion's own failure message
+instructs the next reader to "re-measure them, say in this comment why they changed".
+A reader who follows the citation lands on `driver.rs:2349`, which is inside
+`strip_trailing_path_qualifiers`' doc block and carries no needle at all — so the
+evidence for the pin appears, to anyone who checks, to not exist. That is the
+failure mode this phase has spent eleven rounds naming.
+
+These are distinguishable from the *verbatim compiler/panic captures* elsewhere in the
+round (e.g. `screens/mod.rs:794` quoting `787 | pub struct EditBuffer`, which is a
+faithful capture from a scratch tree and is declared as such). These three are
+present-tense assertions about the committed tree.
+
+**Fix:** re-measure and correct the three numbers. Better, remove the class: cite by
+identifier rather than by line (`detail.rs`'s `first_string_entry` helper; `driver.rs`'s
+`test_module_marker_lines`-era test call), or — for the third — replace the sentence
+with the difference the code already computes (`whole_file - occurrences == 1`), which
+cannot go stale.
+
+### ME-02 — `needle_distribution` counts LINES; its name, its doc, and the pinned table all say OCCURRENCES
+
+**File:** `src/ui/mod.rs:279-302` (`needle_distribution`), pinned at `:341-345`
+(`MEASURED_REACH`), disclosed at `:378-388`
+**Severity:** MEDIUM (the disclosed property is strictly wider than the mechanism, in the
+one artifact 21-33 added specifically to stop a disclosed property from being prose)
+
+```rust
+let count = lines
+    .iter()
+    .filter(|(_, line)| !line.trim_start().starts_with("//"))
+    .filter(|(_, line)| line.contains(&call))     // <-- one per LINE, not per call
+    .count();
+```
+
+The function's doc says "Executable **occurrences** of the call needle per file"; the
+test's disclosed table is headed "Executable needle **occurrences**"; the totals row
+reads "**8** — six non-exempt". Today lines and occurrences coincide (I verified: no
+line under `src/ui/` carries two `display_identity(` calls), so the pin is *correct as
+committed* — but it is not measuring what it claims to measure. Writing
+`display_identity(a) + display_identity(b)` on one line adds an occurrence the reach
+pin cannot see, and the pin's entire purpose is to make a disclosed number go red when
+the tree moves under it.
+
+The contrast is internal to this same round: `driver.rs`'s census pins
+`PRODUCTION_NEEDLE_UNITS` **and** `PRODUCTION_NEEDLE_OCCURRENCES` separately, precisely
+because it found a unit carrying two (`driver_confirm.rs:178`/`:180`). 21-33 pinned the
+weaker of the two quantities under the stronger one's name.
 
 **Fix:**
 
 ```rust
-fn resume_terminal_argv(term: &str, sid: &Untrusted) -> Vec<String> {
-    vec![
-        terminal_program_separator(term).to_string(),
-        "claude".to_string(),
-        "--resume".to_string(),
-        // END-OF-OPTIONS. Deleting the interpreter removed the shell's
-        // metacharacters; `-` is the option parser's, and `claude --resume`
-        // takes an OPTIONAL value, so a hyphen-leading id is read as a new
-        // flag rather than as this option's argument.
-        "--".to_string(),
-        sid.as_raw_for_logic_only().to_string(),
-    ]
-}
+let count = lines
+    .iter()
+    .filter(|(_, line)| !line.trim_start().starts_with("//"))
+    .map(|(_, line)| line.matches(&call).count())
+    .sum();
 ```
 
-(Confirm `claude` honours `--` before the positional; if it does not, the alternative is
-to refuse at the source — `read_session_id` returns `None` unless the value matches the
-UUID shape `claude --resume` actually accepts — and to report the refusal rather than
-silently dropping it.)
-
-Then extend the control in both directions:
-
-```rust
-// in hostile_session_ids()
-"-h",
-"--dangerously-skip-permissions",
-"--print",
-"-",
-```
-
-plus an assertion that the untrusted element is preceded by `"--"` in the argv, so the
-absence of the separator goes red rather than the presence of a quote.
+`MEASURED_REACH` is unchanged by this today (`2 / 4 / 2`), so the fix is a one-line
+change with no pin churn — which is exactly why it should be made now rather than
+after a two-call line appears.
 
 ---
 
-## Warnings
+## LOW
 
-### WR-01: `every_render_site_under_ui_composes_both_classes` is exercised by 6 lines in 2 of the 16 files it walks; its name claims a property it does not check
+### LO-01 — `executor::claude::build_argv` still emits `--resume` and its value as two argv elements, with no pin holding it unreachable
 
-**File:** `src/ui/mod.rs:196-231` (the census), `:357-408` (the assertion)
-
-**Issue:**
-
-The test is named for render sites and its failure message says *"executable call sites
-under src/ui/ apply the invisible-formatting half alone"*. Its implementation only ever
-inspects lines that contain the literal `display_identity(`. A render site that escapes
-**nothing at all** — `Span::raw(untrusted_string)` — carries no needle and is invisible
-to it.
-
-Measured at HEAD, `display_identity(` occurrences per file under `src/ui/`:
-
-```
-0  roadmap_widget.rs      0  normal.rs             0  add_project.rs
-0  driver_inject.rs       0  enqueue.rs            0  driver_start.rs
-0  delete_confirm.rs      0  queue_delete_confirm  0  help.rs
-0  create_project.rs      0  ui/mod.rs             1  detail.rs   (doc comment only)
-3  screens/mod.rs (all doc comments)               1  render_escape_guard.rs (exempt)
-3  driver.rs (2 executable + 1 doc)                4  driver_confirm.rs (4 executable)
-```
-
-So the assertion is driven by **six executable lines in two files**. Fourteen files —
-including the two largest render surfaces, `detail.rs` (7 462 lines) and `normal.rs` —
-contribute nothing, and a new un-escaped `Span::raw` in any of them is not a census hit,
-not a compile error, and caught only if a `render_escape_guard` probe state happens to
-reach it.
-
-This is a control whose coverage **shrinks as the conversion succeeds**: every site
-converted from `display_identity` to `render_for_terminal` removes a line the census can
-see. The `!files.is_empty()` guard at `:360` only proves the walk found files; there is
-no per-file or global non-vacuity guard on the needle (contrast `driver.rs:2252-2268`,
-which at least attempts one).
-
-The residuals block at `:346-356` lists two gaps (alias/re-export; join > 4 lines). It
-does not list this one, which is the largest.
-
-**Fix:** either (a) rename and re-scope the claim to what is checked —
-*`no_display_identity_call_under_ui_stands_outside_a_composition`* — and state in the
-residuals that the census says nothing about a site that escapes nothing; or (b) add the
-missing half: a non-vacuity guard asserting the needle appears in at least *N* files, and
-route the "escapes nothing" question to a second control (widening the
-`render_escape_guard` probe states is the only mechanism in the tree that can answer it).
-Option (a) is honest and cheap; option (b) is the one that makes the test's current name
-true.
-
-### WR-02: the interpreter census's line-join budget is consumed by comment lines — 12 comments between the interpreter and the interpolation defeat it, and the disclosed residual points at a paragraph that was never written
-
-**File:** `src/text.rs:1724-1760` (`interpreter_program_sites`),
-`:1713-1722` (`has_an_unclosed_delimiter`), `:1785-1815` (the residual block)
-
-**Issue (a) — comment lines burn the join budget.** In the join loop
-(`src/text.rs:1739-1755`), `taken` is incremented *before* the comment check:
+**File:** `src/executor/claude.rs:267-272`
 
 ```rust
-ahead += 1;
-taken += 1;
-let next = lines[ahead].1.trim();
-if next.starts_with("//") {
-    continue;                       // line skipped, budget still spent
+if let Some(session) = &options.resume_session {
+    push(&mut argv, "--resume");
+    push(&mut argv, session);
 }
 ```
 
-I ran the census's algorithm against synthetic fixtures of exactly the CR-01 shape
-(`Command::new(&term).args([ "-e", "sh", "-c", <N comment lines>, &format!(...) ])`):
+This is the CWE-88 shape 21-31 removed from `resume_terminal_argv`. It is **not** live:
+`resume_session` has exactly one initializer in the whole tree
+(`src/executor/mod.rs:465`, `resume_session: None`) and no `Some` producer anywhere —
+verified by `grep -rn "resume_session" --include=*.rs`. 21-31 examined it and declared
+it inert (D-21-50, T-21-31-05), and `claude.rs:2044` asserts `--resume` is absent from
+the built argv. So the disclosure is honest and I am not calling it a vulnerability.
 
-| comment lines between `"-c"` and `&format!` | reported |
-|---|---|
-| 4  | yes |
-| 10 | yes |
-| 11 | yes |
-| **12** | **no** |
-| 13 | no |
+What is missing is the pin. 21-31 did exactly the right thing for the *other* sibling
+builder — `launch_terminal_argv_carries_no_untrusted_element_and_is_pinned_at_two`
+(`detail.rs:7737`) turns "examined and found safe" into something that fails when it
+stops being true. `resume_session` got the reasoning without the pin, so the first
+caller that sets it from a scraped id reopens CWE-88 with every test green.
 
-The real CR-01 site had five. This codebase's comment blocks routinely run ten to twenty
-lines — the round-10 diff itself contains dozens of comment blocks longer than twelve
-lines inside expression bodies. The budget is not comfortable; it is one ordinary
-comment block away from silent.
+**Fix (cheapest, no behaviour change):** fuse it — `push(&mut argv, format!("--resume={session}"))` —
+and note in the doc that this is the same control `resume_terminal_argv` carries. Or,
+if the two-element form is wanted for the executor, add a source-scan pin asserting
+`resume_session` has no `Some` producer under `src/`, in the same house style as the
+existing `spawn_seam_guard` scans.
 
-**Issue (b) — a residual is cross-referenced but not present.**
-`has_an_unclosed_delimiter`'s doc (`src/text.rs:1706-1712`) says: *"Deliberately NOT a
-method-chain follower … **The price is stated as a residual on the census itself.**"*
-The census's residual block (`src/text.rs:1785-1815`) states three residuals — a
-construction assembled across *statements*, an interpreter named by a variable, and
-`project_creator::execute_hook`. The method-chain price is not among them.
+### LO-02 — `ui::mod::census`'s join loop has the exact `taken += 1` placement 21-32 repaired in `text.rs`, undisclosed
 
-That price is real and it is the most idiomatic spelling of the defect. Measured against
-the census's own algorithm, all of these are missed:
+**File:** `src/ui/mod.rs:212-224`
 
 ```rust
-// missed — method chain, interpreter and interpolation on different lines
-Command::new("bash")
-    .arg("-c")
-    .arg(format!("echo {}", x));
-
-// missed — assembled into a local first
-let prog = format!("echo {}", x);
-Command::new("sh").args(["-c", &prog]);
-
-// missed — .concat() is not in the marker list
-Command::new("sh").args(["-c", &["echo ", x].concat()]);
-
-// missed — `+` without `&`
-Command::new("sh").args(["-c", &("echo ".to_string() + x)]);
+while taken < CALL_JOIN_LINES && ahead + 1 < lines.len() && continues_onto_the_next_line(&logical) {
+    ahead += 1;
+    taken += 1;                     // <-- BEFORE the comment `continue`
+    let next = lines[ahead].1.trim();
+    if next.starts_with("//") { continue; }
 ```
 
-Only the single-physical-line form is reported. This phase's own standing rule is that a
-claim certified only by prose is a finding; a residual that a doc *points at* and that
-does not exist is the same failure one level down.
+This is the statement placement 21-32 moved in `text::tests::interpreter_sites_in` (T-21-32-01).
+**The direction here is the safe one** — in this census finding the composer causes a
+*skip*, so a budget shortened by comments produces *more* reports (loud
+over-detection), not fewer. So it is not a defect and must **not** be "fixed for
+consistency" without re-reasoning the direction.
 
-**Fix:** move the `taken += 1` after the comment check so skipped lines do not consume
-the budget:
+The finding is the disclosure gap: the test's residual 3 (`ui/mod.rs:518-523`) says only
+"a composition wrapped across more than `CALL_JOIN_LINES` physical lines reads as
+un-composed". With `CALL_JOIN_LINES = 4`, three interleaved comment lines are enough to
+trigger the same false positive at three *physical* lines. The disclosed reach is wider
+than the mechanism's, which is the same class as ME-02.
+
+**Fix:** one clause in the residual — "…or wrapped across fewer lines with comment lines
+interleaved, which spend the budget here (safe direction: this census reports on
+*failing* to find the composer)".
+
+### LO-03 — `an_input_echo_screen_...`'s "the escape ACTED" arm is a self-oracle
+
+**File:** `src/ui/screens/render_escape_guard.rs:3272-3741`
 
 ```rust
-ahead += 1;
-let next = lines[ahead].1.trim();
-if next.starts_with("//") {
-    continue;                       // a comment costs no budget
-}
-taken += 1;
-logical.push(' ');
-logical.push_str(next);
+let expected = display_identity(hostile);
+assert!(hostile_text.contains(&expected), ...);
 ```
 
-and write the residual the other doc promises, naming the method-chain shape explicitly
-with the fixture above as its worked example. Widening
-`interpolates_into_a_string` to include `concat(`, `join(`, `format_args!` and a
-`+`-with-any-rhs marker costs nothing and closes two more of the four shapes.
+The oracle is `display_identity`, which is the second half of `render_for_terminal` —
+the function under test. The assertion therefore certifies "the render's output contains
+`display_identity`'s output", which is true by construction for any correct-shaped
+escape and cannot detect a *wrong* escape, only a *dropped* value. The test's own
+comment says the self-oracle is deliberate ("rather than by a second spelling that could
+disagree with it") and the committed RED fires on the preceding `survivors.is_empty()`
+arm, not on this one — so this arm has no observed red.
 
-### WR-03: the driver-file composition census over-joins sibling match arms, its non-vacuity guard counts a different set than the census, and one `#[cfg(test)]` attribute silently blinds it
+Not a defect: the arm's stated job is to distinguish "escaped" from "dropped", and it
+does that. Flagged so it is not later counted as escaping-correctness coverage. The
+correctness of `display_identity` itself is carried by `text.rs`'s alphabet census, and
+that is where it should stay attributed.
 
-**File:** `src/ui/screens/driver.rs:2091-2137` (`logical_lines`), `:2159-2185`
-(`composition_census`), `:2252-2268` (the non-vacuity guard)
+### LO-04 — `test_read_session_id_nonexistent_pid` is near-vacuous
 
-**Issue (a) — over-joining excuses a violation.** `logical_lines` merges physical lines
-until paren/bracket depth returns to zero AND the line ends in `;`, `{` or `}`. In
-`driver.rs` this produces logical units of up to 882 characters spanning tens of physical
-lines (measured: the unit starting at `driver.rs:1603`). `composition_census` then
-excuses the whole unit if *anywhere* in it a composer name appears. Reproduced with the
-census's own algorithm:
+**File:** `src/session_detector.rs:197-201`
 
 ```rust
-let (a, b) = match kind {
-    Kind::One => (
-        display_identity(&sanitize_render_line(v)),   // composed
-        String::new(),
-    ),
-    Kind::Two => (
-        sanitize_render_line(v),                      // NOT composed
-        String::new(),
-    ),
-};
+assert!(read_session_id(999_999_999).is_none());
 ```
 
-Result: **census hits: []**. Both arms land in one logical unit; the composed arm
-launders the un-composed one. Given how much of `driver.rs` is exactly this shape
-(`match` over `DriverLineKind` / `TerminalState` / `RunOutcome`, all one logical unit
-each), this is the likeliest way the next violation arrives. The census's residual block
-(`driver.rs:2200-2205`) discloses only the opposite direction (a composition assembled
-across statements reading as un-composed).
+Returns `None` at `std::fs::read(...).ok()?` — the first line — so the assertion holds
+for *any* body of the parsing loop below it, including an empty one. It is the only test
+touching the function, and it is what let HI-01 ship. Pre-existing, not introduced this
+round, but round 11 added 59 lines of doc to this function asserting a decision about its
+behaviour without adding anything that can go red about that behaviour.
 
-**Issue (b) — the non-vacuity guard measures a different set.** `composition_census`
-truncates each file at the first `#[cfg(test)]` line (`driver.rs:2168-2172`), but
-NON-VACUITY 2 (`:2252-2268`) counts needle lines over the **whole file**. Measured:
-
-```
-src/ui/screens/driver.rs          whole file: 3   production: 2
-src/ui/screens/driver_confirm.rs  whole file: 4   production: 4
-```
-
-If every production call were converted away, `total > 0` would still pass on the
-test-section occurrence while the census scanned nothing — which is precisely the
-"nothing to find vs all composed" ambiguity the guard exists to remove.
-
-**Issue (c) — a `#[cfg(test)]` attribute is a silent kill switch.** The truncation is at
-the *first* `#[cfg(test)]` line, not at the test module. `detail.rs` already carries a
-mid-file `#[cfg(test)] pub(super) fn first_string_entry` (added this round,
-`src/ui/screens/detail.rs:5342-5343`), so the pattern is live in this codebase. Adding such a
-helper near the top of `driver.rs` would silently exclude every render site below it,
-with nothing going red.
-
-**Fix:**
-- (a) Reject on the *innermost* call rather than on the enclosing unit: extract the
-  argument expression of each `sanitize_render_line(` occurrence and require a composer
-  in the same parenthesised expression, not anywhere in the statement. Failing that, add
-  a fixture control that asserts the two-arm shape above IS reported.
-- (b) Compute `total` over `lines[..end]` — the same slice the census scans.
-- (c) Truncate at the test **module** (`mod tests` after a `#[cfg(test)]`), or assert
-  that exactly one `#[cfg(test)]` exists per census file so a second one goes red.
-
-### WR-04: `EditBuffer`'s trait-absence claim is prose only — no analogue of the control the same round demanded for `Untrusted`
-
-**File:** `src/ui/screens/mod.rs:750-757, 787-846`
-
-**Issue:** the type's doc asserts:
-
-> *"`Span::styled(buffer.clone(), ..)` does not compile, because this type has no
-> `Display`, no `AsRef<str>` and no `Into<Cow<'static, str>>`, and the only route to a
-> cell is `shown`."*
-
-That is the same sentence `Untrusted` carried before 21-27, and 21-27 (WR-01) rated the
-prose-only version a finding, built
-`an_untrusted_carrier_implements_none_of_the_string_conversions`, extended it from three
-absences to six, and observed each red by planting. **No equivalent control exists for
-`EditBuffer`.** The committed tests for it (`what_the_operator_types_is_what_is_persisted`,
-`the_edit_buffer_pushes_and_pops_whole_characters`,
-`the_edit_popup_is_measured_in_characters_not_bytes`) all assert *behaviour*; none
-asserts the absent trait surface. Adding `impl Display for EditBuffer` tomorrow restores
-the exact laundering path CR-03 closed, with every test in the repository still green and
-the doc still claiming the absence — which is verbatim the argument 21-27 used to justify
-building the `Untrusted` control.
-
-The claim is also already slightly false as written: `EditBuffer` does not derive
-`Clone`, so `buffer.clone()` fails for a reason unrelated to the three named absences.
-
-**Fix:** reuse the existing probe machinery. `text::tests::trait_probe` is already
-`pub(crate)`-shaped; drive the same six absences over `EditBuffer` with the same
-`String` presence arms:
-
-```rust
-#[test]
-fn the_edit_buffer_implements_none_of_the_string_conversions() {
-    let b = EditBuffer::seed_from_untrusted_source("demo".into());
-    assert!(!implements_display!(b), "…");
-    assert!(!implements_as_ref_str!(b), "…");
-    assert!(!implements_into_cow_str!(b), "…");
-    // + the three String presence arms, so a broken probe fails loudly
-}
-```
-
-### WR-05: the backlog order is still permutation-dependent for tied entries, and the test's name says otherwise
-
-**File:** `src/state_reader/backlog.rs:49-96` (`parse_backlog_items`), `:112-157`
-(the key and comparator), `:283-330` (the control)
-
-**Issue:** the comparator is now a genuine total order over *keys*, but
-`backlog_sort_key` maps every unusable suffix to the same `0.0`
-(`999.NaN`, `999.nan`, `999.inf`, `999.x`, `999.` and a literal `999.0` all tie).
-`slice::sort_by` is stable, so tied elements keep the order `std::fs::read_dir`
-(`backlog.rs:51`) returned them in — which is unspecified and varies by filesystem and
-by directory-entry churn.
-
-So the Backlog tab's displayed order for tied items is *still* "a function of whatever
-`read_dir` happened to return first" — the exact sentence in the failure message at
-`:294-297` describing the defect being fixed. The test named
-`a_non_numeric_suffix_cannot_make_the_order_depend_on_the_input_permutation`
-sidesteps this by asserting only the sequence of *keys* for the tied fixture
-(`:312-330`), with a comment explaining why the element sequence is not asserted. The
-explanation is correct about `sort_by`'s stability; it is not correct that the
-user-visible property in the test's own name is achieved.
-
-**Fix:** make the comparator total on *elements*, which costs one line and removes the
-tie class entirely:
-
-```rust
-fn backlog_number_ordering(a: &str, b: &str) -> std::cmp::Ordering {
-    backlog_sort_key(a)
-        .total_cmp(&backlog_sort_key(b))
-        // Tie-break on the raw name, so items whose suffix names no position on
-        // the number line still have ONE order rather than `read_dir`'s.
-        .then_with(|| a.cmp(b))
-}
-```
-
-then assert the element sequence for the tied fixture too, which is what the test's name
-promises.
-
-### WR-06: the `cd '<dir>' &&` → `Command::current_dir` half of the CR-01 fix has no control and no emulator table, while the separator half of the same change got both
-
-**File:** `src/ui/screens/detail.rs:611-616` (the claim), `:1818`, `:2224`
-
-**Issue:** the plan recognised — correctly and at length — that handing an emulator a
-real argv exposes the resumed program's options to the emulator's own parser for the
-first time, wrote the `terminal_program_separator` table for it
-(`src/ui/screens/detail.rs:536-568`), and pinned it with two controls
-(`every_terminal_find_terminal_can_return_gets_a_separator_that_keeps_the_program_options`,
-`the_separator_table_covers_every_candidate_find_terminal_probes`).
-
-The same change also moved the working directory from *inside* the shell program
-(`cd '<dir>' && …`, which executed in the final child) to `Command::current_dir` on the
-**emulator client process**. That is a different level, and the doc elides it:
-
-> *"It is set through `std::process::Command::current_dir` at the call site, which the
-> process API passes to the child directly rather than as a `cd` written into a program."*
-
-The "child" there is the emulator, not `claude`. Whether the terminal's shell inherits
-that cwd is a per-emulator property: `kitty`/`alacritty`/`xterm` fork-and-exec the
-program and it is inherited; `gnome-terminal` is a D-Bus-activated client that must
-forward the cwd to a pre-existing server process for it to take effect. `gnome-terminal`
-is one of exactly four candidates `find_terminal` probes, and it is the same candidate
-the separator table had to special-case. There is no test, table or note covering the
-cwd half, and the failure mode is silent: the terminal opens, the resume works, and the
-session lands in `$HOME` instead of the project.
-
-**Fix:** at minimum, extend `terminal_program_separator`'s table with a cwd column and
-say per emulator how the working directory reaches the child, with the same "under-
-detection, LOUD/silent" annotation the separator residual carries. If gnome-terminal is
-found not to forward it, pass `--working-directory=<path>` for that stem — which is a
-table entry beside the separator, not a new mechanism.
+**Fix:** subsumed by HI-01's recommended round-trip control, which drives the parse over
+in-memory NUL-separated fixtures.
 
 ---
 
-## Info
+## Things checked that came back CLEAN
 
-### IN-01: `EXEMPTIONS` are whole-file while `WAVE_PENDING` argues for exact `path:line` pinning
+Recorded so a later reader knows these were adversarially examined and not merely
+skipped.
 
-**File:** `src/ui/mod.rs:74-94`, `:386-391`
-
-`WAVE_PENDING`'s doc (`:106-113`) argues that an entry pinned to one exact `path:line`
-"hides at most that one line and cannot absorb a new violation elsewhere in the file".
-The `EXEMPTIONS` filter one screen down uses
-`site.starts_with(&format!("{}:", exemption.path))` — a whole-file match over
-`render_escape_guard.rs` (3 128 lines). The two mechanisms sit in the same module with
-opposite conventions and the inconsistency is unexplained. The exemption is defensible
-today (the file is `#[cfg(test)]`-gated, `src/ui/screens/mod.rs:20-21`), but the pinning
-argument applies to it verbatim.
-
-**Fix:** pin the exemption to `src/ui/screens/render_escape_guard.rs:2615`, or state in
-`EXEMPTIONS`' doc why whole-file is right here and pinned is right there.
-
-### IN-02: dead assertion in `the_separator_table_covers_every_candidate_find_terminal_probes`
-
-**File:** `src/ui/screens/detail.rs:7457`
-
-```rust
-assert!(matches!(separator, "-e" | "--"), "{candidate:?} resolved to the unknown separator {separator:?}");
-```
-
-`terminal_program_separator` is a two-arm `match` returning `&'static str` literals
-`"--"` and `"-e"`; the assertion cannot fail. The load-bearing part of the test is the
-`candidates.len() == 4` equality above it.
-
-**Fix:** delete the arm, or replace it with the assertion that has teeth — that each
-candidate resolves to the separator the table's markdown row records for it.
-
-### IN-03: "Resumed session {}" is reported on `spawn()` returning, not on the resume working
-
-**File:** `src/ui/screens/detail.rs:1820-1826`, `:2226-2232`
-
-`Command::spawn()` succeeds as soon as the emulator binary is exec'd. An emulator that
-rejects the separator or the flags exits immediately (and, having no terminal yet, shows
-the operator nothing), while the TUI reports success. `terminal_program_separator`'s doc
-claims the unsupported-emulator residual is *"LOUD rather than silent — the emulator
-rejects the flag and the operator sees the failure"*; with the status line reporting
-success and the emulator's stderr going nowhere, the operator sees a flash and a green
-message. Pre-existing shape, but the round-10 doc now rests a residual's direction on it.
-
-### IN-04: `ArchiveDepth::milestone` is the same untyped round trip 21-30 closed for `defaults_text_buffer`
-
-**File:** `src/ui/screens/detail.rs:1866` (raw take), `:4024-4079` (re-escape at render)
-
-`archive_milestones` is `Vec<Untrusted>`; navigating takes
-`.as_raw_for_logic_only().to_string()` into `ArchiveDepth::PhaseList { milestone: String }`,
-and `archive_breadcrumb` escapes it again with the local `shown()` helper
-(`detail.rs:77-79`). Structurally identical to the CR-03 laundering, correctly escaped at
-each of the three render sites, honestly disclosed at `:4024-4032` with its direction
-("under-protection, silent"), and covered by the archive probe states. Named here so the
-one remaining instance of the pattern the round made a defect class is on the record; it
-is a candidate for the same `EditBuffer`-style retype next time `crate::archive` is open.
-
-### IN-05: `interpolates_into_a_string`'s marker set is narrower than its own doc
-
-**File:** `src/text.rs:1698-1704`
-
-The doc says *"The formatting macros this codebase builds strings with, plus `&`-string
-concatenation."* The list is `["format!", "write!", "writeln!", "+ &", "push_str(&"]`.
-`+ &` matches only that exact spacing (`a+&b` and a `+` at a line break both miss), and
-`String + &str` where the right-hand side is already a `&str` variable is written `s + x`
-with no `&` at all. `concat!`, `.concat()`, `.join()`, `format_args!` and `.replace()` are
-absent. See WR-02 for measured misses.
-
-### IN-06: `EditBuffer::push_char` / `pop_char` reallocate the whole buffer per keystroke
-
-**File:** `src/ui/screens/mod.rs:805-818`
-
-Each edit does `as_raw_for_logic_only().to_string()` → mutate → `from_untrusted_source`,
-copying the buffer twice per keypress. Harmless at config-value lengths and out of the
-declared v1 performance scope, but it is a shape forced by `Untrusted` exposing no
-mutator; a `Untrusted::into_raw(self) -> String` (a by-value take, no more permissive
-than the existing accessor) would let the wrapper mutate in place without adding a
-borrow-shaped escape hatch.
-
----
-
-## Verification notes
-
-- Every count- or presence-bearing check in this review was run through `rtk proxy`.
-- The three censuses were exercised by re-implementing their published algorithms and
-  running them against (a) the pre-fix `detail.rs` from `80bc4c1` and (b) synthetic
-  fixtures; the pass/fail tables in WR-02 and WR-03 are measurements, not readings.
-- `tests/driver_reattach.rs`'s two nondeterministic tests were not run and are not
-  reported, per scope.
-- The four known clippy lints (`browser.rs:155-157`, `project_creator.rs:146`) are
-  out of scope and were confirmed to be the only ones.
+- **Fusion completeness (Priority 1).** `resume_terminal_argv` (`detail.rs:703-715`) is
+  the only builder reachable from the Sessions-tab resume, and it is called from exactly
+  one site (`detail.rs:1929`). Every terminal in `terminal_program_separator`'s table
+  produces a 3-element vector with the id fused; no path emits `--resume` and the id
+  separately (LO-01 excepted, and it is unreachable). The `--` separator was correctly
+  *not* used. `read_session_id`'s non-validating pass-through is, as instructed, not
+  flagged — HI-01 is about the parser's *shape coverage*, not about validation.
+- **`the_resume_argv_never_lets_a_session_id_become_an_option_of_the_resumed_program`**
+  is genuinely falsifying. Traced against the base builder
+  `[sep, "claude", "--resume", raw]`: the hyphen-leading count is 3 for the nine
+  option-lookalike fixtures and 2 for the rest, so `observed.len() == 2` and the content
+  independence arm goes red. The `corpus.len() == 28` pin arithmetic checks out
+  (`LOOK_ALIKE_PAIRS` is `[(&str, &str); 7]` + 11 + 10).
+- **The rewritten assertion (1)** in `the_resume_argv_carries_a_hostile_session_id_as_one_opaque_element`
+  handles the two adversarial fixtures correctly: `a=b` (splits on the FIRST `=`, so the
+  id arrives whole) and `--settings=/tmp/x.json` (a value that already carries a fused
+  `=`). It no longer checks *which* option the id is fused to, but the sibling test's
+  `RESUME_OPTION_FUSED_PREFIX` arm covers that.
+- **21-32's `taken += 1` relocation (Priority 3).** Hand-traced: `taken` starts at 1 for
+  the seed line, the guard `taken >= 16` is evaluated pre-append, and the fixture spends
+  4 before the filler — so `LAST_REPORTED_FILLER = 11` / `FIRST_MISSED_FILLER = 12` is
+  arithmetically exact, and the executable window is provably unmoved. The comment
+  `continue` cannot loop forever (`ahead` strictly increases and is bounded).
+- **21-32's relocated verdict (Priority 3).** `occurrence_is_composed` is strictly
+  stronger than the whole-unit rule it replaces — it can only report more, never fewer,
+  so nothing the old site covered is lost. `strip_trailing_path_qualifiers` terminates
+  (each iteration strictly shrinks the slice), never panics (`boundary` comes from
+  `char_indices`), and handles both live spellings (`crate::text::display_identity(&` and
+  `...(&super::`). The `laundering_fixture` really does join both arms into one logical
+  unit at line 3 (traced through `logical_lines`' `closes` rule: `],` does not close, `}`
+  does), so the control's red is the verdict's and not the join's.
+- **21-33's census pin (Priority 4).** Independently re-measured. 16 `.rs` files under
+  `src/ui/`; needle lines `driver_confirm.rs` 4 (`:178`, `:180`, `:304`, `:344`),
+  `driver.rs` 2 (`:645`, `:944`), `render_escape_guard.rs` 2 (`:2615`, `:3272`).
+  `MEASURED_REACH` matches exactly, `UI_SOURCE_FLOOR = 16` matches, and "six non-exempt
+  in two of sixteen" is right. The `render_escape_guard.rs` exemption is **justified, not
+  convenient**: both its occurrences are `let expected = display_identity(...)` /
+  `let escaped = display_identity(&hostile)` oracle lines, and `stale_exemptions` keeps
+  the exemption honest by reporting it if the file stops containing an un-composed call.
+  The two doc line numbers cited for those occurrences (`:2615`, `:3272`) are correct —
+  unlike ME-01's.
+- **21-32's non-vacuity pin `(units, occurrences, whole_file) == (5, 6, 7)`.**
+  Re-measured: correct. Only the prose citation of the 7th line is wrong (ME-01).
+- **21-33's `EditBuffer` trait probe.** The three `String` presence arms are real
+  non-vacuity guards (a broken autoref probe answers `false` to everything and the
+  presence arms catch it). The orphan-rule argument bounding the "feature-gated impl"
+  residual is sound. "Derives nothing at all, `Clone` included" is literally true —
+  `Default` is hand-written at `screens/mod.rs:849`.
+- **21-33's backlog tiebreak.** `key(a).total_cmp(&key(b)).then_with(|| a.cmp(b))` is a
+  genuine total order over elements (lexicographic composition of two total orders), the
+  fixture `["999.zebra", "999.alpha"]` really does tie on the key, and its alphabetical
+  order really is the reverse of its input order — so the control is red pre-fix, as its
+  quoted panic shows. Scope claim ("display ordering only") checked: no persisted
+  artifact reads this order.
+- **21-33's rename.** `grep -rn "every_render_site_under_ui_composes_both_classes" src/ tests/`
+  returns zero. The rename fully landed.
+- **21-34.** `tests/driver_reattach.rs` is comment-only, as claimed — the diff touches no
+  executable line, so the binary behaves identically. The known `driver_reattach` flake
+  is excluded per instruction; it did not fire in this review's workspace run
+  (all suites green).
+- **Build health.** `cargo test --workspace --no-fail-fast`: 1110 lib tests + every
+  integration suite green. `cargo clippy -- -D warnings` (the project-standard
+  invocation per CLAUDE.md): clean. `cargo clippy --all-targets -- -D warnings` reports 4
+  errors, all in `src/browser.rs:155-157` and `src/project_creator.rs:146` — files
+  untouched by round 11, pre-existing, out of scope.
 
 ---
 
 _Reviewed: 2026-08-27_
-_Reviewer: Claude (gsd-code-reviewer)_
-_Depth: standard_
+_Reviewer: Claude (gsd-code-reviewer), adversarial stance_
+_Depth: standard + targeted simulation_
+_Prior round's REVIEW.md is preserved in git history at `dfa11c6`._
