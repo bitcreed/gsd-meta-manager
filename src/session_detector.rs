@@ -93,6 +93,65 @@ fn read_tty(pid: u32) -> Option<String> {
     }
 }
 
+/// The ONE place a session id enters this build: the token after another
+/// process's `--resume` in its `/proc/<pid>/cmdline`.
+///
+/// # This value is passed through UNVALIDATED, and that is a decision (D-21-48)
+///
+/// Said plainly, because the next reader must not mistake the absence of a
+/// validator for the absence of thought: **nothing here constrains the id
+/// beyond non-emptiness after `trim()`.** Not its first byte, not its
+/// character set, not its length. A `-h`, a `--dangerously-skip-permissions`
+/// or a `'; rm -rf / #` read out of a hostile neighbour's command line is
+/// returned from this function unchanged.
+///
+/// **The control that makes that safe is `resume_terminal_argv` in
+/// `crate::ui::screens::detail`**, which fuses the id to its option name in a
+/// single argv element (`--resume=<id>`). Fusion binds the value to the option
+/// regardless of its first byte, so `claude`'s own option parser reads it as
+/// data rather than as an option of its own (CWE-88). If you are here because
+/// you deleted or loosened that fusion, this sentence is the one that says why
+/// it existed.
+///
+/// # A rejecting validator was CONSIDERED and DECLINED, for two reasons
+///
+/// **One, it costs capability in the SILENT direction.** The installed CLI's
+/// own error text is `--resume requires a valid session ID or session title`
+/// — `claude` resumes by session **title** as well as by UUID. A rule tight
+/// enough to refuse `-h` therefore also refuses legitimate title resumes, and
+/// those sessions would simply stop appearing as resumable in the Sessions tab
+/// with no message to the operator. That is a feature deletion wearing a
+/// security fix's clothes, and it would be invisible.
+///
+/// **Two, it is the structurally weaker control.** A validator can only
+/// enumerate shapes to refuse, and an enumeration can always be one shape
+/// short — this phase's own history is eleven verification passes of exactly
+/// that. Fusion is not an enumeration: it removes the receiving parser's
+/// ability to reinterpret ANY byte of the value. It is the same argument round
+/// 10 made correctly about deleting the command interpreter, carried one
+/// parser further than round 10 stopped.
+///
+/// # What this pass-through does NOT bound, and in which direction
+///
+/// A hostile id still reaches every OTHER consumer of
+/// [`ClaudeSession::session_id`]. That is already closed at the TYPE rather
+/// than here: the field is `Option<crate::text::Untrusted>`, and every
+/// Sessions-tab render goes through `shown()`, so an invisible or bidi
+/// character cannot reach a row unescaped.
+///
+/// The residual is a FUTURE consumer that takes the raw accessor and hands it
+/// to a parser without an argv fusion. Its direction is **under-detection, and
+/// SILENT** — nothing here would report it. It is bounded by
+/// `Untrusted::as_raw_for_logic_only`'s three-question rule and by the
+/// interpreter census over `src/`, and NOT by this function.
+///
+/// # No control is added in this file, deliberately
+///
+/// The property that matters is a property of the SINK — that the id cannot
+/// become an option of the resumed program — and it is asserted at the sink by
+/// `tests::the_resume_argv_never_lets_a_session_id_become_an_option_of_the_resumed_program`.
+/// A second assertion here would certify a claim this function does not make,
+/// and would let the class be counted as closed twice.
 fn read_session_id(pid: u32) -> Option<Untrusted> {
     let cmdline = std::fs::read(format!("/proc/{}/cmdline", pid)).ok()?;
     let args: Vec<&[u8]> = cmdline.split(|&b| b == 0).collect();

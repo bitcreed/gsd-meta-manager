@@ -574,6 +574,16 @@ fn terminal_program_separator(term: &str) -> &'static str {
     }
 }
 
+/// The resume long option **fused to its value separator** — the single
+/// spelling of the prefix [`resume_terminal_argv`] builds its untrusted element
+/// from, so the option name and the `=` that binds its value cannot drift apart
+/// between the builder and the controls that check it (T-21-31-01).
+///
+/// The trailing `=` is load-bearing, not cosmetic: without it the id becomes a
+/// separate argv element and `-r, --resume [value]`'s OPTIONAL value lets an
+/// id beginning with `-` be read as a new option (CWE-88).
+const RESUME_OPTION_FUSED_PREFIX: &str = "--resume=";
+
 /// The argv for resuming a Claude session, with **no command interpreter in
 /// it** (CR-01, T-21-27-01, T-21-27-02).
 ///
@@ -616,16 +626,91 @@ fn terminal_program_separator(term: &str) -> &'static str {
 /// emulator in CI — by
 /// `tests::the_resume_argv_carries_a_hostile_session_id_as_one_opaque_element`,
 /// observed RED against the construction this replaces.
+///
+/// # CORRECTED 2026-08-27 (21-31): the paragraph above says no parser remained in the path, and one did (CWE-88)
+///
+/// **The sentence this corrects, verbatim:** *"**The third kind no longer
+/// exists here** because there is no interpreter left in the path to parse
+/// anything."*
+///
+/// Its second clause is what made the first one false, and the failure is
+/// worth naming precisely rather than patching over. Round 10 deleted the
+/// command interpreter, and that was real: no `-c` program string survives
+/// here, so CR-01 is genuinely closed. But "no interpreter" is not "no
+/// parser". **`claude`'s own option parser was in the path the whole time.**
+///
+/// The distinction the original sentence collapsed: `execve` hands argv
+/// elements to the child **unparsed** — but the PROGRAM `execve` starts parses
+/// them itself, and that is the entire purpose of an argv. Deleting the shell
+/// removed one parser from the path. It did not remove the last one, because
+/// the last one is the program being run.
+///
+/// So what a hostile session id could reach changed KIND rather than
+/// disappearing. It stopped being a shell metacharacter problem (CWE-78) and
+/// became an **argument injection** problem (**CWE-88**): `claude --help`
+/// documents
+///
+/// ```text
+/// -r, --resume [value]   Resume a conversation by session ID, or
+///                        open interactive picker with optional search term
+/// ```
+///
+/// — an option whose value is **optional**. When the id travelled as its own
+/// trailing argv element, an id beginning with `-` was read by `claude` as a
+/// NEW OPTION rather than as this option's argument. Measured at `claude`
+/// 2.1.248 with stdin at `/dev/null`, `claude --resume --version` printed
+/// `2.1.248 (Claude Code)` and exited 0 — the injection firing, with a harmless
+/// flag standing in for `--dangerously-skip-permissions`. The id is scraped
+/// verbatim from another local process's `/proc/<pid>/cmdline`, so planting one
+/// needs no privilege.
+///
+/// # Why FUSION (`--resume=<id>`) and not a `--` end-of-options separator
+///
+/// The obvious fix is the wrong one, and it was measured rather than reasoned
+/// about — at the same binary, same conditions:
+///
+/// | Probe | Command | Observed |
+/// |---|---|---|
+/// | C | `claude --resume -- --version` | `Error: --resume requires a valid session ID or session title when used with --print.` |
+/// | D | `claude --resume -- 550e8400-e29b-41d4-a716-446655440000` | **byte-identical to C** |
+/// | E | `claude --resume=550e8400-e29b-41d4-a716-446655440000` | `No conversation found with session ID: 550e8400-e29b-41d4-a716-446655440000` |
+///
+/// **D is the finding that decides this function.** A `--` separator closes the
+/// injection (C) and, in the same stroke, **deletes the resume** (D): `--`
+/// terminates option parsing, so the id lands as a POSITIONAL operand and
+/// `--resume` receives nothing at all. A valid UUID and a hostile flag produce
+/// the same error, which means the failure is silent on every legitimate
+/// session — a feature deletion wearing a security fix's clothes, the exact
+/// shape [`terminal_program_separator`]'s own doc exists to prevent.
+///
+/// Fusion has neither cost. In `--resume=<id>` the value is bound to the option
+/// by the argv element itself, so its first byte stops being syntax (probe B:
+/// `claude --resume=--version` reports `"--version" is not a UUID and does not
+/// match any session title` — the flag arriving as DATA), and a real id still
+/// resumes (probe E). The id reaching the child stays byte-identical to
+/// `as_raw_for_logic_only()`, which is the capability half: an id that does not
+/// arrive whole resumes nothing.
+///
+/// Note what fusion is NOT: it is not escaping and not validation. It removes
+/// the receiving parser's ability to reinterpret ANY byte of the value, which
+/// is why [`crate::session_detector::read_session_id`] can and does keep its
+/// unvalidated pass-through — see that function's doc for the other half of
+/// this decision.
+///
+/// The shape is asserted, not asserted-about, by
+/// `tests::the_resume_argv_never_lets_a_session_id_become_an_option_of_the_resumed_program`,
+/// observed RED against the construction this replaces.
 fn resume_terminal_argv(term: &str, sid: &Untrusted) -> Vec<String> {
     vec![
         terminal_program_separator(term).to_string(),
         "claude".to_string(),
-        "--resume".to_string(),
-        // An ARGV ELEMENT, and now genuinely one: it is handed to `execve`
-        // unparsed. The raw id is what `claude --resume` must receive and an
-        // escaped one would resume nothing — see this function's doc for the
-        // round-9 comment whose *other* clause was false.
-        sid.as_raw_for_logic_only().to_string(),
+        // ONE element, with the untrusted id FUSED to the option name it
+        // belongs to. `execve` hands this over unparsed and `claude`'s own
+        // option parser then reads everything after the `=` as this option's
+        // VALUE — so an id beginning with `-` is data rather than a new
+        // option of its own (CWE-88). The raw id is what must arrive, and it
+        // arrives whole: an escaped or truncated one would resume nothing.
+        format!("{RESUME_OPTION_FUSED_PREFIX}{}", sid.as_raw_for_logic_only()),
     ]
 }
 
@@ -633,6 +718,25 @@ fn resume_terminal_argv(term: &str, sid: &Untrusted) -> Vec<String> {
 /// [`resume_terminal_argv`]. The project path used to be interpolated into the
 /// same interpreter program string here and now travels through
 /// [`std::process::Command::current_dir`] instead.
+///
+/// # EXAMINED and deliberately left unchanged by 21-31 (D-21-49)
+///
+/// When [`resume_terminal_argv`] was fused against CWE-88, this sibling was the
+/// obvious next place to look. It was looked at, and the answer is that there is
+/// nothing here to protect: **every element of this vector is authored in this
+/// file.** The separator comes from [`terminal_program_separator`]'s table and
+/// the program name is a literal. No untrusted value reaches it at all — the
+/// project path travels through `current_dir`, outside the argv — so there is
+/// no value an option parser could reinterpret, and neither a fusion nor a `--`
+/// separator would have anything to bind. Adding one would be ceremony that
+/// looks like a control.
+///
+/// That reasoning is only true while the vector stays two elements long, and
+/// prose cannot enforce that. `tests::launch_terminal_argv_carries_no_untrusted
+/// _element_and_is_pinned_at_two` asserts the returned vector EQUALS an
+/// authored two-element vector for every terminal, so appending a third element
+/// — the only way this builder could acquire an untrusted value — fails loudly
+/// and forces this decision to be made explicitly again rather than inherited.
 fn launch_terminal_argv(term: &str) -> Vec<String> {
     vec![
         terminal_program_separator(term).to_string(),
@@ -1807,12 +1911,20 @@ impl Screen for DetailScreen {
                                         // fragment of a program handed to an
                                         // interpreter through `-c`, so a quote
                                         // in it ran arbitrary code (CR-01).
-                                        // The third sink kind no longer exists
-                                        // here: there is no parser left. The
-                                        // working directory travels through
-                                        // `current_dir`, not as a `cd` written
-                                        // into a program. See
-                                        // `resume_terminal_argv`'s doc.
+                                        // The INTERPRETER is gone; a parser is
+                                        // not. `claude`'s own option parser
+                                        // reads this argv, and `--resume`
+                                        // takes an OPTIONAL value — so the id
+                                        // travels FUSED as `--resume=<id>`,
+                                        // which binds it as that option's
+                                        // value instead of letting a leading
+                                        // `-` make it an option of its own
+                                        // (CWE-88). The working directory
+                                        // travels through `current_dir`, not
+                                        // as a `cd` written into a program.
+                                        // See `resume_terminal_argv`'s doc for
+                                        // the measurement that chose fusion
+                                        // over a `--` separator.
                                         match std::process::Command::new(&term)
                                             .args(resume_terminal_argv(&term, sid))
                                             .current_dir(&session.working_dir)
@@ -7265,8 +7377,26 @@ mod tests {
     }
 
     /// Session ids that are hostile in every way this codebase can name: the
-    /// look-alike corpus by IMPORT (never respelled — D-21-6), plus one fixture
-    /// per shell metacharacter class.
+    /// look-alike corpus by IMPORT (never respelled — D-21-6), one fixture per
+    /// shell metacharacter class, and — since round 11 — one fixture per
+    /// OPTION-LOOKALIKE class.
+    ///
+    /// # Why the option-lookalike block exists (gaps[0]'s second half, D-21-46)
+    ///
+    /// Until round 11 this corpus carried eighteen fixtures and **not one of
+    /// them began with a hyphen**. Every fixture named a shell metacharacter
+    /// class, because the defect the corpus was written against was a shell
+    /// interpreter in the path. Round 10 deleted that interpreter and traded
+    /// CWE-78 for CWE-88 — and this corpus could not tell, because
+    /// `-r, --resume [value]` is an OPTIONAL-value option and only an
+    /// id whose first byte is `-` can exercise it. The control it certified
+    /// therefore passed against a build shipping the defect, which is not a
+    /// certificate at all.
+    ///
+    /// The complicity was proven rather than asserted: these ten fixtures were
+    /// added FIRST, with no production line touched, and
+    /// `the_resume_argv_carries_a_hostile_session_id_as_one_opaque_element` was
+    /// captured still GREEN against the unfixed construction.
     fn hostile_session_ids() -> Vec<String> {
         let mut ids: Vec<String> = crate::test_support::LOOK_ALIKE_PAIRS
             .iter()
@@ -7289,6 +7419,26 @@ mod tests {
             .iter()
             .map(|raw| (*raw).to_string()),
         );
+        ids.extend(
+            [
+                // --- Option lookalikes (round 11, CWE-88) -------------------
+                // Each is a value that a receiving option parser reads as an
+                // OPTION when it arrives as its own argv element.
+                "-h",                             // the shortest possible option lookalike
+                "--version",                      // probe A's payload: measured to FIRE at claude 2.1.248
+                "--dangerously-skip-permissions", // the payload probe A stands in for
+                "--print",                        // an option that changes the program's whole mode
+                "-",                              // a bare hyphen: the degenerate case
+                "-r",                             // the SHORT spelling of the option being injected into
+                "--resume",                       // the option's own name, so the id can impersonate it
+                "--settings=/tmp/x.json",         // an option that already carries a fused value
+                "a=b",                            // NOT an option: the fusion character inside an id,
+                // which must still arrive WHOLE (capability direction)
+                "--add-dir", // an option taking a path the attacker chooses
+            ]
+            .iter()
+            .map(|raw| (*raw).to_string()),
+        );
         ids
     }
 
@@ -7300,6 +7450,27 @@ mod tests {
     ///
     /// The four assertions are ordered so the first failure names the defect
     /// rather than a symptom of it.
+    ///
+    /// # Assertion (1) rewritten 2026-08-27 (21-31)
+    ///
+    /// It used to require an argv element **byte-identical to the raw id**.
+    /// That is no longer the shape: `resume_terminal_argv` now FUSES the id to
+    /// its option name (`--resume=<id>`) so that `claude`'s own option parser
+    /// binds it as a value rather than reading a leading `-` as a new option
+    /// (CWE-88). The id therefore never stands alone as an element, and the
+    /// capability property it was really asserting — the id arrives WHOLE — is
+    /// now checked on the suffix after the fused element's first `=`.
+    /// Assertions (2), (3) and (4) are untouched: no interpreter binary, no
+    /// interpreter command-string flag, constant arity. They still hold and
+    /// they still name a real class, so they are kept rather than deleted.
+    ///
+    /// Keeping this control honest mattered here for a second reason. Under
+    /// the OLD assertion (1), the round-11 fixture `"--resume"` made this test
+    /// red — not because it detected the injection, but because the builder
+    /// emitted a literal `--resume` element of its own and the id was spelled
+    /// the same, so a count of string equalities read 2. That was a collision
+    /// with this file's own literal masquerading as a finding; the fused shape
+    /// removes it.
     #[test]
     fn the_resume_argv_carries_a_hostile_session_id_as_one_opaque_element() {
         let interpreters = interpreter_binaries();
@@ -7323,18 +7494,21 @@ mod tests {
                 let argv = resume_terminal_argv(term, &sid);
                 arities.insert(argv.len());
 
-                // (1) The id is present EXACTLY ONCE, as a whole element,
-                //     byte-identical to the raw value. Byte-identity is the
+                // (1) The id is carried EXACTLY ONCE and WHOLE, as the suffix
+                //     of the fused option element. Byte-identity is the
                 //     capability half: an escaped id resumes nothing.
-                let carried = argv.iter().filter(|element| *element == &raw).count();
+                let carried = argv
+                    .iter()
+                    .filter(|element| element.split_once('=').map(|(_, v)| v) == Some(raw.as_str()))
+                    .count();
                 assert_eq!(
                     carried, 1,
-                    "the session id {raw:?} must appear as exactly ONE argv \
-                     element byte-identical to `as_raw_for_logic_only()`; it \
-                     appeared {carried} times in {argv:?}. Zero means the id \
-                     was interpolated into some larger string — which is a \
-                     program a parser will read, not an argument `execve` \
-                     hands over unread."
+                    "the session id {raw:?} must be carried by exactly ONE \
+                     argv element as the suffix after that element's first \
+                     `=`; it was carried {carried} times in {argv:?}. Zero \
+                     means the id was interpolated into some larger string — \
+                     which is a program a parser will read, not an argument \
+                     `execve` hands over unread."
                 );
 
                 // (2) No element is a command interpreter binary.
@@ -7370,6 +7544,217 @@ mod tests {
              changed the SHAPE of the vector rather than just one element of \
              it. A value that can change the arity is a value being parsed."
         );
+    }
+
+    /// **CWE-88 closed at the SHAPE of the vector** (T-21-31-01, T-21-31-03,
+    /// D-21-47).
+    ///
+    /// # The property, and why it is not a list of forbidden characters
+    ///
+    /// The assertion is CONTENT INDEPENDENCE: the number of argv elements that
+    /// begin with `-` must be the SAME for every session id in the corpus. A
+    /// list of forbidden first bytes is an enumeration and can always be one
+    /// entry short — that is the defect this control exists to close, arriving
+    /// one level up — whereas a property over the whole vector cannot be. A
+    /// value able to add an option-shaped element to a vector is a value the
+    /// receiving parser will read as an option.
+    ///
+    /// # The parser this is about
+    ///
+    /// Not a shell — round 10 removed that one. `claude`'s OWN option parser,
+    /// which was in the path the whole time. Measured at `claude` 2.1.248 with
+    /// stdin at `/dev/null`:
+    ///
+    /// | Probe | Command | Observed |
+    /// |---|---|---|
+    /// | A | `claude --resume --version` | `2.1.248 (Claude Code)`, exit 0 — **the injection firing** |
+    /// | E | `claude --resume=<uuid>` | `No conversation found with session ID: <uuid>` — **the id bound as a value** |
+    ///
+    /// # Non-vacuity is asserted FIRST, and that is the point
+    ///
+    /// The corpus this control consumes was, until round 11, incapable of
+    /// failing it: eighteen fixtures, not one beginning with a hyphen. The
+    /// non-vacuity arm is what stops that state recurring silently.
+    #[test]
+    fn the_resume_argv_never_lets_a_session_id_become_an_option_of_the_resumed_program() {
+        let corpus = hostile_session_ids();
+
+        // --- Non-vacuity, asserted before anything else --------------------
+        assert!(
+            corpus.iter().any(|id| id.starts_with('-')),
+            "the fixture set contains NO id beginning with a hyphen, so this \
+             control cannot fail for the defect it names (CWE-88) and proves \
+             nothing. That is the exact complicity round 11 found in the \
+             committed corpus: eighteen hostile fixtures, every one of them a \
+             shell metacharacter class, certifying a claim about \
+             option-shaped inputs."
+        );
+        assert!(
+            corpus
+                .iter()
+                .any(|id| id.chars().any(|c| "'\";&|`$\n".contains(c))),
+            "the fixture set carries no shell metacharacter at all, so the \
+             interpreter-absence class this same corpus certifies would be \
+             proven by nothing."
+        );
+
+        // The corpus shape, asserted rather than counted by hand.
+        assert_eq!(
+            corpus.len(),
+            28,
+            "hostile_session_ids() must carry 28 fixtures: 7 imported \
+             LOOK_ALIKE_PAIRS + 11 shell-metacharacter fixtures + 10 \
+             option-lookalikes."
+        );
+        // MEASURED, not inherited: nine of the ten option lookalikes begin
+        // with a hyphen. The tenth, `a=b`, is the fusion-character fixture and
+        // deliberately does not — it exists for the CAPABILITY direction, to
+        // prove an id containing `=` still arrives whole.
+        let hyphen_leading = corpus.iter().filter(|id| id.starts_with('-')).count();
+        assert!(
+            hyphen_leading >= 9,
+            "only {hyphen_leading} fixtures begin with a hyphen; the \
+             option-lookalike block contributes nine and every one of them is \
+             a value `claude`'s parser reads as an option when it arrives as \
+             its own argv element."
+        );
+
+        // --- Content independence ------------------------------------------
+        let mut by_count: std::collections::BTreeMap<usize, std::collections::BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        for term in ["kitty", "alacritty", "gnome-terminal", "xterm", "/opt/wat"] {
+            for raw in &corpus {
+                let sid = Untrusted::from_untrusted_source(raw.clone());
+                let argv = resume_terminal_argv(term, &sid);
+                let leading = argv.iter().filter(|e| e.starts_with('-')).count();
+                by_count.entry(leading).or_default().insert(raw.clone());
+            }
+        }
+        let observed: std::collections::BTreeSet<usize> = by_count.keys().copied().collect();
+        assert_eq!(
+            observed.len(),
+            1,
+            "the number of argv elements beginning with `-` DEPENDS ON THE \
+             SESSION ID. Observed counts {observed:?}; the ids that produced \
+             each: {by_count:?}. A value able to add an option-shaped element \
+             to a vector is a value the receiving parser will read as an \
+             option — measured at `claude` 2.1.248, `claude --resume \
+             --version` prints `2.1.248 (Claude Code)` and exits 0, which is \
+             CWE-88 firing. Fuse the id to its option name in ONE element \
+             (`--resume=<id>`); do NOT insert a `--` separator, which was \
+             measured to delete the resume capability entirely."
+        );
+
+        // --- The fused shape, in both directions ----------------------------
+        // Ordered so the FIRST failure names the defect rather than a symptom.
+        let mut arities = std::collections::BTreeSet::new();
+        for term in ["kitty", "alacritty", "gnome-terminal", "xterm", "/opt/wat"] {
+            for raw in &corpus {
+                let sid = Untrusted::from_untrusted_source(raw.clone());
+                let argv = resume_terminal_argv(term, &sid);
+                arities.insert(argv.len());
+
+                // (1) Exactly ONE element carries the fused option prefix.
+                let fused: Vec<&String> = argv
+                    .iter()
+                    .filter(|e| e.starts_with(RESUME_OPTION_FUSED_PREFIX))
+                    .collect();
+                assert_eq!(
+                    fused.len(),
+                    1,
+                    "exactly one element of {argv:?} must begin with \
+                     {RESUME_OPTION_FUSED_PREFIX:?}. Zero means the session id \
+                     {raw:?} is travelling as its own argv element again, \
+                     where `-r, --resume [value]`'s OPTIONAL value lets a \
+                     leading `-` make it a NEW OPTION of `claude` (CWE-88)."
+                );
+
+                // (2) CAPABILITY: the value arrives WHOLE. The suffix after
+                //     the FIRST `=` is byte-identical to the raw id.
+                let suffix = fused[0]
+                    .split_once('=')
+                    .expect("the fused element contains the fusion character")
+                    .1;
+                assert_eq!(
+                    suffix,
+                    sid.as_raw_for_logic_only(),
+                    "the id `claude` will receive is {suffix:?} but the \
+                     operator selected {raw:?}. An id that does not arrive \
+                     WHOLE resumes nothing: measured at `claude` 2.1.248, \
+                     probe E — `claude \
+                     --resume=550e8400-e29b-41d4-a716-446655440000` reports \
+                     `No conversation found with session ID: \
+                     550e8400-e29b-41d4-a716-446655440000`, i.e. the value \
+                     bound and looked up. Splitting on the LAST `=` rather \
+                     than the first would truncate the id `a=b`, which is why \
+                     that fixture is in the corpus. Full argv: {argv:?}"
+                );
+
+                // (3) The id never stands ALONE as its own element — the state
+                //     this fix exists to remove.
+                assert!(
+                    !argv.iter().any(|e| e == raw),
+                    "the session id {raw:?} appears as a standalone element of \
+                     {argv:?}. Standing alone is exactly what lets an option \
+                     parser reach it as syntax; fused to its option name it is \
+                     that option's value and its first byte is data."
+                );
+            }
+        }
+
+        // (4) Arity is constant: a hostile id adds, removes or merges nothing.
+        assert_eq!(
+            arities.len(),
+            1,
+            "the argv arity varied across inputs ({arities:?}), so some id \
+             changed the SHAPE of the vector rather than one element of it. A \
+             value that can change the arity is a value being parsed."
+        );
+        assert_eq!(
+            arities.iter().next().copied(),
+            Some(3),
+            "the fused argv is exactly three elements — separator, program \
+             name, `--resume=<id>` — and {arities:?} is not that. A fourth \
+             element is how the standalone untrusted id came back."
+        );
+    }
+
+    /// **`launch_terminal_argv` pinned rather than changed** (D-21-49).
+    ///
+    /// The sibling builder carries NO untrusted element: the separator comes
+    /// from [`terminal_program_separator`]'s table and the program name is a
+    /// literal, while the project path travels through `current_dir` outside
+    /// the argv entirely. So there is nothing here for a fusion or a `--`
+    /// separator to bind, and adding one would be ceremony shaped like a
+    /// control.
+    ///
+    /// That is true only while the vector stays two elements long. This
+    /// equality is what turns "examined and found safe" into something that
+    /// FAILS when it stops being true: appending a third element — the only
+    /// way this builder could acquire an untrusted value — breaks it and
+    /// forces the decision to be made again explicitly.
+    #[test]
+    fn launch_terminal_argv_carries_no_untrusted_element_and_is_pinned_at_two() {
+        for (term, expected_separator) in [
+            ("kitty", "-e"),
+            ("alacritty", "-e"),
+            ("gnome-terminal", "--"),
+            ("xterm", "-e"),
+            ("wezterm", "-e"),
+            ("/usr/bin/gnome-terminal", "--"),
+        ] {
+            assert_eq!(
+                launch_terminal_argv(term),
+                vec![expected_separator.to_string(), "claude".to_string()],
+                "launch_terminal_argv({term:?}) must be exactly the separator \
+                 and the program name. A THIRD element means this builder has \
+                 acquired a value from somewhere, and if that value is \
+                 untrusted it needs the same fusion `resume_terminal_argv` \
+                 got — decide it explicitly rather than inheriting this \
+                 function's `no untrusted element` reasoning, which was true \
+                 only of the two-element shape."
+            );
+        }
     }
 
     /// **The capability half of the fix** (T-21-27-06, prohibition 2).
@@ -7410,7 +7795,19 @@ mod tests {
                  emulator reads the program name as one of its own operands"
             );
             let separator_at = argv.iter().position(|e| e == expected);
-            let option_at = argv.iter().position(|e| e == "--resume");
+            // Since 21-31 the resumed program's option is FUSED to its value
+            // (`--resume=<id>`), so no element EQUALS `--resume` any more. The
+            // lookup matches the fused PREFIX instead; the property being
+            // asserted — the emulator must not consume the resumed program's
+            // own option — is unchanged.
+            let option_at = argv
+                .iter()
+                .position(|e| e.starts_with(RESUME_OPTION_FUSED_PREFIX));
+            assert!(
+                option_at.is_some(),
+                "no element of {argv:?} carries {RESUME_OPTION_FUSED_PREFIX:?}, \
+                 so this ordering assertion would pass vacuously"
+            );
             assert!(
                 separator_at < option_at,
                 "the resumed program's own long option `--resume` must appear \
