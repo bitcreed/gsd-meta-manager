@@ -22,6 +22,46 @@ status: issues_found
 **Diff base:** `9eeb3601c087ae5109a0b4953563f6236826c5c3..HEAD`
 **Status:** issues_found
 
+## Identifier scheme
+
+Round 13 numbers its own findings with a round-scoped `R13-` prefix — `R13-CR-01`,
+`R13-CR-02`, `R13-WR-01`..`R13-WR-06`, `R13-IN-01`..`R13-IN-04`. Each review round of
+this phase restarts its numbering at 01, so every bare id this round would otherwise
+have used already names a different, pre-existing phase-21 finding. The phase has
+evidence for at least two such collisions. Historical `WR-04` vs `R13-WR-04`: the
+historical one was `LegacyRegistryKey`'s derived `Debug`, closed by c9345a1, while this
+round's is the unbounded per-NUL `Vec` allocation. Historical
+`CR-01` vs `R13-CR-01`: the historical one was the shell command injection at
+`detail.rs:1692-1707`, while this round's is the `--resume`/`-r` successor-arity defect.
+Renumbering this round into a higher range (`WR-07`+) rather than prefixing it `R13-`
+was rejected: a higher range only defers the collision to the next round that restarts
+its numbering at 01, whereas a round prefix is stable and self-describing.
+
+| Was | Now |
+|-----|-----|
+| `CR-01` | `R13-CR-01` |
+| `CR-02` | `R13-CR-02` |
+| `WR-01` | `R13-WR-01` |
+| `WR-02` | `R13-WR-02` |
+| `WR-03` | `R13-WR-03` |
+| `WR-04` | `R13-WR-04` |
+| `WR-05` | `R13-WR-05` |
+| `WR-06` | `R13-WR-06` |
+| `IN-01` | `R13-IN-01` |
+| `IN-02` | `R13-IN-02` |
+| `IN-03` | `R13-IN-03` |
+| `IN-04` | `R13-IN-04` |
+
+`21-VERIFICATION.md` (pass 14) cites this review's findings under their OLD bare ids,
+including the ad-hoc `WR-05-new` it improvised at its line 109 for what is now `R13-WR-05`.
+It is deliberately NOT edited, being a committed record; apply the table above when
+reading it.
+
+Corollary, and the rule for reading this document: a BARE id names the phase's
+historical finding of that name; an `R13-` id names one of this round's. The bare
+`IN-07` in `R13-CR-01`'s fix list is exactly that case — a different round's id, left
+unchanged.
+
 ## Summary
 
 Round 13 does three things well, and I verified each rather than accepting it: the
@@ -43,13 +83,13 @@ That is where the good news ends. Two defects are load-bearing.
 
 **The parser's model of the `claude` option grammar is wrong for the exact option this
 phase is about, and a test asserts the wrong behaviour as correct with a citation I
-falsified by re-running the probe** (CR-01). `-r, --resume [value]` is an
+falsified by re-running the probe** (R13-CR-01). `-r, --resume [value]` is an
 **optional-value** option — the project's own record says so at
 `deferred-items.md:1404` and `21-31-SUMMARY.md:141` — so `claude` does **not** bind an
 option-shaped successor to it. The parser does. Round 13's new rank rule makes this
 strictly worse: a bogus Resume-rank value now outranks a genuine `--session-id` value.
 
-**The "total" contract is stated over six spellings and certified over four** (CR-02).
+**The "total" contract is stated over six spellings and certified over four** (R13-CR-02).
 `wire_forms()` in `detail.rs` registers `fused`, `split`, `short-split`,
 `short-attached` — and neither `--session-id` spelling, both of which round 13 added to
 the parser and one of which is what **this build's own executor emits**. The doc at
@@ -65,7 +105,7 @@ No structural findings block was supplied.
 
 ## Critical Issues
 
-### CR-01: The split-form "value by position" rule is false for `--resume`/`-r`, and the test that pins it cites a measurement that says the opposite
+### R13-CR-01: The split-form "value by position" rule is false for `--resume`/`-r`, and the test that pins it cites a measurement that says the opposite
 
 **File:** `src/session_detector.rs:530-537` (the rule), `src/session_detector.rs:1052-1079`
 (the test), `src/session_detector.rs:468-482` (the doc), `src/ui/screens/detail.rs:8103-8134`
@@ -185,7 +225,7 @@ is unaffected. Then:
 
 ---
 
-### CR-02: The parser recognises six spellings; the "total" certificate covers four — and the two uncovered ones are `--session-id`, which this build's own executor emits
+### R13-CR-02: The parser recognises six spellings; the "total" certificate covers four — and the two uncovered ones are `--session-id`, which this build's own executor emits
 
 **File:** `src/ui/screens/detail.rs:8150-8169` (`wire_forms`), `src/session_detector.rs:411-447`
 (the totality claim), `src/session_detector.rs:1353-1456` (the only control that touches
@@ -263,7 +303,7 @@ fn encode_assigned_fused(s: &[u8]) -> Vec<u8> {
 
 ## Warnings
 
-### WR-01: The newly adjudicated producer is driven by exactly one benign fixture — the round-10/round-12 corpus defect, reintroduced on the new producer
+### R13-WR-01: The newly adjudicated producer is driven by exactly one benign fixture — the round-10/round-12 corpus defect, reintroduced on the new producer
 
 **File:** `src/session_detector.rs:1405-1455`
 
@@ -298,7 +338,7 @@ the same commit as the assertion that forces them.
 
 ---
 
-### WR-02: The "a named round trip must actually exist" guard is a raw substring search a comment can satisfy, and `#[cfg(unix)]` lets it pass with no test at all
+### R13-WR-02: The "a named round trip must actually exist" guard is a raw substring search a comment can satisfy, and `#[cfg(unix)]` lets it pass with no test at all
 
 **File:** `src/session_detector.rs:1609-1623`, `src/session_detector.rs:1353-1355`
 
@@ -317,7 +357,7 @@ by a reader":
    `line.trim_start().starts_with("//")` (`is_option_literal_site`,
    `no_source_line_under_src_requests_a_forked_session`). This one does not, so a doc
    line or a prose paragraph containing `fn the_executors_own_argv_is_an_argv_this_build_can_read_back(`
-   satisfies the guard with no test in the tree. That the WR-05 comment block at
+   satisfies the guard with no test in the tree. That the earlier, subsumed-duplicate-control `WR-05` (not `R13-WR-05`) comment block at
    `detail.rs:7809-7811` deliberately truncates a deleted test's name "so that no whole
    spelling of a test that no longer exists survives in the tree" shows the hazard is
    understood — the guard is what fails to enforce it.
@@ -334,7 +374,7 @@ restriction in `CLAUDE_ARGV_ROUND_TRIPS` and assert it.
 
 ---
 
-### WR-03: The property test's exemplar map is keyed by class only; its doc claims class × wire form, and its stated bound is wrong
+### R13-WR-03: The property test's exemplar map is keyed by class only; its doc claims class × wire form, and its stated bound is wrong
 
 **File:** `src/ui/screens/detail.rs:8199-8226`
 
@@ -352,10 +392,10 @@ let mut violations: std::collections::BTreeMap<&'static str, (String, usize)> = 
 Four classes exist, so the bound is four, not six, and — the part that costs
 information — when the parser violates a class in one wire form only, the report shows
 the class and the *first* form that hit it, with no way to tell whether the other three
-forms are affected. With CR-02 fixed there will be six wire forms and four classes; the
+forms are affected. With R13-CR-02 fixed there will be six wire forms and four classes; the
 doc's "six" is wrong under both the old and the new register. In a file where every
 other doc paragraph is a load-bearing correction, a doc that describes a diagnostic the
-code does not produce is the WR-05 hazard in miniature.
+code does not produce is that same earlier `WR-05` (not `R13-WR-05`) hazard in miniature.
 
 **Fix:** key the map by `(class, form.name)` as the doc says, and state the bound as
 `classes × wire_forms().len()` rather than a literal:
@@ -366,7 +406,7 @@ let mut violations: BTreeMap<(&'static str, &'static str), (String, usize)> = �
 
 ---
 
-### WR-04: `session_id_in_cmdline` allocates 16 bytes of `Vec` per NUL byte of attacker-controlled `/proc` input, unbounded
+### R13-WR-04: `session_id_in_cmdline` allocates 16 bytes of `Vec` per NUL byte of attacker-controlled `/proc` input, unbounded
 
 **File:** `src/session_detector.rs:506`
 
@@ -399,7 +439,7 @@ lookahead so no `Vec` is built at all. The latter also removes the index arithme
 
 ---
 
-### WR-05: The `--` end-of-options terminator is not honoured, so a post-`--` operand is reported as a session id
+### R13-WR-05: The `--` end-of-options terminator is not honoured, so a post-`--` operand is reported as a session id
 
 **File:** `src/session_detector.rs:505-599`
 
@@ -409,7 +449,7 @@ lookahead so no `Vec` is built at all. The latter also removes the index arithme
 option). So for `claude -- --resume=abc`, the string `--resume=abc` is a *prompt* and
 the process is running no session named `abc` — but `session_id_in_cmdline` reports
 `Some("abc")`. Mis-detection: a Sessions-tab row offering to resume a conversation that
-does not exist, from a cmdline any local process can plant. Same class as CR-01, narrower
+does not exist, from a cmdline any local process can plant. Same class as R13-CR-01, narrower
 shape. The six-spelling census enumerates spellings but says nothing about the grammar
 position they are valid in.
 
@@ -424,7 +464,7 @@ asserting a `--resume` **before** the `--` is still read.
 
 ---
 
-### WR-06: `read_start_time` splits on the first `)`, not the last — a process whose `comm` contains `)` yields a wrong start time
+### R13-WR-06: `read_start_time` splits on the first `)`, not the last — a process whose `comm` contains `)` yields a wrong start time
 
 **File:** `src/session_detector.rs:614`
 
@@ -459,7 +499,7 @@ plus a test with a `)`-bearing comm fixture. Extracting the field-22 parse into 
 
 ## Info
 
-### IN-01: The generator indexes the seed corpus with `% seeds.len()` and no empty guard
+### R13-IN-01: The generator indexes the seed corpus with `% seeds.len()` and no empty guard
 
 **File:** `src/ui/screens/detail.rs:8007-8015`, `src/ui/screens/detail.rs:8049-8051`
 
@@ -472,7 +512,7 @@ inside a generator, far from the corpus that emptied.
 **Fix:** `assert!(!seeds.is_empty(), "…")` at the top of `generated_session_id_bytes`,
 with the same explanatory style the floors use.
 
-### IN-02: The both-branches tallies use floors of 1 while the class floors carry 6×–20× margin
+### R13-IN-02: The both-branches tallies use floors of 1 while the class floors carry 6×–20× margin
 
 **File:** `src/ui/screens/detail.rs:8482-8502`
 
@@ -487,7 +527,7 @@ not do that job to the standard the rest of the file sets.
 `round_tripped >= 1000`, `refused_r1 >= 400`, `refused_r2 >= 20`, each with the observed
 value in the message.
 
-### IN-03: The fork-option guard filters only `//` lines, so a block comment or string literal is a false positive and any assembled spelling evades it
+### R13-IN-03: The fork-option guard filters only `//` lines, so a block comment or string literal is a false positive and any assembled spelling evades it
 
 **File:** `src/session_detector.rs:1004-1014`
 
@@ -501,7 +541,7 @@ but not for this guard, whose whole job is to enforce the rank rule's premise.
 **Fix:** carry the same "what this does NOT see, with its direction" paragraph here, and
 skip `/*`-prefixed lines alongside `//`.
 
-### IN-04: The `corpus.len() == 28` shape assertion and its rationale are duplicated across two tests
+### R13-IN-04: The `corpus.len() == 28` shape assertion and its rationale are duplicated across two tests
 
 **File:** `src/ui/screens/detail.rs:7602-7608`, `src/ui/screens/detail.rs:7854-7861`
 
@@ -519,4 +559,4 @@ both.
 _Reviewed: 2026-08-27_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
-_CLI probes in CR-01/WR-05 were run against `claude 2.1.250` on this machine; transcripts are quoted verbatim._
+_CLI probes in R13-CR-01/R13-WR-05 were run against `claude 2.1.250` on this machine; transcripts are quoted verbatim._
