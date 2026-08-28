@@ -739,4 +739,65 @@ Known risks to resolve before planning — all now bound to phases:
 - Overlaps Phase 999.2 → sequenced: 999.2 plumbing (Phases 15-18, 22) before 999.3
   decision layer (Phases 20-21), per the user-locked ordering.
 
+### Phase 999.4: Coverage sub-stage may need frontmatter status, not a presence bit (BACKLOG)
+
+**Goal:** Decide whether the `COVERAGE.md` sub-stage should be read as a *state* parsed
+from frontmatter rather than as a *presence bit*, and change the Pipeline drill-down
+rendering if so.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+Captured 2026-08-28. **Not for the current milestone** — this is an open question to be
+decided later, not a defect with a known fix. Nothing is known to be broken today.
+
+**What exists now.** The meta-manager detects GSD's `COVERAGE.md` sub-phase artifact and
+renders it in the TUI:
+
+- *Detection* — `src/state_reader/disk_status.rs:575` matches bare `COVERAGE.md` and
+  prefixed `*-COVERAGE.md`, setting `has_coverage`. It is classified with the GSD 1.8.0
+  informational artifacts (`WINDOWS.md`, `deferred-items.md`, `SKELETON.md`): flagged
+  only, never counted, so it cannot skew `plan_count` / `summary_count` or phase status.
+
+- *Rendering* — `src/ui/screens/detail.rs:4364` renders it as the last row of the
+  **Execute sub-stages** drill-down on the Pipeline tab. `push_substage`
+  (`detail.rs:4370-4386`) renders presence as `✓ done` and absence as `○ not run`. It is
+  also part of the `exec_touched` predicate (`detail.rs:4351`), so a phase whose only
+  execute-side artifact is a `COVERAGE.md` still opens the section.
+
+**The open question.** A report from another GSD project states that its api-coverage
+gate's *"detector runs only when COVERAGE.md is absent."* If that generalises, then the
+artifact's **presence** means "the gate is suppressed / will not re-run" — not "coverage
+was checked and passed". Our `✓ done` / `○ not run` labels would then be describing the
+artifact's existence while *reading* to the user as a statement about the coverage
+outcome. For a write-once artifact the two coincide and the current rendering is correct;
+they diverge only if a `COVERAGE.md` can exist while recording a failing or partial
+result.
+
+**Precedent if a richer read is wanted.** `*-UAT.md` already goes beyond a presence bit —
+`disk_status.rs:123` and `:212` parse `status` out of its frontmatter. That is the
+established pattern in this codebase for promoting a sub-stage report from an existence
+check to a state.
+
+**First thing to check before changing anything:** whether GSD's `COVERAGE.md` actually
+carries a frontmatter `status` key, and what values it takes.
+
+Partial evidence, one local sample (2026-08-28): phase 21's own `21-30` wrote a
+`COVERAGE.md` into this repo's `.planning/` tree, at
+`.planning/phases/21-llm-goal-layer-prompt-injection-hardening/COVERAGE.md`. That file has
+**no YAML frontmatter at all** — it opens with an `# …` heading and carries its verdict as
+a bold prose line, `**Status: NO EXTERNAL API INTEGRATION.**`, followed by a reasoned
+declaration. So on this sample there is no `status` key to parse, and a frontmatter-based
+read would find nothing. Caveat: this is a single sample and it is a *declaration*-style
+COVERAGE.md (an opt-out in place of a coverage matrix), which may not be representative of
+a COVERAGE.md that records an actual coverage result. Confirm against GSD's own template
+and against a matrix-style sample before deciding.
+
+Possible outcomes, none chosen: (a) leave the presence bit as-is and reword the labels so
+they describe the artifact rather than the outcome; (b) parse a frontmatter `status` the
+way `*-UAT.md` does, if one exists; (c) parse the prose verdict line, if that is what GSD
+actually emits.
+
 Note: Backlog 999.1 (Milestone Archive Browser) promoted to Phase 12 in v1.2.
