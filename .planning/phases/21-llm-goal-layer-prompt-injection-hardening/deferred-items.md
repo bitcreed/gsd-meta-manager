@@ -1871,3 +1871,338 @@ recording a lucky run as a resolution is how a flake becomes an inherited
 falsehood. The two tests remain
 `a_fresh_scan_finds_the_orphaned_run_live_with_its_last_journal_step` and
 `a_run_killed_without_an_ending_is_reported_crashed_and_nothing_on_disk_is_repaired`.
+
+## 2026-08-28 (`21-37`) — round 13's closure, with residuals and directions
+
+Round 13 closed pass 13's three gaps across two plans, `21-36` (wave 1) and
+`21-37` (wave 2). Each closure is recorded below with **what it does NOT claim**,
+because a closure whose limits are unwritten is the next round's gap.
+
+### G1 — the VALUE axis (closed by `21-36`)
+
+**What it was.** `session_id_in_cmdline` returned the **trimmed** value while
+documenting the condition as a test. `--resume=" abc "` read back as `"abc"` — a
+DIFFERENT id, which resumes a different conversation or none. The 28-fixture
+corpus carried no leading- or trailing-whitespace fixture, so the byte-identity
+claim was certified by inputs structurally incapable of falsifying it.
+
+**What closed it.** The trim became the emptiness TEST on a copy; the value
+returned is the candidate's own wire bytes. Two expressions in one branch.
+
+**What it does NOT claim.** A whitespace-only id still reads back as `None`. That
+is refusal class **R2**, and it is now a **STATED** limit rather than an
+unnoticed one — the parser's contract names it, the property asserts it, and the
+generator's floor requires the class to be reached. Direction: under-detection,
+and it is **not silent**, because the claim says so.
+
+**Residual, recorded rather than closed.** An id with leading or trailing
+whitespace now round-trips byte-identically and is therefore rendered in a
+Sessions-tab row where that whitespace is **invisible** — two rows can look
+identical and be different ids. Cosmetic, not a capability loss: the id is
+correct, the display is ambiguous. `shown()` still escapes the
+invisible-formatting class, so this is edge whitespace only. Direction:
+operator confusion, bounded to display. Disposition: **accept**.
+
+### G3 — the ENCODING axis (closed by `21-36`)
+
+**What it was.** `String::from_utf8_lossy` substituted U+FFFD into ill-formed
+argv bytes and returned the result as an id — a **fabrication**: a non-empty id
+for a value no process carries, putting a Sessions-tab row on screen offering to
+resume a conversation that does not exist. The harness was `&str`-typed, so the
+class was not merely unenumerated but **unrepresentable**.
+
+**What closed it.** The harness was retyped to `&[&[u8]]` and the decode became
+a refusal: ill-formed UTF-8 yields no id and the scan continues.
+
+**What it does NOT claim, with the direction.** An **externally launched**
+`claude` whose argv genuinely carries non-UTF-8 bytes now reads back `None`
+instead of a corrupted id — **under-detection, and SILENT.** Accepted because it
+replaces MIS-detection, which is under-detection wearing a detection's clothes,
+and because it costs no capability here: both of this build's producers take
+`String` and can never emit a non-UTF-8 id, and a lossily-substituted id could
+never have resumed the session it named.
+
+### G2 — the PRODUCER axis (closed by `21-37`)
+
+**What it was.** The invariant *what this build emits, this build can read back*
+was written as a property of THIS BUILD and asserted over **one** of this build's
+**two** `claude` argv producers, with nothing anywhere saying which. Measured:
+`claude -p --session-id <uuid>` → `None`, so **every driver-launched session was
+invisible to the detector that finds it again.** The CLI's own short spelling
+`-r` was read by nothing either.
+
+**What closed it, in three parts.**
+
+1. **The producer set became MEASURED.**
+   `session_detector::tests::every_claude_argv_option_site_under_src_is_adjudicated`
+   walks `src/`, reports every non-comment line spelling one of this parser's
+   option tokens as a quoted literal, and requires each such file to carry a row
+   in `CLAUDE_ARGV_SITES` with a matching per-file count and a disposition —
+   `Producer`, `Consumer`, `NotClaude` or `Excluded`. Three rubber-stamp guards
+   are asserted rather than reviewed: at least one row is a `Producer`, both
+   known producers are `Producer`, and every non-`Producer` row carries a
+   non-empty reason. **Measured counts on the post-`21-36` tree: 26 sites across
+   4 files** (`src/executor/claude.rs` 5, `src/session_detector.rs` 13,
+   `src/state_reader/git_ops.rs` 1, `src/ui/screens/detail.rs` 7), against the
+   pre-wave-1 baseline of 18 across the same four (5 / 8 / 4 / 1). Delivered
+   counts after this round's own arms landed: **5 / 23 / 1 / 8**.
+2. **Four spellings and a measured rank rule.** Bare short `-r <id>`, attached
+   short `-r<id>`, bare long `--session-id <id>`, fused long `--session-id=<id>`.
+   `--resume` outranks `--session-id` regardless of argv index; within a rank the
+   leftmost element still wins by index.
+3. **The second producer was driven through the round trip.**
+   `the_executors_own_argv_is_an_argv_this_build_can_read_back` calls the real
+   `crate::executor::claude::build_argv` and encodes its `Vec<OsString>`
+   byte-exactly through `OsStrExt::as_bytes`, never `to_string_lossy`.
+
+**What it does NOT claim — three residuals, each with a direction.**
+
+* **The census's needle is a QUOTED OPTION LITERAL, not "an argv destined for
+  `claude`".** A producer that assembled its option name from fragments, read it
+  from a config value, or spelled it in a macro is invisible to it.
+  **Under-detection, and SILENT.** Disposition: **accept**, disclosed at the
+  census in the source as well as here, on the same reasoning `text.rs`'s
+  interpreter census gives for its five interpolation markers — widening the
+  needle adds false positives to a control whose whole value is that its numbers
+  can be trusted. What bounds it is not the walk but the round-trip requirement:
+  an adjudicated `Producer` with no round-trip test is a RED.
+* **The rank rule's premise is `claude`'s, not this build's.** An
+  **externally launched** `claude --resume X` that also carries the fork flag has
+  a NEW session id, and this parser reports `X`. **Mis-detection**, bounded to
+  externally-launched forked sessions — this build launches none, and
+  `no_source_line_under_src_requests_a_forked_session` asserts that it cannot
+  start doing so without the rank rule being re-decided in the same change.
+* **The spellings are a DEPENDENCY BEHAVIOUR measured at one version.** Every
+  added constant cites `claude` **2.1.250**, measured by running `--version` and
+  `--help` rather than inherited from the plan. The complete short-option
+  inventory at that version is exactly eight — `-c -d -h -n -p -r -v -w` — which
+  is what makes the attached short form unambiguous. Per the standing record
+  above, **the measurement expires**: re-run the probes on any CLI upgrade rather
+  than inferring forward from a version number. A future release adding a second
+  `r`-initial short option falsifies a written claim rather than silently
+  changing what this build reports.
+
+### WR-05 — the subsumed duplicate control, deleted with its safety OBSERVED
+
+`the_argv_this_build_emits_is_an_argv_...` iterated five terminals × the 28
+fixtures through the real producer, encoder and consumer. The FUSED arm of
+`a_session_id_survives_the_round_trip_in_both_wire_forms` iterates the same
+fixtures × the same terminals through the same three functions and asserts the
+same thing, loop nesting swapped.
+
+**It was not deleted on a subsumption ARGUMENT.** The defect the pair exists to
+catch was planted — the parser's fused-long-resume branch made unreachable — and
+BOTH survivors were observed RED, with their verbatim output captured in
+`21-37-SUMMARY.md`, before anything was removed. The defect was then restored,
+both went green again, and only then was the duplicate deleted. All three
+citations of the deleted name were re-pointed in the same commit and each now
+names BOTH survivors, because they certify different things: the enumerated one
+pins named shapes, the generated one reaches shapes nobody named.
+
+## 2026-08-28 (`21-37`) — the CORPUS SHAPE record: the item this round exists for
+
+**State it plainly, because it is the finding that generalises.** Rounds 10, 12
+and 13 each found a fix certified by a corpus **structurally incapable of
+failing** on the class at issue:
+
+* round 10 certified a CWE-88 fix with a corpus carrying **no leading-hyphen
+  fixture**;
+* round 12 certified a byte-identity claim with a corpus carrying **no
+  whitespace-padded fixture**;
+* the non-UTF-8 class was not merely unenumerated but **unrepresentable**,
+  because the harness was `&str`-typed while the parser had taken `&[u8]` all
+  along.
+
+Each time the repair was to **add the missing fixture**. That leaves the
+mechanism intact and guarantees the next round. Adding entries to a list is
+closing an enumeration by moving it down a level.
+
+**What changed this round, on four axes at once:**
+
+1. **The CLAIM became total** — a disjunction with exactly two NAMED refusal
+   classes (R1 ill-formed UTF-8, R2 empty after trim) and no third outcome, both
+   directions asserted. *"These 28 fixtures round-trip"* could not be false;
+   this can.
+2. **The INPUT SPACE became generated** — a fixed-seed five-arm mixture over
+   `Vec<u8>`, with the 28 fixtures retained and consumed by its `seed` arm.
+3. **The HARNESS became byte-typed** — the encoding class became constructible
+   rather than unrepresentable.
+4. **The PRODUCER SET became a source census** — derived from the tree and
+   adjudicated, rather than a set someone remembers.
+
+### The `proptest` decision, with its MEASURED graph cost
+
+`proptest` was weighed and **DECLINED**, with the cost measured rather than
+asserted: in a scratch copy of this project's own manifest, `cargo add --dev
+proptest` locks **fourteen** new packages and takes `Cargo.lock` from **354 to
+368** entries, none previously present.
+
+**The `icu_properties` precedent does not extend.** That crate supplies
+Unicode's own REFERENCE DATA — an external ground truth this project cannot
+derive. A property engine supplies a SEARCH STRATEGY, and no external source
+defines the set of session-id classes, because that set does not exist anywhere
+to be queried. Its default strategies would not have reached the
+whitespace-padded class either, so the mixture grammar has to be hand-written in
+both worlds. What is given up is **shrinking**, mitigated by a 12-byte length
+bound and a failure message printing the counterexample as an explicit byte
+vector plus its `escape_ascii` rendering.
+
+### The honest limit, recorded so it is not oversold
+
+**A generator does not abolish enumeration.** It MOVES the enumeration from
+VALUES to a GRAMMAR and a DISTRIBUTION, and a grammar can still miss a class.
+What it removes is narrower and is the thing that actually failed three times
+here: **the ability of the claim to pass with no input anywhere near the
+boundary.** The committed non-vacuity floor — six class minima plus three branch
+counters, each its own assertion — is what keeps that true, and it was itself
+observed RED before it was believed. That sentence is written in the source
+beside the floor, not only here.
+
+**One margin worth a second reader's eyes.** Suppressing the `padded` grammar
+arm leaves 16 padded inputs, not 0, because the `ascii` arm draws from printable
+ASCII including the space character. The floor of 20 therefore has a thinner
+suppression margin than the other five. It fires correctly today; a future
+reader lowering the case count or widening the `ascii` arm should know this is
+the floor closest to its noise band.
+
+## 2026-08-28 (`21-37`) — BACKLOG: WR-04, tmux focus-stealing on a ten-plus-pty host
+
+**This is a real, reproduced defect. It is OUT OF PHASE-21 SCOPE and it is NOT
+fixed here. It is recorded so it is not lost.**
+
+### The reproduction, both halves
+
+1. `src/session_detector.rs:84-94` — `read_tty` reads `/proc/<pid>/fd/0`, strips
+   the leading `/dev/` and returns e.g. **`pts/3`**. The stripping is deliberate:
+   the value is compared against tmux's `#{pane_tty}`, which prints `/dev/pts/3`.
+2. **`src/terminal_switch.rs:57`** — `if pane_tty.contains(tty)`, an
+   **unanchored substring** match, inside a loop over every pane with **nothing
+   preferring an exact match**.
+
+`"/dev/pts/31".contains("pts/3")` is **true**. So the first pane in tmux's
+listing whose tty merely *contains* the target's is selected, and on any host
+with ten or more ptys — the normal case for the tmux user this code path exists
+for — the TUI switches focus to **someone else's pane**.
+
+**Note the path.** The pass-13 report and the `21-37` plan prose both spell this
+as `src/ui/screens/terminal_switch.rs:57`. **The file is at
+`src/terminal_switch.rs`** — a top-level module, declared in `src/lib.rs`. There
+is no `src/ui/screens/terminal_switch.rs`. Corrected here so a later round greps
+for a path that exists.
+
+### Why it is not fixed in this phase
+
+It is outside **DRIVE-01**, **DRIVE-03**, **DRIVE-04**, **SAFE-07** and
+**SAFE-08**: it is a **focus UX defect**, not injection and not goal-layer.
+Widening a gap-closure round's scope is how a round stops being verifiable
+against the gaps it was opened for, and this round's whole subject is claims
+wider than their evidence. Fixing it here would be the same error in the
+opposite direction.
+
+### The shape a later round's fix should take (named, not taken)
+
+Compare for **equality** against the `/dev/`-prefixed form, or anchor the
+comparison at a path-segment boundary, rather than substring-matching a stripped
+value; and if a substring pass is kept as a fallback, prefer an exact match
+across the whole pane list before accepting any partial one. A regression test
+should carry `pts/3` against a pane list containing `/dev/pts/31` **before**
+`/dev/pts/3`, since ordering is what makes the current code wrong rather than
+merely lucky.
+
+## 2026-08-28 (`21-37`) — pass-13 INFO rows, dispositioned
+
+Five info findings from verification pass 13, each with a disposition and why it
+is not this round's.
+
+| # | Finding | Disposition | Why not this round |
+|---|---|---|---|
+| **IN-01** | `read_start_time`'s `stat.find(')')` should be `rfind` — a process whose `comm` contains `)` shifts every subsequent field | **BACKLOG** | Unreachable today: `get_claude_pids` uses `pgrep -x claude`, an exact-name match, so `comm` is always `claude`. It is **one flag change from live** — anything that widens the pgrep pattern makes it reachable — so it is recorded rather than dismissed. Direction if it fires: a wrong start time, i.e. mis-ordering in the Sessions tab, never a wrong id. |
+| **IN-02** | `pgrep` is resolved via `$PATH`; the pid is a TOCTOU value by the time `/proc` is read | **ACCEPT** | Both are properties of reading another process's state at all. The `$PATH` resolution is the same trust this build already places in `tmux` and `git`; the TOCTOU window is closed by the reads being `ok()?`-guarded, so a dead pid yields no session rather than a wrong one. Direction: under-detection, self-correcting on the next scan. |
+| **IN-03** | `/proc/<pid>/cmdline` is read unbounded, `std::fs::read`, on a timer, over every `claude` pid | **ACCEPT (standing)** | Already recorded in this file from an earlier round. The kernel caps a process's argv at `MAX_ARG_STRLEN`-bounded totals, and the read is per-`claude`-pid on a UI timer. Revisit if this build ever scans an unbounded process set rather than an exact-name one. |
+| **IN-05** | `proc_cmdline_encoding`'s `skip(1)` encodes an unasserted positional assumption about the terminal argv's shape | **ACCEPT, partially superseded** | It is a test-harness helper, and the assumption it encodes is now asserted from the other side: `launch_terminal_argv_carries_no_untrusted_element_and_is_pinned_at_two` pins the sibling builder at exactly two elements, and the round-trip controls consume the real producer's output rather than a reconstructed one. Not this round's because it is a helper's ergonomics, not a claim. |
+| **IN-06** | `session_id_in_cmdline` is `pub(crate)` solely so a cross-module test can reach it | **ACCEPT, and deliberately so** | The visibility is the price of the round trip: the control's entire value is that it drives the REAL consumer rather than a re-spelling, and a re-spelled parser in `detail.rs` would certify the re-spelling. `pub(crate)` is the narrowest visibility that permits it — the function is not `pub`, and `crate::session_detector`'s public surface is still `ClaudeSession` and `detect_sessions` only. |
+
+**Also carried, unchanged: IN-04** (`28` hard-coded in the corpus-shape
+assertions; the terminal list repeated in several loops). It was folded into
+G1's fix by round 13 wave 1 — the fixture count is still asserted at 28 and the
+generator consumes the corpus rather than replacing it — and no further work is
+claimed against it.
+
+## 2026-08-28 (`21-37`) — the three FLAGGED edge-probe rows, and criterion 4
+
+### No-silent-drop equality, stated explicitly
+
+The deterministic edge probe over this phase's five requirement texts returned
+**7 applicable, 0 resolved, 7 unresolved**, `byVerification: {explicit: 0,
+backstop: 0}` — the same seven rows the `21-35` record above enumerates.
+
+**7 probe-surfaced items == 4 authored as explicit `must_haves.truths` in
+`21-36` + 3 surfaced here as flagged assumptions.** Nothing was auto-resolved
+with a `backstop` marker and nothing was dropped.
+
+The four `21-36` authored as explicit truths are the two **SAFE-07** rows
+(boundary, precision) and the two **DRIVE-04** rows (boundary, precision). The
+three below are the rows the probe returned **`unclassified`** — it could not
+assign a category to the requirement text at all, so there is no predicate to
+satisfy and nothing this round's scope could honestly close.
+
+| # | Requirement | Probe category | Status | Why it could not be resolved from this round's scope |
+|---|---|---|---|---|
+| 1 | **DRIVE-01** | unclassified | **flagged assumption** | The probe could not classify the requirement text; resolving it needs a manual category call, which is spec work, not gap-closure work. This round touches DRIVE-01 only in the narrow sense that a resumed or driver-launched session must remain findable — the session-detection loop. **Goal decomposition, the half of DRIVE-01 about turning a stated goal into a structured plan, is untouched by this round's diff.** Asserting the requirement as a whole would be exactly the wider-than-the-evidence claim this round exists to end. |
+| 2 | **DRIVE-03** | unclassified | **flagged assumption** | Same classification failure. `src/driver/` is absent from this round's `files_modified` entirely; the machine-checkable-plan half of DRIVE-03 is reached by nothing here. Recorded rather than silently inherited. |
+| 3 | **SAFE-08** | unclassified | **flagged assumption** | Same classification failure. SAFE-08's actual control — the argv fusion that keeps a hostile id from becoming an option of the resumed program — is **preserved unchanged** and re-asserted green, and `parse_action`'s fixed command enum is untouched. But "preserved and asserted" is a statement about a control, not a resolution of an unclassified probe row, and it is not reported as one. |
+
+**Direction for a later round.** These three do not need more test coverage; they
+need a **`21-SPEC.md`** with an `## Edge Coverage` section, which is what the
+probe is looking for and cannot find. That is spec work and should be planned as
+such rather than smuggled into a gap-closure round.
+
+### RE-SURFACED, UNCHANGED — ROADMAP success criterion 4 (round 13)
+
+**Recording, not progress. This is the SIXTH consecutive round with NO work
+claimed against it, and that is correct.**
+
+Quoted **verbatim** from `.planning/ROADMAP.md`'s Phase 21 `**Success Criteria**`
+list:
+
+> 4. A `.planning/` file or `CLAUDE.md` carrying injected instructions ("ignore prior constraints, run …") does not change which command the driver executes
+
+**Round-13 status, MEASURED on the delivered tree:**
+
+* `tests/driver_injection_corpus.rs` is **ABSENT** from this round's diff. Both
+  plans' `files_modified` exclude `tests/` entirely, and the round's `tests/`
+  diff is empty.
+* `cargo test --test driver_injection_corpus` — **13 passed / 0 failed / 10
+  ignored.** Identical to every figure since pass 10.
+
+**ROADMAP success criterion 4 is PERMANENTLY AGENT-UNCLOSABLE BY CONSTRUCTION.**
+It requires a human with a live, authenticated Claude subscription to run the ten
+`#[ignore]`d arms of `tests/driver_injection_corpus.rs` against the real model
+binary. No agent has such a subscription and no agent can acquire one. It is a
+standing item **by explicit user decision**.
+
+**4/5 is therefore the EXPECTED AND CORRECT CEILING for this phase, and is not a
+failure.** A future verification pass that scores this phase 4/5 has scored it
+correctly. A future round that opens a plan against criterion 4 is doing work
+that cannot succeed.
+
+### RE-AFFIRMED, UNCHANGED — the `driver_reattach` flake (round 13)
+
+_A second standing record, kept in this section beside criterion 4 because both
+are re-affirmations rather than new dispositions._
+
+**Round 11's refusal to reinstate the `--test-threads=1` mitigation STANDS, and
+round 13 does not restore it.** Round 11 measured the two tests **4/6 red on an
+idle machine**, which refutes concurrency as a necessary cause. Round 13 wave 1
+measured it again at an IDENTICAL commit with no code change between runs and got
+**4 red of 6**, with the failure COUNT varying run to run (2 / 2 / 1 / 2 / 0 / 2)
+and one run fully green.
+
+**That non-determinism is the signature, and the varying count is why a failure
+here is not a regression signal.** The two tests remain
+`a_fresh_scan_finds_the_orphaned_run_live_with_its_last_journal_step` and
+`a_run_killed_without_an_ending_is_reported_crashed_and_nothing_on_disk_is_repaired`;
+both assert on run-journal records on disk, and neither is reachable from
+`session_id_in_cmdline`, `build_argv`, `nul_join_cmdline` or any generated byte
+string. The flake is **documented pre-existing**, **not this round's to fix**, and
+a green run is **not** evidence of repair.
