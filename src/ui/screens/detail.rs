@@ -7730,7 +7730,7 @@ mod tests {
     /// The kernel presents `/proc/<pid>/cmdline` as NUL-separated with a
     /// trailing NUL, which is what is reproduced here.
     fn proc_cmdline_encoding(argv: &[String]) -> Vec<u8> {
-        let elements: Vec<&str> = argv.iter().skip(1).map(String::as_str).collect();
+        let elements: Vec<&[u8]> = argv.iter().skip(1).map(String::as_bytes).collect();
         nul_join_cmdline(&elements)
     }
 
@@ -7741,7 +7741,19 @@ mod tests {
     /// [`proc_cmdline_encoding`] with the producer's real output, and the SPLIT
     /// arm calls it directly with an explicitly constructed cmdline. Sharing it
     /// means both arms carry the same NUL-free precondition.
-    fn nul_join_cmdline(elements: &[&str]) -> Vec<u8> {
+    ///
+    /// # Why this takes `&[&[u8]]` and not `&[&str]` (21-36)
+    ///
+    /// It took `&[&str]` until round 13, and that TYPE was the defect rather
+    /// than any fixture missing from a list. `/proc/<pid>/cmdline` is a byte
+    /// string — the kernel imposes no encoding on it — and
+    /// [`crate::session_detector::session_id_in_cmdline`] has taken `&[u8]` all
+    /// along. A `&str`-typed harness cannot CONSTRUCT an ill-formed-UTF-8
+    /// cmdline at all, so the whole encoding class was not "an unenumerated
+    /// fixture": it was unrepresentable, and no amount of adding fixtures to a
+    /// `&str` list could ever have reached it. The harness was the narrower
+    /// type, and the harness is what changed.
+    fn nul_join_cmdline(elements: &[&[u8]]) -> Vec<u8> {
         let mut bytes = Vec::new();
         for element in elements {
             // A NUL-bearing element would TRUNCATE this encoding, and the
@@ -7749,14 +7761,14 @@ mod tests {
             // round-tripped — passing vacuously (T-21-35-07). Fail loudly
             // instead, at the fixture that did it.
             assert!(
-                !element.as_bytes().contains(&0),
+                !element.contains(&0),
                 "the argv element {element:?} carries a NUL byte. NUL is the \
                  SEPARATOR of this encoding, so the element would be split in \
                  two and everything after the NUL would be read as a separate \
                  argument: the assertion below would then be checking a value \
                  this test invented rather than one that survived the wire."
             );
-            bytes.extend_from_slice(element.as_bytes());
+            bytes.extend_from_slice(element);
             bytes.push(0);
         }
         bytes
@@ -7883,7 +7895,8 @@ mod tests {
             // --- SPLIT: constructed explicitly, not inferred ------------------
             // Program name, bare option name, then the fixture: the two-element
             // window a hand-typed `claude --resume <id>` puts on the wire.
-            let wire = nul_join_cmdline(&["claude", "--resume", raw.as_str()]);
+            let wire =
+                nul_join_cmdline(&[b"claude".as_slice(), b"--resume".as_slice(), raw.as_bytes()]);
             let read_back = crate::session_detector::session_id_in_cmdline(&wire);
 
             assert_eq!(
@@ -7898,6 +7911,560 @@ mod tests {
                  message to the operator — under-detection, and SILENT."
             );
         }
+    }
+
+    // ======================================================================
+    // THE GENERATED CERTIFICATE — the SHAPE of the corpus is what changed
+    //
+    // The two controls above are real and they stay. What they cannot be is
+    // the thing that CERTIFIES the round-trip claim, because they consume an
+    // ENUMERATION. An enumeration can only ever fail on a class somebody
+    // thought to enumerate, and this phase has now watched that mechanism run
+    // three times: round 10 certified a CWE-88 fix with a corpus containing no
+    // leading-hyphen fixture; round 12 certified a byte-identity claim with a
+    // corpus containing no whitespace-padded fixture; and the non-UTF-8 class
+    // was not merely unenumerated but UNREPRESENTABLE, because the harness was
+    // typed `&[&str]`. Each round the repair was to add the missing fixture,
+    // which leaves the mechanism intact and guarantees the next round.
+    //
+    // So the claim below is not "these fixtures round-trip". It is a TOTAL
+    // property with exactly two named refusal classes and no third outcome,
+    // asserted over a deterministic GENERATOR rather than a list. The 28
+    // fixtures are retained and are consumed by the generator as a seed
+    // corpus — nothing that reads them today stops doing so.
+    // ======================================================================
+
+    /// The fixed seed. A generator whose inputs vary run to run makes a green
+    /// gate un-trustworthy in the opposite direction from a vacuous one: it
+    /// passes today over a space that is not the space it passed over
+    /// yesterday. This seed is a literal so that the 4096 inputs below are
+    /// byte-identical on every machine, in CI, forever.
+    const GENERATOR_SEED: u64 = 0x21_36_5E_55_10_4E_C0_DE;
+
+    /// How many byte strings the generator produces per run.
+    const GENERATOR_CASES: usize = 4096;
+
+    /// The length bound on a generated run of bytes.
+    ///
+    /// This is the mitigation for the one thing giving up a property-testing
+    /// dependency actually costs: SHRINKING. A counterexample bounded at twelve
+    /// bytes, printed as an explicit byte vector alongside its escaped
+    /// rendering, is already small enough to read without a shrinker.
+    const GENERATED_MAX_LEN: usize = 12;
+
+    /// The whitespace units the `padded` shape draws from, spelled as BYTES so
+    /// the multi-byte members are unambiguous and so no invisible character is
+    /// pasted into this source file.
+    ///
+    /// Six are ASCII (space, tab, carriage return, line feed, vertical tab,
+    /// form feed). The last two are the UTF-8 encodings of U+00A0 NO-BREAK
+    /// SPACE (two bytes, `C2 A0`) and U+2028 LINE SEPARATOR (**three** bytes,
+    /// `E2 80 A8`). Both carry Unicode `White_Space=yes`, which is the property
+    /// `char::is_whitespace` — and therefore `str::trim` — is defined over, so
+    /// both genuinely belong to the class the G1 floor counts.
+    const GENERATED_WHITESPACE_UNITS: [&[u8]; 8] = [
+        b" ",
+        b"\t",
+        b"\r",
+        b"\n",
+        b"\x0b",
+        b"\x0c",
+        b"\xc2\xa0",
+        b"\xe2\x80\xa8",
+    ];
+
+    /// The byte prefixes the `prefixed` shape draws from. Five of the six begin
+    /// with a hyphen — the class round 10's corpus missed entirely — and the
+    /// sixth is the fusion character itself, which must arrive as data.
+    const GENERATED_OPTION_PREFIXES: [&[u8]; 6] = [
+        b"-",
+        b"--",
+        b"-r",
+        b"=",
+        b"--resume",
+        b"--session-id",
+    ];
+
+    /// One xorshift64* step. Deterministic, seedable, and small enough to read
+    /// in full — which is the point of not taking a dependency for it.
+    ///
+    /// The triple is shift-12-left, shift-25-right, shift-27-left over the
+    /// state, followed by a multiply by Vigna's `0x2545F4914F6CDD1D` on the
+    /// OUTPUT only, so the state sequence stays a pure xorshift. The state must
+    /// never be zero; [`GENERATOR_SEED`] is not.
+    fn next_random(state: &mut u64) -> u64 {
+        let mut x = *state;
+        x ^= x << 12;
+        x ^= x >> 25;
+        x ^= x << 27;
+        *state = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// A run of unconstrained random bytes — the arm that reaches classes
+    /// nobody enumerated.
+    ///
+    /// NUL is excluded, and only NUL: it is the SEPARATOR of the
+    /// `/proc/<pid>/cmdline` encoding, so a NUL inside a value is not a value
+    /// this wire can carry at all. That class is covered where it belongs, by
+    /// [`nul_join_cmdline`]'s own precondition assertion.
+    fn generated_uniform(state: &mut u64) -> Vec<u8> {
+        let len = (next_random(state) % (GENERATED_MAX_LEN as u64 + 1)) as usize;
+        (0..len)
+            .map(|_| (next_random(state) % 255 + 1) as u8)
+            .collect()
+    }
+
+    /// The `core` a compound shape wraps: one recursion, into a terminal arm
+    /// only (`uniform` or a seed fixture). Bounded depth by construction.
+    fn generated_core(state: &mut u64, seeds: &[String]) -> Vec<u8> {
+        if next_random(state).is_multiple_of(2) {
+            generated_uniform(state)
+        } else {
+            seeds[(next_random(state) % seeds.len() as u64) as usize]
+                .as_bytes()
+                .to_vec()
+        }
+    }
+
+    /// One case of the mixture distribution.
+    fn generated_shape(shape: u64, state: &mut u64, seeds: &[String]) -> Vec<u8> {
+        match shape {
+            // uniform — unrestricted bytes, no alphabet, no character class.
+            0 => generated_uniform(state),
+            // padded — whitespace run, core, whitespace run. The class G1 lives
+            // in, and the class uniform bytes essentially never reach.
+            1 => {
+                let mut out = Vec::new();
+                for _ in 0..(next_random(state) % 3 + 1) {
+                    let unit = GENERATED_WHITESPACE_UNITS
+                        [(next_random(state) % GENERATED_WHITESPACE_UNITS.len() as u64) as usize];
+                    out.extend_from_slice(unit);
+                }
+                out.extend_from_slice(&generated_core(state, seeds));
+                for _ in 0..(next_random(state) % 3 + 1) {
+                    let unit = GENERATED_WHITESPACE_UNITS
+                        [(next_random(state) % GENERATED_WHITESPACE_UNITS.len() as u64) as usize];
+                    out.extend_from_slice(unit);
+                }
+                out
+            }
+            // prefixed — an option-shaped head on an arbitrary core.
+            2 => {
+                let mut out = GENERATED_OPTION_PREFIXES
+                    [(next_random(state) % GENERATED_OPTION_PREFIXES.len() as u64) as usize]
+                    .to_vec();
+                out.extend_from_slice(&generated_core(state, seeds));
+                out
+            }
+            // seed — one of the 28 retained fixtures, CONSUMED rather than
+            // respelled (D-21-6).
+            3 => seeds[(next_random(state) % seeds.len() as u64) as usize]
+                .as_bytes()
+                .to_vec(),
+            // ascii — a run of printable ASCII, the boring shape a real id has.
+            _ => {
+                let len = (next_random(state) % (GENERATED_MAX_LEN as u64 + 1)) as usize;
+                (0..len)
+                    .map(|_| (0x20 + next_random(state) % 95) as u8)
+                    .collect()
+            }
+        }
+    }
+
+    /// The input space of the round-trip claim: `count` byte strings drawn
+    /// deterministically from a five-arm mixture at `seed`.
+    ///
+    /// `Vec<Vec<u8>>` and not `Vec<String>`, because the encoding class has to
+    /// be expressible for the claim to be total — see [`nul_join_cmdline`].
+    fn generated_session_id_bytes(seed: u64, count: usize) -> Vec<Vec<u8>> {
+        let seeds = hostile_session_ids();
+        let mut state = seed;
+        let mut out = Vec::with_capacity(count);
+        for _ in 0..count {
+            let shape = next_random(&mut state) % 5;
+            out.push(generated_shape(shape, &mut state, &seeds));
+        }
+        out
+    }
+
+    /// One legitimate way a session id can appear on the `/proc` wire.
+    ///
+    /// A named, registered TABLE rather than two hand-written loops, so the
+    /// property below is stated over a SET a later plan can extend by adding a
+    /// row — rather than over whichever forms someone remembered.
+    struct WireForm {
+        name: &'static str,
+        encode: fn(&[u8]) -> Vec<u8>,
+    }
+
+    /// The FUSED form: one argv element, prefix and value in the same element.
+    ///
+    /// The prefix is taken from this module's own
+    /// [`RESUME_OPTION_FUSED_PREFIX`] rather than respelled, so a change to the
+    /// producer's spelling reaches this table instead of drifting away from it.
+    fn encode_fused(s: &[u8]) -> Vec<u8> {
+        let mut element = RESUME_OPTION_FUSED_PREFIX.as_bytes().to_vec();
+        element.extend_from_slice(s);
+        nul_join_cmdline(&[b"claude".as_slice(), element.as_slice()])
+    }
+
+    /// The SPLIT form: bare option name, then the value as the next element.
+    ///
+    /// The bare name is DERIVED from the fused prefix by removing the fusion
+    /// character, so this file still spells the option exactly once.
+    fn encode_split(s: &[u8]) -> Vec<u8> {
+        let bare = RESUME_OPTION_FUSED_PREFIX
+            .strip_suffix('=')
+            .expect("the fused prefix ends with the fusion character");
+        nul_join_cmdline(&[b"claude".as_slice(), bare.as_bytes(), s])
+    }
+
+    fn wire_forms() -> Vec<WireForm> {
+        vec![
+            WireForm {
+                name: "fused",
+                encode: encode_fused,
+            },
+            WireForm {
+                name: "split",
+                encode: encode_split,
+            },
+        ]
+    }
+
+    /// **The round-trip claim, stated so it has no third outcome** (21-36).
+    ///
+    /// For every generated byte string `s` and every registered [`WireForm`]:
+    ///
+    /// - if `s` is valid UTF-8 **and** trims to something non-empty, the parser
+    ///   MUST return `Some(t)` with `t`'s bytes **byte-identical** to `s` — no
+    ///   normalisation, no case folding, no trimming, no truncation, no cap;
+    /// - otherwise the parser MUST return `None`, and `s` MUST fall in one of
+    ///   exactly two named refusal classes: **R1**, not valid UTF-8; **R2**,
+    ///   valid UTF-8 and empty after `trim`.
+    ///
+    /// Both directions are asserted. A non-refused `s` reading back `None`, a
+    /// refused `s` reading back `Some`, and a byte mismatch each produce a
+    /// distinct message naming the class. A disjunction with two named branches
+    /// can be false; *"these 28 fixtures round-trip"* could not be.
+    ///
+    /// # The oracle is INDEPENDENT of the code it checks
+    ///
+    /// R1 and R2 are computed here from [`std::str::from_utf8`] and
+    /// [`str::trim`] directly. The parser is deliberately NOT asked to export a
+    /// shared `is_refused` predicate for this test to consume: an oracle that
+    /// consumes the predicate it checks can only ever agree with it, which is
+    /// this repository's own recorded lesson — see `Cargo.toml`'s two-crate
+    /// rationale, where the production invisible-character class and its sweep
+    /// oracle read two independently maintained derivations of the same
+    /// standard for exactly this reason. `std` is the independent derivation
+    /// here.
+    ///
+    /// # Why every violation is collected instead of panicking at the first
+    ///
+    /// This control's whole job is to be checked out at the commit that
+    /// introduced it and observed RED. At that commit the parser violates the
+    /// property in TWO distinct classes at once, and a test that panicked on
+    /// the first one would show a reader only whichever class the corpus
+    /// happened to reach first — the second would stay invisible until the
+    /// first was fixed. So one exemplar per (class × wire form) is collected,
+    /// with the rest counted, and the whole report is emitted in a single
+    /// panic. Bounded by construction: at most six exemplars.
+    #[test]
+    fn the_round_trip_property_holds_for_every_generated_byte_string() {
+        let corpus = generated_session_id_bytes(GENERATOR_SEED, GENERATOR_CASES);
+        assert_eq!(
+            corpus.len(),
+            GENERATOR_CASES,
+            "the generator produced {} cases, not {GENERATOR_CASES}; the claim \
+             below would then be made over a space smaller than it names",
+            corpus.len()
+        );
+
+        // class -> (first exemplar message, total count in that class)
+        let mut violations: std::collections::BTreeMap<&'static str, (String, usize)> =
+            std::collections::BTreeMap::new();
+        let mut record = |class: &'static str, message: String| {
+            let entry = violations.entry(class).or_insert((message, 0));
+            entry.1 += 1;
+        };
+
+        for form in wire_forms() {
+            for s in &corpus {
+                let wire = (form.encode)(s);
+                let read_back = crate::session_detector::session_id_in_cmdline(&wire);
+                let read_back = read_back
+                    .as_ref()
+                    .map(|id| id.as_raw_for_logic_only().as_bytes().to_vec());
+
+                // --- THE ORACLE, from `std`, in this test -------------------
+                let decoded = std::str::from_utf8(s);
+                let r1 = decoded.is_err();
+                let r2 = decoded.map(|t| t.trim().is_empty()).unwrap_or(false);
+
+                let name = form.name;
+                let escaped = s.escape_ascii().to_string();
+
+                match read_back {
+                    None if !r1 && !r2 => record(
+                        "refused-a-value-that-must-round-trip",
+                        format!(
+                            "wire form {name:?}: the byte string {s:?} \
+                             (escaped: \"{escaped}\") is valid UTF-8 and does \
+                             not trim to empty, so it is in NEITHER refusal \
+                             class and the parser must return it byte-identically. \
+                             It returned None. A value this build can put on the \
+                             wire and cannot read back is a Sessions-tab row that \
+                             answers `No session ID to resume` with no error \
+                             anywhere — under-detection, and SILENT."
+                        ),
+                    ),
+                    None => {}
+                    Some(ref got) if r1 => record(
+                        "fabricated-an-id-for-ill-formed-input",
+                        format!(
+                            "wire form {name:?}: the byte string {s:?} \
+                             (escaped: \"{escaped}\") is NOT valid UTF-8, so it \
+                             is in refusal class R1 and the parser must return \
+                             None and keep scanning. It returned Some({got:?}). \
+                             That is a FABRICATION: a non-empty id for a value no \
+                             process carries, which puts a row in the Sessions \
+                             tab offering to resume a conversation that does not \
+                             exist. A lossy decode substituting U+FFFD is how \
+                             this happens."
+                        ),
+                    ),
+                    Some(ref got) if r2 => record(
+                        "accepted-a-value-that-must-be-refused",
+                        format!(
+                            "wire form {name:?}: the byte string {s:?} \
+                             (escaped: \"{escaped}\") is valid UTF-8 and trims to \
+                             empty, so it is in refusal class R2 and the parser \
+                             must return None. It returned Some({got:?})."
+                        ),
+                    ),
+                    Some(ref got) if got.as_slice() != s.as_slice() => record(
+                        "read-back-a-different-byte-string",
+                        format!(
+                            "wire form {name:?}: the byte string {s:?} \
+                             (escaped: \"{escaped}\") went onto the wire and \
+                             {got:?} came back. The claim is BYTE-IDENTITY, not \
+                             equivalence: an id the TUI hands back rewritten is \
+                             an id that resumes a different conversation, or \
+                             none. Nothing in this parse may normalise, case \
+                             fold, trim, truncate or cap."
+                        ),
+                    ),
+                    Some(_) => {}
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "the round-trip property is FALSE over {GENERATOR_CASES} generated \
+             byte strings in {} wire forms. {} violation class(es), one \
+             exemplar each:\n\n{}",
+            wire_forms().len(),
+            violations.len(),
+            violations
+                .iter()
+                .map(|(class, (message, count))| format!(
+                    "[{class}] {count} occurrence(s)\n  {message}"
+                ))
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        );
+    }
+
+    /// **The generator's reach is a COMMITTED FLOOR, asserted, not hoped for**
+    /// (21-36).
+    ///
+    /// Replacing an enumeration with a generator buys reach and introduces
+    /// exactly one new way to lie: the generator quietly stops producing a
+    /// class, and the property above then passes over a space SMALLER than the
+    /// one it names — green, and certifying nothing. That is the same failure
+    /// shape as the enumerated corpus it replaces, one level up, and it would
+    /// be invisible without this test.
+    ///
+    /// So the reach is committed as numbers. Each threshold gets its OWN
+    /// assertion naming which class fell short, because a generator bug and a
+    /// parser bug are different bugs with different fixes and one combined
+    /// assertion would conflate them. That is also why this is a separate test
+    /// function from
+    /// [`the_round_trip_property_holds_for_every_generated_byte_string`]: a
+    /// failure here means the INPUTS are wrong, not the parser.
+    ///
+    /// # The precedent this follows
+    ///
+    /// `src/text.rs`'s exhaustive Unicode sweep carries a committed
+    /// `format_seen >= 150` floor for precisely this reason — an implication
+    /// over a filtered set is vacuously TRUE when the filter matches nothing,
+    /// and with the oracle's feature flag off that sweep would have passed
+    /// green forever while asserting nothing. See the `unicode-properties`
+    /// entry in `Cargo.toml`, whose comment names the floor as part of the
+    /// two-crate rationale. This is the same device applied to a generated
+    /// input space instead of a filtered one.
+    ///
+    /// # The honest limit, written where it has to be read
+    ///
+    /// **A generator does not abolish enumeration.** It MOVES the enumeration
+    /// from VALUES to a GRAMMAR and a DISTRIBUTION, and a grammar can still
+    /// miss a class — nobody should read the property above as covering every
+    /// byte string a `/proc` cmdline could carry, because it does not.
+    ///
+    /// What it removes is narrower and is the thing that actually failed three
+    /// times here: the ability of the claim to pass with **no input anywhere
+    /// near the boundary**. Two devices do that work, and they are named so a
+    /// later reader can tell whether a "simplification" deleted them:
+    ///
+    /// 1. the **`uniform` arm** — unrestricted random bytes, constrained to no
+    ///    alphabet and no character class, which is what reaches classes nobody
+    ///    enumerated; and
+    /// 2. the **`>= 200` distinct-byte-values floor**, which fails if that arm
+    ///    is ever narrowed to a restricted alphabet.
+    ///
+    /// A grammar arm that stops firing, or a uniform arm quietly replaced by a
+    /// friendlier one, turns this test red rather than turning the property
+    /// vacuous.
+    #[test]
+    fn the_generator_reaches_every_named_class_and_both_branches_of_the_property() {
+        let corpus = generated_session_id_bytes(GENERATOR_SEED, GENERATOR_CASES);
+
+        // --- The classes, with every predicate spelled from `std` -----------
+        let empty = corpus.iter().filter(|s| s.is_empty()).count();
+
+        let whitespace_padded = corpus
+            .iter()
+            .filter(|s| {
+                let Ok(text) = std::str::from_utf8(s) else {
+                    return false;
+                };
+                let edge_whitespace = text.chars().next().is_some_and(char::is_whitespace)
+                    || text.chars().next_back().is_some_and(char::is_whitespace);
+                edge_whitespace && !text.trim().is_empty()
+            })
+            .count();
+
+        let whitespace_only = corpus
+            .iter()
+            .filter(|s| {
+                !s.is_empty()
+                    && std::str::from_utf8(s).is_ok_and(|text| text.trim().is_empty())
+            })
+            .count();
+
+        let ill_formed = corpus
+            .iter()
+            .filter(|s| std::str::from_utf8(s).is_err())
+            .count();
+
+        let hyphen_leading = corpus.iter().filter(|s| s.first() == Some(&b'-')).count();
+
+        let distinct_bytes: std::collections::BTreeSet<u8> =
+            corpus.iter().flat_map(|s| s.iter().copied()).collect();
+
+        assert!(
+            empty >= 1,
+            "the generator produced {empty} EMPTY inputs, below the floor of 1. \
+             The property above is passing over a space that no longer contains \
+             the empty input — the degenerate end of refusal class R2, and the \
+             shape a fused `--resume=` with nothing after it puts on the wire."
+        );
+        assert!(
+            whitespace_padded >= 20,
+            "the generator produced {whitespace_padded} WHITESPACE-PADDED inputs \
+             (leading or trailing `char::is_whitespace` around a non-whitespace \
+             core), below the floor of 20. The property above is passing over a \
+             space that no longer contains the class G1 lives in — the class \
+             round 12's 28-fixture corpus did not contain either, which is how a \
+             build whose parser rewrote every padded id certified itself green. \
+             Uniform random bytes essentially never produce this shape; the \
+             `padded` grammar arm is the only thing that does."
+        );
+        assert!(
+            whitespace_only >= 5,
+            "the generator produced {whitespace_only} non-empty WHITESPACE-ONLY \
+             inputs, below the floor of 5. The property above is passing over a \
+             space that no longer contains refusal class R2's interesting half \
+             — the values that are non-empty on the wire and empty after trim."
+        );
+        assert!(
+            ill_formed >= 100,
+            "the generator produced {ill_formed} inputs that fail \
+             `std::str::from_utf8`, below the floor of 100. The property above \
+             is passing over a space that no longer contains refusal class R1 — \
+             the encoding class that was not an unenumerated fixture but an \
+             UNREPRESENTABLE one until the harness stopped being `&str`-typed. \
+             Check the `uniform` arm first: it is what produces these."
+        );
+        assert!(
+            hyphen_leading >= 50,
+            "the generator produced {hyphen_leading} inputs whose FIRST BYTE is \
+             `-`, below the floor of 50. The property above is passing over a \
+             space that no longer contains the option-lookalike class — the \
+             class round 10's corpus missed entirely, which let a CWE-88 fix be \
+             certified by fixtures incapable of exercising it."
+        );
+        assert!(
+            distinct_bytes.len() >= 200,
+            "the generator emitted only {} DISTINCT byte values across all \
+             inputs, below the floor of 200 (of 255 possible; NUL is excluded \
+             because it is this encoding's separator). This is the floor that \
+             fails if the `uniform` arm is ever narrowed to a restricted \
+             alphabet or a character class — which would silently turn the \
+             property above back into an enumeration with extra ceremony.",
+            distinct_bytes.len()
+        );
+
+        // --- BOTH branches of the disjunction, actually exercised -----------
+        // A disjunction whose second branch never fires passes vacuously, so
+        // the property is run once more here purely to TALLY which branch each
+        // case took.
+        let mut round_tripped = 0_usize;
+        let mut refused_r1 = 0_usize;
+        let mut refused_r2 = 0_usize;
+
+        for form in wire_forms() {
+            for s in &corpus {
+                let wire = (form.encode)(s);
+                let read_back = crate::session_detector::session_id_in_cmdline(&wire);
+                let decoded = std::str::from_utf8(s);
+
+                match read_back {
+                    Some(ref id) if id.as_raw_for_logic_only().as_bytes() == s.as_slice() => {
+                        round_tripped += 1;
+                    }
+                    Some(_) => {}
+                    None if decoded.is_err() => refused_r1 += 1,
+                    None if decoded.is_ok_and(|text| text.trim().is_empty()) => refused_r2 += 1,
+                    None => {}
+                }
+            }
+        }
+
+        assert!(
+            round_tripped >= 1,
+            "not one generated input ROUND-TRIPPED ({round_tripped} observed). \
+             The property above is then satisfied entirely by its refusal \
+             branch — a parser that returned None for everything would pass it. \
+             The capability half of the claim is asserted by nothing."
+        );
+        assert!(
+            refused_r1 >= 1,
+            "not one generated input was refused as R1 ({refused_r1} observed), \
+             so the ill-formed-UTF-8 branch of the disjunction never fired and \
+             is certified by nothing. Either the generator stopped producing \
+             ill-formed bytes or the parser stopped refusing them."
+        );
+        assert!(
+            refused_r2 >= 1,
+            "not one generated input was refused as R2 ({refused_r2} observed), \
+             so the empty-after-trim branch of the disjunction never fired and \
+             is certified by nothing. Either the generator stopped producing \
+             whitespace-only inputs or the parser stopped refusing them."
+        );
     }
 
     /// **`launch_terminal_argv` pinned rather than changed** (D-21-49).
