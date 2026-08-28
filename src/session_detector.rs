@@ -223,6 +223,95 @@ const RESUME_OPTION_NAME: &[u8] = b"--resume";
 /// when that coupling did not exist, they drifted and the drift was silent.
 const RESUME_OPTION_FUSED_PREFIX: &[u8] = b"--resume=";
 
+/// The resume option's **short name**.
+///
+/// # Measured at `claude` 2.1.250, and that is a DEPENDENCY BEHAVIOUR
+///
+/// `claude --help` documents one option under two spellings —
+/// `-r, --resume [value]` — so `-r` is not a different option with similar
+/// meaning, it is the SAME option and a user typing it by hand is producing a
+/// legitimate wire form this build simply could not read.
+///
+/// Two shapes carry a value under this name, and both are read below:
+///
+/// - **bare short** — `-r <id>`, the value being the NEXT argv element;
+/// - **attached short** — `-r<id>`, the value being everything after these two
+///   bytes.
+///
+/// **What makes the attached form unambiguous, measured rather than assumed.**
+/// At 2.1.250 the CLI's COMPLETE short-option inventory is exactly eight —
+/// `-c -d -h -n -p -r -v -w` — so `-r` is the only `r`-initial short option and
+/// an element beginning with these two bytes and longer than them can only be
+/// this option carrying an attached value. A future release adding a second
+/// `r`-initial short option falsifies that, which is why the inventory is
+/// written here as a measurement with a version on it rather than as a rule.
+///
+/// **The measurement EXPIRES.** See the standing dependency-behaviour record in
+/// this phase's `deferred-items.md`: the probes are re-run on any CLI upgrade
+/// rather than inferred forward from a version number.
+const RESUME_OPTION_SHORT_NAME: &[u8] = b"-r";
+
+/// The bare name of the option **this build's own executor emits**
+/// (`crate::executor::claude::build_argv`), documented at `claude` 2.1.250 as
+/// `--session-id <uuid>`.
+///
+/// Reading it is the whole of G2. Before this round every driver-launched
+/// session — `claude -p --session-id <uuid>` — read back as `None`, so the one
+/// population DRIVE-01 is actually about was invisible to the detector that
+/// finds it again.
+const SESSION_ID_OPTION_NAME: &[u8] = b"--session-id";
+
+/// The same option name with the fusion character appended, for the single
+/// argv element `--session-id=<uuid>`. Measured at `claude` 2.1.250; no
+/// producer in this build emits it, and a launcher that is not this build may.
+const SESSION_ID_OPTION_FUSED_PREFIX: &[u8] = b"--session-id=";
+
+/// Which OPTION a candidate value arrived under, and therefore how it ranks
+/// when an argv carries both (21-37, G2b, D-21-75, T-21-37-02).
+///
+/// # The rank rule is MEASURED, not guessed
+///
+/// [`SessionIdRank::Resume`] outranks [`SessionIdRank::Assigned`] regardless of
+/// argv index. Within a rank, the leftmost element still wins by index,
+/// unchanged.
+///
+/// The reason is `claude` 2.1.250's own help text for its forking option
+/// (spelled `--fork-` + `session`, never whole under `src/` so the guard
+/// `no_source_line_under_src_requests_a_forked_session` cannot report this
+/// file), quoted verbatim:
+///
+/// > When resuming, create a new session ID instead of reusing the original
+/// > (use with --resume or --continue)
+///
+/// Read it for what it says: absent that flag, a resumed conversation REUSES
+/// the id it resumed. So on an argv carrying both options — exactly the shape
+/// this build's own executor emits when resuming, `--session-id <fresh-uuid>`
+/// followed by `--resume <old>` — the LIVE conversation's identity is the
+/// resumed value, and the fresh uuid is an id the run does not end up under.
+/// Reporting the fresh uuid would offer the operator a resume of a conversation
+/// that does not exist.
+///
+/// **The premise is ENFORCED rather than remembered.** The rule is only sound
+/// while this build never requests a fork, so
+/// `tests::no_source_line_under_src_requests_a_forked_session` asserts that no
+/// non-comment line under `src/` spells that option. This build cannot start
+/// forking without the rank rule being re-decided.
+///
+/// **The disclosed residual, with its direction.** An EXTERNALLY-launched
+/// `claude --resume X` carrying the fork flag (`--fork-` + `session`, kept
+/// unspelled here for the guard's sake) has a NEW id, and this parser would
+/// report `X`. **Mis-detection**, bounded to externally-launched forked
+/// sessions — this build launches none — and recorded in `deferred-items.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionIdRank {
+    /// The value arrived under `--resume` / `-r`: the conversation the process
+    /// is actually in.
+    Resume,
+    /// The value arrived under `--session-id`: the id ASSIGNED to a fresh run,
+    /// which is the live identity only when nothing was resumed.
+    Assigned,
+}
+
 /// The PURE half of the pair: the `/proc/<pid>/cmdline` bytes → session id
 /// parse, with no I/O in it (D-21-67).
 ///
@@ -241,6 +330,36 @@ const RESUME_OPTION_FUSED_PREFIX: &[u8] = b"--resume=";
 ///   re-break detection for every session not started here.
 ///
 /// The leftmost id-bearing element wins, deterministically, by argv index.
+///
+/// # CORRECTED 2026-08-28 (21-37): "both wire forms" was TWO of SIX, and "leftmost" is now leftmost WITHIN A RANK
+///
+/// **The two sentences this corrects, verbatim:** *"**BOTH wire forms are
+/// read, because both are legitimate on the wire.**"* and *"The leftmost
+/// id-bearing element wins, deterministically, by argv index."* Both stand
+/// unreworded above; this block is beside them, not instead of them.
+///
+/// **What they got right, and what is NOT retracted.** Both listed forms are
+/// legitimate and both are still read exactly as described, and within one
+/// option the leftmost element still wins by argv index — that rule is
+/// preserved element-for-element, not approximated.
+///
+/// **What they missed.** *"Both"* was a closed claim over an OPEN set. The set
+/// was never censused, and it was two short in one direction and four short in
+/// another. At `claude` 2.1.250 the same option is also spelled `-r` (bare and
+/// attached), and a SECOND option carries an id at all — `--session-id <uuid>`,
+/// which is what **this build's own executor emits on every driver-launched
+/// run**. Measured before this round, `claude -p --session-id <uuid>` read back
+/// as `None`: the population DRIVE-01 is about was the population this parser
+/// could not see. Six spellings are now read — `--resume=<id>`, `--resume <id>`,
+/// `-r<id>`, `-r <id>`, `--session-id=<id>`, `--session-id <id>` — and the set
+/// is no longer a remembered one: `tests::every_claude_argv_option_site_under_src_is_adjudicated`
+/// derives every `claude`-argv site under `src/` from the tree and requires each
+/// PRODUCER to be driven back through this parser.
+///
+/// With two OPTIONS on the wire, argv index alone stopped being enough to
+/// decide. The rule is now: **`--resume` outranks `--session-id`, and within a
+/// rank the leftmost element wins by index.** The rank is MEASURED, its premise
+/// is ENFORCED, and its residual is disclosed — see [`SessionIdRank`].
 ///
 /// # CORRECTED 2026-08-28 (21-36): the byte-identity claim, and the two boundaries that make it total
 ///
@@ -367,27 +486,61 @@ const RESUME_OPTION_FUSED_PREFIX: &[u8] = b"--resume=";
 pub(crate) fn session_id_in_cmdline(cmdline: &[u8]) -> Option<Untrusted> {
     let args: Vec<&[u8]> = cmdline.split(|&b| b == 0).collect();
 
+    // Two slots rather than an early return, because RANK cannot be resolved
+    // without seeing the whole argv: a `--resume` may appear AFTER a
+    // `--session-id` and still outrank it (see [`SessionIdRank`]). The scan is
+    // therefore exhaustive. Each slot is filled only if still empty, which is
+    // exactly the old leftmost-wins rule preserved WITHIN a rank.
+    //
+    // The keep-scanning-past-an-unusable-value behaviour is unchanged: an
+    // ill-formed (R1) or empty-after-trim (R2) candidate simply fills no slot
+    // and the scan continues, so a later well-formed element is still found.
+    let mut first_resume: Option<Untrusted> = None;
+    let mut first_assigned: Option<Untrusted> = None;
+
     let mut index = 0;
     while index < args.len() {
-        // The ONLY new condition is on the ARGUMENT'S SHAPE — which of the two
-        // wire forms this element is, if either. Nothing here inspects what the
-        // value IS.
-        let candidate: Option<&[u8]> =
-            if let Some(suffix) = args[index].strip_prefix(RESUME_OPTION_FUSED_PREFIX) {
-                Some(suffix)
-            } else if args[index] == RESUME_OPTION_NAME {
+        let element = args[index];
+        // The ONLY new condition is on the ARGUMENT'S SHAPE — which wire form
+        // this element is, if any — plus which OPTION it arrived under, which
+        // is a fact about the argv and not about the value. Nothing here
+        // inspects what the value IS.
+        let found: Option<(&[u8], SessionIdRank)> =
+            if let Some(suffix) = element.strip_prefix(RESUME_OPTION_FUSED_PREFIX) {
+                Some((suffix, SessionIdRank::Resume))
+            } else if element == RESUME_OPTION_NAME || element == RESUME_OPTION_SHORT_NAME {
                 // The split form's value is the NEXT element; step over it so
                 // it is not re-examined as an option in its own right. A
                 // trailing option name with nothing after it yields nothing
                 // and does not panic.
                 let next = args.get(index + 1).copied();
                 index += 1;
-                next
+                next.map(|value| (value, SessionIdRank::Resume))
+            } else if element.starts_with(RESUME_OPTION_SHORT_NAME)
+                && element.len() > RESUME_OPTION_SHORT_NAME.len()
+            {
+                // ATTACHED short form. The value is everything after the two
+                // bytes of the name, and NO leading `=` is stripped: measured
+                // at `claude` 2.1.250, `-r=abc` binds `=abc`, and the id this
+                // build reports must be the id `claude` received rather than a
+                // prettier one. Unambiguous because `-r` is the only
+                // `r`-initial short option in the CLI's complete eight-option
+                // inventory — see [`RESUME_OPTION_SHORT_NAME`].
+                Some((
+                    &element[RESUME_OPTION_SHORT_NAME.len()..],
+                    SessionIdRank::Resume,
+                ))
+            } else if let Some(suffix) = element.strip_prefix(SESSION_ID_OPTION_FUSED_PREFIX) {
+                Some((suffix, SessionIdRank::Assigned))
+            } else if element == SESSION_ID_OPTION_NAME {
+                let next = args.get(index + 1).copied();
+                index += 1;
+                next.map(|value| (value, SessionIdRank::Assigned))
             } else {
                 None
             };
 
-        if let Some(candidate) = candidate {
+        if let Some((candidate, rank)) = found {
             // R1 — the ENCODING boundary. Ill-formed UTF-8 is REFUSED and the
             // scan CONTINUES; it is never substituted through. The decode here
             // used to be `String::from_utf8_lossy`, which replaced each
@@ -406,12 +559,19 @@ pub(crate) fn session_id_in_cmdline(cmdline: &[u8]) -> Option<Untrusted> {
                 // `--resume=" abc "` read back as `"abc"` — a different id,
                 // which resumes a different conversation or none.
                 if !text.trim().is_empty() {
-                    // The ONE place a session id is WRAPPED, which is the
-                    // innermost point of the pair rather than the outermost.
-                    // What is wrapped is the candidate's own wire bytes: no
-                    // value is rewritten upstream of the boundary that is
-                    // supposed to be the first thing to touch it.
-                    return Some(Untrusted::from_untrusted_source(text.to_string()));
+                    let slot = match rank {
+                        SessionIdRank::Resume => &mut first_resume,
+                        SessionIdRank::Assigned => &mut first_assigned,
+                    };
+                    if slot.is_none() {
+                        // The ONE place a session id is WRAPPED, which is the
+                        // innermost point of the pair rather than the
+                        // outermost. What is wrapped is the candidate's own
+                        // wire bytes: no value is rewritten upstream of the
+                        // boundary that is supposed to be the first thing to
+                        // touch it.
+                        *slot = Some(Untrusted::from_untrusted_source(text.to_string()));
+                    }
                 }
             }
         }
@@ -419,7 +579,13 @@ pub(crate) fn session_id_in_cmdline(cmdline: &[u8]) -> Option<Untrusted> {
         index += 1;
     }
 
-    None
+    // The RANK resolution. `--resume` outranks `--session-id` because
+    // `claude` 2.1.250's forking option documents that a resume REUSES the
+    // original id unless forking is asked for — so on an argv carrying both,
+    // the resumed value is the live conversation's identity and the fresh
+    // uuid is not. See [`SessionIdRank`] for the quoted help text, the
+    // enforced premise and the disclosed residual.
+    first_resume.or(first_assigned)
 }
 
 fn read_start_time(pid: u32) -> Option<u64> {
@@ -670,7 +836,183 @@ mod tests {
              element, which is a second under-detection bought with the fix \
              for the first."
         );
+
+        // --- The SHORT spelling of the same option (21-37, G2a) -------------
+        // `claude --help` at 2.1.250 documents ONE option under two spellings,
+        // `-r, --resume [value]`. Every arm below is asserted, none inferred
+        // from another.
+        assert_eq!(
+            parsed(&["claude", "-r", "abc"]).as_deref(),
+            Some("abc"),
+            "the BARE SHORT form `-r <id>` is the same option as `--resume \
+             <id>`, documented as one option at `claude` 2.1.250. A user who \
+             types the short spelling gets a session this build cannot see, \
+             and the Sessions-tab row for it answers `No session ID to resume` \
+             with nothing anywhere reporting why."
+        );
+        assert_eq!(
+            parsed(&["claude", "-rabc"]).as_deref(),
+            Some("abc"),
+            "the ATTACHED SHORT form `-r<id>` binds the value inside the same \
+             argv element. Unambiguous at 2.1.250 because the CLI's complete \
+             short-option inventory is eight options and `-r` is the only \
+             `r`-initial one, so an element beginning `-r` and longer than two \
+             bytes can be nothing else."
+        );
+        assert_eq!(
+            parsed(&["claude", "-r=abc"]).as_deref(),
+            Some("=abc"),
+            "the attached form must NOT strip a leading `=`. Measured at 2.1.250 \
+             the receiving parser binds `=abc` here, so reporting `abc` would be \
+             this build inventing a prettier id than the one `claude` actually \
+             received — and offering the operator a resume of a conversation \
+             under an id no process is running."
+        );
+        assert_eq!(
+            parsed(&["claude", "-r"]).as_deref(),
+            None,
+            "a bare short name whose only successor is the encoding's trailing \
+             empty element carries no id, by the same non-empty-after-trim \
+             condition as the long form"
+        );
+        assert_eq!(
+            session_id_in_cmdline(b"claude\0-r").map(|id| id.as_raw_for_logic_only().to_string()),
+            None,
+            "the short name as the FINAL element with nothing after it at all \
+             must yield no id and must NOT panic — the same out-of-bounds arm \
+             the long form is pinned on, on a cmdline any local process can \
+             plant."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resumes", "abc"]).as_deref(),
+            None,
+            "`--resumes` is STILL not this option after the short spelling was \
+             added: it begins with `--`, never with the two bytes of the short \
+             name, so the attached-short branch cannot claim it. This arm is \
+             here because a `starts_with` on a two-byte name is exactly the \
+             shape that over-matches."
+        );
+
+        // --- The SECOND option that carries an id (21-37, G2b) --------------
+        assert_eq!(
+            parsed(&["claude", "--session-id", "u"]).as_deref(),
+            Some("u"),
+            "`--session-id <uuid>` is what THIS BUILD's own executor emits on \
+             every driver-launched run. Measured before this round it read back \
+             as None, which made every session this build itself started \
+             invisible to the detector that finds it again."
+        );
+        assert_eq!(
+            parsed(&["claude", "--session-id=u"]).as_deref(),
+            Some("u"),
+            "the fused spelling of the same option. No producer in this build \
+             emits it; a launcher that is not this build may, and dropping it \
+             would delete those sessions from the Sessions tab silently."
+        );
+
+        // --- RANK: `--resume` outranks `--session-id`, regardless of index --
+        assert_eq!(
+            parsed(&["claude", "--session-id", "u", "--resume", "old"]).as_deref(),
+            Some("old"),
+            "RANK, not index: `--resume` wins even though `--session-id` is \
+             further LEFT. Measured basis — `claude` 2.1.250 documents its \
+             forking option as creating a new session id INSTEAD OF reusing the \
+             original, so absent that flag a resume reuses the resumed id and \
+             the live conversation's identity is `old`. Reporting `u` would \
+             offer a resume of a conversation that does not exist. This is the \
+             exact argv this build's executor emits when resuming."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume", "old", "--session-id", "u"]).as_deref(),
+            Some("old"),
+            "the same rank rule with the two options in the opposite order, \
+             where rank and index happen to agree. Both arms are asserted \
+             because an implementation that simply returned the first match \
+             would pass this one and fail the one above."
+        );
+        assert_eq!(
+            parsed(&["claude", "-r", "a", "--resume", "b"]).as_deref(),
+            Some("a"),
+            "WITHIN the resume rank the leftmost element still wins by index, \
+             across spellings: which spelling an id arrived in must not change \
+             precedence, exactly as the fused/split pair above already requires."
+        );
+        assert_eq!(
+            parsed(&["claude", "--session-id", "u", "--session-id", "v"]).as_deref(),
+            Some("u"),
+            "and within the assigned rank too. The rank rule adds a tie-break \
+             BETWEEN options; it must not disturb the leftmost-wins rule inside \
+             one."
+        );
     }
+
+    /// **The rank rule's PREMISE, enforced instead of remembered** (21-37,
+    /// D-21-75, T-21-37-02).
+    ///
+    /// [`SessionIdRank`] ranks `--resume` above `--session-id` because `claude`
+    /// 2.1.250 documents its forking option as creating a NEW session id
+    /// *instead of reusing the original* — so absent that flag a resume reuses
+    /// the id it resumed, and the resumed value is the live conversation's
+    /// identity even when a fresh `--session-id` also rides on the argv.
+    ///
+    /// That reasoning is sound only while this build never asks for a fork. So
+    /// the premise is a test rather than a sentence: this build cannot start
+    /// requesting one without the rank rule being re-decided at the same time.
+    ///
+    /// The needle is assembled from two halves that are meaningless apart, the
+    /// same anti-self-match idiom as [`OPTION_NEEDLE_HEADS`], and for the same
+    /// reason — this walk covers `src/`, and this file is under `src/`.
+    #[test]
+    fn no_source_line_under_src_requests_a_forked_session() {
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        collect_rs(&base.join("src"), &base, &mut files);
+        assert!(
+            !files.is_empty(),
+            "the walk found no Rust source under src/ at all, so a clean report \
+             here would be a walk that never looked"
+        );
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let needle = format!("{FORK_OPTION_HEAD}{FORK_OPTION_TAIL}");
+        assert_eq!(
+            needle.len(),
+            12,
+            "the assembled fork-option needle is {needle:?}; the two halves have \
+             drifted and this guard is looking for the wrong thing"
+        );
+
+        let mut sites = Vec::new();
+        for (path, lines) in &files {
+            for (number, line) in lines {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                if line.contains(&needle) {
+                    sites.push(format!("{path}:{number}"));
+                }
+            }
+        }
+
+        assert!(
+            sites.is_empty(),
+            "these lines request a FORKED session: {sites:?}. The rank rule in \
+             `session_id_in_cmdline` — `--resume` outranks `--session-id` — is \
+             derived from the measured fact that a resume REUSES the resumed id \
+             unless a fork is asked for. Asking for one makes the fresh \
+             `--session-id` the live identity, so this parser would then report \
+             the resumed id for a conversation running under a different one: \
+             MIS-detection, and silent. Re-decide the rank rule in the same \
+             change that adds the flag; do not delete this guard."
+        );
+    }
+
+    /// The fork option's name, missing its last letter, so no line of this
+    /// module spells it whole. See [`OPTION_NEEDLE_HEADS`] for the idiom and
+    /// the reason a middle split would be wrong.
+    const FORK_OPTION_HEAD: &str = "fork-sessio";
+    /// The letter [`FORK_OPTION_HEAD`] is missing. Meaningless alone.
+    const FORK_OPTION_TAIL: &str = "n";
 
     /// **IN-07: the split form's successor is a VALUE BY POSITION** (21-36).
     ///
@@ -913,7 +1255,7 @@ mod tests {
         ),
         (
             "src/session_detector.rs",
-            13,
+            23,
             SiteDisposition::Consumer,
             "this file is the CONSUMER: the option constants themselves plus \
              the parser arms that pin which shapes carry an id. It builds no \
@@ -931,7 +1273,7 @@ mod tests {
         ),
         (
             "src/ui/screens/detail.rs",
-            7,
+            8,
             SiteDisposition::Producer,
             "resume_terminal_argv fuses the id to its option name and emits \
              `--resume=<id>` into a terminal emulator's argv. Also carries the \

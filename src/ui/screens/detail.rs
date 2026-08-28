@@ -8120,6 +8120,46 @@ mod tests {
         nul_join_cmdline(&[b"claude".as_slice(), bare.as_bytes(), s])
     }
 
+    /// The CLI's SHORT spelling of the resume option, measured at `claude`
+    /// 2.1.250 where `--help` documents ONE option under two spellings,
+    /// `-r, --resume [value]` (21-37, G2a).
+    ///
+    /// **Spelled here rather than imported from `crate::session_detector`, and
+    /// that is deliberate.** The encoders in this table are the PRODUCER side
+    /// of the round trip, and an encoder derived from the parser it checks can
+    /// only ever agree with it — the same oracle-independence argument 21-36
+    /// made for computing R1 and R2 from `std` rather than from a predicate the
+    /// parser exports. The two long forms already derive from this module's own
+    /// producer constant [`RESUME_OPTION_FUSED_PREFIX`] for exactly that
+    /// reason. No producer in this build emits the short spelling — it is what
+    /// a HUMAN types — so there is no producer constant to derive from, and the
+    /// honest substitute is one constant carrying the measurement, with BOTH
+    /// short encoders derived from it rather than respelling it twice.
+    const RESUME_OPTION_SHORT_NAME: &str = "-r";
+
+    /// The BARE SHORT form: `-r`, then the value as the next element.
+    fn encode_short_split(s: &[u8]) -> Vec<u8> {
+        nul_join_cmdline(&[
+            b"claude".as_slice(),
+            RESUME_OPTION_SHORT_NAME.as_bytes(),
+            s,
+        ])
+    }
+
+    /// The ATTACHED SHORT form: `-r<value>`, one element, no fusion character.
+    fn encode_short_attached(s: &[u8]) -> Vec<u8> {
+        let mut element = RESUME_OPTION_SHORT_NAME.as_bytes().to_vec();
+        element.extend_from_slice(s);
+        nul_join_cmdline(&[b"claude".as_slice(), element.as_slice()])
+    }
+
+    /// The registered wire forms the round-trip property is stated over.
+    ///
+    /// 21-36 made this a TABLE precisely so a later plan could extend it by
+    /// adding a row rather than writing a second generator; 21-37 is that later
+    /// plan, and the two short spellings are those rows. The generated property
+    /// and the non-vacuity floor both iterate this function, so both cover the
+    /// new forms with no further change.
     fn wire_forms() -> Vec<WireForm> {
         vec![
             WireForm {
@@ -8129,6 +8169,14 @@ mod tests {
             WireForm {
                 name: "split",
                 encode: encode_split,
+            },
+            WireForm {
+                name: "short-split",
+                encode: encode_short_split,
+            },
+            WireForm {
+                name: "short-attached",
+                encode: encode_short_attached,
             },
         ]
     }
