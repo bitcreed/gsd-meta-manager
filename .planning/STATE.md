@@ -48,7 +48,7 @@ Status: Executing Phase 21
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-08-27 — Phase 21 execution started
+Last activity: 2026-08-28 — Completed quick task 260828-15f: round-scope round-13 finding ids in `21-REVIEW.md`
 
 ## Deferred Verification
 
@@ -276,6 +276,7 @@ Recent decisions affecting current work:
 | 19 | Add GitHub Actions release workflow: crates.io publish on version tags | 2026-07-22 | b174ecb | — |
 | 260728-kfx | Dedupe phases in parse_roadmap_phases so summary-checklist + Phase Details roadmaps do not list every phase twice | 2026-07-28 | df64162 | [260728-kfx](./quick/260728-kfx-dedupe-phases-in-parse-roadmap-phases-so/) |
 | 260729-vmp | Let the user opt a project in to driving from the Driver tab (`o` pushes the same confirmation the dashboard's `o` does; spawn seam unchanged) | 2026-07-30 | 70157bd | [260729-vmp](./quick/260729-vmp-let-the-user-opt-a-project-in-to-driving/) |
+| 260828-15f | Round-scope round-13 finding ids in `21-REVIEW.md` (`R13-` prefix) so no bare id collides with a historical phase-21 finding | 2026-08-28 | 2e44f57 | [260828-15f](./quick/260828-15f-disambiguate-round-13-finding-ids-in-pha/) |
 
 ## Session Continuity
 
