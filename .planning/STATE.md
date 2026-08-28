@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Autonomous Orchestration
 current_phase: 21
 current_phase_name: LLM Goal Layer & Prompt-Injection Hardening
-status: planned
+status: executing
 stopped_at: "Phase 21 gap-closure round 12 PLANNED: one plan (21-35) in one wave. Rounds 1-11 executed (21-01..21-34, merged, gate green: 1424 passed / 0 failed / 13 ignored, clippy exit 0); verification pass 12 scored 90/91 must-haves and ROADMAP 4/5 with gaps_remaining: [], but the independent code reviewer found one real gap the verifier missed — a producer/consumer wire-format mismatch: resume_terminal_argv (src/ui/screens/detail.rs:713) now emits the fused --resume=<id> as ONE argv element, while read_session_id (src/session_detector.rs:159-169) still scans args.windows(2) for the split b\"--resume\", so a session the TUI resumes can no longer have its id read back from /proc and goes silently undetectable. 21-35 teaches the consumer BOTH wire forms (the producer stays fused - round 11 measured that a `--` separator DELETES the resume feature), adds the producer<->consumer round-trip control that no single-sided test could have caught, and corrects in place the read_session_id doc comment whose (correct) sink-property security reasoning is exactly what hid the two-sided functional coupling. Plan-checker: VERIFICATION PASSED first iteration. ROADMAP criterion 4 stays permanently agent-unclosable (4/5 is the ceiling). Next action: /gsd-execute-phase 21 --gaps-only"
-last_updated: "2026-08-28T01:58:07.328Z"
+last_updated: "2026-08-28T02:01:17.771Z"
 last_activity: 2026-08-27
 last_activity_desc: Phase 21 execution started
-state_head: 2a63d1487c539d67a6edaa1cfa81e3bf20d0235f
+state_head: 69f99e21f34ff95d76cd55c1e96a6453d1798f64
 progress:
   total_phases: 10
   completed_phases: 6
   total_plans: 85
-  completed_plans: 80
+  completed_plans: 84
   percent: 60
 ---
 
@@ -29,12 +29,12 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 
 ## Current Position
 
-Phase: 21 (LLM Goal Layer & Prompt-Injection Hardening) — READY TO EXECUTE
-Plan: 35 of 35 (34 executed; 21-35 pending — round-12 gap closure)
+Phase: 21 (LLM Goal Layer & Prompt-Injection Hardening) — EXECUTING
+Plan: 1 of 35
   Rounds 1-11 executed and merged; gate green (1424 passed / 0 failed / 13 ignored, clippy exit 0).
   Verification pass 12: 90/91 must-haves, ROADMAP 4/5, gaps_remaining: [] — but the independent
   code reviewer found one gap the verifier missed, confirmed in source before planning.
-Status: Ready to execute — round-12 gap closure, one plan in one wave
+Status: Executing Phase 21
   21-35 closes a producer/consumer wire-format mismatch: the producer emits the fused
   `--resume=<id>` (one argv element) while the consumer still parses only the split
   `["--resume", "<id>"]`, so TUI-resumed sessions became silently undetectable in /proc.
@@ -48,7 +48,7 @@ Status: Ready to execute — round-12 gap closure, one plan in one wave
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-08-28 — Phase 21 round-12 gap closure planned (21-35); plan-checker passed first iteration
+Last activity: 2026-08-27 — Phase 21 execution started
 
 ## Deferred Verification
 
