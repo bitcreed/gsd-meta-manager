@@ -3,18 +3,18 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Autonomous Orchestration
 current_phase: 21
-current_phase_name: llm-goal-layer-prompt-injection-hardening
+current_phase_name: LLM Goal Layer & Prompt-Injection Hardening
 status: executing
 stopped_at: "Phase 21 gap-closure round 12 PLANNED: one plan (21-35) in one wave. Rounds 1-11 executed (21-01..21-34, merged, gate green: 1424 passed / 0 failed / 13 ignored, clippy exit 0); verification pass 12 scored 90/91 must-haves and ROADMAP 4/5 with gaps_remaining: [], but the independent code reviewer found one real gap the verifier missed — a producer/consumer wire-format mismatch: resume_terminal_argv (src/ui/screens/detail.rs:713) now emits the fused --resume=<id> as ONE argv element, while read_session_id (src/session_detector.rs:159-169) still scans args.windows(2) for the split b\"--resume\", so a session the TUI resumes can no longer have its id read back from /proc and goes silently undetectable. 21-35 teaches the consumer BOTH wire forms (the producer stays fused - round 11 measured that a `--` separator DELETES the resume feature), adds the producer<->consumer round-trip control that no single-sided test could have caught, and corrects in place the read_session_id doc comment whose (correct) sink-property security reasoning is exactly what hid the two-sided functional coupling. Plan-checker: VERIFICATION PASSED first iteration. ROADMAP criterion 4 stays permanently agent-unclosable (4/5 is the ceiling). Next action: /gsd-execute-phase 21 --gaps-only"
-last_updated: "2026-08-28T03:49:49.827Z"
+last_updated: "2026-08-28T03:53:22.497Z"
 last_activity: 2026-08-27
 last_activity_desc: Phase 21 execution started
-state_head: e0ab534da97acb6902a23dd14950703f5a31d001
+state_head: c45a8ed3f81bfc51767a759c56c6b096a66a7421
 progress:
   total_phases: 10
   completed_phases: 6
   total_plans: 87
-  completed_plans: 84
+  completed_plans: 85
   percent: 60
 ---
 
@@ -29,12 +29,12 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 
 ## Current Position
 
-Phase: 21 (llm-goal-layer-prompt-injection-hardening) — READY TO EXECUTE
-Plan: 1 of 35
+Phase: 21 (LLM Goal Layer & Prompt-Injection Hardening) — EXECUTING
+Plan: 1 of 37
   Rounds 1-11 executed and merged; gate green (1424 passed / 0 failed / 13 ignored, clippy exit 0).
   Verification pass 12: 90/91 must-haves, ROADMAP 4/5, gaps_remaining: [] — but the independent
   code reviewer found one gap the verifier missed, confirmed in source before planning.
-Status: Ready to execute
+Status: Executing Phase 21
   21-35 closes a producer/consumer wire-format mismatch: the producer emits the fused
   `--resume=<id>` (one argv element) while the consumer still parses only the split
   `["--resume", "<id>"]`, so TUI-resumed sessions became silently undetectable in /proc.
