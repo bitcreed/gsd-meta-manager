@@ -310,13 +310,29 @@ mod tests {
     /// sentence (D-21-57).**
     ///
     /// Re-measured by `21-33`'s executor over all sixteen `.rs` files under
-    /// `src/ui/`, independently of the planner and reproducing it exactly:
-    /// **seven** executable occurrences of the needle, in **three** files, one
-    /// of them inside the `render_escape_guard.rs` exemption — so **six
-    /// non-exempt occurrences, in two of sixteen files**, drive the census's
-    /// assertion. The other thirteen files, including `screens/detail.rs`
-    /// (7 463 lines) and `screens/normal.rs` (2 167 lines), contribute nothing
-    /// at all.
+    /// `src/ui/`: **eight** executable occurrences of the needle, in **three**
+    /// files, **two** of them inside the `render_escape_guard.rs` exemption —
+    /// so **six non-exempt occurrences, in two of sixteen files**, drive the
+    /// census's assertion. The other thirteen files, including
+    /// `screens/detail.rs` (7 463 lines) and `screens/normal.rs` (2 167
+    /// lines), contribute nothing at all.
+    ///
+    /// **This constant went RED once during `21-33` itself, and the record is
+    /// kept because it is the pin's whole justification.** The executor first
+    /// measured seven occurrences (`render_escape_guard.rs` 1) and wrote that
+    /// into this constant and into the doc table below. `21-33`'s Task 3 then
+    /// added the S1 spot-check to `render_escape_guard.rs`, whose oracle line
+    /// `let expected = display_identity(hostile);` is an eighth occurrence —
+    /// and the pin failed on its own author, inside the same plan, forcing the
+    /// number and the disclosed table to be re-measured together exactly as
+    /// its failure message prescribes. A prose-only disclosure would have
+    /// shipped stale within one plan of being written.
+    ///
+    /// Both `render_escape_guard.rs` occurrences (`:2615` and `:3272`) are
+    /// ORACLES computing the expected escaped form of a hostile fixture, which
+    /// is precisely the reason that file is exempt; neither is a render site.
+    /// The load-bearing figure — six NON-EXEMPT occurrences in two of sixteen
+    /// files — is unchanged by the addition.
     ///
     /// The pin is a `Vec` equality, so it fails in BOTH directions: a file
     /// leaving the distribution is as much a red as a file entering it. That
@@ -325,7 +341,7 @@ mod tests {
     const MEASURED_REACH: [(&str, usize); 3] = [
         ("src/ui/screens/driver.rs", 2),
         ("src/ui/screens/driver_confirm.rs", 4),
-        ("src/ui/screens/render_escape_guard.rs", 1),
+        ("src/ui/screens/render_escape_guard.rs", 2),
     ];
 
     /// How many `.rs` files the walk must find under `src/ui/` for the reach
@@ -363,9 +379,9 @@ mod tests {
     /// |---|---|
     /// | `src/ui/screens/driver_confirm.rs` | 4 |
     /// | `src/ui/screens/driver.rs` | 2 |
-    /// | `src/ui/screens/render_escape_guard.rs` | 1 (the exempt probe module) |
+    /// | `src/ui/screens/render_escape_guard.rs` | 2 (the exempt probe module — both are oracles, not render sites) |
     /// | the other **13** files, incl. `detail.rs` and `normal.rs` | 0 |
-    /// | **total** | **7** — six non-exempt, in **two of sixteen files** |
+    /// | **total** | **8** — six non-exempt, in **two of sixteen files** |
     ///
     /// **These numbers are PINNED, not asserted here.** [`MEASURED_REACH`] and
     /// [`UI_SOURCE_FLOOR`] are checked by this test below, as a `Vec` equality
