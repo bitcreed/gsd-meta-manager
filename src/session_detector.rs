@@ -157,6 +157,21 @@ fn read_session_id(pid: u32) -> Option<Untrusted> {
     session_id_in_cmdline(&cmdline)
 }
 
+/// The resume long option's **bare name**, as it appears on the wire when the
+/// option and its value travel as two separate argv elements — the SPLIT form,
+/// which is what a human typing `claude --resume <id>` by hand produces.
+const RESUME_OPTION_NAME: &[u8] = b"--resume";
+
+/// The same option name with the **fusion character appended** — the prefix of
+/// the SINGLE argv element this build's own producer emits since round 11
+/// (`crate::ui::screens::detail::RESUME_OPTION_FUSED_PREFIX`).
+///
+/// The two modules spell this option name independently, across a module
+/// boundary. The only thing coupling them is the round-trip control
+/// `crate::ui::screens::detail::tests::the_argv_this_build_emits_is_an_argv_this_build_can_read_back`;
+/// when that coupling did not exist, they drifted and the drift was silent.
+const RESUME_OPTION_FUSED_PREFIX: &[u8] = b"--resume=";
+
 /// The PURE half of the pair: the `/proc/<pid>/cmdline` bytes → session id
 /// parse, with no I/O in it (D-21-67).
 ///
@@ -165,7 +180,27 @@ fn read_session_id(pid: u32) -> Option<Untrusted> {
 /// exact bytes the kernel would present, which is what lets the argv this build
 /// EMITS be driven back through the parser this build READS with.
 ///
-/// **Where the boundary sits, restated rather than loosened.**
+/// # BOTH wire forms are read, because both are legitimate on the wire
+///
+/// - **Fused** — one element beginning with [`RESUME_OPTION_FUSED_PREFIX`], the
+///   value being everything after that prefix. This is what this TUI emits.
+/// - **Split** — an element equal to [`RESUME_OPTION_NAME`], the value being
+///   the element after it. This is what a human typing the command by hand, or
+///   any launcher that is not this TUI, still produces. Dropping it would
+///   re-break detection for every session not started here.
+///
+/// The leftmost id-bearing element wins, deterministically, by argv index.
+///
+/// # What is added here is WIRE-FORMAT PARSING, never value validation
+///
+/// The only condition on the VALUE remains non-emptiness after `trim()`,
+/// unchanged from before this function existed; an empty value does not stop
+/// the scan, so a later well-formed element is still found. Nothing constrains
+/// the id's first byte, character set or length — see [`read_session_id`]'s doc
+/// for why a validator was considered and declined.
+///
+/// # Where the boundary sits, restated rather than loosened
+///
 /// [`read_session_id`] remains the one place a session id **enters this build
 /// from another process**; this function is the one place it is **wrapped**.
 /// That is why it returns `Option<Untrusted>` and never `Option<String>` — the
@@ -174,9 +209,28 @@ fn read_session_id(pid: u32) -> Option<Untrusted> {
 pub(crate) fn session_id_in_cmdline(cmdline: &[u8]) -> Option<Untrusted> {
     let args: Vec<&[u8]> = cmdline.split(|&b| b == 0).collect();
 
-    for window in args.windows(2) {
-        if window[0] == b"--resume" {
-            let val = String::from_utf8_lossy(window[1]);
+    let mut index = 0;
+    while index < args.len() {
+        // The ONLY new condition is on the ARGUMENT'S SHAPE — which of the two
+        // wire forms this element is, if either. Nothing here inspects what the
+        // value IS.
+        let candidate: Option<&[u8]> =
+            if let Some(suffix) = args[index].strip_prefix(RESUME_OPTION_FUSED_PREFIX) {
+                Some(suffix)
+            } else if args[index] == RESUME_OPTION_NAME {
+                // The split form's value is the NEXT element; step over it so
+                // it is not re-examined as an option in its own right. A
+                // trailing option name with nothing after it yields nothing
+                // and does not panic.
+                let next = args.get(index + 1).copied();
+                index += 1;
+                next
+            } else {
+                None
+            };
+
+        if let Some(candidate) = candidate {
+            let val = String::from_utf8_lossy(candidate);
             let val = val.trim();
             if !val.is_empty() {
                 // The ONE place a session id is WRAPPED, which is the
@@ -184,6 +238,8 @@ pub(crate) fn session_id_in_cmdline(cmdline: &[u8]) -> Option<Untrusted> {
                 return Some(Untrusted::from_untrusted_source(val.to_string()));
             }
         }
+
+        index += 1;
     }
 
     None
