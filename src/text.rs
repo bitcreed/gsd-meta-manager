@@ -1687,14 +1687,30 @@ mod tests {
         })
     }
 
-    /// Does `logical` INTERPOLATE a value into a string?
+    /// Does `logical` contain one of **five** interpolation markers?
     ///
-    /// The formatting macros this codebase builds strings with, plus `&`-string
-    /// concatenation. Both halves must hold for a line to be reported: naming
-    /// an interpreter with a FIXED command is not the defect, and a census that
-    /// reported it would be a ban on a word rather than a check on a
-    /// construction — at which point the next author works around it by
-    /// renaming.
+    /// Not "does it interpolate". The markers are exactly
+    /// [`INTERPOLATION_MARKERS`] — `format!`, `write!`, `writeln!`, `+ &` and
+    /// `push_str(&` — and nothing else is looked for.
+    ///
+    /// Both halves must hold for a line to be reported: naming an interpreter
+    /// with a FIXED command is not the defect, and a census that reported it
+    /// would be a ban on a word rather than a check on a construction — at
+    /// which point the next author works around it by renaming.
+    ///
+    /// # What the five markers miss, with the direction
+    ///
+    /// A string assembled by any OTHER means is invisible here: a `push_str`
+    /// of an already-owned value (no `&`), a `concat!`, a `join`, an owned `+`
+    /// without the reference marker, a `replace`, a `String::from` fed a
+    /// previously-built variable. **Under-detection, silent.**
+    ///
+    /// **Why the set is not widened** (IN-05, 21-32 T2). Every additional
+    /// substring marker adds false positives to a control whose entire value is
+    /// that its zero can be trusted, and a census that reports correct code is a
+    /// census the next author disables. The honest move is to say what the five
+    /// are and what they miss — not to enumerate the next level down and call
+    /// the claim repaired.
     fn interpolates_into_a_string(logical: &str) -> bool {
         INTERPOLATION_MARKERS
             .iter()
@@ -1713,8 +1729,13 @@ mod tests {
     /// onto the next line would join
     /// `Command::new("/bin/sh")` in `driver::liveness`'s test fixture to the
     /// `.args([.., &format!(..)])` three lines below it and report a fixture
-    /// that spawns a FIXED command — a false positive on correct code. The
-    /// price is stated as a residual on the census itself.
+    /// that spawns a FIXED command — a false positive on correct code.
+    ///
+    /// The price is paid, and it is stated as the **method-chain residual** in
+    /// [`no_executable_line_under_src_hands_an_interpreter_an_interpolated_program`]'s
+    /// "What it does NOT see" block. Pass 11 recorded that this sentence used to
+    /// point at prose that did not exist — the block named three residuals and
+    /// this was not one of them. It is now written there, with its direction.
     fn has_an_unclosed_delimiter(logical: &str) -> bool {
         logical.matches('(').count() > logical.matches(')').count()
             || logical.matches('[').count() > logical.matches(']').count()
@@ -1800,8 +1821,28 @@ mod tests {
     /// [`Untrusted::as_raw_for_logic_only`]'s doc states the rule — a value
     /// reaching a subprocess goes in as its own argv element, never into a
     /// program string an interpreter will parse. A doc cannot go red. This can.
-    /// It reports every executable line under `src/` where the doc's THIRD
-    /// question would have to be asked, and the answer must be none.
+    ///
+    /// # Exactly what it reports — three bounds, not a completeness claim
+    ///
+    /// It reports every executable line under `src/` at which **all three** of
+    /// these hold, and the answer must be none:
+    ///
+    /// 1. a command-interpreter binary is named by a **QUOTED LITERAL** —
+    ///    `"sh"` or the last segment of a quoted path, per
+    ///    [`names_an_interpreter`]. An interpreter named through a variable, a
+    ///    const or a config value is not seen.
+    /// 2. one of the **five** markers in [`INTERPOLATION_MARKERS`] appears, per
+    ///    [`interpolates_into_a_string`]. That doc enumerates them and names
+    ///    what they miss.
+    /// 3. both fall inside **ONE joined logical unit** of at most
+    ///    [`INTERPRETER_JOIN_LINES`] **executable** lines, joined only while
+    ///    delimiters stay open, per [`has_an_unclosed_delimiter`].
+    ///
+    /// That is the claim. It is deliberately narrower than "any such line":
+    /// round 10's version of this doc said **any**, pass 11 measured that false
+    /// (twelve comment lines defeated it), and 21-32 repaired the mechanism and
+    /// cut the word in the same commit rather than leaving a claim wider than
+    /// its certificate.
     ///
     /// **Why an EQUALITY on a count and not an `is_empty()`.** The same reason
     /// [`exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src`]
@@ -1830,22 +1871,63 @@ mod tests {
     /// a certificate — this module's own doc says so and this census is held to
     /// it.
     ///
+    /// # The reach, MEASURED
+    ///
+    /// [`the_interpreter_join_budget_is_spent_on_executable_lines_not_on_comments`]
+    /// drives [`interpreter_sites_in`] over the CR-01 shape and measures both
+    /// sides of the window:
+    ///
+    /// - **Comment lines cost nothing, at any count.** The shape is reported
+    ///   with **100** comment lines between the interpreter name and the
+    ///   interpolation — the largest count actually tested — because `taken`
+    ///   counts executable lines only.
+    /// - **The executable window is 11 / 12.** The same shape with executable
+    ///   filler is reported at **11** filler lines and MISSED at **12**, both
+    ///   asserted, and both measured identical before and after the 21-32 fix.
+    ///
+    /// Those two numbers ARE this census's reach. A change to either means the
+    /// window moved, and it must be re-measured and re-disclosed here rather
+    /// than absorbed.
+    ///
     /// # What it does NOT see, with the direction
     ///
-    /// It is a SOURCE SCAN over one logical call at a time, so a construction
-    /// **assembled across statements** — a program string built into a local on
-    /// one line and handed to an interpreter three lines later — is invisible
-    /// to it. **Under-detection, silent.** So is a spawn whose interpreter is
-    /// named by a variable rather than a literal, and so is
-    /// `project_creator::execute_hook`, which spawns an interpreter on one line
-    /// and interpolates only into its ERROR message on another (correctly: the
-    /// hook command is a shell command by design, supplied by the operator's own
-    /// config).
+    /// Five residuals, each with its failure direction. None of them is bounded
+    /// by this census; what bounds them is
+    /// [`Untrusted::as_raw_for_logic_only`]'s rule and code review.
     ///
-    /// What bounds those is [`Untrusted::as_raw_for_logic_only`]'s rule and code
-    /// review, **not this census**. The census's job is to stop the single-call
-    /// form from being re-introduced silently, and it is deliberately not sold
-    /// as more than that.
+    /// 1. **Assembled across statements.** It is a SOURCE SCAN over one logical
+    ///    call at a time, so a program string built into a local on one line and
+    ///    handed to an interpreter three lines later is invisible.
+    ///    **Under-detection, silent.**
+    /// 2. **Interpreter named by a variable.** [`names_an_interpreter`] wants a
+    ///    quoted literal; a binary chosen through a variable, a const or a
+    ///    config value is invisible. **Under-detection, silent.**
+    /// 3. **Interpolation only into a neighbouring non-program string.**
+    ///    `project_creator::execute_hook` spawns an interpreter on one line and
+    ///    interpolates only into its ERROR message on another, and is not
+    ///    reported — correctly: the hook command is a shell command by design,
+    ///    supplied by the operator's own config. **Deliberate exclusion**, not a
+    ///    gap.
+    /// 4. **Method chains are not followed** — the residual
+    ///    [`has_an_unclosed_delimiter`]'s doc promises is stated here. The join
+    ///    advances only while `(` or `[` stay unclosed; it does NOT chase
+    ///    `.method()` onto the next line. So a construction whose interpreter
+    ///    name sits on a line with balanced delimiters and whose interpolation
+    ///    sits on a later chained call is never joined to it and is invisible.
+    ///    **Under-detection, silent.** The price is paid on purpose: a
+    ///    chain-follower would join `Command::new("/bin/sh")` in
+    ///    `driver::liveness`'s fixture to an unrelated `.args([.., &format!(..)])`
+    ///    three lines below and report correct code — and a census that cries
+    ///    wolf is a census the next author deletes.
+    /// 5. **Four of five string-building forms are unseen.**
+    ///    [`interpolates_into_a_string`] looks for five substrings; a string
+    ///    built by `concat!`, `join`, an owned `+`, a `replace` or an owned
+    ///    `push_str` carries none of them. **Under-detection, silent.** Widening
+    ///    the set is rejected in that doc, with the reason.
+    ///
+    /// The census's job is to stop the single-call form from being
+    /// re-introduced silently, and it is deliberately not sold as more than
+    /// that.
     #[test]
     fn no_executable_line_under_src_hands_an_interpreter_an_interpolated_program() {
         let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
