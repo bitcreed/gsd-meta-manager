@@ -278,4 +278,143 @@ mod tests {
     fn test_read_start_time_nonexistent_pid() {
         assert!(read_start_time(999_999_999).is_none());
     }
+
+    /// NUL-join argv elements into the `/proc/<pid>/cmdline` encoding, with the
+    /// trailing NUL the kernel emits.
+    fn cmdline(elements: &[&str]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for element in elements {
+            bytes.extend_from_slice(element.as_bytes());
+            bytes.push(0);
+        }
+        bytes
+    }
+
+    /// What [`session_id_in_cmdline`] recovers from a cmdline built out of
+    /// `elements`, as a plain `String` for comparison.
+    fn parsed(elements: &[&str]) -> Option<String> {
+        session_id_in_cmdline(&cmdline(elements)).map(|id| id.as_raw_for_logic_only().to_string())
+    }
+
+    /// **Which SHAPES on the wire carry a session id — and which do not.**
+    ///
+    /// These arms exercise the parser ALONE and need no producer, which is why
+    /// they live beside the function they test rather than in `detail.rs`: the
+    /// next reader of `session_id_in_cmdline` looks here.
+    ///
+    /// This is a **functional** control over wire-format parsing. It is NOT a
+    /// second assertion of the security property — that one is a property of
+    /// the SINK, it is asserted at the sink in `detail.rs`, and asserting it
+    /// again here would let the class be counted as closed twice. See the
+    /// correction block above [`read_session_id`], which draws that line
+    /// explicitly.
+    ///
+    /// Every arm below is about the argument's SHAPE. None is about its VALUE:
+    /// the only condition on the value is non-emptiness after `trim()`.
+    #[test]
+    fn session_id_in_cmdline_reads_both_wire_forms_and_no_other_shape() {
+        // --- The two forms that DO carry an id -----------------------------
+        assert_eq!(
+            parsed(&["claude", "--resume=abc"]).as_deref(),
+            Some("abc"),
+            "the FUSED form is one argv element whose value is everything after \
+             the fusion character. This is the shape this build's own producer \
+             emits, so failing here means the TUI cannot read its own sessions."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume", "abc"]).as_deref(),
+            Some("abc"),
+            "the SPLIT form is the two-element window a hand-typed \
+             `claude --resume <id>` puts on the wire. This build no longer \
+             emits it, but every session not started by this TUI arrives in it."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume=a=b"]).as_deref(),
+            Some("a=b"),
+            "a fused value containing the fusion character must arrive WHOLE: \
+             the prefix is stripped once, not split on the LAST `=`, which \
+             would truncate the id `a=b` to `b` and resume nothing."
+        );
+
+        // --- An empty value yields nothing, and the scan CONTINUES ----------
+        assert_eq!(
+            parsed(&["claude", "--resume="]).as_deref(),
+            None,
+            "a fused element with an EMPTY suffix carries no id. This is the \
+             pre-existing non-empty-after-trim() condition, unchanged."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume=", "--resume=later"]).as_deref(),
+            Some("later"),
+            "an empty value must not STOP the scan — a later well-formed \
+             element is still found. Returning None here would be a new \
+             behaviour the pre-fix parser did not have."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume=   "]).as_deref(),
+            None,
+            "a whitespace-only fused suffix carries no id, by the same trim() \
+             as the empty one"
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume=  ", "--resume=later"]).as_deref(),
+            Some("later"),
+            "a whitespace-only value must not stop the scan either"
+        );
+
+        // --- The option name with nothing after it -------------------------
+        assert_eq!(
+            parsed(&["claude", "--resume"]).as_deref(),
+            None,
+            "a trailing bare option name has no value element after it, so it \
+             carries no id"
+        );
+        // The same shape WITHOUT the kernel's trailing NUL, so the final
+        // element genuinely has no successor at all. This is the arm that
+        // reaches the `args.get(index + 1) == None` branch; it must yield None
+        // rather than panicking on an out-of-bounds index.
+        assert_eq!(
+            session_id_in_cmdline(b"claude\0--resume")
+                .map(|id| id.as_raw_for_logic_only().to_string()),
+            None,
+            "a bare option name as the FINAL element, with nothing after it at \
+             all, must yield no id and must NOT panic: an index that walks off \
+             the end of the argument list would take the whole TUI down on a \
+             cmdline any local process can plant."
+        );
+
+        // --- Shapes that carry no id at all --------------------------------
+        assert_eq!(
+            parsed(&["claude", "--print", "hello"]).as_deref(),
+            None,
+            "a cmdline with no resume option at all carries no id"
+        );
+        assert_eq!(
+            parsed(&["claude", "--resumes", "abc"]).as_deref(),
+            None,
+            "`--resumes` merely BEGINS with the resume spelling; it is neither \
+             the bare option name nor the fused prefix, so it carries no id. A \
+             starts_with() on the bare name would wrongly claim `abc` here."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume-session", "abc"]).as_deref(),
+            None,
+            "`--resume-session` is a different option that shares a prefix; its \
+             value is not this option's value"
+        );
+
+        // --- Precedence: the LEFTMOST id-bearing element wins ---------------
+        assert_eq!(
+            parsed(&["claude", "--resume", "first", "--resume=second"]).as_deref(),
+            Some("first"),
+            "split-then-fused: the leftmost id-bearing element wins, by argv \
+             index. Which form it is must not affect precedence."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume=first", "--resume", "second"]).as_deref(),
+            Some("first"),
+            "fused-then-split: same rule, opposite order. Precedence is \
+             deterministic by position, not by wire form."
+        );
+    }
 }

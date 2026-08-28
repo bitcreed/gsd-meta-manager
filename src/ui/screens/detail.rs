@@ -7730,8 +7730,20 @@ mod tests {
     /// The kernel presents `/proc/<pid>/cmdline` as NUL-separated with a
     /// trailing NUL, which is what is reproduced here.
     fn proc_cmdline_encoding(argv: &[String]) -> Vec<u8> {
+        let elements: Vec<&str> = argv.iter().skip(1).map(String::as_str).collect();
+        nul_join_cmdline(&elements)
+    }
+
+    /// NUL-join argv elements into the `/proc/<pid>/cmdline` byte encoding,
+    /// with the trailing NUL the kernel emits.
+    ///
+    /// Used by both round-trip arms: the FUSED arm reaches it through
+    /// [`proc_cmdline_encoding`] with the producer's real output, and the SPLIT
+    /// arm calls it directly with an explicitly constructed cmdline. Sharing it
+    /// means both arms carry the same NUL-free precondition.
+    fn nul_join_cmdline(elements: &[&str]) -> Vec<u8> {
         let mut bytes = Vec::new();
-        for element in argv.iter().skip(1) {
+        for element in elements {
             // A NUL-bearing element would TRUNCATE this encoding, and the
             // round trip would then assert on a value it never actually
             // round-tripped — passing vacuously (T-21-35-07). Fail loudly
@@ -7749,6 +7761,34 @@ mod tests {
         }
         bytes
     }
+
+    // ======================================================================
+    // THE ROUND-TRIP CONTROLS — and why a one-sided control missed this class
+    //
+    // The property these two tests assert is a property of the PAIR, not of
+    // either function: *what this build emits, this build must be able to read
+    // back.* Neither `resume_terminal_argv` nor `session_id_in_cmdline` can be
+    // wrong on its own here — each is individually correct — and that is
+    // precisely why no control over either one could see the defect.
+    //
+    // What happened: round 11 FUSED the id to its option name at the producer
+    // (`--resume=<id>`), correctly, to close CWE-88. That changed the WIRE
+    // FORMAT the consumer parses. Every control in this repository lived on one
+    // side or the other — the producer's controls asserted the argv's shape,
+    // and the consumer had no parser control at all — so NO CONTROL SPANNED
+    // BOTH. A build that had silently lost its resume detection passed the
+    // whole gate green, for a full verification pass.
+    //
+    // The two modules spell the same option name INDEPENDENTLY:
+    // `RESUME_OPTION_FUSED_PREFIX` here, and `RESUME_OPTION_NAME` /
+    // `RESUME_OPTION_FUSED_PREFIX` in `crate::session_detector`. Nothing in the
+    // type system couples them and nothing ever will — they are two byte
+    // literals in two modules. These tests are the ONLY thing coupling them
+    // (T-21-35-02), which is why they consume the real producer's output rather
+    // than re-spelling the option name a third time.
+    //
+    // A control exercising only one side will miss the next instance of this.
+    // ======================================================================
 
     /// **The round trip: what this build EMITS, this build must be able to
     /// READ BACK** (T-21-35-01, D-21-68).
@@ -7794,6 +7834,69 @@ mod tests {
                      `claude` 2.1.248 to re-open the argument injection."
                 );
             }
+        }
+    }
+
+    /// **Both wire forms, because both are legitimate on the wire.**
+    ///
+    /// The FUSED arm is driven from the REAL producer, unchanged — that is the
+    /// shape this TUI emits. The SPLIT arm is constructed EXPLICITLY, because
+    /// no producer in this build emits it any more: it is what a human typing
+    /// `claude --resume <id>` by hand, or any launcher that is not this TUI,
+    /// still produces. Inferring it from the fused arm would assert *about* the
+    /// claim rather than asserting it, and dropping it would silently re-break
+    /// detection for every session not started here (D-21-66).
+    #[test]
+    fn a_session_id_survives_the_round_trip_in_both_wire_forms() {
+        let corpus = hostile_session_ids();
+
+        // Non-vacuity: the corpus shape, asserted rather than assumed, so a
+        // corpus that shrank to nothing could not make this pass silently.
+        assert_eq!(
+            corpus.len(),
+            28,
+            "hostile_session_ids() must carry 28 fixtures: 7 imported \
+             LOOK_ALIKE_PAIRS + 11 shell-metacharacter fixtures + 10 \
+             option-lookalikes. A corpus that shrank would make both arms below \
+             pass over fewer shapes than they claim."
+        );
+
+        for raw in &corpus {
+            // --- FUSED: the real producer's own output ----------------------
+            for term in ["kitty", "alacritty", "gnome-terminal", "xterm", "/opt/wat"] {
+                let sid = Untrusted::from_untrusted_source(raw.clone());
+                let argv = resume_terminal_argv(term, &sid);
+                let wire = proc_cmdline_encoding(&argv);
+                let read_back = crate::session_detector::session_id_in_cmdline(&wire);
+
+                assert_eq!(
+                    read_back.as_ref().map(|id| id.as_raw_for_logic_only()),
+                    Some(raw.as_str()),
+                    "FUSED form: the id {raw:?} was emitted by \
+                     resume_terminal_argv({term:?}) as {argv:?} and could not \
+                     be read back out of the wire bytes it produces. This is \
+                     the shape this TUI itself emits, so a failure here means \
+                     the TUI cannot re-resume its own session."
+                );
+            }
+
+            // --- SPLIT: constructed explicitly, not inferred ------------------
+            // Program name, bare option name, then the fixture: the two-element
+            // window a hand-typed `claude --resume <id>` puts on the wire.
+            let wire = nul_join_cmdline(&["claude", "--resume", raw.as_str()]);
+            let read_back = crate::session_detector::session_id_in_cmdline(&wire);
+
+            assert_eq!(
+                read_back.as_ref().map(|id| id.as_raw_for_logic_only()),
+                Some(raw.as_str()),
+                "SPLIT form: the id {raw:?} on the wire as \
+                 [\"claude\", \"--resume\", {raw:?}] could not be read back. \
+                 This build no longer EMITS this shape, but it is still what a \
+                 human typing the command by hand produces, and it is the shape \
+                 every session not started by this TUI arrives in. Dropping it \
+                 would delete those sessions from the Sessions tab with no \
+                 message to the operator — under-detection, and SILENT."
+            );
         }
     }
 
