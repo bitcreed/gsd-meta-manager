@@ -1,433 +1,411 @@
 ---
-status: issues_found
-phase: 21
-round: 11
-reviewed: 2026-08-27
-depth: standard (per-file, plus targeted simulation of the four censuses and a base-vs-HEAD argv trace)
-range: 2c13fcf..HEAD
-files_reviewed: 9
+phase: 21-llm-goal-layer-prompt-injection-hardening
+reviewed: 2026-08-27T00:00:00Z
+depth: deep
+files_reviewed: 2
 files_reviewed_list:
   - src/session_detector.rs
-  - src/state_reader/backlog.rs
-  - src/text.rs
-  - src/ui/mod.rs
   - src/ui/screens/detail.rs
-  - src/ui/screens/driver.rs
-  - src/ui/screens/mod.rs
-  - src/ui/screens/render_escape_guard.rs
-  - tests/driver_reattach.rs
 findings:
-  critical: 0
-  high: 1
-  medium: 2
-  low: 4
-  total: 7
+  critical: 1
+  warning: 5
+  info: 7
+  total: 13
+status: issues_found
 ---
 
-# Phase 21 (round 11): Independent Code Review
+# Phase 21 (round 12): Code Review Report
 
-**Range:** `2c13fcf..HEAD` (plans 21-31, 21-32, 21-33, 21-34)
-**Verdict:** `issues_found` — 0 CRITICAL, 1 HIGH, 2 MEDIUM, 4 LOW.
+**Reviewed:** 2026-08-27
+**Depth:** deep (cross-file: import graph + call chains traced into `src/terminal_switch.rs`, `src/executor/claude.rs`, `src/test_support.rs`, `src/driver/liveness.rs`)
+**Files Reviewed:** 2
+**Status:** issues_found
 
-## What was checked and how
+## Summary
 
-| Check | Method | Result |
-|---|---|---|
-| Every construction site of the resume argv | `grep -rn -- "--resume"` over `src/` + `tests/`, then read each hit | Two builders exist; one is the live path and is fused, the other is unreachable (LOW-1) |
-| Can any path still emit `--resume` and the id as two argv elements | Read `resume_terminal_argv`, `launch_terminal_argv`, `executor::claude::build_argv`; traced `resume_session` producers | Live path: no. Executor path: yes, but no `Some` producer exists (LOW-1) |
-| Are the round-11 controls falsifiable | Hand-traced each new assertion against the pre-fix body | All four planted-defect controls are genuinely red pre-fix |
-| 21-33's census pin | Re-measured independently: `find src/ui -name '*.rs' \| wc -l` = 16; per-file non-comment `display_identity(` counts | Pin is CORRECT: driver.rs 2, driver_confirm.rs 4, render_escape_guard.rs 2; six non-exempt in two of sixteen |
-| 21-32's non-vacuity pin | Re-measured `sanitize_render_line(` across both census files | `(5, 6, 7)` is CORRECT; the cited line number is not (MEDIUM-1) |
-| 21-32's `taken += 1` relocation | Hand-traced the loop; verified the boundary arithmetic `16 - 5 = 11` / `16 - 4 = 12` | Correct, terminating, and the executable window is genuinely unchanged |
-| Build health | `rtk proxy cargo test --workspace --no-fail-fast`, `rtk proxy cargo clippy -- -D warnings` | 1110 lib + all integration tests green; clippy clean. The `driver_reattach` flake did not fire this run |
+Round 12's six claims were checked against the code rather than against the summary.
+**Five of the six hold.** The sixth — the round trip's central invariant, *"what this
+build emits, this build must be able to read back," asserted as byte-identity* — is
+**false for a class of ids the corpus does not carry**, which is the same vacuous-control
+shape round 11 found in the hostile corpus and round 10 found in the interpreter census.
 
-All count-bearing checks ran through `rtk proxy` per the tooling constraint.
+Verified independently and confirmed:
 
----
+- **Claim 1 (behaviour-preserving split).** The old `args.windows(2)` scan and the new
+  index loop were walked against six adversarial argv shapes (`--resume` as its own value,
+  empty interior element, trailing option name, option name as last element with no
+  trailing NUL). They agree on every one. The `index += 1` inside the split branch is a
+  genuine addition — the old code did not step over the consumed value — but no shape was
+  found where it changes the answer.
+- **Claim 2 (both wire forms).** Both are read; both are asserted, and the SPLIT arm is
+  constructed explicitly rather than inferred from the fused one. See WR-01 for the third
+  spelling that is *not* read.
+- **Claim 3 (non-validating).** No first-byte rule, no character class, no length bound.
+  Keep-scanning-past-an-empty-value survives and is asserted. **But `trim()` is not only a
+  condition — it is a transformation** (CR-01).
+- **Claim 4 (innermost wrap).** `session_id_in_cmdline` returns `Option<Untrusted>`; no
+  `String` path out of the module exists. Holds.
+- **Claim 5 (negative shapes, no panic).** `args[index]` is always guarded by
+  `index < args.len()`; the successor is read through `args.get(index + 1)`. Every loop
+  iteration advances `index` by at least 1. No panic, no unbounded loop. Holds.
+- **Claim 6 (producer untouched).** Verified at the diff: `src/ui/screens/detail.rs` has
+  exactly **one** hunk, `@@ -7719,6 +7719,187 @@`, **all additions, zero deletions**, and
+  `mod tests` begins at line 5877. Nothing outside `mod tests` changed. Holds.
 
-## HIGH
+`cargo clippy --all-targets` is clean apart from the four known out-of-scope lints. The
+seven session-id tests pass.
 
-### HI-01 — 21-31's fusion silently deleted the resume capability's own feedback loop: `read_session_id` cannot parse the argv shape the app now emits
+## Narrative Findings (AI reviewer)
 
-**Files:** `src/session_detector.rs:155-172` ↔ `src/ui/screens/detail.rs:703-715`
-**Severity:** HIGH (silent capability regression in the exact feature being hardened; not a security hole)
+## Critical Issues
 
-`resume_terminal_argv` now emits **one** argv element:
+### CR-01: `trim()` silently REWRITES the session id, so the round-trip byte-identity the round asserts is false — and the corpus cannot see it
 
-```rust
-format!("{RESUME_OPTION_FUSED_PREFIX}{}", sid.as_raw_for_logic_only())   // detail.rs:713
-```
+**File:** `src/session_detector.rs:283-291` (the returned value is built at `289`)
 
-`read_session_id` — the *only* place a session id enters this build — still matches the **separated** form only:
-
-```rust
-for window in args.windows(2) {
-    if window[0] == b"--resume" {          // session_detector.rs:160
-```
-
-For a child whose `/proc/<pid>/cmdline` is `claude\0--resume=<id>\0`, `args` is
-`["claude", "--resume=<id>", ""]`; no `windows(2)` element equals `--resume`, so the
-function returns `None`.
-
-**Base-vs-HEAD trace, confirmed against `git show 2c13fcf:src/ui/screens/detail.rs`:**
-
-| | argv the TUI spawns | child cmdline | `read_session_id` |
-|---|---|---|---|
-| base `2c13fcf` | `[sep, "claude", "--resume", "<id>"]` | `claude --resume <id>` | recovers `<id>` |
-| HEAD | `[sep, "claude", "--resume=<id>"]` | `claude --resume=<id>` | **`None`** |
-
-**Consequence.** A session the TUI itself resumed now appears in the Sessions tab with
-`session_id: None`. Pressing Enter on that row returns
-`"No session ID to resume"` (`detail.rs:1954-1957`). The resume loop that worked at
-`2c13fcf` — resume a session, see it, resume it again — is broken, and it fails
-*silently*: no error, no log, just a row that can no longer be acted on. This is
-precisely the "feature deletion wearing a security fix's clothes" shape that
-`terminal_program_separator`'s and `resume_terminal_argv`'s own docs are written to
-prevent, arriving one file over from where those docs are looking.
-
-**Why nothing caught it.**
-
-1. The option spelling has **two independent sources of truth**:
-   `RESUME_OPTION_FUSED_PREFIX` (`detail.rs:585`, private to that module) and the byte
-   literal `b"--resume"` (`session_detector.rs:160`). Nothing couples them, and 21-31's
-   T-21-31-01 rationale ("the option name and the `=` that binds its value cannot drift
-   apart between the builder and the controls that check it") stops at the module
-   boundary.
-2. `src/session_detector.rs`'s only relevant test is
-   `test_read_session_id_nonexistent_pid` (`:197-201`), which passes because the
-   `/proc` read fails. It certifies nothing about the parser. See LOW-4.
-3. 21-31's summary explicitly declares "No control is added in this file, deliberately"
-   (`session_detector.rs:148-154`), on the argument that the property that matters is a
-   property of the sink. That argument is right about *security* and wrong about
-   *capability*: the round-trip property (what this build emits, this build can read
-   back) is a property of the pair, and no plan in the round owned it.
-4. Neither `21-31-PLAN.md` nor `21-31-SUMMARY.md` mentions the round trip at all —
-   `grep -n "cmdline"` over the four summaries returns only the threat-model direction
-   (attacker → us), never the emit direction (us → us).
-
-**Recommended fix** (in `src/session_detector.rs`, accept both shapes — the separated
-form must stay, because a human running `claude --resume <id>` by hand still produces
-it):
+**Issue:**
 
 ```rust
-const RESUME_OPT: &[u8] = b"--resume";
-const RESUME_OPT_FUSED: &[u8] = b"--resume=";
-
-fn read_session_id(pid: u32) -> Option<Untrusted> {
-    let cmdline = std::fs::read(format!("/proc/{}/cmdline", pid)).ok()?;
-    let args: Vec<&[u8]> = cmdline.split(|&b| b == 0).collect();
-
-    for (index, arg) in args.iter().enumerate() {
-        // FUSED: `--resume=<id>`, the shape THIS build emits since 21-31.
-        let candidate: &[u8] = if let Some(rest) = arg.strip_prefix(RESUME_OPT_FUSED) {
-            rest
-        // SEPARATED: `--resume <id>`, what a human typing the command produces.
-        } else if *arg == RESUME_OPT {
-            match args.get(index + 1) { Some(next) => next, None => continue }
-        } else {
-            continue;
-        };
-        let val = String::from_utf8_lossy(candidate);
-        let val = val.trim();
-        if !val.is_empty() {
-            return Some(Untrusted::from_untrusted_source(val.to_string()));
-        }
-    }
-    None
+let val = String::from_utf8_lossy(candidate);
+let val = val.trim();                                    // ← shadows with the TRIMMED slice
+if !val.is_empty() {
+    return Some(Untrusted::from_untrusted_source(val.to_string()));   // ← returns the TRIMMED value
 }
 ```
 
-**And add the control that would have caught it** — a round-trip assertion driving both
-committed functions, not a re-spelling of either. It needs the parse split out of the
-`/proc` read (e.g. `fn session_id_in(cmdline: &[u8]) -> Option<Untrusted>`), which is
-the same "the live assertion and the control must consume the SAME function" split
-21-32 already made twice this round:
+The value returned is `val.to_string()` where `val` is the **trimmed** slice, not the wire
+bytes. The docs describe this as a *condition* and never as a *transformation*:
 
-```rust
-// The shape this build EMITS must be a shape this build can READ.
-// Red against HEAD: resume_terminal_argv fuses, read_session_id parses only the
-// separated form, so the id the TUI hands `claude` is invisible to the detector
-// that finds it again — the Sessions tab cannot re-resume its own session.
-for raw in hostile_session_ids() {                      // the same corpus, imported
-    let argv = resume_terminal_argv("kitty", &Untrusted::from_untrusted_source(raw.clone()));
-    let cmdline = std::iter::once("claude")
-        .chain(argv.iter().skip(2).map(String::as_str))  // program + its own options
-        .flat_map(|a| a.as_bytes().iter().copied().chain(std::iter::once(0u8)))
-        .collect::<Vec<u8>>();
-    assert_eq!(
-        session_id_in(&cmdline).map(|u| u.as_raw_for_logic_only().to_string()),
-        Some(raw.clone()),
-        "read_session_id cannot recover the id from the argv resume_terminal_argv \
-         emits. The two spell `--resume` independently and have drifted."
-    );
-}
-```
+- `session_id_in_cmdline` doc, line 248: *"The only condition on the VALUE remains
+  non-emptiness after `trim()`"*
+- `read_session_id` doc, line 105: *"nothing here constrains the id beyond non-emptiness
+  after `trim()`"*
+- `session_id_in_cmdline` doc, line 190: *"they assert nothing whatever about which VALUES
+  are acceptable"*
+- `resume_terminal_argv` doc, `detail.rs:690`: *"The id reaching the child stays
+  byte-identical to `as_raw_for_logic_only()`"*
 
-Whatever the exact form, the acceptance bar is: it must go **red on HEAD as committed**.
+All four are false for any id with leading or trailing whitespace. Two concrete failures,
+both silent:
 
----
+1. **The round trip is not a round trip.** For `raw = " abc "` the producer emits
+   `--resume= abc ` and `session_id_in_cmdline` hands back `"abc"`. The Sessions tab then
+   displays, and later re-resumes with, an id **no process on the machine actually
+   carries**. The chain `real argv → detector → resume argv → child` is byte-identical
+   everywhere *except* here, which is precisely where nobody was looking.
+2. **The exact defect round 12 exists to fix is still open for one shape.** For a
+   whitespace-only id the producer emits `--resume=   `, the consumer's `!val.is_empty()`
+   fails, and `session_id_in_cmdline` returns `None` — *the row goes dead in the Sessions
+   tab with no error and no log*, which is the failure sentence quoted verbatim in the new
+   test's own assertion message at `detail.rs:7819-7830`.
 
-## MEDIUM
+**Why the new control cannot fail on it — this is the finding, not a footnote.** The
+round-trip corpus is `hostile_session_ids()` (`detail.rs:7400-7443`): 7 imported
+`LOOK_ALIKE_PAIRS` + 11 shell-metacharacter fixtures + 10 option lookalikes. **Not one of
+the 28 carries leading or trailing whitespace.** The 7 imported look-alikes are all
+`General_Category=Cf` (U+200B, U+FEFF, U+202E, U+E0041, U+00AD) and none has
+`White_Space=Yes`, so `str::trim` leaves them alone; `"a b"` has an *interior* space only.
+The corpus is therefore structurally incapable of failing this assertion — the same
+complicity `the_resume_argv_never_lets_a_session_id_become_an_option_of_the_resumed_program`
+names at `detail.rs:7585-7591` ("eighteen hostile fixtures, every one of them a shell
+metacharacter class, certifying a claim about option-shaped inputs"), arriving one round
+later against a different property.
 
-### ME-01 — 21-32 shipped three present-tense line citations that are stale by exactly the number of lines its own wave inserted
-
-**Files:** `src/ui/screens/driver.rs:2189-2192`, `src/ui/screens/driver.rs:2513-2518`
-**Severity:** MEDIUM (measured-false claims in the load-bearing rationale of a control, in a phase whose stated subject is that prose without a measurement is untrustworthy)
-
-Three claims about the committed tree, all wrong, all off by exactly the size of a
-change that landed in the same wave:
-
-| Claim (verbatim) | Actual | Off by |
-|---|---|---|
-| `driver.rs:2189` — "`src/ui/screens/detail.rs` carries two column-zero test attributes, at `:5342` (a `pub(super) fn` helper)" | `detail.rs:5454` | 112 = the lines 21-31 added above it |
-| `driver.rs:2191` — "and `:5764` (`mod tests`)" | `detail.rs:5876` | 112 |
-| `driver.rs:2516` — "the difference being `driver.rs`'s own test-module call at `:2349`, which the census never scans" | `driver.rs:2651` | 302 = the lines 21-32 itself inserted at `:2157` |
-
-Verified with `grep -n "^#\[cfg(test)\]" src/ui/screens/detail.rs` → `5454`, `5876`,
-and `grep -n 'sanitize_render_line(' src/ui/screens/driver.rs` → the only test-module
-hit is `:2651`. The *substance* of all three is correct (detail.rs really does carry a
-non-module test attribute above its `mod tests`; the whole-file/production-slice
-difference really is that one call). Only the coordinates are wrong.
-
-The third one is the one that matters: it is the stated justification for the pinned
-constant `WHOLE_FILE_NEEDLE_LINES = 7`, and the assertion's own failure message
-instructs the next reader to "re-measure them, say in this comment why they changed".
-A reader who follows the citation lands on `driver.rs:2349`, which is inside
-`strip_trailing_path_qualifiers`' doc block and carries no needle at all — so the
-evidence for the pin appears, to anyone who checks, to not exist. That is the
-failure mode this phase has spent eleven rounds naming.
-
-These are distinguishable from the *verbatim compiler/panic captures* elsewhere in the
-round (e.g. `screens/mod.rs:794` quoting `787 | pub struct EditBuffer`, which is a
-faithful capture from a scratch tree and is declared as such). These three are
-present-tense assertions about the committed tree.
-
-**Fix:** re-measure and correct the three numbers. Better, remove the class: cite by
-identifier rather than by line (`detail.rs`'s `first_string_entry` helper; `driver.rs`'s
-`test_module_marker_lines`-era test call), or — for the third — replace the sentence
-with the difference the code already computes (`whole_file - occurrences == 1`), which
-cannot go stale.
-
-### ME-02 — `needle_distribution` counts LINES; its name, its doc, and the pinned table all say OCCURRENCES
-
-**File:** `src/ui/mod.rs:279-302` (`needle_distribution`), pinned at `:341-345`
-(`MEASURED_REACH`), disclosed at `:378-388`
-**Severity:** MEDIUM (the disclosed property is strictly wider than the mechanism, in the
-one artifact 21-33 added specifically to stop a disclosed property from being prose)
-
-```rust
-let count = lines
-    .iter()
-    .filter(|(_, line)| !line.trim_start().starts_with("//"))
-    .filter(|(_, line)| line.contains(&call))     // <-- one per LINE, not per call
-    .count();
-```
-
-The function's doc says "Executable **occurrences** of the call needle per file"; the
-test's disclosed table is headed "Executable needle **occurrences**"; the totals row
-reads "**8** — six non-exempt". Today lines and occurrences coincide (I verified: no
-line under `src/ui/` carries two `display_identity(` calls), so the pin is *correct as
-committed* — but it is not measuring what it claims to measure. Writing
-`display_identity(a) + display_identity(b)` on one line adds an occurrence the reach
-pin cannot see, and the pin's entire purpose is to make a disclosed number go red when
-the tree moves under it.
-
-The contrast is internal to this same round: `driver.rs`'s census pins
-`PRODUCTION_NEEDLE_UNITS` **and** `PRODUCTION_NEEDLE_OCCURRENCES` separately, precisely
-because it found a unit carrying two (`driver_confirm.rs:178`/`:180`). 21-33 pinned the
-weaker of the two quantities under the stronger one's name.
+This is **not** the validator that was declined (D-21-48). The fix makes the parser
+*strictly less* opinionated about the value: test emptiness on a trimmed copy, return the
+bytes verbatim.
 
 **Fix:**
 
 ```rust
-let count = lines
-    .iter()
-    .filter(|(_, line)| !line.trim_start().starts_with("//"))
-    .map(|(_, line)| line.matches(&call).count())
-    .sum();
-```
-
-`MEASURED_REACH` is unchanged by this today (`2 / 4 / 2`), so the fix is a one-line
-change with no pin churn — which is exactly why it should be made now rather than
-after a two-call line appears.
-
----
-
-## LOW
-
-### LO-01 — `executor::claude::build_argv` still emits `--resume` and its value as two argv elements, with no pin holding it unreachable
-
-**File:** `src/executor/claude.rs:267-272`
-
-```rust
-if let Some(session) = &options.resume_session {
-    push(&mut argv, "--resume");
-    push(&mut argv, session);
+if let Some(candidate) = candidate {
+    let val = String::from_utf8_lossy(candidate);
+    // Emptiness is TESTED on a trimmed copy. The value RETURNED is the wire
+    // bytes verbatim, so what this build emits it reads back byte-identically.
+    // Trimming the returned value would silently rewrite an id whose title
+    // legitimately carries padding, and a whitespace-only id would vanish
+    // from the Sessions tab with no message — the defect this round closed,
+    // one shape over.
+    if !val.trim().is_empty() {
+        return Some(Untrusted::from_untrusted_source(val.into_owned()));
+    }
 }
 ```
 
-This is the CWE-88 shape 21-31 removed from `resume_terminal_argv`. It is **not** live:
-`resume_session` has exactly one initializer in the whole tree
-(`src/executor/mod.rs:465`, `resume_session: None`) and no `Some` producer anywhere —
-verified by `grep -rn "resume_session" --include=*.rs`. 21-31 examined it and declared
-it inert (D-21-50, T-21-31-05), and `claude.rs:2044` asserts `--resume` is absent from
-the built argv. So the disclosure is honest and I am not calling it a vulnerability.
-
-What is missing is the pin. 21-31 did exactly the right thing for the *other* sibling
-builder — `launch_terminal_argv_carries_no_untrusted_element_and_is_pinned_at_two`
-(`detail.rs:7737`) turns "examined and found safe" into something that fails when it
-stops being true. `resume_session` got the reasoning without the pin, so the first
-caller that sets it from a scraped id reopens CWE-88 with every test green.
-
-**Fix (cheapest, no behaviour change):** fuse it — `push(&mut argv, format!("--resume={session}"))` —
-and note in the doc that this is the same control `resume_terminal_argv` carries. Or,
-if the two-element form is wanted for the executor, add a source-scan pin asserting
-`resume_session` has no `Some` producer under `src/`, in the same house style as the
-existing `spawn_seam_guard` scans.
-
-### LO-02 — `ui::mod::census`'s join loop has the exact `taken += 1` placement 21-32 repaired in `text.rs`, undisclosed
-
-**File:** `src/ui/mod.rs:212-224`
+Then extend `hostile_session_ids()` so the control can fail:
 
 ```rust
-while taken < CALL_JOIN_LINES && ahead + 1 < lines.len() && continues_onto_the_next_line(&logical) {
-    ahead += 1;
-    taken += 1;                     // <-- BEFORE the comment `continue`
-    let next = lines[ahead].1.trim();
-    if next.starts_with("//") { continue; }
+" leading",          // padding must survive the round trip verbatim
+"trailing ",
+"\tboth\t",
 ```
 
-This is the statement placement 21-32 moved in `text::tests::interpreter_sites_in` (T-21-32-01).
-**The direction here is the safe one** — in this census finding the composer causes a
-*skip*, so a budget shortened by comments produces *more* reports (loud
-over-detection), not fewer. So it is not a defect and must **not** be "fixed for
-consistency" without re-reasoning the direction.
+And assert the one shape that genuinely cannot round-trip, as a *named* limit rather than
+an unnoticed one: a whitespace-only id emitted by the producer reads back as `None`, so
+either state that in `session_id_in_cmdline`'s doc with the direction (under-detection,
+silent) or make the non-empty test operate on the raw bytes.
 
-The finding is the disclosure gap: the test's residual 3 (`ui/mod.rs:518-523`) says only
-"a composition wrapped across more than `CALL_JOIN_LINES` physical lines reads as
-un-composed". With `CALL_JOIN_LINES = 4`, three interleaved comment lines are enough to
-trigger the same false positive at three *physical* lines. The disclosed reach is wider
-than the mechanism's, which is the same class as ME-02.
+## Warnings
 
-**Fix:** one clause in the residual — "…or wrapped across fewer lines with comment lines
-interleaved, which spend the budget here (safe direction: this census reports on
-*failing* to find the composer)".
+### WR-01: the short spelling `-r` is a third legitimate wire form, and it is read by nothing — the doc's coverage claim is false
 
-### LO-03 — `an_input_echo_screen_...`'s "the escape ACTED" arm is a self-oracle
+**File:** `src/session_detector.rs:214`, `260-281` (doc claim at `238-241`)
 
-**File:** `src/ui/screens/render_escape_guard.rs:3272-3741`
+**Issue:** The doc for `session_id_in_cmdline` claims exhaustive coverage of what arrives
+from outside the TUI:
+
+> *"**Split** — ... This is what a human typing the command by hand, or any launcher that
+> is not this TUI, still produces. Dropping it would re-break detection for every session
+> not started here."*
+
+The installed CLI documents the option as `-r, --resume [value]` — quoted in this very
+codebase at `detail.rs:654`. A human typing `claude -r <id>`, or `claude -r=<id>`,
+produces a shape the parser does not recognise, so that session reads back as
+`session_id: None` and its Sessions-tab row answers `No session ID to resume`. Direction:
+**under-detection, and silent** — byte-for-byte the class round 12 exists to close.
+
+This is not a hypothetical the build is unaware of: `hostile_session_ids()` carries `"-r"`
+as a fixture and annotates it *"the SHORT spelling of the option being injected into"*
+(`detail.rs:7432`). One module knows `-r` exists; the other does not. That is the same
+independent-spelling-across-a-module-boundary mechanism the round-12 doc names as the root
+cause, still live.
+
+Recognising `-r` is **shape**, not value validation, so it does not touch D-21-48.
+
+**Fix:** add the short spellings to the shape check and to the parser test, and drive the
+`-r` split form through the round trip alongside `--resume`:
 
 ```rust
-let expected = display_identity(hostile);
-assert!(hostile_text.contains(&expected), ...);
+/// The resume option's SHORT spelling, split form (`claude -r <id>`).
+const RESUME_OPTION_SHORT: &[u8] = b"-r";
+/// The short spelling fused (`claude -r=<id>`).
+const RESUME_OPTION_SHORT_FUSED_PREFIX: &[u8] = b"-r=";
 ```
 
-The oracle is `display_identity`, which is the second half of `render_for_terminal` —
-the function under test. The assertion therefore certifies "the render's output contains
-`display_identity`'s output", which is true by construction for any correct-shaped
-escape and cannot detect a *wrong* escape, only a *dropped* value. The test's own
-comment says the self-oracle is deliberate ("rather than by a second spelling that could
-disagree with it") and the committed RED fires on the preceding `survivors.is_empty()`
-arm, not on this one — so this arm has no observed red.
+then in the loop, `strip_prefix` against both fused prefixes and compare against both bare
+names. Add `parsed(&["claude", "-r", "abc"]) == Some("abc")` and
+`parsed(&["claude", "-rx", "abc"]) == None` to
+`session_id_in_cmdline_reads_both_wire_forms_and_no_other_shape`.
 
-Not a defect: the arm's stated job is to distinguish "escaped" from "dropped", and it
-does that. Flagged so it is not later counted as escaping-correctness coverage. The
-correctness of `display_identity` itself is carried by `text.rs`'s alphabet census, and
-that is where it should stay attributed.
+### WR-02: `String::from_utf8_lossy` fabricates the id from non-UTF-8 wire bytes, and the new harness is structurally incapable of covering it
 
-### LO-04 — `test_read_session_id_nonexistent_pid` is near-vacuous
+**File:** `src/session_detector.rs:284`; harness gap at `src/ui/screens/detail.rs:7744`
 
-**File:** `src/session_detector.rs:197-201`
+**Issue:** `/proc/<pid>/cmdline` is arbitrary bytes, which this file's own type doc states
+(`session_detector.rs:8-12`: *"nothing constrains it to ASCII"*). `from_utf8_lossy`
+replaces every invalid sequence with U+FFFD, so:
+
+- an id containing invalid UTF-8 is returned **corrupted**, displayed to the operator as
+  if real, and `resume_terminal_argv` then emits the corrupted bytes — resuming nothing,
+  with no message;
+- an id made **entirely** of invalid bytes lossy-converts to a non-empty run of U+FFFD,
+  passes the emptiness test, and produces a Sessions-tab row for an id that never existed
+  — over-detection, also silent;
+- the `Untrusted`/`shown()` escape layer never sees the real bytes, so the "every render
+  goes through `shown()`" argument at `session_detector.rs:136-140` is defending a value
+  that was already rewritten upstream of it.
+
+The new round-trip control cannot reach this class by construction: `nul_join_cmdline`
+takes `&[&str]` (`detail.rs:7744`) and `hostile_session_ids()` returns `Vec<String>`, so
+every byte that can ever enter the harness is valid UTF-8 by the type system. That
+limitation is not stated anywhere in the two new tests' docs, which otherwise enumerate
+their own gaps carefully.
+
+**Fix:** minimum, name the limit where the control is defined, and add a direct
+non-UTF-8 parser arm that does not go through the `&str` harness:
 
 ```rust
-assert!(read_session_id(999_999_999).is_none());
+// In session_detector::tests — bytes the `&str` round-trip harness cannot express.
+assert_eq!(
+    session_id_in_cmdline(b"claude\0--resume=\xff\xfe\0")
+        .map(|id| id.as_raw_for_logic_only().to_string()),
+    Some("\u{fffd}\u{fffd}".to_string()),
+    "non-UTF-8 wire bytes are LOSSY-converted, so the id this build reports \
+     is not the id the process carries. Direction: the resume emits bytes no \
+     session has, silently."
+);
 ```
 
-Returns `None` at `std::fs::read(...).ok()?` — the first line — so the assertion holds
-for *any* body of the parsing loop below it, including an empty one. It is the only test
-touching the function, and it is what let HI-01 ship. Pre-existing, not introduced this
-round, but round 11 added 59 lines of doc to this function asserting a decision about its
-behaviour without adding anything that can go red about that behaviour.
+Better: carry the id as `Vec<u8>`/`OsString` inside `Untrusted` so the wire bytes survive
+to the argv, and lossy-convert only at render.
 
-**Fix:** subsumed by HI-01's recommended round-trip control, which drives the parse over
-in-memory NUL-separated fixtures.
+### WR-03: the pairing invariant covers ONE of this build's argv producers; `--session-id <uuid>` is emitted by another and read by none
 
----
+**File:** `src/ui/screens/detail.rs:7799-7846` (the round trip) — cross-file:
+`src/executor/claude.rs:256`, `src/executor/claude.rs:270`, `src/executor/claude.rs:370`
 
-## Things checked that came back CLEAN
+**Issue:** The class comment at `detail.rs:7758-7783` states the invariant as a property
+of *this build*: *"what this build emits, this build must be able to read back."* The
+control asserts it over exactly one producer, `resume_terminal_argv`. Traced across module
+boundaries, this build has a **second** `claude` argv producer:
 
-Recorded so a later reader knows these were adversarially examined and not merely
-skipped.
+- `src/executor/claude.rs:370` — `program: PathBuf::from("claude")`, so `pgrep -x claude`
+  in `get_claude_pids` (`session_detector.rs:44`) **does** return these pids and
+  `build_session` **does** construct a `ClaudeSession` for each;
+- `src/executor/claude.rs:255-256` — `push("--session-id"); push(options.session_id)`;
+- `src/executor/claude.rs:269-271` — `push("--resume"); push(session)`, the split form.
 
-- **Fusion completeness (Priority 1).** `resume_terminal_argv` (`detail.rs:703-715`) is
-  the only builder reachable from the Sessions-tab resume, and it is called from exactly
-  one site (`detail.rs:1929`). Every terminal in `terminal_program_separator`'s table
-  produces a 3-element vector with the id fused; no path emits `--resume` and the id
-  separately (LO-01 excepted, and it is unreachable). The `--` separator was correctly
-  *not* used. `read_session_id`'s non-validating pass-through is, as instructed, not
-  flagged — HI-01 is about the parser's *shape coverage*, not about validation.
-- **`the_resume_argv_never_lets_a_session_id_become_an_option_of_the_resumed_program`**
-  is genuinely falsifying. Traced against the base builder
-  `[sep, "claude", "--resume", raw]`: the hyphen-leading count is 3 for the nine
-  option-lookalike fixtures and 2 for the rest, so `observed.len() == 2` and the content
-  independence arm goes red. The `corpus.len() == 28` pin arithmetic checks out
-  (`LOOK_ALIKE_PAIRS` is `[(&str, &str); 7]` + 11 + 10).
-- **The rewritten assertion (1)** in `the_resume_argv_carries_a_hostile_session_id_as_one_opaque_element`
-  handles the two adversarial fixtures correctly: `a=b` (splits on the FIRST `=`, so the
-  id arrives whole) and `--settings=/tmp/x.json` (a value that already carries a fused
-  `=`). It no longer checks *which* option the id is fused to, but the sibling test's
-  `RESUME_OPTION_FUSED_PREFIX` arm covers that.
-- **21-32's `taken += 1` relocation (Priority 3).** Hand-traced: `taken` starts at 1 for
-  the seed line, the guard `taken >= 16` is evaluated pre-append, and the fixture spends
-  4 before the filler — so `LAST_REPORTED_FILLER = 11` / `FIRST_MISSED_FILLER = 12` is
-  arithmetically exact, and the executable window is provably unmoved. The comment
-  `continue` cannot loop forever (`ahead` strictly increases and is bounded).
-- **21-32's relocated verdict (Priority 3).** `occurrence_is_composed` is strictly
-  stronger than the whole-unit rule it replaces — it can only report more, never fewer,
-  so nothing the old site covered is lost. `strip_trailing_path_qualifiers` terminates
-  (each iteration strictly shrinks the slice), never panics (`boundary` comes from
-  `char_indices`), and handles both live spellings (`crate::text::display_identity(&` and
-  `...(&super::`). The `laundering_fixture` really does join both arms into one logical
-  unit at line 3 (traced through `logical_lines`' `closes` rule: `],` does not close, `}`
-  does), so the control's red is the verdict's and not the join's.
-- **21-33's census pin (Priority 4).** Independently re-measured. 16 `.rs` files under
-  `src/ui/`; needle lines `driver_confirm.rs` 4 (`:178`, `:180`, `:304`, `:344`),
-  `driver.rs` 2 (`:645`, `:944`), `render_escape_guard.rs` 2 (`:2615`, `:3272`).
-  `MEASURED_REACH` matches exactly, `UI_SOURCE_FLOOR = 16` matches, and "six non-exempt
-  in two of sixteen" is right. The `render_escape_guard.rs` exemption is **justified, not
-  convenient**: both its occurrences are `let expected = display_identity(...)` /
-  `let escaped = display_identity(&hostile)` oracle lines, and `stale_exemptions` keeps
-  the exemption honest by reporting it if the file stops containing an un-composed call.
-  The two doc line numbers cited for those occurrences (`:2615`, `:3272`) are correct —
-  unlike ME-01's.
-- **21-32's non-vacuity pin `(units, occurrences, whole_file) == (5, 6, 7)`.**
-  Re-measured: correct. Only the prose citation of the 7th line is wrong (ME-01).
-- **21-33's `EditBuffer` trait probe.** The three `String` presence arms are real
-  non-vacuity guards (a broken autoref probe answers `false` to everything and the
-  presence arms catch it). The orphan-rule argument bounding the "feature-gated impl"
-  residual is sound. "Derives nothing at all, `Clone` included" is literally true —
-  `Default` is hand-written at `screens/mod.rs:849`.
-- **21-33's backlog tiebreak.** `key(a).total_cmp(&key(b)).then_with(|| a.cmp(b))` is a
-  genuine total order over elements (lexicographic composition of two total orders), the
-  fixture `["999.zebra", "999.alpha"]` really does tie on the key, and its alphabetical
-  order really is the reverse of its input order — so the control is red pre-fix, as its
-  quoted panic shows. Scope claim ("display ordering only") checked: no persisted
-  artifact reads this order.
-- **21-33's rename.** `grep -rn "every_render_site_under_ui_composes_both_classes" src/ tests/`
-  returns zero. The rename fully landed.
-- **21-34.** `tests/driver_reattach.rs` is comment-only, as claimed — the diff touches no
-  executable line, so the binary behaves identically. The known `driver_reattach` flake
-  is excluded per instruction; it did not fire in this review's workspace run
-  (all suites green).
-- **Build health.** `cargo test --workspace --no-fail-fast`: 1110 lib tests + every
-  integration suite green. `cargo clippy -- -D warnings` (the project-standard
-  invocation per CLAUDE.md): clean. `cargo clippy --all-targets -- -D warnings` reports 4
-  errors, all in `src/browser.rs:155-157` and `src/project_creator.rs:146` — files
-  untouched by round 11, pre-existing, out of scope.
+The split `--resume` is now readable (good). `--session-id` is not recognised by
+`session_id_in_cmdline` at all, so every executor-launched session this build starts
+appears with `session_id: None` — the identical symptom, from the identical cause
+(two modules spelling the option independently, nothing coupling them), on the producer the
+new round trip does not reach. Round 12 closed the instance and left the class one producer
+short.
+
+Note also that the executor's `--resume` is **split, not fused**, so the CWE-88 argument
+injection that round 11 closed at `resume_terminal_argv` is still open on that path if
+`options.resume_session` is ever attacker-influenced. That file is outside this review's
+scope, but the round trip is what would have surfaced it.
+
+**Fix:** either teach the consumer `--session-id` (shape only — same non-validating rule),
+and extend the round trip to drive `executor::claude`'s argv builder through
+`session_id_in_cmdline` the same way; or state explicitly in the class comment which
+producers the invariant is asserted over and which are knowingly excluded, with the
+direction of the residual.
+
+### WR-04: `read_tty` strips `/dev/` specifically to enable an UNANCHORED substring match, and `pts/3` matches `/dev/pts/31`
+
+**File:** `src/session_detector.rs:84-94`, design endorsed at `23-26` — sink at
+`src/terminal_switch.rs:57`
+
+**Issue:** `read_tty` returns `"pts/3"` and the `tty` field doc (`lines 23-26`) explicitly
+justifies the stripping so that *"a `contains()` match against tmux's `#{pane_tty}` (which
+prints "/dev/pts/3") still hits."* The sink does exactly that:
+
+```rust
+if pane_tty.contains(tty) {          // src/terminal_switch.rs:57
+```
+
+`"/dev/pts/31".contains("pts/3")` is `true`. On any host with 10+ pseudo-terminals — the
+normal case for a tmux user, which is the only case this code path runs in — the TUI can
+`select-window`/`select-pane` onto **an unrelated pane** and steal the operator's focus.
+`list-panes -a` output order decides which; nothing in the loop prefers an exact match.
+
+Two further defects in the same producer: `fd/0` is *not* the controlling terminal (the
+field is named and documented as if it were), so a session with redirected stdin yields
+`"pipe:[12345]"`, which is then stored as a `tty` and substring-matched; and `strip_prefix`
+falling through for such a value is silent.
+
+**Fix:** make the comparison anchored at the sink and keep the producer's form honest:
+
+```rust
+// src/terminal_switch.rs
+let want = format!("/dev/{tty}");
+if pane_tty == want || pane_tty == tty {
+```
+
+and in `read_tty`, return `None` for a link that does not start with `/dev/` rather than
+passing a pipe path through as a TTY.
+
+### WR-05: two named controls assert one property — the fused round trip is certified twice
+
+**File:** `src/ui/screens/detail.rs:7806-7833` and `7849-7897`
+
+**Issue:** `the_argv_this_build_emits_is_an_argv_this_build_can_read_back` is:
+
+```rust
+for term in [5 terms] { for raw in hostile_session_ids() {
+    argv = resume_terminal_argv(term, &sid);
+    read_back = session_id_in_cmdline(&proc_cmdline_encoding(&argv));
+    assert_eq!(read_back, Some(raw)); } }
+```
+
+The FUSED arm of `a_session_id_survives_the_round_trip_in_both_wire_forms`
+(`detail.rs:7864-7882`) is the same five terminals, the same 28 fixtures, the same
+encoder, the same consumer and the same assertion — with the loop nesting swapped. The
+first test is **entirely subsumed**; deleting it removes no coverage.
+
+This matters beyond duplication in *this* phase specifically. `read_session_id`'s own doc
+(`session_detector.rs:154-155`, restated at `161-163`) warns that a second assertion of an
+already-asserted property *"would let the class be counted as closed twice"* — and round 12
+then added two named controls for one property, which inflates the control count a verifier
+reads. The round-11 failure this round is remediating was a verifier scoring 90/91
+must-haves against a build that had lost a capability.
+
+**Fix:** delete `the_argv_this_build_emits_is_an_argv_this_build_can_read_back` and keep
+`a_session_id_survives_the_round_trip_in_both_wire_forms`, moving the former's long failure
+message (which is the better one — it names the drift mechanism and forbids un-fusing) onto
+the surviving fused arm.
+
+## Info
+
+### IN-01: `read_start_time` finds the FIRST `)` in `/proc/<pid>/stat`, not the last
+
+**File:** `src/session_detector.rs:303`
+**Issue:** The comment on line 301-302 states the reason correctly — comm is
+parenthesised and may contain spaces — but `stat.find(')')` breaks for any comm containing
+`)`, e.g. a process named `cl)aude`. Field 22 would then be read from the wrong offset or
+not at all. Currently unreachable because pids come only from `pgrep -x claude` (exact
+name match), but it is one `pgrep` flag change away from being live, and pid recycling
+between `pgrep` and the `/proc` read (IN-02) can already deliver a foreign comm.
+**Fix:** `let after_comm = stat.rfind(')')?.checked_add(2)?;`
+
+### IN-02: `pgrep` is resolved through `$PATH`, and pids are used after a TOCTOU window
+
+**File:** `src/session_detector.rs:44`, `59-73`
+**Issue:** `Command::new("pgrep")` resolves via the inherited `PATH`; a poisoned `PATH`
+executes an attacker's `pgrep` with the operator's privileges on a timer. Separately, every
+`/proc/<pid>/...` read in `build_session` happens after `pgrep` returned, so a recycled pid
+yields a `ClaudeSession` describing a different process (its cwd, its cmdline, its tty)
+with no detection.
+**Fix:** invoke an absolute path (`/usr/bin/pgrep`) or read `/proc` directly; and
+re-validate `/proc/<pid>/comm == "claude"` inside `build_session` before trusting the reads.
+
+### IN-03: `/proc/<pid>/cmdline` is read unbounded
+
+**File:** `src/session_detector.rs:207`
+**Issue:** `std::fs::read` on `cmdline` has no size cap. Since Linux 4.2 a process can
+present an arbitrarily large cmdline; `detect_sessions` runs over every `claude` pid on a
+timer, so a local process can force repeated large allocations in the TUI.
+**Fix:** read with a cap (e.g. `Read::take(64 * 1024)`) — the resume option and its value
+appear early in any real argv.
+
+### IN-04: the corpus size `28` is a magic number repeated in three tests; the terminal list in four loops
+
+**File:** `src/ui/screens/detail.rs:7604`, `7859`; `7491`, `7625`, `7651`, `7808`, `7866`
+**Issue:** Three separate non-vacuity assertions hard-code `28` with a hand-written
+breakdown comment ("7 + 11 + 10"); changing the corpus requires editing all three, and a
+stale one fails with a message that misdescribes the corpus. The five-terminal array is
+re-spelled in five loops.
+**Fix:** `const HOSTILE_CORPUS_LEN: usize = 28;` and
+`const TERMINALS: [&str; 5] = [...];` beside `hostile_session_ids()`.
+
+### IN-05: `proc_cmdline_encoding`'s `skip(1)` encodes an unasserted positional assumption about the producer
+
+**File:** `src/ui/screens/detail.rs:7732-7734`
+**Issue:** The helper assumes element 0 of `resume_terminal_argv`'s output is the
+emulator's program separator. If the producer ever gains a leading element, `skip(1)`
+silently drops the wrong one and the round trip asserts against an argv the producer never
+emitted — the vacuous-pass shape `nul_join_cmdline`'s NUL guard was written to prevent, on
+the other axis. Arity is pinned in a *different* test, so nothing local protects this.
+**Fix:** assert the shape in the helper:
+`assert_eq!(argv[0], terminal_program_separator(term), ...)`, or take the separator as a
+parameter and assert against it.
+
+### IN-06: `session_id_in_cmdline` is `pub(crate)` solely so a test in another module can call it
+
+**File:** `src/session_detector.rs:260`
+**Issue:** The only non-test caller is `read_session_id`, in the same module. `pub(crate)`
+widens the surface for a test, which slightly weakens the "one place a session id enters
+this build" framing the doc leans on.
+**Fix:** acceptable as-is, but `#[cfg_attr(not(test), allow(dead_code))]` is not the answer;
+prefer documenting that the widened visibility exists for the cross-module round trip, or
+move the round trip into an integration test that uses the crate's public surface.
+
+### IN-07: the split branch swallows an element that is itself id-bearing, contradicting the stated precedence rule
+
+**File:** `src/session_detector.rs:271-278`
+**Issue:** The doc (line 243) states *"The leftmost id-bearing element wins,
+deterministically, by argv index."* For `["claude", "--resume", "--resume=abc"]` the split
+branch consumes element 2 as a raw value and returns the whole string `"--resume=abc"` as
+the id, rather than `"abc"` from the fused element. Both readings are defensible; neither
+is asserted, and the doc's rule reads as if the fused element would win.
+**Fix:** add an arm to
+`session_id_in_cmdline_reads_both_wire_forms_and_no_other_shape` pinning whichever reading
+is intended, so the next reader is not left to infer it from the loop.
 
 ---
 
 _Reviewed: 2026-08-27_
-_Reviewer: Claude (gsd-code-reviewer), adversarial stance_
-_Depth: standard + targeted simulation_
-_Prior round's REVIEW.md is preserved in git history at `dfa11c6`._
+_Reviewer: Claude (gsd-code-reviewer)_
+_Depth: deep_
