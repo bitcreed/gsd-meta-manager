@@ -1288,10 +1288,153 @@ mod tests {
     /// CLAIMS to cover and no test actually drives — which is precisely the
     /// state round 12 shipped in, and precisely what this census exists to make
     /// impossible to ship again.
-    const CLAUDE_ARGV_ROUND_TRIPS: [(&str, &str); 1] = [(
-        "src/ui/screens/detail.rs",
-        "a_session_id_survives_the_round_trip_in_both_wire_forms",
-    )];
+    const CLAUDE_ARGV_ROUND_TRIPS: [(&str, &str); 2] = [
+        (
+            "src/ui/screens/detail.rs",
+            "a_session_id_survives_the_round_trip_in_both_wire_forms",
+        ),
+        (
+            "src/executor/claude.rs",
+            "the_executors_own_argv_is_an_argv_this_build_can_read_back",
+        ),
+    ];
+
+    /// **This build's SECOND `claude` argv producer, driven through the REAL
+    /// parser** (21-37, G2, D-21-74, T-21-37-01).
+    ///
+    /// The invariant *what this build emits, this build can read back* was
+    /// written as a property of THIS BUILD and asserted over ONE of this
+    /// build's TWO producers, with nothing anywhere saying which. This is the
+    /// other one. Nothing is re-spelled: the argv comes from the real
+    /// [`crate::executor::claude::build_argv`], the encoding is the kernel's,
+    /// and the parse comes from the real [`session_id_in_cmdline`].
+    ///
+    /// # The encoding is BYTE-EXACT, deliberately
+    ///
+    /// The `Vec<OsString>` is joined through
+    /// [`std::os::unix::ffi::OsStrExt::as_bytes`] and never through
+    /// `to_string_lossy` — which is the exact substitution 21-36 removed from
+    /// the parser. A lossy conversion here would make this control assert on a
+    /// value it invented rather than on the bytes the kernel would present, and
+    /// it would do so silently.
+    ///
+    /// `#[cfg(unix)]` because that conversion is, exactly as the `/proc` reader
+    /// this module already is.
+    ///
+    /// # Both shapes, because they answer different questions
+    ///
+    /// The NON-resuming shape asks whether a freshly launched run is visible at
+    /// all — measured before this round, it was not. The RESUMING shape asks
+    /// which of two ids on one argv is the live conversation's, and it is
+    /// asserted here rather than only in the parser's own arms because this is
+    /// the argv this build actually emits: `--session-id` first, `--resume`
+    /// later, so a parser that returned the leftmost match would pass every
+    /// enumerated arm and still report the wrong id for every resumed run this
+    /// build starts.
+    #[cfg(unix)]
+    #[test]
+    fn the_executors_own_argv_is_an_argv_this_build_can_read_back() {
+        use std::os::unix::ffi::OsStrExt;
+
+        // The `/proc/<pid>/cmdline` encoding: each element's own bytes, each
+        // followed by a NUL. Byte-exact by construction.
+        fn wire(argv: &[std::ffi::OsString]) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            for element in argv {
+                bytes.extend_from_slice(element.as_bytes());
+                bytes.push(0);
+            }
+            bytes
+        }
+
+        fn read_back(argv: &[std::ffi::OsString]) -> Option<String> {
+            session_id_in_cmdline(&wire(argv))
+                .map(|id| id.as_raw_for_logic_only().to_string())
+        }
+
+        // --- The NON-RESUMING shape: a fresh run's assigned id --------------
+        let options = crate::executor::ExecutionOptions::default();
+        let assigned = options.session_id.to_string();
+        let argv = crate::executor::claude::build_argv(&options);
+
+        assert!(
+            !argv.is_empty(),
+            "build_argv produced an EMPTY argv, so the round trip below would \
+             be driving nothing through the parser and passing on that"
+        );
+        assert!(
+            argv.iter().any(|element| element.as_bytes() == assigned.as_bytes()),
+            "the assigned session id {assigned:?} is not an element of the argv \
+             build_argv produced ({argv:?}), so this control would be asserting \
+             against a value the producer never emitted"
+        );
+
+        assert_eq!(
+            read_back(&argv).as_deref(),
+            Some(assigned.as_str()),
+            "this build's own executor emitted {argv:?} and this build could \
+             not read the session id back out of it. Measured before 21-37 this \
+             returned None for EVERY driver-launched run: the id this build \
+             hands `claude` was invisible to the detector that finds the session \
+             again, so a run this build itself started reads back as \
+             `session_id: None` and its Sessions-tab row answers `No session ID \
+             to resume` with nothing anywhere reporting why. This is the same \
+             defect round 12 closed for the OTHER producer, on the producer \
+             nobody had said the invariant covered."
+        );
+
+        // --- The RESUMING shape: two ids on one argv ------------------------
+        let resumed = "a-conversation-that-already-exists".to_string();
+        let options = crate::executor::ExecutionOptions {
+            resume_session: Some(resumed.clone()),
+            ..Default::default()
+        };
+        let fresh = options.session_id.to_string();
+        let argv = crate::executor::claude::build_argv(&options);
+
+        // Non-vacuity for the RANK claim: both options must actually be on
+        // this argv, and the assigned one must come FIRST — otherwise the
+        // assertion below would be satisfied by leftmost-wins and would
+        // certify nothing about rank.
+        let assigned_at = argv
+            .iter()
+            .position(|element| element.as_bytes() == SESSION_ID_OPTION_NAME);
+        let resume_at = argv
+            .iter()
+            .position(|element| element.as_bytes() == RESUME_OPTION_NAME);
+        assert!(
+            matches!((assigned_at, resume_at), (Some(a), Some(r)) if a < r),
+            "the resuming argv {argv:?} must carry the assigned-id option \
+             BEFORE the resume option (found at {assigned_at:?} and \
+             {resume_at:?}). If it does not, the rank assertion below is \
+             satisfied by argv index and certifies nothing about rank."
+        );
+        assert!(
+            argv.iter().any(|element| element.as_bytes() == fresh.as_bytes()),
+            "the fresh session id {fresh:?} is not on the resuming argv \
+             ({argv:?}), so there is no second id for the rank rule to outrank"
+        );
+
+        assert_eq!(
+            read_back(&argv).as_deref(),
+            Some(resumed.as_str()),
+            "this build's executor emitted {argv:?}, carrying a FRESH assigned \
+             id ({fresh:?}) to the LEFT of the resumed one ({resumed:?}), and \
+             the parser must report the RESUMED one. The basis is measured, not \
+             assumed: `claude` 2.1.250 documents its forking option as creating \
+             a new session id INSTEAD OF reusing the original, so absent that \
+             flag — and `no_source_line_under_src_requests_a_forked_session` \
+             asserts this build never asks for one — the resumed conversation \
+             keeps the id it resumed. Reporting {fresh:?} would offer the \
+             operator a resume of a conversation that does not exist."
+        );
+        assert_ne!(
+            read_back(&argv).as_deref(),
+            Some(fresh.as_str()),
+            "the parser reported the FRESH assigned id for a resuming run. That \
+             is the leftmost match, not the live conversation's identity."
+        );
+    }
 
     /// **Every `claude` argv option site under `src/` is adjudicated** (21-37,
     /// D-21-74, T-21-37-01, T-21-37-04).
