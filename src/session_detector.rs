@@ -154,6 +154,24 @@ fn read_tty(pid: u32) -> Option<String> {
 /// and would let the class be counted as closed twice.
 fn read_session_id(pid: u32) -> Option<Untrusted> {
     let cmdline = std::fs::read(format!("/proc/{}/cmdline", pid)).ok()?;
+    session_id_in_cmdline(&cmdline)
+}
+
+/// The PURE half of the pair: the `/proc/<pid>/cmdline` bytes → session id
+/// parse, with no I/O in it (D-21-67).
+///
+/// It is split out of [`read_session_id`] because a round trip cannot be
+/// asserted against a function that reads `/proc`: a test can hand this one the
+/// exact bytes the kernel would present, which is what lets the argv this build
+/// EMITS be driven back through the parser this build READS with.
+///
+/// **Where the boundary sits, restated rather than loosened.**
+/// [`read_session_id`] remains the one place a session id **enters this build
+/// from another process**; this function is the one place it is **wrapped**.
+/// That is why it returns `Option<Untrusted>` and never `Option<String>` — the
+/// wrap sits at the innermost point of the pair, so there is no arrangement of
+/// callers in which an unwrapped id escapes this module.
+pub(crate) fn session_id_in_cmdline(cmdline: &[u8]) -> Option<Untrusted> {
     let args: Vec<&[u8]> = cmdline.split(|&b| b == 0).collect();
 
     for window in args.windows(2) {
@@ -161,8 +179,8 @@ fn read_session_id(pid: u32) -> Option<Untrusted> {
             let val = String::from_utf8_lossy(window[1]);
             let val = val.trim();
             if !val.is_empty() {
-                // The ONE place a session id enters this build, so the ONE
-                // place it is wrapped.
+                // The ONE place a session id is WRAPPED, which is the
+                // innermost point of the pair rather than the outermost.
                 return Some(Untrusted::from_untrusted_source(val.to_string()));
             }
         }
