@@ -2157,31 +2157,260 @@ mod tests {
     /// order to compare the two compositions — counting that would make the
     /// census red for the test that proves the thing it is checking.
     fn composition_census() -> Vec<String> {
-        let needle = format!("{CENSUS_NEEDLE_HEAD}{CENSUS_NEEDLE_TAIL}");
         let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let mut sites = Vec::new();
 
         for relative in CENSUS_FILES {
             let source = std::fs::read_to_string(base.join(relative))
                 .unwrap_or_else(|e| panic!("the census must be able to read {relative}: {e}"));
-            let lines: Vec<&str> = source.lines().collect();
-            let end = lines
-                .iter()
-                .position(|l| l.trim_start().starts_with("#[cfg(test)]"))
-                .unwrap_or(lines.len());
-
-            let production = lines[..end].join("\n");
-            for (number, logical) in logical_lines(&production) {
-                if !logical.contains(&needle) {
-                    continue;
-                }
-                if CENSUS_COMPOSERS.iter().any(|c| logical.contains(c)) {
-                    continue;
-                }
-                sites.push(format!("{relative}:{number}"));
-            }
+            sites.extend(census_sites_in(relative, &production_slice(&source)));
         }
         sites
+    }
+
+    /// Every line index at which `source` carries a **column-zero**
+    /// `#[cfg(test)]` whose following declaration declares a MODULE.
+    ///
+    /// The truncation used to cut at the first line whose TRIMMED start was the
+    /// test attribute. That is a silent kill switch: a mid-file test-attributed
+    /// helper drops every line after it from the scan, and nothing says so. The
+    /// hazard is **live in this tree** — `src/ui/screens/detail.rs` carries two
+    /// column-zero test attributes, at `:5342` (a `pub(super) fn` helper) and
+    /// `:5764` (`mod tests`) — so adding that file to [`CENSUS_FILES`] under the
+    /// old rule would have silently dropped more than two thousand lines.
+    ///
+    /// A test-attributed item that is NOT a module now stays INSIDE the scanned
+    /// slice. That is the stricter direction, and therefore the safe one.
+    ///
+    /// # Observed RED by planting a second marker
+    ///
+    /// `#[cfg(test)] mod planted_second_test_module {}` appended to this file,
+    /// then removed and `git status --porcelain` confirmed clean afterwards
+    /// (` M src/ui/screens/driver.rs` alone):
+    ///
+    /// ```text
+    /// thread 'ui::screens::driver::tests::no_executable_control_class_call_in_these_two_files_stands_outside_a_composition' (2985743) panicked at src/ui/screens/driver.rs:2457:13:
+    /// assertion `left == right` failed: src/ui/screens/driver.rs carries 2 column-zero `#[cfg(test)]` markers whose following declaration is a MODULE, at line(s) [2030, 4199]. The census cuts at the FIRST one, so a second means every line after it is dropped from the scan without anything saying so [..]
+    ///   left: 2
+    ///  right: 1
+    /// ```
+    ///
+    /// The failure NAMES both marker lines, which is the difference between a
+    /// kill switch and a control: the reader is sent to the two markers rather
+    /// than to the census.
+    fn test_module_marker_lines(source: &str) -> Vec<usize> {
+        let lines: Vec<&str> = source.lines().collect();
+        let mut markers = Vec::new();
+        for (index, line) in lines.iter().enumerate() {
+            // `starts_with` at index 0 IS the column-zero test.
+            if !line.starts_with("#[cfg(test)]") {
+                continue;
+            }
+            let follows_a_module = lines[index + 1..]
+                .iter()
+                .find(|later| !later.trim().is_empty())
+                .is_some_and(|declaration| declares_a_module(declaration));
+            if follows_a_module {
+                markers.push(index);
+            }
+        }
+        markers
+    }
+
+    /// Does `line` declare a module, with or without a visibility qualifier?
+    fn declares_a_module(line: &str) -> bool {
+        let trimmed = line.trim_start();
+        let rest = trimmed.strip_prefix("pub").map_or(trimmed, |after| {
+            let after = if after.starts_with('(') {
+                after.split_once(')').map_or(after, |(_, tail)| tail)
+            } else {
+                after
+            };
+            after.trim_start()
+        });
+        rest.starts_with("mod ")
+    }
+
+    /// `source` above its test module — the slice the census actually walks.
+    fn production_slice(source: &str) -> String {
+        let lines: Vec<&str> = source.lines().collect();
+        let end = test_module_marker_lines(source)
+            .first()
+            .copied()
+            .unwrap_or(lines.len());
+        lines[..end].join("\n")
+    }
+
+    /// The census's verdict over one already-sliced source text.
+    ///
+    /// Extracted from [`composition_census`] so the live assertion and the
+    /// laundering control consume the SAME code. Pass 11 found this census's
+    /// defect by re-implementing its published algorithm in Python; a control
+    /// that exercises a re-implementation certifies the re-implementation, so
+    /// the control below drives this function instead.
+    fn census_sites_in(label: &str, production: &str) -> Vec<String> {
+        let needle = format!("{CENSUS_NEEDLE_HEAD}{CENSUS_NEEDLE_TAIL}");
+        let mut sites = Vec::new();
+        for (number, logical) in logical_lines(production) {
+            if !logical.contains(&needle) {
+                continue;
+            }
+            // **The verdict is taken at each OCCURRENCE, never over the unit.**
+            // `CENSUS_COMPOSERS.iter().any(|c| logical.contains(c))` used to
+            // stand here and it laundered: one composed arm of a joined `match`
+            // answered for its bare sibling. See
+            // `a_composed_arm_does_not_launder_its_un_composed_sibling`.
+            if logical
+                .match_indices(&needle)
+                .all(|(at, _)| occurrence_is_composed(&logical[..at]))
+            {
+                continue;
+            }
+            sites.push(format!("{label}:{number}"));
+        }
+        sites
+    }
+
+    /// Is the needle occurrence that FOLLOWS `before` wrapped in a composer?
+    ///
+    /// The whole verdict, and it looks only at the characters immediately
+    /// preceding one occurrence: strip a trailing run of path-qualifier
+    /// segments (`super::`, `crate::text::`, repeated), trim trailing
+    /// whitespace, and the occurrence is composed only if what remains ends
+    /// with a composer name, an opening parenthesis and an optional reference
+    /// marker.
+    ///
+    /// So `crate::text::display_identity(&super::` + needle is composed and
+    /// `vec![` + needle is not, whichever arm of whatever expression each sits
+    /// in. **There is no window here to over-join**, which is why this repair
+    /// is terminal: no future round can find a bigger unit that launders
+    /// something, because no unit is consulted.
+    ///
+    /// # Residual, with its direction — it FLIPPED
+    ///
+    /// A composition assembled across separate statements — the sanitiser bound
+    /// to a local on one line, wrapped three lines later — reads as
+    /// UN-composed. Under the old whole-unit verdict that same case was
+    /// under-detection and silent; here it is **over-detection, and LOUD**: it
+    /// fails the build and names the file and line. Loud is the safe direction.
+    /// The repair for a loud false positive is to inline the composition, or to
+    /// record an exemption with a reason — never to soften this rule.
+    fn occurrence_is_composed(before: &str) -> bool {
+        let trimmed = strip_trailing_path_qualifiers(before).trim_end();
+        CENSUS_COMPOSERS.iter().any(|composer| {
+            let open = format!("{composer}(");
+            trimmed.ends_with(&open) || trimmed.ends_with(&format!("{open}&"))
+        })
+    }
+
+    /// `text` with any trailing run of `identifier::` segments removed.
+    ///
+    /// `..display_identity(&super::` becomes `..display_identity(&`, so the
+    /// composer check does not have to know which spelling of the path a given
+    /// call site used. Both spellings are live in the census files: this module
+    /// calls the sanitiser unqualified, `driver_confirm.rs` reaches it through
+    /// `super::`.
+    fn strip_trailing_path_qualifiers(text: &str) -> &str {
+        let mut cut = text;
+        while let Some(head) = cut.strip_suffix("::") {
+            let mut boundary = head.len();
+            for (index, character) in head.char_indices().rev() {
+                if character.is_alphanumeric() || character == '_' {
+                    boundary = index;
+                } else {
+                    break;
+                }
+            }
+            if boundary == head.len() {
+                return cut;
+            }
+            cut = &head[..boundary];
+        }
+        cut
+    }
+
+    /// A two-arm `match` whose arms land in ONE logical unit: one arm calls the
+    /// control-class sanitiser bare, its sibling wraps it in a composer.
+    ///
+    /// Built at runtime from [`CENSUS_NEEDLE_HEAD`], [`CENSUS_NEEDLE_TAIL`] and
+    /// [`CENSUS_COMPOSERS`]. Spelled whole, this fixture would be an executable
+    /// hit in this file — in its own census, and in the per-file needle
+    /// distribution `21-33` pins across `src/ui/`, in a file `21-33` cannot
+    /// edit. So no token here is a raw string literal.
+    fn laundering_fixture() -> String {
+        let needle = format!("{CENSUS_NEEDLE_HEAD}{CENSUS_NEEDLE_TAIL}");
+        let composer = CENSUS_COMPOSERS[0];
+        format!(
+            "fn render(action: Action) -> Vec<String> {{\n\
+             match action {{\n\
+             Action::Bare => vec![{needle}value)],\n\
+             Action::Composed => vec![{composer}(&{needle}other))],\n\
+             }}\n\
+             }}\n"
+        )
+    }
+
+    /// **A composed arm must not launder its un-composed sibling** (21-32 T3,
+    /// T-21-32-03, pass 11 gaps[2]).
+    ///
+    /// [`logical_lines`] joins sibling `match` arms into one unit — correctly,
+    /// because a call wrapped across five physical lines has to be judged
+    /// whole. The defect was the VERDICT being taken over that unit: "does this
+    /// unit contain a composer anywhere". One composed arm then answered for
+    /// its bare sibling, and the census silently missed the exact construction
+    /// it exists to catch.
+    ///
+    /// The repair deletes the window from the decision rather than making the
+    /// join smarter. A smarter join is still a window and a window can still
+    /// over-join; taking the verdict at the INNERMOST call leaves nothing to
+    /// over-join.
+    ///
+    /// # Observed RED against the committed whole-unit verdict
+    ///
+    /// ```text
+    /// thread 'ui::screens::driver::tests::a_composed_arm_does_not_launder_its_un_composed_sibling' (2971679) panicked at src/ui/screens/driver.rs:2255:9:
+    /// assertion `left == right` failed: the census did not report the BARE arm of a two-arm match whose sibling is composed. [..]
+    ///   left: []
+    ///  right: ["fixture.rs:3"]
+    /// ```
+    ///
+    /// `left: []` IS the laundering: the committed rule looked at the joined
+    /// unit, found `display_identity` belonging to the OTHER arm, and called the
+    /// bare call clean. The unit-shape assertion below passed in that same run,
+    /// so the fixture really did join both arms — the red is the verdict's, not
+    /// the join's.
+    #[test]
+    fn a_composed_arm_does_not_launder_its_un_composed_sibling() {
+        let fixture = laundering_fixture();
+        let needle = format!("{CENSUS_NEEDLE_HEAD}{CENSUS_NEEDLE_TAIL}");
+
+        // The fixture really does put both arms in ONE logical unit — otherwise
+        // this control would pass for the wrong reason.
+        let units = logical_lines(&fixture);
+        let joined: Vec<&(usize, String)> = units
+            .iter()
+            .filter(|(_, text)| text.matches(&needle).count() == 2)
+            .collect();
+        assert_eq!(
+            joined.len(),
+            1,
+            "the fixture must join both arms into exactly one logical unit, or \
+             the laundering it reproduces is not the laundering that was \
+             measured. Units: {units:?}"
+        );
+
+        let sites = census_sites_in("fixture.rs", &fixture);
+        assert_eq!(
+            sites,
+            vec!["fixture.rs:3".to_string()],
+            "the census did not report the BARE arm of a two-arm match whose \
+             sibling is composed. A verdict taken over the joined unit answers \
+             a question about the unit, not about the calls inside it, so the \
+             composed arm launders its sibling and `U+202E`, `U+00AD` and the \
+             `U+E0000..U+E007F` tag block reach a terminal cell from a site the \
+             census calls clean. The verdict has to be taken at each occurrence, \
+             from the characters immediately preceding it."
+        );
     }
 
     /// **IN-01: `shown_capped`'s completeness claim, replaced by the census that
@@ -2195,24 +2424,38 @@ mod tests {
     /// its place.
     ///
     /// **The zero is not vacuous.** `composition_census` is asserted to have
-    /// actually read both files and to find the needle at all — the two arms
-    /// below — so a walk that silently read nothing, or a needle that matched
-    /// nothing, is red rather than green.
+    /// actually read both files and to find the needle **in the slice it walks**
+    /// — the arms below — so a walk that silently read nothing, a needle that
+    /// matched nothing, or a truncation that quietly ate the file, is red rather
+    /// than green.
     ///
     /// **Observed RED by planting**, an unconverted call added to
     /// `driver_confirm.rs`; the panic naming the planted file and line is quoted
-    /// in `21-28-SUMMARY.md`.
+    /// in `21-28-SUMMARY.md`. 21-32 added two further reds, both quoted in
+    /// `21-32-SUMMARY.md`: the two-arm laundering fixture against the old
+    /// whole-unit verdict, and a planted second column-zero test module against
+    /// the truncation assertion below.
     ///
-    /// # Residual, with its direction
+    /// # Residuals, each with its direction
     ///
-    /// This is a SOURCE SCAN over two NAMED files. A composition assembled
-    /// across separate statements — a local bound on one line and composed three
-    /// lines later — reads as uncomposed and would be a false positive; a third
-    /// file added to this path tomorrow is simply not looked at.
-    /// **Under-detection, silent.** What bounds THAT is the render-escape probe,
-    /// which now renders all four of this path's sites, and NOT this census. The
-    /// census's only job is to stop an unconverted call being re-introduced into
-    /// these two files unnoticed.
+    /// 1. **A composition assembled across separate statements** — the sanitiser
+    ///    bound to a local on one line, wrapped three lines later — reads as
+    ///    UN-composed and is reported. Under the old whole-unit verdict this was
+    ///    under-detection and silent; since 21-32 moved the verdict to the
+    ///    innermost call it is **over-detection, and LOUD** — it fails the build
+    ///    and names the file and line. Loud is the safe direction, and the
+    ///    direction changed on purpose. The repair for a loud false positive is
+    ///    to inline the composition, or to record an exemption with a reason —
+    ///    **never to soften the rule**.
+    /// 2. **A third file added to this path tomorrow is simply not looked at.**
+    ///    [`CENSUS_FILES`] is two named files, and nothing here notices a new
+    ///    one. **Under-detection, silent.** What bounds that is the
+    ///    render-escape probe, which renders all four of this path's sites, and
+    ///    NOT this census.
+    ///
+    /// The census's only job is to stop an unconverted call being re-introduced
+    /// into these two files unnoticed, and it is deliberately not sold as more
+    /// than that.
     #[test]
     fn no_executable_control_class_call_in_these_two_files_stands_outside_a_composition() {
         let needle = format!("{CENSUS_NEEDLE_HEAD}{CENSUS_NEEDLE_TAIL}");
@@ -2249,22 +2492,81 @@ mod tests {
             );
         }
 
-        // NON-VACUITY 2: the needle matches something. If every call vanished,
-        // the zero below would mean "nothing to find" rather than "all composed".
-        let total: usize = CENSUS_FILES
-            .iter()
-            .map(|relative| {
-                std::fs::read_to_string(base.join(relative))
-                    .expect("readable")
-                    .lines()
-                    .filter(|l| !l.trim_start().starts_with("//") && l.contains(&needle))
-                    .count()
-            })
-            .sum();
+        // TRUNCATION: exactly one column-zero test MODULE marker per file, so
+        // the cut cannot become a silent kill switch. Observed RED by planting
+        // a second one; the panic is quoted in `21-32-SUMMARY.md`.
+        for relative in CENSUS_FILES {
+            let source = std::fs::read_to_string(base.join(relative))
+                .unwrap_or_else(|e| panic!("the census must be able to read {relative}: {e}"));
+            let markers = test_module_marker_lines(&source);
+            let numbered: Vec<usize> = markers.iter().map(|index| index + 1).collect();
+            assert_eq!(
+                markers.len(),
+                1,
+                "{relative} carries {} column-zero `#[cfg(test)]` markers whose \
+                 following declaration is a MODULE, at line(s) {numbered:?}. The \
+                 census cuts at the FIRST one, so a second means every line \
+                 after it is dropped from the scan without anything saying so — \
+                 the silent kill switch this assertion exists to make loud. \
+                 Either fold the modules together or state, here, which one the \
+                 census is meant to stop at and why.",
+                markers.len()
+            );
+        }
+
+        // NON-VACUITY 2: the needle matches something **in the slice the census
+        // actually walks**. It used to be counted over the WHOLE file, so its
+        // "there was something to find" guarantee was about a different set
+        // than the zero below — measured at 7 whole-file needle lines against 6
+        // in the production slices, the difference being `driver.rs`'s own
+        // test-module call at `:2349`, which the census never scans. If every
+        // production call vanished, the zero below would mean "nothing to find"
+        // rather than "all composed".
+        //
+        // Measured over the slice at the time of writing: 5 needle-bearing
+        // logical units carrying 6 occurrences — `driver.rs` 2 units / 2
+        // occurrences, `driver_confirm.rs` 3 units / 4 occurrences (its first
+        // unit carries two). All 6 are judged composed by the innermost
+        // verdict, which is what makes the zero below non-vacuous.
+        const PRODUCTION_NEEDLE_UNITS: usize = 5;
+        const PRODUCTION_NEEDLE_OCCURRENCES: usize = 6;
+        const WHOLE_FILE_NEEDLE_LINES: usize = 7;
+
+        let mut units = 0usize;
+        let mut occurrences = 0usize;
+        let mut whole_file = 0usize;
+        for relative in CENSUS_FILES {
+            let source = std::fs::read_to_string(base.join(relative))
+                .unwrap_or_else(|e| panic!("the census must be able to read {relative}: {e}"));
+            whole_file += source
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//") && l.contains(&needle))
+                .count();
+            for (_, logical) in logical_lines(&production_slice(&source)) {
+                let found = logical.matches(&needle).count();
+                if found > 0 {
+                    units += 1;
+                    occurrences += found;
+                }
+            }
+        }
         assert!(
-            total > 0,
-            "the census found NO executable call to the control-class function in \
-             either file, so its zero below says nothing about composition"
+            occurrences > 0,
+            "the census found NO executable call to the control-class function \
+             in the production slice of either file, so its zero below says \
+             nothing about composition"
+        );
+        assert_eq!(
+            (units, occurrences, whole_file),
+            (
+                PRODUCTION_NEEDLE_UNITS,
+                PRODUCTION_NEEDLE_OCCURRENCES,
+                WHOLE_FILE_NEEDLE_LINES
+            ),
+            "the census's non-vacuity totals moved. These are MEASURED numbers, \
+             not targets: re-measure them, say in this comment why they changed, \
+             and check that the change is a site being added or removed rather \
+             than the slice quietly shifting under the census."
         );
 
         let sites = composition_census();

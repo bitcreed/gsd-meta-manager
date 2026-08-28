@@ -1687,19 +1687,40 @@ mod tests {
         })
     }
 
-    /// Does `logical` INTERPOLATE a value into a string?
+    /// Does `logical` contain one of **five** interpolation markers?
     ///
-    /// The formatting macros this codebase builds strings with, plus `&`-string
-    /// concatenation. Both halves must hold for a line to be reported: naming
-    /// an interpreter with a FIXED command is not the defect, and a census that
-    /// reported it would be a ban on a word rather than a check on a
-    /// construction — at which point the next author works around it by
-    /// renaming.
+    /// Not "does it interpolate". The markers are exactly
+    /// [`INTERPOLATION_MARKERS`] — `format!`, `write!`, `writeln!`, `+ &` and
+    /// `push_str(&` — and nothing else is looked for.
+    ///
+    /// Both halves must hold for a line to be reported: naming an interpreter
+    /// with a FIXED command is not the defect, and a census that reported it
+    /// would be a ban on a word rather than a check on a construction — at
+    /// which point the next author works around it by renaming.
+    ///
+    /// # What the five markers miss, with the direction
+    ///
+    /// A string assembled by any OTHER means is invisible here: a `push_str`
+    /// of an already-owned value (no `&`), a `concat!`, a `join`, an owned `+`
+    /// without the reference marker, a `replace`, a `String::from` fed a
+    /// previously-built variable. **Under-detection, silent.**
+    ///
+    /// **Why the set is not widened** (IN-05, 21-32 T2). Every additional
+    /// substring marker adds false positives to a control whose entire value is
+    /// that its zero can be trusted, and a census that reports correct code is a
+    /// census the next author disables. The honest move is to say what the five
+    /// are and what they miss — not to enumerate the next level down and call
+    /// the claim repaired.
     fn interpolates_into_a_string(logical: &str) -> bool {
-        ["format!", "write!", "writeln!", "+ &", "push_str(&"]
+        INTERPOLATION_MARKERS
             .iter()
             .any(|marker| logical.contains(marker))
     }
+
+    /// The five substrings [`interpolates_into_a_string`] recognises, hoisted
+    /// out of its body so the boundary control can build its fixture from the
+    /// SAME list the live census consumes rather than respelling one.
+    const INTERPOLATION_MARKERS: [&str; 5] = ["format!", "write!", "writeln!", "+ &", "push_str(&"];
 
     /// Whether `logical` has an unclosed `(` or `[`, so the next physical line
     /// belongs to the same call.
@@ -1708,8 +1729,13 @@ mod tests {
     /// onto the next line would join
     /// `Command::new("/bin/sh")` in `driver::liveness`'s test fixture to the
     /// `.args([.., &format!(..)])` three lines below it and report a fixture
-    /// that spawns a FIXED command — a false positive on correct code. The
-    /// price is stated as a residual on the census itself.
+    /// that spawns a FIXED command — a false positive on correct code.
+    ///
+    /// The price is paid, and it is stated as the **method-chain residual** in
+    /// [`no_executable_line_under_src_hands_an_interpreter_an_interpolated_program`]'s
+    /// "What it does NOT see" block. Pass 11 recorded that this sentence used to
+    /// point at prose that did not exist — the block named three residuals and
+    /// this was not one of them. It is now written there, with its direction.
     fn has_an_unclosed_delimiter(logical: &str) -> bool {
         logical.matches('(').count() > logical.matches(')').count()
             || logical.matches('[').count() > logical.matches(']').count()
@@ -1729,33 +1755,61 @@ mod tests {
 
         let mut sites = Vec::new();
         for (path, lines) in &files {
-            for (index, (number, line)) in lines.iter().enumerate() {
-                if line.trim_start().starts_with("//") {
+            sites.extend(interpreter_sites_in(path, lines));
+        }
+        sites
+    }
+
+    /// The census's per-file walk, over an already-numbered list of lines.
+    ///
+    /// Extracted from [`interpreter_program_sites`] for the reason this module
+    /// gives everywhere else: **the live assertion and its boundary control
+    /// must consume the SAME function**, because a control that exercises a
+    /// re-implementation certifies the re-implementation. Pass 11 read this
+    /// census's published algorithm, re-implemented it in Python and found the
+    /// mechanism disagreed with the doc — the split below is what makes the
+    /// in-tree control able to find that class of defect without leaving Rust.
+    ///
+    /// Taking `&[(usize, String)]` rather than a path also means the boundary
+    /// control drives it from an in-memory fixture: no temporary directory, no
+    /// filesystem read, nothing to leave behind if the test panics.
+    fn interpreter_sites_in(path: &str, lines: &[(usize, String)]) -> Vec<String> {
+        let mut sites = Vec::new();
+        for (index, (number, line)) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            let mut logical = line.to_string();
+            let mut ahead = index;
+            let mut taken = 1;
+            loop {
+                if names_an_interpreter(&logical) && interpolates_into_a_string(&logical) {
+                    sites.push(format!("{path}:{number}"));
+                    break;
+                }
+                if taken >= INTERPRETER_JOIN_LINES
+                    || ahead + 1 >= lines.len()
+                    || !has_an_unclosed_delimiter(&logical)
+                {
+                    break;
+                }
+                ahead += 1;
+                let next = lines[ahead].1.trim();
+                if next.starts_with("//") {
                     continue;
                 }
-                let mut logical = line.to_string();
-                let mut ahead = index;
-                let mut taken = 1;
-                loop {
-                    if names_an_interpreter(&logical) && interpolates_into_a_string(&logical) {
-                        sites.push(format!("{path}:{number}"));
-                        break;
-                    }
-                    if taken >= INTERPRETER_JOIN_LINES
-                        || ahead + 1 >= lines.len()
-                        || !has_an_unclosed_delimiter(&logical)
-                    {
-                        break;
-                    }
-                    ahead += 1;
-                    taken += 1;
-                    let next = lines[ahead].1.trim();
-                    if next.starts_with("//") {
-                        continue;
-                    }
-                    logical.push(' ');
-                    logical.push_str(next);
-                }
+                // `taken` counts EXECUTABLE lines joined, and it is incremented
+                // HERE — after the comment `continue`, not before it (21-32 T1,
+                // T-21-32-01). With the increment above, a comment the join
+                // then discarded had already been paid for, so twelve comment
+                // lines exhausted INTERPRETER_JOIN_LINES and silenced the
+                // census on the exact CR-01 construction it exists to catch.
+                // A comment cannot carry a call; it must not cost budget.
+                // Pinned in both directions by
+                // `the_interpreter_join_budget_is_spent_on_executable_lines_not_on_comments`.
+                taken += 1;
+                logical.push(' ');
+                logical.push_str(next);
             }
         }
         sites
@@ -1767,8 +1821,28 @@ mod tests {
     /// [`Untrusted::as_raw_for_logic_only`]'s doc states the rule — a value
     /// reaching a subprocess goes in as its own argv element, never into a
     /// program string an interpreter will parse. A doc cannot go red. This can.
-    /// It reports every executable line under `src/` where the doc's THIRD
-    /// question would have to be asked, and the answer must be none.
+    ///
+    /// # Exactly what it reports — three bounds, not a completeness claim
+    ///
+    /// It reports every executable line under `src/` at which **all three** of
+    /// these hold, and the answer must be none:
+    ///
+    /// 1. a command-interpreter binary is named by a **QUOTED LITERAL** —
+    ///    `"sh"` or the last segment of a quoted path, per
+    ///    [`names_an_interpreter`]. An interpreter named through a variable, a
+    ///    const or a config value is not seen.
+    /// 2. one of the **five** markers in [`INTERPOLATION_MARKERS`] appears, per
+    ///    [`interpolates_into_a_string`]. That doc enumerates them and names
+    ///    what they miss.
+    /// 3. both fall inside **ONE joined logical unit** of at most
+    ///    [`INTERPRETER_JOIN_LINES`] **executable** lines, joined only while
+    ///    delimiters stay open, per [`has_an_unclosed_delimiter`].
+    ///
+    /// That is the claim. It is deliberately narrower than "any such line":
+    /// round 10's version of this doc said **any**, pass 11 measured that false
+    /// (twelve comment lines defeated it), and 21-32 repaired the mechanism and
+    /// cut the word in the same commit rather than leaving a claim wider than
+    /// its certificate.
     ///
     /// **Why an EQUALITY on a count and not an `is_empty()`.** The same reason
     /// [`exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src`]
@@ -1797,22 +1871,63 @@ mod tests {
     /// a certificate — this module's own doc says so and this census is held to
     /// it.
     ///
+    /// # The reach, MEASURED
+    ///
+    /// [`the_interpreter_join_budget_is_spent_on_executable_lines_not_on_comments`]
+    /// drives [`interpreter_sites_in`] over the CR-01 shape and measures both
+    /// sides of the window:
+    ///
+    /// - **Comment lines cost nothing, at any count.** The shape is reported
+    ///   with **100** comment lines between the interpreter name and the
+    ///   interpolation — the largest count actually tested — because `taken`
+    ///   counts executable lines only.
+    /// - **The executable window is 11 / 12.** The same shape with executable
+    ///   filler is reported at **11** filler lines and MISSED at **12**, both
+    ///   asserted, and both measured identical before and after the 21-32 fix.
+    ///
+    /// Those two numbers ARE this census's reach. A change to either means the
+    /// window moved, and it must be re-measured and re-disclosed here rather
+    /// than absorbed.
+    ///
     /// # What it does NOT see, with the direction
     ///
-    /// It is a SOURCE SCAN over one logical call at a time, so a construction
-    /// **assembled across statements** — a program string built into a local on
-    /// one line and handed to an interpreter three lines later — is invisible
-    /// to it. **Under-detection, silent.** So is a spawn whose interpreter is
-    /// named by a variable rather than a literal, and so is
-    /// `project_creator::execute_hook`, which spawns an interpreter on one line
-    /// and interpolates only into its ERROR message on another (correctly: the
-    /// hook command is a shell command by design, supplied by the operator's own
-    /// config).
+    /// Five residuals, each with its failure direction. None of them is bounded
+    /// by this census; what bounds them is
+    /// [`Untrusted::as_raw_for_logic_only`]'s rule and code review.
     ///
-    /// What bounds those is [`Untrusted::as_raw_for_logic_only`]'s rule and code
-    /// review, **not this census**. The census's job is to stop the single-call
-    /// form from being re-introduced silently, and it is deliberately not sold
-    /// as more than that.
+    /// 1. **Assembled across statements.** It is a SOURCE SCAN over one logical
+    ///    call at a time, so a program string built into a local on one line and
+    ///    handed to an interpreter three lines later is invisible.
+    ///    **Under-detection, silent.**
+    /// 2. **Interpreter named by a variable.** [`names_an_interpreter`] wants a
+    ///    quoted literal; a binary chosen through a variable, a const or a
+    ///    config value is invisible. **Under-detection, silent.**
+    /// 3. **Interpolation only into a neighbouring non-program string.**
+    ///    `project_creator::execute_hook` spawns an interpreter on one line and
+    ///    interpolates only into its ERROR message on another, and is not
+    ///    reported — correctly: the hook command is a shell command by design,
+    ///    supplied by the operator's own config. **Deliberate exclusion**, not a
+    ///    gap.
+    /// 4. **Method chains are not followed** — the residual
+    ///    [`has_an_unclosed_delimiter`]'s doc promises is stated here. The join
+    ///    advances only while `(` or `[` stay unclosed; it does NOT chase
+    ///    `.method()` onto the next line. So a construction whose interpreter
+    ///    name sits on a line with balanced delimiters and whose interpolation
+    ///    sits on a later chained call is never joined to it and is invisible.
+    ///    **Under-detection, silent.** The price is paid on purpose: a
+    ///    chain-follower would join `Command::new("/bin/sh")` in
+    ///    `driver::liveness`'s fixture to an unrelated `.args([.., &format!(..)])`
+    ///    three lines below and report correct code — and a census that cries
+    ///    wolf is a census the next author deletes.
+    /// 5. **Four of five string-building forms are unseen.**
+    ///    [`interpolates_into_a_string`] looks for five substrings; a string
+    ///    built by `concat!`, `join`, an owned `+`, a `replace` or an owned
+    ///    `push_str` carries none of them. **Under-detection, silent.** Widening
+    ///    the set is rejected in that doc, with the reason.
+    ///
+    /// The census's job is to stop the single-call form from being
+    /// re-introduced silently, and it is deliberately not sold as more than
+    /// that.
     #[test]
     fn no_executable_line_under_src_hands_an_interpreter_an_interpolated_program() {
         let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -1837,6 +1952,186 @@ mod tests {
              Quoting for the interpreter is the weaker answer and \
              `Untrusted::as_raw_for_logic_only`'s doc says why.",
             sites.len()
+        );
+    }
+
+    /// The two `.args` flag letters the CR-01 fixture needs, **split from their
+    /// leading dash and their quotes** so no line of this module spells a
+    /// quoted command flag. Same idiom as [`INTERPRETER_STEMS`], same reason.
+    const FIXTURE_FLAG_STEMS: [&str; 2] = ["e", "c"];
+
+    /// The CR-01 opener, **split across the spawn seam's own needle** so no
+    /// executable line of this module spells `Command::new(`.
+    ///
+    /// `tests/spawn_seam_guard.rs` walks `src/` for exactly that substring and
+    /// requires every file carrying it to be on its allowlist. `src/text.rs`
+    /// spawns nothing and must not join that allowlist to accommodate a test
+    /// fixture — the allowlist is the record of which files really do spawn.
+    /// Same anti-self-match idiom as [`INTERPRETER_STEMS`], applied to a
+    /// SIBLING census rather than to this one.
+    const FIXTURE_SPAWN_HEAD: &str = "std::process::Comman";
+    const FIXTURE_SPAWN_TAIL: &str = "d::new(&term)";
+
+    /// The CR-01 construction, built IN MEMORY: a `.args([..])` block whose
+    /// interpreter name is separated from its interpolation by `comments`
+    /// comment lines and `filler` executable filler lines.
+    ///
+    /// Every interpreter name, command flag and interpolation marker is
+    /// ASSEMBLED AT RUNTIME from [`interpreter_binary_names`],
+    /// [`FIXTURE_FLAG_STEMS`] and [`INTERPOLATION_MARKERS`] — the same halves
+    /// the live census consumes. Spelled whole, these fixture lines would be
+    /// live census hits in `src/text.rs`, which is under `src/`: the census
+    /// would report itself.
+    ///
+    /// The census joins from the `.args([` line, not from the `match` opener —
+    /// `Command::new(&term)` has balanced delimiters, so the opener is not
+    /// joined to anything. That is why the reported line is the second one.
+    fn cr01_fixture(comments: usize, filler: usize) -> Vec<(usize, String)> {
+        let name = interpreter_binary_names()[0].clone();
+        let quote = '"';
+        let mut lines: Vec<String> = vec![
+            format!("match {FIXTURE_SPAWN_HEAD}{FIXTURE_SPAWN_TAIL}"),
+            ".args([".to_string(),
+            format!("{quote}-{}{quote},", FIXTURE_FLAG_STEMS[0]),
+            format!("{quote}{name}{quote},"),
+            format!("{quote}-{}{quote},", FIXTURE_FLAG_STEMS[1]),
+        ];
+        for index in 0..filler {
+            lines.push(format!("{quote}filler-{index}{quote},"));
+        }
+        for index in 0..comments {
+            lines.push(format!("// a spacer comment, number {index}"));
+        }
+        lines.push(format!(
+            "&{}({quote}{{prefix}} {{value}}{quote}),",
+            INTERPOLATION_MARKERS[0]
+        ));
+        lines.push("])".to_string());
+        lines
+            .into_iter()
+            .enumerate()
+            .map(|(index, line)| (index + 1, line))
+            .collect()
+    }
+
+    /// **A comment line must not spend the census's join budget** (21-32 T1,
+    /// T-21-32-01, pass 11 gaps[1]).
+    ///
+    /// Pass 11 re-implemented this census's published algorithm and ran it
+    /// against the exact CR-01 shape with N comment lines between the
+    /// interpreter name and the `format!`. It reported at N = 0, 4, 10, 11 and
+    /// **MISSED at N = 12, 13, 20** — on the one construction the census exists
+    /// to catch. The cause was one statement's placement: `taken += 1` executed
+    /// immediately after `ahead += 1`, i.e. BEFORE the comment `continue`, so a
+    /// line the join then threw away had already been paid for. Twelve comments
+    /// exhausted [`INTERPRETER_JOIN_LINES`] and the walk gave up.
+    ///
+    /// # Observed RED against the pre-fix placement
+    ///
+    /// ```text
+    /// thread 'text::tests::the_interpreter_join_budget_is_spent_on_executable_lines_not_on_comments' (2948088) panicked at src/text.rs:2014:13:
+    /// the census MISSED the CR-01 shape with 12 comment line(s) between the interpreter name and the interpolation. A comment cannot carry a call, so it must not spend the join budget: `taken += 1` has to run AFTER the comment `continue`, not before it.
+    /// note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+    /// test text::tests::the_interpreter_join_budget_is_spent_on_executable_lines_not_on_comments ... FAILED
+    /// test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1103 filtered out; finished in 0.00s
+    /// ```
+    ///
+    /// Recorded exactly: the first failure fired at **twelve** comment lines,
+    /// the arm having passed at zero, four, ten and eleven — reproducing pass
+    /// 11's measurement independently, in Rust, against the committed function
+    /// rather than against a re-implementation of it.
+    ///
+    /// # The window this pins, in both directions
+    ///
+    /// The comment arm is asserted well past the join constant, so no comment
+    /// count silences the census. The EXECUTABLE arm is asserted at N and at
+    /// N + 1 in both directions — reported at [`LAST_REPORTED_FILLER`], missed
+    /// at [`FIRST_MISSED_FILLER`] — and those two numbers were measured
+    /// identical before and after the move, which is how the fix is known to
+    /// have changed the comment behaviour WITHOUT moving the executable window.
+    /// Those two numbers are the census's reach, and a change to either means
+    /// the window moved and must be re-measured and re-disclosed on the census
+    /// itself.
+    #[test]
+    fn the_interpreter_join_budget_is_spent_on_executable_lines_not_on_comments() {
+        // ---- The executable arm: the window, asserted at N and N + 1. ----
+        //
+        // Deliberately FIRST. Run against the pre-fix increment placement this
+        // arm passes and the comment arm below is what goes red, so the same
+        // single run measures the executable window BEFORE the fix; run again
+        // after the fix it measures the same window AFTER. That is how the pair
+        // below is known to be identical either side of the move rather than
+        // merely argued to be.
+        //
+        // The fixture spends four lines of budget before the filler starts —
+        // the `.args([` line the join begins from (`taken` = 1), then the exec
+        // flag, the interpreter name and the command flag (`taken` = 4) — and
+        // one further line of budget is needed for the interpolation itself.
+        // So with INTERPRETER_JOIN_LINES = 16 the last reportable filler count
+        // is 16 - 5 = 11 and the first missed one is 16 - 4 = 12. Both numbers
+        // are MEASURED, not derived: they were run before and after the
+        // increment moved and came out identical, which is the evidence that
+        // the comment fix left the executable window where it was.
+        const LAST_REPORTED_FILLER: usize = 11;
+        const FIRST_MISSED_FILLER: usize = 12;
+        assert_eq!(
+            FIRST_MISSED_FILLER,
+            LAST_REPORTED_FILLER + 1,
+            "the two sides of the boundary must be adjacent, or this is not a \
+             boundary test"
+        );
+        assert_eq!(
+            FIRST_MISSED_FILLER,
+            INTERPRETER_JOIN_LINES - 4,
+            "the executable window must follow from INTERPRETER_JOIN_LINES = \
+             {INTERPRETER_JOIN_LINES} and the fixture's four lines of prefix \
+             budget. If this fails the constant moved, the census's reach moved \
+             with it, and the claim on the census must be re-measured and \
+             re-disclosed rather than this number edited."
+        );
+
+        for filler in [0usize, 5, 9, 10, LAST_REPORTED_FILLER] {
+            let sites = interpreter_sites_in("fixture.rs", &cr01_fixture(0, filler));
+            assert!(
+                !sites.is_empty(),
+                "the census MISSED the CR-01 shape at {filler} executable \
+                 filler line(s), inside the documented window of \
+                 {LAST_REPORTED_FILLER}"
+            );
+        }
+        for filler in [FIRST_MISSED_FILLER, 13, 16, 20] {
+            let sites = interpreter_sites_in("fixture.rs", &cr01_fixture(0, filler));
+            assert!(
+                sites.is_empty(),
+                "the census REPORTED the CR-01 shape at {filler} executable \
+                 filler line(s), beyond the documented window of \
+                 {LAST_REPORTED_FILLER}. The window widened; the claim on the \
+                 census now understates its reach and must be re-disclosed. \
+                 Sites: {sites:?}"
+            );
+        }
+
+        // ---- The comment arm: budget is never spent on a comment. ----
+        for comments in [0usize, 4, 10, 11, 12, 13, 20, 40, 100] {
+            let sites = interpreter_sites_in("fixture.rs", &cr01_fixture(comments, 0));
+            assert!(
+                !sites.is_empty(),
+                "the census MISSED the CR-01 shape with {comments} comment \
+                 line(s) between the interpreter name and the interpolation. A \
+                 comment cannot carry a call, so it must not spend the join \
+                 budget: `taken += 1` has to run AFTER the comment `continue`, \
+                 not before it."
+            );
+        }
+
+        // The fixture is in memory: no temporary directory, no filesystem read,
+        // nothing left behind if any assertion above panics.
+        let reported = interpreter_sites_in("fixture.rs", &cr01_fixture(100, 0));
+        assert_eq!(
+            reported,
+            vec!["fixture.rs:2".to_string()],
+            "the join begins at the `.args([` line, whose delimiters are the \
+             ones left open; the `match` opener is balanced and joins nothing"
         );
     }
 
