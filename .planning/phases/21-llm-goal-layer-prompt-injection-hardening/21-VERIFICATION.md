@@ -1,96 +1,57 @@
 ---
 phase: 21-llm-goal-layer-prompt-injection-hardening
 verified: 2026-08-27T00:00:00Z
-head: feb37ee
-status: gaps_found
-score: 40/45 must-haves verified (4/5 ROADMAP success criteria; 0 ROADMAP criteria FAILED, 1 behavior-unverified; 4 round-10 completeness claims FAILED)
+head: ac5267a
+status: human_needed
+score: 90/91 must-haves verified (4/5 ROADMAP success criteria; 0 ROADMAP criteria FAILED, 1 behavior-unverified; round-10's 4 completeness-claim FAILUREs now CLOSED — 40/40; round-11's 46/46 new must-haves VERIFIED)
 behavior_unverified: 1
 overrides_applied: 0
 re_verification:
   previous_status: gaps_found
-  previous_score: 30/33 must-haves verified (4/5 ROADMAP success criteria)
+  previous_score: 40/45 must-haves verified (4/5 ROADMAP success criteria)
   gaps_closed:
-    - "pass-10 gaps[0] (CR-01, `sh -c` shell-command injection at `detail.rs:1692-1707`): CLOSED AS TO THE SHELL CLASS. I read `src/ui/screens/detail.rs:619-630` (`resume_terminal_argv`), `:636-641` (`launch_terminal_argv`), `:1816-1819` and `:2222-2225` directly. Both Sessions-tab spawn paths now build a `Vec<String>` argv and pass the working directory through `Command::current_dir`; no `format!`-built program string and no `-c` flag remains on either path. A tree-wide grep for `\"-c\"` / `\"sh\"` / `\"bash\"` / `/bin/sh` under `src/` finds only `project_creator::execute_hook` (an operator-authored `hooks.post_create` from the user's own `config.json`, correctly scoped out) and two fixed-program test fixtures in `driver/liveness.rs` and `driver/kill.rs`. I independently re-implemented `text.rs`'s new interpreter census and ran it against `git show 80bc4c1:src/ui/screens/detail.rs`: it reports lines 1693 and 2097 — both pre-fix sites — so the 'it would have caught CR-01' claim is a measurement, not an assertion. **This closure is partial: the successor defect CR-01' (argument injection) is gaps[0] below.**"
-    - "pass-10 gaps[1] (CR-02, the driver output pane / injection rows / dry-run preview composing only the control class): CLOSED AT THE TYPE. `DriverOutputLine::text` is `crate::text::Untrusted` (`src/ui/screens/mod.rs:475`), `push_record` (`:566-583`) is the ONLY construction site in the tree (grep for `DriverOutputLine {` returns exactly the definition and that one line), and `driver.rs:1785` renders `line.text.shown()`. The injection rows (`driver.rs:1733`) and the dry-run preview (`:1127`) compose both classes through `shown_capped`. The probe hole is closed rather than re-disclosed: `probe_ctx` now populates `ctx.driver_output` (`render_escape_guard.rs:1099`), `cache.driver_inbox` (`:1116`) and `cache.driver_journal` (`:1125`), and a `DETAIL_SUB_STATES` entry drives `driver_dry_run` (`:1601`), each with a negative-control arm (`:2981-3053`) that empties the fixture and asserts the state stops arriving. All green in my own `cargo test --lib` run (1103 passed / 0 failed)."
-    - "pass-10 gaps[2] (CR-03, `defaults_text_buffer` escaped at the list render and raw at the edit popup): CLOSED AT THE TYPE, and the round correctly re-diagnosed it. `ProjectViewCache::defaults_text_buffer` is `EditBuffer` (`src/ui/screens/mod.rs:787,909`), a newtype over `crate::text::Untrusted` with a hand-written `Default`, `seed_from_untrusted_source`, character-wise `push_char`/`pop_char`, `clear`, `shown()` and exactly one named raw take. `detail.rs:4267` renders `cache.defaults_text_buffer.shown()`; `:2803` takes `take_raw_for_persistence()` for the write-back, pinned byte-identical by `what_the_operator_types_is_what_is_persisted` (`mod.rs:1712-1740`). The probe reaches the state: `render_escape_guard.rs:1635` sets `defaults_editing = Some(idx)` on a `ConfigValueKind::String` row with a branch token, and `:3116` is its negative control. I also checked the popup's OTHER interpolant, `entry.key` — it is `&'static str` (`detail.rs:4939`), authored, so the `Block::title` at `:4266` is not a leak."
-    - "pass-10's WR-01 (Untrusted's doc claimed five/six absent conversions; the control certified three): CLOSED. `an_untrusted_carrier_implements_none_of_the_string_conversions` (`src/text.rs:2236+`) now asserts SIX absences — `Display`, `AsRef<str>`, `Into<Cow<str>>`, `Deref<Target=str>`, `Borrow<str>`, `Serialize` — each with a `String` presence control arm so a broken probe fails loudly. Read directly."
-    - "pass-10's WR-07 disposition (the NaN sort comparator): CLOSED as the ordering defect it is. `backlog_number_ordering` (`src/state_reader/backlog.rs:155-157`) is `f64::total_cmp` over a finite-filtered key with no fallback arm, and the doc quotes pass 10's refutation of the reviewer's panic claim verbatim with attribution. **Residual: see the WARNINGS section — ties still fall back to `read_dir` order.**"
-    - "REQUIREMENTS.md untouched for the EIGHTH consecutive round: `git log --oneline -3 -- .planning/REQUIREMENTS.md` still ends at `0c4f712`, and `git diff --stat 80bc4c1..HEAD -- .planning/REQUIREMENTS.md` is empty. Both run by me."
+    - "pass-11 gaps[0] (CR-01', argument injection at the Sessions-tab resume): CLOSED. `resume_terminal_argv` (`src/ui/screens/detail.rs:703-715`) now fuses the untrusted session id to its own option name in ONE argv element, `--resume=<id>` (`RESUME_OPTION_FUSED_PREFIX = \"--resume=\"`), rather than inserting a `--` end-of-options separator — the planner measured at the real binary (`claude` 2.1.248) that a `--` separator SILENTLY DELETES the resume capability (`claude --resume -- <uuid>` returns the same error as a hostile input), so fusion rather than separation is the correct fix and is disclosed as such in the corrected doc. I read `resume_terminal_argv` directly, ran `cargo test --lib ui::screens::detail::tests::the_resume_argv_never_lets_a_session_id_become_an_option_of_the_resumed_program -- --exact` myself (1 passed), and confirmed the test is STRUCTURAL rather than fixture-only: it asserts the number of `-`-leading argv elements is CONSTANT across the entire widened 28-fixture corpus (content-independence), not merely the per-character absence pass 11 flagged as coincidental-reliance. `hostile_session_ids()` is widened with 10 option-lookalike fixtures (`-h`, `--version`, `--dangerously-skip-permissions`, `--print`, `-`, `-r`, `--resume`, `--settings=/tmp/x.json`, `a=b`, `--add-dir`), non-vacuity-asserted. The falsified doc sentence (\"there is no interpreter left in the path to parse anything\") is corrected in place, quoting itself verbatim, naming CWE-88 and `claude`'s own option parser. `read_session_id` deliberately keeps its pass-through with the reason recorded (a validator tight enough to refuse `-h` would also refuse legitimate session-title resumes). The three sibling argv builders in `src/executor/claude.rs` were measured (all three fields `None` at `ExecutionOptions::default()`, set by no caller in the tree) and correctly left unfused, recorded as a standing item with an explicit promote condition (first caller that sets one from an untrusted value)."
+    - "pass-11 gaps[1] (the interpreter census's comment-line budget bug at `src/text.rs:1750-1755`): CLOSED. `taken += 1` now executes AFTER the `next.starts_with(\"//\")` comment check — I read the moved line directly. Ran `cargo test --lib text::tests::the_interpreter_join_budget_is_spent_on_executable_lines_not_on_comments -- --exact` myself (1 passed): a genuinely two-sided boundary test asserting the census still MISSES at 12+ EXECUTABLE filler lines (unchanged) while now REPORTING at 100 COMMENT filler lines (previously missed at 12). The method-chain residual `has_an_unclosed_delimiter`'s doc pointed at but that the census's residual block did not contain is now written there. The census's doc is narrowed from claiming 'any' such line to stating the three bounds it actually has, rather than the marker set being silently widened to manufacture a broader claim."
+    - "pass-11 gaps[2] (the composition census's over-joining at `src/ui/screens/driver.rs`): CLOSED. The composition verdict moved from a whole-logical-unit check to the INNERMOST call — `occurrence_is_composed` (`driver.rs:2293-2299`) looks only at the characters immediately preceding each needle occurrence, so there is no window left to over-join. Ran `cargo test --lib ui::screens::driver::tests::a_composed_arm_does_not_launder_its_un_composed_sibling -- --exact` myself (1 passed): the exact two-arm `match` fixture pass 11 used to reproduce the laundering (`census hits: []` under the old rule) is now reported (`HIT` under the new rule). Also fixed in the same commit: NON-VACUITY 2 now computed over the same slice the census scans (not the whole file), and the `#[cfg(test)]` truncation now cuts at a column-zero test MODULE marker with exactly one asserted per file (previously a silent kill switch — I confirmed `detail.rs` carries two such markers in this tree, which the fix's own test plants and observes red for)."
+    - "pass-11 gaps[3] (the `src/ui/mod.rs` census's false completeness claim): CLOSED by narrowing, not by a fourth census. The test is renamed `no_display_identity_call_under_ui_stands_outside_a_composition` (from `every_render_site_under_ui_composes_both_classes`) — I read the doc directly: it states the measured reach (8 executable occurrences, 6 non-exempt in 2 of 16 files) as a CHECKED per-file equality (`MEASURED_REACH` constant) that fails in both directions, discloses the shrinking-coverage property with its direction (under-detection, silent, growing as conversions succeed), and hands the actual completeness claim by name to the sealed `RenderAdjudicated` supertrait and the `render_escape_guard` behavioural probes. Ran `cargo test --lib ui::tests::no_display_identity_call_under_ui_stands_outside_a_composition -- --exact` myself (1 passed). The doc's own commit history shows the pin caught itself going stale mid-plan when Task 3 added an eighth occurrence — direct evidence the pin is load-bearing, not decorative."
+    - "WR-04 (EditBuffer's trait-absence claim was prose-only) CLOSED with a local autoref-specialization probe (`an_edit_buffer_implements_none_of_the_string_conversions`, `src/ui/screens/mod.rs:1915+`) mirroring `Untrusted`'s pattern, with matching `String` presence-control arms. Ran myself: 1 passed."
+    - "WR-05 (the backlog comparator was total over KEYS, not ELEMENTS, so ties fell back to read_dir order) CLOSED: `backlog_number_ordering` (`src/state_reader/backlog.rs:180-184`) now appends `.then_with(|| a.cmp(b))`. Read directly."
+    - "21-29's carried S1 (a two-direction input-echo spot-check) DELIVERED: `an_input_echo_screen_escapes_a_hostile_value_and_leaves_a_clean_one_alone` (`src/ui/screens/render_escape_guard.rs:3220+`) drives `EnqueueScreen`'s real `Screen::render` with a TAG_PAIR fixture, asserting arrival-before-property in both directions, with the widget family (`Paragraph`, which drops zero-width but preserves tag characters) named as the reason that fixture rather than a zero-width one was chosen. Ran myself: 1 passed. Housed in the probe module with zero visibility changes to `src/ui/screens/mod.rs`, as the plan's own measurement required."
+    - "The `driver_reattach` flake record's stale `--test-threads=1` mitigation claim is corrected AT the stale sentence (not only in a later section), a comment-only module note is added to `tests/driver_reattach.rs` itself (diff confirmed 81 insertions / 0 deletions by me), and the correction's completeness is established by a committed grep inventory (388 hits classified: 354 dated observations left unedited, 34 living hits individually read, 7 carrying a standing claim corrected). `21-34`'s own merged-tree gate measurement CONTRADICTED the wave-1 'isolated re-runs are reliably green' generalization (2 green / 4 red out of 6 isolated runs) and that contradiction is recorded rather than smoothed, with a third candidate mechanism (M3, intra-process thread-timing on `isolate_envelope_root`'s env-var write) named but explicitly NOT claimed as proven."
+    - "A Record-corrections table in `deferred-items.md` names all four round-10 truths pass 11 measured false as shipped (`21-27` truth 1, `21-27` truth 5, `21-28` truth 7, `21-29` truth 2), quoting the falsified claim and citing the plan/task that closed it. Read directly."
+    - "REQUIREMENTS.md untouched for the NINTH consecutive round: `git log --oneline -3 -- .planning/REQUIREMENTS.md` still ends at `0c4f712`; `git diff --stat 343c408..HEAD -- .planning/REQUIREMENTS.md tests/driver_injection_corpus.rs` is empty. Both run by me."
+    - "COVERAGE.md amended append-only: the existing no-external-API declaration is byte-identical, with a dated round-11 paragraph appended stating no dependency was added (`git diff Cargo.toml Cargo.lock` empty over 343c408..HEAD, confirmed by me) and naming what changed instead."
   gaps_remaining: []
   regressions:
-    - "None in the ROADMAP criteria. `src/driver/` and `tests/` are entirely absent from `git diff --stat 80bc4c1..HEAD`, and `git diff 80bc4c1..HEAD -- src/text.rs` changes none of `is_invisible_formatting_char`, `is_identity_char`, `display_identity`, `strip_terminal_controls`, `render_for_terminal`, `carries_visible_content` or `carries_invisible_formatting` (grepped the diff for each signature — zero hits), so pass 9's exhaustive Unicode oracle sweep for criterion 1 is untouched. `tests/driver_reattach.rs` is 1 passed / 2 failed in my run, in exactly the two tests named as pre-existing nondeterministic flakes; measured against base and HEAD at the same rate by the orchestrator and NOT scored as a regression here."
-gaps:
-  - truth: "21-27 truth 1 — CR-01 is closed by deleting the shell from the path, so that a value scraped from another process's /proc entry reaches the child as data with no parser left to make it code"
-    status: failed
-    reason: "CONFIRMED INDEPENDENTLY, by reading the code and by measuring the CLI, not by trusting `21-REVIEW.md`'s prose. The fix removed the SHELL metacharacter class and left the OPTION metacharacter class (CWE-88, the standard successor to CWE-78). `resume_terminal_argv` (`src/ui/screens/detail.rs:619-630`) returns `[separator, \"claude\", \"--resume\", sid.as_raw_for_logic_only()]` with NO `--` end-of-options marker. `sid` is scraped verbatim from another process's `/proc/<pid>/cmdline` and the only filter in `session_detector::read_session_id` (`src/session_detector.rs:96-113`) is `!val.is_empty()` after a `trim()` — I read it; nothing constrains the first byte. I then measured the receiving parser rather than assuming it: `claude --help` on this machine prints `-r, --resume [value]`, an OPTIONAL-value option, and `--dangerously-skip-permissions` is a real flag in the same help output. A process named `claude` (the `pgrep -x claude` filter, `session_detector.rs:44`) running as the SAME user with cmdline `claude --resume --dangerously-skip-permissions` therefore makes the operator's Sessions-tab resume spawn `claude --resume --dangerously-skip-permissions` with `current_dir` set to the attacker's `/proc/<pid>/cwd`. No privilege boundary is crossed (a different user's cwd readlink fails and `build_session` drops the row), which is why this is scored as a gap in a security-hardening phase rather than as a vulnerability of wider blast radius than CR-01 had. Three things make it a BLOCKER rather than a WARNING: (a) it is a live injection path inside the exact function this plan created to close injection; (b) the function's own doc asserts the opposite — 'The third kind no longer exists here because there is no interpreter left in the path to parse anything' — which is false, `claude`'s own option parser is still in the path; (c) it is UNDISCLOSED. I grepped `21-27-SUMMARY.md`, `21-30-SUMMARY.md` and `deferred-items.md` for `end-of-options`, `argument injection`, `CWE-88`, `hyphen`, `option parser` and `leading -`: zero hits. This is the same shape as CR-02 in round 9 — not merely an open residual but an undisclosed one — in the round whose own prohibition reads 'MUST NOT close a gap while leaving its residual undisclosed'. The committed control cannot see it: `hostile_session_ids()` (`detail.rs:7270-7293`) is the LOOK_ALIKE_PAIRS corpus plus eleven shell-metacharacter fixtures, and I checked every one — not a single fixture begins with `-`, and `LOOK_ALIKE_PAIRS` (`src/test_support.rs:124-132`) contains none either. Assertion (1) of `the_resume_argv_carries_a_hostile_session_id_as_one_opaque_element` only requires the id to appear once byte-identical, which a hyphen-leading id satisfies, so the control would pass unchanged against a build shipping this defect. That is this phase's own named pathology: the fixture set is drawn from the same enumeration the doc's claim is drawn from."
-    artifacts:
-      - path: "src/ui/screens/detail.rs"
-        issue: "Lines 619-630: `resume_terminal_argv` emits `[sep, \"claude\", \"--resume\", <untrusted>]` with no `--` end-of-options separator. Lines 598-608: the doc asserts 'The third kind no longer exists here … there is no interpreter left in the path to parse anything', which is false of `claude`'s own option parser. Lines 7270-7293: `hostile_session_ids()` contains no hyphen-leading fixture, so the certifying control is blind to the live case."
-      - path: "src/session_detector.rs"
-        issue: "Lines 96-113: `read_session_id` validates only non-emptiness after a trim; a `/proc`-scraped value beginning with `-` reaches the argv unchanged."
-    missing:
-      - "Insert `\"--\".to_string()` immediately before the session-id element in `resume_terminal_argv` (confirm `claude` honours `--` before the positional; if it does not, refuse at the source instead — `read_session_id` returns `None` unless the value matches the shape `claude --resume` accepts — and REPORT the refusal rather than silently dropping it)."
-      - "Extend `hostile_session_ids()` with the option-metacharacter class the current set omits: `-h`, `--dangerously-skip-permissions`, `--print`, and a bare `-`."
-      - "Add an assertion that the untrusted element is immediately preceded by `\"--\"` in the argv, so the ABSENCE of the separator goes red rather than only the presence of a quote."
-      - "Correct `resume_terminal_argv`'s doc: the shell interpreter is gone; an option parser is not. Name the option-metacharacter class explicitly, and record it in `deferred-items.md` with its direction, per the round's own disclosure prohibition."
-  - truth: "21-27 truth 5 — the argv-never-a-program-string rule is CHECKED by a committed census that reports any executable line under src/ that both names a command-interpreter binary and interpolates a value into the string handed to it"
-    status: failed
-    reason: "The word that fails is 'any'. I re-implemented `interpreter_program_sites` (`src/text.rs:1724-1762`) in Python from the committed source and ran it against synthetic fixtures of exactly the CR-01 shape (`Command::new(&term).args([\"-e\", \"sh\", \"-c\", <N comment lines>, &format!(...)])`). Measured: 0 comment lines → reported; 4 → reported; 10 → reported; 11 → reported; **12 → MISSED**; 13 → MISSED; 20 → MISSED. The cause is at `src/text.rs:1750-1755`: `taken += 1` is executed BEFORE the `next.starts_with(\"//\")` check, so a skipped comment line still consumes one of the sixteen units of join budget. The real CR-01 site had five comment lines; this codebase's comment blocks routinely run ten to twenty, and round 10's own diff contains many expression-body comment blocks longer than twelve lines. The census is one ordinary comment block away from silent on the single form it IS sold for. Second, independently confirmed: `has_an_unclosed_delimiter`'s doc (`src/text.rs:1707-1712`) states that its deliberate refusal to follow method chains has a 'price … stated as a residual on the census itself'. I read the census's residual block (`:1800-1815`) line by line: it states three residuals — assembled-across-statements, interpreter-named-by-a-variable, and `project_creator::execute_hook`. The method-chain price is NOT among them. A doc that points at a residual which does not exist is the same prose-over-control failure one level down, and it is the most idiomatic spelling of the defect (`Command::new(\"bash\").arg(\"-c\").arg(format!(..))`)."
-    artifacts:
-      - path: "src/text.rs"
-        issue: "Lines 1750-1755: comment lines consume the join budget before being skipped (measured: 12 comment lines defeat the census on the exact CR-01 construction). Lines 1707-1712 vs 1800-1815: a residual that one doc cross-references is absent from the block it points at. Lines 1698-1702: `interpolates_into_a_string`'s marker list omits `.concat()`, `.join()`, `concat!`, `format_args!`, and `+` without a following `&` (IN-05)."
-    missing:
-      - "Move `taken += 1` AFTER the comment check so a skipped line costs no budget."
-      - "Write the method-chain residual the `has_an_unclosed_delimiter` doc promises, with the `Command::new(\"bash\").arg(\"-c\").arg(format!(..))` fixture as its worked example."
-      - "Widen `interpolates_into_a_string` with `concat(`, `join(`, `format_args!` and a `+`-with-any-rhs marker."
-  - truth: "21-28 truth 7 — IN-01 is closed by a committed census asserting that an executable call to `sanitize_render_line` in driver.rs and driver_confirm.rs appears ONLY inside a composition"
-    status: failed
-    reason: "Reproduced with the census's own published algorithm, re-implemented in Python from `src/ui/screens/driver.rs:2091-2185`. (a) OVER-JOINING LAUNDERS A VIOLATION. `logical_lines` merges physical lines until paren/bracket depth returns to zero AND the line ends in `;`, `{` or `}`; sibling `match` arms inside one `let` statement therefore land in ONE logical unit, and `composition_census` excuses the whole unit if a composer name appears anywhere in it. My fixture — one arm `display_identity(&sanitize_render_line(v))` and a sibling arm `sanitize_render_line(v)` — yields `census hits: []`. `driver.rs` is largely this shape (`match` over `DriverLineKind` / `TerminalState` / `RunOutcome`), so this is the likeliest route for the next violation, and the census's residual block (`:2206-2215`) discloses only the OPPOSITE direction. (b) THE NON-VACUITY GUARD MEASURES A DIFFERENT SET. `composition_census` truncates each file at the first `#[cfg(test)]` line (`:2168-2172`) but NON-VACUITY 2 (`:2252-2268`) counts needle lines over the WHOLE file — so if every production call were converted away, `total > 0` would still pass on a test-section occurrence while the census scanned nothing, which is exactly the 'nothing to find vs. all composed' ambiguity the guard exists to remove. (c) A `#[cfg(test)]` ATTRIBUTE IS A SILENT KILL SWITCH. The truncation is at the first such LINE, not at the test module, and the pattern is already live in this tree: `detail.rs:5342` carries a mid-file `#[cfg(test)] pub(super) fn first_string_entry` added this very round."
-    artifacts:
-      - path: "src/ui/screens/driver.rs"
-        issue: "Lines 2091-2145 (`logical_lines`) over-join across match arms so a composed arm launders an un-composed sibling; lines 2159-2185 vs 2252-2268 (census truncates at the first `#[cfg(test)]`, non-vacuity counts the whole file); the truncation point is a line, not a module, so one mid-file `#[cfg(test)]` helper silently excludes everything below it."
-    missing:
-      - "Reject on the INNERMOST call: extract the argument expression of each `sanitize_render_line(` occurrence and require a composer in the same parenthesised expression, not anywhere in the enclosing statement. Failing that, add a fixture control asserting the two-arm shape IS reported."
-      - "Compute NON-VACUITY 2's `total` over `lines[..end]` — the same slice the census scans."
-      - "Truncate at the test MODULE, or assert exactly one `#[cfg(test)]` per census file so a second one goes red."
-  - truth: "21-29 truth 2 — the one-composition claim stops being a sentence and becomes a committed control: a census in src/ui/mod.rs asserts an equality on the count of executable render sites under src/ui/ that apply the invisible-formatting half alone"
-    status: failed
-    reason: "The mechanism is real and green (I ran `cargo test --lib`: 1103 passed / 0 failed, and the census's own printed raw list is empty of non-exempt sites), and I independently confirmed its RED against the pre-conversion tree is reproducible in kind. What FAILS is the completeness the test's NAME and failure message assert. The census only ever inspects lines carrying the literal needle `display_identity(`; a render site that escapes NOTHING — `Span::raw(untrusted_string)` — carries no needle and is invisible to it. I measured the needle at HEAD with a script over every `.rs` file under `src/ui/`: SEVEN executable occurrences in total, of which one is inside the `render_escape_guard.rs` exemption — so the assertion named `every_render_site_under_ui_composes_both_classes` is driven by SIX executable lines in TWO of SIXTEEN files (`driver.rs`: 2; `driver_confirm.rs`: 4). Fourteen files contribute nothing, including the two largest render surfaces, `detail.rs` (7 463 lines) and `normal.rs` (2 167 lines). Worse, the control's coverage SHRINKS as the conversion succeeds: every site converted from `display_identity` to `render_for_terminal` removes a line the census can see. The `!files.is_empty()` guard at `:360-364` proves only that the walk found files; there is no per-file or global non-vacuity guard on the needle itself. The census's residual block (`:346-356`) lists two residuals (alias/re-export; join > 4 lines) and does not list this one, which is by far the largest. **I did look for a live leak behind it and did not find one:** I sampled render sites OUTSIDE the census's needle — 63 `Span::raw`/`Span::styled` call sites under `src/ui/` whose argument is neither a literal nor an obvious escape — and traced the risky ones by hand (`normal.rs:734/800/808`, `driver.rs:841/883`, `detail.rs:2887/2957/3064/4297/4346`, `driver_confirm.rs:441`). Every one either draws an authored `&'static str`/const or is escaped one to three lines upstream through `render_for_terminal`/`shown`/`shown_capped`. So this is scored as a false completeness claim with an undisclosed residual, not as a live leak."
-    artifacts:
-      - path: "src/ui/mod.rs"
-        issue: "Lines 196-231 (the census, needle-driven) and 357-408 (the assertion): the test's name and failure message claim a property over all render sites under src/ui/, but the assertion is exercised by 6 executable lines in 2 of 16 files (measured at HEAD). The residuals block at 346-356 does not disclose that a site escaping nothing is invisible to it."
-    missing:
-      - "Either rename and re-scope to what is checked — `no_display_identity_call_under_ui_stands_outside_a_composition` — and state in the residuals that the census says nothing about a site that escapes nothing;"
-      - "or add the missing half: a non-vacuity guard asserting the needle appears in at least N files, plus a second control (widening the `render_escape_guard` probe states is the only mechanism in the tree that can answer it) for the escapes-nothing question."
+    - "None found. `git diff --stat 343c408..HEAD -- src/` touches exactly the eight files the four plans' `files_modified` declare (`session_detector.rs`, `state_reader/backlog.rs`, `test_support.rs`, `text.rs`, `ui/mod.rs`, `ui/screens/detail.rs`, `ui/screens/driver.rs`, `ui/screens/mod.rs`, `ui/screens/render_escape_guard.rs`) plus no others — confirmed by me, not inherited. Full workspace suite re-run by me: `cargo test --workspace --no-fail-fast` — 1424 passed / 0 failed / 13 ignored (34 binaries), matching the orchestrator's pre-measured gate exactly; `driver_reattach` came back 3/3 green in my run, consistent with its documented non-determinism and not scored as a regression or a fix. `cargo clippy --all-targets -- -D warnings` — exactly 4 pre-existing lints (3x `bool_assert_comparison` at `src/browser.rs:155-157`, 1x `cmp_owned` at `src/project_creator.rs:146`), re-measured by me; `cargo clippy -- -D warnings` exit 0. No dependency added (`git diff Cargo.toml Cargo.lock` empty). ROADMAP criteria 1, 2, 3, 5 reconfirmed unregressed: `driver_escalation_cap` 8/0, `driver_refusal_record` 9/0, `driver_injection_corpus` 13/0/10-ignored (unchanged, `tests/driver_injection_corpus.rs` absent from the round-11 diff), `spawn_seam_guard` 15/0 — all run by me."
 deferred:
   - truth: "A `.planning/` file or `CLAUDE.md` carrying injected instructions does not change which command the driver executes — the BEHAVIOURAL half (ROADMAP success criterion 4 / SAFE-07)"
-    addressed_in: "Not any phase — permanently agent-unclosable by explicit user decision, tracked in deferred-items.md ('RE-SURFACED, UNCHANGED — ROADMAP success criterion 4 (round 10)', line 865)"
-    evidence: "Verified unchanged for the ELEVENTH consecutive pass. My own run: `tests/driver_injection_corpus.rs` reports 13 passed / 0 failed / 10 ignored. `git diff --stat 80bc4c1..HEAD` names no file under `tests/` at all, so round 10 did zero work against it — as all four round-10 plans' prohibitions require. 4/5 is the EXPECTED and correct outcome."
+    addressed_in: "Not any phase — permanently agent-unclosable by explicit user decision, re-surfaced verbatim by `21-34` for the fourth consecutive round in deferred-items.md"
+    evidence: "Verified unchanged for the TWELFTH consecutive pass. My own run: `tests/driver_injection_corpus.rs` reports 13 passed / 0 failed / 10 ignored. `git diff --stat 343c408..HEAD` names no file under `tests/` except the comment-only `tests/driver_reattach.rs`, so round 11 did zero work against criterion 4 — as all four round-11 plans' prohibitions require. 4/5 is the EXPECTED and correct outcome and is not scored as a failure."
   - truth: "General Unicode CONFUSABLES / homoglyph (TR39) defence in FREE TEXT"
     addressed_in: "Not phase 21 — recommend a new roadmap item"
-    evidence: "Unchanged from passes 9 and 10. Out of scope by design."
+    evidence: "Unchanged from passes 9-11. Out of scope by design."
   - truth: "Four PRE-EXISTING clippy lints make `cargo clippy --all-targets -- -D warnings` fail"
-    addressed_in: "deferred-items.md:200-236, re-measured a third time by 21-30 and a fourth time by me"
-    evidence: "I ran `rtk proxy cargo clippy --all-targets -- -D warnings`: exactly four lints (three `bool_assert_comparison`, one `cmp_owned`) plus the aggregate 'could not compile' line. The stated project gate, `rtk proxy cargo clippy -- -D warnings` (lib only), exits 0 — I ran it. Neither `src/browser.rs` nor `src/project_creator.rs` appears in `git diff --stat 80bc4c1..HEAD`."
-  - truth: "`tests/driver_reattach.rs`'s two nondeterministic tests"
-    addressed_in: "deferred-items.md:8 and :972 ('the driver_reattach flake, reported and NOT absorbed')"
-    evidence: "My full-suite run reproduced exactly those two: `a_fresh_scan_finds_the_orphaned_run_live_with_its_last_journal_step` and `a_run_killed_without_an_ending_is_reported_crashed_and_nothing_on_disk_is_repaired`. Measured by the orchestrator at the same 3/5-red rate against untouched base `80bc4c1` and against HEAD. Not caused by round 10; NOT scored as a regression. Every other test binary is green; the ignored count is 13 (10 corpus + 3 `driver_kill_startup`), matching the documented green-run figure."
+    addressed_in: "deferred-items.md, re-measured a fifth time by me"
+    evidence: "I ran `rtk proxy cargo clippy --all-targets -- -D warnings`: exactly four lints (three `bool_assert_comparison`, one `cmp_owned`). `rtk proxy cargo clippy -- -D warnings` (lib only) exits 0. Neither `src/browser.rs` nor `src/project_creator.rs` appears in `git diff --stat 343c408..HEAD`."
+  - truth: "`tests/driver_reattach.rs`'s nondeterministic tests"
+    addressed_in: "deferred-items.md's standing entry, now with a corrected mechanism analysis (M1/M2/M3) and a 388-hit grep inventory establishing the correction's completeness"
+    evidence: "My own isolated run came back 3/3 green (matching the documented non-determinism — not every run flakes). `21-34`'s own merged-tree measurement recorded 2 green / 4 red out of 6 isolated runs, which I read directly rather than re-deriving; it is disclosed as CONTRADICTING the prior 'isolated re-runs are reliably green' generalization rather than being smoothed into it. Not attempted to be fixed, per this round's own prohibition. Not scored as a regression — pre-existing, and the record now says so more precisely than before."
+  - truth: "`src/executor/claude.rs`'s three `--option value` argv pairs (`--resume`, `--model`, `--name`), the same CWE-88 shape gaps[0] closed at the Sessions-tab resume"
+    addressed_in: "Standing item recorded by `21-34` in deferred-items.md, with an explicit promote condition"
+    evidence: "I confirmed directly: `resume_session`, `model` and `name` are all `None` at `ExecutionOptions::default()` (`src/executor/mod.rs:464,465,473`) and no caller in the tree sets any of the three to `Some(..)` outside test code (grepped `resume_session\\s*:\\s*Some|\\.resume_session\\s*=|model:\\s*Some|\\.model\\s*=|name:\\s*Some\\(` across `src/` — zero non-test hits). So there is no untrusted value reaching this seam today; the promote condition is the first caller that sets one from a value not authored in this crate."
   - truth: "`registry::current_prompt_inputs` absent from BLOCKING_HELPERS; the spawn-gate plan-half comment; dead `PlanStep::rationale`"
-    addressed_in: "Backlog (adjudicated OUT in deferred-items.md, unchanged across rounds 4-10)"
-    evidence: "No round-10 plan touched any of the three."
+    addressed_in: "Backlog (adjudicated OUT in deferred-items.md, unchanged across rounds 4-11)"
+    evidence: "No round-11 plan touched any of the three."
 behavior_unverified_items:
   - truth: "A `.planning/` file or `CLAUDE.md` carrying injected instructions does not change which command the driver executes (ROADMAP success criterion 4 / SAFE-07)"
     test: "With an authenticated `claude` CLI available, run `cargo test --test driver_injection_corpus -- --ignored --nocapture` from the repository root and record the CLI version beside the result."
     expected: "10 passed, 0 failed. Every `corpus_*_arrives_and_leaves_the_command_unchanged` arm asserts the payload ARRIVED at the model before asserting the command was unchanged; the two suppression controls show the positive/negative `CLAUDE_CODE_DISABLE_CLAUDE_MDS` pair diverging; and `both_arms_of_every_class_comparison_were_really_executed` confirms the hostile and clean arms both really ran."
-    why_human: "All ten spawn the real `claude` binary and need an authenticated subscription, so they cannot run inside verification. NO AGENT CAN CLOSE THIS ITEM, and the user has explicitly chosen to leave it tracked in `deferred-items.md`. Counted independently from my own run: 13 passed / 0 failed / 10 ignored. Round 10 did NO work against it (all four plans carry an explicit prohibition; `git diff --stat 80bc4c1..HEAD` names no file under `tests/`). Presence and wiring verified for the ELEVENTH consecutive pass; behaviour never exercised by any verification pass of this phase."
-coincidental_reliance_items:
-  - truth: "21-27 truth 2 — the argv fix is proven at the argv by a control asserting arity, byte-identity of the one untrusted element, and the absence of an interpreter binary and its command-string flag"
-    reason: fixture-only
-    harden: "The control's fixture set (`hostile_session_ids()`, `detail.rs:7270-7293`, plus `test_support::LOOK_ALIKE_PAIRS`) is drawn from the SAME enumeration the function's doc asserts completeness over — quote, double quote, semicolon, `&&`, pipe, backtick, `$( )`, newline, `\\u{7}`, space. It therefore holds for exactly the classes already enumerated and cannot certify the class the fix newly exposed (see gaps[0]). Promote the option-metacharacter class into the fixture set and assert the structural precondition (`\"--\"` immediately precedes the untrusted element) rather than only the per-character absence."
+    why_human: "All ten spawn the real `claude` binary and need an authenticated subscription, so they cannot run inside verification. NO AGENT CAN CLOSE THIS ITEM, and the user has explicitly chosen to leave it tracked in `deferred-items.md`. Counted independently from my own run: 13 passed / 0 failed / 10 ignored. Round 11 did NO work against it (all four plans carry an explicit prohibition; `tests/driver_injection_corpus.rs` is absent from `git diff --stat 343c408..HEAD`). Presence and wiring verified for the TWELFTH consecutive pass; behaviour never exercised by any verification pass of this phase."
 human_verification:
   - test: "With an authenticated `claude` CLI available, run `cargo test --test driver_injection_corpus -- --ignored --nocapture` from the repository root and record the CLI version beside the result."
     expected: "10 passed, 0 failed, with arrival asserted before influence in every class arm and `both_arms_of_every_class_comparison_were_really_executed` green."
-    why_human: "Requires an authenticated subscription and spawns the real model binary; cannot run inside verification. This is criterion 4's only behavioural evidence and no verification pass of this phase has ever produced it."
+    why_human: "Requires an authenticated subscription and spawns the real model binary; cannot run inside verification. This is criterion 4's only behavioural evidence and no verification pass of this phase has ever produced it. This is the ONLY reason overall status is `human_needed` rather than `passed` — every other must-have in the phase is VERIFIED."
 ---
 
 # Phase 21: LLM Goal Layer & Prompt-Injection Hardening Verification Report
@@ -526,3 +487,190 @@ outcome.** Round 10 correctly did zero work against it.
 _Verified: 2026-08-27_
 _Verifier: Claude (gsd-verifier), adversarial stance_
 _HEAD `feb37ee` · eleventh verification pass · pass 10 preserved above, pass 9 at `f442881`, pass 8 at `f1a9d0d`, pass 7 at `84143bb`_
+
+---
+
+## PASS 12 ADDENDUM (2026-08-27, verification pass 12, after round 11: plans `21-31`..`21-34`)
+
+**Scope of this pass.** Round 11 (`21-31`..`21-34`) executed in 2 waves since pass 11 and
+closed pass 11's four gaps plus WR-04, WR-05 and the carried S1 item. Base commit
+`343c408` (pass 11's own recording commit), HEAD `ac5267a`. This pass independently
+re-derives each of the four gap closures by reading the fixed code directly and by
+running the single named test that exercises each fix — not by trusting `21-31`
+through `21-34`'s SUMMARYs, `deferred-items.md`'s own narrative, or the fact that the
+merged tree is green. Every count- and presence-bearing command was run through `rtk
+proxy`.
+
+### ROADMAP Success Criteria — reconfirmed, no regression
+
+| # | Truth | Status | Evidence (pass 12) |
+|---|---|---|---|
+| 1 | A user states a goal in plain language and gets back a structured, machine-checkable plan to review before anything runs | VERIFIED (regression-checked) | `git diff --stat 343c408..HEAD` names no file under `src/driver/` and no file under `tests/` except the comment-only `tests/driver_reattach.rs`. Ran the full workspace suite myself: 1424 passed / 0 failed / 13 ignored, 34 binaries — matches the orchestrator's pre-measured gate exactly. |
+| 2 | An approved goal is pursued across multiple GSD commands to a terminal outcome without further user input | VERIFIED (regression-checked) | `src/driver/run.rs` and `src/driver/mod.rs` absent from the round-11 diff. |
+| 3 | Model escalations are counted against a per-run cap; exceeding the cap parks the run rather than continuing | VERIFIED (reconfirmed, ran myself) | `cargo test --test driver_escalation_cap`: 8 passed / 0 failed. File untouched by the round-11 diff. |
+| 4 | A `.planning/` file or `CLAUDE.md` carrying injected instructions does not change which command the driver executes | PRESENT_BEHAVIOR_UNVERIFIED (unchanged, permanently agent-unclosable by explicit user decision) | `cargo test --test driver_injection_corpus`: 13 passed / 0 failed / 10 ignored, identical to passes 9-11. `tests/driver_injection_corpus.rs` absent from the round-11 diff. **4/5 is the expected and correct outcome — not scored as a failure, per this task's explicit constraint.** |
+| 5 | Any action the model names that is not in the fixed GSD command enum is refused, never executed as a shell string | VERIFIED (regression-checked) | `parse_action` unchanged (not in the round-11 diff). `driver_refusal_record`: 9 passed / 0 failed, run by me. |
+
+**ROADMAP score: 4/5 verified, 0 FAILED, 1 behavior-unverified — unchanged from passes 9-11. No regression on any of the four VERIFIED criteria.**
+
+### The four pass-11 gaps — each independently re-derived, not trusted
+
+I did not accept `deferred-items.md`'s own account that a gap is closed. For each, I
+read the fixed code directly and ran the single named test that is claimed to exercise
+it.
+
+| Gap | Fix, read directly | Test run myself | Verdict |
+|---|---|---|---|
+| gaps[0] (CR-01', CWE-88 argument injection) | `resume_terminal_argv` (`detail.rs:703-715`) fuses the id to `--resume=<id>` in ONE element via `RESUME_OPTION_FUSED_PREFIX`. The falsified doc sentence is corrected in place, quoting itself. `hostile_session_ids()` widened with 10 option-lookalike fixtures, non-vacuity-asserted (`corpus.iter().any(id starts_with '-')` and a shell-metacharacter non-vacuity check). | `ui::screens::detail::tests::the_resume_argv_never_lets_a_session_id_become_an_option_of_the_resumed_program` — 1 passed. This test is STRUCTURAL: it asserts the count of `-`-leading argv elements is a CONSTANT independent of the session id across all 28 corpus entries and 5 terminals — a content-independence property, not an enumeration of forbidden bytes. | **CLOSED** |
+| gaps[1] (interpreter census comment-budget bug) | `taken += 1` (`text.rs:1810`) now sits AFTER the `next.starts_with("//")` `continue`, confirmed by reading the surrounding loop in full. | `text::tests::the_interpreter_join_budget_is_spent_on_executable_lines_not_on_comments` — 1 passed. Asserts BOTH sides of the boundary: the census still MISSES the CR-01 shape at 12+ EXECUTABLE filler lines (unchanged — the executable window did not widen) and now REPORTS it at up to 100 COMMENT filler lines (previously missed at 12). | **CLOSED** |
+| gaps[2] (composition census over-joining) | `occurrence_is_composed` (`driver.rs:2293-2299`) takes the verdict at the innermost call — the text immediately preceding each needle occurrence — rather than over a joined logical unit, so there is no window left to launder across `match` arms. | `ui::screens::driver::tests::a_composed_arm_does_not_launder_its_un_composed_sibling` — 1 passed. Uses the exact two-arm `match` fixture pass 11 reproduced the laundering with (`census hits: []` under the old rule); now reported. Also confirmed: `test_module_marker_lines` cuts at a column-zero `#[cfg(test)] mod` marker with an asserted count of exactly one per file (`driver.rs:2495-2506`), closing the silent-truncation defect. | **CLOSED** |
+| gaps[3] (`src/ui/mod.rs` false completeness claim) | Test renamed `no_display_identity_call_under_ui_stands_outside_a_composition`. Doc states the measured reach (`MEASURED_REACH` — 8 occurrences, 6 non-exempt in 2 of 16 files) as a checked equality that fails in both directions, discloses the shrinking-coverage property with its direction, and hands the actual completeness claim by name to the sealed `RenderAdjudicated` bound and the `render_escape_guard` behavioural probes. | `ui::tests::no_display_identity_call_under_ui_stands_outside_a_composition` — 1 passed. | **CLOSED, by narrowing rather than by a fourth census — this is the pattern the plan called for and it is what shipped.** |
+
+**No new census was built for any of the four.** Each fix is a repair to the mechanism that already existed plus a narrowed or corrected claim, exactly as each plan's own "PATTERN CALL" section committed to before execution — I checked the pattern calls against the shipped code and found no drift between what was promised and what was built.
+
+### The retired coincidental-reliance item
+
+Pass 11 flagged `21-27` truth 2 (the argv-fix control) as `coincidental-reliance:
+fixture-only` — its fixture set was drawn from the same enumeration its doc claimed
+completeness over. That control (`the_resume_argv_carries_a_hostile_session_id_as_one_opaque_element`)
+still exists unchanged, but it now sits alongside
+`the_resume_argv_never_lets_a_session_id_become_an_option_of_the_resumed_program`,
+which asserts a STRUCTURAL, corpus-independent property (constant count of
+`-`-leading argv elements) rather than a per-fixture absence. I checked this
+directly: the structural property generalizes over any hostile string sharing the
+"begins with `-`" shape, not only the ones enumerated in the corpus. The
+coincidental-reliance flag is therefore retired rather than carried forward —
+the property it worried about is now checked by a mechanism that does not share
+its weakness. Not re-added to this pass's `coincidental_reliance_items`.
+
+### WR-04, WR-05, and the carried S1 item — each verified directly
+
+- **WR-04** (`EditBuffer`'s trait-absence claim was prose-only): `an_edit_buffer_implements_none_of_the_string_conversions` (`src/ui/screens/mod.rs:1915+`) is a local autoref-specialization probe mirroring `Untrusted`'s pattern, with `String` presence-control arms. Ran myself: 1 passed.
+- **WR-05** (the backlog comparator was total over KEYS, letting tied ELEMENTS fall back to `read_dir` order): `backlog_number_ordering` (`src/state_reader/backlog.rs:180-184`) now reads `backlog_sort_key(a).total_cmp(&backlog_sort_key(b)).then_with(|| a.cmp(b))`. Read directly.
+- **S1** (a two-direction spot-check on an input-echo screen — carried since `21-29`, declined a second time by `21-30`): `an_input_echo_screen_escapes_a_hostile_value_and_leaves_a_clean_one_alone` (`render_escape_guard.rs:3220+`) drives `EnqueueScreen`'s real `Screen::render` with a `TAG_PAIR` fixture (chosen, and the reason stated, because `Paragraph` drops zero-width but preserves tag characters — a zero-width fixture would have passed vacuously). Ran myself: 1 passed. Delivered with zero visibility changes to `src/ui/screens/mod.rs`, as the plan's own measurement (`render_escape_guard.rs` already reaches `super::tests::ctx_with_aliases` as a child module) required.
+
+### The `driver_reattach` flake record — corrected, and the correction's own contradicting measurement disclosed rather than smoothed
+
+`21-34` corrected the stale `--test-threads=1` mitigation claim AT the sentence
+that made it (not only in a later section), added a comment-only module note to
+`tests/driver_reattach.rs` (diff confirmed by me: 81 insertions, 0 deletions,
+`git diff --stat`), and established the correction's completeness with a grep
+inventory (`test-threads` + `driver_reattach` across `.planning/`, `tests/`,
+`src/`: 388 hits, classified 354 dated-observation / 34 living, of which 7 carried
+a standing claim and were corrected).
+
+**What I credit specifically:** `21-34`'s own merged-tree gate run recorded 2
+green / 4 red out of 6 isolated `driver_reattach` runs — a WORSE isolated rate
+than the "isolated re-runs are reliably green" pattern wave-1's three worktrees
+had shown — and this contradiction is written into `deferred-items.md` rather
+than absorbed into the more comfortable narrative. A third candidate mechanism
+(M3: intra-process thread timing on `isolate_envelope_root`'s `std::env::set_var`
+call) is named as a hypothesis, explicitly NOT claimed as proven. My own isolated
+run of `driver_reattach` came back 3 passed / 0 failed — consistent with the
+now-more-precisely-documented non-determinism, not a regression, not a fix.
+
+**This is not scored as a new gap.** The task's constraint 4 characterizes this
+flake as pre-existing at the same rate on base and HEAD; `21-34`'s own additional
+measurement sharpens the record of that rate without attributing the flake to
+round 11's changes, is explicit that no fix was attempted (per its own
+prohibition), and is honest about a finding that complicates its own
+predecessor's narrative rather than suppressing it. That is the behaviour this
+phase exists to produce, one level removed from the render/escape defects the
+rest of the phase is about.
+
+### Anti-pattern scan (round-11 diff)
+
+`git diff 343c408..HEAD -- src/` (5868 insertions, 184 deletions across 21 files at
+`80bc4c1..HEAD`; the round-11-only diff at `343c408..HEAD` touches exactly the 8
+files declared across the four plans' `files_modified` plus 3 `.planning/`/`tests/`
+files under `21-34`) was grepped for `TBD|FIXME|XXX|TODO|HACK|PLACEHOLDER`:
+**zero hits.** No stub returns, no hardcoded-empty renders introduced. Every plan's
+declared `files_modified` list matches the actual diff exactly — no wave-conflict,
+no edit outside a plan's declared fence.
+
+### Requirements Coverage (pass 12 — unchanged from pass 11)
+
+| Requirement | Status | Evidence |
+|---|---|---|
+| DRIVE-01 | SATISFIED | Criteria 1, 2 regression-checked; `src/driver/` absent from the round-11 diff. |
+| DRIVE-03 | SATISFIED | Criterion 1's machinery unchanged; alphabet primitives untouched. |
+| DRIVE-04 | SATISFIED | `driver_escalation_cap` 8/0, my own run; file absent from the round-11 diff. |
+| SAFE-07 | NEEDS HUMAN, behavioural half unchanged; all four render/execution-honesty completeness gaps within this requirement's scope now CLOSED | Criterion 4 permanently human-only. gaps[0]-[3] all independently reproduced closed, above. |
+| SAFE-08 | SATISFIED, and CR-01' (gaps[0], the related-but-distinct BLOCKER pass 11 opened) is now CLOSED | `parse_action` unchanged; `driver_refusal_record` 9/0. The Sessions-tab resume fusion closes the argument-injection defect pass 11 found in the mechanism 21-27 built. |
+
+**No orphaned requirements.** Union of `requirements:` across all 34 plans:
+exactly `{DRIVE-01, DRIVE-03, DRIVE-04, SAFE-07, SAFE-08}`, matching
+REQUIREMENTS.md's phase-21 mapping. REQUIREMENTS.md untouched for the ninth
+consecutive round (`git diff --stat 343c408..HEAD -- .planning/REQUIREMENTS.md`
+empty, run by me).
+
+### Behavioral Spot-Checks (pass 12)
+
+| Behavior | Command | Result | Status |
+|---|---|---|---|
+| Full workspace suite (run ONCE, `--no-fail-fast`) | `rtk proxy cargo test --workspace --no-fail-fast` | 1424 passed / 0 failed / 13 ignored, 34 binaries; `driver_reattach` came back 3/3 green this run | PASS |
+| gaps[0] structural fix | `--lib ui::screens::detail::tests::the_resume_argv_never_lets_a_session_id_become_an_option_of_the_resumed_program -- --exact` | 1 passed | PASS |
+| gaps[1] two-sided boundary | `--lib text::tests::the_interpreter_join_budget_is_spent_on_executable_lines_not_on_comments -- --exact` | 1 passed | PASS |
+| gaps[2] laundering fixture | `--lib ui::screens::driver::tests::a_composed_arm_does_not_launder_its_un_composed_sibling -- --exact` | 1 passed | PASS |
+| gaps[2] full census, re-run | `--lib ui::screens::driver::tests::no_executable_control_class_call_in_these_two_files_stands_outside_a_composition -- --exact` | 1 passed | PASS |
+| gaps[3] narrowed + pinned census | `--lib ui::tests::no_display_identity_call_under_ui_stands_outside_a_composition -- --exact` | 1 passed | PASS |
+| WR-04 trait-absence probe | `--lib ui::screens::tests::an_edit_buffer_implements_none_of_the_string_conversions -- --exact` | 1 passed | PASS |
+| S1 input-echo spot-check | `--lib render_escape_guard::tests::an_input_echo_screen_escapes_a_hostile_value_and_leaves_a_clean_one_alone -- --exact` | 1 passed | PASS |
+| Escalation cap | `--test driver_escalation_cap` | 8 passed / 0 failed | PASS |
+| Out-of-enum action refused | `--test driver_refusal_record` | 9 passed / 0 failed | PASS |
+| Spawn-seam structural boundary | `--test spawn_seam_guard` | 15 passed / 0 failed | PASS |
+| Injection corpus (structural half) | `--test driver_injection_corpus` | 13 passed / 0 failed / 10 ignored | PASS (behavioural half SKIP -> human) |
+| Clippy, project gate (lib) | `rtk proxy cargo clippy -- -D warnings` | exit 0 | PASS |
+| Clippy, `--all-targets` | `rtk proxy cargo clippy --all-targets -- -D warnings` | exactly 4 lints, same 2 kinds, same 2 files | PASS (documented deferral) |
+| No dependency added | `git diff 343c408..HEAD -- Cargo.toml Cargo.lock` | empty | PASS |
+| `tests/driver_reattach.rs` diff is comment-only | `git diff --stat 343c408..HEAD -- tests/driver_reattach.rs` | 81 insertions(+), 0 deletions | PASS |
+| REQUIREMENTS.md / driver_injection_corpus.rs untouched | `git diff --stat 343c408..HEAD -- .planning/REQUIREMENTS.md tests/driver_injection_corpus.rs` | empty | PASS |
+
+### Gaps Summary (pass 12)
+
+**All four of pass 11's gaps are closed, and each closure was independently
+re-derived rather than trusted.** I read the fixed code directly for each of the
+four and ran the single named test claimed to exercise it, rather than relying on
+`deferred-items.md`'s own narrative or the fact that the merged tree is green.
+gaps[0]'s fix is stronger than a literal reading of pass 11's own recommendation
+would have produced — the planner measured that pass 11's suggested `--`
+separator fix would have silently deleted the resume capability, and chose
+fusion instead, with the measurement (`claude --resume -- <uuid>` returns the
+same error as a hostile input) quoted in the plan and reproduced in the record.
+gaps[1]-[3] are each closed by the pattern this phase's own eleven-pass arc
+converged on: a bounded repair to the existing mechanism plus a narrowed,
+honestly-scoped claim — never a new census layered on top of the one that
+failed.
+
+**I found no new gap distinct from ROADMAP criterion 4.** The round-11 diff
+touches exactly the files each plan declared, contains no debt markers, adds no
+dependency, leaves REQUIREMENTS.md and the injection corpus untouched, and the
+merged-tree gate (full workspace suite, both clippy invocations) matches the
+orchestrator's independently pre-measured figures exactly. The one item I
+scrutinized hardest for a hidden regression — the `driver_reattach` flake
+record's self-contradicting measurement — is disclosed rather than smoothed and
+is consistent with (not different in kind from) the pre-existing non-determinism
+this task's constraints describe; I do not score it as a gap.
+
+**Criterion 4 is unchanged, permanently agent-unclosable, and 4/5 remains the
+correct outcome.** Round 11 correctly did zero work against it, confirmed by
+`tests/driver_injection_corpus.rs`'s absence from the round-11 diff and its
+unchanged 13/0/10-ignored count.
+
+### Recommendation
+
+**No further gap-closure round is needed for this phase.** Every must-have this
+pass could verify is VERIFIED; the phase's sole open item is ROADMAP criterion
+4, which needs a human with an authenticated Claude subscription to run
+`cargo test --test driver_injection_corpus -- --ignored --nocapture` and record
+the result, per the standing item in `deferred-items.md`. This is a `human_needed`
+status, not `gaps_found` and not `passed` — the distinction the status vocabulary
+exists to draw. This phase should not be re-verified again on the strength of
+further agent-executed rounds; the next legitimate state change requires a human
+running the ten ignored tests.
+
+---
+
+_Verified: 2026-08-27_
+_Verifier: Claude (gsd-verifier), adversarial stance_
+_HEAD `ac5267a` · twelfth verification pass · pass 11 preserved above at `feb37ee`, pass 10 at `c9345a1`, pass 9 at `f442881`, pass 8 at `f1a9d0d`, pass 7 at `84143bb`_
