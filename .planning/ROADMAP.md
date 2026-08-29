@@ -364,7 +364,7 @@ Plans:
   - `git stash` must be forbidden in the driver's allowlist outright
 
 **Research**: skip — branch-protection and pre-push-hook patterns are well-established practice (GitHub Copilot's `copilot/`-prefix model is a direct precedent)
-**Plans**: 8/8 executed, plus 2 UAT gap-closure plans (19-09, 19-10) planned
+**Plans**: 8/8 executed, plus 2 UAT gap-closure plans (19-09, 19-10) and 2 security gap-closure plans (19-11, 19-12) for the blocking threat T-19-60
 
 Plans:
 **Wave 1**
@@ -403,6 +403,11 @@ Plans:
 
 - [x] 19-09-PLAN.md — G-19-1: `SECTION_ENVELOPE` rewritten to one sentence + both cases explained with examples + the branch-protection conclusion, with all seven pinned substrings verbatim and a new legibility cap observed RED at 250 tokens
 - [x] 19-10-PLAN.md — G-19-4: per-test aliases in `tests/driver_lock.rs` so no two writers share one `settings.json`, the shared-path mechanism demonstrated at the real seam, and an early-dying child reported with its exit status and stderr instead of as a 30s lock timeout
+
+**Wave 10** *(gap closure from `/gsd-secure-phase 19`, 2026-08-29 — the one high-severity threat blocking the gate; 19-12 depends on 19-11)*
+
+- [ ] 19-11-PLAN.md — T-19-60: the `PreToolUse` guard classifies on `words[0]`, so a wrapper or a `NAME=VALUE` prefix walks a force push and a PR past layers 1, 2 and 3. Closed structurally by `policy::resolve_program` — consume assignment words, then find the first token whose basename is a program the envelope already governs — with the six measured lines committed RED first and the `NESTED_SHELLS` list deleted rather than extended
+- [ ] 19-12-PLAN.md — The control over the class rather than the instances: a fixed-seed generator asserting the verdict is invariant under any wrapper chain, an alphabet whose names are mechanically proved absent from `src/`, a paired allow corpus so the fix cannot be "deny everything", and the one disclosed residual bounded on both sides
 
 **UI hint**: no — this phase ships no visual surface. It delivers a policy module, two git hook
 stubs, a `PreToolUse` guard, an environment envelope and a secret scanner. The one user-visible
