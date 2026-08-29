@@ -1183,8 +1183,12 @@ pub const GOVERNED_PROGRAMS: &[&str] = &["git", "gh", "glab"];
 ///
 /// This list is **drift-pinned** against the environment
 /// [`super::cred::build_env_in`] actually builds — a unit test iterates
-/// `EnvelopeEnv::entries()` and asserts every `GIT_`/`GH_` key it SETS is
-/// covered here. That is the discipline [`forbidden_repo_prefixes`] already
+/// `EnvelopeEnv::entries()` and asserts that **every** entry it carries is
+/// covered here, SET or REMOVED, whatever the key is called. The pin used to
+/// filter on `value.is_some()` and on a `GIT_`/`GH_` name prefix; both filters
+/// are gone, because between them they hid the two `SSH_*` removals and the
+/// run-journal locator (`T-19-82`). That is the discipline
+/// [`forbidden_repo_prefixes`] already
 /// uses by deriving its runs path from `journal::RUNS_SUBDIR`: a second
 /// spelling of a fact is a second thing to keep in step, and here the drift
 /// would be a refusal that silently stopped covering the key it was written
@@ -2780,12 +2784,31 @@ mod tests {
     }
 
     #[test]
-    fn every_envelope_key_the_child_environment_actually_sets_is_covered_by_the_constant() {
+    fn every_envelope_key_the_child_environment_actually_carries_is_covered_by_the_constant() {
         // The drift pin. `ENVELOPE_ENV_KEYS` is a second spelling of a fact
         // `cred::build_env_in` already owns, and the day they drift is the day
         // this refusal silently stops covering the key it was written for —
         // the same discipline `forbidden_repo_prefixes` uses by deriving its
         // runs path from `journal::RUNS_SUBDIR`.
+        //
+        // **Both of this pin's filters are DELETED, and that is `T-19-82`.**
+        // It used to iterate only entries with `value.is_some()` and only names
+        // beginning `GIT_`/`GH_`:
+        //
+        // - `value.is_some()` made every REMOVAL invisible. `SSH_AUTH_SOCK` and
+        //   `SSH_AGENT_PID` are removed rather than set — they are the belt D-16
+        //   relies on — so the pin could not see the two entries whose absence
+        //   from the constant let a driven run put the user's own ssh-agent
+        //   back. It would not have caught `GIT_SSH_COMMAND` either, had that
+        //   key been a removal.
+        // - The name filter would silently exclude a future `GITHUB_TOKEN`,
+        //   `GLAB_CONFIG_DIR` or `SSH_*`, and it already excluded
+        //   `GSD_MM_ENVELOPE_PROJECT_ROOT`.
+        //
+        // The pin now covers what its name claims: EVERY entry
+        // `EnvelopeEnv::entries()` carries, set or removed, whatever it is
+        // called. The four floors below each name the filter they replace, so
+        // re-introducing either one turns this test red instead of green.
         let envelope = tempfile::TempDir::new().unwrap();
         let project = tempfile::TempDir::new().unwrap();
         let env = crate::envelope::cred::build_env_in(
@@ -2796,29 +2819,67 @@ mod tests {
         )
         .expect("the fixture environment builds");
 
-        let set: Vec<String> = env
+        let carried: Vec<(String, bool)> = env
             .entries()
             .iter()
-            .filter(|(_, value)| value.is_some())
-            .map(|(name, _)| name.to_string_lossy().into_owned())
-            .filter(|name| name.starts_with("GIT_") || name.starts_with("GH_"))
+            .map(|(name, value)| (name.to_string_lossy().into_owned(), value.is_none()))
             .collect();
 
-        // Non-vacuity first: an empty environment would satisfy the coverage
-        // claim below having proved nothing at all.
+        // --- floor 1: the entry set exists at all ------------------------
         assert!(
-            set.len() >= 5,
-            "the built child environment must actually set the keys this pin is about, or \
-             the coverage assertion proves nothing: {set:?}"
+            !carried.is_empty(),
+            "an empty environment satisfies the coverage claim below having proved \
+             nothing at all"
         );
 
-        for name in &set {
+        // --- floor 2: it is the real environment, not a stub -------------
+        assert!(
+            carried.len() >= 5,
+            "the built child environment must actually carry the keys this pin is about, \
+             or the coverage assertion proves nothing: {carried:?}"
+        );
+
+        // --- floor 3: REMOVALS are present, the direction the old pin was
+        //     structurally blind in. `value.is_some()` hid exactly these.
+        let removals: Vec<&String> = carried
+            .iter()
+            .filter(|(_, removed)| *removed)
+            .map(|(name, _)| name)
+            .collect();
+        assert!(
+            removals.len() >= 2,
+            "the environment must carry at least two REMOVAL entries, or this pin cannot \
+             tell that it is covering them. This floor exists because the deleted \
+             `value.is_some()` filter made every removal invisible, which is how \
+             `SSH_AUTH_SOCK` and `SSH_AGENT_PID` — the belt D-16 relies on — stayed out \
+             of `ENVELOPE_ENV_KEYS` unnoticed (`T-19-82`). Got: {removals:?}"
+        );
+
+        // --- floor 4: coverage reaches beyond the old name filter --------
+        assert!(
+            carried.iter().any(|(name, _)| {
+                !name.starts_with("GIT_")
+                    && !name.starts_with("GH_")
+                    && envelope_env_key(name).is_some()
+            }),
+            "at least one COVERED key must begin with neither `GIT_` nor `GH_`. This floor \
+             exists because the deleted name filter would silently exclude a future \
+             `GITHUB_TOKEN`, `GLAB_CONFIG_DIR` or `SSH_*` — and already excluded \
+             `GSD_MM_ENVELOPE_PROJECT_ROOT`. Re-introducing that filter turns this red. \
+             Carried: {carried:?}, covered set: {ENVELOPE_ENV_KEYS:?}"
+        );
+
+        for (name, removed) in &carried {
+            let how = if *removed { "REMOVED from" } else { "SET in" };
             assert!(
                 envelope_env_key(name).is_some(),
-                "`{name}` is SET in the driven child's environment by `cred::build_env_in` \
+                "`{name}` is {how} the driven child's environment by `cred::build_env_in` \
                  but is not covered by `ENVELOPE_ENV_KEYS`, so a command that reassigns or \
-                 removes it is not refused. Add it to the constant rather than narrowing \
-                 this test. Covered set: {ENVELOPE_ENV_KEYS:?}"
+                 removes it is not refused. **Add the key to the constant.** Do NOT narrow \
+                 this test, and in particular do NOT re-introduce either of the filters \
+                 this pin used to carry — a `value.is_some()` filter hides every removal, \
+                 and a `GIT_`/`GH_` name filter hides every key the envelope grows that is \
+                 not called after git. Covered set: {ENVELOPE_ENV_KEYS:?}"
             );
         }
     }
