@@ -198,7 +198,38 @@ impl Lcg {
 /// including it here would break invariance by being MORE strict, not less. It
 /// is an enumerated row in `tests/envelope_wrapper_bypass.rs`, and its
 /// interaction with the `T-19-74` residual is pinned at the bottom of this file.
-const ASSIGNMENT_PREFIXES: &[&str] = &["", "FOO=bar ", "LC_ALL=C TZ=UTC ", "EMPTY= "];
+/// **`T-19-89`, the Rule A half.** Audit 3 read all five alphabets in this file
+/// and found that no entry of any of them contains a `$`, a `` ` ``, a `{` or a
+/// `(` — so the corpus could not GENERATE, and therefore could not FAIL ON, the
+/// class that walked through it. The two entries below are the direct repair of
+/// that finding for this alphabet, and both are chosen so the verdict stays
+/// genuinely INVARIANT:
+///
+/// * a value carrying an expansion. `resolve_program` step 2b tests an
+///   assignment's value against the envelope keys and step 7 tests it against
+///   `GOVERNED_PROGRAMS`; `$BAR` is neither, and the step-5 prefix rule looks
+///   only at words AFTER the assignment prefix. So the verdict is the base's
+///   own, wrapped or not.
+/// * a value that is a **proper prefix** of an envelope key rather than a key.
+///   `GIT_CONFIG` matches no entry of `ENVELOPE_ENV_KEYS` exactly and no
+///   `_`-terminated entry by prefix, so it is not refused on its own account —
+///   which is the whole shape of the measured `C=GIT_CONFIG; env -u ${C}_COUNT`
+///   line, drawn as an alphabet entry rather than typed once.
+///
+/// **What must NOT be added here, and why**, in the shape this file already
+/// records for the `GIT_CONFIG_COUNT=0` prefix: a prefix whose value IS an
+/// envelope key (step 2b) or IS a governed program (step 7) is refused on its
+/// own account, BEFORE resolution reaches the command behind it. Folding one in
+/// would break the invariance property by being STRICTER rather than laxer,
+/// which is a red for the wrong reason.
+const ASSIGNMENT_PREFIXES: &[&str] = &[
+    "",
+    "FOO=bar ",
+    "LC_ALL=C TZ=UTC ",
+    "EMPTY= ",
+    "FOO=$BAR ",
+    "C=GIT_CONFIG ",
+];
 
 /// The wrapper alphabet: thirty whole prefixes, each with its own options.
 ///
@@ -363,9 +394,30 @@ const REFUSED_BASES: &[&str] = &[
     "git update-ref -d refs/heads/main",
     "git config core.hooksPath /tmp/x",
     "git -c core.hooksPath=/tmp/x status",
+    // -----------------------------------------------------------------------
+    // `T-19-89`, the Rule A half — an expansion in the base's own VERB SLOT.
+    //
+    // **These three are RED against the pre-Rule-A tree at the property's own
+    // floor 2**, which measures every base refused UNWRAPPED before the
+    // wrapping loop runs. That is exactly the non-vacuity this widening is
+    // about: the alphabet above could not draw a `$`, so 1680 generated cases
+    // certified a fix that the very next audit walked around with two
+    // characters — `git $V`.
+    //
+    // **FORGE bases are deliberately kept out of this alphabet.** The
+    // invariance property shares ONE envelope root across all its cases, and a
+    // forge base that is permitted before the fix writes ledger lines and
+    // exhausts the 3/1 PR cap — which would turn later cases red for a reason
+    // that has nothing to do with the class and muddy the RED evidence. The
+    // forge slots are covered by
+    // `a_forge_subcommand_slot_carrying_an_expansion_is_refused_in_every_generated_slot`
+    // below, which builds a fresh root per case for exactly that reason.
+    "git $V --force origin main",
+    "git ${V}push --force origin main",
+    "git $(true)push --force origin main",
 ];
 
-/// How many wrappings each refused base gets. 12 x 140 = 1680, over the 1500
+/// How many wrappings each refused base gets. 15 x 140 = 2100, over the 1500
 /// floor the plan sets.
 const VARIANTS_PER_REFUSED_BASE: usize = 140;
 
@@ -1159,6 +1211,47 @@ const DECOY_OPERANDS: &[&str] = &[
     "made-up-wrapper-9000 --flag git",
     // ...and its forge twin, so the made-up shape is exercised on both paths.
     "made-up-wrapper-9000 --flag gh",
+    // -----------------------------------------------------------------------
+    // `T-19-89`, the Rule A half — a decoy operand in a prefix that ALSO
+    // carries an expansion.
+    //
+    // Audit 3's finding for this alphabet was that every entry is a literal
+    // program word, so the corpus could not draw the cell where a decoy and an
+    // expansion appear in the same prefix. This property asserts REFUSAL
+    // carrying a D-24 identifier rather than invariance — which is why these
+    // belong here and not in `WRAPPERS`: they are legitimately refused for a
+    // reason of their own (two candidates, or an unreadable prefix word) rather
+    // than for the base's reason.
+    "env -u $V git",
+    "sudo -u $U gh",
+    "made-up-wrapper-9000 --flag $F git",
+];
+
+/// Whole wrapper prefixes that carry an expansion and NO decoy operand.
+///
+/// **A separate alphabet with a refusal property of its own, for the reason
+/// `DECOY_OPERANDS` already records.** An expansion anywhere in the wrapper
+/// prefix region is refused by `resolve_program` step 5 on its own account —
+/// what that prefix does to the environment the program runs in is decided
+/// after the guard has answered — so folding these into `WRAPPERS` would break
+/// the invariance property by being STRICTER, not laxer. The property below
+/// therefore asserts refusal carrying a D-24 identifier.
+///
+/// The last entry is deliberately a BRACE spelling, and its verdict arrives by
+/// a different route: `{` and `}` are `SEPARATORS`, so the flush severs the
+/// prefix from the governed program and the refusal comes from the base's own
+/// segment instead of from step 5. That is the `19-15` shape drawn here rather
+/// than typed once, and it is why this property asserts membership in D-24's
+/// taxonomy rather than one specific identifier.
+const EXPANSION_WRAPPERS: &[&str] = &[
+    "env $E",
+    "env -u $K",
+    "timeout $T",
+    "nice -n $N",
+    "sudo -u $U",
+    "made-up-wrapper-9000 --flag $F",
+    "env -u `true`SOME_VAR",
+    "env -u ${K}",
 ];
 
 /// How many wrappings each (base, decoy) pair gets. 12 x 10 x 6 = 720.
@@ -1375,15 +1468,33 @@ fn the_decoy_rule_discriminates_rather_than_blanket_denying_the_shape() {
     // `ls`. Refusing it would be blanket-denying the SHAPE.
     permits(root, "env -u git ls");
 
-    // **`T-19-74` / AR-19-10, in its DECOY form.** One candidate again — the
-    // decoy — so the segment still mis-indexes and `classify_git` judges the verb
-    // `$X`. This asserts an ACCEPTED RESIDUAL, not a desirable behaviour: it is
-    // inside the expansion-assembled class `19-11` accepted and this plan does
-    // not move. It is pinned because
-    // `the_residual_begins_exactly_at_the_command_line_boundary` pins only the
-    // decoy-free spelling, and an accepted boundary whose decoy form nobody wrote
-    // down is a boundary a later round rediscovers as a finding.
-    permits(root, "env -u git $X push --force origin main");
+    // **`T-19-74` / AR-19-10 in its DECOY form — CONVERTED from a permit to a
+    // refusal by plan 19-14's Rule A, and disclosed rather than absorbed.**
+    //
+    // Old verdict: PERMITTED (exit 0). New verdict: REFUSED under
+    // `envelope_assertion_failed`.
+    //
+    // The mechanism, and why the flip is a SIDE EFFECT of closing `T-19-88`
+    // rather than a decision to narrow AR-19-10: the segment resolves
+    // `Governed { index: 2 }` on the decoy — ONE candidate, so the ambiguity
+    // rule does not fire — and the verb `classify_git` would then judge is
+    // `$X`, which is the decision word Rule A refuses. Every argv whose verb
+    // slot carries an expansion is refused now, and this one is inside that
+    // class however it got there.
+    //
+    // **The CORE of the residual is unmoved and is pinned elsewhere in this
+    // file:** `env $X push --force origin main` reaches ZERO candidates and
+    // stays permitted, `X=git; env $X push --force origin main` returns
+    // `NoProgram` then `Ungoverned` and stays permitted, and
+    // `the_residual_begins_exactly_at_the_command_line_boundary` is not edited.
+    // This is the ONE pre-existing row plan 19-14 converts, and it is named in
+    // `19-14-SUMMARY.md` with its old verdict, its new verdict and this
+    // sentence.
+    refuses_under(
+        root,
+        "env -u git $X push --force origin main",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
 
     // **The discriminating pair from `19-SECURITY.md`, in ONE test so they cannot
     // drift apart.** These two commands differ by a single word. Both must be
@@ -1544,4 +1655,610 @@ fn resolve_programs_own_doc_still_discloses_the_residual_it_does_not_cover() {
              Extracted region was: {doc}"
         );
     }
+}
+
+// ===========================================================================
+// 10. `T-19-89` — the alphabets this corpus could not draw, and the forge
+//     slots no enumerated row can generate (plan 19-14, Rule A half)
+// ===========================================================================
+//
+// **The finding, in the auditor's own terms and not softened.** Audit 3 read all
+// five alphabets in this file — `ASSIGNMENT_PREFIXES`, `WRAPPERS`,
+// `SHELL_LAYERS`, `DECOY_OPERANDS` and `REFUSED_BASES` — and found that **no
+// entry of any of them contains a `$`, a `` ` ``, a `{` or a `(`**. The corpus
+// therefore cannot generate, and so cannot fail on: an expansion in a base's
+// verb (`T-19-88`), an expansion in a wrapper or decoy operand, an assignment
+// prefix whose value reaches a rule, or any brace/paren grouping (`T-19-87`).
+//
+// That is `T-19-76`'s failure mode for the **THIRD consecutive round**, at the
+// next radius out — a corpus certifying a fix while being structurally incapable
+// of failing on the class the fix is about. This section exists because of that
+// sentence, which is also why it must never be narrowed: a case that stops being
+// drawn is a case that stops being able to fail.
+//
+// **This is the Rule A half only.** Plan 19-14 widens `ASSIGNMENT_PREFIXES`,
+// `REFUSED_BASES` and `DECOY_OPERANDS`, adds `EXPANSION_WRAPPERS`, and adds the
+// forge-slot property below. `19-15` completes the alphabets — `SHELL_LAYERS`
+// still offers only `sh -c '…'` and `bash -lc "…"`, never `{ …; }` or `( … )`,
+// and there is no severed-prefix alphabet yet. **`T-19-89` is NOT claimed closed
+// by plan 19-14.**
+
+/// The characters whose presence in a word makes it an expansion the guard
+/// cannot read, or a grouping character that fragments the splitter.
+const EXPANSION_METACHARACTERS: &[char] = &['$', '`', '{', '('];
+
+/// Whether an alphabet entry carries one of them.
+fn carries_a_metacharacter(entry: &str) -> bool {
+    entry.chars().any(|ch| EXPANSION_METACHARACTERS.contains(&ch))
+}
+
+/// Whether a generated command line carries a `$` or a `` ` `` **outside single
+/// quotes** — i.e. one the shell would actually expand.
+///
+/// Single quotes are the only construct that suppresses expansion entirely; a
+/// `$` inside double quotes still expands, which is why only `'` toggles here.
+fn carries_a_live_expansion(command: &str) -> bool {
+    let mut in_single = false;
+    for ch in command.chars() {
+        match ch {
+            '\'' => in_single = !in_single,
+            '$' | '`' if !in_single => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+#[test]
+fn every_alphabet_this_plan_widens_can_draw_an_expansion_metacharacter() {
+    // **The direct mechanical inverse of audit 3's finding, and the floor that
+    // makes the finding un-reintroducible.** The auditor established the defect
+    // by READING the alphabets; this asserts the repaired fact so that narrowing
+    // one of them back turns this red instead of quietly restoring a corpus that
+    // cannot fail on its own class.
+    //
+    // `19-15` extends the same floor to `SHELL_LAYERS` — which still cannot draw
+    // `{ …; }` or `( … )` — and to the severed-prefix alphabet Rule B needs.
+    for (name, entries) in [
+        ("ASSIGNMENT_PREFIXES", ASSIGNMENT_PREFIXES),
+        ("REFUSED_BASES", REFUSED_BASES),
+        ("DECOY_OPERANDS", DECOY_OPERANDS),
+        ("EXPANSION_WRAPPERS", EXPANSION_WRAPPERS),
+    ] {
+        let drawable: Vec<&&str> = entries
+            .iter()
+            .filter(|entry| carries_a_metacharacter(entry))
+            .collect();
+        assert!(
+            !drawable.is_empty(),
+            "`{name}` contains no entry carrying a `$`, a backtick, a `{{` or a `(`.\n\n\
+             This is audit 3's `T-19-89` finding restated: an alphabet that cannot DRAW an \
+             expansion is an alphabet whose property cannot FAIL on one, and every case \
+             generated from it certifies a claim about a class it could never have \
+             exercised. It is the same defect as `T-19-76` and `T-19-83`, one radius \
+             further out, and plan 19-14 exists partly because it had by then happened \
+             three rounds running.\n\n\
+             The correct response is to RESTORE the entries, not to delete this floor. \
+             Entries were: {entries:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 10a. An expansion in the WRAPPER PREFIX, generated rather than enumerated
+// ---------------------------------------------------------------------------
+
+/// One generated splice, including the command BEFORE the outer shell layer is
+/// applied.
+///
+/// **Why the pre-layer string is carried and `Wrapped`/`Decoyed` do not carry
+/// it.** The counted expansion floor below asks how many generated cases carry a
+/// metacharacter the shell would actually expand. `ShellLayer::ShSingleQuoted`
+/// wraps the whole command in single quotes, so a count taken over the FINAL
+/// string would answer "none" for every `sh -c '…'` case — while the guard, which
+/// splits that payload and classifies it, sees the expansion perfectly well. The
+/// count is therefore taken over the command the guard ultimately classifies.
+struct Spliced {
+    command: String,
+    inner: String,
+    chain: String,
+    recipe: String,
+}
+
+/// Splice `entry` into a drawn wrapper chain around `base`, exactly as
+/// [`wrap_with_decoy`] does.
+fn splice_prefix(rng: &mut Lcg, base: &str, entry: &str) -> Spliced {
+    let prefix = ASSIGNMENT_PREFIXES[rng.pick(ASSIGNMENT_PREFIXES.len())];
+    let layer = SHELL_LAYERS[rng.pick(SHELL_LAYERS.len())];
+    let quotes = layer.inner_quotes();
+    let depth = rng.pick(3);
+
+    let mut chain: Vec<&str> = Vec::with_capacity(depth + 1);
+    for _ in 0..depth {
+        chain.push(WRAPPERS[rng.pick(WRAPPERS.len())]);
+    }
+    let at = rng.pick(depth + 1);
+    chain.insert(at, entry);
+
+    let mut spelled = String::new();
+    for item in &chain {
+        let quote = quotes[rng.pick(quotes.len())];
+        match item.split_once(' ') {
+            Some((program, rest)) => spelled.push_str(&format!("{quote}{program}{quote} {rest} ")),
+            None => spelled.push_str(&format!("{quote}{item}{quote} ")),
+        }
+    }
+
+    let inner = format!("{prefix}{spelled}{base}");
+    Spliced {
+        command: layer.apply(&inner),
+        inner,
+        chain: format!("[{}] expansion@{at}", chain.join(", ")),
+        recipe: format!("prefix={prefix:?} layer={layer:?} depth={depth} entry={entry:?} at={at}"),
+    }
+}
+
+/// 15 x 8 x 4 = 480, over the 300 counted floor.
+const VARIANTS_PER_EXPANSION_WRAPPER: usize = 4;
+
+/// The floors, asserted BEFORE the loop.
+const MIN_EXPANSION_WRAPPERS: usize = 6;
+const MIN_EXPANSION_WRAPPER_CASES: usize = 400;
+const MIN_DISTINCT_EXPANSION_CHAINS: usize = 100;
+
+/// **The counted floor the plan sets**: at least this many GENERATED cases must
+/// carry an expansion metacharacter the shell would expand, counted while
+/// generating rather than inferred from alphabet sizes.
+const MIN_LIVE_EXPANSION_CASES: usize = 300;
+
+#[test]
+fn a_wrapper_prefix_carrying_an_expansion_is_refused_in_every_generated_position() {
+    let envelope = TempDir::new().expect("a temporary envelope root");
+    let root = envelope.path();
+
+    // --- floor 1: the alphabet exists and is wide enough ------------------
+    assert!(
+        EXPANSION_WRAPPERS.len() >= MIN_EXPANSION_WRAPPERS,
+        "the expansion-wrapper alphabet must carry at least {MIN_EXPANSION_WRAPPERS} \
+         entries; a narrower one is a row per named shape wearing a property's clothes. \
+         Got {}",
+        EXPANSION_WRAPPERS.len()
+    );
+
+    // --- floor 2: every base is refused UNWRAPPED, with an identifier -----
+    //
+    // Measured rather than written down, for the same reason the invariance
+    // property measures its right-hand side. **This is the floor that is RED
+    // against the pre-Rule-A tree**, because `REFUSED_BASES` now carries three
+    // bases whose VERB is assembled by expansion.
+    for base in REFUSED_BASES {
+        let answer = verdict(root, base);
+        assert_eq!(
+            answer.code, 2,
+            "the UNWRAPPED base `{base}` must itself be refused, or every assertion below \
+             is comparing a refusal against nothing. Got reason id: {}",
+            answer.reason_id
+        );
+        assert!(
+            REASON_IDENTIFIERS.contains(&answer.reason_id.as_str()),
+            "the unwrapped base `{base}` must be refused under a member of D-24's \
+             taxonomy. Got: {}",
+            answer.reason_id
+        );
+    }
+
+    // --- the property ------------------------------------------------------
+    let mut rng = Lcg::new();
+    let mut chains: BTreeSet<String> = BTreeSet::new();
+    let mut used: BTreeSet<&str> = BTreeSet::new();
+    let mut cases = 0usize;
+    let mut live_expansion_cases = 0usize;
+
+    for base in REFUSED_BASES {
+        for entry in EXPANSION_WRAPPERS {
+            for _ in 0..VARIANTS_PER_EXPANSION_WRAPPER {
+                let case = splice_prefix(&mut rng, base, entry);
+                chains.insert(case.chain.clone());
+                used.insert(entry);
+                cases += 1;
+                if carries_a_live_expansion(&case.inner) {
+                    live_expansion_cases += 1;
+                }
+
+                let got = verdict(root, &case.command);
+                assert_eq!(
+                    got.code,
+                    2,
+                    "\n\nA WRAPPER PREFIX CARRYING AN EXPANSION WAS PERMITTED.\n\
+                     \n  command : {}\
+                     \n  base    : {base}\
+                     \n  recipe  : {}\
+                     \n  got     : exit {} reason {}\
+                     \n  seed    : {SEED:#x}\n\
+                     \nWhat that prefix does to the environment the program runs in — and \
+                     therefore which program runs and with what — is decided AFTER the guard \
+                     has answered, so an unreadable word in the prefix is a decision the \
+                     guard cannot make.\n\
+                     \n**The correct response is a change to the decision-region rule in \
+                     `src/envelope/policy.rs`.** It is NOT a wrapper name added to a list, it \
+                     is NOT a wrapper FLAG added to a list — a rule keyed on what `-u` means \
+                     is a wrapper-name list wearing a flag's clothes — and it is NOT a \
+                     narrowing of this alphabet. Audit 3 found that no alphabet in this file \
+                     could draw a `$` at all; making this green by removing the entry would \
+                     be restoring exactly that defect.\n",
+                    case.command,
+                    case.recipe,
+                    got.code,
+                    got.reason_id,
+                );
+                assert!(
+                    REASON_IDENTIFIERS.contains(&got.reason_id.as_str()),
+                    "\n\nREFUSED WITHOUT A D-24 IDENTIFIER.\n\
+                     \n  command : {}\
+                     \n  recipe  : {}\
+                     \n  reason  : {}\n\
+                     \nA refusal that parks under no member of D-24's taxonomy cannot be \
+                     found by a later reader grepping for a disarmed layer.\n",
+                    case.command,
+                    case.recipe,
+                    got.reason_id,
+                );
+            }
+        }
+    }
+
+    // --- floors 3, 4, 5, 6 -------------------------------------------------
+    assert!(
+        cases >= MIN_EXPANSION_WRAPPER_CASES,
+        "the property must run over at least {MIN_EXPANSION_WRAPPER_CASES} generated \
+         cases. Got {cases}"
+    );
+    assert!(
+        chains.len() >= MIN_DISTINCT_EXPANSION_CHAINS,
+        "the property must use at least {MIN_DISTINCT_EXPANSION_CHAINS} DISTINCT chains, \
+         or hundreds of cases are one row counted hundreds of times. Got {}",
+        chains.len()
+    );
+    assert_eq!(
+        used.len(),
+        EXPANSION_WRAPPERS.len(),
+        "every entry of `EXPANSION_WRAPPERS` must appear in at least one generated case; \
+         an entry nobody drew is an entry that cannot fail. Unused: {:?}",
+        EXPANSION_WRAPPERS
+            .iter()
+            .filter(|entry| !used.contains(*entry))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        live_expansion_cases >= MIN_LIVE_EXPANSION_CASES,
+        "at least {MIN_LIVE_EXPANSION_CASES} GENERATED cases must carry an expansion \
+         metacharacter the shell would actually expand, COUNTED while generating rather \
+         than inferred from the alphabet sizes. Audit 3's finding was about what the \
+         corpus can draw, and a floor derived from alphabet arithmetic would restate the \
+         alphabet rather than measure the corpus. Got {live_expansion_cases} of {cases}"
+    );
+
+    println!(
+        "expansion-wrapper corpus: {cases} generated cases, {live_expansion_cases} carrying \
+         a live expansion, {} distinct chains, {} wrapper entries, seed {SEED:#x}",
+        chains.len(),
+        EXPANSION_WRAPPERS.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 10b. The FORGE SLOTS, with a fresh envelope root per case
+// ---------------------------------------------------------------------------
+
+/// Which subcommand slot of a forge command line carries the expansion.
+///
+/// **Why this property exists, and why it varies the SLOT.** The three region
+/// cells plan 19-14 was corrected for during plan-check were the SECOND
+/// subcommand word, the `-`-initial `api` flag, and the endpoint DISPLACED past
+/// the first two subcommand words by an option value only the `api` arm's own
+/// scan skips. A corpus that varied only the FIRST word would not have failed on
+/// any of the three. Every enumerated forge row in
+/// `tests/envelope_expansion_slots.rs` fixes one slot; this varies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ForgeSlot {
+    /// `gh <EXP> create --title x` — `pr_command_label`'s first matched word.
+    First,
+    /// `gh pr <EXP> --title x` — the cell a ONE-word region leaves open.
+    Second,
+    /// `gh api /repos/o/r/<EXP> …` — the endpoint in its ordinary position.
+    ApiEndpoint,
+    /// `gh api <OPT> <VALUE> repos/o/r/<EXP> …` — the endpoint pushed past the
+    /// first two subcommand words by an option value that ONLY
+    /// `gh_api_posts_a_pull_request`'s scan skips.
+    ApiDisplacedEndpoint,
+    /// `gh api … -X <EXP> …` — the method value.
+    ApiMethod,
+    /// `gh api … <EXP> title=x` — a token that BEGINS with an expansion marker.
+    ApiFlagMarker,
+    /// `gh api … -<EXP> title=x` — the same hole ONE CHARACTER TO THE LEFT: the
+    /// token begins with `-`, so it is neither one of the first two subcommand
+    /// words nor the method value nor marker-initial.
+    ApiFlagDash,
+}
+
+const FORGE_SLOTS: &[ForgeSlot] = &[
+    ForgeSlot::First,
+    ForgeSlot::Second,
+    ForgeSlot::ApiEndpoint,
+    ForgeSlot::ApiDisplacedEndpoint,
+    ForgeSlot::ApiMethod,
+    ForgeSlot::ApiFlagMarker,
+    ForgeSlot::ApiFlagDash,
+];
+
+/// The `GH_API_VALUE_OPTS` pairs that displace the endpoint out of
+/// `subcommand_words`' first two words. Each is a whole option-and-value pair.
+///
+/// `subcommand_words` skips only `FORGE_VALUE_OPTS` (`-R`, `--repo`,
+/// `--hostname`), so every VALUE below is an ordinary non-flag word to it.
+const DISPLACING_OPTS: &[(&str, &str)] = &[
+    ("-f", "title=x"),
+    ("-H", "accept:x"),
+    ("-q", ".number"),
+    ("-t", "{{.number}}"),
+];
+
+/// The three spellings of "an expansion-carrying word standing where `word`
+/// should be".
+///
+/// 0 is a plain variable, 1 is the BRACE form that fragments the splitter, and 2
+/// is a backtick command substitution followed by the literal rest — the
+/// spelling audit 3 measured separately because it reaches the same slot through
+/// a different tokenizer arm.
+fn expansion_spelling(spelling: usize, name: &str, word: &str) -> String {
+    match spelling {
+        0 => format!("${name}"),
+        1 => format!("${{{name}}}"),
+        _ => format!("`true`{word}"),
+    }
+}
+
+/// The command line for one (slot, spelling, displacing option) case.
+fn forge_slot_case(slot: ForgeSlot, spelling: usize, displacer: (&str, &str)) -> String {
+    match slot {
+        ForgeSlot::First => format!(
+            "gh {} create --title x",
+            expansion_spelling(spelling, "P", "pr")
+        ),
+        ForgeSlot::Second => format!(
+            "gh pr {} --title x",
+            expansion_spelling(spelling, "P", "create")
+        ),
+        ForgeSlot::ApiEndpoint => format!(
+            "gh api /repos/o/r/{} -X POST -f title=x",
+            expansion_spelling(spelling, "E", "pulls")
+        ),
+        ForgeSlot::ApiDisplacedEndpoint => format!(
+            "gh api {} {} repos/o/r/{} -f title=y",
+            displacer.0,
+            displacer.1,
+            expansion_spelling(spelling, "E", "pulls")
+        ),
+        ForgeSlot::ApiMethod => format!(
+            "gh api repos/o/r/pulls -X {} -f title=x",
+            expansion_spelling(spelling, "M", "POST")
+        ),
+        ForgeSlot::ApiFlagMarker => format!(
+            "gh api repos/o/r/pulls {} title=x",
+            expansion_spelling(spelling, "F", "-f")
+        ),
+        ForgeSlot::ApiFlagDash => format!(
+            "gh api repos/o/r/pulls -{} title=x",
+            expansion_spelling(spelling, "F", "f")
+        ),
+    }
+}
+
+/// Every file under `dir`, recursively — so a "no ledger line" claim is
+/// OBSERVED by walking the envelope root rather than derived from a read of one
+/// expected path. A row that only read `ledger::ledger_path_in` would pass
+/// identically if the line were written somewhere else.
+fn files_under(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(files_under(&path));
+        } else {
+            found.push(path);
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Every pull-request ledger line anywhere under the envelope root.
+fn ledger_lines_under(root: &Path) -> Vec<String> {
+    let mut lines = Vec::new();
+    for path in files_under(root) {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in text.lines() {
+            if line.contains("\"platform\"") {
+                lines.push(format!("{}: {line}", path.display()));
+            }
+        }
+    }
+    lines
+}
+
+/// Two wrapper depths — 0 and 1 — because each case builds an envelope root of
+/// its own and the point of the property is the SLOT rather than the chain.
+const FORGE_WRAPPER_DEPTHS: usize = 2;
+
+/// The floors, asserted BEFORE the loop.
+const MIN_FORGE_SLOT_CASES: usize = 50;
+
+#[test]
+fn a_forge_subcommand_slot_carrying_an_expansion_is_refused_in_every_generated_slot() {
+    // --- floor 0: the POSITIVE control for the walk -----------------------
+    //
+    // Every case below asserts that the walked envelope root holds NO ledger
+    // line. Without this row those assertions could all be passing because the
+    // walk cannot see anything: "the line is not there" and "this scanner cannot
+    // read the file" are indistinguishable without a positive control.
+    let control = TempDir::new().expect("a temporary envelope root");
+    permits(control.path(), "gh pr create --title x");
+    assert_eq!(
+        ledger_lines_under(control.path()).len(),
+        1,
+        "a PERMITTED `gh pr create` writes exactly one ledger line, and the walk must be \
+         able to find it. If this is 0 the walk is blind and every no-ledger-line \
+         assertion below is vacuous. Files: {:?}",
+        files_under(control.path())
+    );
+
+    // --- floor 1: the slot alphabet spans what the region checks were about
+    assert!(
+        FORGE_SLOTS.len() >= 7,
+        "the slot alphabet must span the first word, the second word, the `api` endpoint, \
+         the DISPLACED `api` endpoint, the method and BOTH flag spellings. Got {}",
+        FORGE_SLOTS.len()
+    );
+
+    let mut rng = Lcg::new();
+    let mut slots_seen: BTreeSet<ForgeSlot> = BTreeSet::new();
+    let mut displacers_seen: BTreeSet<&str> = BTreeSet::new();
+    let mut commands: BTreeSet<String> = BTreeSet::new();
+    let mut cases = 0usize;
+    let mut live_expansion_cases = 0usize;
+
+    for slot in FORGE_SLOTS {
+        // Only the displaced-endpoint slot varies the displacing option; every
+        // other slot draws it once so its case count stays modest.
+        let displacers: &[(&str, &str)] = if *slot == ForgeSlot::ApiDisplacedEndpoint {
+            DISPLACING_OPTS
+        } else {
+            &DISPLACING_OPTS[..1]
+        };
+
+        for spelling in 0..3 {
+            for displacer in displacers {
+                for depth in 0..FORGE_WRAPPER_DEPTHS {
+                    let base = forge_slot_case(*slot, spelling, *displacer);
+                    let command = if depth == 0 {
+                        base.clone()
+                    } else {
+                        format!("{} {base}", WRAPPERS[rng.pick(WRAPPERS.len())])
+                    };
+
+                    slots_seen.insert(*slot);
+                    if *slot == ForgeSlot::ApiDisplacedEndpoint {
+                        displacers_seen.insert(displacer.0);
+                    }
+                    commands.insert(command.clone());
+                    cases += 1;
+                    if carries_a_live_expansion(&command) {
+                        live_expansion_cases += 1;
+                    }
+
+                    // A fresh root per case, because a forge command that is
+                    // PERMITTED writes a ledger line and a shared root would
+                    // exhaust the 3/1 cap and turn later cases red for a reason
+                    // that has nothing to do with the slot under test.
+                    let envelope = TempDir::new().expect("a temporary envelope root");
+                    let got = verdict(envelope.path(), &command);
+
+                    assert_eq!(
+                        got.code,
+                        2,
+                        "\n\nA FORGE DECISION WORD CARRYING AN EXPANSION WAS PERMITTED.\n\
+                         \n  command : {command}\
+                         \n  slot    : {slot:?}\
+                         \n  spelling: {spelling} (0=$W 1=${{W}} 2=`true`W)\
+                         \n  depth   : {depth}\
+                         \n  got     : exit {} reason {}\
+                         \n  seed    : {SEED:#x}\n\
+                         \n`pr_command_label` matches its arms on WORDS. A word it cannot read \
+                         matches no arm, so `None` is returned and the command is neither \
+                         refused NOR counted — the SAFE-06 cap is BYPASSED rather than \
+                         exceeded, and the cap has no second carrier (`T-19-35`).\n\
+                         \n**The correct response is a change to the decision-region rule in \
+                         `src/envelope/policy.rs`, with every index reported by the scan the \
+                         classifier itself runs.** It is NOT a name or a flag added to a list \
+                         in `src/`, and it is NOT a narrowing of this slot alphabet: the three \
+                         cells this property exists for — the SECOND subcommand word, the \
+                         `-`-initial flag and the DISPLACED endpoint — were each missed once \
+                         already by a region derived from the wrong scan.\n",
+                        got.code,
+                        got.reason_id,
+                    );
+                    assert!(
+                        REASON_IDENTIFIERS.contains(&got.reason_id.as_str()),
+                        "\n\nREFUSED WITHOUT A D-24 IDENTIFIER.\n  command : {command}\n  \
+                         reason  : {}\n",
+                        got.reason_id
+                    );
+
+                    let written = ledger_lines_under(envelope.path());
+                    assert!(
+                        written.is_empty(),
+                        "\n\nA REFUSED FORGE COMMAND STILL WROTE A LEDGER LINE.\n\
+                         \n  command : {command}\
+                         \n  slot    : {slot:?}\
+                         \n  written : {written:?}\n\
+                         \nThe refusal must be taken BEFORE the ledger write, or an argv the \
+                         guard refuses consumes cap budget for a pull request that never \
+                         opens. Observed by WALKING the envelope root, not by reading one \
+                         expected path.\n"
+                    );
+                }
+            }
+        }
+    }
+
+    // --- the SLOT-COVERAGE floor ------------------------------------------
+    //
+    // The floor that makes "generatable" true rather than claimed. A slot the
+    // generator never drew is a slot covered only by the enumerated row that
+    // named it, which is the state this property exists to leave behind.
+    assert_eq!(
+        slots_seen.len(),
+        FORGE_SLOTS.len(),
+        "every slot this property varies must appear in at least one generated case. \
+         Missing: {:?}",
+        FORGE_SLOTS
+            .iter()
+            .filter(|slot| !slots_seen.contains(slot))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        displacers_seen.len(),
+        DISPLACING_OPTS.len(),
+        "the DISPLACED-endpoint slot must be generated with EVERY option it displaces \
+         with. `subcommand_words` skips only `FORGE_VALUE_OPTS`, so each of these option \
+         VALUES is an ordinary word to it and pushes the endpoint out of the first two — \
+         and an option nobody drew is a displacement nobody tested. Missing: {:?}",
+        DISPLACING_OPTS
+            .iter()
+            .filter(|(opt, _)| !displacers_seen.contains(opt))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        cases >= MIN_FORGE_SLOT_CASES,
+        "the forge-slot property must run over at least {MIN_FORGE_SLOT_CASES} generated \
+         cases. Got {cases}"
+    );
+    assert_eq!(
+        live_expansion_cases, cases,
+        "every generated forge case must carry a live expansion metacharacter, counted \
+         while generating. Got {live_expansion_cases} of {cases}"
+    );
+
+    println!(
+        "forge-slot corpus: {cases} generated cases over {} slots and {} displacing \
+         options, {} distinct commands, seed {SEED:#x}",
+        slots_seen.len(),
+        displacers_seen.len(),
+        commands.len()
+    );
 }
