@@ -1000,3 +1000,182 @@ fn a_dash_c_payload_whose_quoting_cannot_be_recovered_is_permitted_when_it_gover
     // `git commit -m 'unterminated` while this row runs.
     permits(root, "grep -c \"don't\" src/main.rs");
 }
+
+// ===========================================================================
+// 6. The residual `T-19-60`'s fix does NOT close, bounded on both sides
+// ===========================================================================
+//
+// **Everything below asserts a DISCLOSED LIMITATION, not a desirable
+// behaviour.** `19-11` accepted `T-19-74` and recorded it in
+// `resolve_program`'s own doc comment; these rows exist so that the residual has
+// measured edges rather than prose ones, and so that a future change which
+// closes it does so by DELETING these rows deliberately rather than by
+// discovering them failing.
+//
+// A residual whose edges are untested is a residual nobody can tell has grown.
+
+#[test]
+fn the_t_19_74_residual_is_permitted_and_the_cost_of_closing_it_is_measured_beside_it() {
+    let envelope = TempDir::new().expect("a temporary envelope root");
+    let root = envelope.path();
+
+    // **`T-19-74`.** The program is assembled by an expansion of a variable
+    // bound OUTSIDE this command line, behind a wrapper. `resolve_program`
+    // reaches `Ungoverned` and the guard permits it.
+    permits(root, "env $X push --force origin main");
+
+    // **The cost of the alternative, measured rather than asserted about.**
+    // Closing the row above would require refusing every `$VAR` in an ungoverned
+    // command. These two are what that would also refuse — an ordinary read of
+    // git's own output, and `cd`. A control that fails into unusability is a
+    // control that gets switched off, which is why `19-11` accepted the residual
+    // instead. If a future change closes `T-19-74`, these two rows are the bill.
+    permits(root, "echo $(git rev-parse HEAD)");
+    permits(root, "cd \"$HOME\"");
+}
+
+#[test]
+fn the_bounds_of_the_t_19_74_residual_are_refused_which_is_what_makes_it_narrow() {
+    let envelope = TempDir::new().expect("a temporary envelope root");
+    let root = envelope.path();
+
+    // **Bound 1 — the compound `19-SECURITY.md` calls the reason the threat is
+    // high is closed even where the program stays unresolved.** One token that
+    // both hides the command from layer 2 and disarms layer 3 is refused on its
+    // own account, at step 1, before resolution reaches anything.
+    refuses_under(
+        root,
+        "GIT_CONFIG_COUNT=0 env $X push --force origin main",
+        policy::REASON_HOOK_BYPASS_BLOCKED,
+    );
+
+    // **Bound 2 — binding a governed program name to a variable IN THE SAME
+    // COMMAND LINE is refused.** `resolve_program` step 7. This closes the
+    // same-command-line route, so only a binding from outside remains.
+    //
+    // NOTE the spelling: no `;`. See
+    // `the_residual_begins_exactly_at_the_command_line_boundary` below for why
+    // the semicolon form is a different case and what it measures.
+    refuses_under(
+        root,
+        "X=git env $X push --force origin main",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+
+    // **Bound 3 — the BARE-NAME form of the envelope-key rule is live, not only
+    // the assignment form.** `unset GIT_CONFIG_COUNT` spells no `=`, and a rule
+    // that only matched assignments would let the removal through while
+    // refusing the overwrite.
+    refuses_under(
+        root,
+        "unset GIT_CONFIG_COUNT && git push --force origin main",
+        policy::REASON_HOOK_BYPASS_BLOCKED,
+    );
+}
+
+#[test]
+fn the_residual_begins_exactly_at_the_command_line_boundary() {
+    let envelope = TempDir::new().expect("a temporary envelope root");
+    let root = envelope.path();
+
+    // **The two sides of the boundary, in one test so they cannot drift apart.**
+    //
+    // `resolve_program` step 7 refuses a governed program name bound to a
+    // variable in the SAME simple command. A `;` makes the binding a DIFFERENT
+    // command, and a binding from a previous command line is precisely what
+    // `T-19-74` discloses as out of reach: the guard is answering about one
+    // command at a time and has no memory of the last one.
+    //
+    // Both rows are asserted because the interesting fact is WHERE the closed
+    // route stops. Pinning only the refused side would let the boundary move
+    // outward unnoticed; pinning only the permitted side would not show that
+    // anything is closed at all.
+    refuses_under(
+        root,
+        "X=git env $X push --force origin main",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+    permits(root, "X=git; env $X push --force origin main");
+}
+
+// ---------------------------------------------------------------------------
+// 7. The disclosure in the code and the disclosure in the test cannot drift
+//    apart (`T-19-79`, D-27)
+// ---------------------------------------------------------------------------
+
+/// The doc comment immediately above the line that starts with `item`,
+/// normalised to one line.
+///
+/// The `///` markers are stripped and the lines joined with single spaces, so a
+/// phrase that happens to wrap in the source still matches — a pin that broke
+/// every time someone reflowed a comment would be a pin that gets deleted.
+fn doc_comment_above(source: &str, item: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let index = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with(item))
+        .unwrap_or_else(|| {
+            panic!(
+                "`{item}` was not found in the included source at all. A red here means the \
+                 function was renamed or moved, not that its disclosure is intact — every \
+                 assertion below would otherwise read an empty string and pass."
+            )
+        });
+
+    let mut start = index;
+    while start > 0 && lines[start - 1].trim_start().starts_with("///") {
+        start -= 1;
+    }
+
+    lines[start..index]
+        .iter()
+        .map(|line| line.trim_start().trim_start_matches('/').trim())
+        .collect::<Vec<&str>>()
+        .join(" ")
+}
+
+#[test]
+fn resolve_programs_own_doc_still_discloses_the_residual_it_does_not_cover() {
+    let doc = doc_comment_above(POLICY_SOURCE, "pub fn resolve_program(");
+
+    // -----------------------------------------------------------------------
+    // ANTI-VACUITY FIRST. An extraction that silently yielded an empty string
+    // would let every `contains` below pass having read nothing — the same
+    // shape of certification this whole file exists to argue against.
+    // -----------------------------------------------------------------------
+    assert!(
+        doc.len() > 400,
+        "the extracted doc region for `resolve_program` is {} bytes, which is too short to \
+         be the disclosure. The extractor has failed, and every substring assertion below \
+         would be reading an empty or truncated string. Region was: {doc:?}",
+        doc.len()
+    );
+
+    for required in [
+        // The identifier, so a reader can find the threat register row.
+        "T-19-74",
+        // The SHAPE, so the disclosure names what is actually open rather than
+        // only pointing at a ticket.
+        "env $X push --force",
+        "bound outside this command line",
+        // And that the shape is PERMITTED, which is the fact a reader needs.
+        "and is permitted",
+        // The paired over-refusal, disclosed in the same doc and pinned in
+        // `a_search_for_an_allowed_git_command_runs_and_a_search_for_a_refused_one_does_not`.
+        "T-19-75",
+    ] {
+        assert!(
+            doc.contains(required),
+            "`resolve_program`'s doc comment no longer contains `{required}`.\n\n\
+             This is the honesty statement `19-06`/`19-09` established the discipline for \
+             (D-27): an accepted limitation that can be deleted without a test failing is a \
+             limitation that gets deleted, and the reader of the code meets the resolver \
+             without meeting what it does not cover.\n\n\
+             The correct response is to RESTORE the disclosure, or to CLOSE the residual \
+             and delete these rows deliberately along with the pins in \
+             `the_t_19_74_residual_is_permitted_and_the_cost_of_closing_it_is_measured_beside_it`. \
+             Deleting this assertion is neither.\n\n\
+             Extracted region was: {doc}"
+        );
+    }
+}
