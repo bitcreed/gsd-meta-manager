@@ -53,9 +53,42 @@ const FAKE_SLOW: &str = concat!(
     "/tests/fixtures/fake-claude-slow.sh"
 );
 
-const ALIAS: &str = "locked";
+// ============================================================================
+// One alias per driving test, and they may NOT be consolidated back into one
+// (G-19-4, closed 2026-08-28).
+//
+// The envelope root is deliberately shared for the whole process lifetime —
+// `isolate_envelope_root` holds its `TempDir` in a `static` so the root outlives
+// every test that drives a run. A shared root plus a shared alias is a shared
+// `<root>/<alias>/settings.json`, and the writers of that one file do not agree
+// about its contents: four of these tests drive IN-PROCESS, so their
+// `current_exe()` is the test binary, while `the_lock_is_released_when_the_holding_process_dies`
+// spawns the REAL binary. `write_settings_in` persists and then re-reads that
+// path to verify (hooks.rs:1340-1341) and the compared value embeds
+// `current_exe()` through `guard_command` (hooks.rs:1281), so a sibling's atomic
+// rename landing inside the child's persist->verify window kills the child with
+// an envelope assertion failure BEFORE it reaches `lock::acquire` — and on
+// 2026-08-18 that surfaced as nothing but "the child driver never took the lock
+// within 30s".
+//
+// Per-test aliases give each test its own directory beneath the shared root, so
+// the window has nothing to open on.
+// `no_two_driving_tests_share_an_envelope_settings_path` enforces this
+// mechanically; it is not a comment anyone has to remember.
+// ============================================================================
 
-/// The alias for the early-exit reporting control below.
+/// `a_second_drive_reports_which_run_holds_the_lock`.
+const ALIAS_HOLDER_NAMED: &str = "lock-holder-named";
+/// `a_duplicate_start_refuses_promptly_rather_than_blocking`.
+const ALIAS_PROMPT_REFUSAL: &str = "lock-prompt-refusal";
+/// `acquiring_the_run_lock_does_not_block_the_async_runtime`.
+const ALIAS_BLOCKING_POOL: &str = "lock-blocking-pool";
+/// `the_losing_reader_does_not_truncate_the_lock_file`.
+const ALIAS_NO_TRUNCATION: &str = "lock-no-truncation";
+/// `the_lock_is_released_when_the_holding_process_dies` — the one whose holder is
+/// the real binary in its own process image.
+const ALIAS_HOLDER_DIES: &str = "lock-holder-dies";
+/// `a_child_that_dies_before_taking_the_lock_is_reported_with_its_status_and_stderr`.
 ///
 /// Deliberately NOT registered in that test's config: the refusal it wants is
 /// `OptInError::UnknownAlias`, raised at the registry lookup before any envelope
@@ -95,6 +128,9 @@ fn project_root() -> TempDir {
 /// The `set_var` happens exactly **once** per test binary, inside the
 /// `OnceLock` initialiser, and the `TempDir` is held by the `static` for the
 /// process lifetime so the root outlives every test that drives a run.
+///
+/// That sharing is what makes the per-test aliases above mandatory rather than
+/// tidy — see the G-19-4 block at their declaration.
 fn isolate_envelope_root() {
     static ROOT: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
     ROOT.get_or_init(|| {
@@ -108,11 +144,13 @@ fn isolate_envelope_root() {
 ///
 /// Built fresh per caller rather than shared: `Config` is not `Clone`, and each
 /// concurrent drive in these tests needs its own owned value.
-fn config_for(root: &Path) -> Config {
+/// The alias is a parameter rather than a global, because each test owns one
+/// (G-19-4).
+fn config_for(root: &Path, alias: &str) -> Config {
     isolate_envelope_root();
     let mut config = Config::new();
     config.projects.insert(
-        ALIAS.to_string(),
+        alias.to_string(),
         RegisteredProject {
             path: root.to_path_buf(),
             added: "2026-07-29T12:00:00Z".to_string(),
@@ -133,9 +171,9 @@ fn config_for(root: &Path) -> Config {
 }
 
 /// Drive arguments pointed at the paced stand-in.
-fn args(run_id: &str, heartbeats: &str, interval: &str) -> DriveArgs {
+fn args(alias: &str, run_id: &str, heartbeats: &str, interval: &str) -> DriveArgs {
     DriveArgs {
-        alias: nonblank(ALIAS),
+        alias: nonblank(alias),
         command: Some(nonblank("/gsd-progress")),
         target_phase: None,
         max_steps: None,
@@ -163,11 +201,26 @@ fn planning_of(root: &Path) -> PathBuf {
 /// Polls for the holder record rather than sleeping a fixed duration and hoping:
 /// a fixed sleep either flakes on a loaded machine or wastes the difference on
 /// every run, and neither is a property of the thing under test.
-async fn start_holder(root: &Path) -> (tokio::task::JoinHandle<Result<(), DriveError>>, LockHolder) {
+///
+/// The holder and the second drive within a single test share ONE alias
+/// deliberately: they are contending for one project, and the lock lives in that
+/// project's `.planning` directory. Both are in-process, so both derive the same
+/// `current_exe()` and write byte-identical settings — the mismatch G-19-4
+/// records only ever existed between the in-process siblings and the real-binary
+/// child.
+async fn start_holder(
+    root: &Path,
+    alias: &str,
+) -> (tokio::task::JoinHandle<Result<(), DriveError>>, LockHolder) {
     let root_owned = root.to_path_buf();
+    let alias_owned = alias.to_string();
     let handle = tokio::spawn(async move {
-        let config = config_for(&root_owned);
-        drive(args(RUN_A, A_HEARTBEATS, A_INTERVAL), &config).await
+        let config = config_for(&root_owned, &alias_owned);
+        drive(
+            args(&alias_owned, RUN_A, A_HEARTBEATS, A_INTERVAL),
+            &config,
+        )
+        .await
     });
 
     let planning = planning_of(root);
@@ -181,9 +234,9 @@ async fn start_holder(root: &Path) -> (tokio::task::JoinHandle<Result<(), DriveE
 }
 
 /// Attempt a second drive against the same project, in this process.
-async fn second_drive(root: &Path) -> DriveError {
-    let config = config_for(root);
-    drive(args(RUN_B, "1", "0"), &config)
+async fn second_drive(root: &Path, alias: &str) -> DriveError {
+    let config = config_for(root, alias);
+    drive(args(alias, RUN_B, "1", "0"), &config)
         .await
         .expect_err("a second drive against a live run must be refused")
 }
@@ -313,10 +366,10 @@ async fn wait_for_lock_or_report(
 #[tokio::test]
 async fn a_second_drive_reports_which_run_holds_the_lock() {
     let root = project_root();
-    let (a, holder) = start_holder(root.path()).await;
+    let (a, holder) = start_holder(root.path(), ALIAS_HOLDER_NAMED).await;
     assert_eq!(holder.run_id, RUN_A, "run A recorded itself as the holder");
 
-    let err = second_drive(root.path()).await;
+    let err = second_drive(root.path(), ALIAS_HOLDER_NAMED).await;
 
     let DriveError::Lock(LockError::HeldBy {
         run_id,
@@ -377,7 +430,7 @@ async fn a_second_drive_reports_which_run_holds_the_lock() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_duplicate_start_refuses_promptly_rather_than_blocking() {
     let root = project_root();
-    let (a, _holder) = start_holder(root.path()).await;
+    let (a, _holder) = start_holder(root.path(), ALIAS_PROMPT_REFUSAL).await;
 
     // The one test that distinguishes a non-blocking acquire from a blocking one
     // (D-20.4). A blocking `flock` would wait here until run A finished and then
@@ -386,7 +439,7 @@ async fn a_duplicate_start_refuses_promptly_rather_than_blocking() {
     // generous by orders of magnitude against a `LOCK_NB` syscall, and run A
     // stays alive for about six.
     let root_owned = root.path().to_path_buf();
-    let attempt = tokio::spawn(async move { second_drive(&root_owned).await });
+    let attempt = tokio::spawn(async move { second_drive(&root_owned, ALIAS_PROMPT_REFUSAL).await });
 
     let refused = tokio::time::timeout(Duration::from_secs(1), attempt).await;
 
@@ -438,7 +491,7 @@ async fn acquiring_the_run_lock_does_not_block_the_async_runtime() {
         .expect("this test takes the lock before anything contends for it");
 
     let root_owned = root.path().to_path_buf();
-    let attempt = tokio::spawn(async move { second_drive(&root_owned).await });
+    let attempt = tokio::spawn(async move { second_drive(&root_owned, ALIAS_BLOCKING_POOL).await });
 
     let err = tokio::time::timeout(Duration::from_secs(5), attempt)
         .await
@@ -468,13 +521,13 @@ async fn acquiring_the_run_lock_does_not_block_the_async_runtime() {
 #[tokio::test]
 async fn the_losing_reader_does_not_truncate_the_lock_file() {
     let root = project_root();
-    let (a, _holder) = start_holder(root.path()).await;
+    let (a, _holder) = start_holder(root.path(), ALIAS_NO_TRUNCATION).await;
 
     let lock_file = lock::lock_path(&planning_of(root.path()));
     let before = std::fs::read(&lock_file).expect("the holder's record is on disk");
     assert!(!before.is_empty(), "the holder wrote a non-empty record");
 
-    let _ = second_drive(root.path()).await;
+    let _ = second_drive(root.path(), ALIAS_NO_TRUNCATION).await;
 
     let after = std::fs::read(&lock_file).expect("the lock file survives a losing attempt");
     assert_eq!(
@@ -502,7 +555,8 @@ async fn the_lock_is_released_when_the_holding_process_dies() {
     // in its own process image rather than a task in this one.
     let config_dir = TempDir::new().expect("temp dir for the config");
     let config_path = config_dir.path().join("config.json");
-    save_config(&config_for(root.path()), &config_path).expect("write the driver's config");
+    save_config(&config_for(root.path(), ALIAS_HOLDER_DIES), &config_path)
+        .expect("write the driver's config");
 
     // Files, not pipes, and not `Stdio::null()`. Null'd output is what made a
     // child that died in envelope establishment indistinguishable from a child
@@ -512,8 +566,12 @@ async fn the_lock_is_released_when_the_holding_process_dies() {
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_gsd-meta-manager"))
         .arg("--config")
         .arg(&config_path)
+        // The child inherits `GSD_MM_ENVELOPE_ROOT` from this process, which is
+        // what carries the isolation across the process boundary. The ROOT stays
+        // shared; only the alias — and therefore the directory beneath it — is
+        // this test's own (G-19-4).
         .arg("drive")
-        .arg(ALIAS)
+        .arg(ALIAS_HOLDER_DIES)
         .arg("--command")
         .arg("/gsd-progress")
         .arg("--run-id")
