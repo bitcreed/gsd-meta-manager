@@ -364,13 +364,15 @@ Plans:
   - `git stash` must be forbidden in the driver's allowlist outright
 
 **Research**: skip — branch-protection and pre-push-hook patterns are well-established practice (GitHub Copilot's `copilot/`-prefix model is a direct precedent)
-**Plans**: 8/8 executed, plus 2 UAT gap-closure plans (19-09, 19-10) and 4 security gap-closure plans (19-11, 19-12, 19-13, 19-14) across three audit rounds
+**Plans**: 8/8 executed, plus 2 UAT gap-closure plans (19-09, 19-10) and 5 security gap-closure plans (19-11, 19-12, 19-13, 19-14, 19-15) across three audit rounds
 
 Plans:
 
 - [x] 19-13-PLAN-CHECK.md
 - [x] 19-13-PLAN.md
+- [x] 19-14-PLAN-CHECK.md
 - [ ] 19-14-PLAN.md
+- [ ] 19-15-PLAN.md
 
 **Wave 1**
 
@@ -418,9 +420,10 @@ Plans:
 
 - [x] 19-13-PLAN.md — T-19-60's wrapper-operand sub-class closed by establishing COMMAND POSITION structurally (head shortcut, refusal on two candidates behind a wrapper prefix), T-19-81 on both halves, T-19-82's key-set gap with an unfiltered drift pin, and T-19-83's corpus vacuity — with T-19-86 registered, pinned at its current permitted verdict and left open
 
-**Wave 12** *(gap closure from audit 3 of `/gsd-secure-phase 19`, 2026-08-29 — three findings, one root cause)*
+**Wave 12** *(gap closure from audit 3 of `/gsd-secure-phase 19`, 2026-08-29 — three findings, one root cause; split into Rule A and Rule B so each is shown separately load-bearing, 19-15 blocked on 19-14)*
 
-- [ ] 19-14-PLAN.md — T-19-87, T-19-88, T-19-89, T-19-90: `Token.expansion` is unavailable to `classify_git` and `pr_command_label`, so the words every classifier decision turns on are exempt from every expansion rule. Closed by governing the DECISION REGION — exactly the words each matched arm reads: the git verb plus `config`'s key operand, the forge's first TWO subcommand words plus the `api` decision words — with operands left free so commit messages and PR titles carrying `$` keep working; the brace/paren fragmentation closed on top of it POSITIONALLY, by recording which boundaries severed a word and refusing a governed program found after a closer, without changing what any separator does and without reading any name; the generative alphabets given expansion metacharacters as a class with a per-alphabet floor and a forge-slot property. Registers T-19-91
+- [ ] 19-14-PLAN.md — Rule A. T-19-88 and T-19-90, plus six of T-19-87's eight rows: `Token.expansion` is unavailable to `classify_git` and `pr_command_label`, so the words every classifier decision turns on are exempt from every expansion rule. Closed by governing the DECISION REGION — exactly the words each matched arm reads: the git verb plus `config`'s key operand, the forge's first TWO subcommand words plus the `api` method, endpoint and both flag-ness spellings — with operands left free so commit messages and PR titles carrying `$` keep working. Delivers the Rule A half of the corpus widening with a fresh-root forge-slot property, registers T-19-91, and **ends with two severed-prefix rows deliberately RED** for 19-15
+- [ ] 19-15-PLAN.md — Rule B. T-19-87's remaining two rows and T-19-89: a segment whose immediately preceding operator is a word-splitting CLOSER continues an enclosing word, so its first token is not a command position and a governed program found there is refused. POSITIONAL — reads no name, no substring and no length; `SEPARATORS` unchanged, the flush flag set for `( ) { }` only, the opener excluded so command substitutions keep being classified. Confirms 19-14's carry-forward rows still red before fixing them, completes the alphabets, corrects the false T-19-87 pin by deleting it and re-homing its rows
 
 **UI hint**: no — this phase ships no visual surface. It delivers a policy module, two git hook
 stubs, a `PreToolUse` guard, an environment envelope and a secret scanner. The one user-visible
