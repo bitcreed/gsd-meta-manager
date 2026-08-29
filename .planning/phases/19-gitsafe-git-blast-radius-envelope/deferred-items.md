@@ -502,3 +502,89 @@ at `high`: `T-19-86`, `T-19-91`, `T-19-92`, `T-19-93`.
 
 **Suggested owner.** The round-5 gap-closure plan, together with `T-19-86` and
 `T-19-91`.
+
+---
+
+## `T-19-96` — a glob in a PUSH FLAG (registered by 19-16)
+
+**Symptom.** Measured at `e842fa3`, one fresh envelope root, walk after:
+
+```
+exit=0  git push --forc? origin refs/heads/gsd-auto/alpha/w   <- the glob in a push FLAG
+exit=2  git push --force origin refs/heads/gsd-auto/alpha/w   [force_push_blocked]  <- the control
+```
+
+Confirmed under `bash` against an argv-printing `git` shim: with a file named
+`--force` in the working directory the shell assembles the literal command. The
+verdict is invariant under the working directory — measured identically with and
+without an in-namespace project root — because the explicit refspec means
+`push_needs_resolved_dests` answers false and no push context is resolved.
+
+**Mechanism.** `19-14`'s git decision region is the VERB plus `classify_config`'s
+key operand. `classify_push`'s FLAGS are a further arm, structurally identical to
+`classify_reflog`'s and `classify_symbolic_ref`'s operands (`T-19-91`):
+`classify_push` reads `--force`, `-f`, `--force-with-lease`, `--delete` and
+`--no-verify` by name, and a flag it cannot read falls to an `Allow` arm. A glob
+sets no `Token.expansion` bit at all, which is the same root cause as `T-19-94`
+one slot to the right.
+
+**Why it is REGISTERED rather than fixed.** Round discipline, and *not* a
+blast-radius judgement. It was found while PLANNING round 5, and a plan cannot
+both discover a threat and be the plan that measured it fail first — the
+discipline `19-14` established for `T-19-91` and `19-13` for `T-19-86`. Plan
+19-16 measures it, pins it at its measured verdict, and adds no rule; plan 19-17
+is scoped to the decision region `19-14` defined and does not extend it either.
+
+**Second carrier.** `git push` DOES have `pre-push` behind it, which `git stash`
+and `git update-ref` do not. That asymmetry is why this is rated `medium` rather
+than `high`, and it is a narrowing rather than a covering: layer 3 sees what git
+does regardless of how git was invoked, but only for `push`.
+
+**Pinned at.**
+`tests/envelope_literal_decision.rs::the_t_19_96_push_flag_glob_is_measured_and_registered_rather_than_fixed`,
+which asserts the measured exit 0 and the literal control's exit 2. If a later
+change reaches this cell the pin turns red and the change is disclosed rather
+than absorbed.
+
+**Severity.** medium, open — below `high`, so it does not count toward
+`threats_open`.
+
+**Suggested owner.** A round-6 gap-closure plan, together with `T-19-86` and
+`T-19-91`, or `/gsd-secure-phase 19`'s re-audit.
+
+---
+
+## Round-5 corpus status (recorded by 19-16) — `T-19-92` … `T-19-95` all still OPEN
+
+Plan 19-16 wrote the corpus and the reproducers and stopped. **It closes
+nothing**; plan 19-17 writes the rule. Which file carries which class:
+
+* **`tests/envelope_literal_decision.rs`** (new, 41 tests, 21 RED) — audit 4's
+  `T-19-92`/`T-19-93`/`T-19-94` reproducers re-measured at `e842fa3`, all
+  fourteen reproducing at their recorded verdicts; the position-0 splice; the
+  concatenated, multi-expansion, range, increment-range, nested-alternative and
+  quoted-run spellings; the flag-slot splice pinned in the IN-NAMESPACE
+  configuration; the two glob decision-operand cells; the `T-19-93` counted pair
+  with its quoted positive control and its `…/pulls/7` boundary control; the cost
+  rows each beside a permitted twin and a written clause derivation; the
+  must-not-move controls; the Rule B mechanism pin over
+  `policy::split_segments_with_heads`; the `T-19-91` in-namespace measurement;
+  and the registered-only `T-19-96` row.
+* **`tests/envelope_wrapper_class.rs`** (6 new tests, 5 RED) — the seven
+  unreadable classes with degenerate-proof predicates and per-alphabet,
+  per-class and counted floors; 22 new `REFUSED_BASES` entries; brace entries in
+  `DECOY_OPERANDS`, `EXPANSION_WRAPPERS` and a new `SEVERED_BRACE_PREFIXES`;
+  invariant glob and literal-brace entries in `ASSIGNMENT_PREFIXES`, `WRAPPERS`
+  and `PERMITTED_BASES`; and two new forge-slot properties, one asserting refusal
+  and one asserting a LEDGER LINE.
+
+`T-19-95` is closed only when plan 19-17's rule is certified by this corpus,
+because a corpus is evidence about a control and there is no control yet.
+
+**Two rows are NOT what round 5 was written expecting**, and both are recorded in
+`19-SECURITY.md`'s plan-19-16 execution record rather than absorbed: the
+comma-list spellings of the concatenated class are class COVERAGE rather than
+reproduced force pushes (a comma list of N alternatives produces N words, and the
+surplus word lands where real git rejects it), and `git push {--force,origin} main`
+is cwd-dependent — exit 0 in the namespace a driven run is designed to be in,
+exit 2 outside it under an unrelated arm.

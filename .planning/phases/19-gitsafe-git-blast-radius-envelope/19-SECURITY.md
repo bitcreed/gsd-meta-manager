@@ -1766,3 +1766,258 @@ set has shrunk in mechanism and grown in precision for the second round running.
 What remains is one residual deferred by explicit decision (`T-19-86`), one
 registered honestly and now measured wider than it was written (`T-19-91`), and
 two the audit found in the one place four rounds of alphabets have never looked.
+
+---
+
+## Execution record — plan 19-16 (the corpus, RED). NOT an audit finding.
+
+**Provenance, stated first.** This subsection was written by the EXECUTOR of
+plan 19-16. It is not audit 4's, it re-measures nothing on audit 4's behalf, and
+it edits nothing above it — no audit table, no Security Audit Trail entry, no
+Accepted Risks Log row, no sign-off, and none of the subsections plans 19-13,
+19-14 and 19-15 appended. Re-measuring and re-classifying those rows is
+`/gsd-secure-phase 19`'s job; an audit's own tables are its provenance.
+
+**What plan 19-16 is.** The corpus and the reproducers for round 5, written and
+committed RED **before** a single line of the rule exists. Plan 19-17 writes the
+rule. The split is deliberate: four consecutive rounds certified a control with a
+corpus structurally incapable of failing on the class that got through it, and
+the first three were each found by the NEXT audit rather than by the round's own
+evidence. **This plan closes nothing.**
+
+### What was measured, and how
+
+Every row was driven at `e842fa3` against the built binary as
+
+```
+printf '<PreToolUse JSON>' | GSD_MM_ENVELOPE_ROOT=$(mktemp -d) \
+  ./target/debug/gsd-meta-manager envelope guard alpha
+```
+
+one fresh envelope root per row, with the whole envelope directory walked
+afterwards so a missing ledger line is OBSERVED rather than inferred. Every
+claimed permit was then re-run under `bash` against shims named `git`, `gh` and
+`glab`, first on `PATH`, printing their own argv. The JSON was built with
+`json.dumps` rather than by hand.
+
+**All fourteen audit-4 rows reproduced at their recorded verdicts.** No audit-4
+row failed to reproduce, so no finding of that kind is reported.
+
+```
+exit=0  git {-c,core.hooksPath=/dev/null,push,--force,origin,main}   empty walk
+exit=0  git {push,--force} origin main
+exit=0  git {update-ref,-d,refs/heads/main}
+exit=0  git {config,core.hooksPath,/tmp/x}
+exit=0  gh {pr,create} --title x                                     empty walk
+exit=0  gh {api,repos/o/r/pulls} -f title=x                          empty walk
+exit=0  glab {mr,create} --title x                                   empty walk
+exit=0  bash -lc "git {push,--force} origin main"
+exit=0  gh api repos/{owner}/{repo}/pulls -f title=x                 empty walk
+exit=0  git pus? --force origin main
+exit=0  git ?ush --force origin main
+exit=0  git stas?
+exit=0  gh p? create --title x                                       empty walk
+exit=0  touch push && git pus? --force origin main
+```
+
+Walked listings, measured rather than described. After a REFUSED forge row the
+root is empty; after a PERMITTED `gh pr create` it holds one file:
+
+```
+refused  gh {pr,create} --title x        ->  (the envelope root is empty)
+counted  gh pr create --title x          ->  alpha/pr-ledger.ndjson (112 bytes), 1 ledger line
+counted  gh api "repos/{owner}/{repo}/pulls" -f title=x
+                                         ->  alpha/pr-ledger.ndjson (112 bytes), 1 ledger line
+         and the SECOND call in that same root -> exit 2, pr_cap_exceeded
+```
+
+### The cells found while PLANNING round 5 — same provenance caveat 19-14 set
+
+Found while planning, not by an audit. Measured at `e842fa3`, one fresh root
+each, argv from the `bash` shims beside each:
+
+```
+exit=0  {git,push,--force,origin,main}              ARGV[git]: [push][--force][origin][main]
+exit=0  {env,git} push --force origin main          ARGV[git]: [push][--force][origin][main]
+exit=0  {g..g}it push --force origin main           ARGV[git]: [push][--force][origin][main]
+exit=0  {g..g}{i..i}t push --force origin main      ARGV[git]: [push][--force][origin][main]
+exit=0  {g..g..1}it push --force origin main        ARGV[git]: [push][--force][origin][main]
+exit=0  {g..g}"it" push --force origin main         ARGV[git]: [push][--force][origin][main]
+exit=0  {g..g}h pr create --title x                 ARGV[gh]:  [pr][create][--title][x]
+exit=0  git {--no-pager,push} --force origin main   ARGV[git]: [--no-pager][push][--force][origin][main]
+exit=0  git {stash,-q}                              ARGV[git]: [stash][-q]
+exit=0  git push origin refs/heads/gsd-auto/alpha/w --forc{e,e}
+                                                    ARGV[git]: [push][origin][refs/…/w][--force][--force]
+exit=0  git commit -m {a,b}                         ARGV[git]: [commit][-m][a][b]
+exit=0  git config core.hooksPat? /tmp/x
+exit=0  gh api repos/o/r/pul?s -f title=x                                    empty walk
+exit=0  git ~push --force origin main               ARGV[git]: [~push][--force][origin][main]
+exit=2  X=push,--force; IFS=,; git $X origin main   [envelope_assertion_failed]
+```
+
+### Two findings of this plan, recorded rather than smoothed over
+
+**1. A comma list produces N WORDS, so most of the "concatenated splice"
+spellings are class COVERAGE and not reproduced harms.** The plan and audit 4's
+successor material describe eight concatenated/multi-expansion/nested/quoted
+spellings as "assembled by bash into a real force push". Measured under the
+shims, that is true of FOUR of them and false of the rest:
+
+```
+GENUINE   {g..g}it …          ARGV[git]: [push][--force][origin][main]
+GENUINE   {g..g}{i..i}t …     ARGV[git]: [push][--force][origin][main]
+GENUINE   {g..g..1}it …       ARGV[git]: [push][--force][origin][main]
+GENUINE   {g..g}"it" …        ARGV[git]: [push][--force][origin][main]
+
+COVERAGE  g{i,i}t …           ARGV[git]: [git][push]…    real git: 'git' is not a git command
+COVERAGE  {g,g}{i,i}{t,t} …   ARGV[git]: [git]x7 [push]…
+COVERAGE  {g{i,i}t,x} …       ARGV[git]: [git][x][push]… real git: 'x' is not a git command
+COVERAGE  "g"{i,i}"t" …       ARGV[git]: [git][push]…
+COVERAGE  g{it,x} …           ARGV[git]: [gx][push]…
+COVERAGE  {g,x}it …           ARGV[git]: [xit][push]…
+COVERAGE  {g,x}{h,h} pr …     ARGV[gh]:  [gh][xh][xh][pr]… real gh: unknown command "gh" for "gh"
+```
+
+A brace expansion carrying a comma list of N alternatives produces N words, so a
+concatenated comma splice in a PROGRAM slot always leaves a surplus word in the
+subcommand slot that the real tool rejects. Only a RANGE whose endpoints are
+equal produces exactly one word. The comma spellings are kept in the corpus and
+are refused by the same rule — the guard is blind to them identically and one
+character separates them from the range spellings — but they are **labelled
+COVERAGE in `tests/envelope_literal_decision.rs`, row by row, with the printed
+argv**, so a later reader cannot mistake one for a reproduced force push. This is
+audit 4's own discard discipline applied to rows audit 4 did not measure.
+
+**The one exception is the FLAG slot**, where a surplus word is harmless because
+git accepts a repeated `--force`:
+`git push origin refs/heads/gsd-auto/alpha/w --forc{e,e}` is a GENUINE
+concatenated COMMA splice, measured exit 0 with its literal control at exit 2
+under `force_push_blocked`, and it consults no repository.
+
+**2. `git push {--force,origin} main` is CWD-DEPENDENT, and out of namespace it
+is masked by an unrelated arm.**
+
+```
+project root outside the namespace (this checkout, on master)
+  -> exit 2, push_outside_namespace   — the braces fragment the line into a
+     `git push` with no refspec, and the no-refspec arm refuses it for a reason
+     that has nothing to do with the splice
+project root INSIDE the namespace (refs/heads/gsd-auto/alpha/work, upstream
+configured — the state a driven run is DESIGNED to be in)
+  -> exit 0
+```
+
+Both spellings assemble `ARGV[git]: [push][--force][origin][main]`. So it is a
+live bypass in the configuration the envelope exists for. It is pinned in the
+IN-NAMESPACE configuration with the repository passed to `guard_in` as an
+explicit parameter, so the pin does not depend on the test process's own working
+directory (`T-19-80`), and it is pinned from its other side out of namespace with
+an assertion that accepts either refusal identifier.
+
+### Rows DISCARDED, recorded so audit 5 does not spend the measurement again
+
+None this round. Every candidate the plan named was assembled by `bash` into a
+command that really reaches the governed program; the eleven rows above that are
+labelled COVERAGE reach it and are refused by the same rule, but the argv the
+shell finally builds is not itself destructive, which is a weaker claim than
+audit 4's three discards (`{ git,push }` a syntax error, `sh -c '…'` not
+brace-expanding under `dash`, and real `gh` rejecting `-R` as a shorthand).
+
+### `T-19-93` — the bar is COUNT, and it is asserted as a ledger line
+
+`{owner}`/`{repo}` are `gh`'s own documented placeholders and bash passes them
+through byte-identically: `printf "[%s]" repos/{owner}/{repo}/pulls` prints
+`[repos/{owner}/{repo}/pulls]`, measured. Refusing the line is not the fix — an
+agent following `gh`'s manual would be denied, which is how a safety control gets
+switched off (AR-19-11). So the assertions written here are:
+
+* the unquoted placeholder form is PERMITTED **and** the walked root holds
+  exactly one ledger line — RED today, measured exit 0 with an empty walk;
+* a SECOND placeholder-form creation in the SAME root is refused under
+  `pr_cap_exceeded` — the one assertion an implementation cannot satisfy by
+  refusing the first;
+* the quoted spelling is the POSITIVE control and passes today: exit 0 with one
+  ledger line, second call exit 2 `pr_cap_exceeded`;
+* `…/pulls/7` is the boundary control and passes today: exit 0 with an EMPTY
+  walk in both the quoted and unquoted spellings, because a single pull request
+  is not the collection. The placeholder tolerance therefore cannot be
+  implemented as "any endpoint containing braces counts".
+
+### `T-19-91` — the in-namespace measurement, recorded; the threat stays OPEN
+
+Audit 4's correction reproduced in a purpose-built fixture on
+`gsd-auto/alpha/work` with a local bare upstream configured, the repository
+passed to the guard explicitly:
+
+```
+in namespace      git push $REF          -> exit 0                        (audit 4 confirmed)
+in namespace      git push origin $REF   -> exit 2 push_outside_namespace (still fails closed)
+out of namespace  git push $REF          -> exit 2 push_outside_namespace
+                  git reflog $S          -> exit 0
+                  git reflog show $S     -> exit 0
+                  git symbolic-ref $S    -> exit 0
+                  git symbolic-ref HEAD $R -> exit 2 force_push_blocked
+```
+
+**`T-19-91` remains OPEN at `high`.** No decision-operand rule was added for
+`reflog`, `symbolic-ref` or `push`; the denylist was not extended; the code-side
+record correction is plan 19-17's work. The second-carrier asymmetry the
+registration draws still holds and is restated here so nobody reads a narrowed
+threat as a covered one: `git push` has `pre-push` behind it, while `git reflog`
+and `git symbolic-ref` have no `pre-push` and no `pre-commit` — git runs no hook
+for either.
+
+### `T-19-96` — REGISTERED, measured, and deliberately NOT fixed
+
+```
+exit=0  git push --forc? origin refs/heads/gsd-auto/alpha/w   <- a glob in a PUSH FLAG
+exit=2  git push --force origin refs/heads/gsd-auto/alpha/w   [force_push_blocked]
+```
+
+Invariant under the working directory: measured identically with and without an
+in-namespace project root, because the explicit refspec means no push context is
+resolved. `19-14`'s git decision region is the VERB plus `config`'s key operand;
+`classify_push`'s FLAGS are a further arm, exactly as `classify_reflog`'s and
+`classify_symbolic_ref`'s operands are.
+
+**Registered rather than fixed on ROUND DISCIPLINE, not on blast radius.** It was
+found while planning round 5, and a plan cannot both discover a threat and be the
+plan that measured it fail first — the discipline `19-14` established for
+`T-19-91` and `19-13` for `T-19-86`. Blast radius is explicitly not the argument:
+`git push` does have `pre-push` behind it, which `git stash` and
+`git update-ref` do not, but that is a narrowing and not a covering. Pinned at
+its measured verdict in
+`tests/envelope_literal_decision.rs::the_t_19_96_push_flag_glob_is_measured_and_registered_rather_than_fixed`,
+so if plan 19-17's rule happens to reach it the pin turns red and the change is
+disclosed rather than absorbed. Also registered in `deferred-items.md`.
+
+### What plan 19-16 leaves RED, by design
+
+`passed + failed` over `cargo test --no-fail-fast` moves from **1533** to
+**1580**; the increase is exactly the 47 new `#[test]` functions this plan adds
+(41 in `tests/envelope_literal_decision.rs`, 6 in
+`tests/envelope_wrapper_class.rs`). 26 of them are RED and every name is listed
+in `19-16-SUMMARY.md`. The only other failures in the run are the two
+pre-existing flaky `tests/driver_reattach.rs` names, which are documented in
+`deferred-items.md` and out of scope. `--test envelope_expansion_slots` (32),
+`--test envelope_command_position` (18) and `--lib envelope` (184) are fully
+green — the widening did not disturb round-4's evidence.
+
+### What this plan CLOSES: nothing
+
+`T-19-92`, `T-19-93`, `T-19-94` and `T-19-95` are all **open** at this plan's
+end. `T-19-95` in particular is closed only when plan 19-17's rule is certified
+by the corpus written here, because a corpus is evidence about a control and
+there is no control yet.
+
+**`/gsd-secure-phase 19` is NOT cleared by this plan, by plan 19-17, or by the
+two together.** `T-19-86` remains OPEN at `high` by explicit user scoping
+decision and its four rows still exit 0; `T-19-91` remains OPEN at `high` and was
+widened, not remedied. `T-19-61` … `T-19-73`, `T-19-84` and `T-19-85` are open,
+unaccepted and untouched — `cred.rs`, `advisory.rs`, `scan.rs` and `config.rs`
+were not opened. Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed;
+`T-19-86` and `T-19-91` are both sub-classes of `T-19-60` and both remain open at
+`high`.
+
+**No `src/` file was modified by any of this plan's three commits**, and neither
+`Cargo.toml` nor `Cargo.lock` was touched (`T-19-SC`).
