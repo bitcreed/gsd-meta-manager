@@ -51,7 +51,7 @@
 // and `Cargo.toml`/`Cargo.lock` are untouched by this plan.
 // ============================================================================
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use gsd_meta_manager::envelope::{hooks, policy};
@@ -229,6 +229,24 @@ const ASSIGNMENT_PREFIXES: &[&str] = &[
     "EMPTY= ",
     "FOO=$BAR ",
     "C=GIT_CONFIG ",
+    // -----------------------------------------------------------------------
+    // `T-19-95`, the round-5 half — a value carrying a PATHNAME-EXPANSION
+    // character.
+    //
+    // **Why a glob and NOT a brace expansion here**, which is the substance of
+    // the split this round makes between the alphabets. This alphabet feeds
+    // properties that assert the wrapped verdict EQUALS the unwrapped one, and
+    // it is shared with `PERMITTED_BASES`. `FOO={a,b} git status` is refused on
+    // its own account — `}` is a word-splitting closer, so Rule B refuses the
+    // segment behind it, measured exit 2 under `envelope_assertion_failed` — and
+    // after `19-17` it is a pinned COST row. Folding one in would make the
+    // permitted corpus STRICTER than its base and break invariance in the same
+    // direction this file already records for the `GIT_CONFIG_COUNT=0` prefix.
+    //
+    // A glob in an assignment VALUE is nobody's decision word, sets no expansion
+    // bit and severs nothing, so its verdict is genuinely invariant: measured
+    // exit 0 with `git status` behind it and exit 0 with `ls -la` behind it.
+    "GLOB=*.rs ",
 ];
 
 /// The wrapper alphabet: thirty whole prefixes, each with its own options.
@@ -273,6 +291,23 @@ const WRAPPERS: &[&str] = &[
     // on a list of wrapper names cannot possibly contain it, so a corpus that
     // includes it can fail on the class in a way a corpus of real names cannot.
     "made-up-wrapper-9000 --flag",
+    // `T-19-95`, the round-5 half — a wrapper whose OPERAND carries a
+    // pathname-expansion character. Invariant for the same reason the glob
+    // assignment value above is: the operand is nobody's decision word, it sets
+    // no expansion bit and it severs nothing. Measured exit 0 with `git status`
+    // behind it and exit 0 with `ls -la` behind it.
+    //
+    // **A brace expansion does NOT belong here** — it would sever the base and
+    // make this alphabet stricter than its own bases — and neither does a
+    // QUOTED literal brace pair, which is the other spelling that would keep the
+    // verdict invariant: the outer `ShellLayer`s quote the whole payload, so a
+    // `'` or a `"` inside a wrapper entry produces illegal shell under
+    // `ShSingleQuoted` or `BashDashLC` respectively, and a generator that
+    // emitted illegal shell would be exercising the splitter's error path while
+    // claiming to exercise the class. The literal-brace pair is drawn by
+    // `PERMITTED_BASES` instead, where it sits at the END of the line and its
+    // closer has nothing left to sever.
+    "env -u SOME_VAR*",
 ];
 
 /// The optional outer shell layer, so the payload half of the class is generated
@@ -444,9 +479,92 @@ const REFUSED_BASES: &[&str] = &[
     "git $V --force origin main",
     "git ${V}push --force origin main",
     "git $(true)push --force origin main",
+    // -----------------------------------------------------------------------
+    // `T-19-95`, the round-5 half — the classes that make a word UNREADABLE
+    // rather than the ones that MARK an expansion.
+    //
+    // **Every entry below is measured at exit 0 against the pre-`19-17` tree**,
+    // so all of them are RED at the invariance property's own floor 2, which
+    // measures every base refused UNWRAPPED before the wrapping loop runs. That
+    // is the non-vacuity this widening exists for: audit 4 verified by reading
+    // every entry of every alphabet in this file that **not one contained a
+    // comma inside braces, a `*`, a `?` or a `[`**, so 2100 generated cases
+    // certified a fix against a class the corpus could not draw. This is
+    // `T-19-76`'s failure mode for the FOURTH consecutive round.
+    //
+    // **The classes, and why a single "brace expansion" class is not enough.**
+    // `{a,b}` standing as its own word satisfies a whole-word splice floor and
+    // nothing else. A corpus of whole-word splices cannot fail on
+    // `{g..g}it push --force origin main`, and a corpus of SINGLE-BRACE entries
+    // cannot fail on `{g..g}{i..i}t push --force origin main` — both measured at
+    // exit 0 here, both found in plan-check one round apart. So the classes are
+    // split and each is drawn separately.
+    //
+    // **GENUINE vs. COVERAGE, measured under `bash` against argv-printing
+    // shims.** A comma list of N alternatives produces N WORDS, so a
+    // concatenated COMMA splice in a program slot always leaves a surplus word
+    // in the subcommand slot that real git rejects
+    // (`git git push --force …` -> `git: 'git' is not a git command`). Only a
+    // RANGE with equal endpoints produces exactly ONE word. The comma spellings
+    // are kept because the guard is blind to them identically and one character
+    // separates them from the range spellings, but they are CLASS COVERAGE
+    // rather than reproduced harms and `tests/envelope_literal_decision.rs`
+    // records which is which, row by row, with the printed argv.
+    //
+    // WHOLE-WORD splice, verb slot and position 0:
+    "git {push,--force} origin main",
+    "{git,push,--force,origin,main}",
+    "{env,git} push --force origin main",
+    "git {--no-pager,push} --force origin main",
+    "git {stash,-q}",
+    "git {update-ref,-d,refs/heads/main}",
+    "git {config,core.hooksPath,/tmp/x}",
+    // CONCATENATED splice — a non-empty literal run adjacent to the braces in
+    // the SAME word, which no whole-word entry above can satisfy:
+    "{g..g}it push --force origin main",
+    "g{i,i}t push --force origin main",
+    "g{it,x} push --force origin main",
+    "{g,x}it push --force origin main",
+    // CONCATENATED splice in a FLAG slot — the one comma spelling that is
+    // GENUINE, because git accepts a repeated `--force` so the surplus word is
+    // harmless. The refspec is explicit and in-namespace, so
+    // `push_needs_resolved_dests` answers false and no repository is consulted.
+    "git push origin refs/heads/gsd-auto/alpha/w --forc{e,e}",
+    // RANGE, including the INCREMENT form, which is neither a comma list nor a
+    // two-endpoint range and so falls outside every enumerability trigger
+    // written for the other spellings:
+    "{g..g..1}it push --force origin main",
+    // MULTI-EXPANSION — two or more brace expansions in ONE word, which no
+    // per-`{` product computation reaches because bash composes ACROSS `{`s:
+    "{g..g}{i..i}t push --force origin main",
+    "{g,g}{i,i}{t,t} push --force origin main",
+    // A NESTED expansion inside an alternative, where a decomposition into
+    // TOP-LEVEL alternatives yields `g{i,i}t` and `x` and clears both:
+    "{g{i,i}t,x} push --force origin main",
+    // PATHNAME expansion in a decision slot — the verb, and `config`'s own key
+    // operand, which `19-14` closed for `$` and which a glob reaches through a
+    // character that sets no expansion bit at all:
+    "git pus? --force origin main",
+    "git ?ush --force origin main",
+    "git stas?",
+    "git config core.hooksPat? /tmp/x",
+    // TILDE — class coverage, labelled as such here and in
+    // `tests/envelope_literal_decision.rs`: bash leaves `~push` alone when no
+    // such user exists, so the shell does not assemble a force push. It is drawn
+    // because the guard cannot know whether such a user exists on the machine
+    // the command will run on.
+    "git ~push --force origin main",
+    // A LITERAL brace pair inside a command that is refused BEFORE and AFTER.
+    // This is a CONTROL rather than a reproducer, and it is the sharpest one in
+    // the file: today the tokenizer fragments `HEAD@{0}` and the guard refuses
+    // the fragment `git reflog delete HEAD@`; after `19-17` the word survives
+    // whole and the guard refuses `reflog delete HEAD@{0}`. A change that
+    // absorbed literal braces while LOSING a refusal turns this red and nothing
+    // else in the suite.
+    "git reflog delete HEAD@{0}",
 ];
 
-/// How many wrappings each refused base gets. 15 x 140 = 2100, over the 1500
+/// How many wrappings each refused base gets. 37 x 140 = 5180, over the 1500
 /// floor the plan sets.
 const VARIANTS_PER_REFUSED_BASE: usize = 140;
 
@@ -822,9 +940,32 @@ const PERMITTED_BASES: &[&str] = &[
     "git log --oneline -n 5",
     "git push origin refs/heads/gsd-auto/alpha/w:refs/heads/gsd-auto/alpha/w",
     "gh pr list --limit 5",
+    // -----------------------------------------------------------------------
+    // `T-19-95`, the round-5 half — the PERMITTED TWINS of the refused brace and
+    // glob bases, and the only way this corpus can tell a brace EXPANSION from a
+    // brace PAIR, or a decision-slot glob from an operand glob.
+    //
+    // **`git add src/*.rs` is the operand glob.** `19-17` refuses a glob in a
+    // DECISION word; only the decision region is in scope, and this row is what
+    // makes that boundary a behaviour rather than an intention.
+    //
+    // **`git log -1 HEAD@{0}` is the LITERAL brace pair** — braces with no comma
+    // and no range, which bash passes through byte-identically. It is the
+    // permitted twin of `git reflog delete HEAD@{0}` below, and the pair is what
+    // `T-19-93` requires: a rule that absorbed literal braces while losing a
+    // refusal, or one that refused every brace it saw, turns exactly one of the
+    // two red.
+    //
+    // It sits in the base rather than in a wrapper because a base is the END of
+    // the generated line: its `}` closer has no following word to sever, so its
+    // verdict really is invariant. Measured exit 0 unwrapped, under `env`, under
+    // `sh -c '…'`, under `{ …; }`, under `( … )`, and with the glob assignment
+    // prefix and the glob wrapper operand in front of it.
+    "git add src/*.rs",
+    "git log -1 HEAD@{0}",
 ];
 
-/// 9 x 120 = 1080, over the 1000 floor the plan sets.
+/// 11 x 120 = 1320, over the 1000 floor the plan sets.
 const VARIANTS_PER_PERMITTED_BASE: usize = 120;
 
 const MIN_PERMITTED_CASES: usize = 1000;
@@ -1254,6 +1395,23 @@ const DECOY_OPERANDS: &[&str] = &[
     "env -u $V git",
     "sudo -u $U gh",
     "made-up-wrapper-9000 --flag $F git",
+    // -----------------------------------------------------------------------
+    // `T-19-95`, the round-5 half — a decoy operand carrying a governed name
+    // through a class that sets NO expansion bit.
+    //
+    // `env -u gi?` is a glob decoy: measured exit 0 unwrapped as a prefix in
+    // front of a permitted base, so it is not refused on its own account today,
+    // and the case is refused only for the base's own reason.
+    //
+    // `env -u {git,x}` is a splice whose PRODUCTS include a governed name.
+    // **Its verdict arrives by a different route today, and that is disclosed
+    // rather than glossed** — exactly as this alphabet's `${K}` sibling already
+    // is. `}` is a word-splitting closer, so Rule B refuses the segment behind
+    // it and the case is refused at `envelope_assertion_failed` before anything
+    // this round adds is reached. It is drawn so the decoy axis can DRAW the
+    // class, not because it is a live bypass.
+    "env -u gi?",
+    "env -u {git,x}",
 ];
 
 /// Whole wrapper prefixes that carry an expansion and NO decoy operand.
@@ -1281,6 +1439,26 @@ const EXPANSION_WRAPPERS: &[&str] = &[
     "made-up-wrapper-9000 --flag $F",
     "env -u `true`SOME_VAR",
     "env -u ${K}",
+    // -----------------------------------------------------------------------
+    // `T-19-95`, the round-5 half — brace-expansion wrapper prefixes, one of
+    // them CONCATENATED so the wrapper axis can draw that class too.
+    //
+    // Both reach their verdict by the `19-15` route the `${K}` entry above
+    // already documents — `}` severs the prefix from the governed program and
+    // the refusal comes from the base's own segment rather than from
+    // `resolve_program` step 5 — so both are refused TODAY, measured at exit 2
+    // under `envelope_assertion_failed`. **They are class coverage for this
+    // axis, not a red row**, and saying so here is what stops a later reader
+    // counting them as evidence that `19-17` closed something.
+    //
+    // **A GLOB wrapper prefix is deliberately NOT here.** Step 5's prefix rule
+    // decides on `Token.expansion`, and `19-17` explicitly does not move steps 3
+    // and 5: its new literalness bit is consumed by the DECISION-WORD rule, not
+    // by the prefix rule. An entry like `env -u GIT_CONFIG_COUN?` would
+    // therefore be pinned at a refusal the rule cannot produce — the one thing a
+    // plan that measures pre-fix has no method to catch.
+    "env -u GIT_CONFIG{_COUNT,_COUNT}",
+    "env -u {GIT_CONFIG_COUNT,GIT_SSH_COMMAND}",
 ];
 
 /// How many wrappings each (base, decoy) pair gets. 12 x 10 x 6 = 720.
@@ -1739,7 +1917,7 @@ fn carries_a_live_expansion(command: &str) -> bool {
 }
 
 #[test]
-fn every_alphabet_this_plan_widens_can_draw_an_expansion_metacharacter() {
+fn every_alphabet_this_phase_widens_can_draw_an_expansion_metacharacter() {
     // **The direct mechanical inverse of audit 3's finding, and the floor that
     // makes the finding un-reintroducible.** The auditor established the defect
     // by READING the alphabets; this asserts the repaired fact so that narrowing
@@ -2051,13 +2229,38 @@ const DISPLACING_OPTS: &[(&str, &str)] = &[
 /// is a backtick command substitution followed by the literal rest — the
 /// spelling audit 3 measured separately because it reaches the same slot through
 /// a different tokenizer arm.
+///
+/// **Spellings 3 and 4 are `T-19-95`'s round-5 half and are drawn by a property
+/// of their own**, not by
+/// `a_forge_subcommand_slot_carrying_an_expansion_is_refused_in_every_generated_slot`,
+/// whose loop runs `0..3` and is left byte-identical. 3 is a brace-expansion
+/// SPLICE and 4 is a PATHNAME expansion — neither sets `Token.expansion`, which
+/// is the whole of audit 4's finding about this file.
 fn expansion_spelling(spelling: usize, name: &str, word: &str) -> String {
     match spelling {
         0 => format!("${name}"),
         1 => format!("${{{name}}}"),
-        _ => format!("`true`{word}"),
+        2 => format!("`true`{word}"),
+        // A whole-word splice whose first alternative is the real word, so bash
+        // really does assemble the forge command: `gh {pr,x} create --title x`
+        // runs `gh pr x create --title x`. The guard sees `gh` with an empty
+        // argv and answers `Allow`.
+        3 => format!("{{{word},x}}"),
+        // A pathname expansion over the same word — the last character replaced
+        // by a `?`, so a matching file in the working directory reassembles it.
+        _ => {
+            let mut glob: String = word.chars().collect();
+            glob.pop();
+            glob.push('?');
+            glob
+        }
     }
 }
+
+/// The spellings that make a word UNREADABLE without marking it — the two
+/// `19-16` adds. Kept as a named constant so the per-class floor below counts
+/// the same thing the property generates.
+const UNREADABLE_SPELLINGS: &[usize] = &[3, 4];
 
 /// The command line for one (slot, spelling, displacing option) case.
 fn forge_slot_case(slot: ForgeSlot, spelling: usize, displacer: (&str, &str)) -> String {
@@ -2362,6 +2565,30 @@ const SEVERED_PREFIXES: &[&str] = &[
     "made-up-wrapper-9000 --flag ${W}x",
 ];
 
+/// Rule B's alphabet reached through a BRACE EXPANSION rather than through a
+/// parameter expansion — `T-19-95`'s round-5 half for the severed axis.
+///
+/// **A separate alphabet rather than more entries in [`SEVERED_PREFIXES`], and
+/// the reason is a floor rather than a preference.**
+/// `a_governed_program_behind_a_severed_prefix_is_refused_wherever_the_split_falls`
+/// asserts `live_expansion_cases == cases` — EVERY generated severed case must
+/// carry a `$` or a backtick the shell would actually expand. That floor is
+/// correct for the class it was written for and this plan must not lower it, so
+/// a brace spelling, which carries neither character, gets an alphabet and a
+/// property of its own instead.
+///
+/// The first entry is a WHOLE-WORD splice and the second is CONCATENATED, so
+/// both classes are drawn on Rule B's own seam. Both are refused TODAY —
+/// measured exit 2 under `envelope_assertion_failed` — because `}` severs a word
+/// in progress exactly as `${C}`'s does, and both must STAY refused after
+/// `19-17`. That is a real requirement rather than a formality: `19-17`
+/// reclassifies `{`, and case 1 of its three-way question exists precisely to
+/// keep this flush.
+const SEVERED_BRACE_PREFIXES: &[&str] = &[
+    "env -u {GIT_CONFIG_COUNT,GIT_SSH_COMMAND}",
+    "env -u GIT_CONFIG{_COUNT,_COUNT}",
+];
+
 /// Governed commands that are PERMITTED unwrapped, so a refusal below can only
 /// come from the severed prefix.
 const SEVERED_BASES: &[&str] = &[
@@ -2549,5 +2776,816 @@ fn a_governed_program_behind_a_severed_prefix_is_refused_wherever_the_split_fall
         SEVERED_PREFIXES.len(),
         SEVERED_BASES.len(),
         chains.len()
+    );
+}
+
+// ===========================================================================
+// 13. `T-19-95` — the alphabets widened to the SEVEN classes that make a word
+//     UNREADABLE, rather than the four characters that MARK an expansion
+// ===========================================================================
+//
+// **Audit 4's finding, in the auditor's own terms and not softened.**
+//
+// > `EXPANSION_METACHARACTERS` is exactly `['$', '`', '{', '(']`. Verified by
+// > reading every entry of `ASSIGNMENT_PREFIXES`, `WRAPPERS`, `REFUSED_BASES`,
+// > `DECOY_OPERANDS`, `EXPANSION_WRAPPERS`, `SHELL_LAYERS` and
+// > `SEVERED_PREFIXES`: **not one entry anywhere contains a comma inside braces,
+// > and not one contains a `*`, a `?` or a `[`.** Every entry satisfying the
+// > floor does so through an expansion MARKER. The corpus is therefore
+// > structurally incapable of generating, and so of failing on, `T-19-92` and
+// > `T-19-94`.
+//
+// **The alphabets model `$`-shaped assembly and nothing else, so any control
+// certified by them is certified against `$`-shaped assembly and nothing else.**
+// That sentence belongs in this file because it is the reason this section must
+// never be narrowed: a case that stops being drawn is a case that stops being
+// able to fail. It is the same finding as `T-19-76`, `T-19-83` and `T-19-89`,
+// one radius further out — the FOURTH consecutive round in which a control was
+// certified by a corpus that could not draw the cell the next audit walked
+// through, and the first three were each found by the NEXT audit rather than by
+// the round's own evidence.
+//
+// **The class split is itself a finding, twice over, and both halves were caught
+// in PLAN-CHECK rather than by the next audit.** A single "brace expansion"
+// class is satisfied by `{a,b}` standing as its own word, and a corpus of
+// whole-word splices can never generate `{g..g}it push --force origin main`. A
+// class set without MULTI-EXPANSION is satisfied by any single-brace entry, and
+// such a corpus can never generate `{g..g}{i..i}t push --force origin main`.
+// Both are measured at exit 0 against the pre-`19-17` tree. Hence the predicates
+// below: the concatenated class requires a non-empty literal run adjacent to the
+// braces WITHIN the same whitespace-delimited word, the range class requires a
+// `..` between them, and the multi-expansion class requires at least TWO
+// top-level expansion pairs inside ONE word — none of which `{a,b}` can satisfy
+// however it is spelled.
+
+/// One `{`…`}` pair found inside a single whitespace-delimited word.
+struct BracePair {
+    /// Byte offset of the `{`.
+    start: usize,
+    /// Byte offset of the `}`.
+    end: usize,
+    /// A comma at the pair's own nesting level — what makes it an alternative
+    /// list rather than a literal pair.
+    top_level_comma: bool,
+    /// A `..` between the braces — what makes it a RANGE, including the
+    /// increment form `{a..b..n}`.
+    range: bool,
+}
+
+impl BracePair {
+    /// A pair bash would EXPAND, as opposed to one it passes through unchanged.
+    ///
+    /// This is the distinction `T-19-93` turns on: `repos/{owner}/{repo}/pulls`
+    /// carries two pairs and neither is an expansion, which is why
+    /// `printf "[%s]" repos/{owner}/{repo}/pulls` prints it byte-identically.
+    fn is_expansion(&self) -> bool {
+        self.top_level_comma || self.range
+    }
+}
+
+/// Every top-level `{`…`}` pair in one word, in source order.
+///
+/// A `{` immediately preceded by an unquoted `$` is a PARAMETER expansion rather
+/// than a brace pair, and is skipped: `${K}` is round 4's class, already drawn by
+/// this file's `$` entries, and counting it here would let the old alphabet
+/// satisfy the new floors.
+fn brace_pairs(word: &str) -> Vec<BracePair> {
+    let bytes: Vec<char> = word.chars().collect();
+    let mut pairs = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (index, ch) in bytes.iter().enumerate() {
+        match ch {
+            '{' => {
+                let parameter_expansion = index > 0 && bytes[index - 1] == '$';
+                if parameter_expansion {
+                    continue;
+                }
+                if depth == 0 {
+                    start = index;
+                }
+                depth += 1;
+            }
+            '}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    let inner: String = bytes[start + 1..index].iter().collect();
+                    let mut nesting = 0usize;
+                    let mut top_level_comma = false;
+                    for inner_ch in inner.chars() {
+                        match inner_ch {
+                            '{' => nesting += 1,
+                            '}' if nesting > 0 => nesting -= 1,
+                            ',' if nesting == 0 => top_level_comma = true,
+                            _ => {}
+                        }
+                    }
+                    pairs.push(BracePair {
+                        start,
+                        end: index,
+                        top_level_comma,
+                        range: inner.contains(".."),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    pairs
+}
+
+/// A brace expansion occupying its OWN whitespace-delimited word, with no
+/// literal run attached to it.
+///
+/// `{a,b}` satisfies this and nothing else below, which is the point.
+fn draws_a_whole_word_splice(entry: &str) -> bool {
+    entry.split_whitespace().any(|word| {
+        let chars = word.chars().count();
+        let pairs = brace_pairs(word);
+        pairs.len() == 1
+            && pairs[0].is_expansion()
+            && pairs[0].start == 0
+            && pairs[0].end + 1 == chars
+    })
+}
+
+/// A brace expansion with a NON-EMPTY LITERAL RUN adjacent to it inside the same
+/// whitespace-delimited word.
+///
+/// **`{a,b}` cannot satisfy this however it is spelled**, and that is the whole
+/// reason the class exists separately: bash joins the literal run to every
+/// alternative, which is how `g{i,i}t` produces `git` and `{g..g}it` produces
+/// `git` while no alternative names anything at all.
+fn draws_a_concatenated_splice(entry: &str) -> bool {
+    entry.split_whitespace().any(|word| {
+        let chars = word.chars().count();
+        let pairs = brace_pairs(word);
+        if !pairs.iter().any(BracePair::is_expansion) {
+            return false;
+        }
+        // A literal run exists if any character of the word lies OUTSIDE every
+        // pair — a prefix, a suffix, or a run between two pairs.
+        (0..chars).any(|index| {
+            !pairs
+                .iter()
+                .any(|pair| index >= pair.start && index <= pair.end)
+        })
+    })
+}
+
+/// A `..` between the braces, in either its whole-word or its concatenated
+/// spelling, and including the increment form `{a..b..n}`.
+fn draws_a_range(entry: &str) -> bool {
+    entry
+        .split_whitespace()
+        .any(|word| brace_pairs(word).iter().any(|pair| pair.range))
+}
+
+/// TWO OR MORE brace expansions inside ONE whitespace-delimited word.
+///
+/// **No SINGLE-BRACE entry can satisfy this**, which is the second half of the
+/// class split. Bash composes ACROSS `{`s, so a product computed per-`{` answers
+/// `g` for the first pair of `{g..g}{i..i}t` and `it` for the second — neither
+/// governed, both sets enumerating cleanly — and permits the command. Only a
+/// product composed over the WHOLE WORD reaches it, and only a corpus that can
+/// draw two pairs in one word can fail on it.
+fn draws_a_multi_expansion_word(entry: &str) -> bool {
+    entry.split_whitespace().any(|word| {
+        brace_pairs(word)
+            .iter()
+            .filter(|pair| pair.is_expansion())
+            .count()
+            >= 2
+    })
+}
+
+/// A `{`…`}` pair with NEITHER a top-level comma NOR a range — the pair bash
+/// passes through byte-identically.
+///
+/// This is the class `T-19-93` requires to keep working AND be counted, and a
+/// corpus that can only draw `{a,b}` cannot fail on the difference between a
+/// brace expansion and a brace pair.
+fn draws_a_literal_brace_pair(entry: &str) -> bool {
+    entry
+        .split_whitespace()
+        .any(|word| brace_pairs(word).iter().any(|pair| !pair.is_expansion()))
+}
+
+/// An unquoted `*`, `?` or `[` — pathname expansion, whose result depends on the
+/// working directory and is therefore unknowable at guard time WHETHER OR NOT a
+/// file matches today.
+///
+/// Single quotes are the only construct that suppresses it entirely, so only `'`
+/// toggles here — the same discipline `carries_a_live_expansion` uses.
+fn draws_a_glob(entry: &str) -> bool {
+    let mut in_single = false;
+    for ch in entry.chars() {
+        match ch {
+            '\'' => in_single = !in_single,
+            '*' | '?' | '[' if !in_single => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// An unquoted `~` — tilde expansion, whose result depends on the passwd
+/// database of the machine the command will run on.
+fn draws_a_tilde(entry: &str) -> bool {
+    let mut in_single = false;
+    for ch in entry.chars() {
+        match ch {
+            '\'' => in_single = !in_single,
+            '~' if !in_single => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// One named class and the predicate that decides whether an entry draws it.
+type UnreadableClass = (&'static str, fn(&str) -> bool);
+
+/// The seven classes, named once so the per-alphabet floor, the per-class floor
+/// and the counted floor all count the same thing.
+const UNREADABLE_CLASSES: &[UnreadableClass] = &[
+    ("whole-word splice", draws_a_whole_word_splice),
+    ("concatenated splice", draws_a_concatenated_splice),
+    ("range", draws_a_range),
+    ("multi-expansion word", draws_a_multi_expansion_word),
+    ("literal brace pair", draws_a_literal_brace_pair),
+    ("glob", draws_a_glob),
+    ("tilde", draws_a_tilde),
+];
+
+/// Whether an entry draws ANY of the seven.
+fn carries_an_unreadable_class(entry: &str) -> bool {
+    UNREADABLE_CLASSES
+        .iter()
+        .any(|(_, predicate)| predicate(entry))
+}
+
+// ---------------------------------------------------------------------------
+// 13a. The floors — per ALPHABET, per CLASS, and COUNTED over generated cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_alphabet_this_round_widens_can_draw_a_word_the_guard_cannot_read() {
+    // **The direct mechanical inverse of audit 4's finding.** The auditor
+    // established the defect by READING the alphabets; this asserts the repaired
+    // fact, so narrowing one of them back turns this red instead of quietly
+    // restoring a corpus that cannot fail on its own class.
+    //
+    // `SHELL_LAYERS` is deliberately absent: it is NOT widened this round. It
+    // already carries `BraceGroup` and `Subshell`, and a brace-EXPANSION layer
+    // would be a layer whose verdict is a refusal — which would break the
+    // invariance property by being stricter than its base rather than laxer.
+    for (name, entries) in [
+        ("ASSIGNMENT_PREFIXES", ASSIGNMENT_PREFIXES),
+        ("WRAPPERS", WRAPPERS),
+        ("REFUSED_BASES", REFUSED_BASES),
+        ("PERMITTED_BASES", PERMITTED_BASES),
+        ("DECOY_OPERANDS", DECOY_OPERANDS),
+        ("EXPANSION_WRAPPERS", EXPANSION_WRAPPERS),
+        ("SEVERED_BRACE_PREFIXES", SEVERED_BRACE_PREFIXES),
+    ] {
+        let drawable: Vec<&&str> = entries
+            .iter()
+            .filter(|entry| carries_an_unreadable_class(entry))
+            .collect();
+        assert!(
+            !drawable.is_empty(),
+            "`{name}` contains no entry carrying a brace expansion, a literal brace pair, a \
+             glob character or a tilde.\n\n\
+             This is audit 4's `T-19-95` finding restated: an alphabet that cannot DRAW a \
+             word the guard cannot read is an alphabet whose property cannot FAIL on one, \
+             and every case generated from it certifies a claim about a class it could \
+             never have exercised. It is `T-19-76`'s failure mode for the FOURTH \
+             consecutive round, after `T-19-83` and `T-19-89`.\n\n\
+             The correct response is to RESTORE the entries, never to delete this floor. \
+             Entries were: {entries:?}"
+        );
+    }
+}
+
+#[test]
+fn the_corpus_can_draw_every_one_of_the_seven_unreadable_classes() {
+    // **Per CLASS rather than per alphabet, because one "brace expansion" class
+    // is what let two live cells through in two consecutive plan-check rounds.**
+    //
+    // A floor a WHOLE-WORD splice satisfies is a floor
+    // `{g..g}it push --force origin main` walks around. A floor a SINGLE-BRACE
+    // entry satisfies is a floor `{g..g}{i..i}t push --force origin main` walks
+    // around. Both are measured at exit 0 against the pre-`19-17` tree, and
+    // shipping either would be another round of a corpus incapable of failing on
+    // the class that got through it.
+    let corpus: Vec<&str> = ASSIGNMENT_PREFIXES
+        .iter()
+        .chain(WRAPPERS.iter())
+        .chain(REFUSED_BASES.iter())
+        .chain(PERMITTED_BASES.iter())
+        .chain(DECOY_OPERANDS.iter())
+        .chain(EXPANSION_WRAPPERS.iter())
+        .chain(SEVERED_PREFIXES.iter())
+        .chain(SEVERED_BRACE_PREFIXES.iter())
+        .copied()
+        .collect();
+
+    for (class, predicate) in UNREADABLE_CLASSES {
+        let drawable: Vec<&&str> = corpus.iter().filter(|entry| predicate(entry)).collect();
+        assert!(
+            !drawable.is_empty(),
+            "no entry in ANY alphabet draws the class `{class}`.\n\n\
+             The seven classes are the ways bash makes a word that the guard cannot read: \
+             a whole-word splice, a CONCATENATED splice, a RANGE (including the increment \
+             form), a MULTI-EXPANSION word, a literal brace pair, a pathname-expansion \
+             character and a tilde. They are separate classes and not spellings of one, \
+             because the predicates are written so that `{{a,b}}` satisfies only the \
+             first: the concatenated predicate requires a literal run adjacent to the \
+             braces inside the same word, the range predicate requires a `..` between \
+             them, and the multi-expansion predicate requires at least TWO top-level \
+             expansion pairs inside one word.\n\n\
+             The correct response is to RESTORE the entries, never to relax this \
+             predicate or delete this floor."
+        );
+    }
+
+    // The degenerate-proofing, asserted rather than described. If any of these
+    // three ever became true, the floors above would be satisfiable by an
+    // alphabet that cannot generate the cells this round is about — which is
+    // exactly how the last two plan-check rounds each found a live cell.
+    assert!(
+        draws_a_whole_word_splice("{a,b}"),
+        "`{{a,b}}` IS a whole-word splice — if this is false the first predicate is broken"
+    );
+    assert!(
+        !draws_a_concatenated_splice("{a,b}"),
+        "`{{a,b}}` must NOT satisfy the concatenated class: a corpus of whole-word splices \
+         cannot fail on `{{g..g}}it push --force origin main`"
+    );
+    assert!(
+        !draws_a_range("{a,b}"),
+        "`{{a,b}}` must NOT satisfy the range class: it carries no `..`"
+    );
+    assert!(
+        !draws_a_multi_expansion_word("{a,b}"),
+        "`{{a,b}}` must NOT satisfy the multi-expansion class: one pair is not two"
+    );
+    assert!(
+        !draws_a_multi_expansion_word("{a,b} {c,d}"),
+        "two pairs in two WORDS must NOT satisfy the multi-expansion class — bash composes \
+         across `{{`s only inside ONE word, which is the whole mechanism of \
+         `{{g..g}}{{i..i}}t`"
+    );
+    assert!(
+        !draws_a_multi_expansion_word("{a,b}{x}"),
+        "a second pair that is LITERAL must NOT satisfy the multi-expansion class: only \
+         EXPANSION pairs compose"
+    );
+    assert!(
+        draws_a_multi_expansion_word("{g..g}{i..i}t"),
+        "`{{g..g}}{{i..i}}t` IS a multi-expansion word — measured at exit 0 today"
+    );
+    assert!(
+        draws_a_literal_brace_pair("git log -1 HEAD@{0}") && !draws_a_range("HEAD@{0}"),
+        "`HEAD@{{0}}` IS a literal brace pair and is NOT a range — the distinction \
+         `T-19-93` turns on"
+    );
+}
+
+/// The counted floors over GENERATED cases, in the shape `MIN_LIVE_EXPANSION_CASES`
+/// already establishes: counted while generating rather than inferred from
+/// alphabet sizes.
+const MIN_UNREADABLE_GENERATED_CASES: usize = 400;
+const MIN_GENERATED_CASES_PER_UNREADABLE_CLASS: usize = 20;
+
+#[test]
+fn the_generated_corpus_really_produces_each_unreadable_class_in_quantity() {
+    // **An alphabet floor is not a generation floor.** An entry can sit in an
+    // alphabet and be drawn by nothing, or be drawn once out of thousands of
+    // cases — which is a corpus that can technically fail on the class and
+    // practically never does. This counts what the generator ACTUALLY emits,
+    // over the same recipe shape the invariance property uses.
+    let mut rng = Lcg::new();
+    let mut total = 0usize;
+    let mut unreadable = 0usize;
+    let mut per_class: BTreeMap<&str, usize> = BTreeMap::new();
+
+    for base in REFUSED_BASES {
+        for _ in 0..VARIANTS_PER_REFUSED_BASE {
+            let prefix = ASSIGNMENT_PREFIXES[rng.pick(ASSIGNMENT_PREFIXES.len())];
+            let layer = SHELL_LAYERS[rng.pick(SHELL_LAYERS.len())];
+            let depth = rng.pick(4);
+            let mut chain = String::new();
+            for _ in 0..depth {
+                chain.push_str(WRAPPERS[rng.pick(WRAPPERS.len())]);
+                chain.push(' ');
+            }
+            let command = layer.apply(&format!("{prefix}{chain}{base}"));
+
+            total += 1;
+            if carries_an_unreadable_class(&command) {
+                unreadable += 1;
+            }
+            for (class, predicate) in UNREADABLE_CLASSES {
+                if predicate(&command) {
+                    *per_class.entry(class).or_default() += 1;
+                }
+            }
+        }
+    }
+
+    assert!(
+        unreadable >= MIN_UNREADABLE_GENERATED_CASES,
+        "the generator emitted only {unreadable} of {total} cases carrying a word the guard \
+         cannot read, under the floor of {MIN_UNREADABLE_GENERATED_CASES}.\n\n\
+         An entry that sits in an alphabet and is drawn by nothing is an entry that cannot \
+         fail on anything. The correct response is to RESTORE the entries, never to lower \
+         this floor. Per class: {per_class:?}"
+    );
+
+    for (class, _) in UNREADABLE_CLASSES {
+        let count = per_class.get(class).copied().unwrap_or(0);
+        assert!(
+            count >= MIN_GENERATED_CASES_PER_UNREADABLE_CLASS,
+            "the generator emitted only {count} cases of the class `{class}`, under the \
+             floor of {MIN_GENERATED_CASES_PER_UNREADABLE_CLASS}.\n\n\
+             This is `T-19-95` counted rather than read: a class the generator emits a \
+             handful of times is a class the property is not really testing. Seed: \
+             {SEED:#x}. Full counts: {per_class:?}"
+        );
+    }
+
+    // Recorded so the SUMMARY carries measured counts rather than described
+    // ones. `cargo test -- --nocapture` shows them.
+    println!(
+        "generated {total} cases from {} refused bases; {unreadable} carry an unreadable \
+         class.\nper class: {per_class:?}",
+        REFUSED_BASES.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 13b. The forge slots, carrying a SPLICE and a GLOB
+// ---------------------------------------------------------------------------
+
+/// 7 slots x 2 spellings x (1 or 4 displacers) x 2 depths = 68, over the floor.
+const MIN_UNREADABLE_FORGE_SLOT_CASES: usize = 50;
+
+#[test]
+fn a_forge_decision_slot_carrying_a_splice_or_a_glob_is_refused_in_every_generated_slot() {
+    // **A property of its own rather than three more spellings in
+    // `a_forge_subcommand_slot_carrying_an_expansion_is_refused_in_every_generated_slot`.**
+    // That property is round 4's evidence and its loop runs `0..3`; leaving it
+    // byte-identical is what keeps round-4 and round-5 evidence attributable to
+    // the round that produced each. `expansion_spelling` gains spellings 3 and 4,
+    // which only this property draws.
+    //
+    // **RED against the pre-`19-17` tree, every case.** Measured, one fresh root
+    // per row and the root walked afterwards: `gh {pr,x} create --title x` → 0,
+    // `gh pr {create,x} --title x` → 0, `gh api /repos/o/r/{pulls,x} …` → 0,
+    // `gh p? create --title x` → 0, `gh pr creat? --title x` → 0,
+    // `gh api /repos/o/r/pull? …` → 0, `gh api … -X POS? …` → 0,
+    // `gh api … -? title=x` → 0 — every one with an EMPTY WALK, so the SAFE-06
+    // cap is bypassed rather than exceeded and the cap has no second carrier
+    // (`T-19-35`).
+    //
+    // Derivations: the splice spelling by clause 2(a) — the segment `gh`
+    // resolves `Governed` and its simple command is brace-spliced — and the glob
+    // spelling by clause 1, every slot being a decision word `19-14` already
+    // named through the scan the classifier itself runs.
+
+    // --- floor 0: the POSITIVE control for the walk -----------------------
+    let control = TempDir::new().expect("a temporary envelope root");
+    permits(control.path(), "gh pr create --title x");
+    assert_eq!(
+        ledger_lines_under(control.path()).len(),
+        1,
+        "a PERMITTED `gh pr create` writes exactly one ledger line, and the walk must be \
+         able to find it. If this is 0 the walk is blind and every no-ledger-line \
+         assertion below is vacuous. Files: {:?}",
+        files_under(control.path())
+    );
+
+    let mut rng = Lcg::new();
+    let mut slots_seen: BTreeSet<ForgeSlot> = BTreeSet::new();
+    let mut spellings_seen: BTreeSet<usize> = BTreeSet::new();
+    let mut cases = 0usize;
+    let mut splice_cases = 0usize;
+    let mut glob_cases = 0usize;
+
+    for slot in FORGE_SLOTS {
+        let displacers: &[(&str, &str)] = if *slot == ForgeSlot::ApiDisplacedEndpoint {
+            DISPLACING_OPTS
+        } else {
+            &DISPLACING_OPTS[..1]
+        };
+
+        for spelling in UNREADABLE_SPELLINGS {
+            for displacer in displacers {
+                for depth in 0..FORGE_WRAPPER_DEPTHS {
+                    let base = forge_slot_case(*slot, *spelling, *displacer);
+                    let command = if depth == 0 {
+                        base.clone()
+                    } else {
+                        format!("{} {base}", WRAPPERS[rng.pick(WRAPPERS.len())])
+                    };
+
+                    slots_seen.insert(*slot);
+                    spellings_seen.insert(*spelling);
+                    cases += 1;
+                    if draws_a_whole_word_splice(&command) || draws_a_concatenated_splice(&command)
+                    {
+                        splice_cases += 1;
+                    }
+                    if draws_a_glob(&command) {
+                        glob_cases += 1;
+                    }
+
+                    // A fresh root per case, because a forge command that is
+                    // PERMITTED writes a ledger line and a shared root would
+                    // exhaust the cap and turn later cases red for a reason that
+                    // has nothing to do with the slot under test.
+                    let envelope = TempDir::new().expect("a temporary envelope root");
+                    let got = verdict(envelope.path(), &command);
+
+                    assert_eq!(
+                        got.code,
+                        2,
+                        "\n\nA FORGE DECISION WORD THE SHELL ASSEMBLES WITHOUT MARKING IT WAS \
+                         PERMITTED.\n\
+                         \n  command : {command}\
+                         \n  slot    : {slot:?}\
+                         \n  spelling: {spelling} (3=splice `{{word,x}}` 4=glob `wor?`)\
+                         \n  depth   : {depth}\
+                         \n  got     : exit {} reason {}\
+                         \n  seed    : {SEED:#x}\n\
+                         \nNeither spelling sets `Token.expansion`. A brace expansion is \
+                         spliced back into the same simple command by the shell, and a glob \
+                         is resolved from the working directory — so `pr_command_label` \
+                         matches no arm, `None` is returned, and the creation is neither \
+                         refused NOR counted. The SAFE-06 cap is BYPASSED rather than \
+                         exceeded, and it has no second carrier (`T-19-35`).\n\
+                         \n**The correct response is a change to the tokenizer's brace \
+                         classification or to the decision-word rule in \
+                         `src/envelope/policy.rs`.** It is NOT a name or a character added \
+                         to a list in `src/`, and it is NOT a narrowing of this slot \
+                         alphabet or of `UNREADABLE_SPELLINGS`.",
+                        got.code,
+                        got.reason_id
+                    );
+
+                    let written = ledger_lines_under(envelope.path());
+                    assert!(
+                        written.is_empty(),
+                        "`{command}` was refused, but a pull-request ledger line was written \
+                         somewhere under the envelope root — cap budget consumed for a \
+                         command that never opens a pull request. Found: {written:?} Files: \
+                         {:?}",
+                        files_under(envelope.path())
+                    );
+                }
+            }
+        }
+    }
+
+    assert_eq!(
+        slots_seen.len(),
+        FORGE_SLOTS.len(),
+        "every slot must have been generated. Seen: {slots_seen:?}"
+    );
+    assert_eq!(
+        spellings_seen.len(),
+        UNREADABLE_SPELLINGS.len(),
+        "both unreadable spellings must have been generated. Seen: {spellings_seen:?}"
+    );
+    assert!(
+        cases >= MIN_UNREADABLE_FORGE_SLOT_CASES,
+        "only {cases} cases were generated, under the floor of \
+         {MIN_UNREADABLE_FORGE_SLOT_CASES}"
+    );
+    assert!(
+        splice_cases > 0 && glob_cases > 0,
+        "the forge axis must draw BOTH classes — a property that could only draw one would \
+         certify the fix for half of `T-19-92`/`T-19-94` while staying silent on the other. \
+         splice={splice_cases} glob={glob_cases}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 13c. `T-19-93` on the forge axis — the class whose bar is COUNT, not refuse
+// ---------------------------------------------------------------------------
+
+/// The placements of `gh`'s own documented placeholders that all name the pulls
+/// COLLECTION, so every one of them is a pull-request creation and every one
+/// must be counted.
+const PLACEHOLDER_ENDPOINTS: &[&str] = &[
+    "gh api repos/{owner}/{repo}/pulls -f title=x",
+    "gh api repos/{owner}/r/pulls -f title=x",
+    "gh api repos/o/{repo}/pulls -f title=x",
+    "gh api /repos/{owner}/{repo}/pulls -X POST -f title=x",
+    "gh api -f title=x repos/{owner}/{repo}/pulls -f title=y",
+];
+
+#[test]
+fn a_gh_placeholder_endpoint_is_permitted_and_counted_in_every_generated_placement() {
+    // **The forge property above could only draw the REFUSED half.** A corpus
+    // that generated only refusals would certify the fix for `T-19-92` and
+    // `T-19-94` while remaining silent on `T-19-93` — the same defect one class
+    // over, and the reason this property exists beside it.
+    //
+    // `{owner}` and `{repo}` are `gh`'s OWN documented placeholders. Bash passes
+    // them through byte-identically because there is no comma between the braces
+    // — `printf "[%s]" repos/{owner}/{repo}/pulls` prints it unchanged, measured
+    // — and `gh` is what substitutes them. **Refusing these is not the fix**: an
+    // agent following `gh`'s manual would be denied, which is how a safety
+    // control gets switched off (AR-19-11).
+    //
+    // So the assertion is a LEDGER LINE, which no implementation can satisfy by
+    // refusing. Every placement below measured exit 0 with an EMPTY WALK against
+    // the pre-`19-17` tree, while the quoted spelling
+    // `gh api "repos/o/r/pulls" -f title=x` already exits 0 WITH a ledger line —
+    // the positive control that proves the walk and the cap are both live.
+    let control = TempDir::new().expect("a temporary envelope root");
+    permits(control.path(), "gh api \"repos/o/r/pulls\" -f title=x");
+    assert_eq!(
+        ledger_lines_under(control.path()).len(),
+        1,
+        "the QUOTED endpoint is counted TODAY — this is the behaviour every placement below \
+         must be brought up to, and it is what proves this walk is not blind. Files: {:?}",
+        files_under(control.path())
+    );
+
+    let mut rng = Lcg::new();
+    let mut cases = 0usize;
+
+    for base in PLACEHOLDER_ENDPOINTS {
+        // Every placement carries a literal brace pair and no expansion pair,
+        // asserted rather than assumed: if one of these ever became a brace
+        // EXPANSION the row would be testing a different class entirely.
+        assert!(
+            draws_a_literal_brace_pair(base) && !draws_a_range(base),
+            "`{base}` must carry a LITERAL brace pair — no comma between the braces and no \
+             range. That is the whole distinction `T-19-93` turns on."
+        );
+
+        for depth in 0..FORGE_WRAPPER_DEPTHS {
+            let command = if depth == 0 {
+                (*base).to_string()
+            } else {
+                format!("{} {base}", WRAPPERS[rng.pick(WRAPPERS.len())])
+            };
+            cases += 1;
+
+            let envelope = TempDir::new().expect("a temporary envelope root");
+            let got = verdict(envelope.path(), &command);
+            assert_eq!(
+                got.code,
+                0,
+                "\n\nA LEGITIMATE `gh api` PLACEHOLDER ENDPOINT WAS REFUSED.\n\
+                 \n  command : {command}\
+                 \n  got     : exit {} reason {}\
+                 \n  seed    : {SEED:#x}\n\
+                 \nThis is `gh`'s own documented syntax. The correctness bar for `T-19-93` \
+                 is COUNT, not refuse: a rule that denied it would deny an agent following \
+                 the manual, which is how a safety control gets switched off (AR-19-11).",
+                got.code, got.reason_id
+            );
+
+            let written = ledger_lines_under(envelope.path());
+            assert_eq!(
+                written.len(),
+                1,
+                "\n\nA PULL-REQUEST CREATION WAS PERMITTED WITHOUT BEING COUNTED.\n\
+                 \n  command : {command}\
+                 \n  ledger  : {written:?}\
+                 \n  files   : {:?}\
+                 \n  seed    : {SEED:#x}\n\
+                 \nBecause `{{` and `}}` are `SEPARATORS`, the endpoint is fragmented before \
+                 either forge scan sees it, `pr_command_label` matches no arm, and the \
+                 creation is never counted. The SAFE-06 cap is BYPASSED rather than \
+                 exceeded and it has NO second carrier (`T-19-35`).\n\
+                 \n**The correct response is to stop the tokenizer fragmenting a brace pair \
+                 that contains no comma and no range**, or to teach the forge scans the \
+                 placeholders — not to refuse the command, and not to count every endpoint \
+                 that merely contains a brace.",
+                files_under(envelope.path())
+            );
+        }
+    }
+
+    assert!(
+        cases >= PLACEHOLDER_ENDPOINTS.len(),
+        "every placement must have been generated. Got {cases}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 13d. Rule B's seam reached through a BRACE EXPANSION
+// ---------------------------------------------------------------------------
+
+/// 2 prefixes x 4 bases x 2 depths = 16.
+const MIN_SEVERED_BRACE_CASES: usize = 12;
+
+#[test]
+fn a_governed_program_behind_a_brace_severed_prefix_is_refused_wherever_the_split_falls() {
+    // **This property is GREEN today and that is stated first, because a control
+    // nobody can tell is already satisfied is exactly this phase's failure
+    // mode.** `}` is a word-splitting closer whether the pair it closes is a
+    // parameter expansion or a brace expansion, so Rule B already reaches these
+    // spellings: both entries measured exit 2 under `envelope_assertion_failed`
+    // at this file's base commit. They are drawn so Rule B's seam can be
+    // exercised through the OTHER character class, not because they are live
+    // bypasses.
+    //
+    // **What it is load-bearing for is `19-17`, not `19-16`.** `19-17`
+    // reclassifies `{` three ways, and case 1 — a `{` preceded in-word by an
+    // unquoted `$` — exists solely to keep this flush. If a later change folded
+    // the brace-expansion case into the literal-brace case, these lines would
+    // stop being severed and this property would turn red where a verdict pin
+    // alone might not.
+
+    // --- floor 1: every base is PERMITTED unwrapped -----------------------
+    //
+    // The mirror image of the invariance property's floor 2. If a base were
+    // refused on its own account, every case built on it would be green for the
+    // base's reason and the property could not fail on the severed prefix at all.
+    for base in SEVERED_BASES {
+        let envelope = TempDir::new().expect("a temporary envelope root");
+        let answer = verdict(envelope.path(), base);
+        assert_eq!(
+            answer.code, 0,
+            "the UNWRAPPED base `{base}` must be PERMITTED, or every case built on it is \
+             green for the base's own reason. Got reason id: {}",
+            answer.reason_id
+        );
+    }
+
+    let mut rng = Lcg::new();
+    let mut cases = 0usize;
+    let mut splice_cases = 0usize;
+    let mut concatenated_cases = 0usize;
+
+    for entry in SEVERED_BRACE_PREFIXES {
+        for base in SEVERED_BASES {
+            for depth in 0..2usize {
+                let mut chain = String::new();
+                for _ in 0..depth {
+                    chain.push_str(WRAPPERS[rng.pick(WRAPPERS.len())]);
+                    chain.push(' ');
+                }
+                let command = format!("{chain}{entry} {base}");
+                cases += 1;
+                if draws_a_whole_word_splice(&command) {
+                    splice_cases += 1;
+                }
+                if draws_a_concatenated_splice(&command) {
+                    concatenated_cases += 1;
+                }
+
+                let envelope = TempDir::new().expect("a temporary envelope root");
+                let got = verdict(envelope.path(), &command);
+                assert_eq!(
+                    got.code,
+                    2,
+                    "\n\nA GOVERNED PROGRAM BEHIND A BRACE-SEVERED PREFIX WAS PERMITTED.\n\
+                     \n  command : {command}\
+                     \n  entry   : {entry}\
+                     \n  base    : {base}\
+                     \n  depth   : {depth}\
+                     \n  got     : exit {} reason {}\
+                     \n  seed    : {SEED:#x}\n\
+                     \nRule B is POSITIONAL and reads no name: a segment whose immediately \
+                     preceding operator is a `}}` that severed a word in progress is a \
+                     fragment continuing an enclosing word, so its first token is not a \
+                     command position. That must hold for a brace EXPANSION exactly as it \
+                     holds for a parameter expansion.\n\
+                     \n**The correct response is to restore the word-splitting flush for \
+                     `}}`, never to narrow this alphabet.** If a brace-expansion `{{` was \
+                     folded into the literal-brace case, this is the property that says so.",
+                    got.code, got.reason_id
+                );
+                assert!(
+                    got.reason_id
+                        .contains(policy::REASON_ENVELOPE_ASSERTION_FAILED),
+                    "and refused under `{}` — the identifier Rule B answers with. A refusal \
+                     for another cause would leave the class exactly as open. Got: {}",
+                    policy::REASON_ENVELOPE_ASSERTION_FAILED,
+                    got.reason_id
+                );
+            }
+        }
+    }
+
+    assert!(
+        cases >= MIN_SEVERED_BRACE_CASES,
+        "only {cases} cases were generated, under the floor of {MIN_SEVERED_BRACE_CASES}"
+    );
+    assert!(
+        splice_cases > 0 && concatenated_cases > 0,
+        "Rule B's brace alphabet must draw BOTH a whole-word splice and a CONCATENATED \
+         one, counted while generating. A floor a whole-word `{{a,b}}` satisfies is a floor \
+         `env -u GIT_CONFIG{{_COUNT,_COUNT}}` walks around. \
+         whole-word={splice_cases} concatenated={concatenated_cases}"
     );
 }
