@@ -1210,18 +1210,27 @@ pub const GOVERNED_PROGRAMS: &[&str] = &["git", "gh", "glab"];
 /// index git generates (`GIT_CONFIG_KEY_0`, `GIT_CONFIG_VALUE_0`, …); every
 /// other entry is matched exactly.
 ///
-/// This list is **drift-pinned** against the environment
-/// [`super::cred::build_env_in`] actually builds — a unit test iterates
-/// `EnvelopeEnv::entries()` and asserts that **every** entry it carries is
-/// covered here, SET or REMOVED, whatever the key is called. The pin used to
-/// filter on `value.is_some()` and on a `GIT_`/`GH_` name prefix; both filters
-/// are gone, because between them they hid the two `SSH_*` removals and the
-/// run-journal locator (`T-19-82`). That is the discipline
+/// This list is **drift-pinned** against the environment the DRIVER hands the
+/// child — a unit test iterates the entries of
+/// `build_env_in(...).with_run_id(...)` and asserts that **every** entry it
+/// carries is covered here, SET or REMOVED, whatever the key is called. The pin
+/// used to filter on `value.is_some()` and on a `GIT_`/`GH_` name prefix; both
+/// filters are gone, because between them they hid the two `SSH_*` removals and
+/// the run-journal locator (`T-19-82`). That is the discipline
 /// [`forbidden_repo_prefixes`] already
 /// uses by deriving its runs path from `journal::RUNS_SUBDIR`: a second
 /// spelling of a fact is a second thing to keep in step, and here the drift
 /// would be a refusal that silently stopped covering the key it was written
 /// for.
+///
+/// **The pin's SOURCE is the whole child environment rather than one
+/// constructor call, and that is `T-19-90`.** `super::cred::build_env_in`
+/// returns an `EnvelopeEnv` to which the driver then appends
+/// [`super::cred::RUN_ID_ENV`] through `with_run_id`, at the one seam that hands
+/// the environment to the spawn closure. A pin sourced from `build_env_in`
+/// alone is one seam short of the child and cannot see the entry that seam adds,
+/// whatever names are in this constant — which is exactly how `GSD_MM_RUN_ID`
+/// stayed uncovered while being carried to every driven child.
 pub const ENVELOPE_ENV_KEYS: &[&str] = &[
     "GIT_CONFIG_COUNT",
     "GIT_CONFIG_KEY_",
@@ -3148,6 +3157,16 @@ mod tests {
         // `EnvelopeEnv::entries()` carries, set or removed, whatever it is
         // called. The four floors below each name the filter they replace, so
         // re-introducing either one turns this test red instead of green.
+        //
+        // **And the SOURCE is now the environment the DRIVER hands the child,
+        // which is `T-19-90`.** `build_env_in` is one seam short of the child:
+        // the driver appends `cred::RUN_ID_ENV` afterwards through
+        // `with_run_id`, at the seam that hands the environment to the spawn
+        // closure. A pin sourced from the bare constructor could not see that
+        // entry however wide its floors were, so `GSD_MM_RUN_ID` was carried to
+        // every driven child while being outside the pin's reach entirely.
+        // Floor 5 below is what turns this test red if the source is ever
+        // narrowed back.
         let envelope = tempfile::TempDir::new().unwrap();
         let project = tempfile::TempDir::new().unwrap();
         let env = crate::envelope::cred::build_env_in(
@@ -3156,7 +3175,8 @@ mod tests {
             project.path(),
             std::path::Path::new("/opt/gsd-meta-manager"),
         )
-        .expect("the fixture environment builds");
+        .expect("the fixture environment builds")
+        .with_run_id("fixture-run-id");
 
         let carried: Vec<(String, bool)> = env
             .entries()
@@ -3206,6 +3226,26 @@ mod tests {
              `GITHUB_TOKEN`, `GLAB_CONFIG_DIR` or `SSH_*` — and already excluded \
              `GSD_MM_ENVELOPE_PROJECT_ROOT`. Re-introducing that filter turns this red. \
              Carried: {carried:?}, covered set: {ENVELOPE_ENV_KEYS:?}"
+        );
+
+        // --- floor 5: the SOURCE reaches the child, not just the constructor
+        //
+        // `T-19-90`. This floor stands for a defect that no amount of widening
+        // the COVERAGE could have caught: a pin whose source is a constructor
+        // call one seam short of the child cannot see the entry that seam
+        // appends, whatever names are in the constant. Re-sourcing this pin back
+        // to a bare `build_env_in(...)` — dropping the `.with_run_id(...)` above
+        // — turns this red.
+        assert!(
+            carried
+                .iter()
+                .any(|(name, _)| name == crate::envelope::cred::RUN_ID_ENV),
+            "the pinned environment must carry `{}`, the entry the DRIVER appends through \
+             `cred::EnvelopeEnv::with_run_id` after `build_env_in` returns. If this is \
+             absent, the pin's source is one seam short of the environment the child \
+             actually receives, and every coverage assertion below is being made about a \
+             smaller set than the one that reaches `execve`. Carried: {carried:?}",
+            crate::envelope::cred::RUN_ID_ENV
         );
 
         for (name, removed) in &carried {
