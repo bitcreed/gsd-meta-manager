@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
-status: executing
-stopped_at: Completed 19-11-PLAN.md (T-19-60 closed)
-last_updated: "2026-08-29T04:55:07.108Z"
-last_activity: 2026-08-28
-last_activity_desc: Phase 19 execution started
-state_head: 8d2a9a2441e98ad4254219335eac8b2a75e402c2
+status: verifying
+stopped_at: Completed 19-12-PLAN.md
+last_updated: "2026-08-29T05:24:13.619Z"
+last_activity: 2026-08-29
+last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
+state_head: fea96bc51c4d7172145f922df194c89d21389a9f
 progress:
   total_phases: 10
   completed_phases: 6
   total_plans: 91
-  completed_plans: 90
+  completed_plans: 91
   percent: 60
 ---
 
@@ -29,19 +29,28 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 
 ## Current Position
 
-Phase: 19 (GITSAFE — Git & Blast-Radius Envelope) — EXECUTING
-Plan: 12 of 12 (11 summaries on disk; 19-12 is the only plan without one)
-  19-11 closed T-19-60, the one high-severity threat blocking /gsd-secure-phase 19: the
-  PreToolUse guard decided what a command was from words[0], so `env`, `timeout`, `command`,
-  `/usr/bin/env`, a five-name wrapper chain and a `GIT_CONFIG_COUNT=0` prefix all walked
-  through it, and `env gh pr create` bypassed the SAFE-06 cap with no ledger line. The fix
-  resolves the effective program STRUCTURALLY (first token whose basename is in a closed
-  GOVERNED_PROGRAMS set) and adds NO wrapper-name list — it DELETES one (NESTED_SHELLS).
-  RED corpus committed first (69c766e), then the resolver (81eb044), then the fix (03c5abb).
-  Gate: 1245 passed / 2 failed / 13 ignored; clippy -D warnings exit 0; --all-targets still 5.
-  The 2 failures are the pre-existing driver_reattach pair, re-proved pre-existing by
-  reverting hooks.rs and observing them fail identically — see deferred-items.md.
-Status: Executing Phase 19
+Phase: 19 (GITSAFE — Git & Blast-Radius Envelope) — ALL 12 PLANS SUMMARISED
+Plan: 12 of 12 (12 summaries on disk)
+  19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
+  whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
+  19-12 certifies that closure at the CLASS level rather than at the instance level:
+  tests/envelope_wrapper_class.rs, one created file, 1181 lines, 11 tests, 0.2s.
+  A hand-rolled fixed-seed LCG (seed 0x1912_C0DE_5EED_0060, no crate — T-19-SC holds) composes
+  30 wrapper spellings chained 0-3 deep x 4 assignment prefixes x basename/absolute-path forms
+  x 3 quoting styles x an optional sh -c / bash -lc payload layer, and asserts
+  verdict(wrap(base)) == verdict(base) on exit code AND D-24 reason identifier, with the
+  right-hand side MEASURED from the unwrapped command in the same run.
+  MEASURED: 1680 refused cases / 773 distinct wrapper chains / 3 distinct D-24 reasons, and a
+  paired allow corpus of 1080 permitted cases / 533 chains, each exit 0 with EMPTY stdout (D-32).
+  12 wrapper names proved absent from the PRODUCTION LOGIC of policy.rs and hooks.rs (4 of them
+  from the raw bytes too), plus an orchestrator-required POSITIVE control proving each
+  include_str! file is the file the scanner thinks it is — both proved fail-first.
+  T-19-74 pinned on both sides, including the command-line boundary where the residual begins.
+  Gate: cargo test --no-fail-fast 1470 passed / 2 failed / 13 ignored; clippy -D warnings exit 0;
+  --all-targets lint count unchanged. USE --no-fail-fast: a plain `cargo test` stops at
+  driver_reattach and never reaches any envelope_* binary, reporting 1245/2/13 regardless of
+  what was added. The 2 failures are the pre-existing driver_reattach pair (deferred-items.md).
+Status: Phase complete — ready for verification
   21-35 closes a producer/consumer wire-format mismatch: the producer emits the fused
   `--resume=<id>` (one argv element) while the consumer still parses only the split
   `["--resume", "<id>"]`, so TUI-resumed sessions became silently undetectable in /proc.
@@ -55,7 +64,7 @@ Status: Executing Phase 19
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-08-28 — Phase 19 execution started
+Last activity: 2026-08-29 — Phase 19 plan 12 executed; all 12 plans summarised
 
 ## Deferred Verification
 
@@ -206,6 +215,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 19 P09 | 15 min | 2 tasks | 2 files |
 | Phase 19 P10 | 20 min | 3 tasks | 1 files |
 | Phase 19 P11 | 24 min | 3 tasks | 4 files |
+| Phase 19 P12 | 41 min | 3 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -236,6 +246,10 @@ Recent decisions affecting current work:
 - [quick 260729-vmp]: `o` is tab-scoped on the detail screen DESPITE having no collision to resolve, so it cannot silently become a global detail-screen opt-in on tabs where it is undiscoverable; the scoping test is what makes the guard an enforced property rather than a comment (CTRL-03)
 - [Phase 19]: T-19-60 closed by resolving the effective program STRUCTURALLY: consume leading NAME=VALUE assignment words by the shell grammar, then find the first token whose BASENAME is in a closed GOVERNED_PROGRAMS set. No wrapper-name list is added anywhere — one is DELETED (NESTED_SHELLS) (19-11) — The set of things that can precede a program is open and unlistable (env, timeout, nohup, stdbuf, setsid, doas, busybox env, ...), so a list plus one row per name is green on the day it lands and silent on the seventh wrapper. The set of programs the envelope GOVERNS is closed and already defined by classify_git and pr_command_label (D-08). made-up-wrapper-9000 resolving identically to env is the proof the fix is over the class rather than over a list.
 - [Phase 19]: GIT_CONFIG_COUNT=0 git push --force parks under hook_bypass_blocked, not force_push_blocked: the assignment is refused on its own account before resolution reaches the push (19-11) — One token does two things: it hides the command from layer 2 AND it stops core.hooksPath being injected, so no pre-push hook runs (D-09). Parking it under the reason --no-verify and core.hooksPath already use is where a later reader greps for a disarmed enforcement layer. ENVELOPE_ENV_KEYS is drift-pinned against cred::build_env_in, and the pin found GIT_SSH_COMMAND on its first run — a key the plan list omitted and whose reassignment would put the user ssh agent back within the run reach.
+- [Phase 19]: The alphabet-absence control asserts wrapper names absent from PRODUCTION CODE (comments and the #[cfg(test)] module stripped), not from raw file bytes (19-12) — 8 of the 12 designated names appear in policy.rs raw text: 7 in the doc comments of GOVERNED_PROGRAMS and resolve_program, where they are listed precisely to record that the set of things which can precede a program is open and must NOT be enumerated, and made-up-wrapper-9000 4x in the unit-test module as 19-11's own class-level fixture. A literal raw-bytes reading would be RED today for the opposite of the reason the control exists. Stripping is the same fact 19-11's audit measured with grep -v '^\s*//'. Strengthened rather than relaxed: the 4 raw-absent names (unshare, firejail, torsocks, catchsegv) are additionally asserted against unprocessed bytes.
+- [Phase 19]: Every absence control needs a POSITIVE control beside it: include_str! fails the build on a MISSING path but not on a WRONG-BUT-EXISTING one (19-12) — Point include_str! at a different source file, or at the same file twice, and every absence assertion passes having certified nothing. An absence assertion cannot distinguish "the name is not in this file" from "this is not the file I think it is". Each included file is now asserted to contain an anchor unique to it (fn resolve_program for policy.rs, fn classify_segments( for hooks.rs), absent from the other, present after stripping, ordered BEFORE the absence assertions. Proved fail-first by repointing HOOKS_SOURCE at policy.rs.
+- [Phase 19]: X=git; env $X push --force is PERMITTED and is pinned as such: resolve_program step 7 closes the SAME-command-line binding, and a semicolon makes it a different command line (19-12) — The plan required the semicolon form to be REFUSED; measured exit 0. The plan's own rationale and resolve_program's doc both say step 7 refuses a binding "in the same command line", so the semicolon form is the T-19-74 residual by definition rather than a bound on it. Bound 2 is pinned as X=git env $X push --force (no semicolon, refused under envelope_assertion_failed) AND the semicolon form is pinned permitted in a dedicated boundary test, so the residual's edge cannot move outward OR inward unnoticed.
+- [Phase 19]: Any phase-19 suite number must come from cargo test --no-fail-fast (19-12) — cargo test stops at the first failing test BINARY. driver_reattach fails (documented pre-existing pair) and envelope_* sorts after driver_*, so a plain run never executes any envelope test and reports 1245/2/13 no matter what was added. With --no-fail-fast the true total after 19-12 is 1470 passed / 2 failed / 13 ignored.
 
 ### Pending Todos
 
@@ -292,14 +306,21 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-08-29T04:54:42.912Z
-Stopped at: Completed 19-11-PLAN.md (T-19-60 closed)
+Last session: 2026-08-29T05:24:12.973Z
+Stopped at: Completed 19-12-PLAN.md
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
 Resume file: None
 (both retained deliberately — the plan-checker step runs as a separate agent and needs them;
 delete only after round 7 executes).
 Note: `.planning/phases/19-gitsafe-git-blast-radius-envelope/.continue-here.md` is a stale
-mid-execution checkpoint (claims task 3 of 8); all 8 plans have summaries. Ignore it.
+mid-execution checkpoint (claims task 3 of 8); all 12 plans have summaries. Ignore it.
+Note (19-12): the next action for Phase 19 is **re-run `/gsd-secure-phase 19`** — `19-SECURITY.md`
+still carries `threats_open: 1` / `status: blocked` and a Sign-Off block predating 19-11. Neither
+19-11 nor 19-12 edited it, deliberately (D-25): re-running the audit is what should flip it, not
+the plans that closed the finding writing their own verdict into it. `T-19-60` is closed and now
+certified at the class level; the `T-19-74` pin the register names as 19-12's job is done.
+Note (19-12): use `cargo test --no-fail-fast` for any phase-19 suite number. A plain `cargo test`
+stops at the failing `driver_reattach` binary and never reaches any `envelope_*` binary.
 Note: `.planning/ROADMAP.md`'s "Gap closure, round 7" block is now written (unexecuted `- [ ]`
 boxes for 21-19/21-20); the outstanding-edit note that stood here is resolved.

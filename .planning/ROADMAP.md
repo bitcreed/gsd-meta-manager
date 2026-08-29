@@ -407,7 +407,7 @@ Plans:
 **Wave 10** *(gap closure from `/gsd-secure-phase 19`, 2026-08-29 — the one high-severity threat blocking the gate; 19-12 depends on 19-11)*
 
 - [x] 19-11-PLAN.md — T-19-60: the `PreToolUse` guard classifies on `words[0]`, so a wrapper or a `NAME=VALUE` prefix walks a force push and a PR past layers 1, 2 and 3. Closed structurally by `policy::resolve_program` — consume assignment words, then find the first token whose basename is a program the envelope already governs — with the six measured lines committed RED first and the `NESTED_SHELLS` list deleted rather than extended
-- [ ] 19-12-PLAN.md — The control over the class rather than the instances: a fixed-seed generator asserting the verdict is invariant under any wrapper chain, an alphabet whose names are mechanically proved absent from `src/`, a paired allow corpus so the fix cannot be "deny everything", and the one disclosed residual bounded on both sides
+- [x] 19-12-PLAN.md — The control over the class rather than the instances: a fixed-seed generator asserting the verdict is invariant under any wrapper chain, an alphabet whose names are mechanically proved absent from `src/`, a paired allow corpus so the fix cannot be "deny everything", and the one disclosed residual bounded on both sides
 
 **UI hint**: no — this phase ships no visual surface. It delivers a policy module, two git hook
 stubs, a `PreToolUse` guard, an environment envelope and a secret scanner. The one user-visible
@@ -674,7 +674,7 @@ Gap closure, round 13 (verification pass 13 scored **98/100 must-haves, 4/5 ROAD
 | 16. Run Journal & State Substrate | 6/6 | Complete    | 2026-07-29 |
 | 17. Supervisor | 8/8 | Complete    | 2026-07-29 |
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
-| 19. GITSAFE — Git & Blast-Radius Envelope | 11/12 | In Progress|  |
+| 19. GITSAFE — Git & Blast-Radius Envelope | 12/12 | In Progress|  |
 | 20. Deterministic Decision Router & Run Bounds | 5/5 | In Progress|  |
 | 21. LLM Goal Layer & Prompt-Injection Hardening | 37/37 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |
