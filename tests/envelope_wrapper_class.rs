@@ -697,3 +697,306 @@ fn wrapper_names_the_fix_must_not_know_are_absent_from_the_production_logic() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 3. The paired allow corpus (D-32, `T-19-78`) — what stops the fix from being
+//    "deny everything"
+// ---------------------------------------------------------------------------
+
+/// Commands that must be PERMITTED, run through the SAME generator and the same
+/// wrapper chains as the refusal corpus.
+///
+/// **This half is what makes the other half mean anything.** Every assertion in
+/// `the_verdict_is_invariant_under_every_generated_wrapping_of_a_refused_command`
+/// would also be satisfied by a guard that refused every Bash tool call, and the
+/// guard is registered against every Bash tool call — so a resolution that denied
+/// what it did not recognise would deny `ls`, `cargo` and `rg`, and a control
+/// that fails into unusability is a control that gets switched off.
+/// `ProgramResolution::Ungoverned` is a PERMIT and it is the ANSWER, not a
+/// fall-through.
+///
+/// **No PR-CREATING forge command appears here, and that is a correctness
+/// requirement rather than a preference.** The ledger records before it permits
+/// (D-20), so the second `gh pr create` in a run is parked for
+/// `pr_cap_exceeded` REGARDLESS of wrapping — which would make an invariance
+/// assertion over it pass for entirely the wrong reason. `gh pr list` is the read
+/// that belongs here; `env gh pr create` is an enumerated row in
+/// `tests/envelope_wrapper_bypass.rs`, where it is asserted against the ledger
+/// rather than against invariance.
+const PERMITTED_BASES: &[&str] = &[
+    // Ordinary commands the guard has no governance claim over at all.
+    "ls -la",
+    "echo hi",
+    "cargo build --offline",
+    "rg -n TODO src/",
+    // A `-c` that is not a shell's `-c`: its following word is a search pattern,
+    // which names no governed program, so the payload resolves to nothing rather
+    // than to a refusal.
+    "grep -c fn src/main.rs",
+    // Legitimate GOVERNED commands. The wrapper must be transparent in BOTH
+    // directions: if `env git status` were refused, transparency would be a
+    // denial rather than a classification, and reading git state is the first
+    // thing a driven run does.
+    "git status",
+    "git log --oneline -n 5",
+    "git push origin refs/heads/gsd-auto/alpha/w:refs/heads/gsd-auto/alpha/w",
+    "gh pr list --limit 5",
+];
+
+/// 9 x 120 = 1080, over the 1000 floor the plan sets.
+const VARIANTS_PER_PERMITTED_BASE: usize = 120;
+
+const MIN_PERMITTED_CASES: usize = 1000;
+
+#[test]
+fn the_permitted_corpus_survives_every_generated_wrapping_and_still_answers_nothing() {
+    let envelope = TempDir::new().expect("a temporary envelope root");
+    let root = envelope.path();
+
+    assert!(
+        !PERMITTED_BASES.is_empty(),
+        "an empty allow corpus is the same thing as not having one: without it, a guard \
+         that refused every tool call would satisfy every assertion in the refusal half of \
+         this file (D-32)"
+    );
+
+    // Every base permits UNWRAPPED first, for the same reason the refusal half
+    // measures its bases first: the right-hand side of an invariance claim has
+    // to be observed, not assumed.
+    for base in PERMITTED_BASES {
+        let (answer, stdout) = ask(root, base);
+        assert_eq!(
+            answer.code, 0,
+            "the UNWRAPPED base `{base}` must be PERMITTED. Reason id: {}",
+            answer.reason_id
+        );
+        assert!(
+            stdout.is_empty(),
+            "a permit answers nothing at all: emitting `allow` would turn a deny-only \
+             control into an approval authority. `{base}` wrote: {stdout}"
+        );
+    }
+
+    let mut rng = Lcg::new();
+    let mut chains: BTreeSet<String> = BTreeSet::new();
+    let mut cases = 0usize;
+
+    for base in PERMITTED_BASES {
+        for _ in 0..VARIANTS_PER_PERMITTED_BASE {
+            let wrapped = wrap(&mut rng, base);
+            chains.insert(wrapped.chain.clone());
+            cases += 1;
+
+            let (got, stdout) = ask(root, &wrapped.command);
+            assert_eq!(
+                got.code,
+                0,
+                "\n\nA PERMITTED COMMAND WAS REFUSED AFTER WRAPPING.\n\
+                 \n  wrapped : {}\
+                 \n  base    : {base}\
+                 \n  recipe  : {}\
+                 \n  reason  : {}\
+                 \n  seed    : {SEED:#x}\n\
+                 \nThis corpus exists so that the refusal half of this file cannot be \
+                 satisfied by a guard that denies everything. A red here is the fix having \
+                 become a blanket denial in some wrapping — which would make a driven run \
+                 unusable, and an unusable control is a control that gets switched off.\n",
+                wrapped.command,
+                wrapped.recipe,
+                got.reason_id,
+            );
+            assert!(
+                stdout.is_empty(),
+                "a permit answers nothing at all, wrapped or not. `{}` wrote: {stdout}",
+                wrapped.command
+            );
+        }
+    }
+
+    assert!(
+        cases >= MIN_PERMITTED_CASES,
+        "the allow corpus must run over at least {MIN_PERMITTED_CASES} wrapped cases, or \
+         the pairing is decorative. Got {cases}"
+    );
+
+    println!(
+        "permitted corpus: {cases} generated cases, {} distinct wrapper chains, \
+         seed {SEED:#x}",
+        chains.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4. The discrimination pair (`T-19-75`)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_search_for_an_allowed_git_command_runs_and_a_search_for_a_refused_one_does_not() {
+    // **Asserted as a PAIR in one test so the two cannot drift apart.** The
+    // quoted-payload rule CLASSIFIES the payload rather than blanket-denying it,
+    // and the only way to show that is to exhibit one of each. Split across two
+    // tests, someone deleting the permitted half would leave a file that still
+    // looked like it proved discrimination.
+    let envelope = TempDir::new().expect("a temporary envelope root");
+    let root = envelope.path();
+
+    let (allowed, stdout) = ask(root, "rg \"git status\" src/");
+    assert_eq!(
+        allowed.code, 0,
+        "`rg \"git status\" src/` must RUN. The payload is classified, and `git status` \
+         classifies as allowed — a rule that refused every quoted payload naming a \
+         governed program would stop a driven run from grepping its own source. Reason: {}",
+        allowed.reason_id
+    );
+    assert!(stdout.is_empty(), "a permit answers nothing: {stdout}");
+
+    let refused = verdict(root, "rg \"git push --force\" src/");
+    assert_eq!(
+        refused.code, 2,
+        "`rg \"git push --force\" src/` must be REFUSED. This is `T-19-75`, the ACCEPTED \
+         over-refusal disclosed in `resolve_program`'s doc: an argument that literally \
+         spells a refused git command is refused. It is pinned rather than merely \
+         disclosed so that closing it later is a deliberate edit."
+    );
+    assert_eq!(
+        refused.reason_id, policy::REASON_FORCE_PUSH_BLOCKED,
+        "and it is refused for the reason the payload itself carries, not for an unrelated \
+         cause such as words that could not be recovered"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 5. The behaviours `19-11` GENERALISED rather than replaced
+// ---------------------------------------------------------------------------
+//
+// Asserted through `hooks::guard_in` against command STRINGS rather than against
+// `resolve_program`'s enum, so they survive any future refactor of how
+// resolution is spelled. `19-11` deleted `NESTED_SHELLS` — a five-name list of
+// shells — in favour of a structural `-c` rule; these rows are what prove the
+// deletion widened coverage rather than merely moving it.
+
+/// Assert one command is refused, and that its refusal carries one specific
+/// member of D-24's taxonomy.
+fn refuses_under(root: &Path, command: &str, reason_id: &str) {
+    let answer = verdict(root, command);
+    assert_eq!(
+        answer.code, 2,
+        "`{command}` must be REFUSED. Got reason id: {}",
+        answer.reason_id
+    );
+    assert_eq!(
+        answer.reason_id, reason_id,
+        "`{command}` must be refused UNDER `{reason_id}`. Asserting the identifier and not \
+         merely the exit code is what stops a row from passing because it was refused for \
+         an unrelated cause."
+    );
+}
+
+/// Assert one command is refused and that its message NAMES `needle`.
+///
+/// Used where the refusal's value is in what it tells the reader — that it was
+/// `eval`, or an expansion, or words that could not be recovered — rather than
+/// only in which bucket it parked under.
+fn refuses_naming(root: &Path, command: &str, needle: &str) {
+    let (answer, stdout) = ask(root, command);
+    assert_eq!(
+        answer.code, 2,
+        "`{command}` must be REFUSED. Got reason id: {}",
+        answer.reason_id
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(stdout.trim()).unwrap_or(serde_json::Value::Null);
+    let reason = value["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        reason.contains(needle),
+        "`{command}`'s refusal must NAME `{needle}`, or a reader meeting it cannot tell \
+         which property of the command made it unjudgeable. Got: {reason}"
+    );
+}
+
+/// Assert one command is permitted and answers nothing.
+fn permits(root: &Path, command: &str) {
+    let (answer, stdout) = ask(root, command);
+    assert_eq!(
+        answer.code, 0,
+        "`{command}` must be PERMITTED. Got reason id: {}",
+        answer.reason_id
+    );
+    assert!(stdout.is_empty(), "a permit answers nothing: {stdout}");
+}
+
+#[test]
+fn a_force_push_inside_a_shell_payload_is_still_refused_in_every_spelling_of_the_flag() {
+    let envelope = TempDir::new().expect("a temporary envelope root");
+    let root = envelope.path();
+
+    // 19-05 deviation 2, preserved: the guard follows a `-c` payload.
+    refuses_under(
+        root,
+        "sh -c \"git push --force origin main\"",
+        policy::REASON_FORCE_PUSH_BLOCKED,
+    );
+    refuses_under(
+        root,
+        "bash -c \"echo hi && git push --force origin main\"",
+        policy::REASON_FORCE_PUSH_BLOCKED,
+    );
+
+    // **The row that proves the generalisation WIDENED coverage rather than
+    // moving it.** `bash -lc "…"` bundles the login flag with `-c`; the deleted
+    // `NESTED_SHELLS` list matched an exact `-c` and did not cover this. The
+    // structural rule — a bundled short option containing `c` hands its
+    // following word over as a nested command line — covers it without naming
+    // `bash`.
+    refuses_under(
+        root,
+        "bash -lc \"git push --force origin main\"",
+        policy::REASON_FORCE_PUSH_BLOCKED,
+    );
+}
+
+#[test]
+fn a_command_the_guard_cannot_see_the_program_of_is_refused_naming_why() {
+    let envelope = TempDir::new().expect("a temporary envelope root");
+    let root = envelope.path();
+
+    // `eval` builds its command at run time, so no classifier can see it.
+    refuses_naming(root, "eval \"git push --force\"", "eval");
+
+    // A verb assembled by shell expansion is not knowable before it runs.
+    refuses_naming(root, "$TOOL push --force", "expansion");
+
+    // Words that cannot be recovered. Note this refusal carries no `(reason: …)`
+    // marker — it is produced before classification, by the splitter — so it is
+    // pinned on the sentence rather than on a taxonomy identifier.
+    refuses_naming(
+        root,
+        "git commit -m 'unterminated",
+        "words cannot be recovered",
+    );
+
+    // A nesting deeper than the guard follows is REFUSED rather than followed.
+    // The bound exists so the recursion cannot be turned into a denial of
+    // service; refusing at the bound is the direction that fails closed.
+    refuses_under(
+        root,
+        "sh -c \"sh -c \\\"sh -c 'git status'\\\"\"",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+}
+
+#[test]
+fn a_dash_c_payload_whose_quoting_cannot_be_recovered_is_permitted_when_it_governs_nothing() {
+    let envelope = TempDir::new().expect("a temporary envelope root");
+    let root = envelope.path();
+
+    // **The control for the payload rule's own edge.** An unbalanced quote
+    // inside a `-c` payload is a payload the shell will not run either, so
+    // refusing all of them would deny an ordinary command for nothing. The rule
+    // refuses such a payload only when it actually mentions something this
+    // envelope governs — which is why `refuses_naming` above catches
+    // `git commit -m 'unterminated` while this row runs.
+    permits(root, "grep -c \"don't\" src/main.rs");
+}
