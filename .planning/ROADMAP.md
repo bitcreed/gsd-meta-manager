@@ -364,7 +364,7 @@ Plans:
   - `git stash` must be forbidden in the driver's allowlist outright
 
 **Research**: skip — branch-protection and pre-push-hook patterns are well-established practice (GitHub Copilot's `copilot/`-prefix model is a direct precedent)
-**Plans**: 8/8 plans executed
+**Plans**: 8/8 executed, plus 2 UAT gap-closure plans (19-09, 19-10) planned
 
 Plans:
 **Wave 1**
@@ -398,6 +398,11 @@ Plans:
 **Wave 8** *(blocked on Wave 7)*
 
 - [x] 19-08-PLAN.md — `tests/async_blocking_guard.rs`, the project gate with the unchanged 5-lint delta, and criterion-by-criterion traceability
+
+**Wave 9** *(gap closure from the human UAT pass of 2026-08-28 — both plans independent, no shared files, run in parallel)*
+
+- [ ] 19-09-PLAN.md — G-19-1: `SECTION_ENVELOPE` rewritten to one sentence + both cases explained with examples + the branch-protection conclusion, with all seven pinned substrings verbatim and a new legibility cap observed RED at 250 tokens
+- [ ] 19-10-PLAN.md — G-19-4: per-test aliases in `tests/driver_lock.rs` so no two writers share one `settings.json`, the shared-path mechanism demonstrated at the real seam, and an early-dying child reported with its exit status and stderr instead of as a 30s lock timeout
 
 **UI hint**: no — this phase ships no visual surface. It delivers a policy module, two git hook
 stubs, a `PreToolUse` guard, an environment envelope and a secret scanner. The one user-visible
