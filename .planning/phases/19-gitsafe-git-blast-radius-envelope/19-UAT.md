@@ -1,10 +1,17 @@
 ---
-status: testing
+status: complete
 phase: 19-gitsafe-git-blast-radius-envelope
 source: [19-VERIFICATION.md]
 started: 2026-08-18T23:27:41Z
 updated: 2026-08-29
 resumed: 2026-08-29
+completed: 2026-08-29
+completion_note: >-
+  All 5 items have definitive results: 3 passed, 2 recorded as issues and both closed by the
+  gap-closure round (G-19-1 by 19-09, G-19-4 by 19-10). No item was scored on a `skipped`
+  spelling. Every pass was judged by the user against verbatim material — the rendered
+  constant, the traceability rows against the criterion sentences, the disclosure paragraphs
+  in situ — not against a summary's description of them.
 previously_deferred_by: user
 previously_deferred_reason: >-
   Explicitly deferred on 2026-08-19 so Phase 20 could start. All four items are reading
@@ -25,17 +32,7 @@ gap_closure_round:
   new_pending_item: 5
 ---
 
-## Current Test
-
-number: 5
-name: The shipped SECTION_ENVELOPE text reads as legible candour
-expected: |
-  One opening sentence stating the ceiling, then the guaranteed case with visibly
-  indented examples, then the not-guaranteed case with visibly indented examples, then
-  the server-side branch-protection recommendation as the closing conclusion — the shape
-  asked for verbatim in test 1 ("One sentence, then an explanation for both cases and
-  examples?"). All nine residual disclosures still present and un-softened.
-awaiting: user response
+[testing complete]
 
 ## Tests
 
@@ -200,14 +197,31 @@ raised_by: gap closure of G-19-1. Test 1 reported the original text as too long 
   215). The exact shipped wording has therefore not itself been read by the user.
 where: the full rendered text is quoted in 19-VERIFICATION.md so it can be judged without
   opening the source.
-result: [pending]
+result: pass
+judged: 2026-08-29
+note: >-
+  Passed on the rendered text, extracted from src/envelope/advisory.rs and read by the user
+  in full — not on the SUMMARY's description of it, and not on the ~161-word draft reviewed
+  on 2026-08-28, which is NOT what shipped.
+  Two reservations were put to the user before the pass and accepted by it:
+  (a) the opening ceiling sentence — "Mechanism bounds this run's reach and pushes; a
+  determined agent defeats everything below the remote" — is compressed to the edge of
+  readability, and may not fully answer the "hard to follow" complaint that started G-19-1;
+  (b) one clause not on the permitted-drop list was dropped — "Each layer is documented with
+  what it cannot see". The executor flagged it rather than absorbing it quietly. It survives
+  in substance because `super`'s three-layer contract still documents each layer's blind spot
+  and the doc-comment now points at it explicitly, but it is gone from the user-facing text.
+  Also noted at the pass: 19-09's own token cap moved from 190 to 215 when 190 proved
+  unsatisfiable without dropping required disclosures. The corrected cap was re-observed RED
+  against the unmodified constant in its own commit (4cc54bb) before advisory.rs was touched,
+  so the control is honest — looser than planned, not retrofitted to the result.
 
 ## Summary
 
 total: 5
-passed: 2
+passed: 3
 issues: 2
-pending: 1
+pending: 0
 skipped: 0
 blocked: 0
 
