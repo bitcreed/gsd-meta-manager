@@ -221,6 +221,63 @@ fn the_honesty_statement_carries_each_of_its_three_required_parts() {
     );
 }
 
+/// A word cap on a safety text, and why one belongs there (G-19-1, D-27).
+///
+/// The test above proves the three required parts are PRESENT. That is
+/// necessary and it is not sufficient. The failure this test catches is
+/// different in kind: a statement long enough that nobody finishes it. The human
+/// UAT pass on 2026-08-28 found no claim overstated and still recorded the
+/// statement as failing its own purpose — *"it reads like it's too long.. it's
+/// hard to follow"*. D-27's closing line is that an overstated safety claim is
+/// worse than a stated limitation because it gets trusted, and PITFALLS' concern
+/// is precisely that safety claims get trusted **without being understood**. An
+/// honesty statement that is not read is doing none of the work D-27
+/// commissioned it for, so legibility is held here by a control rather than by
+/// an intention — otherwise the text re-grows one well-meaning clarification at
+/// a time and G-19-1 quietly re-opens.
+#[test]
+fn the_honesty_statement_stays_short_enough_that_a_reader_finishes_it() {
+    // 250 tokens measured before the G-19-1 rewrite; the rewrite targets ~172
+    // (a 161-token body plus the 11-token section header, which is the header
+    // `dry_run` renders and is not the density problem). 190 is the cap: it
+    // leaves ~18 tokens of ordinary-rewording headroom above the target while a
+    // return to the pre-fix density fails by 60. The number is arithmetic, not
+    // taste, so a future editor can audit it rather than guess at it.
+    const MAX_TOKENS: usize = 190;
+
+    let tokens = advisory::SECTION_ENVELOPE.split_whitespace().count();
+    assert!(
+        tokens <= MAX_TOKENS,
+        "the honesty statement is {tokens} whitespace-separated tokens, over the \
+         {MAX_TOKENS} cap. Shortening it must never mean softening it — the pin \
+         test above is what makes that a build failure — so cut redundancy and \
+         layout, never a residual disclosure (G-19-1, D-27):\n{}",
+        advisory::SECTION_ENVELOPE
+    );
+
+    // This clause is a GUARD, not a repair: the widest line measured 76 before
+    // the rewrite, so it is green on arrival. It protects the property the pin
+    // test above silently depends on — a pinned phrase straddling a `\n` cannot
+    // match, and the failure message would then name the phrase rather than the
+    // wrapping, sending the next reader at entirely the wrong thing.
+    const MAX_LINE: usize = 80;
+
+    if let Some((number, line)) = advisory::SECTION_ENVELOPE
+        .lines()
+        .enumerate()
+        .find(|(_, line)| line.chars().count() > MAX_LINE)
+    {
+        panic!(
+            "line {} of the honesty statement is {} characters, over the \
+             {MAX_LINE} cap. Wrap around the pinned phrases, never through one \
+             — the longest is `defeatable by an agent that can spawn an \
+             unsupervised` at 53 characters. Offending line:\n{line}",
+            number + 1,
+            line.chars().count()
+        );
+    }
+}
+
 #[test]
 fn the_journal_notice_and_the_rendered_preview_carry_the_same_claim_text() {
     use gsd_meta_manager::driver::dry_run;
