@@ -367,6 +367,10 @@ Plans:
 **Plans**: 8/8 executed, plus 2 UAT gap-closure plans (19-09, 19-10) and 2 security gap-closure plans (19-11, 19-12) for the blocking threat T-19-60
 
 Plans:
+
+- [x] 19-13-PLAN-CHECK.md
+- [ ] 19-13-PLAN.md
+
 **Wave 1**
 
 - [x] 19-01-PLAN.md — Tracer: SAFE-01 end-to-end namespace refusal proved against a `file://` bare remote, with `src/envelope/`, the hidden `envelope` subcommand, the out-of-repo artifact directory and env-injected `core.hooksPath`
@@ -674,7 +678,7 @@ Gap closure, round 13 (verification pass 13 scored **98/100 must-haves, 4/5 ROAD
 | 16. Run Journal & State Substrate | 6/6 | Complete    | 2026-07-29 |
 | 17. Supervisor | 8/8 | Complete    | 2026-07-29 |
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
-| 19. GITSAFE — Git & Blast-Radius Envelope | 12/12 | In Progress|  |
+| 19. GITSAFE — Git & Blast-Radius Envelope | 14/14 | In Progress|  |
 | 20. Deterministic Decision Router & Run Bounds | 5/5 | In Progress|  |
 | 21. LLM Goal Layer & Prompt-Injection Hardening | 37/37 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |

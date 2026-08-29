@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
-stopped_at: Completed 19-12-PLAN.md
-last_updated: "2026-08-29T05:24:13.619Z"
+stopped_at: Completed 19-13-PLAN.md
+last_updated: "2026-08-29T17:48:51.785Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: fea96bc51c4d7172145f922df194c89d21389a9f
+state_head: 7ef7ba210f78cd423f65dbb242b8ef47fc885dd6
 progress:
   total_phases: 10
   completed_phases: 6
-  total_plans: 91
-  completed_plans: 91
+  total_plans: 93
+  completed_plans: 93
   percent: 60
 ---
 
@@ -216,6 +216,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 19 P10 | 20 min | 3 tasks | 1 files |
 | Phase 19 P11 | 24 min | 3 tasks | 4 files |
 | Phase 19 P12 | 41 min | 3 tasks | 1 files |
+| Phase 19 P13 | 50m | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -250,6 +251,8 @@ Recent decisions affecting current work:
 - [Phase 19]: Every absence control needs a POSITIVE control beside it: include_str! fails the build on a MISSING path but not on a WRONG-BUT-EXISTING one (19-12) — Point include_str! at a different source file, or at the same file twice, and every absence assertion passes having certified nothing. An absence assertion cannot distinguish "the name is not in this file" from "this is not the file I think it is". Each included file is now asserted to contain an anchor unique to it (fn resolve_program for policy.rs, fn classify_segments( for hooks.rs), absent from the other, present after stripping, ordered BEFORE the absence assertions. Proved fail-first by repointing HOOKS_SOURCE at policy.rs.
 - [Phase 19]: X=git; env $X push --force is PERMITTED and is pinned as such: resolve_program step 7 closes the SAME-command-line binding, and a semicolon makes it a different command line (19-12) — The plan required the semicolon form to be REFUSED; measured exit 0. The plan's own rationale and resolve_program's doc both say step 7 refuses a binding "in the same command line", so the semicolon form is the T-19-74 residual by definition rather than a bound on it. Bound 2 is pinned as X=git env $X push --force (no semicolon, refused under envelope_assertion_failed) AND the semicolon form is pinned permitted in a dedicated boundary test, so the residual's edge cannot move outward OR inward unnoticed.
 - [Phase 19]: Any phase-19 suite number must come from cargo test --no-fail-fast (19-12) — cargo test stops at the first failing test BINARY. driver_reattach fails (documented pre-existing pair) and envelope_* sorts after driver_*, so a plain run never executes any envelope test and reports 1245/2/13 no matter what was added. With --no-fail-fast the true total after 19-12 is 1470 passed / 2 failed / 13 ignored.
+- [Phase 19]: T-19-60 is closed for the wrapper-operand sub-class only; T-19-86 registered, pinned and deferred
+- [Phase 19]: /gsd-secure-phase 19 is NOT cleared by plan 19-13 alone — T-19-86 and T-19-87 remain open
 
 ### Pending Todos
 
@@ -276,6 +279,8 @@ Recent decisions affecting current work:
 
 - Phase 13's queue-execution design self-dated "valid until 2026-04-30"; re-verify GSD's
   autonomous-mode / checkpoint contract during Phase 20 research
+
+- T-19-86 (governed program's own operand names a governed command) and T-19-87 (${VAR} fragments a command past the splitter) are open, pinned and deferred to a round-4 plan; /gsd-secure-phase 19 cannot clear until they are closed
 
 ### Quick Tasks Completed
 
@@ -306,8 +311,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-08-29T05:24:12.973Z
-Stopped at: Completed 19-12-PLAN.md
+Last session: 2026-08-29T17:48:42.553Z
+Stopped at: Completed 19-13-PLAN.md
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
 Resume file: None
