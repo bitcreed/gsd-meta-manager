@@ -646,3 +646,149 @@ async fn a_child_that_dies_before_taking_the_lock_is_reported_with_its_status_an
         "an early exit must be reported in seconds, not at the 30s deadline; took {elapsed:?}"
     );
 }
+
+// ============================================================================
+// The two controls for G-19-4. One demonstrates the MECHANISM; the other is the
+// REGRESSION GATE. They are not interchangeable and the difference is stated
+// here so neither is mistaken for the other.
+// ============================================================================
+
+/// Two writers sharing one alias break each other's settings verification.
+///
+/// **This is not a product bug, and the distinction matters.** The read-back
+/// refusal is `write_settings_in` doing precisely what D-07 asks of it: the
+/// agent CLI ignores a settings file that fails validation SILENTLY, so the
+/// moment just after the write is the only moment this process can still tell
+/// that the file on disk is not the file it meant. Weakening that check to
+/// verify from the handle it wrote would delete the detection point. The defect
+/// G-19-4 records is a *harness* that pointed two writers at one path.
+///
+/// **This control is green before the fix and green after it.** It is evidence
+/// that the diagnosis is a measured cause rather than a believed story — the
+/// shared-path collision reproduced by construction, with no timing involved —
+/// and it is deliberately NOT the gate that proves the fix.
+/// `no_two_driving_tests_share_an_envelope_settings_path` is that gate.
+#[test]
+fn two_writers_sharing_one_alias_break_each_others_settings_verification() {
+    use gsd_meta_manager::envelope::hooks;
+
+    let root = TempDir::new().expect("an envelope root");
+
+    // A plain local, NOT a const in the alias family: this test drives no run,
+    // and the gate below counts one alias per driving test.
+    let alias = "shared-by-two-writers";
+
+    // `write_settings_in` takes the binary as a parameter and calls no
+    // `current_exe`, so two process images can be simulated exactly by passing
+    // two paths. In the real defect these were the TEST binary (four in-process
+    // siblings) and the REAL binary (the spawned child).
+    let first_binary = Path::new("/fixture/first/gsd-meta-manager");
+    let second_binary = Path::new("/fixture/second/gsd-meta-manager");
+
+    let path = hooks::write_settings_in(root.path(), alias, first_binary)
+        .expect("the first write verifies against its own value");
+    let first_expected = hooks::settings_value(first_binary, alias);
+
+    // The sibling's atomic rename, landing where it would have landed inside the
+    // first writer's persist->verify window. A complete write rather than a
+    // partial one, because that is what `persist_settings` performs.
+    hooks::write_settings_in(root.path(), alias, second_binary)
+        .expect("the second write verifies against ITS own value, which is the whole problem");
+
+    let err = hooks::verify_settings(&path, &first_expected).expect_err(
+        "one path cannot hold two writers' settings; the first writer's verification \
+         must refuse",
+    );
+
+    let rendered = format!("{err:#}");
+    assert!(
+        rendered.contains(gsd_meta_manager::envelope::policy::REASON_ENVELOPE_ASSERTION_FAILED),
+        "the refusal must carry the envelope-assertion reason code, got: {rendered}"
+    );
+}
+
+/// The regression gate: no two driving tests in this file share a settings path.
+///
+/// Scans its own source, in the idiom of
+/// `the_guard_makes_no_network_call_on_any_path_it_takes`
+/// (src/envelope/hooks.rs:1953-1985), including that test's anti-vacuity
+/// discipline. **This assertion was observed FAILING against the pre-fix file**
+/// — a control that has never been seen red certifies nothing, and G-19-4 exists
+/// precisely because a green suite hid a defect for ten days.
+#[test]
+fn no_two_driving_tests_share_an_envelope_settings_path() {
+    let source = include_str!("driver_lock.rs");
+
+    // Every needle is assembled at RUNTIME, and that is not an affectation. A
+    // source scanner whose search strings appear literally in its own body
+    // matches itself and reports on nothing — the vacuous pass this phase argues
+    // against. Worse here: the shared-declaration check below would become
+    // permanently unsatisfiable, since the file would always contain the very
+    // string it asserts is absent.
+    let declaration = format!("const {}", "ALIAS_");
+    let shared_declaration = format!("const {}: &{}", "ALIAS", "str");
+    let driving_attribute = format!("#[{}::test", "tokio");
+
+    // The mechanism, said once, and quoted by every failure below so the next
+    // person to trip one does not repeat the investigation.
+    let mechanism = "a shared envelope settings path plus differing current_exe() values \
+                     fails the child's read-back verification (hooks.rs:1340-1341) before it \
+                     ever reaches lock::acquire, and the child's death then reads as a lock \
+                     timeout (G-19-4)";
+
+    let aliases: Vec<&str> = source
+        .split(declaration.as_str())
+        .skip(1)
+        .map(|tail| {
+            tail.split('"')
+                .nth(1)
+                .expect("an alias declaration carries a double-quoted value")
+        })
+        .collect();
+
+    // The anti-vacuity guard. Without it the extraction could silently yield
+    // nothing and every assertion below would pass having read no aliases at
+    // all.
+    assert!(
+        !aliases.is_empty(),
+        "no per-test alias declarations were found, so this gate read nothing and \
+         proves nothing"
+    );
+
+    assert!(
+        !source.contains(shared_declaration.as_str()),
+        "the shared alias declaration is still present: every test in this file would \
+         write one settings.json. {mechanism}"
+    );
+
+    let driving_tests = source.matches(driving_attribute.as_str()).count();
+    assert_eq!(
+        aliases.len(),
+        driving_tests,
+        "expected one alias per driving test, found {} aliases for {driving_tests} driving \
+         tests. A test that reuses a sibling's alias reuses its settings path: {mechanism}",
+        aliases.len()
+    );
+
+    // `envelope_dir_in` validates and joins without touching the filesystem, so
+    // any absolute root works. `expect`ing `Some` is load-bearing: an alias that
+    // is not a plain path component sanctions no settings file at all, which
+    // would be a different defect wearing this one's clothes.
+    let root = Path::new("/gsd-mm-alias-uniqueness-gate");
+    let directories: std::collections::BTreeSet<PathBuf> = aliases
+        .iter()
+        .map(|alias| {
+            gsd_meta_manager::envelope::envelope_dir_in(root, alias)
+                .unwrap_or_else(|| panic!("alias {alias:?} is not a plain path component"))
+        })
+        .collect();
+
+    assert_eq!(
+        directories.len(),
+        aliases.len(),
+        "two or more aliases resolve to the same envelope directory ({} directories for \
+         {} aliases): {mechanism}",
+        directories.len(),
+        aliases.len()
+    );
+}
