@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: executing
-stopped_at: Completed 19-10-PLAN.md (G-19-4 closed)
-last_updated: "2026-08-29T03:07:36.297Z"
+stopped_at: Completed 19-11-PLAN.md (T-19-60 closed)
+last_updated: "2026-08-29T04:55:07.108Z"
 last_activity: 2026-08-28
 last_activity_desc: Phase 19 execution started
-state_head: 04fb2bfcb106795871e48eccf23cacecf414cd89
+state_head: 8d2a9a2441e98ad4254219335eac8b2a75e402c2
 progress:
   total_phases: 10
   completed_phases: 6
-  total_plans: 89
-  completed_plans: 88
+  total_plans: 91
+  completed_plans: 90
   percent: 60
 ---
 
@@ -30,11 +30,18 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 ## Current Position
 
 Phase: 19 (GITSAFE — Git & Blast-Radius Envelope) — EXECUTING
-Plan: 3 of 10
-  Rounds 1-11 executed and merged; gate green (1424 passed / 0 failed / 13 ignored, clippy exit 0).
-  Verification pass 12: 90/91 must-haves, ROADMAP 4/5, gaps_remaining: [] — but the independent
-  code reviewer found one gap the verifier missed, confirmed in source before planning.
-Status: Ready to execute
+Plan: 12 of 12 (11 summaries on disk; 19-12 is the only plan without one)
+  19-11 closed T-19-60, the one high-severity threat blocking /gsd-secure-phase 19: the
+  PreToolUse guard decided what a command was from words[0], so `env`, `timeout`, `command`,
+  `/usr/bin/env`, a five-name wrapper chain and a `GIT_CONFIG_COUNT=0` prefix all walked
+  through it, and `env gh pr create` bypassed the SAFE-06 cap with no ledger line. The fix
+  resolves the effective program STRUCTURALLY (first token whose basename is in a closed
+  GOVERNED_PROGRAMS set) and adds NO wrapper-name list — it DELETES one (NESTED_SHELLS).
+  RED corpus committed first (69c766e), then the resolver (81eb044), then the fix (03c5abb).
+  Gate: 1245 passed / 2 failed / 13 ignored; clippy -D warnings exit 0; --all-targets still 5.
+  The 2 failures are the pre-existing driver_reattach pair, re-proved pre-existing by
+  reverting hooks.rs and observing them fail identically — see deferred-items.md.
+Status: Executing Phase 19
   21-35 closes a producer/consumer wire-format mismatch: the producer emits the fused
   `--resume=<id>` (one argv element) while the consumer still parses only the split
   `["--resume", "<id>"]`, so TUI-resumed sessions became silently undetectable in /proc.
@@ -198,6 +205,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 18 P11 | 45min | 3 tasks | 8 files |
 | Phase 19 P09 | 15 min | 2 tasks | 2 files |
 | Phase 19 P10 | 20 min | 3 tasks | 1 files |
+| Phase 19 P11 | 24 min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -226,6 +234,8 @@ Recent decisions affecting current work:
 - [Phase ?]: prune_driver_maps now covers last_refresh and archive_cache too, and every_per_alias_driver_map_is_pruned destructures AppContext exhaustively, so a new alias-keyed field is a compile error until it has been classified (18-11)
 - [quick 260729-vmp]: A new opt-in affordance PUSHES the existing DriverConfirmScreen and never writes the registry itself — do_toggle_opt_in stays the single write path that has to agree with the spawn seam (CTRL-03)
 - [quick 260729-vmp]: `o` is tab-scoped on the detail screen DESPITE having no collision to resolve, so it cannot silently become a global detail-screen opt-in on tabs where it is undiscoverable; the scoping test is what makes the guard an enforced property rather than a comment (CTRL-03)
+- [Phase 19]: T-19-60 closed by resolving the effective program STRUCTURALLY: consume leading NAME=VALUE assignment words by the shell grammar, then find the first token whose BASENAME is in a closed GOVERNED_PROGRAMS set. No wrapper-name list is added anywhere — one is DELETED (NESTED_SHELLS) (19-11) — The set of things that can precede a program is open and unlistable (env, timeout, nohup, stdbuf, setsid, doas, busybox env, ...), so a list plus one row per name is green on the day it lands and silent on the seventh wrapper. The set of programs the envelope GOVERNS is closed and already defined by classify_git and pr_command_label (D-08). made-up-wrapper-9000 resolving identically to env is the proof the fix is over the class rather than over a list.
+- [Phase 19]: GIT_CONFIG_COUNT=0 git push --force parks under hook_bypass_blocked, not force_push_blocked: the assignment is refused on its own account before resolution reaches the push (19-11) — One token does two things: it hides the command from layer 2 AND it stops core.hooksPath being injected, so no pre-push hook runs (D-09). Parking it under the reason --no-verify and core.hooksPath already use is where a later reader greps for a disarmed enforcement layer. ENVELOPE_ENV_KEYS is drift-pinned against cred::build_env_in, and the pin found GIT_SSH_COMMAND on its first run — a key the plan list omitted and whose reassignment would put the user ssh agent back within the run reach.
 
 ### Pending Todos
 
@@ -282,8 +292,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-08-29T03:07:35.644Z
-Stopped at: Completed 19-10-PLAN.md (G-19-4 closed)
+Last session: 2026-08-29T04:54:42.912Z
+Stopped at: Completed 19-11-PLAN.md (T-19-60 closed)
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
 Resume file: None
