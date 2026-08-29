@@ -364,12 +364,13 @@ Plans:
   - `git stash` must be forbidden in the driver's allowlist outright
 
 **Research**: skip — branch-protection and pre-push-hook patterns are well-established practice (GitHub Copilot's `copilot/`-prefix model is a direct precedent)
-**Plans**: 8/8 executed, plus 2 UAT gap-closure plans (19-09, 19-10) and 2 security gap-closure plans (19-11, 19-12) for the blocking threat T-19-60
+**Plans**: 8/8 executed, plus 2 UAT gap-closure plans (19-09, 19-10) and 4 security gap-closure plans (19-11, 19-12, 19-13, 19-14) across three audit rounds
 
 Plans:
 
 - [x] 19-13-PLAN-CHECK.md
-- [ ] 19-13-PLAN.md
+- [x] 19-13-PLAN.md
+- [ ] 19-14-PLAN.md
 
 **Wave 1**
 
@@ -412,6 +413,14 @@ Plans:
 
 - [x] 19-11-PLAN.md — T-19-60: the `PreToolUse` guard classifies on `words[0]`, so a wrapper or a `NAME=VALUE` prefix walks a force push and a PR past layers 1, 2 and 3. Closed structurally by `policy::resolve_program` — consume assignment words, then find the first token whose basename is a program the envelope already governs — with the six measured lines committed RED first and the `NESTED_SHELLS` list deleted rather than extended
 - [x] 19-12-PLAN.md — The control over the class rather than the instances: a fixed-seed generator asserting the verdict is invariant under any wrapper chain, an alphabet whose names are mechanically proved absent from `src/`, a paired allow corpus so the fix cannot be "deny everything", and the one disclosed residual bounded on both sides
+
+**Wave 11** *(gap closure from audit 2 of `/gsd-secure-phase 19`, 2026-08-29)*
+
+- [x] 19-13-PLAN.md — T-19-60's wrapper-operand sub-class closed by establishing COMMAND POSITION structurally (head shortcut, refusal on two candidates behind a wrapper prefix), T-19-81 on both halves, T-19-82's key-set gap with an unfiltered drift pin, and T-19-83's corpus vacuity — with T-19-86 registered, pinned at its current permitted verdict and left open
+
+**Wave 12** *(gap closure from audit 3 of `/gsd-secure-phase 19`, 2026-08-29 — three findings, one root cause)*
+
+- [ ] 19-14-PLAN.md — T-19-87, T-19-88, T-19-89, T-19-90: `Token.expansion` is unavailable to `classify_git` and `pr_command_label`, so the verb slot is exempt from every expansion rule. Closed by governing the DECISION REGION — the tokens each classifier's own scanner walks, plus the verb — with operands left free so commit messages and PR titles carrying `$` keep working; the brace/paren fragmentation closed on top of it by recording word-splitting flushes without changing what any separator does; the generative alphabets given expansion metacharacters as a class with a per-alphabet floor
 
 **UI hint**: no — this phase ships no visual surface. It delivers a policy module, two git hook
 stubs, a `PreToolUse` guard, an environment envelope and a secret scanner. The one user-visible
