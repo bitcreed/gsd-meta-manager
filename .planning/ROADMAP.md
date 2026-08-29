@@ -401,7 +401,7 @@ Plans:
 
 **Wave 9** *(gap closure from the human UAT pass of 2026-08-28 — both plans independent, no shared files, run in parallel)*
 
-- [ ] 19-09-PLAN.md — G-19-1: `SECTION_ENVELOPE` rewritten to one sentence + both cases explained with examples + the branch-protection conclusion, with all seven pinned substrings verbatim and a new legibility cap observed RED at 250 tokens
+- [x] 19-09-PLAN.md — G-19-1: `SECTION_ENVELOPE` rewritten to one sentence + both cases explained with examples + the branch-protection conclusion, with all seven pinned substrings verbatim and a new legibility cap observed RED at 250 tokens
 - [ ] 19-10-PLAN.md — G-19-4: per-test aliases in `tests/driver_lock.rs` so no two writers share one `settings.json`, the shared-path mechanism demonstrated at the real seam, and an early-dying child reported with its exit status and stderr instead of as a 30s lock timeout
 
 **UI hint**: no — this phase ships no visual surface. It delivers a policy module, two git hook
@@ -669,7 +669,7 @@ Gap closure, round 13 (verification pass 13 scored **98/100 must-haves, 4/5 ROAD
 | 16. Run Journal & State Substrate | 6/6 | Complete    | 2026-07-29 |
 | 17. Supervisor | 8/8 | Complete    | 2026-07-29 |
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
-| 19. GITSAFE — Git & Blast-Radius Envelope | 8/10 | In Progress|  |
+| 19. GITSAFE — Git & Blast-Radius Envelope | 9/10 | In Progress|  |
 | 20. Deterministic Decision Router & Run Bounds | 5/5 | In Progress|  |
 | 21. LLM Goal Layer & Prompt-Injection Hardening | 37/37 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |
