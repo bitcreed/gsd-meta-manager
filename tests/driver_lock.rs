@@ -55,6 +55,14 @@ const FAKE_SLOW: &str = concat!(
 
 const ALIAS: &str = "locked";
 
+/// The alias for the early-exit reporting control below.
+///
+/// Deliberately NOT registered in that test's config: the refusal it wants is
+/// `OptInError::UnknownAlias`, raised at the registry lookup before any envelope
+/// or lock work happens (src/driver/mod.rs:837), which is exactly the shape of
+/// child failure that used to masquerade as a lock timeout.
+const ALIAS_EARLY_EXIT_REPORT: &str = "lock-early-exit-report";
+
 /// Run A's id: the one a losing attempt must name.
 const RUN_A: &str = "2026-07-29T12-00-00Z-aaaa";
 /// Run B's id: deliberately different, so an assertion on run A's id cannot pass
@@ -196,6 +204,110 @@ fn run_directories(root: &Path) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+/// Where a spawned child's stdout and stderr go, and how they are rendered when
+/// something needs explaining.
+///
+/// **Files, never pipes.** Nothing drains a pipe during the poll below, so a
+/// child that outgrew the kernel's buffer would block forever on its next write
+/// and this test would hang instead of failing — strictly worse than the rare
+/// misleading failure being fixed here. A file has no such ceiling. The `TempDir`
+/// is owned by this struct so the captures outlive the child and are readable
+/// after it dies.
+struct ChildCapture {
+    /// Held for its `Drop`: the captures live exactly as long as this value.
+    _dir: TempDir,
+    stdout: PathBuf,
+    stderr: PathBuf,
+}
+
+impl ChildCapture {
+    fn new() -> Self {
+        let dir = TempDir::new().expect("a temp dir for the child's captured output");
+        let stdout = dir.path().join("stdout.log");
+        let stderr = dir.path().join("stderr.log");
+        Self {
+            _dir: dir,
+            stdout,
+            stderr,
+        }
+    }
+
+    fn redirect_stdout(&self) -> std::process::Stdio {
+        Self::redirect(&self.stdout)
+    }
+
+    fn redirect_stderr(&self) -> std::process::Stdio {
+        Self::redirect(&self.stderr)
+    }
+
+    fn redirect(path: &Path) -> std::process::Stdio {
+        std::process::Stdio::from(
+            std::fs::File::create(path).expect("a capture file for the child's output"),
+        )
+    }
+
+    /// Both captures, rendered for a failure message.
+    ///
+    /// Called on failure paths ONLY. A success path that reads these files is a
+    /// success path that can fail for a new reason.
+    fn report(&self) -> String {
+        let read = |path: &Path| std::fs::read_to_string(path).unwrap_or_default();
+        format!(
+            "\n--- child stdout ---\n{}\n--- child stderr ---\n{}\n--- end ---",
+            read(&self.stdout),
+            read(&self.stderr)
+        )
+    }
+}
+
+/// Wait for the child to take the lock, or say what actually happened instead.
+///
+/// A `Result` rather than a `panic!` inside the helper, deliberately: it is what
+/// makes the reporting behaviour itself testable, which is what
+/// `a_child_that_dies_before_taking_the_lock_is_reported_with_its_status_and_stderr`
+/// exercises.
+///
+/// The holder record is checked BEFORE the child's exit status on every
+/// iteration, so a child that takes the lock and then dies is still a success —
+/// the record is on disk and outlives its writer, which is the property
+/// `the_lock_is_released_when_the_holding_process_dies` exists to prove.
+async fn wait_for_lock_or_report(
+    child: &mut std::process::Child,
+    planning: &Path,
+    capture: &ChildCapture,
+) -> Result<(), String> {
+    for _ in 0..600 {
+        if lock::read_holder(planning).is_some() {
+            return Ok(());
+        }
+
+        // The arm that would have turned a two-hour diagnosis into a one-line
+        // answer (G-19-4, 2026-08-18): a child that dies in envelope
+        // establishment never reaches `lock::acquire`, so polling only for the
+        // holder record reports the 30s deadline and says nothing about the
+        // exit that made the deadline inevitable.
+        if let Some(status) = child
+            .try_wait()
+            .expect("the child's exit status is readable")
+        {
+            return Err(format!(
+                "the child driver exited with {status} BEFORE taking the lock, so the \
+                 deadline below was never reachable{}",
+                capture.report()
+            ));
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Kept verbatim from before this helper existed, so anyone searching the
+    // history for the original symptom still lands here.
+    Err(format!(
+        "the child driver never took the lock within 30s{}",
+        capture.report()
+    ))
 }
 
 #[tokio::test]
@@ -392,6 +504,11 @@ async fn the_lock_is_released_when_the_holding_process_dies() {
     let config_path = config_dir.path().join("config.json");
     save_config(&config_for(root.path()), &config_path).expect("write the driver's config");
 
+    // Files, not pipes, and not `Stdio::null()`. Null'd output is what made a
+    // child that died in envelope establishment indistinguishable from a child
+    // that was merely slow (G-19-4); a pipe nothing drains would deadlock the
+    // child once the kernel buffer filled, which is worse than either.
+    let capture = ChildCapture::new();
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_gsd-meta-manager"))
         .arg("--config")
         .arg(&config_path)
@@ -407,20 +524,14 @@ async fn the_lock_is_released_when_the_holding_process_dies() {
         .args(["--claude-args", A_INTERVAL])
         .args(["--claude-args", "result"])
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(capture.redirect_stdout())
+        .stderr(capture.redirect_stderr())
         .spawn()
         .expect("the driver binary is built and spawnable");
 
-    let mut held = false;
-    for _ in 0..600 {
-        if lock::read_holder(&planning).is_some() {
-            held = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(held, "the child driver never took the lock within 30s");
+    wait_for_lock_or_report(&mut child, &planning, &capture)
+        .await
+        .unwrap_or_else(|why| panic!("{why}"));
 
     // SIGKILL: the one signal the holder cannot handle, so no cooperative
     // release can possibly have run. Whatever releases the lock here is the
@@ -444,5 +555,94 @@ async fn the_lock_is_released_when_the_holding_process_dies() {
         recovered.holder().run_id,
         "recovery-after-sigkill",
         "the recovering acquire records itself as the new holder"
+    );
+}
+
+/// The reporting itself, under test (G-19-4, T-19-10-01).
+///
+/// On 2026-08-18 the sigkill test above failed with the single sentence "the
+/// child driver never took the lock within 30s". The child had in fact died
+/// early, in envelope establishment, and its output was null'd — so the only
+/// visible symptom named the lock, which was never reached. This control proves
+/// the harness now says what happened: a child that exits before writing a
+/// holder record is reported with its exit status and its stderr, in seconds.
+///
+/// The refusal is manufactured at the cheapest possible seam — an alias that is
+/// not in the saved config, refused at the registry lookup
+/// (src/driver/mod.rs:837) and printed by `main` before any envelope, journal or
+/// lock work exists. That is deliberately the same *shape* as the real failure
+/// (die early, say nothing, look like a timeout) without depending on the real
+/// failure being reproducible, which it is not: it was a microsecond window.
+#[tokio::test]
+async fn a_child_that_dies_before_taking_the_lock_is_reported_with_its_status_and_stderr() {
+    // `config_for` is not used here — this alias must NOT be registered — so the
+    // envelope redirect that it would otherwise perform is done explicitly.
+    isolate_envelope_root();
+
+    let root = project_root();
+    let planning = planning_of(root.path());
+
+    let config_dir = TempDir::new().expect("temp dir for the config");
+    let config_path = config_dir.path().join("config.json");
+    save_config(&Config::new(), &config_path).expect("write a config with no projects");
+
+    let capture = ChildCapture::new();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_gsd-meta-manager"))
+        .arg("--config")
+        .arg(&config_path)
+        .arg("drive")
+        .arg(ALIAS_EARLY_EXIT_REPORT)
+        .arg("--command")
+        .arg("/gsd-progress")
+        .stdin(std::process::Stdio::null())
+        .stdout(capture.redirect_stdout())
+        .stderr(capture.redirect_stderr())
+        .spawn()
+        .expect("the driver binary is built and spawnable");
+
+    let started = std::time::Instant::now();
+    let reported = wait_for_lock_or_report(&mut child, &planning, &capture).await;
+    let elapsed = started.elapsed();
+
+    let why = reported.expect_err(
+        "a child refused at the registry lookup never takes the lock, so the wait must \
+         report rather than succeed",
+    );
+
+    // `try_wait` caches the status, so asking again after the helper observed it
+    // yields the same value — which is what lets this assert on the ACTUAL
+    // status rather than on a guess at how one renders.
+    let status = child
+        .try_wait()
+        .expect("the child's exit status is readable")
+        .expect("the child has already exited");
+    assert!(
+        !status.success(),
+        "the fixture must produce a FAILING child, got: {status}"
+    );
+    assert!(
+        why.contains(&status.to_string()),
+        "the report must name the child's exit status, got: {why}"
+    );
+
+    // The stderr half. Without it the report would say "it died" and still leave
+    // the reader to go and find out why.
+    assert!(
+        why.contains("no project is registered under the alias"),
+        "the report must carry the child's stderr, got: {why}"
+    );
+    assert!(
+        why.contains(ALIAS_EARLY_EXIT_REPORT),
+        "the report must carry the alias the child refused, got: {why}"
+    );
+
+    // The point of polling `try_wait` alongside the holder record is that a dead
+    // child is reported when it dies, not when the deadline expires. Ten seconds
+    // is generous by orders of magnitude against an immediate refusal and still
+    // a third of the 30s deadline, so a regression to "wait it out" is caught
+    // rather than merely being slower.
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "an early exit must be reported in seconds, not at the 30s deadline; took {elapsed:?}"
     );
 }
