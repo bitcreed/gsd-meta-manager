@@ -923,6 +923,240 @@ fn the_contents_of_a_substitution_are_not_a_decision_word() {
     permits("cd \"$HOME\"");
 }
 
+// ===========================================================================
+// 12. Rule B (plan 19-15) — a SEVERED PREFIX is not a command position
+// ===========================================================================
+//
+// **The alphabet of this class is WHERE the split falls, not what the fragment
+// says.** Every row below is the same shape — a wrapper prefix whose operand is
+// assembled by an expansion, so the tokenizer's flush severs the prefix from the
+// governed program and the last fragment resolves `git` behind a clean literal
+// prefix whose verb is the literal `fetch`:
+//
+// ```text
+// C=GIT_CONFIG; env -u ${C}_COUNT git fetch origin
+//   ->  `C=GIT_CONFIG`  |  `env -u $`  |  `C`  |  `_COUNT git fetch origin`
+// ```
+//
+// The rows differ only in where the author chose to cut. That is deliberate, and
+// it is the measurement that WITHDREW the textual formulation of this rule.
+//
+// **The withdrawn formulation, recorded so a later reader finds the measurement
+// rather than repeats it.** An earlier draft keyed Rule B on the literal fragment
+// (`_COUNT`) being a substring of an `ENVELOPE_ENV_KEYS` entry. It was withdrawn
+// on two measurements:
+//
+// * **Evadable — move the split point.** `C=GIT_CONFIG_COU; env -u ${C}NT …`
+//   leaves the two-character fragment `NT`; `C=GIT_CONFIG_COUN; env -u ${C}T …`
+//   leaves one character; and `env -u ${C} …` leaves NO literal fragment at all,
+//   so there is nothing for a substring test to match. Any minimum length is a
+//   floor an author ducks under by moving the cut one character.
+// * **Unshippable — it refuses ordinary shell.** The commonest `$(`-carrying
+//   shape in real use is an uppercase assignment, and `ROOT`, `DIR`, `RUN`,
+//   `CONFIG` and `COMMAND` all sit inside envelope key names — `GSD_MM_RUN_ID`
+//   included, which 19-14 added. `ROOT=$(git rev-parse --show-toplevel)`,
+//   `DIR=$(mktemp -d)`, `RUN_ID=$(uuidgen)`, `CONFIG=$(cat cfg)` and
+//   `COMMAND=$(which git)` would each be refused on every Bash tool call.
+//
+// The POSITIONAL rule refuses all four spellings below and permits all five
+// assignments, because it reads no name, no substring and no length: a segment
+// whose immediately preceding operator is a word-splitting CLOSER (`}` or `)`)
+// continues an enclosing word, so its first token is not a command position and a
+// governed program found there is refused. It has nothing to floor and nothing to
+// duck under.
+
+/// The remaining severed-prefix spellings — the rows Rule A could not reach and
+/// the rows the withdrawn textual formulation could not have reached either.
+#[test]
+fn the_severed_prefix_class_is_refused_wherever_the_author_chooses_to_split_it() {
+    // **No literal fragment AT ALL.** `${C}` is followed by whitespace, so the
+    // fragment after the closer is the empty string and the segment's first token
+    // is the governed program itself. A substring test has nothing to match here;
+    // the positional rule sees a segment continuing an enclosing word and refuses
+    // it exactly as it refuses the others.
+    //
+    // The binding is deliberately NOT in this command line: a leading assignment
+    // whose value spells a whole envelope key is already refused by
+    // `resolve_program` step 2b under `hook_bypass_blocked` — see the disclosure
+    // row below — which would make this row green for a reason that has nothing
+    // to do with Rule B. `T-19-74` records that a binding from a PREVIOUS command
+    // line is out of the guard's reach, which is exactly the shape here.
+    refuses(
+        "env -u ${C} git fetch origin",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+
+    // The two-character moved split point. `GIT_CONFIG_COU` + `NT`.
+    refuses(
+        "C=GIT_CONFIG_COU; env -u ${C}NT git fetch origin",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+
+    // The one-character tail. `GIT_CONFIG_COUN` + `T`. If a rule had a minimum
+    // fragment length, this is the row that ducks under it.
+    refuses(
+        "C=GIT_CONFIG_COUN; env -u ${C}T git fetch origin",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+
+    // The COMMAND-SUBSTITUTION spelling, which reaches the same severed shape
+    // through `(`/`)` rather than `{`/`}` and assembles the key name out of two
+    // halves that are each harmless on their own.
+    refuses(
+        "env -u $(printf %s%s GIT_CONFIG _COUNT) git fetch origin",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+}
+
+/// The one severed spelling that is ALREADY refused, and under a different
+/// identifier — disclosed so nobody counts it as Rule B's evidence.
+///
+/// `C=GIT_CONFIG_COUNT; env -u ${C} git fetch origin` binds a WHOLE envelope key
+/// name in the same command line, which `resolve_program` step 2b refuses on its
+/// own account under `hook_bypass_blocked` (`T-19-81`) — before resolution reaches
+/// the severed fragment at all. It was measured at exit 2 against 19-14's
+/// post-state, so it is not a Rule B row and asserting it as one would be a
+/// control that could not fail on its class.
+#[test]
+fn the_severed_spelling_that_binds_a_whole_key_is_already_refused_for_another_reason() {
+    refuses(
+        "C=GIT_CONFIG_COUNT; env -u ${C} git fetch origin",
+        policy::REASON_HOOK_BYPASS_BLOCKED,
+    );
+}
+
+/// The two rows re-homed from the DELETED `T-19-87` test in
+/// `tests/envelope_command_position.rs`, with their reason identifiers corrected.
+///
+/// **The old test's stated bound was measured FALSE.** It asserted that "the
+/// fragmentation does not hide a refused git command, because the segment that
+/// carries the command still resolves it" — and pinned
+/// `K=GIT_SSH; env -u ${K}_COMMAND git fetch origin` PERMITTED as the evidence.
+/// Audit 3 measured that bound false ONE WORD TO THE RIGHT: the fragmentation
+/// hides `env -u GIT_SSH_COMMAND`, which is a layer-3 bypass whether or not the
+/// git command behind it is itself refused.
+///
+/// **The test was DELETED rather than re-worded**, and that is the point: a test
+/// asserting a wrong bound is worse than no test, and re-wording it would have
+/// been a bound wider than the mechanism for the second time in the same file.
+/// The rows move here with corrected verdicts:
+///
+/// | row | old verdict | new verdict |
+/// |---|---|---|
+/// | `… ${K}_COMMAND git fetch origin` | PERMITTED (exit 0) | REFUSED, `envelope_assertion_failed` |
+/// | `… ${K}_COMMAND git push --force origin main` | REFUSED, `force_push_blocked` | REFUSED, `envelope_assertion_failed` |
+///
+/// The second row's identifier changes because after Rule B the segment is
+/// refused for an UNRESOLVABLE COMMAND POSITION before `classify_git` is reached,
+/// so `force_push_blocked` is no longer the reason it is refused. The class is
+/// closed by a command-position rule and by no change whatever to what a brace
+/// does.
+#[test]
+fn the_re_homed_t_19_87_rows_carry_the_reason_identifiers_the_corrected_bound_implies() {
+    refuses(
+        "K=GIT_SSH; env -u ${K}_COMMAND git fetch origin",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+    refuses(
+        "K=GIT_SSH; env -u ${K}_COMMAND git push --force origin main",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+}
+
+/// **These rows assert a COST, not a desirable behaviour.**
+///
+/// Rule B refuses a governed program whose segment continues an enclosing word
+/// after an expansion, and it cannot tell that word's tail apart from a key name
+/// being assembled — that is the whole of why it reads no name. The price is one
+/// ordinary shape: a command that places a governed program immediately after a
+/// substitution which carried a literal prefix.
+///
+/// It is pinned as a PAIR because a cost stated only on the refused side is a cost
+/// nobody can tell has grown. Both halves alone are permitted, so what is lost is
+/// exactly the juxtaposition and nothing wider.
+///
+/// A future change that reduces this cost must DELETE these rows deliberately
+/// rather than discover them failing.
+#[test]
+fn rule_bs_disclosed_cost_is_pinned_as_a_pair_with_both_halves_alone_permitted() {
+    // The cost. `ROOT=$` | `git rev-parse --show-toplevel` | `git status`, and
+    // the third segment's immediately preceding operator is the closer `)`.
+    refuses(
+        "ROOT=$(git rev-parse --show-toplevel) git status",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+
+    // Both halves alone, which is what makes the cost the juxtaposition rather
+    // than either construct.
+    permits("ROOT=$(git rev-parse --show-toplevel)");
+    permits("git status");
+}
+
+/// The grouping rows, which pin that NO CHARACTER CHANGED MEANING.
+///
+/// **Why grouping is not a word-splitting flush, from bash's own grammar.** `{`
+/// is a reserved WORD, so it must be followed by whitespace and the list inside
+/// must be terminated by a `;` or a newline before `}` — which means at both
+/// boundaries no word is in progress, and neither operator is a flush. `( … )` is
+/// an operator pair and the spellings people write put whitespace inside. So
+/// `{ git status; }` and `( git status )` produce exactly today's segments and
+/// reach exactly the verdict their ungrouped spelling reaches.
+///
+/// These pass BEFORE Rule B and after it, and that is what they are for: if a
+/// later change made a grouping character sever a word, this test goes red rather
+/// than an ordinary subshell quietly becoming unusable.
+#[test]
+fn a_grouped_command_reaches_the_same_verdict_as_its_ungrouped_spelling() {
+    permits("git status");
+    permits("{ git status; }");
+    permits("( git status )");
+
+    refuses(
+        "git push --force origin main",
+        policy::REASON_FORCE_PUSH_BLOCKED,
+    );
+    refuses(
+        "{ git push --force origin main; }",
+        policy::REASON_FORCE_PUSH_BLOCKED,
+    );
+    refuses(
+        "( git push --force origin main )",
+        policy::REASON_FORCE_PUSH_BLOCKED,
+    );
+}
+
+/// The OPENER EXCLUSION, re-asserted so this file fails loudly if it is dropped.
+///
+/// A segment following `{` is the parameter expansion's variable NAME and is
+/// never a governed program. A segment following `(` is the command
+/// substitution's OWN CONTENTS, which IS at a genuine command position and must
+/// keep being classified rather than refused. Excluding the opener is what keeps
+/// every row below running.
+///
+/// The last row pins "IMMEDIATELY preceding": in `(git status)&&git fetch origin`
+/// the second segment's last preceding operator is `&&`, not `)`, so a rule that
+/// looked further back than one operator would refuse an ordinary sequence.
+///
+/// Every row here passes today and must pass after Rule B.
+#[test]
+fn the_opener_exclusion_keeps_substitution_contents_and_uppercase_assignments_running() {
+    // The two substitution-contents rows, the first of which `resolve_program`'s
+    // own doc names as the bill of closing `T-19-74`.
+    permits("echo $(git rev-parse HEAD)");
+    permits("git log --format=%h $(git rev-parse HEAD)");
+
+    // The five uppercase assignments the WITHDRAWN textual formulation would have
+    // refused, because each name sits inside an envelope key name.
+    permits("ROOT=$(git rev-parse --show-toplevel)");
+    permits("DIR=$(mktemp -d)");
+    permits("RUN_ID=$(uuidgen)");
+    permits("CONFIG=$(cat cfg)");
+    permits("COMMAND=$(which git)");
+
+    // "Immediately preceding" — the closer is two operators back, not one.
+    permits("(git status)&&git fetch origin");
+}
+
 #[test]
 fn the_two_core_t_19_74_spellings_this_plan_does_not_move_are_still_permitted() {
     // **AR-19-10's core, unmoved.** `env $X push --force origin main` reaches

@@ -287,6 +287,23 @@ enum ShellLayer {
     /// did not cover, and the reason `19-11` deleted `NESTED_SHELLS` rather than
     /// extending it.
     BashDashLC,
+    /// `{ <cmd>; }` — a brace GROUP (`T-19-89`, plan 19-15).
+    ///
+    /// One of the two shapes audit 3 named as absent from every alphabet in this
+    /// file, and one of the two that exercise the SPLITTER rather than the
+    /// resolver. It preserves invariance because bash's own grammar makes `{` a
+    /// reserved WORD — it must be followed by whitespace, and the list inside must
+    /// be terminated by `;` or a newline before `}` — so no word is in progress at
+    /// either boundary and neither operator is a word-splitting flush. The
+    /// enumerated rows in `tests/envelope_expansion_slots.rs` assert that claim
+    /// directly; this layer makes the corpus able to DRAW it.
+    BraceGroup,
+    /// `( <cmd> )` — a SUBSHELL (`T-19-89`, plan 19-15).
+    ///
+    /// The other absent shape. Invariance is preserved for the same reason: the
+    /// spellings written here put whitespace inside the parentheses, so no word is
+    /// in progress when either character arrives.
+    Subshell,
 }
 
 impl ShellLayer {
@@ -302,6 +319,9 @@ impl ShellLayer {
             ShellLayer::None => &["", "'", "\""],
             ShellLayer::ShSingleQuoted => &["", "\""],
             ShellLayer::BashDashLC => &["", "'"],
+            // Neither grouping layer introduces an outer quote of its own, so
+            // both quote characters remain legal inside it.
+            ShellLayer::BraceGroup | ShellLayer::Subshell => &["", "'", "\""],
         }
     }
 
@@ -310,6 +330,13 @@ impl ShellLayer {
             ShellLayer::None => inner.to_string(),
             ShellLayer::ShSingleQuoted => format!("sh -c '{inner}'"),
             ShellLayer::BashDashLC => format!("bash -lc \"{inner}\""),
+            // The whitespace and the `;` are REQUIRED by bash, not cosmetic: `{`
+            // is a reserved word and `}` must follow a `;` or a newline. Emitting
+            // `{git status}` would be illegal shell, and a generator that emitted
+            // illegal shell would be exercising the splitter's error path while
+            // claiming to exercise the class.
+            ShellLayer::BraceGroup => format!("{{ {inner}; }}"),
+            ShellLayer::Subshell => format!("( {inner} )"),
         }
     }
 }
@@ -319,6 +346,8 @@ const SHELL_LAYERS: &[ShellLayer] = &[
     ShellLayer::None,
     ShellLayer::ShSingleQuoted,
     ShellLayer::BashDashLC,
+    ShellLayer::BraceGroup,
+    ShellLayer::Subshell,
 ];
 
 /// One generated wrapping, and the recipe that produced it.
@@ -1717,13 +1746,25 @@ fn every_alphabet_this_plan_widens_can_draw_an_expansion_metacharacter() {
     // one of them back turns this red instead of quietly restoring a corpus that
     // cannot fail on its own class.
     //
-    // `19-15` extends the same floor to `SHELL_LAYERS` — which still cannot draw
-    // `{ …; }` or `( … )` — and to the severed-prefix alphabet Rule B needs.
+    // **Plan 19-15 completes the set.** `SHELL_LAYERS` is checked through the
+    // SPELLING each layer produces rather than through its name, because a layer
+    // is an enum rather than a string and what audit 3 read was the shell each
+    // alphabet can emit. `SEVERED_PREFIXES` is Rule B's own alphabet. With these
+    // two the floor now covers every alphabet named in audit 3's axis table, which
+    // is what closes `T-19-89`.
+    let layer_spellings: Vec<String> = SHELL_LAYERS
+        .iter()
+        .map(|layer| layer.apply("CMD"))
+        .collect();
+    let layer_entries: Vec<&str> = layer_spellings.iter().map(String::as_str).collect();
+
     for (name, entries) in [
         ("ASSIGNMENT_PREFIXES", ASSIGNMENT_PREFIXES),
         ("REFUSED_BASES", REFUSED_BASES),
         ("DECOY_OPERANDS", DECOY_OPERANDS),
         ("EXPANSION_WRAPPERS", EXPANSION_WRAPPERS),
+        ("SHELL_LAYERS", layer_entries.as_slice()),
+        ("SEVERED_PREFIXES", SEVERED_PREFIXES),
     ] {
         let drawable: Vec<&&str> = entries
             .iter()
@@ -2260,5 +2301,253 @@ fn a_forge_subcommand_slot_carrying_an_expansion_is_refused_in_every_generated_s
         slots_seen.len(),
         displacers_seen.len(),
         commands.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 10c. The SEVERED-PREFIX alphabet — WHERE the split falls (plan 19-15, Rule B)
+// ---------------------------------------------------------------------------
+//
+// **This alphabet varies WHERE the split falls, not what the fragment says, and
+// that distinction is the whole reason it is written this way.** A generator that
+// varied the fragment's TEXT — `_COUNT`, `_COMMAND`, `_GLOBAL` — would be the
+// withdrawn textual formulation of Rule B wearing a property's clothes: it would
+// certify a rule that reads names, and it would be evaded by the same two
+// characters that evaded the rule. What actually distinguishes these cases is the
+// POSITION of the cut, so that is what is varied: a trailing literal fragment, no
+// literal fragment at all, one- and two-character tails, and the
+// command-substitution spelling that assembles the name from two harmless halves.
+//
+// **Why a property of its own rather than more `WRAPPERS` entries.** A severed
+// prefix is legitimately STRICTER than the unwrapped base — `git fetch origin`
+// alone is permitted and must stay permitted — so folding these into `WRAPPERS`
+// would break the invariance property by comparing a refusal against a permit,
+// exactly as this file already records for the `GIT_CONFIG_COUNT=0` assignment
+// prefix and for `DECOY_OPERANDS`. The property here is therefore REFUSAL under a
+// D-24 identifier.
+//
+// **The bases are deliberately INNOCUOUS git and forge commands.** The harm this
+// class names is what the PREFIX does — `env -u GIT_CONFIG_COUNT` removes layer
+// 3's `core.hooksPath` carrier, `env -u GIT_SSH_COMMAND` removes
+// `IdentitiesOnly=yes` — and it lands whether or not the git command behind it is
+// itself refused. A corpus built on `git push --force` bases would be green
+// against the pre-Rule-B tree for the base's own reason and could not fail on this
+// class at all.
+
+/// Whole wrapper prefixes whose operand is SEVERED from the program behind it.
+///
+/// Each entry ends in a word-splitting CLOSER — `}` or `)` — with a word in
+/// progress before it, so the tokenizer flushes and everything after the closer
+/// becomes a segment whose first token is not a command position.
+const SEVERED_PREFIXES: &[&str] = &[
+    // A trailing literal fragment: the measured carry-forward shape.
+    "env -u ${C}_COUNT",
+    // No literal fragment at all — the spelling a substring test cannot see.
+    "env -u ${C}",
+    // A one-character tail, and a two-character tail: the two spellings that duck
+    // under any minimum-length floor a textual rule could set.
+    "env -u ${C}T",
+    "env -u ${C}NT",
+    // The command-substitution spelling, which reaches the same severed shape
+    // through `(`/`)` and assembles the name from two harmless halves.
+    "env -u $(printf %s%s GIT_CONFIG _COUNT)",
+    // An ordinary-shell shape carrying no envelope key name anywhere. It is here
+    // because Rule B reads no name: if this row were permitted while the rows
+    // above were refused, the rule would be textual after all.
+    "sudo -u $(id -un)",
+    // A different wrapper and a different fragment position, so the class is not
+    // one wrapper counted eight times.
+    "timeout ${T}s",
+    // A wrapper the production logic is mechanically asserted never to know.
+    "made-up-wrapper-9000 --flag ${W}x",
+];
+
+/// Governed commands that are PERMITTED unwrapped, so a refusal below can only
+/// come from the severed prefix.
+const SEVERED_BASES: &[&str] = &[
+    "git fetch origin",
+    "git status",
+    "git log --oneline",
+    "glab mr list",
+];
+
+/// The floors, asserted BEFORE the loop.
+const MIN_SEVERED_PREFIXES: usize = 6;
+const MIN_SEVERED_CASES: usize = 50;
+const MIN_DISTINCT_SEVERED_CHAINS: usize = 20;
+
+/// Splice a severed prefix into a drawn wrapper chain, exactly as
+/// [`splice_prefix`] does for the expansion-wrapper alphabet.
+fn splice_severed(rng: &mut Lcg, base: &str, entry: &str) -> Spliced {
+    let prefix = ASSIGNMENT_PREFIXES[rng.pick(ASSIGNMENT_PREFIXES.len())];
+    let layer = SHELL_LAYERS[rng.pick(SHELL_LAYERS.len())];
+    let quotes = layer.inner_quotes();
+    let depth = rng.pick(3);
+
+    let mut chain: Vec<&str> = Vec::with_capacity(depth + 1);
+    for _ in 0..depth {
+        chain.push(WRAPPERS[rng.pick(WRAPPERS.len())]);
+    }
+    let at = rng.pick(depth + 1);
+    chain.insert(at, entry);
+
+    let mut spelled = String::new();
+    for item in &chain {
+        let quote = quotes[rng.pick(quotes.len())];
+        match item.split_once(' ') {
+            Some((program, rest)) => spelled.push_str(&format!("{quote}{program}{quote} {rest} ")),
+            None => spelled.push_str(&format!("{quote}{item}{quote} ")),
+        }
+    }
+
+    let inner = format!("{prefix}{spelled}{base}");
+    Spliced {
+        command: layer.apply(&inner),
+        inner,
+        chain: format!("[{}] severed@{at}", chain.join(", ")),
+        recipe: format!("prefix={prefix:?} layer={layer:?} depth={depth} entry={entry:?} at={at}"),
+    }
+}
+
+/// 8 x 4 x 2 = 64, over the 50 floor.
+const VARIANTS_PER_SEVERED_PREFIX: usize = 2;
+
+#[test]
+fn a_governed_program_behind_a_severed_prefix_is_refused_wherever_the_split_falls() {
+    // --- floor 1: the alphabet exists and is wide enough ------------------
+    assert!(
+        SEVERED_PREFIXES.len() >= MIN_SEVERED_PREFIXES,
+        "the severed-prefix alphabet must carry at least {MIN_SEVERED_PREFIXES} entries \
+         spanning WHERE the split falls — a trailing fragment, no fragment, a one- and a \
+         two-character tail, and the command-substitution spelling. A narrower one is a row \
+         per named shape wearing a property's clothes. Got {}",
+        SEVERED_PREFIXES.len()
+    );
+
+    // --- floor 2: every base is PERMITTED unwrapped -----------------------
+    //
+    // The mirror image of the invariance property's floor 2, and it is the floor
+    // that makes this property non-vacuous. If a base were refused on its own
+    // account, every case built on it would be green for the base's reason and the
+    // property could not fail on the severed prefix at all — which is exactly the
+    // certification failure three rounds of this phase have been about.
+    for base in SEVERED_BASES {
+        let envelope = TempDir::new().expect("a temporary envelope root");
+        let answer = verdict(envelope.path(), base);
+        assert_eq!(
+            answer.code,
+            0,
+            "the UNWRAPPED base `{base}` must be PERMITTED, or every case built on it is \
+             refused for the BASE's reason and this property cannot fail on the severed \
+             prefix at all. Got reason id: {}",
+            answer.reason_id
+        );
+    }
+
+    // --- the property ------------------------------------------------------
+    let mut rng = Lcg::new();
+    let mut chains: BTreeSet<String> = BTreeSet::new();
+    let mut used: BTreeSet<&str> = BTreeSet::new();
+    let mut cases = 0usize;
+    let mut live_expansion_cases = 0usize;
+
+    for base in SEVERED_BASES {
+        for entry in SEVERED_PREFIXES {
+            for _ in 0..VARIANTS_PER_SEVERED_PREFIX {
+                let case = splice_severed(&mut rng, base, entry);
+                chains.insert(case.chain.clone());
+                used.insert(entry);
+                cases += 1;
+                if carries_a_live_expansion(&case.inner) {
+                    live_expansion_cases += 1;
+                }
+
+                // A fresh root per case, for the reason the forge-slot property
+                // records: a case that is PERMITTED against the pre-fix tree can
+                // write a ledger line, and a shared root would exhaust the 3/1 cap
+                // and turn later cases red for a reason unrelated to the class.
+                let envelope = TempDir::new().expect("a temporary envelope root");
+                let got = verdict(envelope.path(), &case.command);
+
+                assert_eq!(
+                    got.code,
+                    2,
+                    "\n\nA GOVERNED PROGRAM BEHIND A SEVERED PREFIX WAS PERMITTED.\n\
+                     \n  command : {}\
+                     \n  base    : {base}\
+                     \n  recipe  : {}\
+                     \n  got     : exit {} reason {}\
+                     \n  seed    : {SEED:#x}\n\
+                     \nThe expansion flushed the tokenizer's current word, so what reached \
+                     the resolver was a FRAGMENT continuing an enclosing word — and its \
+                     first token was mistaken for a command position. In bash the prefix \
+                     removes an environment key the envelope injects, which disarms layer \
+                     3, while the git command behind it is innocuous and permitted on its \
+                     own account. No verb-slot rule can see this: by the time resolution \
+                     runs the shape is gone.\n\
+                     \n**The correct response is a change to the COMMAND-POSITION rule in \
+                     `src/envelope/policy.rs`.** It is NOT a name, a wrapper flag or an \
+                     environment-key substring test added to a list in `src/` — that \
+                     formulation was measured EVADABLE (move the split point: `${{C}}NT`, \
+                     `${{C}}T`, or `${{C}}` with no fragment at all) and UNSHIPPABLE (it \
+                     refuses `ROOT=$(git rev-parse --show-toplevel)` and every other \
+                     uppercase assignment whose name sits inside an envelope key). And it \
+                     is NOT a narrowing of this alphabet: a case that stops being drawn is \
+                     a case that stops being able to fail.\n",
+                    case.command,
+                    case.recipe,
+                    got.code,
+                    got.reason_id,
+                );
+                assert!(
+                    REASON_IDENTIFIERS.contains(&got.reason_id.as_str()),
+                    "\n\nREFUSED WITHOUT A D-24 IDENTIFIER.\n\
+                     \n  command : {}\
+                     \n  recipe  : {}\
+                     \n  reason  : {}\n\
+                     \nA refusal that parks under no member of D-24's taxonomy cannot be \
+                     found by a later reader grepping for a disarmed layer.\n",
+                    case.command,
+                    case.recipe,
+                    got.reason_id,
+                );
+            }
+        }
+    }
+
+    // --- floors 3, 4, 5 ----------------------------------------------------
+    assert!(
+        cases >= MIN_SEVERED_CASES,
+        "the property must run over at least {MIN_SEVERED_CASES} generated cases. Got {cases}"
+    );
+    assert!(
+        chains.len() >= MIN_DISTINCT_SEVERED_CHAINS,
+        "the property must use at least {MIN_DISTINCT_SEVERED_CHAINS} DISTINCT chains, or \
+         dozens of cases are one row counted dozens of times. Got {}",
+        chains.len()
+    );
+    assert_eq!(
+        used.len(),
+        SEVERED_PREFIXES.len(),
+        "every entry of `SEVERED_PREFIXES` must appear in at least one generated case; an \
+         entry nobody drew is a split point nobody tested. Unused: {:?}",
+        SEVERED_PREFIXES
+            .iter()
+            .filter(|entry| !used.contains(*entry))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        live_expansion_cases, cases,
+        "every generated severed case must carry an expansion metacharacter the shell would \
+         actually expand, COUNTED while generating rather than inferred from the alphabet \
+         sizes. Got {live_expansion_cases} of {cases}"
+    );
+
+    println!(
+        "severed-prefix corpus: {cases} generated cases over {} split points and {} bases, \
+         {} distinct chains, seed {SEED:#x}",
+        SEVERED_PREFIXES.len(),
+        SEVERED_BASES.len(),
+        chains.len()
     );
 }
