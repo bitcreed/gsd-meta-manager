@@ -106,3 +106,30 @@ proved pre-existing.
 **Suggested owner.** Whoever fixes the `driver_reattach` race — the fix direction is the
 same (wait on the artifact/state, not a fixed budget), and Phase 20 builds on this envelope
 and will add further startup work.
+
+---
+
+## Re-observed during 19-11 (T-19-60 gap closure), 2026-08-29
+
+The `driver_reattach` pair reproduced **deterministically** on this machine during 19-11's
+full-suite gate — 3/3 isolated runs failed, not intermittently:
+
+- `a_fresh_scan_finds_the_orphaned_run_live_with_its_last_journal_step`
+  (`tests/driver_reattach.rs:450` — `exactly one project has a run to observe`, left 0 right 1)
+- `a_run_killed_without_an_ending_is_reported_crashed_and_nothing_on_disk_is_repaired`
+  (`tests/driver_reattach.rs:542` — `the run record is on disk: NotFound`)
+
+Both spawn the real driver binary and then read `run.json`; `live_within(pid, …)` succeeds, so
+the driver comes up and is visible in `/proc` — the run **record** is what is missing. The
+shape is the same startup race already recorded above, now presenting as a consistent loss
+rather than a flake on this host.
+
+**Proved not caused by 19-11.** `src/envelope/hooks.rs` was reverted to its pre-Task-3 state
+(leaving `policy::resolve_program` present but with no production caller, so the guard behaved
+exactly as it did at the plan's base commit `5e574c4`) and the same two tests failed
+identically. 19-11 touches only the `PreToolUse` guard's program resolution, which
+`driver_reattach` never exercises.
+
+**Not fixed here** — out of scope for a T-19-60 gap-closure plan, and the plan forbids taking
+on neighbouring findings. Recorded so the count is not mistaken for a 19-11 regression:
+19-11's gate is 1245 passed / 2 failed / 13 ignored, and the 2 are this pair.

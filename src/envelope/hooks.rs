@@ -732,17 +732,21 @@ fn classify_refs(alias: &str, lines: &[String]) -> usize {
 /// judging a prefix of a command is worse than refusing it.
 const MAX_GUARD_REQUEST_BYTES: u64 = 1 << 20;
 
-/// How deep the guard follows `sh -c` payloads.
+/// How deep the guard follows a nested command line.
 ///
 /// One level covers `bash -c "git push --force"`, which is an ordinary thing for
 /// an agent to write and not an evasion at all. Deeper nesting is bounded rather
 /// than followed: the cost of recursion here is latency on the critical path,
 /// and an agent nesting three shells to hide a push is doing something layer 3
 /// exists for.
+///
+/// **Which words are nested command lines is decided structurally**, by
+/// [`policy::resolve_program`], and no longer by a list of shell names. `-c` is
+/// the shell's own spelling for "here is a command line", so `sh`, `bash`,
+/// `busybox sh`, `script` and anything else that consumes one are followed
+/// without being named — and `bash -lc "…"` is followed where an exact `-c`
+/// match was not.
 const MAX_SHELL_RECURSION: usize = 2;
-
-/// The shells whose `-c` payload the guard re-splits and re-classifies.
-const NESTED_SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
 
 /// One `PreToolUse` request, with unknown fields preserved rather than rejected.
 ///
@@ -788,10 +792,22 @@ pub struct GuardRequest {
 /// [`write_settings`] generates, as [`GUARD_TIMEOUT_SECS`].
 ///
 /// **Failure is denial, never permission.** A request that will not parse, a
-/// command whose words cannot be recovered, a verb assembled from an expansion,
-/// an `eval` — each is refused. A guard that permitted what it could not
-/// understand would be a guard that an unparseable command walks straight
+/// command whose words cannot be recovered, a program assembled from an
+/// expansion, an `eval` — each is refused. A guard that permitted what it could
+/// not understand would be a guard that an unparseable command walks straight
 /// through.
+///
+/// **Which token is the program is resolved structurally, not read off
+/// `words[0]`** ([`policy::resolve_program`], `T-19-60`). Every classifier below
+/// is applied at the index the governed program's own argv begins at, so
+/// `env git push --force`, `GIT_CONFIG_COUNT=0 git push --force` and
+/// `timeout 60 git push --force` reach exactly the verdict the unwrapped form
+/// reaches. The boundary that fails closed is narrow and deliberate: a segment
+/// that provably reaches **no** governed program is *permitted*, because this
+/// guard sees every Bash tool call and a rule that denied what it did not
+/// recognise would deny `ls`; but once resolution reaches a governed program,
+/// this function classifies it or refuses it and never falls through to
+/// `Ok(None)`.
 ///
 /// **A permit writes nothing at all**, and that is deliberate rather than
 /// lazy: answering `"permissionDecision": "allow"` would make this deny-only
@@ -924,7 +940,12 @@ pub fn guard_in(
 /// message would be deriving the same fact a second way — which is how a journal
 /// comes to disagree with the refusal it records.
 ///
-/// `depth` bounds the `sh -c` recursion at [`MAX_SHELL_RECURSION`].
+/// Which token of each segment is the **effective program** is answered by
+/// [`policy::resolve_program`] rather than by reading `words[0]`, and the index
+/// it reports is where each classifier is applied — so a wrapped command is
+/// judged on the same argv its unwrapped spelling would produce (`T-19-60`).
+///
+/// `depth` bounds the nested-command-line recursion at [`MAX_SHELL_RECURSION`].
 #[allow(clippy::too_many_arguments)]
 fn classify_segments(
     segments: &[Vec<policy::Token>],
@@ -936,41 +957,46 @@ fn classify_segments(
     push_ctx: &mut Option<policy::GitContext>,
 ) -> anyhow::Result<Option<(ParkReason, String)>> {
     for segment in segments {
-        let Some(program_token) = segment.first() else {
-            continue;
-        };
         let words: Vec<&str> = segment.iter().map(|token| token.text.as_str()).collect();
-        let program = policy::program_name(words[0]);
 
-        // A verb the shell will assemble at run time is a verb this function
-        // cannot see. `layer 2 raises the cost of an accident`; it does not
-        // pretend to evaluate a shell.
-        if program_token.expansion {
-            return Ok(Some((
-                ParkReason::EnvelopeAssertionFailed,
-                format!(
-                    "this command's program is assembled by shell expansion, so what it will \
-                     run is not knowable before it runs; refused rather than guessed at \
-                     (reason: {})",
-                    policy::REASON_ENVELOPE_ASSERTION_FAILED
-                ),
-            )));
-        }
-        if program == "eval" {
-            return Ok(Some((
-                ParkReason::EnvelopeAssertionFailed,
-                format!(
-                    "`eval` builds a command at run time, so no classifier can see what it \
-                     will run; refused (reason: {})",
-                    policy::REASON_ENVELOPE_ASSERTION_FAILED
-                ),
-            )));
-        }
+        match policy::resolve_program(segment) {
+            // A segment that runs no program at all (a bare `FOO=bar`), and a
+            // segment that provably reaches no governed program in any command
+            // position.
+            //
+            // **`Ungoverned` is the ANSWER here, not a fall-through**, and the
+            // distinction is the whole of `T-19-60`: the old code reached this
+            // point by *failing to recognise* `words[0]`, so a wrapper name it
+            // had never heard of and a genuine `ls` were indistinguishable. The
+            // resolver has now looked at every command position in the segment
+            // and found nothing this envelope governs. Permitting is correct —
+            // this guard is registered against every Bash tool call, and a rule
+            // that denied what it did not recognise would deny `ls`, `cargo
+            // test` and `rg`, which is how a safety control gets switched off.
+            policy::ProgramResolution::NoProgram | policy::ProgramResolution::Ungoverned => {
+                continue
+            }
 
-        // `bash -c "git push --force"` is an ordinary thing to write, not an
-        // evasion, so the payload is classified rather than the wrapper.
-        if NESTED_SHELLS.contains(&program) {
-            if let Some(payload) = shell_c_payload(&words) {
+            // Refused before any classifier: an expansion-assembled program, an
+            // `eval`, a word reaching for an envelope environment key, or a
+            // governed program name bound to a variable in this same command
+            // line. The resolver's reason travels out whole rather than being
+            // re-derived here.
+            policy::ProgramResolution::Refuse { reason, detail } => {
+                return Ok(Some((
+                    reason,
+                    format!(
+                        "gsd-meta-manager envelope: REFUSED (reason: {}) — {detail}",
+                        reason.as_str()
+                    ),
+                )));
+            }
+
+            // A command line handed to some other program as one word — a `-c`
+            // payload, or a quoted string whose first word names something
+            // governed. Classified rather than refused, so `bash -c "git
+            // status"` and `rg "git status" src/` both stay allowed.
+            policy::ProgramResolution::NestedPayload { index } => {
                 if depth >= MAX_SHELL_RECURSION {
                     return Ok(Some((
                         ParkReason::EnvelopeAssertionFailed,
@@ -981,82 +1007,124 @@ fn classify_segments(
                         ),
                     )));
                 }
-                let Some(inner) = policy::split_segments(payload) else {
-                    return Ok(Some((
-                        ParkReason::EnvelopeAssertionFailed,
-                        "the nested shell payload's words cannot be recovered, so it cannot \
-                         be classified and is refused"
-                            .to_string(),
-                    )));
-                };
-                if let Some(refusal) = classify_segments(
-                    &inner,
-                    depth + 1,
-                    root,
-                    alias,
-                    project_root,
-                    envelope,
-                    push_ctx,
-                )? {
-                    return Ok(Some(refusal));
+                let payload = words[index];
+                match policy::split_segments(payload) {
+                    Some(inner) => {
+                        if let Some(refusal) = classify_segments(
+                            &inner,
+                            depth + 1,
+                            root,
+                            alias,
+                            project_root,
+                            envelope,
+                            push_ctx,
+                        )? {
+                            return Ok(Some(refusal));
+                        }
+                    }
+                    // A payload whose words cannot be recovered is refused only
+                    // when it actually names something this envelope governs.
+                    // An unbalanced quote is a payload the shell will not run
+                    // either, so refusing every one of them would deny
+                    // `grep -c "don't" file` for nothing.
+                    None => {
+                        if policy::mentions_governed_program(payload) {
+                            return Ok(Some((
+                                ParkReason::EnvelopeAssertionFailed,
+                                "the nested shell payload's words cannot be recovered, so it \
+                                 cannot be classified and is refused"
+                                    .to_string(),
+                            )));
+                        }
+                    }
                 }
                 continue;
             }
-        }
 
-        if program == "git" {
-            let rest: Vec<&str> = words[1..].to_vec();
-            if policy::push_needs_resolved_dests(&rest) && push_ctx.is_none() {
-                let repo = project_root
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(|| PathBuf::from("."));
-                *push_ctx = Some(policy::resolve_push_context(&repo, &envelope.namespace));
-            }
-            let ctx = push_ctx.clone().unwrap_or_else(|| policy::GitContext {
-                namespace: envelope.namespace.clone(),
-                resolved_push_dests: Vec::new(),
-            });
-            if let policy::GitVerdict::Refuse { reason, detail } = policy::classify_git(&rest, &ctx)
-            {
-                // The classifier's own reason, carried out whole.
-                return Ok(Some((
-                    reason,
-                    format!(
-                        "gsd-meta-manager envelope: REFUSED (reason: {}) — {detail}",
-                        reason.as_str()
-                    ),
-                )));
-            }
-            continue;
-        }
+            // A program this envelope governs, and the index its own argv
+            // begins at — so `env git push --force` is classified on exactly
+            // the argv `git push --force` would produce.
+            policy::ProgramResolution::Governed { index } => {
+                match policy::program_name(words[index]) {
+                    "git" => {
+                        let rest: Vec<&str> = words[index + 1..].to_vec();
+                        if policy::push_needs_resolved_dests(&rest) && push_ctx.is_none() {
+                            let repo = project_root
+                                .map(Path::to_path_buf)
+                                .unwrap_or_else(|| PathBuf::from("."));
+                            *push_ctx =
+                                Some(policy::resolve_push_context(&repo, &envelope.namespace));
+                        }
+                        let ctx = push_ctx.clone().unwrap_or_else(|| policy::GitContext {
+                            namespace: envelope.namespace.clone(),
+                            resolved_push_dests: Vec::new(),
+                        });
+                        if let policy::GitVerdict::Refuse { reason, detail } =
+                            policy::classify_git(&rest, &ctx)
+                        {
+                            // The classifier's own reason, carried out whole.
+                            return Ok(Some((
+                                reason,
+                                format!(
+                                    "gsd-meta-manager envelope: REFUSED (reason: {}) — {detail}",
+                                    reason.as_str()
+                                ),
+                            )));
+                        }
+                    }
 
-        if let Some((platform, label)) = policy::pr_command_label(&words) {
-            let entry = super::ledger::LedgerEntry {
-                at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                run_id: current_run_id(),
-                command: label,
-                platform: platform.to_string(),
-            };
-            let verdict = super::ledger::record_and_check_in(root, alias, &entry, envelope)?;
-            if let Some(detail) = verdict.refusal_detail() {
-                return Ok(Some((
-                    ParkReason::PrCapExceeded,
-                    format!(
-                        "gsd-meta-manager envelope: REFUSED (reason: {}) — {detail}",
-                        policy::REASON_PR_CAP_EXCEEDED
-                    ),
-                )));
+                    "gh" | "glab" => {
+                        if let Some((platform, label)) =
+                            policy::pr_command_label(&words[index..])
+                        {
+                            let entry = super::ledger::LedgerEntry {
+                                at: chrono::Utc::now()
+                                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                                run_id: current_run_id(),
+                                command: label,
+                                platform: platform.to_string(),
+                            };
+                            let verdict =
+                                super::ledger::record_and_check_in(root, alias, &entry, envelope)?;
+                            if let Some(detail) = verdict.refusal_detail() {
+                                return Ok(Some((
+                                    ParkReason::PrCapExceeded,
+                                    format!(
+                                        "gsd-meta-manager envelope: REFUSED (reason: {}) — \
+                                         {detail}",
+                                        policy::REASON_PR_CAP_EXCEEDED
+                                    ),
+                                )));
+                            }
+                        }
+                    }
+
+                    // **The fail-closed edge this whole gap is about.** A member
+                    // of `policy::GOVERNED_PROGRAMS` with no classifier arm here
+                    // must REFUSE, never fall through to `Ok(None)` — falling
+                    // through is precisely how `T-19-60` turned an unrecognised
+                    // token into a permit. The name is bound and put in the
+                    // message rather than swallowed by a wildcard, so a reader
+                    // meeting this refusal knows which program grew a governance
+                    // claim that this function has not learned to judge.
+                    governed => {
+                        return Ok(Some((
+                            ParkReason::EnvelopeAssertionFailed,
+                            format!(
+                                "gsd-meta-manager envelope: REFUSED (reason: {}) — `{governed}` \
+                                 is a program this envelope governs, but this enforcement point \
+                                 has no classifier for it, so what it would do cannot be judged; \
+                                 refused rather than permitted unjudged",
+                                policy::REASON_ENVELOPE_ASSERTION_FAILED
+                            ),
+                        )));
+                    }
+                }
             }
         }
     }
 
     Ok(None)
-}
-
-/// The `-c` payload of a nested shell invocation, if this is one.
-fn shell_c_payload<'a>(words: &[&'a str]) -> Option<&'a str> {
-    let index = words.iter().position(|word| *word == "-c")?;
-    words.get(index + 1).copied()
 }
 
 /// The run this guard invocation belongs to, for the per-run cap.
