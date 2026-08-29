@@ -46,8 +46,10 @@
 //
 // ## TWO ROWS IN THIS FILE ARE DELIBERATELY LEFT RED BY PLAN 19-14
 //
-// `the_two_severed_prefix_rows_are_carried_forward_to_19_15_and_are_expected_red`
-// holds
+// `the_severed_git_config_count_row_is_carried_forward_to_19_15_and_is_expected_red`
+// and
+// `the_severed_git_ssh_command_row_is_carried_forward_to_19_15_and_is_expected_red`
+// hold, one row each:
 //
 // ```
 // C=GIT_CONFIG; env -u ${C}_COUNT git fetch origin
@@ -712,40 +714,59 @@ fn removing_the_run_id_key_is_refused() {
 // 9. THE CARRY-FORWARD — two rows deliberately left RED by plan 19-14
 // ===========================================================================
 
-/// **This test is EXPECTED TO FAIL at the end of plan 19-14. Do not fix it
-/// here, do not weaken it, and do not mark it `#[ignore]`.**
+// **THE TWO TESTS BELOW ARE EXPECTED TO FAIL at the end of plan 19-14. Do not
+// fix them here, do not weaken them, and do not mark either `#[ignore]` — an
+// ignored test is a test nobody sees go green.**
+//
+// Both are measured `T-19-87` bypasses. Both are RED before Rule A and both are
+// STILL RED after it, because the expansion lands in a wrapper operand
+// **severed** from the governed program:
+//
+// ```text
+// C=GIT_CONFIG; env -u ${C}_COUNT git fetch origin
+//   ->  `C=GIT_CONFIG`  |  `env -u $`  |  `C`  |  `_COUNT git fetch origin`
+// ```
+//
+// The last fragment resolves `git` behind a clean one-word prefix and its verb
+// is the LITERAL `fetch`. No verb-slot rule can see the shape, because by the
+// time resolution runs the shape is gone. `19-15` closes both positionally, by
+// recording which segment boundaries were created by a word-splitting flush —
+// with `SEPARATORS` untouched there too.
+//
+// **The carry-forward is a MECHANISM, not an omission.** If `19-15` found these
+// already green, Rule B would be a rule nobody had shown was needed; if `19-14`
+// closed them, nobody could tell which mechanism did it. Three rounds of this
+// phase have been certified by corpora that could not fail on their own class,
+// and separating the two rules is how this round avoids being the fourth.
+//
+// **One row per test, deliberately.** Plan 19-14's gate is read as "the failure
+// count is 2 or 4, and every failure name is a `driver_reattach` name or one of
+// the two carry-forward names" — arithmetic that only holds if each carried row
+// is its own name. `19-15`'s gate is the mirror image: 0 or 2 failures, both
+// `driver_reattach`. Two rows inside one test would make both gates unable to
+// tell one carried row from two.
+
+/// Carry-forward 1 of 2 — EXPECTED RED at the end of plan 19-14.
 ///
-/// Both rows are measured `T-19-87` bypasses. Both are RED before Rule A and
-/// both are STILL RED after it, because the expansion lands in a wrapper operand
-/// **severed** from the governed program:
-///
-/// ```text
-/// C=GIT_CONFIG; env -u ${C}_COUNT git fetch origin
-///   ->  `C=GIT_CONFIG`  |  `env -u $`  |  `C`  |  `_COUNT git fetch origin`
-/// ```
-///
-/// The last fragment resolves `git` behind a clean one-word prefix and its verb
-/// is the LITERAL `fetch`. No verb-slot rule can see the shape, because by the
-/// time resolution runs the shape is gone. `19-15` closes both positionally, by
-/// recording which segment boundaries were created by a word-splitting flush —
-/// with `SEPARATORS` untouched there too.
-///
-/// **The carry-forward is a MECHANISM, not an omission.** If `19-15` found these
-/// already green, Rule B would be a rule nobody had shown was needed; if `19-14`
-/// closed them, nobody could tell which mechanism did it. Three rounds of this
-/// phase have been certified by corpora that could not fail on their own class,
-/// and separating the two rules is how this round avoids being the fourth.
-///
-/// The harm is `T-19-81`'s: the removal of `GIT_CONFIG_COUNT` takes away the
-/// `core.hooksPath` carrier layer 3 depends on, and the removal of
-/// `GIT_SSH_COMMAND` puts the user's own agent and default identity back within
-/// reach of the run (D-16).
+/// The harm is `T-19-81`'s: removing `GIT_CONFIG_COUNT` takes away the
+/// `core.hooksPath` carrier that layer 3 depends on, so the `pre-push` hook does
+/// not run.
 #[test]
-fn the_two_severed_prefix_rows_are_carried_forward_to_19_15_and_are_expected_red() {
+fn the_severed_git_config_count_row_is_carried_forward_to_19_15_and_is_expected_red() {
     refuses(
         "C=GIT_CONFIG; env -u ${C}_COUNT git fetch origin",
         policy::REASON_ENVELOPE_ASSERTION_FAILED,
     );
+}
+
+/// Carry-forward 2 of 2 — EXPECTED RED at the end of plan 19-14.
+///
+/// The harm is `T-19-81`'s other half: removing `GIT_SSH_COMMAND` takes away
+/// `IdentitiesOnly=yes`, `IdentityAgent=none` and `-F /dev/null`, putting the
+/// user's own agent and default identity back within reach of a driven run
+/// (D-16).
+#[test]
+fn the_severed_git_ssh_command_row_is_carried_forward_to_19_15_and_is_expected_red() {
     refuses(
         "K=GIT_SSH; env -u ${K}_COMMAND git fetch origin",
         policy::REASON_ENVELOPE_ASSERTION_FAILED,

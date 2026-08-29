@@ -379,6 +379,150 @@ row.
 *`T-19-89` and `T-19-90` are open below the `high` threshold and do **not** count
 toward `threats_open`. `T-19-87` and `T-19-88` do.*
 
+### Execution record — plan 19-14 (Rule A). NOT an audit finding.
+
+**Provenance, stated first so a reader cannot mistake this for audit 3's own
+work.** Everything below was measured by the EXECUTOR of plan 19-14, against the
+tree at `c595141` (before) and after the Rule A fix. It is recorded here because
+audit 3's suggested closure names the rows and a later reader needs to find their
+post-fix state beside the finding — not because these rows have been
+re-audited. **Re-measuring and re-classifying them is `/gsd-secure-phase 19`'s
+job, not a plan's.** The audit tables above, the Security Audit Trail, the
+Accepted Risks Log and the Sign-Off are untouched by plan 19-14.
+
+#### The audit-3 rows Rule A closes
+
+Driven in-process through `hooks::guard_in`, one fresh `TempDir` envelope root
+per row, with the envelope directory WALKED afterwards so a missing ledger line
+is observed rather than assumed. Pinned in
+`tests/envelope_expansion_slots.rs`.
+
+```
+before  after                                 command
+exit=0  exit=2 [envelope_assertion_failed]    V=push; git $V --force origin main
+exit=0  exit=2 [envelope_assertion_failed]    V=stash; git $V
+exit=0  exit=2 [envelope_assertion_failed]    V=update-ref; git $V -d refs/heads/main
+exit=0  exit=2 [envelope_assertion_failed]    P=pr; gh $P create --title x        (walk: no ledger line)
+exit=0  exit=2 [envelope_assertion_failed]    gh `true`pr create --title x        (walk: no ledger line)
+exit=0  exit=2 [envelope_assertion_failed]    git ${X}push --force origin main
+exit=0  exit=2 [envelope_assertion_failed]    git $(true)push --force origin main
+exit=0  exit=2 [envelope_assertion_failed]    git ${X}stash
+exit=0  exit=2 [envelope_assertion_failed]    git ${X}update-ref -d refs/heads/main
+exit=0  exit=2 [envelope_assertion_failed]    git ${X}config core.hooksPath /tmp/x
+exit=0  exit=2 [envelope_assertion_failed]    gh ${X}pr create --title x          (walk: no ledger line)
+exit=0  exit=2 [envelope_assertion_failed]    C=GIT_CONFIG; env -u ${C}_COUNT git ${X}push --force origin main
+exit=0  exit=2 [hook_bypass_blocked]          env -u GSD_MM_RUN_ID git fetch origin
+```
+
+`T-19-88` is closed. `T-19-90` is closed both by the key and by re-sourcing the
+drift pin through `cred::EnvelopeEnv::with_run_id`, the seam that appends it.
+**`T-19-87` is NOT closed** — this is six of its eight measured rows, and
+`SEPARATORS`, `split_segments` and the tokenizer's separator arm are untouched.
+**`T-19-89` is NOT closed** — plan 19-14 delivers the Rule A half of the
+alphabet widening; `SHELL_LAYERS` still cannot draw `{ …; }` or `( … )`.
+
+The mechanism, for the record: `hooks.rs` collapsed each `Token` to its `text`
+before either classifier ran, so `Token.expansion` was structurally unavailable
+to the words each matched arm DECIDES ON. Rule A restores the bit at that
+boundary — `policy::expansion_in_decision_region`, called once, before both
+classifiers and before the ledger write — over a region that is exactly those
+words: the git verb, `config`'s key operand, a forge's first two subcommand
+words, and the `gh api` endpoint, method and flag-ness words. Operands stay
+free, so `git commit -m "$MSG"`, `gh pr create --title "$TITLE"`,
+`gh api repos/o/r/pulls -f title="$T"` and `git -c user.name="$NAME" commit -m x`
+all still exit 0 and are pinned doing so.
+
+#### Region cells found while CHECKING plan 19-14
+
+Not measured by any audit. Same method, same provenance caveat. Each was at
+exit 0 before the fix and is at `exit=2 [envelope_assertion_failed]` after it.
+
+| Cell | Command | Why a region derived from the wrong scan missed it |
+|---|---|---|
+| the forge's SECOND subcommand word | `P=create; gh pr $P --title x` | `pr_command_label` matches on TWO words, so a one-word region leaves this unmatched, uncounted and unparked — no ledger line, SAFE-06 bypassed rather than exceeded |
+| the `-`-initial `api` flag | `F=f; gh api repos/o/r/pulls -$F title=x`, and `-${F}` | begins with `-`, so it is neither one of the first two subcommand words, nor the method value, nor marker-initial — a clause written only for `$F` leaves it in no part of the region |
+| the DISPLACED `api` endpoint | `E=pulls; gh api -f title=x repos/o/r/$E`, and the `-H accept:x` spelling | the two forge scans disagree about which words are flags: `subcommand_words` skips only `FORGE_VALUE_OPTS`, so an option value only the `api` scan skips pushes the endpoint to the THIRD word and out of the region entirely, while the arm's own scan reads it and `endpoint_is_pulls` compares `$E` |
+| `classify_config`'s key operand | `git config $K /tmp/x`, `git config ${K} /tmp/x`, `git config set $K /tmp/x` | `classify_config` reaches `is_hooks_path_key` on an operand it cannot read and answers `Allow`, so layer 3 is disarmed exactly as by the literal spelling |
+| the `git -c` key half | `git -c $K commit -m x`, `git -c ${K}=/tmp/x commit -m x` | `scan_leading`'s only decision is whether `core.hooksPath` is set at command-line precedence, and it makes it by comparing the KEY half |
+
+The fix takes every index from the scan the classifier itself runs — three
+extracted index primitives, including one over `gh_api_posts_a_pull_request`'s
+own walk — because a region computed by a SECOND scan is the defect this round
+is about, and it had by then sat one slot over four times.
+
+#### Carried forward RED to plan 19-15
+
+Two of `T-19-87`'s eight measured rows are written in
+`tests/envelope_expansion_slots.rs`, observed RED, and **left RED** at plan
+19-14's end:
+
+```
+exit=0  C=GIT_CONFIG; env -u ${C}_COUNT git fetch origin
+exit=0  K=GIT_SSH;    env -u ${K}_COMMAND git fetch origin
+```
+
+The expansion lands in a wrapper operand SEVERED from the governed program —
+`env -u $` | `C` | `_COUNT git fetch origin` — so the last fragment resolves
+`git` behind a clean one-word prefix whose verb is the literal `fetch`. No
+verb-slot rule can reach them; `19-15` closes them positionally, with
+`SEPARATORS` still untouched. They are left failing so that each rule is shown
+separately load-bearing rather than one being certified by the other's evidence.
+Test names:
+`the_severed_git_config_count_row_is_carried_forward_to_19_15_and_is_expected_red`
+and `the_severed_git_ssh_command_row_is_carried_forward_to_19_15_and_is_expected_red`.
+
+#### `T-19-91` — registered OPEN, not closed
+
+A git classifier's own DECISION OPERAND, assembled by expansion. Measured at
+`c595141`, one fresh envelope root per row, and pinned in
+`tests/envelope_expansion_slots.rs::the_t_19_91_residual_is_measured_and_pinned_rather_than_closed`:
+
+```
+exit=0  git reflog $S            <- PERMITTED, registered OPEN
+exit=0  git reflog show $S       <- PERMITTED, registered OPEN
+exit=0  git symbolic-ref $S      <- PERMITTED, registered OPEN
+exit=2  git symbolic-ref HEAD $R    [force_push_blocked]        <- already fails closed
+exit=2  git push origin $REF       [push_outside_namespace]     <- already fails closed
+exit=2  git push $REF              [push_outside_namespace]     <- already fails closed; NOT pinned as a
+                                                                  live row, because it is the one shape
+                                                                  `push_needs_resolved_dests` answers
+                                                                  `true` for, which makes the guard shell
+                                                                  out to git in the test's own working
+                                                                  directory (`T-19-80`)
+```
+
+`classify_reflog` matches its first non-flag token against `delete`, `expire`
+and `drop`; `classify_symbolic_ref` counts operands and looks for `-d`. An
+operand neither can read falls to an `Allow` arm — structurally identical to the
+`config` cell.
+
+**Why `config` is closed here and these are not: ROUND DISCIPLINE and
+provenance, and NOT a second-carrier argument.** `git ${X}config core.hooksPath
+/tmp/x` is a row in audit 3's own measured bypass list, so closing that cell is
+part of making the region principle coherent over rows the audit established.
+These were found while checking plan 19-14, and a plan cannot both discover a
+threat and be the plan that measured it fail first.
+
+**`reflog` and `symbolic-ref` have NO `pre-push` and NO `pre-commit` second
+carrier.** Git runs no hook for either, and `classify_reflog`'s own refusal text
+records that the reflog is *the recovery path for every other destructive git
+operation*. Only `git push` has a hook behind it, and its refspec operand
+already fails closed. A reader who took the asymmetry above for a blast-radius
+judgement would be reading a narrowed threat as a covered one.
+
+Severity: **high**, disposition **mitigate (partial — `config` closed; the rest
+registered open)**. Registered in `deferred-items.md` and disclosed in
+`resolve_program`'s own doc as its fourth residual bullet.
+
+#### Consequence for the phase gate
+
+**`/gsd-secure-phase 19` is NOT cleared by plan 19-14, and will not be cleared
+by 19-15 either.** `T-19-86` remains OPEN at `high` by explicit user scoping
+decision — its four rows were re-measured after Rule A and all four still exit 0
+— and `T-19-91` is registered open at `high`. `T-19-87` and `T-19-89` are
+partial. `T-19-61` through `T-19-73`, `T-19-84` and `T-19-85` are open and
+unaccepted.
+
 ---
 
 ## Audit 3 — what the round-2 controls can and cannot fail on

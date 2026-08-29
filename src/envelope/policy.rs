@@ -347,7 +347,48 @@ fn scan_leading(argv: &[&str]) -> (usize, Option<GitVerdict>) {
         }
         let (assignment, consumed) = leading_git_option(argv, index);
         if let Some(assignment) = assignment {
-            if is_hooks_path_key(config_key_of(assignment)) {
+            // **A key this scan cannot read is a decision it cannot make.**
+            // This function's ONE job is to decide whether `core.hooksPath` is
+            // being set at command-line precedence — the single form that
+            // outranks the envelope's own env-injected setting (D-09) — and it
+            // decides it by comparing the KEY half. `git -c $K commit -m x`
+            // hands it a key whose value is bound after the guard has answered,
+            // so the comparison is a guess.
+            //
+            // **The check is on the key half only, and that boundary is the
+            // whole of its cost containment.** A VALUE carrying an expansion —
+            // `git -c user.name="$NAME" commit -m x` — changes what the setting
+            // IS, not WHICH setting it is, and is pinned PERMITTED. A rule that
+            // refused the value half would refuse every `git -c` that
+            // interpolates anything, which is `T-19-75` widened from `rg` to
+            // ordinary configuration (AR-19-11).
+            //
+            // **Textual rather than expansion-flagged**, because this function
+            // is a pure argv function and must stay one: it is called by
+            // [`push_needs_resolved_dests`] before classification and by
+            // [`classify_git`] during it, from `&[&str]` in both cases. The
+            // `Token.expansion` bit is consulted once, at the decision
+            // boundary, by [`expansion_in_decision_region`].
+            //
+            // Both callers inherit the refusal, which is the point of there
+            // being one scan.
+            let key = config_key_of(assignment);
+            if key.contains('$') || key.contains('`') {
+                return (
+                    index,
+                    Some(refuse(
+                        ParkReason::EnvelopeAssertionFailed,
+                        format!(
+                            "the key half of `git -c {assignment}` is assembled by shell \
+                             expansion, so whether this command sets core.hooksPath at \
+                             command-line precedence — the one form that outranks the \
+                             envelope's own env-injected setting (D-09) — is not knowable \
+                             before it runs; refused rather than guessed at"
+                        ),
+                    )),
+                );
+            }
+            if is_hooks_path_key(key) {
                 return (
                     index,
                     Some(refuse(
@@ -689,8 +730,43 @@ const CONFIG_WRITE_SUBCOMMANDS: &[&str] = &[
 ];
 const CONFIG_READ_SUBCOMMANDS: &[&str] = &["get", "list"];
 
-fn classify_config(rest: &[&str]) -> GitVerdict {
-    let mut operands: Vec<&str> = Vec::new();
+/// One walk of a `git config` argv: its operands paired with their indices into
+/// `rest`, and the three facts the classifier decides on.
+struct ConfigScan<'a> {
+    /// Every operand, with the index into `rest` it was found at.
+    operands: Vec<(usize, &'a str)>,
+    /// Where the KEY operands begin — after the subcommand form's verb, if the
+    /// argv uses that form.
+    key_start: usize,
+    is_read: bool,
+    is_write: bool,
+    whole_file_write: bool,
+}
+
+impl<'a> ConfigScan<'a> {
+    /// The operand [`classify_config`] tests with [`is_hooks_path_key`], with
+    /// its index into `rest`.
+    fn key_operand(&self) -> Option<(usize, &'a str)> {
+        self.operands.get(self.key_start).copied()
+    }
+
+    /// How many key operands there are — what tells `git config <key> <value>`
+    /// (a write) from `git config <key>` (a read).
+    fn key_operand_count(&self) -> usize {
+        self.operands.len().saturating_sub(self.key_start)
+    }
+}
+
+/// The single walk of a `git config` argv, over which both
+/// [`classify_config`] and the `config` half of
+/// [`expansion_in_decision_region`] are defined.
+///
+/// **The index primitive, for the reason [`scan_leading`]'s doc already records
+/// for its two callers**: a second copy of a loop is a second thing to keep in
+/// step with git's own option grammar, and the day they drift is the day the
+/// rule guards a different word than the one the classifier reads.
+fn scan_config<'a>(rest: &[&'a str]) -> ConfigScan<'a> {
+    let mut operands: Vec<(usize, &'a str)> = Vec::new();
     let mut is_read = false;
     let mut is_write = false;
     let mut whole_file_write = false;
@@ -699,12 +775,17 @@ fn classify_config(rest: &[&str]) -> GitVerdict {
     while index < rest.len() {
         let token = rest[index];
         if !token.starts_with('-') || token == "-" {
-            operands.push(token);
+            operands.push((index, token));
             index += 1;
             continue;
         }
         if token == "--" {
-            operands.extend_from_slice(&rest[index + 1..]);
+            operands.extend(
+                rest[index + 1..]
+                    .iter()
+                    .enumerate()
+                    .map(|(offset, token)| (index + 1 + offset, *token)),
+            );
             break;
         }
         let name = token.split_once('=').map(|(n, _)| n).unwrap_or(token);
@@ -724,23 +805,50 @@ fn classify_config(rest: &[&str]) -> GitVerdict {
     }
 
     // The subcommand form puts the verb where the key would otherwise be.
-    let mut key_operands = operands.as_slice();
-    if let Some(first) = operands.first() {
+    let mut key_start = 0;
+    if let Some((_, first)) = operands.first() {
         if CONFIG_WRITE_SUBCOMMANDS.contains(first) {
             is_write = true;
             if *first == "edit" {
                 whole_file_write = true;
             }
-            key_operands = &operands[1..];
+            key_start = 1;
         } else if CONFIG_READ_SUBCOMMANDS.contains(first) {
             is_read = true;
-            key_operands = &operands[1..];
+            key_start = 1;
         }
     }
 
+    ConfigScan {
+        operands,
+        key_start,
+        is_read,
+        is_write,
+        whole_file_write,
+    }
+}
+
+/// The index into `rest` of the operand [`classify_config`] would test with
+/// [`is_hooks_path_key`], if there is one.
+///
+/// `rest` is the argv AFTER the `config` verb, as [`classify_config`] receives
+/// it.
+fn config_key_operand_index(rest: &[&str]) -> Option<usize> {
+    scan_config(rest).key_operand().map(|(index, _)| index)
+}
+
+fn classify_config(rest: &[&str]) -> GitVerdict {
+    let scan = scan_config(rest);
+    let ConfigScan {
+        is_read,
+        mut is_write,
+        whole_file_write,
+        ..
+    } = scan;
+
     // The classic form: `git config <key> <value>` is a write, `git config
     // <key>` alone prints the value and is a read.
-    if !is_read && !is_write && key_operands.len() >= 2 {
+    if !is_read && !is_write && scan.key_operand_count() >= 2 {
         is_write = true;
     }
 
@@ -754,7 +862,7 @@ fn classify_config(rest: &[&str]) -> GitVerdict {
     }
 
     if is_write && !is_read {
-        if let Some(key) = key_operands.first() {
+        if let Some((_, key)) = scan.key_operand() {
             if is_hooks_path_key(key) {
                 return refuse(
                     ParkReason::HookBypassBlocked,
@@ -1266,6 +1374,21 @@ pub const ENVELOPE_ENV_KEYS: &[&str] = &[
     // driven run cannot name them as a bare unquoted word, and must quote it.
     // That is the direction to be wrong in.
     "GSD_MM_ENVELOPE_PROJECT_ROOT",
+    // `T-19-90`. The run identifier the DRIVER appends through
+    // `cred::EnvelopeEnv::with_run_id`, which is why the drift pin could not
+    // see it until the pin's source was moved to that seam.
+    //
+    // What it carries and which harm its removal causes:
+    // `super::hooks::current_run_id` falls back to the `"unattributed-run"`
+    // placeholder bucket when this key is absent, so every park the run
+    // produces is attributed to a run nobody can find. D-24 requires every
+    // envelope refusal to park and D-25 requires the park to land where a later
+    // reader can find it — so this entry protects the EVIDENCE rather than the
+    // containment, exactly as recorded above for its sibling locator
+    // `GSD_MM_ENVELOPE_PROJECT_ROOT`. That reasoning had simply not yet reached
+    // this key. Its false-positive cost is the same as every other entry's: a
+    // driven run cannot name it as a bare unquoted word, and must quote it.
+    "GSD_MM_RUN_ID",
 ];
 
 /// The [`ENVELOPE_ENV_KEYS`] entry covering `name`, if any.
@@ -1489,6 +1612,40 @@ pub enum ProgramResolution {
 ///   `19-SECURITY.md` and `deferred-items.md`, and left for a later round: they
 ///   were found while planning the round that closed the sub-class, and a plan
 ///   cannot both discover a threat and be the plan that measured it fail first.
+/// * **`T-19-91` — a git classifier's own DECISION OPERAND, assembled by
+///   expansion, for every verb but `config`.** `git reflog $S`,
+///   `git reflog show $S` and `git symbolic-ref $S` are measured PERMITTED:
+///   `classify_reflog` matches its first non-flag token against `delete`,
+///   `expire` and `drop`, and `classify_symbolic_ref` counts operands and looks
+///   for `-d` — so an operand neither can read falls to an `Allow` arm.
+///   `git config`'s key operand is the one cell of this shape that IS closed,
+///   because `git ${X}config core.hooksPath /tmp/x` is a row in audit 3's own
+///   measured bypass list and a region principle that stopped at the verb while
+///   `config`'s key stayed unreadable would not be coherent. The rest was found
+///   while checking plan 19-14, and a plan cannot both discover a threat and be
+///   the plan that measured it fail first.
+///
+///   **This is NOT a second-carrier argument.** `reflog` and `symbolic-ref`
+///   have no `pre-push` and no `pre-commit` behind them — git runs no hook for
+///   either — and [`classify_reflog`]'s own refusal text records that the
+///   reflog is the recovery path for every other destructive git operation.
+///   Only `git push` has a hook behind it, and its refspec operand already
+///   fails CLOSED: an unreadable refspec does not carry the namespace prefix,
+///   so `git push origin $REF` is refused. The residual is pinned in
+///   `tests/envelope_expansion_slots.rs` and registered in `19-SECURITY.md` and
+///   `deferred-items.md`.
+///
+/// ## What IS covered in the program's own arguments, since 19-14
+///
+/// The exemption above is no longer total, and the boundary is exact.
+/// [`expansion_in_decision_region`] refuses an expansion in the words each
+/// matched classifier arm READS — the git verb, `config`'s key operand, a
+/// forge's first two subcommand words, and the `gh api` endpoint, method and
+/// flag-ness words — before either classifier runs and before the ledger write.
+/// Everything to the right of those is an OPERAND and stays free, which is what
+/// keeps `git commit -m "$MSG"`, `gh pr create --title "$TITLE"`,
+/// `gh api repos/o/r/pulls -f title="$T"` and `git -c user.name="$NAME" commit`
+/// working (`T-19-88`, `T-19-87` in part).
 pub fn resolve_program(segment: &[Token]) -> ProgramResolution {
     // 1. An envelope key is refused on its own account, wherever it appears.
     for token in segment {
@@ -1641,10 +1798,19 @@ pub fn resolve_program(segment: &[Token]) -> ProgramResolution {
         // prefix does to the environment — and therefore which program runs and
         // with what — is decided after the guard has answered. Restricted to
         // this region deliberately: an expansion in the ASSIGNMENT prefix
-        // (`FOO=$BAR git status`) and one in the program's own ARGUMENTS
+        // (`FOO=$BAR git status`) and one in the program's own OPERANDS
         // (`git commit -m "$MSG"`) are untouched, and a segment reaching no
         // governed program at all is untouched — which is what leaves the
         // accepted `T-19-74` residual exactly where it is.
+        //
+        // **The words between this region and the operands are no longer
+        // exempt, and that is `T-19-88`.** Audit 3 quoted the sentence above as
+        // the disclosure that left the VERB SLOT open; the classifier's own
+        // decision words are now checked by
+        // [`expansion_in_decision_region`], at the one call site in
+        // `super::hooks::classify_segments`. Nothing about this rule changed —
+        // it still governs only the prefix — but a reader meeting it should not
+        // conclude that everything after the head is free.
         //
         // The head itself is not examined here because step 3 already refused
         // it. This is the half of `T-19-81` that closes the CLASS rather than
@@ -1695,6 +1861,200 @@ pub fn resolve_program(segment: &[Token]) -> ProgramResolution {
     // 8. No governed program is reachable. See `ProgramResolution::Ungoverned`
     //    for why this is the answer and not a gap.
     ProgramResolution::Ungoverned
+}
+
+/// A word a classifier's matched arm READS, which the shell assembles at run
+/// time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecisionWord {
+    /// Its index in the segment.
+    pub index: usize,
+    /// The word as the tokenizer recovered it — `$V`, `$`, `` `true`pr ``.
+    pub word: String,
+    /// Which decision it is, for a refusal a reader can act on.
+    pub role: &'static str,
+}
+
+/// Whether a `gh api` token is one whose FLAG-NESS the arm decides on.
+///
+/// Two clauses, and the code says why neither alone is enough.
+/// [`gh_api_posts_a_pull_request`] sets `implies_post` by WHOLE-TOKEN membership
+/// in [`GH_API_IMPLIES_POST`], so a token whose spelling is not knowable yields
+/// `implies_post == false`, `pr_command_label` returns `None`, and a pull
+/// request opens with no refusal, no ledger line and no cap charge.
+///
+/// * **marker-initial** — `F=-f; gh api repos/o/r/pulls $F title=x`. The whole
+///   token is assembled, so whether it is a flag at all is unknowable.
+/// * **`-`-initial with an expansion before the first `=`** —
+///   `F=f; gh api repos/o/r/pulls -$F title=x`, and its `-${F}` spelling, which
+///   the tokenizer flushes to a bare `-$`. This is the SAME hole one character
+///   to the left: the token begins with `-`, so it is neither one of the first
+///   two subcommand words (it is a flag to [`subcommand_word_indices`]), nor the
+///   method value, nor marker-initial — a clause written only for the first form
+///   leaves it in no part of the region at all.
+///
+/// The second clause is the same key-half readability test [`scan_leading`]
+/// applies to `git -c`, and it is what leaves
+/// `gh api repos/o/r/pulls -f title="$T"` alone: `-f` has a readable key half,
+/// and `title="$T"` neither begins with `-` nor with a marker.
+fn api_flag_ness_is_unreadable(word: &str) -> bool {
+    if word.starts_with('$') || word.starts_with('`') {
+        return true;
+    }
+    if word.starts_with('-') {
+        let key = word.split_once('=').map(|(key, _)| key).unwrap_or(word);
+        return key.contains('$') || key.contains('`');
+    }
+    false
+}
+
+/// The first word a governed program's classifier DECIDES ON that the shell
+/// assembles at run time, or `None`.
+///
+/// **The root cause this closes, in one paragraph.**
+/// `super::hooks::classify_segments` collapses each [`Token`] to its `text`
+/// before either classifier runs, so `Token.expansion` is structurally
+/// unavailable to [`classify_git`] and [`pr_command_label`] — both of which are
+/// pure argv functions and must stay so. [`resolve_program`] refuses an
+/// expansion at the HEAD (step 3) and one in the WRAPPER PREFIX (step 5), and
+/// the words between them — the ones every classifier decision turns on — were
+/// exempt by an explicit comment. This function is where the bit is restored: at
+/// the decision boundary, over the same slice the caller already holds, called
+/// ONCE, before both classifiers and before the ledger write.
+///
+/// ## The region is exactly the words the matched arm reads
+///
+/// * **git — the VERB**, at the absolute index [`classify_git`] itself slices to
+///   (`governed + 1 + scan_leading`), plus, when that verb is `config`, the one
+///   operand [`classify_config`] tests with [`is_hooks_path_key`], at the index
+///   [`config_key_operand_index`] reports.
+/// * **forge — the first TWO non-flag subcommand words**, because
+///   [`pr_command_label`] matches on `["pr", "create", ..]` and
+///   `["mr", "create", ..]`.
+/// * **forge, `api` arm only** — the ENDPOINT at the index [`scan_gh_api`]
+///   reports, the `-X`/`--method` value in both its spellings, and any token
+///   whose flag-ness that arm cannot read
+///   ([`api_flag_ness_is_unreadable`]).
+///
+/// Every index is reported by the scan the classifier itself runs, so the region
+/// cannot drift one slot from the words that decide. That drift is the defect
+/// this round is about, and it had already happened: see [`scan_gh_api`]'s doc
+/// for the endpoint an `api` option value displaces out of
+/// [`subcommand_word_indices`]' first two words entirely.
+///
+/// ## What is deliberately NOT in the region, and why
+///
+/// * **Operands.** `git commit -m "$MSG"`, `gh pr create --title "$TITLE"` and
+///   `gh api repos/o/r/pulls -f title="$T"` all still run. A rule that refused
+///   every expansion in a governed segment would be `T-19-75` widened from `rg`
+///   to every commit, and a control that fails into unusability gets switched
+///   off (AR-19-11). This boundary is the whole of the design's cost
+///   containment and it is pinned from both sides in
+///   `tests/envelope_expansion_slots.rs`.
+/// * **The tokens [`scan_leading`] WALKS.** [`leading_git_option`] consumes a
+///   `-c` option AND its assignment token, so a region defined as "what that
+///   scan walked" would put `user.name="$NAME"` inside it and refuse
+///   `git -c user.name="$NAME" commit -m x`, which is pinned permitted. Those
+///   options are governed by [`scan_leading`]'s own key-half check instead,
+///   which matches the only decision that scan makes.
+/// * **All of [`subcommand_word_indices`].** That pulls `--title`'s value into
+///   the region and refuses a pull-request title carrying a `$`.
+///
+/// A governed program with no classifier arm has no decision region here; the
+/// fail-closed arm in `classify_segments` already refuses it.
+pub fn expansion_in_decision_region(segment: &[Token], governed: usize) -> Option<DecisionWord> {
+    let words: Vec<&str> = segment.iter().map(|token| token.text.as_str()).collect();
+    let program = program_name(words.get(governed)?);
+
+    // The one place the expansion bit is read. Every clause below reports an
+    // index; this turns an index into a finding.
+    let at = |index: usize, role: &'static str| -> Option<DecisionWord> {
+        let token = segment.get(index)?;
+        token.expansion.then(|| DecisionWord {
+            index,
+            word: token.text.clone(),
+            role,
+        })
+    };
+
+    let rest_start = governed + 1;
+    let rest: Vec<&str> = words.get(rest_start..).unwrap_or_default().to_vec();
+
+    match program {
+        "git" => {
+            // The verb, at the absolute index `classify_git` slices to. The
+            // refusal `scan_leading` may also have earned is not consulted here:
+            // this function answers about readability, and `classify_git` still
+            // runs afterwards.
+            let (verb_index, _) = scan_leading(&rest);
+            if let Some(found) = at(rest_start + verb_index, "the git verb") {
+                return Some(found);
+            }
+
+            // `config`'s key operand — the one other word a git classifier arm
+            // decides on that this plan closes. `classify_config` reaches
+            // `is_hooks_path_key` on it and answers `Allow` when it cannot read
+            // it, so `git config $K /tmp/x` disarms layer 3 exactly as
+            // `git config core.hooksPath /tmp/x` would.
+            if rest.get(verb_index).copied() == Some("config") {
+                let config_rest = &rest[verb_index + 1..];
+                if let Some(key_index) = config_key_operand_index(config_rest) {
+                    let absolute = rest_start + verb_index + 1 + key_index;
+                    if let Some(found) = at(absolute, "the `git config` key operand") {
+                        return Some(found);
+                    }
+                }
+            }
+        }
+
+        "gh" | "glab" => {
+            // The first TWO subcommand words, because `pr_command_label` matches
+            // on two. A ONE-word region leaves `P=create; gh pr $P --title x`
+            // matching no arm — neither refused nor counted, which is the
+            // SAFE-06 cap BYPASSED rather than exceeded, and the cap has no
+            // second carrier (`T-19-35`).
+            let subcommands = subcommand_word_indices(&rest);
+            for index in subcommands.iter().take(2) {
+                if let Some(found) = at(rest_start + index, "a forge subcommand word") {
+                    return Some(found);
+                }
+            }
+
+            // The `api` arm reads three more kinds of word, and it reads them
+            // through its OWN scan. See `scan_gh_api`'s doc for why taking the
+            // endpoint from `subcommand_word_indices` instead loses it entirely.
+            let is_api = program == "gh"
+                && subcommands
+                    .first()
+                    .is_some_and(|index| rest[*index] == "api");
+            if is_api {
+                let scan = scan_gh_api(&rest);
+                if let Some(endpoint) = scan.endpoint {
+                    if let Some(found) = at(rest_start + endpoint, "the `gh api` endpoint") {
+                        return Some(found);
+                    }
+                }
+                if let Some(method) = scan.method_word {
+                    if let Some(found) = at(rest_start + method, "the `gh api` method") {
+                        return Some(found);
+                    }
+                }
+                for (offset, word) in rest.iter().enumerate() {
+                    if api_flag_ness_is_unreadable(word) {
+                        if let Some(found) =
+                            at(rest_start + offset, "a `gh api` word whose flag-ness decides")
+                        {
+                            return Some(found);
+                        }
+                    }
+                }
+            }
+        }
+
+        _ => {}
+    }
+
+    None
 }
 
 /// The forge and the recorded shape of a pull-request creation, or `None`.
@@ -1781,13 +2141,24 @@ pub fn classify_pr_command(argv: &[&str]) -> bool {
 /// counted, which is the under-counting direction the cap exists to prevent.
 const FORGE_VALUE_OPTS: &[&str] = &["-R", "--repo", "--hostname"];
 
-/// The non-flag words of a subcommand chain, in order.
+/// The INDICES into `rest` of the non-flag words of a subcommand chain, in
+/// order.
+///
+/// **The index primitive, and [`subcommand_words`] is defined over it.** The
+/// decision region [`expansion_in_decision_region`] computes has to name the
+/// words `pr_command_label` matches its arms on, at the positions they occupy in
+/// the segment — and the only way to be sure it names the same words is to take
+/// them from the same walk. A second copy of this loop would be a second thing
+/// to keep in step, and the day they drift is the day the rule guards a
+/// different word than the one the classifier reads. That is exactly what had
+/// already happened between this scan and [`scan_gh_api`]; see
+/// [`scan_gh_api`]'s doc.
 ///
 /// Flags are skipped rather than terminating the scan, because `gh --repo o/r pr
 /// create` is a legal invocation and a scan that stopped at the first `-` would
 /// miss it.
-fn subcommand_words<'a>(rest: &[&'a str]) -> Vec<&'a str> {
-    let mut words = Vec::new();
+fn subcommand_word_indices(rest: &[&str]) -> Vec<usize> {
+    let mut indices = Vec::new();
     let mut index = 0;
 
     while index < rest.len() {
@@ -1797,12 +2168,20 @@ fn subcommand_words<'a>(rest: &[&'a str]) -> Vec<&'a str> {
             continue;
         }
         if !word.starts_with('-') {
-            words.push(word);
+            indices.push(index);
         }
         index += 1;
     }
 
-    words
+    indices
+}
+
+/// The non-flag words of a subcommand chain, in order.
+fn subcommand_words<'a>(rest: &[&'a str]) -> Vec<&'a str> {
+    subcommand_word_indices(rest)
+        .into_iter()
+        .map(|index| rest[index])
+        .collect()
 }
 
 /// Long and short flags of `gh api` that take a **separate** following value.
@@ -1833,10 +2212,56 @@ const GH_API_VALUE_OPTS: &[&str] = &[
 /// request and never spells `POST`.
 const GH_API_IMPLIES_POST: &[&str] = &["-f", "--raw-field", "-F", "--field", "--input"];
 
-fn gh_api_posts_a_pull_request(rest: &[&str]) -> bool {
-    let mut method: Option<String> = None;
-    let mut implies_post = false;
-    let mut path: Option<&str> = None;
+/// One walk of a `gh api` argv, reported by index.
+struct GhApiScan {
+    /// The index into `rest` of the ENDPOINT this arm takes, if it found one.
+    endpoint: Option<usize>,
+    /// The index into `rest` of the word carrying the HTTP method — the VALUE
+    /// word of a separate `-X`/`--method`, or the `-X=…` token itself.
+    method_word: Option<usize>,
+    /// The method, upper-cased.
+    method: Option<String>,
+    /// Whether a member of [`GH_API_IMPLIES_POST`] is present.
+    implies_post: bool,
+}
+
+/// The single walk of a `gh api` argv, over which both
+/// [`gh_api_posts_a_pull_request`] and the `api` half of
+/// [`expansion_in_decision_region`] are defined.
+///
+/// **This primitive is not symmetry with [`subcommand_word_indices`], it is a
+/// MEASURED hole, and the reason is recorded here rather than left to be
+/// inferred.** The two forge scans DISAGREE about which words are flags:
+/// [`subcommand_word_indices`] skips only [`FORGE_VALUE_OPTS`] (`-R`, `--repo`,
+/// `--hostname`), while this one skips all of [`GH_API_VALUE_OPTS`] (`-f`,
+/// `-F`, `--field`, `-H`, `--header`, `-q`, `-t`, `--input`, …). Any of those
+/// option VALUES is therefore an ordinary non-flag word to the first scan and
+/// displaces the endpoint past the first two subcommand words:
+///
+/// ```text
+/// E=pulls; gh api -f title=x repos/o/r/$E
+///   subcommand_words -> ["api", "title=x", "repos/o/r/$E"]
+/// ```
+///
+/// An endpoint taken from `subcommand_words`' first two words would then be in
+/// NO part of the decision region — the token is not one of the first two, it is
+/// not the method value, it does not begin with `-`, and it does not begin with
+/// an expansion marker. Meanwhile this scan skips the whole `-f` pair, sets
+/// `implies_post`, takes `path = repos/o/r/$E`, and [`endpoint_is_pulls`]
+/// compares `$E` against `"pulls"` — so the label is `None` and a pull request
+/// opens with no refusal, no ledger line and no cap charge.
+///
+/// **A region computed by a second scan is the defect this whole round is
+/// about.** It has sat one slot over four times now — the wrapper operand, the
+/// governed program's own operand, the verb slot, and here. Every index in the
+/// region is reported by the scan whose answer it guards.
+fn scan_gh_api(rest: &[&str]) -> GhApiScan {
+    let mut scan = GhApiScan {
+        endpoint: None,
+        method_word: None,
+        method: None,
+        implies_post: false,
+    };
     let mut index = 0;
     // `api` itself is the first non-flag word; the endpoint is the second.
     let mut seen_api = false;
@@ -1846,17 +2271,21 @@ fn gh_api_posts_a_pull_request(rest: &[&str]) -> bool {
 
         if let Some((name, value)) = token.split_once('=') {
             if name == "-X" || name == "--method" {
-                method = Some(value.to_ascii_uppercase());
+                scan.method = Some(value.to_ascii_uppercase());
+                // The `=`-attached spelling carries the method in the option
+                // token itself, so the decision word is that token.
+                scan.method_word = Some(index);
                 index += 1;
                 continue;
             }
         }
         if GH_API_IMPLIES_POST.contains(&token) {
-            implies_post = true;
+            scan.implies_post = true;
         }
         if GH_API_VALUE_OPTS.contains(&token) {
             if token == "-X" || token == "--method" {
-                method = rest.get(index + 1).map(|m| m.to_ascii_uppercase());
+                scan.method = rest.get(index + 1).map(|m| m.to_ascii_uppercase());
+                scan.method_word = rest.get(index + 1).map(|_| index + 1);
             }
             index += 2;
             continue;
@@ -1867,18 +2296,24 @@ fn gh_api_posts_a_pull_request(rest: &[&str]) -> bool {
         }
         if !seen_api {
             seen_api = true;
-        } else if path.is_none() {
-            path = Some(token);
+        } else if scan.endpoint.is_none() {
+            scan.endpoint = Some(index);
         }
         index += 1;
     }
 
-    let posts = match method.as_deref() {
+    scan
+}
+
+fn gh_api_posts_a_pull_request(rest: &[&str]) -> bool {
+    let scan = scan_gh_api(rest);
+
+    let posts = match scan.method.as_deref() {
         Some(explicit) => explicit == "POST",
-        None => implies_post,
+        None => scan.implies_post,
     };
 
-    posts && path.is_some_and(endpoint_is_pulls)
+    posts && scan.endpoint.is_some_and(|index| endpoint_is_pulls(rest[index]))
 }
 
 /// Whether an endpoint names the pull-request collection.

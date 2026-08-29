@@ -1045,6 +1045,41 @@ fn classify_segments(
             // begins at — so `env git push --force` is classified on exactly
             // the argv `git push --force` would produce.
             policy::ProgramResolution::Governed { index } => {
+                // **The seam line 960 opened, closed at the decision boundary.**
+                //
+                // The collapse to `text` above stays exactly where it is: both
+                // classifiers are pure argv functions and must remain so, or
+                // every unit test that drives them from `&[&str]` stops being
+                // able to. What that collapse discards is `Token.expansion`, and
+                // the words it discards it for are the ones each classifier's
+                // matched arm DECIDES ON — the git verb, `config`'s key operand,
+                // a forge's first two subcommand words, the `gh api` endpoint,
+                // its method and its flag-ness words. So the bit is consulted
+                // here instead: ONCE, on the segment this function already
+                // holds, at the point where the program family is known.
+                //
+                // **Placing it before the `match` is load-bearing in two ways.**
+                // It runs before both classifiers, so a decision word that
+                // cannot be read is never handed to a classifier that would
+                // answer from its denylist's default arm. And it runs before the
+                // ledger write, so an argv the guard refuses never consumes PR
+                // cap budget — `pr_command_label` matching no arm is exactly how
+                // SAFE-06 came to be bypassed rather than exceeded.
+                if let Some(found) = policy::expansion_in_decision_region(segment, index) {
+                    return Ok(Some((
+                        ParkReason::EnvelopeAssertionFailed,
+                        format!(
+                            "gsd-meta-manager envelope: REFUSED (reason: {}) — `{}` is {} \
+                             for this command, and it is assembled by shell expansion, so \
+                             what this command asks for is not knowable before it runs; \
+                             refused rather than guessed at",
+                            policy::REASON_ENVELOPE_ASSERTION_FAILED,
+                            found.word,
+                            found.role
+                        ),
+                    )));
+                }
+
                 match policy::program_name(words[index]) {
                     "git" => {
                         let rest: Vec<&str> = words[index + 1..].to_vec();
@@ -1913,8 +1948,24 @@ mod tests {
         );
     }
 
+    /// **Renamed, not rewritten and not deleted — and the rename IS the
+    /// repair.** This test used to be called
+    /// `a_verb_assembled_by_expansion_and_an_eval_are_both_denied`. It exercises
+    /// `$TOOL push --force`, which is an expansion-assembled **PROGRAM** — the
+    /// HEAD, `resolve_program` step 3 — and not a verb at all. Its assertions
+    /// were always correct and it is the only pin on step 3 through the guard,
+    /// so deleting it to repair a naming defect would have traded evidence for
+    /// tidiness.
+    ///
+    /// Audit 3 found the overclaim while asking what the round-3 controls could
+    /// not fail on. **A name is part of a control's claim**: a later reader
+    /// grepping for the verb-slot class would have found this test, read its
+    /// name, and concluded the class was pinned — which is how `T-19-88` stayed
+    /// unmeasured through two rounds. The class the old name claimed is covered
+    /// by `a_decision_word_assembled_by_expansion_is_denied_on_the_git_verb_and_both_forge_slots`
+    /// below.
     #[test]
-    fn a_verb_assembled_by_expansion_and_an_eval_are_both_denied() {
+    fn a_program_assembled_by_expansion_and_an_eval_are_both_denied() {
         let tmp = tempfile::TempDir::new().unwrap();
         let expanded = ask(tmp.path(), "$TOOL push --force");
         assert!(expanded.denied(), "{}", expanded.stdout);
@@ -1923,6 +1974,53 @@ mod tests {
         let evaluated = ask(tmp.path(), "eval \"git push --force\"");
         assert!(evaluated.denied(), "{}", evaluated.stdout);
         assert!(evaluated.reason().contains("eval"), "{}", evaluated.reason());
+    }
+
+    /// The class the renamed test's old name claimed, now actually reached:
+    /// the program is spelled LITERALLY and resolution is correct, and it is the
+    /// word one slot to the right — the one the classifier decides on — that the
+    /// shell assembles.
+    #[test]
+    fn a_decision_word_assembled_by_expansion_is_denied_on_the_git_verb_and_both_forge_slots() {
+        // The git verb. `classify_git` reads `$V`, finds it absent from the
+        // denylist, and answers `Allow` from the default arm.
+        let git = tempfile::TempDir::new().unwrap();
+        let verb = ask(git.path(), "V=push; git $V --force origin main");
+        assert!(verb.denied(), "{}", verb.stdout);
+        assert!(
+            verb.reason()
+                .contains(policy::REASON_ENVELOPE_ASSERTION_FAILED),
+            "{}",
+            verb.reason()
+        );
+
+        // The forge's FIRST subcommand word. `pr_command_label` matches no arm,
+        // so the creation is never counted: SAFE-06 bypassed rather than
+        // exceeded. A root of its own, because a permitted forge command writes
+        // a ledger line.
+        let first = tempfile::TempDir::new().unwrap();
+        let word_one = ask(first.path(), "P=pr; gh $P create --title x");
+        assert!(word_one.denied(), "{}", word_one.stdout);
+        assert!(
+            word_one
+                .reason()
+                .contains(policy::REASON_ENVELOPE_ASSERTION_FAILED),
+            "{}",
+            word_one.reason()
+        );
+
+        // The forge's SECOND subcommand word — the cell a one-word decision
+        // region would leave open, because `pr_command_label` matches on TWO.
+        let second = tempfile::TempDir::new().unwrap();
+        let word_two = ask(second.path(), "P=create; gh pr $P --title x");
+        assert!(word_two.denied(), "{}", word_two.stdout);
+        assert!(
+            word_two
+                .reason()
+                .contains(policy::REASON_ENVELOPE_ASSERTION_FAILED),
+            "{}",
+            word_two.reason()
+        );
     }
 
     #[test]

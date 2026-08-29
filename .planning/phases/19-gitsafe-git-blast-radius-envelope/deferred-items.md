@@ -215,3 +215,72 @@ verdict in
 
 **Suggested owner.** The same round-4 plan as `T-19-86`. Both are splitter/classifier
 questions rather than resolver questions.
+
+## `T-19-91` — a git classifier's own decision operand, assembled by expansion (registered by 19-14)
+
+**Symptom.** A git verb's own decision operand, assembled by shell expansion, is handed to a
+classifier that cannot read it and falls to an `Allow` arm. Measured against `c595141`, one
+fresh tempdir per row, driven in-process through `hooks::guard_in`:
+
+```
+exit=0  git reflog $S            <- PERMITTED
+exit=0  git reflog show $S       <- PERMITTED
+exit=0  git symbolic-ref $S      <- PERMITTED
+```
+
+and the two spellings of the same question that already fail CLOSED, measured and pinned
+beside them so the residual's width is honest rather than assumed:
+
+```
+exit=2  git symbolic-ref HEAD $R    [force_push_blocked]      <- two operands is a write whatever they say
+exit=2  git push origin $REF        [push_outside_namespace]  <- an unreadable refspec carries no namespace prefix
+exit=2  git push $REF               [push_outside_namespace]  <- refused, but repository-dependent (see below)
+```
+
+**Mechanism.** `classify_reflog` looks for the first non-flag token and matches it against
+`delete`, `expire` and `drop`; `classify_symbolic_ref` counts operands and looks for
+`-d`/`--delete`. Handed `$S`, neither test matches, and both answer `Allow`. So
+`S=delete; git reflog $S` destroys the reflog and `S=-d; git symbolic-ref $S` deletes the
+ref. This is structurally identical to the `config` cell that 19-14 DID close —
+`classify_config` reaching `is_hooks_path_key` on an operand it cannot read.
+
+**Why 19-14 closed `config` and not these: round discipline and provenance.**
+`git ${X}config core.hooksPath /tmp/x` is a row in **audit 3's own measured bypass list**,
+so closing that cell is part of making 19-14's decision-region principle coherent over rows
+the audit had already established. These three were found while *checking* plan 19-14, and a
+plan cannot both discover a threat and be the plan that measured it fail first — the
+corpus-vacuity failure this phase has now recorded three times.
+
+**This is NOT a second-carrier argument, and the distinction is the whole point of writing
+it down.** `reflog` and `symbolic-ref` are LISTED verbs that reach their own classifiers and
+fall to an `Allow` arm on an unreadable operand. Neither has a `pre-push` and neither has a
+`pre-commit` behind it — git runs no hook for either — and `classify_reflog`'s own refusal
+text records that the reflog is *the recovery path for every other destructive git
+operation*. **Only `git push` has a hook behind it**, and its refspec operand already fails
+closed. A later reader who took the asymmetry for a blast-radius judgement would read a
+narrowed threat as a covered one, which is exactly what this paragraph exists to prevent.
+
+**On `git push $REF`.** It is refused today, but by the no-refspec path: with a single
+operand `classify_push` falls to `ctx.resolved_push_dests`, which is the ONE shape
+`policy::push_needs_resolved_dests` answers `true` for and which makes the guard shell out to
+`git` in the caller's working directory. Its verdict therefore depends on the repository the
+test happens to run in (`T-19-80`), so it is recorded here rather than pinned as a live row;
+the repository-free half of the same question is the `git push origin $REF` row.
+
+**Pinned at its measured verdicts** in
+`tests/envelope_expansion_slots.rs::the_t_19_91_residual_is_measured_and_pinned_rather_than_closed`,
+and disclosed in `resolve_program`'s own doc as its fourth residual bullet beside `T-19-74`,
+`T-19-75` and `T-19-86`. A future change that closes it must delete those rows deliberately
+rather than discover them failing.
+
+**Fix direction (not prescriptive).** Extending `expansion_in_decision_region`'s git arm to
+report each classifier's own decision-operand index — the way it already reports
+`classify_config`'s via `config_key_operand_index` — closes all three with the same
+primitive-per-scan discipline and no new denylist entry. It needs one index primitive per
+classifier arm, which is mechanical but is a per-verb notion of which operand decides.
+
+**Consequence.** `/gsd-secure-phase 19` is **not cleared by 19-14 or by 19-15.** `T-19-86`
+remains open at `high` by user scoping decision, and this is a second `high` alongside it.
+
+**Suggested owner.** The same round-5 gap-closure plan as `T-19-86`, before
+`/gsd-secure-phase 19` is re-run.
