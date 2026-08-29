@@ -307,3 +307,198 @@ remains open at `high` by user scoping decision, and this is a second `high` alo
 
 **Suggested owner.** The same round-5 gap-closure plan as `T-19-86`, before
 `/gsd-secure-phase 19` is re-run.
+
+
+---
+
+## Audit 4 (2026-08-29, at `b72237e`) — a correction to `T-19-91` above, and four new items
+
+Everything below this line was measured by **audit 4** — `/gsd-secure-phase 19`
+re-run after plans 19-14 and 19-15 — against the built binary, one fresh
+`GSD_MM_ENVELOPE_ROOT` per row, envelope directory walked afterwards so a missing
+ledger line is observed rather than inferred, and every claimed bypass re-run
+under `bash` against argv-printing `git`/`gh`/`glab` shims. The full write-up is
+in `19-SECURITY.md`; this file carries the actionable residue.
+
+### Correction — `T-19-91`'s `git push $REF` row is wrong as written
+
+The row above records `exit=2  git push $REF  [push_outside_namespace]  <- refused,
+but repository-dependent`, and `resolve_program`'s fourth residual bullet argues
+from it that "its refspec operand already fails CLOSED".
+
+**Measured, the repository-dependence goes both ways.** Outside any repository
+and inside this one, `git push $REF` is exit 2. **Inside a repository whose
+current branch is inside the envelope's namespace** — a branch under
+`refs/heads/gsd-auto/alpha/`, which is the state a driven run is designed to be
+in — it is **exit 0**. Measured in a purpose-built fixture repo on
+`gsd-auto/alpha/work` with an upstream configured.
+
+Not pinning it was the RIGHT call (`T-19-80`); recording it as "already fails
+closed" was not. `classify_push`'s refspec operand is a **third** arm of
+`T-19-91`'s shape that answers `Allow` on an operand it cannot read, alongside
+`classify_reflog` and `classify_symbolic_ref`. The threat stays `T-19-91` at
+`high` — same component, same mechanism, measured more completely — and the
+second-carrier asymmetry the registration draws is still correct, because `push`
+does have `pre-push` behind it while `reflog` and `symbolic-ref` have nothing.
+
+`src/envelope/policy.rs:1735-1742` is narrower and correct (it claims only that
+`git push origin $REF` is refused, which audit 4 re-measured at exit 2). The
+`19-SECURITY.md` row, `19-14-SUMMARY.md` and `19-15-SUMMARY.md` all state the
+stronger and false claim. Correct disposition: **cwd-dependent, and permitted in
+the in-namespace configuration.**
+
+### `T-19-92` (high, OPEN — BLOCKING) — a `{` that opens a brace EXPANSION is read as a brace GROUP
+
+**Symptom.** Measured at `b72237e`, fresh root per row, walk after:
+
+```
+exit=0  git {-c,core.hooksPath=/dev/null,push,--force,origin,main}   <- ALL THREE LAYERS
+exit=0  git {push,--force} origin main
+exit=0  git {update-ref,-d,refs/heads/main}                          <- no second carrier
+exit=0  git {config,core.hooksPath,/tmp/x}
+exit=0  gh {pr,create} --title x                    (walk: no ledger line)
+exit=0  gh {api,repos/o/r/pulls} -f title=x         (walk: no ledger line)
+exit=0  glab {mr,create} --title x
+exit=0  bash -lc "git {push,--force} origin main"   <- through the nested-payload path
+```
+
+Confirmed under `bash` against the shims — the first prints
+`ARGV: -c core.hooksPath=/dev/null push --force origin main`.
+
+**Mechanism.** `tokenize` marks a separator as a word-splitting flush only when a
+word was in progress **immediately before** the character, and
+`Segment::head_is_command_position` acts on **closers** only. Bash's grammar has a
+second condition the flag does not encode: `{` is the reserved word opening a
+group only at a **command position**; inside a simple command it opens a brace
+**expansion** whose contents bash splices back into that same command. So
+`git {push,--force} origin main` is split into `git`, `push,--force` and
+`origin main`; the first segment resolves `Governed` with an EMPTY argv,
+`classify_git` returns `Allow` for a bare `git`, and the guard permits.
+
+**Why high.** Three legs, each measured rather than argued. Layer 1 — the line
+begins `git {-c,…`, no `Bash(git push:*)` prefix match. Layer 2 — exit 0 above.
+Layer 3 — re-measured on this machine,
+`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/ENV_WINS git {-c,core.hooksPath=/CLI_WINS,config,--get,core.hooksPath}`
+prints `/CLI_WINS`, so command-line `-c` outranks the envelope's env-injected
+`core.hooksPath` and no `pre-push` hook runs. Credentials survive, so the push
+authenticates. Two further rows have **no second carrier at all**:
+`git update-ref` and the SAFE-06 PR cap, which is bypassed UNCOUNTED rather than
+exceeded.
+
+**Same component as `T-19-87`** (`tokenize` treating `{ } ( )` as `SEPARATORS`) —
+the direction Rule B did not take. Rule B's doc argues the opener is safe because
+"after `{` is the parameter expansion's variable name"; true for `${`, false for
+a ` {` opening a brace expansion.
+
+**Fix direction (not prescriptive).** Discriminate group from expansion by
+whether the current segment is empty when `{` arrives — bash's own rule — and
+treat a splice back into an enclosing simple command as making that whole command
+unresolvable rather than as N independent segments. **Do NOT delete the characters
+from `SEPARATORS`**: `{ cmd; }` and `( cmd )` are real grouping syntax and losing
+them re-opens the `echo hi && git push --force` class one level in. The paired
+cost must be pinned from both sides, as Rule B's was: `{ git status; }` and
+`( git status )` must keep reaching their ungrouped verdicts, and their
+force-push spellings must keep reaching `force_push_blocked` under the base's own
+identifier.
+
+### `T-19-93` (high, OPEN — BLOCKING) — `gh`'s own `{owner}`/`{repo}` placeholders are uncounted by the PR cap
+
+**Symptom.**
+
+```
+exit=0  gh api repos/{owner}/{repo}/pulls -f title=x       (walk: NO ledger line)
+exit=0  gh api "repos/{owner}/{repo}/pulls" -f title=x     (walk: ledger line present)
+```
+
+**Mechanism.** `gh api` documents `{owner}`, `{repo}` and `{branch}` as
+placeholders substituted from the repository of the current directory — it is the
+idiomatic spelling in `gh`'s own manual. Because `{` and `}` are `SEPARATORS`, the
+unquoted endpoint is fragmented before either forge scan sees it,
+`pr_command_label` matches no arm, and the creation is never counted. Bash
+confirms the braces are literal (no comma, so no brace expansion);
+`gh` is what substitutes them.
+
+**Why high.** This is not an evasion — it is the documented spelling, so the cap
+under-counts by accident for an honest agent and can be under-counted
+deliberately by a hostile one. The cap has **no second carrier**
+(`hooks.rs:1263-1270`, `T-19-35`). Rated on the standard this phase already used
+twice: SAFE-06 bypassed rather than exceeded.
+
+**Fix direction.** Either teach the forge scans the placeholders so
+`repos/{owner}/{repo}/pulls` reaches `endpoint_is_pulls` intact, or stop the
+tokenizer fragmenting a brace pair containing no comma. **The bar is "count", not
+"refuse"** — an uncounted pull request is the failure mode — so the fix must be
+verified by WALKING the envelope root and finding a ledger line, not by an exit
+code.
+
+### `T-19-94` (medium, open — below `high`) — pathname (glob) expansion in a decision slot
+
+**Symptom**, with a matching file in the working directory:
+
+```
+exit=0  git pus? --force origin main
+exit=0  git ?ush --force origin main
+exit=0  git stas?                                  <- no second carrier
+exit=0  gh p? create --title x
+exit=0  touch push && git pus? --force origin main <- precondition met in ONE tool call
+```
+
+Confirmed under the shims: with `push` present, `git pus? --force origin main`
+prints `ARGV: push --force origin main`.
+
+**Mechanism.** Rule A recognises shell assembly by ONE bit, and `tokenize` sets
+`Token.expansion` only for an unquoted `$` or backtick. Pathname expansion sets
+nothing. `touch push` is `Ungoverned` and the two segments are judged
+independently, so the precondition is satisfiable inside a single tool call.
+
+**Medium rather than high on the precondition alone** — it needs a matching
+filename where `T-19-92` needs nothing. Same root cause; a fix for either should
+be written so it covers both.
+
+**Fix direction.** Treat an unquoted glob metacharacter in a decision word exactly
+as `Token.expansion` is treated. The cost is bounded and should be measured the
+way Rule A's was: an operand carrying a glob (`git add src/*.rs`,
+`rg "x" src/*`) must keep working, because only the decision region is in scope.
+
+### `T-19-95` (medium, open — below `high`) — the alphabets cannot draw a `{a,b}` or a glob
+
+`EXPANSION_METACHARACTERS` (`tests/envelope_wrapper_class.rs:1717`) is exactly
+`['$', '`', '{', '(']`. Verified by reading every entry of `ASSIGNMENT_PREFIXES`,
+`WRAPPERS`, `REFUSED_BASES`, `DECOY_OPERANDS`, `EXPANSION_WRAPPERS`,
+`SHELL_LAYERS` and `SEVERED_PREFIXES`, and by grepping the file: **not one entry
+anywhere contains a comma inside braces, and not one contains a `*`, a `?` or a
+`[`.** Every entry satisfying the floor does so through an expansion MARKER.
+
+The corpus is therefore structurally incapable of generating, and so of failing
+on, `T-19-92` and `T-19-94`. This is `T-19-76`'s failure mode for the **fourth
+consecutive round** (after `T-19-83` and `T-19-89`), and it is the reason the
+closure order below puts the corpus first.
+
+### Closure order for round 5 — the corpus FIRST
+
+1. **`T-19-95`** — extend `EXPANSION_METACHARACTERS` beyond the four expansion
+   markers to the characters that make a word unreadable (at minimum a comma
+   inside braces, and `*`, `?`, `[`), add entries carrying them to every alphabet,
+   and assert the corpus generates them with the `MIN_*`-floor pattern already in
+   the file. **Before certifying anything below.** Three rounds running, the gap
+   has been the cell one slot over from what the corpus could draw, and each time
+   it was the NEXT audit that found it rather than the round's own evidence.
+2. **`T-19-92`** — the brace-expansion / brace-group discrimination.
+3. **`T-19-93`** — the `gh` placeholder endpoint, verified by a ledger line.
+4. **`T-19-94`** — glob metacharacters in a decision word.
+
+Then, separately: correct the `T-19-91` `git push $REF` row wherever it appears,
+and make `resolve_program_with_head`'s post-filter **exhaustive**. That filter is
+currently `Governed | NestedPayload => Refuse, other => other` — a wildcard, so a
+future `ProgramResolution` variant meaning "reaches a governed program" would
+compile, pass a severed head silently, and turn no test red. Rule B is the newest
+control in the file and this is the one place it can be defeated by an addition
+rather than a deletion. Same discipline `T-19-45` already establishes for
+`PermissionMode`: one arm per variant, so a new variant is an E0004 rather than a
+quiet permit.
+
+**Consequence.** `/gsd-secure-phase 19` is **not cleared**. Four threats are open
+at `high`: `T-19-86`, `T-19-91`, `T-19-92`, `T-19-93`.
+
+**Suggested owner.** The round-5 gap-closure plan, together with `T-19-86` and
+`T-19-91`.
