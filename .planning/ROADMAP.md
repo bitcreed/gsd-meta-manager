@@ -364,7 +364,7 @@ Plans:
   - `git stash` must be forbidden in the driver's allowlist outright
 
 **Research**: skip — branch-protection and pre-push-hook patterns are well-established practice (GitHub Copilot's `copilot/`-prefix model is a direct precedent)
-**Plans**: 8/8 executed, plus 2 UAT gap-closure plans (19-09, 19-10) and 5 security gap-closure plans (19-11, 19-12, 19-13, 19-14, 19-15) across three audit rounds
+**Plans**: 8/8 executed, plus 2 UAT gap-closure plans (19-09, 19-10) and 7 security gap-closure plans (19-11, 19-12, 19-13, 19-14, 19-15, 19-16, 19-17) across four audit rounds
 
 Plans:
 
@@ -373,6 +373,8 @@ Plans:
 - [x] 19-14-PLAN-CHECK.md
 - [x] 19-14-PLAN.md
 - [x] 19-15-PLAN.md
+- [ ] 19-16-PLAN.md
+- [ ] 19-17-PLAN.md
 
 **Wave 1**
 
@@ -423,7 +425,12 @@ Plans:
 **Wave 12** *(gap closure from audit 3 of `/gsd-secure-phase 19`, 2026-08-29 — three findings, one root cause; split into Rule A and Rule B so each is shown separately load-bearing, 19-15 blocked on 19-14)*
 
 - [x] 19-14-PLAN.md — Rule A. T-19-88 and T-19-90, plus six of T-19-87's eight rows: `Token.expansion` is unavailable to `classify_git` and `pr_command_label`, so the words every classifier decision turns on are exempt from every expansion rule. Closed by governing the DECISION REGION — exactly the words each matched arm reads: the git verb plus `config`'s key operand, the forge's first TWO subcommand words plus the `api` method, endpoint and both flag-ness spellings — with operands left free so commit messages and PR titles carrying `$` keep working. Delivers the Rule A half of the corpus widening with a fresh-root forge-slot property, registers T-19-91, and **ends with two severed-prefix rows deliberately RED** for 19-15
-- [ ] 19-15-PLAN.md — Rule B. T-19-87's remaining two rows and T-19-89: a segment whose immediately preceding operator is a word-splitting CLOSER continues an enclosing word, so its first token is not a command position and a governed program found there is refused. POSITIONAL — reads no name, no substring and no length; `SEPARATORS` unchanged, the flush flag set for `( ) { }` only, the opener excluded so command substitutions keep being classified. Confirms 19-14's carry-forward rows still red before fixing them, completes the alphabets, corrects the false T-19-87 pin by deleting it and re-homing its rows
+- [x] 19-15-PLAN.md — Rule B. T-19-87's remaining two rows and T-19-89: a segment whose immediately preceding operator is a word-splitting CLOSER continues an enclosing word, so its first token is not a command position and a governed program found there is refused. POSITIONAL — reads no name, no substring and no length; `SEPARATORS` unchanged, the flush flag set for `( ) { }` only, the opener excluded so command substitutions keep being classified. Confirms 19-14's carry-forward rows still red before fixing them, completes the alphabets, corrects the false T-19-87 pin by deleting it and re-homing its rows
+
+**Wave 13** *(gap closure from audit 4 of `/gsd-secure-phase 19`, 2026-08-29 — four findings; the rule is INVERTED rather than extended, and the corpus is widened FIRST so the round cannot be the fifth certified by alphabets that could not fail on its class; 19-17 blocked on 19-16)*
+
+- [ ] 19-16-PLAN.md — The corpus, first, and RED. T-19-95: `EXPANSION_METACHARACTERS` is exactly `['$', '`', '{', '(']` and no entry of any alphabet contains a `{a,b}`, a `*`, a `?` or a `[`, so four rounds running the corpus could not fail on the class the next audit walked through. Widens seven alphabets across the four classes that make a word UNREADABLE — brace expansion, LITERAL brace pair, pathname expansion, tilde — split by whether each alphabet's property asserts refusal or invariance, with per-alphabet AND per-class floors. Writes audit 4's T-19-92 / T-19-93 / T-19-94 reproducers and five cells found while planning as a fourth evidence file, each measured against the built binary and confirmed under bash shims BEFORE being asserted, with T-19-93's rows written as COUNTED (a ledger line plus a second creation under `pr_cap_exceeded`) rather than refused. **Zero `src/` hunks; ends deliberately RED**, and reports a finding instead of proceeding if any axis is green
+- [ ] 19-17-PLAN.md — The rule, INVERTED. A governed segment's DECISION WORDS must be LITERAL — the shell hands the word to the program byte-identically to how it is written — established by positive evidence gathered by `tokenize` as the word is consumed, so brace expansion, pathname expansion, tilde expansion and `$IFS` re-splitting close in one rule. The region does not move and operands stay free. `{` gets bash's own three-way classification (parameter expansion / reserved word / brace pair), with `SEPARATORS` unchanged and the parameter-expansion case preserved so Rule B stays load-bearing; a comma-free brace pair is absorbed as one word, which is what makes `gh api repos/{owner}/{repo}/pulls` COUNTED without touching either forge scan. Clause 2 refuses a brace-spliced simple command on both halves, folded into a post-filter made EXHAUSTIVE. Corrects the T-19-91 `git push $REF` record without closing it. **T-19-86, T-19-91 and T-19-96 stay open at `high` — `/gsd-secure-phase 19` is NOT cleared**
 
 **UI hint**: no — this phase ships no visual surface. It delivers a policy module, two git hook
 stubs, a `PreToolUse` guard, an environment envelope and a secret scanner. The one user-visible
