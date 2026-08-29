@@ -372,7 +372,7 @@ Plans:
 - [x] 19-13-PLAN.md
 - [x] 19-14-PLAN-CHECK.md
 - [x] 19-14-PLAN.md
-- [ ] 19-15-PLAN.md
+- [x] 19-15-PLAN.md
 
 **Wave 1**
 
@@ -422,7 +422,7 @@ Plans:
 
 **Wave 12** *(gap closure from audit 3 of `/gsd-secure-phase 19`, 2026-08-29 — three findings, one root cause; split into Rule A and Rule B so each is shown separately load-bearing, 19-15 blocked on 19-14)*
 
-- [ ] 19-14-PLAN.md — Rule A. T-19-88 and T-19-90, plus six of T-19-87's eight rows: `Token.expansion` is unavailable to `classify_git` and `pr_command_label`, so the words every classifier decision turns on are exempt from every expansion rule. Closed by governing the DECISION REGION — exactly the words each matched arm reads: the git verb plus `config`'s key operand, the forge's first TWO subcommand words plus the `api` method, endpoint and both flag-ness spellings — with operands left free so commit messages and PR titles carrying `$` keep working. Delivers the Rule A half of the corpus widening with a fresh-root forge-slot property, registers T-19-91, and **ends with two severed-prefix rows deliberately RED** for 19-15
+- [x] 19-14-PLAN.md — Rule A. T-19-88 and T-19-90, plus six of T-19-87's eight rows: `Token.expansion` is unavailable to `classify_git` and `pr_command_label`, so the words every classifier decision turns on are exempt from every expansion rule. Closed by governing the DECISION REGION — exactly the words each matched arm reads: the git verb plus `config`'s key operand, the forge's first TWO subcommand words plus the `api` method, endpoint and both flag-ness spellings — with operands left free so commit messages and PR titles carrying `$` keep working. Delivers the Rule A half of the corpus widening with a fresh-root forge-slot property, registers T-19-91, and **ends with two severed-prefix rows deliberately RED** for 19-15
 - [ ] 19-15-PLAN.md — Rule B. T-19-87's remaining two rows and T-19-89: a segment whose immediately preceding operator is a word-splitting CLOSER continues an enclosing word, so its first token is not a command position and a governed program found there is refused. POSITIONAL — reads no name, no substring and no length; `SEPARATORS` unchanged, the flush flag set for `( ) { }` only, the opener excluded so command substitutions keep being classified. Confirms 19-14's carry-forward rows still red before fixing them, completes the alphabets, corrects the false T-19-87 pin by deleting it and re-homing its rows
 
 **UI hint**: no — this phase ships no visual surface. It delivers a policy module, two git hook
@@ -690,7 +690,7 @@ Gap closure, round 13 (verification pass 13 scored **98/100 must-haves, 4/5 ROAD
 | 16. Run Journal & State Substrate | 6/6 | Complete    | 2026-07-29 |
 | 17. Supervisor | 8/8 | Complete    | 2026-07-29 |
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
-| 19. GITSAFE — Git & Blast-Radius Envelope | 16/17 | In Progress|  |
+| 19. GITSAFE — Git & Blast-Radius Envelope | 17/17 | In Progress|  |
 | 20. Deterministic Decision Router & Run Bounds | 5/5 | In Progress|  |
 | 21. LLM Goal Layer & Prompt-Injection Hardening | 37/37 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |

@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
-stopped_at: Completed 19-14-PLAN.md (Rule A). Two carry-forward rows RED for 19-15; post-state passed+failed = 1527
-last_updated: "2026-08-29T19:33:34.201Z"
+stopped_at: Completed 19-15-PLAN.md (Rule B); T-19-86 and T-19-91 remain OPEN so /gsd-secure-phase 19 is NOT cleared
+last_updated: "2026-08-29T19:53:09.393Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: 8f4cbe3b907a6f086a454517995f96c3c74abd57
+state_head: af721373c63882153e7cff8b79a112b08de61070
 progress:
   total_phases: 10
   completed_phases: 6
   total_plans: 96
-  completed_plans: 95
+  completed_plans: 96
   percent: 60
 ---
 
@@ -218,6 +218,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 19 P12 | 41 min | 3 tasks | 1 files |
 | Phase 19 P13 | 50m | 3 tasks | 6 files |
 | Phase 19 P14 | 1h | 3 tasks | 6 files |
+| Phase 19 P15 | ~1h | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -257,6 +258,11 @@ Recent decisions affecting current work:
 - [Phase 19]: Rule A: the classifier decision region — every index reported by the scan the classifier itself runs, never a second scan
 - [Phase 19]: T-19-87's two severed-prefix rows left RED on purpose, so Rule A and Rule B are each shown separately load-bearing
 - [Phase 19]: T-19-91 measured, pinned and registered OPEN rather than closed — round discipline, and reflog/symbolic-ref have no second carrier
+- [Phase 19]: Rule B is POSITIONAL — the substring/prefix/suffix/length formulation against ENVELOPE_ENV_KEYS stays withdrawn on two measurements (evadable by moving the split point; refuses every uppercase assignment)
+- [Phase 19]: The word-splitting OPENER is excluded, which is what keeps command substitutions classified and ordinary shell running
+- [Phase 19]: split_segments is DEFINED OVER split_segments_with_heads so a decision region comes from the same scan the classifier runs, never a second scan
+- [Phase 19]: The false T-19-87 test was DELETED with a tombstone rather than re-worded; its two rows re-homed with corrected reason identifiers
+- [Phase 19]: The bare-brace Rule B row is spelled without its binding, because the bound spelling is already refused under hook_bypass_blocked and would be a control that could not fail on its class
 
 ### Pending Todos
 
@@ -315,8 +321,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-08-29T19:33:23.932Z
-Stopped at: Completed 19-14-PLAN.md (Rule A). Two carry-forward rows RED for 19-15; post-state passed+failed = 1527
+Last session: 2026-08-29T19:52:57.544Z
+Stopped at: Completed 19-15-PLAN.md (Rule B); T-19-86 and T-19-91 remain OPEN so /gsd-secure-phase 19 is NOT cleared
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
 Resume file: None
