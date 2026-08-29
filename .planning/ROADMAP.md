@@ -368,12 +368,14 @@ Plans:
 
 Plans:
 
+- [x] 19-16-PLAN-CHECK.md
+
 - [x] 19-13-PLAN-CHECK.md
 - [x] 19-13-PLAN.md
 - [x] 19-14-PLAN-CHECK.md
 - [x] 19-14-PLAN.md
 - [x] 19-15-PLAN.md
-- [ ] 19-16-PLAN.md
+- [x] 19-16-PLAN.md
 - [ ] 19-17-PLAN.md
 
 **Wave 1**
@@ -697,7 +699,7 @@ Gap closure, round 13 (verification pass 13 scored **98/100 must-haves, 4/5 ROAD
 | 16. Run Journal & State Substrate | 6/6 | Complete    | 2026-07-29 |
 | 17. Supervisor | 8/8 | Complete    | 2026-07-29 |
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
-| 19. GITSAFE — Git & Blast-Radius Envelope | 17/17 | In Progress|  |
+| 19. GITSAFE — Git & Blast-Radius Envelope | 19/20 | In Progress|  |
 | 20. Deterministic Decision Router & Run Bounds | 5/5 | In Progress|  |
 | 21. LLM Goal Layer & Prompt-Injection Hardening | 37/37 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |
