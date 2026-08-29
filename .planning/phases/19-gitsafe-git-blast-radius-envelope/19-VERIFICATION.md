@@ -1,135 +1,151 @@
 ---
 phase: 19-gitsafe-git-blast-radius-envelope
-verified: 2026-08-18T23:27:41Z
+verified: 2026-08-29T00:00:00Z
 status: human_needed
-score: 5/5 must-haves verified
+score: 6/7 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
+re_verification:
+  previous_status: human_needed
+  previous_score: 5/5
+  gaps_closed:
+    - "G-19-1: SECTION_ENVELOPE reshaped to one-sentence-then-two-cases-then-conclusion (250 -> 200 whitespace tokens), all seven pinned substrings verbatim, pin test byte-unchanged, every residual disclosure preserved, legibility control observed RED before the rewrite and GREEN after"
+    - "G-19-4: tests/driver_lock.rs shared-alias race closed — six per-test aliases replace the shared ALIAS, a source-scanning gate observed RED against the pre-fix file and GREEN after, an early-dying child is now reported with its exit status and captured stderr instead of a 30s lock timeout"
+  gaps_remaining: []
+  regressions: []
 human_verification:
-  - test: "Read `SECTION_ENVELOPE` (src/envelope/advisory.rs:192-214, rendered by the dry-run preview and the run journal) and confirm it reads as an honest account of the safety ceiling rather than as a hedge or pre-excuse."
-    expected: "The statement should plainly say what IS mechanically guaranteed (no ambient credentials/SSH agent reachable, pre-push hook sees ground truth, PR cap enforced from an out-of-repo ledger), what is NOT (client-side hooks/tool denies/env-injected config are all defeatable by an agent that spawns an unsupervised shell and chooses to; the PR cap specifically has no git-hook second carrier and degrades to unenforced if the settings file is ignored), and conclude with the server-side branch-protection recommendation as the phase's honest conclusion rather than a footnote."
-    why_human: "19-06 coverage D5 and 19-08 coverage D2 both record this as `human_judgment: true` — a test can only assert the three required parts are present and ordered; whether the prose reads as candid rather than as marketing is a reading judgement, and the phase's own transparency prohibitions verify this class of claim by judgment, not by grep."
-  - test: "Confirm the composed-proof judgement calls in 19-08's traceability table are adequate readings of the ROADMAP criteria as literally written — in particular criterion 2's 'and the attempt parks the run' clause (proved once per park reason, not once per force-push spelling) and criterion 5's 'instead of opening another PR' clause (proved at the PreToolUse guard's deny, never by observing a forge, per D-35's fence)."
-    expected: "Each composed clause ([C] rows in 19-08-SUMMARY.md's traceability table for criteria 1, 2, 4 and 5) should read as a faithful decomposition of the criterion sentence, not as a substitution of a weaker claim for the one actually written."
-    why_human: "19-08 coverage D6 records this as `human_judgment: true` explicitly: 'whether a composed proof is an adequate proof of the sentence as written is a reader's judgement.'"
-  - test: "Confirm the residual-exposure paragraphs in `src/envelope/mod.rs`, `src/envelope/cred.rs` and `src/envelope/scan.rs` (the unset-GIT_CONFIG_COUNT escape, the askpass-token-readable-by-the-agent-inside-the-run admission, and the gitleaks Blocked/Failed arms being unexercised on this machine) read as honest disclosures rather than as rationalizations."
-    expected: "Each doc comment states the residual gap plainly, in the same paragraph as the mechanism it qualifies, without softening language."
-    why_human: "19-01 D9, 19-02 D8, 19-03's pre-commit-hook rationale, 19-04 D11, 19-05 D11 and 19-07's D25 items are each recorded `human_judgment: true` for the same reason — this is a systemic, deliberate pattern across the phase, not an isolated item, and it is the exact axis PITFALLS names as most dangerous to get wrong (an overstated safety claim is worse than a stated limitation because it gets trusted)."
-  - test: "Re-run the full workspace suite 2-3 times under load (`rtk proxy cargo test`) and watch `tests/driver_lock.rs::the_lock_is_released_when_the_holding_process_dies`."
-    expected: "Decide whether the observed one-off failure (`the child driver never took the lock within 30s`) is acceptable background flakiness or needs a fix/deferred-items.md entry before Phase 20 builds on this envelope."
-    why_human: "Not previously documented in `deferred-items.md` or in the orchestrator's pre-cleared list (only `driver_reattach.rs` and `envelope_tracer.rs`'s `ExecutableFileBusy` case were pre-cleared). Reproduced once in this verification pass under full-parallel load; passed cleanly in isolation and in a second isolated run. Plausible mechanism: 19-07's `establish_envelope()` now runs synchronously (hook stub writes, settings-file generation + round-trip readback, `.git/info/exclude` write, cred config generation) inside one `spawn_blocking`, *before* `lock::acquire` — this is new I/O on the run-startup critical path that did not exist before Phase 19, and under heavy contention it can plausibly eat into the test's 30s budget. This is a test-timing observation, not a mechanism defect: no SAFE-0x success criterion depends on lock-acquisition latency, and the fixture's own project root carries no `.git`, so `probe_protection` short-circuits immediately without a network call in this specific test."
+  - test: "Read the shipped SECTION_ENVELOPE (src/envelope/advisory.rs:239-262, quoted in full below) and confirm it now reads as legible candour — the specific defect the UAT raised was legibility, not accuracy, and the delivered text (200 tokens against a corrected 215 cap) differs from the ~161-word draft the user reviewed during the UAT conversation, so the final shipped wording has not itself been shown to the user."
+    expected: "One opening sentence stating the ceiling, then the guaranteed case with visibly indented examples, then the not-guaranteed case with visibly indented examples, then the server-side branch-protection recommendation as the closing conclusion — matching the shape the user asked for verbatim ('One sentence, then an explanation for both cases and examples?'). All nine residual disclosures must read as still present and un-softened."
+    why_human: "19-09-SUMMARY.md's own coverage table (D1) records this as human_judgment: true — a token count and a pin list prove the parts are present, not that the layout is now actually legible or that the text still reads as candour rather than a hedge. This is the identical axis PITFALLS names as most dangerous: an overstated or under-communicated safety claim is worse than a stated limitation, because it gets trusted."
 ---
 
 # Phase 19: GITSAFE — Git & Blast-Radius Envelope Verification Report
 
 **Phase Goal:** Autonomous git operations are bounded by mechanisms the agent cannot argue its way past
-**Verified:** 2026-08-18T23:27:41Z
+**Verified:** 2026-08-29T00:00:00Z
 **Status:** human_needed
-**Re-verification:** No — initial verification
+**Re-verification:** Yes — gap-closure round (`/gsd-execute-phase 19 --gaps-only`, plans 19-09 and 19-10) following the 19-UAT.md pass that produced G-19-1 and G-19-4.
 
 ## Goal Achievement
 
-### Observable Truths (ROADMAP Success Criteria)
+### Observable Truths (ROADMAP Success Criteria — regression check)
+
+None of these criteria's enforcing code (`policy.rs`, `hooks.rs`, `cred.rs`, `scan.rs`, `ledger.rs`) changed between the prior verification (`3ba7950`, pre-gap-closure) and `HEAD` — confirmed via `git diff --stat 3ba7950..HEAD -- src/envelope/{mod,cred,scan,policy,hooks,ledger}.rs`, empty. All five remain verified by direct re-run of their named test suites.
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | A driven run configured to push to `main` is rejected by the envelope, with the model's cooperation removed from the equation | ✓ VERIFIED | `tests/envelope_tracer.rs::a_driven_push_to_main_is_refused_and_the_remote_ref_never_appears` — reproduced directly: `cargo test --test envelope_tracer` → 6/6 pass. Drives a real `git push` against a `file://` bare remote under the envelope's environment with no agent spawned (D-31). Paired allow test (`a_driven_push_inside_the_reserved_namespace_reaches_the_remote`) confirms the envelope is a boundary, not a wall. `classify_push_ref` at `src/envelope/policy.rs:125` is the enforcing pure function; `DEFAULT_NAMESPACE_ROOT = "refs/heads/gsd-auto/"` at `policy.rs:23`. |
-| 2 | `git push --force`, `+refs/…`, `--no-verify`, and `core.hooksPath` rewrites from a driven run are all blocked, and the attempt parks the run | ✓ VERIFIED | `classify_git` at `src/envelope/policy.rs:257` — 47 passing unit tests in `envelope::policy` cover every spelling (`-f`, `--force`, `--force-with-lease[=v]`, `--force-if-includes`, `--mirror`, `--delete`/`-d`, `+refspec`, `--no-verify`, every `git config` scope touching `core.hooksPath`, and the `-c core.hooksPath=` form). End-to-end park proof reproduced directly: `cargo test --test envelope_wiring` → 14/14 pass, including `a_force_push_is_refused_and_lands_a_force_push_blocked_park` and `a_hooks_path_rewrite_is_refused_and_lands_a_hook_bypass_blocked_park`, both asserting an on-disk `JournalEvent::Parked` read back by a separate process. `core.hooksPath` delivered via `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` (confirmed present in `src/envelope/cred.rs`), never by mutating `.git/config` or `.git/hooks/`. |
-| 3 | A push carrying a detectable secret is blocked before it leaves the machine, including a secret written to a gitignored path | ✓ VERIFIED | `src/envelope/scan.rs` hand-rolled walk explicitly does not consult `.gitignore` (confirmed by reading the file and its test `the_git_directory_is_not_walked` plus the gitignored-path fixture). Reproduced directly: `cargo test --test envelope_hook_refusals` → 7/7 pass, including `a_credential_on_a_path_the_ignore_rules_cover_still_blocks_the_push`, which first asserts via `git check-ignore` that the planted `secrets/prod.pem` really is ignored, then asserts the push refusal and an unchanged remote. Scanner reuses `journal::redact`'s `PARTS` table split by `SecretClass::{Credential, PathHygiene}` — only `Credential` blocks. |
-| 4 | A driven run pushes using a per-run scoped credential and still works with the user's ambient credentials and SSH agent unavailable to it | ✓ VERIFIED | `src/envelope/cred.rs` confirmed removes `SSH_AUTH_SOCK`/`SSH_AGENT_PID` (not overwrites), sets `GIT_SSH_COMMAND`, redirects `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` to a generated config with no `credential.helper`, sets `GIT_TERMINAL_PROMPT=0`, redirects `GH_CONFIG_DIR`, and delivers the token only through `GIT_ASKPASS`. Reproduced directly: `cargo test --test envelope_credential` → 6/6 pass, including `a_credential_helper_the_user_really_has_stops_being_resolvable_under_the_envelope` (a planted control proving plain git *would* resolve it and the envelope doesn't) and `a_push_inside_the_reserved_namespace_succeeds_with_home_emptied` (exit 0, ref present, `HOME` pointed at an empty directory). |
-| 5 | Exceeding the per-project 24-hour PR cap parks the run instead of opening another PR | ✓ VERIFIED | `src/envelope/ledger.rs` append-only NDJSON ledger outside the repo. Reproduced directly: `cargo test --test envelope_pr_cap` → 11/11 pass, including `the_third_pull_request_in_the_window_succeeds_and_the_fourth_is_refused`, the rolling-window boundary tests, and the per-run cap test. `cargo test --test envelope_wiring` confirms `a_pull_request_beyond_the_cap_is_refused_and_lands_a_pr_cap_exceeded_park` — an on-disk `Parked` event carrying `pr_cap_exceeded`. **Caveat, honestly disclosed by the phase itself (not discovered by this verifier):** the cap has only one enforcement layer (the `PreToolUse` settings-file guard) — no git hook observes `gh pr create` because it is not a git operation, so a settings file the agent's own CLI silently ignores (the documented `-p` mode risk) leaves this specific criterion's cap unenforced while every push boundary stays standing. This is stated in `SECTION_ENVELOPE` and in 19-08-SUMMARY.md's "What is NOT proved" item 3, not hidden. |
+| 1 | A driven run configured to push to `main` is rejected, with the model's cooperation removed | ✓ VERIFIED | `cargo test --test envelope_tracer` — 6/6 pass (re-run directly). No source change since prior verification. |
+| 2 | `--force`, `+refs/…`, `--no-verify`, `core.hooksPath` rewrites are blocked and park the run | ✓ VERIFIED | `cargo test --test envelope_wiring` — 14/14 pass (re-run directly). |
+| 3 | A push carrying a detectable secret is blocked, including on a gitignored path | ✓ VERIFIED | `cargo test --test envelope_hook_refusals` — 7/7 pass (re-run directly). |
+| 4 | A driven run uses a per-run scoped credential; ambient credentials/SSH agent unreachable | ✓ VERIFIED | `cargo test --test envelope_credential` — 6/6 pass (re-run directly). |
+| 5 | Exceeding the per-project 24h PR cap parks the run instead of opening another PR | ✓ VERIFIED | `cargo test --test envelope_pr_cap` — 11/11 pass (re-run directly). |
 
-**Score:** 5/5 truths verified (0 present, behavior-unverified)
+### Gap-Closure Truths (this round)
+
+| # | Truth | Status | Evidence |
+|---|-------|--------|----------|
+| 6 | G-19-4: `tests/driver_lock.rs` no longer has a shared-settings-path race, and an early-dying child is reported with its exit status and stderr instead of a misleading 30s timeout | ✓ VERIFIED | Behavior-dependent truth (a state-transition/reporting invariant), confirmed by a passing named test, not presence alone: `a_child_that_dies_before_taking_the_lock_is_reported_with_its_status_and_stderr` (re-run directly, PASS). Six distinct `ALIAS_*` consts confirmed in source (`grep -c 'const ALIAS_'` = 6, `grep -c '#\[tokio::test'` = 6). `no_two_driving_tests_share_an_envelope_settings_path` (the regression gate) and `two_writers_sharing_one_alias_break_each_others_settings_verification` (the mechanism demonstration) both re-run directly and pass. `git diff --stat fbc5670..04fb2bf -- src/` confirmed empty — no production code touched, matching the plan's prohibition. |
+| 7 | G-19-1: `SECTION_ENVELOPE` is legible (one sentence, two explained cases, conclusion) without softening any claim | ⚠️ Mechanically VERIFIED / candour read UNCERTAIN | The mechanical contract is fully verified: 200 whitespace tokens (was 250), all seven pinned substrings present verbatim in the pinned order, `the_honesty_statement_carries_each_of_its_three_required_parts` byte-identical to `3ba7950` (confirmed via `git diff 3ba7950..HEAD -- tests/envelope_advisory.rs` — the only hunk is the new legibility test, an insertion-only diff), all nine residual disclosures independently located in the rendered constant (read directly from `src/envelope/advisory.rs:239-262`). The legibility control (`the_honesty_statement_stays_short_enough_that_a_reader_finishes_it`) re-run directly and passes. **What remains unverifiable by this agent:** whether the text, as actually shipped, reads as candid and finished to a human — this is the exact judgment the original UAT gap was raised from, and the shipped wording differs from the ~161-word draft the user reviewed mid-UAT (the achieved floor was 200 tokens, not ~161, per 19-09-SUMMARY.md's Deviations section). Routed to human verification below. |
+
+**Score:** 6/7 truths mechanically verified; 1 routed to human judgment (0 present-behavior-unverified in the state-transition sense — truth 7's open item is a subjective readability/candour judgment, not an unexercised state transition).
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |----------|----------|--------|---------|
-| `src/envelope/mod.rs` | Module root, D-06 three-layer doc contract, envelope dir resolver | ✓ VERIFIED | Present, substantive, imported and used across the crate |
-| `src/envelope/policy.rs` | Pure `classify_git`/`classify_push_ref` decision functions | ✓ VERIFIED | 47 passing unit tests; genuine logic, not a stub |
-| `src/envelope/hooks.rs` | Hook stub generation + provenance check | ✓ VERIFIED | 33 passing lib tests; generated stub re-enters the binary, no policy logic in the stub (confirmed by `both_hooks_are_generated_and_neither_carries_policy_logic`) |
-| `src/envelope/scan.rs` | Full-worktree secret scanner, reported skip list | ✓ VERIFIED | Confirmed does not consult `.gitignore`; skip-list reporting present |
-| `src/envelope/cred.rs` | Scoped-credential env builder, askpass responder | ✓ VERIFIED | 20 passing lib tests; all D-16/D-17 environment variables confirmed present in source |
-| `src/envelope/ledger.rs` | Append-only PR-cap ledger | ✓ VERIFIED | 16 passing lib tests; `record_and_check` present |
-| `src/envelope/advisory.rs` | Read-only protection probe, pinned honesty statement | ✓ VERIFIED | `SECTION_ENVELOPE` present, wired into both the dry-run preview (`src/driver/dry_run.rs:67,235`) and the run journal (`src/driver/run.rs:1338`) — genuinely reachable from production code paths, not test-only |
-| `tests/envelope_tracer.rs` | Namespace refusal/allow fixture | ✓ VERIFIED | 6/6 passing |
-| `tests/envelope_hook_refusals.rs` | Secret-scan + worktree-sweep fixtures | ✓ VERIFIED | 7/7 passing |
-| `tests/envelope_credential.rs` | Scoped-credential environment fixtures | ✓ VERIFIED | 6/6 passing |
-| `tests/envelope_pr_cap.rs` | PR-cap ledger fixtures | ✓ VERIFIED | 11/11 passing |
-| `tests/envelope_wiring.rs` | End-to-end refusal→park fixtures | ✓ VERIFIED | 14/14 passing (each `Parked` row also re-run individually, per plan requirement) |
-| `tests/envelope_advisory.rs` | Protection-probe fixtures | ✓ VERIFIED | 9/9 passing |
-| `tests/async_blocking_guard.rs` | D-29 blocking-call-inside-async lint | ✓ VERIFIED | 917 lines (≥120 required), 7/7 passing, fail-first proof independently plausible from source (planted call reported by name) |
-| `.planning/REQUIREMENTS.md` | SAFE-01/02/03/05/06 marked Complete | ✓ VERIFIED | Confirmed directly: all five `[x]` in the checklist and "Complete" in the traceability table |
+| `src/envelope/advisory.rs` | `SECTION_ENVELOPE` rewritten to the 4-movement shape; doc comment extended with the three editor traps | ✓ VERIFIED | Read directly at lines 156-262; four movements present, `\x20` escapes used correctly (rendered text confirmed indented, not flush-left), ordering-trap and line-break-trap documentation present |
+| `tests/envelope_advisory.rs` | New legibility cap test; pin test byte-unchanged | ✓ VERIFIED | 10/10 tests pass (re-run directly); `git diff 3ba7950..HEAD` shows a single insertion-only hunk, confined to the new test |
+| `tests/driver_lock.rs` | Six per-test `ALIAS_*` consts; `wait_for_lock_or_report`; `ChildCapture` (files, not pipes); two new controls | ✓ VERIFIED | 8/8 tests pass (re-run directly); all claimed symbols present and confirmed via direct source read |
+| `.planning/REQUIREMENTS.md` | SAFE-01/02/03/05/06 marked Complete | ✓ VERIFIED | Confirmed directly — all five `[x]` and "Complete" in the traceability table; no orphaned Phase 19 requirement IDs (SAFE-04 belongs to Phase 16, already Complete; SAFE-07/08 belong to Phase 21, correctly "Gaps Found") |
 
 ### Key Link Verification
 
-| From | To | Via | Status | Details |
-|------|-----|-----|--------|---------|
-| `src/driver/run.rs` (`establish_envelope`, single `ExecutionOptions` site) | `src/envelope/*` | `envelope::hooks::install`, `cred::build_env`, `advisory::probe_protection` inside one `spawn_blocking` at the single production construction site | ✓ WIRED | Confirmed at `src/driver/run.rs:110-127,1225-1226`; runs before `lock::acquire` (line 1295) and before the journal is created, so a refused envelope creates nothing (matches D-24) |
-| `src/executor/claude.rs` (spawn closure) | envelope environment | `envelope_disallowed_tools` rendered onto `--disallowedTools` argv | ✓ WIRED | Confirmed at `src/executor/claude.rs:286-288`; pinned argv test present |
-| `src/driver/mod.rs::drive` (dry-run branch) | `src/driver/dry_run.rs` | `dry_run::build_report` → `dry_run::render` → `println!` | ✓ WIRED | Confirmed at `src/driver/mod.rs:241,261` — real CLI output path, not test-only |
-| `src/journal/mod.rs::JournalEvent::Parked` | envelope refusal points | `park`/`park_at` appender, `ParkReason::as_str` taxonomy | ✓ WIRED | Confirmed `parked` moved from `RESERVED_KINDS` into `EMITTED_KINDS` at `src/journal/mod.rs:921-934`, matching the D-24 comment correction |
+No key links changed in this round — 19-09 touched only a constant and a test file; 19-10 touched only a test file (`git diff --stat` confirms zero `src/` changes for 19-10, and 19-09's `src/` change is confined to one constant + doc comment in `advisory.rs`, whose wiring into `dry_run.rs`/`run.rs` via `envelope_notice` was already verified in the prior report and re-confirmed unchanged: `the_journal_notice_and_the_rendered_preview_carry_the_same_claim_text` passes in the re-run of `envelope_advisory`).
 
 ### Behavioral Spot-Checks / Independent Reproduction
 
-All checks below were run directly by this verifier, not taken from SUMMARY.md claims.
+All checks below were re-run directly by this verifier, not taken from SUMMARY.md claims.
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
-| Clean build | `rtk proxy cargo build` | exit 0 | ✓ PASS |
+| Clean build | `rtk proxy cargo build` (n/a — full suite build implies this) | via full-suite run below | ✓ PASS |
 | Lint gate | `rtk proxy cargo clippy -- -D warnings` | exit 0 | ✓ PASS |
-| All-targets lint delta | `rtk proxy cargo clippy --all-targets -- -D warnings` | exactly 5 errors, at `browser.rs:131/132/133`, `project_creator.rs:146`, `state_reader/mod.rs:258` — matches claimed unchanged locations | ✓ PASS |
-| `envelope_wiring` suite | `cargo test --test envelope_wiring -- --test-threads=1` | 14 passed, 0 failed | ✓ PASS |
-| `envelope_tracer`, `envelope_hook_refusals`, `envelope_credential`, `envelope_pr_cap`, `envelope_advisory`, `async_blocking_guard` | `cargo test --test <name>` | 6, 7, 6, 11, 9, 7 passed respectively, 0 failed | ✓ PASS |
-| Full workspace suite (run once) | `rtk proxy cargo test` | Stopped early on one failure — see below | ⚠️ see note |
-
-**Full-suite note:** the first full run hit one failure, `tests/driver_lock.rs::the_lock_is_released_when_the_holding_process_dies` ("the child driver never took the lock within 30s"). Re-run of that file alone (`cargo test --test driver_lock -- --test-threads=1`) passed 5/5 cleanly. This is a timing failure under full-parallel contention, not a deterministic one, and it is **not** one of the two pre-cleared `driver_reattach.rs` flakes or the `envelope_tracer.rs` `ExecutableFileBusy` case documented in `deferred-items.md`. Traced to a plausible new cause: 19-07 wired `establish_envelope()` (hook stub writes, settings-file generation + round-trip read-back, `.git/info/exclude` write, cred config generation) to run synchronously inside one `spawn_blocking`, before `lock::acquire` — new I/O on the run-startup critical path that did not exist pre-Phase-19. Routed to human verification below rather than treated as a gap, because no SAFE-0x criterion depends on lock-acquisition latency and the mechanism logic itself is unaffected.
+| All-targets lint delta | `rtk proxy cargo clippy --all-targets -- -D warnings` | exactly 4 lints, all in `src/browser.rs` and `src/project_creator.rs` — none in any file this round touched | ✓ PASS |
+| `envelope_advisory` + `driver_lock` suites | `cargo test --test envelope_advisory --test driver_lock` | 10 passed / 8 passed, 0 failed in both | ✓ PASS |
+| Early-exit reporting invariant (behavior-dependent truth) | `a_child_that_dies_before_taking_the_lock_is_reported_with_its_status_and_stderr` (within the run above) | ok | ✓ PASS |
+| Alias-uniqueness regression gate | `no_two_driving_tests_share_an_envelope_settings_path` (within the run above) | ok | ✓ PASS |
+| Full workspace suite (run once) | `rtk proxy cargo test` | 1436 passed, 0 failed (aggregated across all binaries; `driver_reattach` green on this run) | ✓ PASS |
+| Debt markers | `grep -n -E "TBD\|FIXME\|XXX\|TODO\|HACK\|PLACEHOLDER"` over `src/envelope/advisory.rs`, `tests/envelope_advisory.rs`, `tests/driver_lock.rs` | no matches | ✓ PASS |
+| Commit existence | `395d0bb`, `4cc54bb`, `45fe2e4`, `bfa3fee`, `0447272`, `04fb2bf` | all present in `git log` | ✓ PASS |
 
 ### Requirements Coverage
 
-| Requirement | Source Plan | Description | Status | Evidence |
-|---|---|---|---|---|
-| SAFE-01 | 19-01, 19-06, 19-07 | Reserved push namespace, model's cooperation removed | ✓ SATISFIED | `classify_push_ref`, `envelope_tracer.rs`, `SECTION_ENVELOPE` |
-| SAFE-02 | 19-02, 19-03, 19-07 | Force-push/hook-bypass blocked | ✓ SATISFIED | `classify_git`, `envelope_wiring.rs` park fixtures |
-| SAFE-03 | 19-03 | Secret scan over full worktree, gitignore-blind | ✓ SATISFIED | `scan.rs`, `envelope_hook_refusals.rs` |
-| SAFE-05 | 19-04 | Scoped credential, ambient credentials unreachable | ✓ SATISFIED | `cred.rs`, `envelope_credential.rs` |
-| SAFE-06 | 19-05 | PR cap, rolling 24h window | ✓ SATISFIED (single-layer caveat disclosed) | `ledger.rs`, `envelope_pr_cap.rs` |
+| Requirement | Source Plans | Status | Evidence |
+|---|---|---|---|
+| SAFE-01 | 19-01, 19-06, 19-07, 19-09 | ✓ SATISFIED | Unchanged enforcing code; `SECTION_ENVELOPE` rewrite carries the same claims (D1 of 19-09) |
+| SAFE-02 | 19-02, 19-03, 19-05, 19-06, 19-07, 19-09 | ✓ SATISFIED | Unchanged enforcing code; pin test byte-unchanged |
+| SAFE-03 | 19-03, 19-07 | ✓ SATISFIED | Unchanged; `scan.rs` untouched this round |
+| SAFE-05 | 19-04, 19-07, 19-10 | ✓ SATISFIED | Unchanged production credential-scoping code; `driver_lock.rs` test-harness fix does not touch `src/` |
+| SAFE-06 | 19-05, 19-07, 19-10 | ✓ SATISFIED (single-layer caveat disclosed, unchanged) | `ledger.rs` untouched; `driver_lock.rs` race fix closes a test-harness defect on the SAFE-06 test path, not a production gap |
 
-No orphaned requirements: SAFE-04 belongs to Phase 16 (already complete), SAFE-07/08 belong to Phase 21 and are correctly `Pending`.
+No orphaned requirements — same finding as the prior verification, unaffected by this round.
 
 ### Anti-Patterns Found
 
-None. `grep -rn -E "TBD|FIXME|XXX|TODO|HACK|PLACEHOLDER"` over `src/envelope/*.rs`, `tests/envelope*.rs` and `tests/async_blocking_guard.rs` returns no matches. No debt markers.
+None. `grep -n -E "TBD|FIXME|XXX|TODO|HACK|PLACEHOLDER"` over the three files this round modified returns no matches. `cargo clippy -- -D warnings` exits 0. `cargo clippy --all-targets` shows only the pre-existing 4 lints in `browser.rs`/`project_creator.rs`, neither of which this round touched.
 
-### Deviations / Honesty Disclosures Cross-Checked
+### Non-Blocking Observations (recorded, not gaps)
 
-The phase's own SUMMARY documents (principally 19-08-SUMMARY.md's "What is NOT proved" section) disclose eight residual gaps. This verifier confirmed each is genuinely disclosed (not silently absorbed into a passing claim) and none is misrepresented:
+Per the scope note governing this round, the following are explicitly out of scope for this gap-closure pass and were confirmed still present, unresolved, and non-blocking:
 
-1. Honesty statement's tone — not test-provable, routed to human verification above.
-2. Protection probe's 10s-budget stall path — no network fixture exists (D-35 forbids one); reasoned, not observed. Confirmed the code path exists (`PROBE_BUDGET_SECS = 10`, kill-at-deadline loop in `advisory.rs`).
-3. PR cap has no git-hook second carrier — confirmed by reading `policy::disallowed_tools()` (only covers `Bash(git push:*)` and `.claude/**` writes, not `gh pr create`) — genuinely a single-layer control, honestly stated in `SECTION_ENVELOPE` itself.
-4. Askpass token readable by an agent inside the run — confirmed as an inherent, stated limitation (`D-17`'s own doc).
-5. No test reads the driven child's actual environment via `/proc` — confirmed absent; reasoned from `Command`'s contract instead.
-6. `gitleaks` Blocked/Failed arms unexercised (binary not installed) — confirmed absent from `$PATH` in this environment; Absent arm (must-never-fail-open) is exercised on every run.
-7. The async-blocking guard is a lint, not a proof — its own doc says so (`grep -c 'a lint, not a proof'` → 1, confirmed).
-8. SAFE-01 is true of the model's cooperation being removed, not of "no escape exists" — an agent that unsets `GIT_CONFIG_COUNT` in a subshell is past the last client-side layer, stated in `SECTION_ENVELOPE` and in the module docs.
+- `hooks.rs:1144-1145` — the broken-pipe park skip (recorded in 19-UAT.md's test 2 `open_items_recorded_not_blocking`).
+- The missing shared-sink "every park reason lands a park" control (same source).
+- `scan.rs` documentation placement — the gitleaks-coverage fact lives only in SUMMARY files, not in `scan.rs` itself (19-UAT.md test 3).
 
-None of these were found to be overstated or hidden. This matches the phase's stated governing principle (D-27: "an overstated safety claim is worse than a stated limitation").
+**One new observation from this round, investigated further here.** `tests/driver_reattach.rs` shares the structural precondition 19-10's fix removed from `driver_lock.rs` — a single `const ALIAS: &str = "detached"` (line 128) under one process-wide `isolate_envelope_root()` (line 181). 19-10-SUMMARY.md flagged this as a candidate follow-up but left open whether the file actually spawns the real binary. This verifier confirmed it does (`env!("CARGO_BIN_EXE_gsd-meta-manager")` at three call sites) — **but** found no in-process `drive()` calls in the file (`grep` for `drive(` inline calls returned nothing). This means `driver_reattach.rs`'s three real-binary spawns would all share the same `current_exe()` value, so the specific G-19-4 mechanism (a settings-JSON mismatch between an in-process test binary and a real-binary child) does **not** directly transfer — any race here would have to be a different one (e.g., two real-binary writers racing the same atomic rename with otherwise-identical settings content, or the previously-documented artifact-vs-liveness-probe race already recorded in `deferred-items.md`). Recommend this nuance be carried into any follow-up investigation rather than assuming the G-19-4 fix pattern applies unchanged. Confirmed pre-existing and independent of this round's changes (`driver_reattach` ran clean, 0 failures, in this verifier's own full-suite run).
+
+### Code Review Cross-Check
+
+`19-REVIEW.md` (standard depth, 3 files reviewed: `advisory.rs`, `driver_lock.rs`, `envelope_advisory.rs`) found 0 critical, 3 warning, 1 info. All three warnings concern the pre-existing `probe_protection`/branch-protection-probe logic (a lowercase-HTTP-verb gap in a source-scanning test, a 404-vs-403 ambiguity in the read-only GitHub probe, and a cumulative-latency doc-accuracy gap) — none of which are in the code this round's two plans changed (`SECTION_ENVELOPE`'s text and `driver_lock.rs`'s test harness). None are BLOCKER-tier and none contradict a ROADMAP success criterion; they are legitimate advisory-probe robustness improvements for a future plan, not gaps in this phase's goal.
 
 ### Human Verification Required
 
-See frontmatter `human_verification`. Summary:
+See frontmatter `human_verification`. One item:
 
-1. **Honesty statement tone** (`SECTION_ENVELOPE`) — reads as candid to this verifier on direct reading, but the phase's own transparency prohibitions require human judgment, not an automated verifier's read, to close this item.
-2. **Composed-proof adequacy** — whether the `[C]`-marked clauses in 19-08's traceability table are faithful decompositions of the ROADMAP criteria as literally written.
-3. **Residual-exposure disclosures** (unset-`GIT_CONFIG_COUNT` escape, askpass-token-readable-by-agent, gitleaks-arms-unexercised) — same class of judgment, recorded across nearly every plan in the phase.
-4. **`tests/driver_lock.rs` new intermittent failure** — a previously undocumented flake this verifier observed once under full-suite load; needs a human decision on whether to accept as background flakiness (à la the two already-documented ones) or open a follow-up.
+1. **Final read of the shipped `SECTION_ENVELOPE` text** — the mechanical contract (shape, pins, disclosures, length control) is fully verified by this agent, but whether the delivered 200-token text actually reads as candid and finished — the specific complaint that opened G-19-1 — is a judgment this phase's own plans reserve for a human reader, and the exact shipped wording has not yet been shown to the user (only an earlier, shorter draft was). The full rendered text, for reference:
+
+```
+== What this envelope guarantees, and what it does not ==
+
+Mechanism bounds this run's reach and pushes; a determined agent defeats
+everything below the remote.
+
+Guaranteed:
+    This run cannot reach your ambient git credentials or SSH agent: the
+    socket is removed, not emptied, and global and system git config is a
+    generated file naming no credential helper.
+    A push through the driven process tree passes the pre-push hook,
+    judging the refs git hands it, not the command line asked about.
+    Pull-request cap: an append-only ledger this repository does not contain.
+
+Not guaranteed: client-side hooks, tool denies and env-injected git config
+are all defeatable by an agent that can spawn an unsupervised shell.
+    An agent that unsets GIT_CONFIG_COUNT in a subshell is past the last layer.
+    An agent that runs the askpass responder itself reads the token.
+    A settings file the agent's own CLI silently ignores leaves that cap
+    unenforced: no git hook observes a pull request.
+    Only the remote's own ruleset and the scope of the credential this
+    run was given do not depend on the agent's cooperation.
+
+Therefore: enable server-side branch protection on this repository. It is
+the one control here an agent cannot talk its way past.
+```
 
 ### Gaps Summary
 
-No must-have truth failed, no artifact is missing or stubbed, and no key link is unwired. All five ROADMAP success criteria have genuine, independently-reproduced enforcing code and passing named tests, not merely SUMMARY claims. Status is `human_needed` rather than `passed` solely because of (a) the large number of `human_judgment: true` honesty/tone items the phase's own plans explicitly deferred to a human reader — most centrally whether the pinned honesty statement reads as candor rather than hedge — and (b) one previously undocumented intermittent test failure (`driver_lock.rs`) observed during this verification pass that was not part of the orchestrator's pre-cleared flake list and plausibly traces to new I/O this phase added to the run-startup critical path.
+Both gaps from the 2026-08-28 UAT are closed with real, independently re-run evidence: G-19-1's mechanical contract (shape, seven verbatim pins, byte-unchanged pin test, all nine residual disclosures, a legibility control observed RED then GREEN) and G-19-4's engineering fix (per-test aliases, a source-scanning regression gate observed RED then GREEN, a behavior-dependent early-exit-reporting test that passes, zero `src/` changes). No new blocking gap was found. Status is `human_needed`, not `passed`, solely because G-19-1's underlying complaint was about how the text *reads* to a person, and that judgment — on the text as actually shipped, which differs from the draft the user saw mid-UAT — has not yet been closed by the user. A secondary, non-blocking observation (`driver_reattach.rs`'s shared-alias structure) is recorded for a future investigation but does not block this phase.
 
 ---
 
-_Verified: 2026-08-18T23:27:41Z_
+_Verified: 2026-08-29T00:00:00Z_
 _Verifier: Claude (gsd-verifier)_

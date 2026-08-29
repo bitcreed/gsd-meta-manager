@@ -1,10 +1,10 @@
 ---
-status: diagnosed
+status: testing
 phase: 19-gitsafe-git-blast-radius-envelope
 source: [19-VERIFICATION.md]
 started: 2026-08-18T23:27:41Z
-updated: 2026-08-28
-resumed: 2026-08-28
+updated: 2026-08-29
+resumed: 2026-08-29
 previously_deferred_by: user
 previously_deferred_reason: >-
   Explicitly deferred on 2026-08-19 so Phase 20 could start. All four items are reading
@@ -15,9 +15,27 @@ resume_note: >-
   `skipped` with a reason, which the completion predicate would have scored as
   `status: complete` — clearing the phase without anyone judging them. They are
   unresolved debt, not clearances, so they are restored to `[pending]` and presented.
+gap_closure_round:
+  ran: 2026-08-29
+  command: /gsd-execute-phase 19 --gaps-only
+  plans: [19-09, 19-10]
+  closed:
+    - "G-19-1 — closed by 19-09 (395d0bb, 4cc54bb, 45fe2e4, fbc5670). SECTION_ENVELOPE reshaped to one ceiling sentence, then the guaranteed case with indented examples, then the not-guaranteed case with indented examples, then the branch-protection recommendation as the conclusion. 250 -> 200 whitespace tokens; all seven pinned substrings verbatim; the pin test byte-unchanged; every residual disclosure preserved; a new legibility cap observed RED before the rewrite."
+    - "G-19-4 — closed by 19-10 (bfa3fee, 0447272, 04fb2bf, d7a9011). Six per-test aliases replace the shared ALIAS in tests/driver_lock.rs, so no two tests write the same envelope settings path. A source-scanning alias-uniqueness gate was observed RED against the pre-fix file and committed in that state (0447272) before the fix. A child that dies before taking the lock is now reported with its exit status and captured stderr instead of as a 30s lock timeout. Nothing under src/ was modified."
+  new_pending_item: 5
 ---
 
-[testing complete]
+## Current Test
+
+number: 5
+name: The shipped SECTION_ENVELOPE text reads as legible candour
+expected: |
+  One opening sentence stating the ceiling, then the guaranteed case with visibly
+  indented examples, then the not-guaranteed case with visibly indented examples, then
+  the server-side branch-protection recommendation as the closing conclusion — the shape
+  asked for verbatim in test 1 ("One sentence, then an explanation for both cases and
+  examples?"). All nine residual disclosures still present and un-softened.
+awaiting: user response
 
 ## Tests
 
@@ -165,18 +183,41 @@ orchestrator_evidence_2026_08_28: >-
   ordering.
 previously: skipped — deferred by user 2026-08-19, never resolved; restored to pending on 2026-08-28
 
+### 5. The shipped SECTION_ENVELOPE text reads as legible candour
+expected: One opening sentence stating the ceiling, then the guaranteed case with visibly
+  indented examples, then the not-guaranteed case with visibly indented examples, then the
+  server-side branch-protection recommendation as the closing conclusion. All nine residual
+  disclosures still present and un-softened.
+why_human: 19-09-SUMMARY.md's coverage table (D1) records this `human_judgment: true`. The
+  token count and the seven-phrase pin list prove the parts are present and ordered; they do
+  not prove the layout is legible or that the text still reads as candour rather than a
+  hedge. This is the same axis PITFALLS names as most dangerous — an overstated or
+  under-communicated safety claim is worse than a stated limitation, because it gets trusted.
+raised_by: gap closure of G-19-1. Test 1 reported the original text as too long and hard to
+  follow; 19-09 rewrote it. The user reviewed a ~161-word draft during the 2026-08-28 UAT
+  conversation, but the DELIVERED text is a different 200-token version (the 190-token target
+  proved unsatisfiable without dropping required disclosures, so the cap was corrected to
+  215). The exact shipped wording has therefore not itself been read by the user.
+where: the full rendered text is quoted in 19-VERIFICATION.md so it can be judged without
+  opening the source.
+result: [pending]
+
 ## Summary
 
-total: 4
+total: 5
 passed: 2
 issues: 2
-pending: 0
+pending: 1
 skipped: 0
 blocked: 0
 
-All four items are unresolved verification debt, not clearances. They were carried as
-`skipped` between 2026-08-19 and 2026-08-28; that spelling would have scored the session
-`complete`, so they are carried as `pending` now.
+Items 1-4 are the 2026-08-28 reading pass: 2 passed, and 2 (items 1 and 4) reported issues
+that became G-19-1 and G-19-4. Both gaps are now mechanically closed by the 2026-08-29
+gap-closure round (plans 19-09 and 19-10) — see `gap_closure_round` in the frontmatter.
+
+Item 5 is new and is the only thing still pending. It exists because closing G-19-1 changed
+the very text item 1 was judging, and the delivered wording differs from the draft the user
+saw. It is a reading judgement, not a mechanical check.
 
 ## Gaps
 
@@ -189,7 +230,15 @@ The entries below come from the human reading pass resumed on 2026-08-28.
 - gap_id: G-19-1
   truth: "SECTION_ENVELOPE reads as candour rather than as a hedge, and is legible enough to
     actually be read"
-  status: failed
+  status: closed
+  closed_by: "19-09-PLAN.md — commits 395d0bb, 4cc54bb, 45fe2e4, fbc5670 (2026-08-29)"
+  closed_note: >-
+    Mechanically closed: 250 -> 200 whitespace tokens, reshaped to one ceiling sentence then
+    both explained cases with indented examples then the branch-protection conclusion, all
+    seven pinned substrings verbatim, the pin test byte-unchanged, every residual disclosure
+    preserved, and a legibility cap observed RED before the rewrite. The human READING
+    judgement on the delivered wording is carried forward as new UAT item 5 — the shipped
+    200-token text is not the ~161-word draft the user reviewed, so it has not been read yet.
   reason: "User reported: it reads like it's too long.. it's hard to follow. Can we shorten
     it significantly. One sentence, then an explanation for both cases and examples? Doable?"
   severity: minor
@@ -242,7 +291,23 @@ The entries below come from the human reading pass resumed on 2026-08-28.
 - gap_id: G-19-4
   truth: "`tests/driver_lock.rs::the_lock_is_released_when_the_holding_process_dies` passes
     reliably, and when it does fail the symptom points at the actual cause"
-  status: failed
+  status: closed
+  closed_by: "19-10-PLAN.md — commits bfa3fee, 0447272, 04fb2bf, d7a9011 (2026-08-29)"
+  closed_note: >-
+    Six per-test `ALIAS_*` consts replace the shared alias, so no two tests write the same
+    `<envelope_root>/<alias>/settings.json` and the persist-then-verify window that failed
+    the child with EnvelopeAssertionFailed no longer exists. A source-scanning
+    alias-uniqueness gate was observed RED against the pre-fix file and COMMITTED in that
+    state (0447272) before the fix landed. The child's stdout/stderr now go to files in a
+    TempDir (never pipes) and an early-dying child is reported with its exit status and
+    stderr rather than as a 30s lock timeout. Nothing under src/ was modified; the refuted
+    establish_envelope()/lock::acquire ordering hypothesis was not revived.
+  follow_up: >-
+    tests/driver_reattach.rs shares the old structural precondition (a single shared
+    `const ALIAS: &str = "detached"` at :128 plus its own process-wide isolate_envelope_root
+    at :181). Verification found it has no in-process `drive()` calls — only real-binary
+    spawns — so the specific current_exe() mismatch does not directly transfer. Recorded as a
+    candidate follow-up, deliberately NOT actioned in this round.
   reason: "User chose `fix` over `accept` and `defer` when shown that the item's original
     framing no longer holds."
   severity: minor
