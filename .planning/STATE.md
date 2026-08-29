@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
-stopped_at: Completed 19-13-PLAN.md
-last_updated: "2026-08-29T17:48:51.785Z"
+stopped_at: Completed 19-14-PLAN.md (Rule A). Two carry-forward rows RED for 19-15; post-state passed+failed = 1527
+last_updated: "2026-08-29T19:33:34.201Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: 7ef7ba210f78cd423f65dbb242b8ef47fc885dd6
+state_head: 8f4cbe3b907a6f086a454517995f96c3c74abd57
 progress:
   total_phases: 10
   completed_phases: 6
-  total_plans: 93
-  completed_plans: 93
+  total_plans: 96
+  completed_plans: 95
   percent: 60
 ---
 
@@ -217,6 +217,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 19 P11 | 24 min | 3 tasks | 4 files |
 | Phase 19 P12 | 41 min | 3 tasks | 1 files |
 | Phase 19 P13 | 50m | 3 tasks | 6 files |
+| Phase 19 P14 | 1h | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -253,6 +254,9 @@ Recent decisions affecting current work:
 - [Phase 19]: Any phase-19 suite number must come from cargo test --no-fail-fast (19-12) — cargo test stops at the first failing test BINARY. driver_reattach fails (documented pre-existing pair) and envelope_* sorts after driver_*, so a plain run never executes any envelope test and reports 1245/2/13 no matter what was added. With --no-fail-fast the true total after 19-12 is 1470 passed / 2 failed / 13 ignored.
 - [Phase 19]: T-19-60 is closed for the wrapper-operand sub-class only; T-19-86 registered, pinned and deferred
 - [Phase 19]: /gsd-secure-phase 19 is NOT cleared by plan 19-13 alone — T-19-86 and T-19-87 remain open
+- [Phase 19]: Rule A: the classifier decision region — every index reported by the scan the classifier itself runs, never a second scan
+- [Phase 19]: T-19-87's two severed-prefix rows left RED on purpose, so Rule A and Rule B are each shown separately load-bearing
+- [Phase 19]: T-19-91 measured, pinned and registered OPEN rather than closed — round discipline, and reflog/symbolic-ref have no second carrier
 
 ### Pending Todos
 
@@ -311,8 +315,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-08-29T17:48:42.553Z
-Stopped at: Completed 19-13-PLAN.md
+Last session: 2026-08-29T19:33:23.932Z
+Stopped at: Completed 19-14-PLAN.md (Rule A). Two carry-forward rows RED for 19-15; post-state passed+failed = 1527
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
 Resume file: None
