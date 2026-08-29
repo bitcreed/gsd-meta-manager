@@ -1146,6 +1146,338 @@ pub fn program_name(program: &str) -> &str {
     program.rsplit('/').next().unwrap_or(program)
 }
 
+// ---------------------------------------------------------------------------
+// Which token is the effective program (T-19-60)
+// ---------------------------------------------------------------------------
+
+/// The programs this envelope has a classifier for.
+///
+/// **This is the ONE enumeration the wrapper fix contains, and it is not the
+/// same kind of list as a list of wrapper names.** The distinction is what the
+/// whole design turns on, so it is recorded here rather than left to be
+/// inferred:
+///
+/// - This set is **closed and already defined elsewhere in this module** —
+///   [`classify_git`] handles `git`, [`pr_command_label`] handles `gh` and
+///   `glab`, and a fourth entry here with no classifier is a *refusal*, not a
+///   silent permit (see [`ProgramResolution::Governed`]). Adding a governed
+///   program is a deliberate act with a compiler-adjacent consequence.
+/// - The set of things that can *precede* a program is **open and unlistable**.
+///   `env`, `timeout`, `nohup`, `command`, `nice`, `stdbuf`, `setsid`, `ionice`,
+///   `chrt`, `taskset`, `doas`, `runuser`, `sudo`, `xargs`, `time`,
+///   `busybox env`, `/usr/bin/env` — and the seventh one nobody listed. A fix
+///   built on naming them is green on the day it lands and silent afterwards,
+///   which is why [`resolve_program`] never asks what the wrapper is called
+///   (D-08).
+pub const GOVERNED_PROGRAMS: &[&str] = &["git", "gh", "glab"];
+
+/// The environment keys the envelope itself injects into a driven child.
+///
+/// A word that assigns to one of these, or that bare-names one, is refused
+/// under [`ParkReason::HookBypassBlocked`] — see [`tampers_with_envelope_env`]
+/// for why the bare name counts too.
+///
+/// **An entry ending in `_` is matched as a prefix**, because its suffix is an
+/// index git generates (`GIT_CONFIG_KEY_0`, `GIT_CONFIG_VALUE_0`, …); every
+/// other entry is matched exactly.
+///
+/// This list is **drift-pinned** against the environment
+/// [`super::cred::build_env_in`] actually builds — a unit test iterates
+/// `EnvelopeEnv::entries()` and asserts every `GIT_`/`GH_` key it SETS is
+/// covered here. That is the discipline [`forbidden_repo_prefixes`] already
+/// uses by deriving its runs path from `journal::RUNS_SUBDIR`: a second
+/// spelling of a fact is a second thing to keep in step, and here the drift
+/// would be a refusal that silently stopped covering the key it was written
+/// for.
+pub const ENVELOPE_ENV_KEYS: &[&str] = &[
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_",
+    "GIT_CONFIG_VALUE_",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_ASKPASS",
+    "GIT_TERMINAL_PROMPT",
+    // Found by the drift pin below rather than by inspection, and it belongs
+    // here for the same reason the rest do: `GIT_SSH_COMMAND` is what carries
+    // `IdentitiesOnly=yes`, `IdentityAgent=none` and `-F /dev/null`, so a
+    // command that reassigns it puts the user's own agent and default identity
+    // back within reach of the run (D-16).
+    "GIT_SSH_COMMAND",
+    "GH_CONFIG_DIR",
+];
+
+/// The [`ENVELOPE_ENV_KEYS`] entry covering `name`, if any.
+fn envelope_env_key(name: &str) -> Option<&'static str> {
+    ENVELOPE_ENV_KEYS
+        .iter()
+        .copied()
+        .find(|entry| name == *entry || (entry.ends_with('_') && name.starts_with(*entry)))
+}
+
+/// Whether a word is a shell **assignment word**, by the shell's own grammar.
+///
+/// A `=` exists, the half before it is non-empty, its first character is an
+/// ASCII letter or `_`, and every remaining character of it is alphanumeric or
+/// `_`.
+///
+/// **The grammar rather than a `contains('=')` test**, and the difference is
+/// load-bearing: `--opt=value`, `a/b=c` and `x.y=z` all contain `=` and none of
+/// them is an assignment. Treating one as an assignment would make
+/// [`resolve_program`] skip past it looking for a program, which is how a
+/// resolver ends up consuming the very token it was trying to find.
+pub fn is_assignment_word(word: &str) -> bool {
+    let Some((name, _)) = word.split_once('=') else {
+        return false;
+    };
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+/// The envelope key a word assigns to or names, if it is reaching for one.
+///
+/// Two shapes, because there are two ways to make an injected key stop
+/// applying:
+///
+/// - `GIT_CONFIG_COUNT=0 git push --force` **overwrites** it. `19-SECURITY.md`
+///   records that this single line neutralises layer 3 — no injected
+///   `core.hooksPath`, so no `pre-push` hook — with the *same* token that made
+///   layer 2 fail to recognise the command. That is why the threat is high
+///   rather than medium, and why the assignment is refused **on its own
+///   account** rather than merely parsed past (D-09).
+/// - `env -u GIT_CONFIG_COUNT git push --force` and `unset GIT_CONFIG_COUNT`
+///   **remove** it, and neither spells `=`. So a bare word that *is* one of the
+///   keys counts too.
+///
+/// **The false-positive cost, stated rather than discovered:** a driven run
+/// cannot mention one of these key names as a bare unquoted word — `grep
+/// GIT_ASKPASS .` is refused. That is the direction to be wrong in, for the
+/// same reason [`validate_namespace`] degrades to the tighter default: the
+/// refusal is legible and the run can quote the word, while the other direction
+/// is a disarmed enforcement layer nobody notices.
+pub fn tampers_with_envelope_env(word: &str) -> Option<&'static str> {
+    if is_assignment_word(word) {
+        let key = word.split_once('=').map(|(key, _)| key).unwrap_or(word);
+        return envelope_env_key(key);
+    }
+    envelope_env_key(word)
+}
+
+/// Whether any whitespace-delimited word of `text` names a governed program.
+///
+/// Used on a payload the guard could not split into words — an unbalanced quote
+/// inside a `-c` string, say — so that such a payload is refused only when it
+/// actually mentions something this envelope governs. Refusing every
+/// unsplittable payload would refuse `grep -c "don't" file` for nothing.
+pub fn mentions_governed_program(text: &str) -> bool {
+    text.split_whitespace()
+        .any(|word| GOVERNED_PROGRAMS.contains(&program_name(word)))
+}
+
+/// What [`resolve_program`] concluded about one simple command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProgramResolution {
+    /// The segment runs no program at all — a bare `FOO=bar`.
+    NoProgram,
+    /// A program this envelope governs, and **the index its own argv begins
+    /// at**. The index rather than a boolean, so a classifier is applied to the
+    /// same argv it would have seen unwrapped.
+    Governed {
+        /// Index into the segment of the governed program's own token.
+        index: usize,
+    },
+    /// The token at `index` is a command line handed to some other program —
+    /// a `-c` payload, or a quoted string whose first word names a governed
+    /// program. The caller re-splits and re-classifies it.
+    NestedPayload {
+        /// Index into the segment of the word carrying the nested command.
+        index: usize,
+    },
+    /// The segment is refused before any classifier sees it.
+    ///
+    /// The [`ParkReason`] travels with the message rather than being inferred
+    /// from it, for the reason `super::hooks::classify_segments` already
+    /// records about its own refusal pair: a caller that read the reason out of
+    /// the message would be deriving the same fact a second way, and that is
+    /// how a journal comes to disagree with the refusal it records.
+    Refuse {
+        /// The member of D-24's taxonomy this refusal parks under.
+        reason: ParkReason,
+        /// One line naming what caused the refusal. Never the whole command:
+        /// a detail that quotes the command back can carry a secret into the
+        /// journal (SAFE-04), the same rule [`GitVerdict::Refuse`] follows.
+        detail: String,
+    },
+    /// The segment provably reaches no governed program in any command
+    /// position.
+    ///
+    /// **This is a PERMIT, and it is the answer rather than a fall-through.**
+    /// The `PreToolUse` guard is registered against *every* Bash tool call, so
+    /// a resolution that denied what it did not recognise would deny `ls`,
+    /// `cargo test` and `rg`, and a control that fails into unusability is a
+    /// control that gets switched off. What fails closed is the other
+    /// direction: once resolution reaches a governed program, the caller must
+    /// classify it or refuse it, never permit it silently (D-06, D-24).
+    Ungoverned,
+}
+
+/// Resolve which token of a simple command is the **effective program**.
+///
+/// The gap this closes (`T-19-60`) is that the guard used to decide what a
+/// command was by looking at `words[0]`. Five measured lines walked through it:
+/// `env`, a `NAME=VALUE` prefix, `timeout`, `command`, and `env gh pr create`,
+/// the last of which bypassed the SAFE-06 cap with no ledger line and therefore
+/// no park.
+///
+/// **The class, not the instances.** The obvious fix is a list of wrapper names
+/// plus a test row each; it is green on the day it lands and silent on
+/// `stdbuf`, `setsid`, `ionice`, `doas`, `busybox env` and the seventh one
+/// nobody listed. So this function never asks what the wrapper is *called*. It
+/// consumes leading assignment words by the shell's own grammar and then finds
+/// the first token whose **basename** names a program in
+/// [`GOVERNED_PROGRAMS`]. There is nothing for a new wrapper to be missing
+/// from.
+///
+/// **The order below is part of the contract**, because each step exists to be
+/// reached only when the one above it did not answer:
+///
+/// 1. **Any token reaching for an envelope environment key** →
+///    `Refuse(HookBypassBlocked)`. The assignment is refused for what it does
+///    to layer 3, before anything is parsed past.
+/// 2. **Skip leading assignment words.** Nothing left → `NoProgram`; a bare
+///    `FOO=bar` executes no program and refusing it would be refusing an
+///    assignment.
+/// 3. **The head carries an expansion** → `Refuse(EnvelopeAssertionFailed)`.
+/// 4. **The head is `eval`** → `Refuse(EnvelopeAssertionFailed)`.
+/// 5. **The first non-flag, non-expansion token that either names a governed
+///    program (`Governed`) or is a quoted string whose first word does
+///    (`NestedPayload`).**
+/// 6. **Otherwise the first bundled short option containing `c`** hands its
+///    following word over as a nested command line. `-c` is the shell's own
+///    spelling for "here is a command line", so `sh`, `bash`, `busybox sh`,
+///    `script` and anything else that consumes one are covered without being
+///    named — and `bash -lc "…"` is covered where an exact `-c` match was not.
+/// 7. **Otherwise a leading assignment whose VALUE names a governed program**
+///    → `Refuse(EnvelopeAssertionFailed)`. Checked *here*, after resolution has
+///    otherwise failed, so it can never fire on `git commit -m x=git`, whose
+///    segment already answered at step 5.
+/// 8. `Ungoverned`.
+///
+/// ## The two shapes this does NOT cover, named rather than left to be found
+///
+/// * **`T-19-74` — an expansion-assembled program behind a wrapper.**
+///   `env $X push --force`, where `$X` was bound outside this command line,
+///   resolves to `Ungoverned` and is permitted. Closing it would require
+///   refusing every `$VAR` in an ungoverned command, which also refuses
+///   `echo $(git rev-parse HEAD)` and `cd "$HOME"` — a control that fails into
+///   unusability gets switched off. It is narrowed on two sides: step 1 refuses
+///   the envelope-key assignments that would pair with it, and step 7 refuses
+///   binding a governed program name to a variable *in the same command line*.
+///   Each Bash tool call being its own shell process is what keeps it narrow.
+/// * **`T-19-75` — over-refusal from step 5(b).** An argument that literally
+///   spells a refused git command is refused: `rg "git push --force" src/` does
+///   not run. The rule **discriminates** rather than blanket-denying, because
+///   the payload is classified — `rg "git status" src/` is permitted — and the
+///   cost is confined to driven runs and legible when it fires.
+pub fn resolve_program(segment: &[Token]) -> ProgramResolution {
+    // 1. An envelope key is refused on its own account, wherever it appears.
+    for token in segment {
+        if let Some(key) = tampers_with_envelope_env(&token.text) {
+            return ProgramResolution::Refuse {
+                reason: ParkReason::HookBypassBlocked,
+                detail: format!(
+                    "this command sets or removes `{key}`, which is one of the environment \
+                     keys the envelope injects; the same token that hides a command from \
+                     the guard is the one that stops the git hooks from running (D-09)"
+                ),
+            };
+        }
+    }
+
+    // 2. Leading assignment words are a prefix, not the program.
+    let mut head = 0;
+    while head < segment.len() && is_assignment_word(&segment[head].text) {
+        head += 1;
+    }
+    let Some(head_token) = segment.get(head) else {
+        return ProgramResolution::NoProgram;
+    };
+
+    // 3. A program the shell assembles at run time is not knowable here.
+    if head_token.expansion {
+        return ProgramResolution::Refuse {
+            reason: ParkReason::EnvelopeAssertionFailed,
+            detail: "this command's program is assembled by shell expansion, so what it \
+                     will run is not knowable before it runs; refused rather than guessed \
+                     at"
+                .to_string(),
+        };
+    }
+
+    // 4. `eval` builds its command at run time, so no classifier can see it.
+    if program_name(&head_token.text) == "eval" {
+        return ProgramResolution::Refuse {
+            reason: ParkReason::EnvelopeAssertionFailed,
+            detail: "`eval` builds a command at run time, so no classifier can see what it \
+                     will run"
+                .to_string(),
+        };
+    }
+
+    // 5. The first token in any command position that names something governed.
+    for (index, token) in segment.iter().enumerate().skip(head) {
+        if token.expansion || token.text.starts_with('-') {
+            continue;
+        }
+        if GOVERNED_PROGRAMS.contains(&program_name(&token.text)) {
+            return ProgramResolution::Governed { index };
+        }
+        if token.text.split_whitespace().count() > 1
+            && token
+                .text
+                .split_whitespace()
+                .next()
+                .is_some_and(|first| GOVERNED_PROGRAMS.contains(&program_name(first)))
+        {
+            return ProgramResolution::NestedPayload { index };
+        }
+    }
+
+    // 6. `-c` is the shell's own spelling for "the next word is a command line".
+    for (index, token) in segment.iter().enumerate().skip(head) {
+        let word = token.text.as_str();
+        if word == "-" || word.starts_with("--") || !word.starts_with('-') {
+            continue;
+        }
+        if word[1..].contains('c') && segment.len() > index + 1 {
+            return ProgramResolution::NestedPayload { index: index + 1 };
+        }
+    }
+
+    // 7. A governed program bound to a name in this same command line.
+    for token in &segment[..head] {
+        let value = token.text.split_once('=').map(|(_, value)| value);
+        if value.is_some_and(|value| GOVERNED_PROGRAMS.contains(&program_name(value))) {
+            return ProgramResolution::Refuse {
+                reason: ParkReason::EnvelopeAssertionFailed,
+                detail: "this command binds the name of a program the envelope governs to a \
+                         shell variable, so which program it reaches is decided after the \
+                         guard has answered; refused rather than guessed at"
+                    .to_string(),
+            };
+        }
+    }
+
+    // 8. No governed program is reachable. See `ProgramResolution::Ungoverned`
+    //    for why this is the answer and not a gap.
+    ProgramResolution::Ungoverned
+}
+
 /// The forge and the recorded shape of a pull-request creation, or `None`.
 ///
 /// The three forms D-19 names, matched on **tokens** rather than on a joined
@@ -2180,5 +2512,314 @@ mod tests {
             !push_needs_resolved_dests(&["push", "-o", "ci.skip", "origin", "refs/heads/x"]),
             "an option value is not an operand"
         );
+    }
+
+    // ---- which token is the effective program (T-19-60) ----
+
+    /// The resolution of the FIRST simple command of `cmd`.
+    fn resolve(cmd: &str) -> ProgramResolution {
+        let segments = split_segments(cmd).expect("the fixture command's words are recoverable");
+        resolve_program(&segments[0])
+    }
+
+    #[test]
+    fn the_six_measured_bypass_lines_all_resolve_to_the_governed_program() {
+        // The lines `19-SECURITY.md` reproduced at exit 0 against the built
+        // binary. The index is the position `git`/`gh` occupies, because the
+        // classifiers must be applied to the same argv they would have seen
+        // unwrapped.
+        assert_eq!(
+            resolve("env git push --force origin main"),
+            ProgramResolution::Governed { index: 1 }
+        );
+        assert_eq!(
+            resolve("timeout 60 git push --force origin main"),
+            ProgramResolution::Governed { index: 2 }
+        );
+        assert_eq!(
+            resolve("command git push --force origin main"),
+            ProgramResolution::Governed { index: 1 }
+        );
+        assert_eq!(
+            resolve("env gh pr create --title x"),
+            ProgramResolution::Governed { index: 1 }
+        );
+        assert_eq!(
+            resolve("git push --force origin main"),
+            ProgramResolution::Governed { index: 0 },
+            "the unwrapped control: the wrapped and unwrapped forms must reach the same \
+             classifier at the same argv"
+        );
+
+        // The assignment prefix is refused rather than merely skipped, because
+        // the token that hides the command from layer 2 is the same one that
+        // disarms layer 3.
+        match resolve("GIT_CONFIG_COUNT=0 git push --force origin main") {
+            ProgramResolution::Refuse { reason, detail } => {
+                assert_eq!(reason, ParkReason::HookBypassBlocked);
+                assert!(detail.contains("GIT_CONFIG_COUNT"), "{detail}");
+            }
+            other => panic!("the envelope-key assignment must refuse: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_wrapper_name_that_appears_nowhere_in_this_crate_resolves_exactly_like_env() {
+        // **This is the point of the whole design.** A fix built on a list of
+        // wrapper names is green on the day it lands and silent on the seventh
+        // wrapper nobody listed. Nothing here knows what `env` is called, so a
+        // name invented in this assertion behaves identically to it.
+        let known = resolve("env git push --force origin main");
+        let invented = resolve("made-up-wrapper-9000 git push --force origin main");
+        assert_eq!(
+            known, invented,
+            "an unlisted wrapper must resolve identically to a listed one, or the fix is \
+             over a list rather than over the class"
+        );
+
+        assert_eq!(
+            resolve("made-up-wrapper-9000 --flag git push --force"),
+            ProgramResolution::Governed { index: 2 },
+            "the unknown wrapper's own flags are skipped without being understood"
+        );
+        assert_eq!(
+            resolve("nohup nice -n 10 stdbuf -oL setsid git push --force origin main"),
+            ProgramResolution::Governed { index: 7 },
+            "a chain of five names, none of which this module may know"
+        );
+    }
+
+    #[test]
+    fn a_wrapper_is_recognised_by_basename_at_any_path_spelling() {
+        for spelling in [
+            "/usr/bin/env git push --force",
+            "busybox env git push --force",
+            "/bin/busybox env /usr/bin/git push --force",
+        ] {
+            assert!(
+                matches!(resolve(spelling), ProgramResolution::Governed { .. }),
+                "`{spelling}` must resolve to the governed program: `/usr/bin/git` and \
+                 `git` are the same program, and comparing whole strings is defeated by \
+                 what `command -v` prints"
+            );
+        }
+    }
+
+    #[test]
+    fn leading_assignment_words_are_a_prefix_and_a_bare_assignment_runs_nothing() {
+        assert_eq!(
+            resolve("FOO=bar BAZ=qux git push --force"),
+            ProgramResolution::Governed { index: 2 }
+        );
+        assert_eq!(
+            resolve("FOO=bar"),
+            ProgramResolution::NoProgram,
+            "a bare assignment executes no program, and refusing it would be refusing an \
+             assignment"
+        );
+        assert_eq!(resolve("FOO=bar BAZ=qux"), ProgramResolution::NoProgram);
+    }
+
+    #[test]
+    fn the_assignment_grammar_is_the_shells_own_and_not_a_test_for_an_equals_sign() {
+        assert!(is_assignment_word("FOO=bar"));
+        assert!(is_assignment_word("_x1="));
+        assert!(
+            !is_assignment_word("--opt=value"),
+            "a long option is not an assignment, and skipping it as one would consume the \
+             program token"
+        );
+        assert!(!is_assignment_word("a/b=c"));
+        assert!(!is_assignment_word("core.hooksPath=x"));
+        assert!(!is_assignment_word("=bar"));
+        assert!(!is_assignment_word("plain"));
+
+        // The consequence at the resolver: a `-m` message containing `=` must
+        // not swallow anything.
+        assert_eq!(
+            resolve("git commit -m x=git"),
+            ProgramResolution::Governed { index: 0 },
+            "step 5 answers first, so step 7 can never fire on a commit message"
+        );
+    }
+
+    #[test]
+    fn an_expansion_assembled_head_and_an_eval_are_both_refused() {
+        for hostile in ["$TOOL push --force", "eval \"git push --force\""] {
+            assert!(
+                matches!(
+                    resolve(hostile),
+                    ProgramResolution::Refuse {
+                        reason: ParkReason::EnvelopeAssertionFailed,
+                        ..
+                    }
+                ),
+                "`{hostile}` must be refused: {:?}",
+                resolve(hostile)
+            );
+        }
+    }
+
+    #[test]
+    fn binding_a_governed_program_name_in_the_same_command_line_is_refused() {
+        // The narrow half of `T-19-74` that IS closable: the binding and the
+        // use are in one segment, so the guard can see both.
+        assert!(
+            matches!(
+                resolve("X=git made-up-wrapper-9000 --flag run"),
+                ProgramResolution::Refuse {
+                    reason: ParkReason::EnvelopeAssertionFailed,
+                    ..
+                }
+            ),
+            "{:?}",
+            resolve("X=git made-up-wrapper-9000 --flag run")
+        );
+    }
+
+    #[test]
+    fn a_dash_c_payload_is_followed_whatever_program_consumes_it() {
+        // The structural replacement for the deleted `NESTED_SHELLS` list.
+        // `-c` is the shell's own spelling for "here is a command line", so
+        // nothing here needs to know what a shell is called.
+        assert_eq!(
+            resolve("bash -c \"git push --force\""),
+            ProgramResolution::NestedPayload { index: 2 }
+        );
+        assert_eq!(
+            resolve("bash -lc \"git push --force\""),
+            ProgramResolution::NestedPayload { index: 2 },
+            "`-lc` is covered where an exact `-c` match was not"
+        );
+        assert_eq!(
+            resolve("script -c \"git push --force\" /dev/null"),
+            ProgramResolution::NestedPayload { index: 2 },
+            "`script` was never in the shell list and needs no entry in one"
+        );
+        assert_eq!(
+            resolve("tar -czf a.tgz dir"),
+            ProgramResolution::NestedPayload { index: 2 },
+            "a `-c` that is not a shell's `-c` hands over a payload that resolves to \
+             NOTHING rather than to a refusal, which is why following it costs nothing"
+        );
+        assert_eq!(
+            resolve_program(&split_segments("a.tgz").unwrap()[0]),
+            ProgramResolution::Ungoverned,
+            "and that is the resolution of the payload `tar -czf` handed over"
+        );
+    }
+
+    #[test]
+    fn a_quoted_command_line_is_followed_when_its_first_word_is_governed() {
+        // Step 5(b): the payload half of the class — a command handed to an
+        // unknown program as one quoted string.
+        assert_eq!(
+            resolve("ssh host \"git push --force\""),
+            ProgramResolution::NestedPayload { index: 2 }
+        );
+        assert_eq!(
+            resolve("rg \"git status\" src/"),
+            ProgramResolution::NestedPayload { index: 1 },
+            "it DISCRIMINATES rather than blanket-denying: the payload is classified, so \
+             a search for an allowed command stays allowed. The paired cost is T-19-75"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_command_is_ungoverned_which_is_a_permit_and_not_a_gap() {
+        // The guard sees EVERY Bash tool call. A resolution that denied what it
+        // did not recognise would deny each of these and make a driven run
+        // unusable, which is how a safety control gets switched off.
+        for ordinary in [
+            "ls -la",
+            "echo hi",
+            "rg -n TODO src/",
+            "cargo test --lib",
+            "timeout 5 ls",
+            "make -j8 all",
+        ] {
+            assert_eq!(
+                resolve(ordinary),
+                ProgramResolution::Ungoverned,
+                "`{ordinary}` must resolve to a permit"
+            );
+        }
+    }
+
+    #[test]
+    fn removing_an_envelope_key_counts_as_reaching_for_it_just_as_setting_it_does() {
+        // `env -u GIT_CONFIG_COUNT git push` and `unset GIT_CONFIG_COUNT` are
+        // how the key is removed rather than set, and neither spells `=`.
+        for shape in [
+            "env -u GIT_CONFIG_COUNT git push --force",
+            "unset GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0=core.hooksPath git push",
+            "GIT_SSH_COMMAND=ssh git push origin refs/heads/gsd-auto/a/b",
+        ] {
+            assert!(
+                matches!(
+                    resolve(shape),
+                    ProgramResolution::Refuse {
+                        reason: ParkReason::HookBypassBlocked,
+                        ..
+                    }
+                ),
+                "`{shape}` must park under hook_bypass_blocked: {:?}",
+                resolve(shape)
+            );
+        }
+
+        assert!(
+            tampers_with_envelope_env("GIT_CONFIG_VALUE_11").is_some(),
+            "the indexed keys are matched as prefixes, because their suffix is an index"
+        );
+        assert!(
+            tampers_with_envelope_env("GIT_COMMITTER_NAME=x").is_none(),
+            "a git variable the envelope does NOT inject is not this refusal's business"
+        );
+    }
+
+    #[test]
+    fn every_envelope_key_the_child_environment_actually_sets_is_covered_by_the_constant() {
+        // The drift pin. `ENVELOPE_ENV_KEYS` is a second spelling of a fact
+        // `cred::build_env_in` already owns, and the day they drift is the day
+        // this refusal silently stops covering the key it was written for —
+        // the same discipline `forbidden_repo_prefixes` uses by deriving its
+        // runs path from `journal::RUNS_SUBDIR`.
+        let envelope = tempfile::TempDir::new().unwrap();
+        let project = tempfile::TempDir::new().unwrap();
+        let env = crate::envelope::cred::build_env_in(
+            envelope.path(),
+            "alpha",
+            project.path(),
+            std::path::Path::new("/opt/gsd-meta-manager"),
+        )
+        .expect("the fixture environment builds");
+
+        let set: Vec<String> = env
+            .entries()
+            .iter()
+            .filter(|(_, value)| value.is_some())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("GIT_") || name.starts_with("GH_"))
+            .collect();
+
+        // Non-vacuity first: an empty environment would satisfy the coverage
+        // claim below having proved nothing at all.
+        assert!(
+            set.len() >= 5,
+            "the built child environment must actually set the keys this pin is about, or \
+             the coverage assertion proves nothing: {set:?}"
+        );
+
+        for name in &set {
+            assert!(
+                envelope_env_key(name).is_some(),
+                "`{name}` is SET in the driven child's environment by `cred::build_env_in` \
+                 but is not covered by `ENVELOPE_ENV_KEYS`, so a command that reassigns or \
+                 removes it is not refused. Add it to the constant rather than narrowing \
+                 this test. Covered set: {ENVELOPE_ENV_KEYS:?}"
+            );
+        }
     }
 }
