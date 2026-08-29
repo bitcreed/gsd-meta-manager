@@ -3,14 +3,14 @@ phase: 19
 slug: gitsafe-git-blast-radius-envelope
 status: blocked
 # threats_open = count of OPEN threats at or above workflow.security_block_on severity (high)
-threats_open: 1
+threats_open: 2
 asvs_level: 1
 block_on: high
 created: 2026-08-29
+updated: 2026-08-29
 register_authored_at_plan_time: true
-audited_against: HEAD (0ec1fcb) — note that src/envelope/hooks.rs has since been
-  modified by phase-21 commits 337f67a and b38451c, so this audit judges the
-  current tree, not the phase-19 tip.
+audited_against: HEAD (b8605ef) — the second audit judges the tree after plans
+  19-11 and 19-12. The first audit (2026-08-29) judged 0ec1fcb.
 ---
 
 # Phase 19 — Security
@@ -24,8 +24,22 @@ all ten plans (`register_authored_at_plan_time: true`); this audit verifies that
 each declared mitigation exists in the implementation and that the test named as
 its evidence actually asserts the property.
 
-**Verdict: OPEN_THREATS.** One high-severity threat is open and blocking
-(`T-19-60`). Sixty-eight of sixty-nine threats are closed.
+**Verdict (audit 2, 2026-08-29): OPEN_THREATS.** Two high-severity threats are
+open and blocking — `T-19-60`, **narrowed but not closed** by plans 19-11/19-12,
+and `T-19-81`, found during this audit. Ninety-seven threats total, seventy-eight
+closed, nineteen open (two at or above the `high` block threshold).
+
+> **What changed since audit 1.** Plans 19-11 and 19-12 replaced `words[0]`
+> classification with `policy::resolve_program` and closed every one of the six
+> originally measured bypass lines — verified independently against the built
+> binary, not accepted from the summaries. They also fixed a second live
+> vulnerability found in passing (`GIT_SSH_COMMAND` missing from
+> `ENVELOPE_ENV_KEYS`). But the declared property — *"the verdict is invariant
+> under any wrapper chain"* — is false: `resolve_program` selects the first token
+> whose basename is governed **without establishing that it is in a command
+> position**, so a wrapper's own option operand spelled `git` captures the index
+> and the real command is classified one word off. `env -u git git push --force
+> origin main` is permitted. See the T-19-60 section below.
 
 ---
 
@@ -65,7 +79,18 @@ underneath it.
 
 ## Threat Register
 
-Sixty-nine threats. Sixty-eight closed, one open and blocking.
+Ninety-seven threats, in four groups. Bookkeeping is stated explicitly because
+audit 1's header ("sixty-nine … sixty-eight closed") folded the audit-found rows
+into the plan-time count inconsistently:
+
+| Group | Count | Closed | Open |
+|---|---|---|---|
+| Plan-time register, plans 19-01 … 19-10 + supply chain | 69 | 69 | 0 |
+| Plan-time register, plan 19-11 (`T-19-60a/b`, `T-19-74`, `T-19-75`) | 4 | 4 | 0 |
+| Plan-time register, plan 19-12 (`T-19-76` … `T-19-80`) | 5 | 5 | 0 |
+| Found by audit 1 (`T-19-60`, `T-19-61` … `T-19-73`) | 14 | 0 | 14 (1 at `high`) |
+| Found by audit 2 (`T-19-81` … `T-19-85`) | 5 | 0 | 5 (1 at `high`) |
+| **Total** | **97** | **78** | **19 (2 at `high`)** |
 
 ### Plan 19-01 — hook stubs, provenance, alias path safety
 
@@ -180,6 +205,28 @@ Sixty-nine threats. Sixty-eight closed, one open and blocking.
 | T-19-10-04 | Tampering | the alias-uniqueness gate | medium | mitigate | Needles assembled at runtime; `!aliases.is_empty()` anti-vacuity assertion precedes the substantive ones | closed |
 | T-19-10-05 | Elevation of Privilege | test aliases as path components | low | **accept** | Validated by `envelope_dir_in`; the gate `expect`s `Some`, so a hostile literal is a red test | closed (accepted) |
 
+### Plan 19-11 — structural program resolution (the T-19-60 fix)
+
+| Threat ID | Category | Component | Severity | Disposition | Mitigation / Evidence | Status |
+|---|---|---|---|---|---|---|
+| T-19-60a | Tampering | `GIT_CONFIG_COUNT` assignment prefix | high | mitigate | `tampers_with_envelope_env` `policy.rs:1263-1269` refuses any word assigning to or bare-naming an envelope key under `hook_bypass_blocked`, at `resolve_program` step 1 — **before** anything is parsed past. Measured by this audit: `GIT_CONFIG_COUNT=0 git push --force origin main` → exit 2 `hook_bypass_blocked`; `env -u GIT_CONFIG_COUNT git push --force` → exit 2; `GIT_SSH_COMMAND=ssh git push origin main` → exit 2. Drift-pinned against `EnvelopeEnv::entries()` (`policy.rs:2782-2824`), pin proved fail-first. **Literal spellings only — see `T-19-81`** | closed |
+| T-19-60b | Elevation of Privilege | a command handed to another program as one quoted string | high | mitigate | `resolve_program` step 5(b) `policy.rs:1440-1448` follows a whitespace-bearing token whose first word names a governed program, covering `script -c`, `ssh host "…"` and `command eval "…"` without naming them. Measured: `bash -lc "git push --force origin main"` and `sh -c` → exit 2. Over-refusal cost declared as `T-19-75` | closed |
+| T-19-74 | Elevation of Privilege | expansion-assembled program behind a wrapper | medium | **accept** | `env $X push --force` with `$X` bound outside the command line resolves to `Ungoverned` and is permitted. Disclosed at `policy.rs:1373-1381`, pinned on both sides by `tests/envelope_wrapper_class.rs`. Layer 3 still refuses the push, which is the difference from `T-19-60`. **The disclosure's narrowing argument is factually wrong — see `T-19-84`** | closed (accepted) |
+| T-19-75 | Denial of Service | over-refusal from the quoted-payload rule | medium | **accept** | `rg "git push --force" src/` is refused. Verified **discriminating**, not blanket: `rg "git status" src/` → exit 0, `rg "git push --force" src/` → exit 2. Blast radius measured and narrow — commit messages, PR titles, `sed`, `jq` and heredocs are unaffected. Disclosed at `policy.rs:1382-1386`. **Park-reason wrinkle undisclosed — see `T-19-85`** | closed (accepted) |
+
+### Plan 19-12 — the class-level control corpus
+
+Five control-quality threats, all about whether the corpus certifying the fix can
+fail. Each is closed on its own scope; the adjacent uncovered shape is `T-19-83`.
+
+| Threat ID | Category | Component | Severity | Disposition | Mitigation / Evidence | Status |
+|---|---|---|---|---|---|---|
+| T-19-76 | Spoofing | a corpus incapable of failing on its own class | medium | mitigate | 12 wrapper names asserted absent from production logic; fail-first proved by mutating `GOVERNED_PROGRAMS`. Verified: no wrapper-name list exists in `src/` (`NESTED_SHELLS` deleted, only comment references survive) | closed |
+| T-19-77 | Spoofing | a property that passes by generating nothing | medium | mitigate | Four floors asserted before the generative loop; RHS measured from the unwrapped base in the same run | closed |
+| T-19-78 | Spoofing | a fix certified by a suite that would pass if everything were denied | high | mitigate | 1080 wrapped permits asserted with empty stdout, plus the `rg` discrimination pair. Independently corroborated: `ls`, `echo hi`, `env git status`, `rg "git status" src/` all exit 0 | closed |
+| T-19-79 | Repudiation | a disclosed residual deleted without notice | medium | mitigate | Doc-disclosure pin over a 3364-byte extracted region with an anti-vacuity floor asserted first. **Pins that the paragraph exists, not that it is true — see `T-19-84`** | closed |
+| T-19-80 | Denial of Service | a property that consults a repository per case | low | **accept** | Refspec-less push excluded, one `TempDir` for the whole property, 0.2 s total | closed (accepted) |
+
 ### Supply chain
 
 | Threat ID | Category | Component | Severity | Disposition | Mitigation / Evidence | Status |
@@ -188,15 +235,20 @@ Sixty-nine threats. Sixty-eight closed, one open and blocking.
 
 ---
 
-### Threats found during this audit
+### Threats found by audit 1 (2026-08-29)
 
 Two auditors surfaced surfaces that the plan-time register does not cover. They
 are recorded here so they have a durable home rather than living only in a
-transcript. `T-19-60` is the only one at or above the `high` block threshold.
+transcript.
+
+`T-19-61` through `T-19-73` were **deliberately left unremediated** by an
+explicit user scoping decision taken after audit 1. Audit 2 re-checked each for
+side effects of the 19-11/19-12 edits and carried them forward at their original
+severities. They are **open and not accepted**.
 
 | Threat ID | Category | Component | Severity | Disposition | Finding | Status |
 |---|---|---|---|---|---|---|
-| **T-19-60** | **Elevation of Privilege** | **`classify_segments` program-token selection** | **high** | **mitigate (unimplemented)** | **The guard classifies on `words[0]` alone (`hooks.rs:943` → `policy::program_name`). It follows `sh/bash/zsh/dash/ksh -c` payloads and refuses `eval` and expansion-assembled verbs, but it is **not** transparent to the wrapper family (`env`, `timeout`, `nohup`, `command`, `nice`, `stdbuf`, `ionice`, `sudo`, …) nor to a bare `NAME=VALUE` assignment prefix. Such a command falls through `classify_segments` to `Ok(None)` and is permitted.** | **OPEN — BLOCKING** |
+| **T-19-60** | **Elevation of Privilege** | **`resolve_program` command-position selection** | **high** | **mitigate (partial)** | **Audit 1:** the guard classified on `words[0]` alone, so the wrapper family (`env`, `timeout`, `nohup`, `command`, …) and a bare `NAME=VALUE` prefix fell through to a permit. **Audit 2: narrowed, NOT closed.** `policy::resolve_program` replaced `words[0]` and every one of the six measured lines is now refused — but step 5 (`policy.rs:1433-1449`) returns `Governed { index }` for the first token whose basename is governed **without establishing that the token is in a command position**. A wrapper's own *option operand* spelled `git`/`gh`/`glab` captures the index; the real program then becomes `argv[0]` of the classified argv, `classify_git` reads it as the **verb**, `git` is not in the denylist, and the answer is `Allow`. Measured: `env -u git git push --force origin main` → **exit 0**. | **OPEN — BLOCKING** |
 | T-19-61 | Repudiation | `hooks::deny` | medium | mitigate | `hooks.rs:1144-1145` write the decision and the stderr mirror with `?` **before** `park_refusal` at `:1156`, so a failed stdio write skips the park for every reason. A broken **stderr** additionally makes `main.rs`'s `eprintln!` double-panic and abort (wait status 134), which a `PreToolUse` consumer reads as a non-blocking error. Not agent-reachable (see below). A second unparked `?` path exists at `hooks.rs:337` (`read_ref_lines`). | open — below `high` (non-blocking) |
 | T-19-62 | Repudiation | park coverage | medium | mitigate | The single-funnel property is true today but held **only by reading**. Four of seven `ParkReason` variants and five of nine `park_refusal` call sites have no on-disk coverage; four named single-line deletions leave the whole suite green. Worst: deleting `park_refusal` at `hooks.rs:444` (`refuse_paths`, the reserved-path refusal for *both* hooks) — `tests/envelope_hook_refusals.rs` contains zero journal assertions. | open — below `high` (non-blocking) |
 | T-19-63 | Information Disclosure | `CredentialSource::Env` | medium | mitigate | `resolve_credential` reads the variable from the **parent** environment (`cred.rs:619`) and the spawn closure scrubs only `CLAUDE*` plus the `EnvelopeEnv` entries, so the configured variable is inherited by the driven child and readable in its `/proc/<pid>/environ`. Within D-17's accepted class in principle, but it falsifies `write_askpass_stub_in`'s stated "not at rest / not visible in the process table" property for that source. Fix: emit a removal entry for the configured variable name in `build_env`. | open — below `high` (non-blocking) |
@@ -211,15 +263,237 @@ transcript. `T-19-60` is the only one at or above the `high` block threshold.
 | T-19-72 | Spoofing | T-19-18's declared evidence | low | mitigate | `19-03-SUMMARY.md:176` cites `tests/envelope_hook_refusals.rs` as proving the `Absent`-never-permits property. No such assertion exists anywhere in `tests/`. The mitigation is present and correct (verified structurally and empirically) but **unpinned** — an edit making `is_clean()` consult `external` turns nothing red. | open — below `high` (non-blocking) |
 | T-19-73 | Information Disclosure | `CredentialSource` drift | low | mitigate | T-19-11 holds by construction but has no drift-pin test; a third variant carrying a literal token would compile and pass the suite. Cheap fix: assert `serde_json::from_str::<CredentialSource>(r#"{"source":"literal","token":"x"}"#)` is an `Err`. | open — below `high` (non-blocking) |
 
+**Audit 2 re-check of T-19-61 … T-19-73: all thirteen unchanged.** The
+19-11/19-12 diff is exactly four files (`git diff --numstat 5e574c4..HEAD`):
+`src/envelope/hooks.rs`, `src/envelope/policy.rs` (additions only, 641/0) and the
+two new test files. `cred.rs`, `mod.rs`, `advisory.rs`, `scan.rs` and `config.rs`
+are byte-identical, so `T-19-63` and `T-19-65` … `T-19-73` cannot have moved.
+Two were re-verified directly because 19-11 touched their file:
+
+- **`T-19-61` — unchanged.** `hooks::deny` is the function 19-11 deliberately did
+  not touch. The `?`-before-`park_refusal` ordering is intact: `hooks.rs:1212`
+  and `:1213` both use `?`, `park_refusal` is at `:1224` (line numbers shifted
+  from 1144/1156 by insertions above; the sequence is identical). The second
+  unparked `?` at `hooks.rs:337` (`read_ref_lines`) is also unchanged. Still not
+  agent-reachable; still not a blocker on its own merits.
+- **`T-19-62` — unchanged; the new tests neither close nor weaken it.** All nine
+  `park_refusal` call sites intact (`:331, :354, :388, :399, :444, :688, :709,
+  :826, :1224`); `super::park` still has exactly one non-test caller. Neither
+  `tests/envelope_wrapper_bypass.rs` nor `tests/envelope_wrapper_class.rs`
+  contains an on-disk `Parked` assertion, so the four named single-line deletions
+  still leave the suite green. Not a blocker on its own merits.
+
+---
+
+### Threats found by audit 2 (2026-08-29, after plans 19-11 / 19-12)
+
+| Threat ID | Category | Component | Severity | Disposition | Finding | Status |
+|---|---|---|---|---|---|---|
+| **T-19-81** | **Tampering / Elevation of Privilege** | **`resolve_program` step 1 — literal-token matching of `ENVELOPE_ENV_KEYS`** | **high** | **mitigate (unimplemented)** | **The envelope-key refusal matches only a token that literally *is* the key or assigns to it. The name can be bound to a shell variable in a prior segment of the *same* Bash tool call and then removed indirectly, which the guard does not see. Measured: `K=GIT_SSH_COMMAND; SSH_AUTH_SOCK=/tmp/evil env -u $K git fetch origin` → **exit 0**. That single tool call removes the `GIT_SSH_COMMAND` braces *and* restores the `SSH_AUTH_SOCK` belt, putting the user's own ssh-agent and default identities back inside a driven run — the escape D-16 and `T-19-23` (high) exist to prevent. Nothing checks an assignment's **value** against `ENVELOPE_ENV_KEYS`, although step 7 already performs exactly that check against `GOVERNED_PROGRAMS`. Independent of `T-19-60`: the pure form `env -u $K git push --force origin main` is still refused, so this is not the decoy mechanism.** | **OPEN — BLOCKING** |
+| T-19-82 | Information Disclosure | `ENVELOPE_ENV_KEYS` vs. the envelope's **removal** entries | medium | mitigate | `SSH_AUTH_SOCK` and `SSH_AGENT_PID` are removed by `cred::build_env_in` (`cred.rs:402-403`) but absent from `ENVELOPE_ENV_KEYS`, and the drift pin's `filter(\|(_, value)\| value.is_some())` guarantees it will never notice — the pin would not have caught `GIT_SSH_COMMAND` either, had that key been a removal. Measured: `SSH_AUTH_SOCK=/tmp/evil git fetch origin` → exit 0. **Inert on its own** while `GIT_SSH_COMMAND` holds (`IdentityAgent=none`, `IdentitiesOnly=yes`, `-F /dev/null`); live in combination with `T-19-81`. The pin's second filter, `starts_with("GIT_") \|\| starts_with("GH_")`, additionally excludes a future `GITHUB_*`, `GLAB_*` (a governed program) or `SSH_*` key. | open — below `high` (non-blocking) |
+| T-19-83 | Spoofing | `tests/envelope_wrapper_class.rs` `WRAPPERS` alphabet | medium | mitigate | The generative class-level corpus contains wrappers with operands (`env -u SOME_VAR`, `runuser -u me --`) but **no operand whose basename is a governed program**, so it is structurally incapable of failing on the surviving `T-19-60` shape. The discriminating pair, measured: `env -u SOME_VAR git push --force origin main` → exit 2, `env -u git git push --force origin main` → exit 0. This is `T-19-76`'s own failure mode one level up — the corpus certifying the fix cannot fail on the class it certifies. | open — below `high` (non-blocking) |
+| T-19-84 | Repudiation | `T-19-74`'s disclosure in `resolve_program`'s doc | low | mitigate | The doc (`policy.rs:1373-1381`) claims the residual requires `$X` "bound outside this command line" and that "each Bash tool call being its own shell process is what keeps it narrow". Both are false: `env $(echo git) push --force origin main` → exit 0 with no prior binding and no outside state, and `K=…; env -u $K …` binds inside the same tool call in a segment the guard can see. `T-19-79`'s doc-disclosure pin enforces that the paragraph *exists*, not that it is *true*. | open — below `high` (non-blocking) |
+| T-19-85 | Repudiation | `T-19-75`'s park reason | low | mitigate | A benign `rg "git push --force" src/` is refused **and parked under `force_push_blocked`**, so the run journal records a force-push refusal for a source search. The accept rationale discloses the refusal but not the misdescribing evidence record (D-24/D-25). | open — below `high` (non-blocking) |
+
 *Status: open · closed · open — below `high` threshold (non-blocking)*
 *Severity: critical > high > medium > low — only open threats at or above `workflow.security_block_on` count toward `threats_open`*
 *Disposition: mitigate (implementation required) · accept (documented risk) · transfer (third-party)*
 
 ---
 
-## T-19-60 — the blocking threat, in detail
+## T-19-60 after 19-11/19-12 — narrowed, not closed
 
-**What it is.** The `PreToolUse` guard decides what a command is by looking at
+### What the fix does deliver
+
+Verified independently against the built binary, not accepted from the
+summaries. The guard was driven as
+`printf '{"tool_name":"Bash","tool_input":{"command":"<CMD>"}}' | GSD_MM_ENVELOPE_ROOT=<fresh tempdir> ./target/debug/gsd-meta-manager envelope guard alpha`,
+**one fresh tempdir per row** (the PR ledger persists and otherwise produces
+misleading cap-exhaustion refusals):
+
+```
+exit=2  git push --force origin main                          <- control, correct
+exit=2  env git push --force origin main                      <- FIXED (force_push_blocked)
+exit=2  GIT_CONFIG_COUNT=0 git push --force origin main       <- FIXED (hook_bypass_blocked)
+exit=2  timeout 60 git push --force origin main               <- FIXED (force_push_blocked)
+exit=2  command git push --force origin main                  <- FIXED (force_push_blocked)
+exit=2  env gh pr create --title x  (2nd call)                <- FIXED, ledger line written
+exit=2  /usr/bin/env git push --force origin main             <- FIXED
+exit=2  nohup nice -n 5 stdbuf -o0 timeout 60 env git push …  <- FIXED (deep chain)
+exit=2  made-up-wrapper-9000 git push --force origin main     <- FIXED (unnamed wrapper)
+exit=2  GIT_SSH_COMMAND=ssh git push origin main              <- FIXED (hook_bypass_blocked)
+exit=2  env -u GIT_CONFIG_COUNT git push --force origin main  <- FIXED (hook_bypass_blocked)
+exit=2  X=git; $X push --force                                <- FIXED (envelope_assertion_failed)
+exit=0  ls                                                    <- permitted, correct
+exit=0  echo hi                                               <- permitted, correct
+exit=0  env git status                                        <- permitted, correct
+exit=0  rg "git status" src/                                  <- permitted, correct
+```
+
+`env gh pr create --title x` in a fresh root exits 0 **and writes a ledger line**
+(`{"command":"gh pr create","platform":"github"}`), so the SAFE-06 cap now counts
+the wrapped form. `NESTED_SHELLS` is genuinely gone and no wrapper-name list
+replaced it. The mechanism is real and the six original lines are genuinely
+closed.
+
+### The shape that survives
+
+`resolve_program` step 5 (`policy.rs:1433-1449`) returns `Governed { index }` for
+the **first token in the segment whose basename is in `GOVERNED_PROGRAMS`**,
+skipping only tokens that start with `-`. It never establishes that the token it
+found is in a *command position*. So any earlier token literally spelled
+`git`/`gh`/`glab` — typically a wrapper's own **option operand** — captures the
+index. `classify_segments` then applies `classify_git` to `words[index+1..]`, the
+real `git` becomes `argv[0]` of that slice, `scan_leading` breaks on it (it does
+not start with `-`), `classify_git` reads it as the **verb**, the verb `git` is
+not in the denylist, and the answer is `Allow`.
+
+Measured by this audit, each in a fresh root:
+
+| Command line | exit | Consequence |
+|---|---|---|
+| `env -u SOME_VAR git push --force origin main` | 2 | correct — the discriminator |
+| **`env -u git git push --force origin main`** | **0** | **force push permitted** |
+| **`env -u git git -c core.hooksPath=/dev/null push --force origin main`** | **0** | **all three layers cleared, credential intact** |
+| **`env -u gh gh pr create --title x`** | **0** | **PR cap bypassed, no ledger line, no park** |
+| `sudo -u git git push --force origin main` | 0 | force push permitted |
+| `env -u git git stash` | 0 | permitted; `stash` has no hook carrier |
+| `env $(echo git) push --force origin main` | 0 | permitted (layer 3 still fires) |
+
+**Why row 2 is high and blocking.** It is a *single simple command* — no
+assignment, no expansion, no semicolon, no shell nesting — and it defeats all
+three layers with the credential intact:
+
+1. **Layer 1** — `Bash(git push:*)` is a prefix rule owned by the agent CLI; the
+   line starts with `env`.
+2. **Layer 2** — measured exit 0 above.
+3. **Layer 3** — `git -c core.hooksPath=` is the one form that outranks the
+   envelope's env-injected setting, which `policy.rs`'s own `T-19-09` refusal
+   says outright (D-09). Verified empirically:
+   `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/ENV_WINS git -c core.hooksPath=/CLI_WINS config --get core.hooksPath`
+   prints `/CLI_WINS`. No `pre-push` hook runs.
+4. **Credentials survive.** `GIT_ASKPASS`, `GIT_CONFIG_GLOBAL/SYSTEM` and
+   `GIT_SSH_COMMAND` are untouched, so the push authenticates. This is **strictly
+   worse than the original T-19-60**, whose D-09 note recorded that the escape at
+   least cost the agent its token.
+
+Rows 4 and 6 have **no second carrier at all** — `git stash`, `update-ref` and
+the PR cap have no `pre-push`/`pre-commit` backstop (`hooks.rs:1263-1270`,
+`T-19-35`) — so for those the guard is the only control and it is bypassed
+outright.
+
+**Why the 19-12 class-level corpus could not catch it.** Its `WRAPPERS` alphabet
+contains wrappers *with operands* (`env -u SOME_VAR`, `runuser -u me --`) but no
+operand whose basename is a governed program. Recorded as `T-19-83`.
+
+**Suggested closure.** Return `Governed` only for a token in a command position —
+the first non-option word after the head, having accounted for wrapper option
+operands — and `Refuse` rather than mis-index when command position cannot be
+established structurally. Independently and more cheaply: `classify_git` should
+**refuse**, not `Allow`, an argv whose verb is itself `git`/`gh`/`glab`, which
+kills the whole decoy family in one line. Then add `env -u git`-shaped operands
+to the 19-12 alphabet so the corpus can fail on this class.
+
+## T-19-81 — the second blocking threat, in detail
+
+`resolve_program` step 1 refuses a token that literally *is* an envelope key or
+assigns to one. It does not look at what an assignment's **value** is, even
+though step 7 already performs exactly that check against `GOVERNED_PROGRAMS`.
+So the key name can be bound in a prior segment of the **same** Bash tool call
+and removed indirectly:
+
+```
+exit=2  env -u $K git push --force origin main                                  <- refused (no decoy)
+exit=2  K=GIT_CONFIG_COUNT; env -u $K git push --force origin main              <- refused
+exit=0  K=GIT_SSH_COMMAND; SSH_AUTH_SOCK=/tmp/evil env -u $K git fetch origin   <- PERMITTED
+exit=0  SSH_AUTH_SOCK=/tmp/evil git fetch origin                                <- PERMITTED
+```
+
+The third line is the finding. In one tool call it removes `GIT_SSH_COMMAND` —
+the braces carrying `IdentitiesOnly=yes`, `IdentityAgent=none`, `BatchMode=yes`
+and `-F /dev/null` — **and** restores `SSH_AUTH_SOCK`, the belt. Neither half is
+refused: the removal is indirect so step 1 does not see the key, and
+`SSH_AUTH_SOCK` is not in `ENVELOPE_ENV_KEYS` at all (`T-19-82`). The socket is
+discoverable from inside the run (`ls -d /tmp/ssh-*/agent.*`). Together this puts
+the user's own ssh-agent and default identities back within reach of a driven
+run, which is exactly what D-16 and `T-19-23` (high) exist to prevent, and what
+`SECTION_ENVELOPE` states outright is not possible.
+
+It is **independent of `T-19-60`**: the pure form without the `git` decoy is
+still refused, so this is not the same mechanism re-measured.
+
+**Suggested closure.** Refuse a leading assignment whose **value** is covered by
+`envelope_env_key`, symmetric to step 7's `GOVERNED_PROGRAMS` check; and treat an
+expansion-bearing operand of a removal-style flag as unresolvable rather than
+skippable.
+
+## `ENVELOPE_ENV_KEYS` — completeness and drift-pin strength
+
+The orchestrator asked this specifically, on the grounds that a key list wrong
+once may be wrong again. It was.
+
+**Completeness — enumerated from `cred::build_env_in` (`cred.rs:398-475`) rather
+than taken from the constant:**
+
+| Entry | Kind | Covered by `ENVELOPE_ENV_KEYS`? |
+|---|---|---|
+| `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n` | set | yes (prefix entries) |
+| `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` | set | yes |
+| `GIT_ASKPASS`, `GIT_TERMINAL_PROMPT` | set | yes |
+| `GIT_SSH_COMMAND` | set | yes — **added by 19-11, this was the live bug** |
+| `GH_CONFIG_DIR` | set | yes |
+| `SSH_AUTH_SOCK` | **removed** | **NO** — `T-19-82` |
+| `SSH_AGENT_PID` | **removed** | **NO** — `T-19-82` |
+| `GSD_MM_ENVELOPE_PROJECT_ROOT` | set | no (evidence locator; within accepted `T-19-57`) |
+| `GSD_MM_RUN_ID` | set | no (evidence locator; within accepted `T-19-57`) |
+
+**Verdict: complete for every SET `GIT_`/`GH_` key; incomplete for the two
+removals.**
+
+**Drift-pin strength: partial — it will catch the next omission only if that
+omission is a SET key whose name begins exactly `GIT_` or `GH_`.** The pin
+(`policy.rs:2782-2824`) carries two filters, and both exclude live surface:
+
+- `filter(|(_, value)| value.is_some())` excludes **every removal entry**.
+  Removal is not an implementation detail here — `EnvelopeEnv`'s own doc
+  (`cred.rs:129-135`) says D-16 "turns on removal rather than overwriting". This
+  filter is precisely why `SSH_AUTH_SOCK`/`SSH_AGENT_PID` are invisible to the
+  pin, and it means **the pin would not have caught `GIT_SSH_COMMAND` either had
+  that key been a removal**.
+- `name.starts_with("GIT_") || name.starts_with("GH_")` defensibly excludes
+  `GSD_MM_*`, but also silently excludes a future `GITHUB_TOKEN`
+  (`"GITHUB_TOKEN".starts_with("GIT_")` is `false`), `GLAB_*` — for a program
+  this envelope *governs* — and `SSH_*`. A `GLAB_CONFIG_DIR` added tomorrow, the
+  exact analogue of `GH_CONFIG_DIR`, would sail past.
+
+The `set.len() >= 5` anti-vacuity floor is real but loose (satisfied 9-to-5).
+
+**Fail-first proof, performed and reverted.** `"GIT_SSH_COMMAND"` was deleted
+from the constant and the single unit test run — **RED**:
+
+```
+panicked at src/envelope/policy.rs:2815:13:
+`GIT_SSH_COMMAND` is SET in the driven child's environment by `cred::build_env_in`
+but is not covered by `ENVELOPE_ENV_KEYS`, so a command that reassigns or removes
+it is not refused. Add it to the constant rather than narrowing this test.
+test result: FAILED. 0 passed; 1 failed
+```
+
+Reverted with `git checkout -- src/envelope/policy.rs`; tree clean afterwards.
+So the pin is genuinely non-vacuous for the class it covers — it simply covers
+less than its doc comment implies.
+
+**Suggested closure (`T-19-82`).** Add `SSH_AUTH_SOCK` and `SSH_AGENT_PID` to
+`ENVELOPE_ENV_KEYS`; drop the `value.is_some()` filter so removals are pinned
+too; and widen the name filter beyond `GIT_`/`GH_`.
+
+---
+
+## T-19-60 as recorded by audit 1 — the original mechanism
+
+Retained for the record; the `words[0]` mechanism below is closed.
+
+**What it was.** The `PreToolUse` guard decided what a command was by looking at
 `words[0]` and nothing else. `classify_segments` (`src/envelope/hooks.rs:929-1054`)
 resolves `policy::program_name(words[0])` and then asks three questions of it: is
 it `eval`, is it a nested shell with a `-c` payload, is it `git`; finally
@@ -366,6 +640,74 @@ whether the code still matches the description.
 
 ---
 
+## The two residuals 19-11 registered — are they correctly classified?
+
+### `T-19-74` — `accept` at medium is correct *as scoped*; the disclosure is wrong
+
+**(a) Is the justification true?** Partly. Refusing every `$VAR` in an ungoverned
+segment would indeed refuse ordinary work — `echo $(git rev-parse HEAD)` and
+`cd "$HOME"` both measured exit 0 today and would stop. But the stated cost is
+inflated: a narrower rule (an expansion token in a *command position*) touches
+neither. And the justification **does not transfer** to the envelope-key half,
+where a targeted fix — checking assignment *values* against `ENVELOPE_ENV_KEYS`,
+symmetric to step 7 — costs nothing. That half is `T-19-81`, and it is **not**
+covered by this acceptance.
+
+**(b) Do the two claimed narrowings hold?**
+
+| Claimed narrowing | Measured | Holds? |
+|---|---|---|
+| step 1 refuses envelope-key assignments | `GIT_CONFIG_COUNT=0 git push --force` → 2; `env -u GIT_CONFIG_COUNT git push --force` → 2 | only for **literal** spellings |
+| — same, indirect | `K=GIT_SSH_COMMAND; SSH_AUTH_SOCK=… env -u $K git fetch` → **0** | **NO** (`T-19-81`) |
+| step 7 refuses a governed name bound in the same command line | `X=git env $X push --force` → 2 `envelope_assertion_failed` | yes, for the same *simple* command |
+| — self-contained substitution | `env $(echo git) push --force origin main` → **0** | **NO — undisclosed** (`T-19-84`) |
+
+**(c) Honestly disclosed?** The mechanism is disclosed at `policy.rs:1373-1381`
+and pinned by `resolve_programs_own_doc_still_discloses_the_residual_it_does_not_cover`
+plus two-sided bound tests — that machinery works and the residual cannot be
+deleted silently. **But the narrowing argument is false as written.** It says
+`$X` "was bound outside this command line" and that "each Bash tool call being
+its own shell process is what keeps it narrow"; `env $(echo git) push --force`
+needs no prior binding and no outside state at all, and `K=…; env -u $K …` binds
+inside the same tool call in a segment the guard can see. The doc pin enforces
+that the paragraph *exists*, not that it is *true*. Recorded as `T-19-84` (low).
+
+**Classification: `accept` at medium is correct and non-blocking** — layer 3
+still refuses the force push for the pure program-name half, which is the whole
+difference from `T-19-60`.
+
+### `T-19-75` — `accept` is correct, honestly disclosed, blast radius narrower than feared
+
+Both directions verified: `rg "git push --force" src/` → **exit 2**
+`force_push_blocked`; `rg "git status" src/` → **exit 0**. It discriminates as
+claimed rather than blanket-denying.
+
+The trigger is narrow: step 5(b) fires only when a token *contains whitespace*
+**and** its first word's basename is a governed program, and refuses only if the
+payload then classifies as a refusal. Blast radius measured rather than assumed:
+
+| Realistic driven-run command | exit |
+|---|---|
+| `rg "git push --force" src/` | 2 |
+| `grep -rn "git stash" .` | 2 |
+| `printf 'git update-ref -d refs/heads/x\n'` | 2 |
+| `git commit -m "fix: stop git push --force bypassing the guard"` | 0 |
+| `gh pr create --title "block git push --force" --body x` | 0 |
+| `echo "run git stash to save work"` | 0 |
+| `git log --grep="git stash"` · `sed -i 's/git stash/x/' README.md` · `jq` · heredocs | 0 |
+
+Commit messages, PR titles, `sed`, `jq` and heredocs are unaffected; the cost is
+confined to `grep`/`rg`/`echo`/`printf` over a string that *starts* with
+`git `/`gh `/`glab `. Disclosed at `policy.rs:1382-1386` and pinned by
+`a_search_for_an_allowed_git_command_runs_and_a_search_for_a_refused_one_does_not`.
+
+**Classification: `accept` is correct and non-blocking.** One undisclosed
+wrinkle: the false positive parks an on-disk `force_push_blocked` event, so a
+benign `rg` writes a journal record that misdescribes what happened (D-24/D-25).
+Recorded as `T-19-85` (low).
+
+---
+
 ## Accepted Risks Log
 
 Nine `accept` dispositions, carried here so they do not resurface as OPEN on the
@@ -383,22 +725,86 @@ name it.
 | AR-19-07 | T-19-57 | Refusal is decided before `park` is called, so suppressing the run-journal locator costs the agent its own evidence and buys it nothing; a second stderr line names the unrecorded park. Asserted by `a_re_entry_with_the_locator_absent_still_refuses_and_says_it_could_not_park` | phase-19 plan author | 2026-08-29 |
 | AR-19-08 | T-19-09-03, T-19-09-04 | The honesty statement is unchanged in substance and already user-facing on both surfaces; the 190/215-token legibility cap failing loudly on a future addition is the cap doing its job | phase-19 plan author | 2026-08-29 |
 | AR-19-09 | T-19-10-05 | Test aliases are compile-time literals in this repository's own test file, validated by `envelope_dir_in`; the gate `expect`s `Some`, so a hostile literal is a red test. No untrusted input reaches the join | phase-19 plan author | 2026-08-29 |
+| AR-19-10 | T-19-74 | Closing the expansion-assembled-program residual requires refusing every `$VAR` in an ungoverned command, which also refuses `echo $(git rev-parse HEAD)` and `cd "$HOME"` — a control that fails into unusability gets switched off. Layer 3 still refuses the force push for this half. Disclosed in `resolve_program`'s doc and pinned on both sides | 19-11 plan author | 2026-08-29 |
+| AR-19-11 | T-19-75 | The over-refusal is confined to driven runs, legible rather than silent, and **discriminating** — the payload is classified, so `rg "git status" src/` is permitted. Measured blast radius excludes commit messages, PR titles, `sed`, `jq` and heredocs | 19-11 plan author | 2026-08-29 |
+| AR-19-12 | T-19-80 | Excluding the refspec-less push case and sharing one `TempDir` keeps the generative property at 0.2 s, so it cannot become the reason the suite is skipped | 19-12 plan author | 2026-08-29 |
 
-**Not accepted here.** `T-19-60` is a high-severity, empirically confirmed bypass
-of layers 1, 2 and 3 and of the SAFE-06 cap. Accepting it is a human decision and
-this audit does not make it. `T-19-61` through `T-19-73` are open below the
-`high` threshold and therefore non-blocking, but none of them has been *accepted*
-either — they are unremediated findings awaiting disposition.
+**Not accepted here.** `T-19-60` and `T-19-81` are high-severity, empirically
+confirmed bypasses — of layers 1, 2 and 3 and the SAFE-06 cap, and of the D-16
+ssh isolation respectively. Accepting either is a human decision and this audit
+does not make it.
+
+`T-19-61` through `T-19-73` were **deliberately left unremediated by an explicit
+user scoping decision** after audit 1. They remain open below the `high`
+threshold and therefore non-blocking, but **none has been accepted** — they are
+unremediated findings awaiting disposition, carried forward at their original
+severities. Audit 2 confirms none of them is a blocker on its own merits.
+
+`T-19-82` through `T-19-85` are new, open below `high`, and likewise unaccepted.
 
 ---
 
 ## Security Audit Trail
 
-| Audit Date | Threats Total | Closed | Open | Run By |
-|------------|---------------|--------|------|--------|
-| 2026-08-29 | 69 | 68 | 1 | `/gsd-secure-phase 19` — three `gsd-security-auditor` subagents (opus), orchestrator-verified |
+| Audit Date | Threats Total | Closed | Open | Open at `high` | Run By |
+|------------|---------------|--------|------|---|--------|
+| 2026-08-29 (audit 1) | 83 | 69 | 14 | 1 (`T-19-60`) | `/gsd-secure-phase 19` — three `gsd-security-auditor` subagents (opus), orchestrator-verified |
+| 2026-08-29 (audit 2) | 97 | 78 | 19 | 2 (`T-19-60`, `T-19-81`) | `/gsd-secure-phase 19` re-run after 19-11/19-12 — one `gsd-security-auditor` subagent (opus), every blocking claim reproduced independently by the orchestrator |
 
-**Method.** State B (no prior SECURITY.md). The register was parsed from the
+### Audit 2 method (re-audit after plans 19-11 and 19-12)
+
+**State A** (prior SECURITY.md, `status: blocked`, `threats_open: 1`),
+`register_authored_at_plan_time: true`, ASVS L1, `block_on: high`, `ISOLATION=none`
+on the main checkout at `b8605ef`. The mandate was to verify the T-19-60
+remediation rather than accept it.
+
+**What was re-derived rather than read.** Every refusal and permit quoted in this
+document above was measured by the orchestrator against the built binary
+(`./target/debug/gsd-meta-manager envelope guard alpha`, fresh `mktemp -d`
+envelope root per row, `PreToolUse` JSON on stdin), not taken from
+`19-11-SUMMARY.md` or `19-12-SUMMARY.md`. The three legs of the surviving
+`T-19-60` bypass were each confirmed separately: layer-2 exit 0, git's own
+`-c` > `GIT_CONFIG_*` precedence measured with a real `git config --get`, and the
+absent PR-ledger file after `env -u gh gh pr create`. `T-19-81` was isolated from
+`T-19-60`'s decoy mechanism by measuring the pure form (`env -u $K git push
+--force`, exit 2) alongside it.
+
+**Gates observed.** `rtk proxy cargo test --no-fail-fast` redirected to a file
+(so the RTK filter could not elide the middle of the output): **37 suites, 1472
+passed, 0 failed, 13 ignored**, including `envelope_wrapper_bypass` (13/13) and
+`envelope_wrapper_class` (11/11). `rtk proxy cargo clippy -- -D warnings` exit 0,
+zero warnings. `T-19-SC` still holds: `Cargo.toml` and `Cargo.lock` are untouched
+by 19-11 and 19-12.
+
+> **Tooling note for the next auditor.** Plain `cargo test` fail-fasts at
+> `tests/driver_reattach.rs`, and `envelope_*` sorts *after* `driver_*`, so an
+> unqualified run skips every envelope suite while reporting a count that looks
+> like baseline. `--no-fail-fast` is mandatory. Separately, the RTK hook both
+> strips `warning:`/`test result:` lines *and* elides the middle of long output —
+> redirect to a file and count there, or the suite total is unknowable.
+
+**Regression check.** `src/envelope/policy.rs` is additions-only (641/0), so
+`T-19-08` … `T-19-14` are byte-identical; each named evidence test was re-run
+individually and passed. `src/envelope/hooks.rs` hunks are confined to
+`classify_segments` and two doc regions — `deny`, `write_settings_in`,
+`refuse_paths`, the hook stubs and the ledger paths are untouched, so `T-19-30`,
+`T-19-32`, `T-19-34`, `T-19-36` and `T-19-56` are unchanged. `T-19-33`'s
+`GUARD_TIMEOUT_SECS = 5` and no-network scan are intact. One deliberate
+behavioural narrowing, plan-sanctioned and not a registered-threat regression: an
+unsplittable `-c` payload is now refused only when
+`policy::mentions_governed_program(payload)` holds (`hooks.rs:1030-1039`), rather
+than unconditionally; the outer `split_segments` still denies the common
+unbalanced-quote case. **Effective-coverage caveat:** `T-19-08` and `T-19-09`
+remain closed as unit-level classifiers but are reachable *around* at the guard
+entry point (`env -u git git push --force-with-lease origin main` → exit 0) —
+that is `T-19-60`'s surviving mechanism, not a weakening of their own code.
+
+**ID allocation.** `19-12-PLAN.md`'s threat model already allocated `T-19-76` …
+`T-19-80`, so audit-2 findings are numbered from `T-19-81` to avoid collision.
+
+### Audit 1 method
+
+**State B (no prior SECURITY.md).** The register was parsed from the
 `<threat_model>` blocks in all ten `19-NN-PLAN.md` files and cross-checked against
 the `## Threat Flags` sections of the summaries. Three auditors verified
 disjoint slices (T-19-01..22, T-19-23..37, T-19-38..59 plus 09-* and 10-*) against
@@ -424,7 +830,22 @@ declaration is missing.
 
 - [x] All threats have a disposition (mitigate / accept / transfer)
 - [x] Accepted risks documented in Accepted Risks Log
-- [ ] `threats_open: 0` confirmed — **1 open at `high`: T-19-60**
+- [ ] `threats_open: 0` confirmed — **2 open at `high`: `T-19-60`, `T-19-81`**
 - [ ] `status: verified` set in frontmatter
 
-**Approval:** blocked 2026-08-29 — close `T-19-60`, then re-run `/gsd-secure-phase 19`.
+**Approval:** blocked 2026-08-29 (audit 2) — close `T-19-60` and `T-19-81`, then
+re-run `/gsd-secure-phase 19`.
+
+**What closing them requires** (both are one-function changes; neither expands
+phase scope):
+
+1. **`T-19-60`** — `classify_git` refuses rather than `Allow`s an argv whose verb
+   is itself `git`/`gh`/`glab`; and/or `resolve_program` establishes command
+   position before returning `Governed`. Add `env -u git`-shaped operands to the
+   19-12 wrapper alphabet (`T-19-83`) so the corpus can fail on this class.
+2. **`T-19-81`** — refuse a leading assignment whose **value** is covered by
+   `envelope_env_key`, symmetric to step 7's existing `GOVERNED_PROGRAMS` check.
+
+`T-19-82` (add the two removal keys, drop the drift pin's `value.is_some()` and
+`GIT_`/`GH_` filters) is cheap and closes the enabling half of `T-19-81`, but is
+non-blocking on its own.
