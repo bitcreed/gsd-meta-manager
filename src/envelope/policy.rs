@@ -264,6 +264,35 @@ pub fn classify_git(argv: &[&str], ctx: &GitContext) -> GitVerdict {
         // `git` with no subcommand prints usage. There is nothing to refuse.
         return GitVerdict::Allow;
     };
+
+    // **The SECOND layer, and it is a second layer rather than the fix.**
+    //
+    // No valid invocation puts a program the envelope governs in its own VERB
+    // slot: `git git push --force` is not a command. An argv shaped this way is
+    // one [`resolve_program`] mis-indexed, and answering `Allow` from the
+    // denylist's default arm below is exactly how a mis-index became a permit
+    // (`T-19-60`, audit 2). After the command-position rule this argv no longer
+    // reaches here through `super::hooks::guard_in`, so this arm is pinned by a
+    // UNIT test on this function rather than through the guard.
+    //
+    // **It is not dead code and it must not be deleted as unreachable.** It is
+    // the layer that holds if resolution ever mis-indexes again, which it has
+    // now done twice. It is also, on its own, insufficient: the verb it would
+    // see for `env -u git timeout 5 git push --force origin main` is `timeout`,
+    // and the forge path never enters this function at all — see
+    // [`forge_subcommand_names_a_governed_program`].
+    if GOVERNED_PROGRAMS.contains(&program_name(verb)) {
+        return refuse(
+            ParkReason::EnvelopeAssertionFailed,
+            format!(
+                "this argv puts `{}` — a program the envelope governs — in its own verb \
+                 slot, which no valid invocation does; the command that reaches `execve` \
+                 is therefore not the one being classified",
+                program_name(verb)
+            ),
+        );
+    }
+
     let rest = &argv[index + 1..];
 
     match *verb {
@@ -1208,6 +1237,26 @@ pub const ENVELOPE_ENV_KEYS: &[&str] = &[
     // back within reach of the run (D-16).
     "GIT_SSH_COMMAND",
     "GH_CONFIG_DIR",
+    // `T-19-82`. The two entries `cred::build_env_in` REMOVES rather than sets,
+    // and the belt D-16 relies on: an ambient agent socket is the shortest path
+    // from a driven run to the user's own keys, so a command that puts either
+    // back — `SSH_AUTH_SOCK=/tmp/evil git fetch origin` — restores exactly what
+    // the removal exists to take away. They were absent because the drift pin
+    // filtered on `value.is_some()` and could not see a removal at all.
+    "SSH_AUTH_SOCK",
+    "SSH_AGENT_PID",
+    // The run-journal locator, which the old pin's `GIT_`/`GH_` name filter
+    // excluded. A child that unsets it loses its park evidence — D-24 requires
+    // every envelope refusal to park and D-25 requires the park to land where a
+    // later reader can find it — without gaining any ability to push. So this
+    // entry protects the EVIDENCE rather than the containment, and it is the
+    // reason the pin's name filter had to go rather than be widened.
+    //
+    // The false-positive cost of all three is the one
+    // `tampers_with_envelope_env` already states for every key in this list: a
+    // driven run cannot name them as a bare unquoted word, and must quote it.
+    // That is the direction to be wrong in.
+    "GSD_MM_ENVELOPE_PROJECT_ROOT",
 ];
 
 /// The [`ENVELOPE_ENV_KEYS`] entry covering `name`, if any.
@@ -1355,12 +1404,30 @@ pub enum ProgramResolution {
 ///    to layer 3, before anything is parsed past.
 /// 2. **Skip leading assignment words.** Nothing left → `NoProgram`; a bare
 ///    `FOO=bar` executes no program and refusing it would be refusing an
-///    assignment.
+///    assignment. But first: **a leading assignment whose VALUE names an
+///    envelope key** → `Refuse(HookBypassBlocked)`, checked *before* the
+///    `NoProgram` return because `K=GIT_SSH_COMMAND` runs no program and step 7
+///    would never be reached for it (`T-19-81`).
 /// 3. **The head carries an expansion** → `Refuse(EnvelopeAssertionFailed)`.
 /// 4. **The head is `eval`** → `Refuse(EnvelopeAssertionFailed)`.
-/// 5. **The first non-flag, non-expansion token that either names a governed
-///    program (`Governed`) or is a quoted string whose first word does
-///    (`NestedPayload`).**
+/// 5. **COMMAND POSITION.** Candidates are the non-flag, non-expansion tokens
+///    that either name a governed program (`Governed`) or are a quoted string
+///    whose first word does (`NestedPayload`). Finding one is not the same as
+///    having placed it:
+///    - a candidate **at the head** — the first word after the assignment
+///      prefix — IS the command position and answers immediately, because
+///      nothing precedes it but assignments and no wrapper grammar is in play.
+///      This shortcut is what keeps `git commit -m "git push --force is now
+///      blocked"` and `gh pr create --title "stop git push --force"` working;
+///    - otherwise the candidate sits behind a wrapper prefix. **Two or more
+///      candidates** → `Refuse(EnvelopeAssertionFailed)`: which one is the
+///      command and which is an option's operand depends on that wrapper's flag
+///      grammar, which this resolver deliberately does not know, so it is
+///      refused rather than mis-indexed;
+///    - **an expansion-carrying word between the head and the candidate** →
+///      `Refuse(EnvelopeAssertionFailed)`, because what that prefix does to the
+///      environment is decided after the guard has answered;
+///    - exactly one candidate behind a knowable prefix resolves as before.
 /// 6. **Otherwise the first bundled short option containing `c`** hands its
 ///    following word over as a nested command line. `-c` is the shell's own
 ///    spelling for "here is a command line", so `sh`, `bash`, `busybox sh`,
@@ -1372,7 +1439,7 @@ pub enum ProgramResolution {
 ///    segment already answered at step 5.
 /// 8. `Ungoverned`.
 ///
-/// ## The two shapes this does NOT cover, named rather than left to be found
+/// ## The three shapes this does NOT cover, named rather than left to be found
 ///
 /// * **`T-19-74` — an expansion-assembled program behind a wrapper.**
 ///   `env $X push --force`, where `$X` was bound outside this command line,
@@ -1388,6 +1455,31 @@ pub enum ProgramResolution {
 ///   not run. The rule **discriminates** rather than blanket-denying, because
 ///   the payload is classified — `rg "git status" src/` is permitted — and the
 ///   cost is confined to driven runs and legible when it fires.
+///
+///   The command-position rule extends this accepted class to governed heads: a
+///   WRAPPED command that also quotes a string beginning with a governed
+///   program name — `env gh pr create --title "git push --force"` — is now a
+///   two-candidate segment and is refused, while the unwrapped spelling
+///   answers at the head and runs. That is the same cost in a new spelling, not
+///   a new kind of cost, and it is pinned beside the spelling that works.
+/// * **`T-19-86` — a GOVERNED program's own operand naming a governed
+///   command.** `git submodule foreach git push --force origin main`,
+///   `git rebase -x "git push --force origin main" HEAD~3`,
+///   `git bisect run sh -c "git push --force origin main"` and
+///   `git -c alias.p='!git push --force origin main' p` all resolve at the head
+///   — **correctly**, because the head is the command position — and are then
+///   permitted by [`classify_git`]'s denylist default arm, whose verbs here are
+///   `submodule`, `rebase`, `bisect` and `p`. They were permitted before the
+///   command-position rule and they are permitted after it.
+///
+///   So step 5 closes the **wrapper-operand** sub-class of `T-19-60` — a token
+///   that is not the effective program capturing the index because it is
+///   spelled `git`/`gh`/`glab` in a WRAPPER's operand slot — and it does not
+///   close this one. The four spellings are pinned at their current permitted
+///   verdict in `tests/envelope_command_position.rs`, registered in
+///   `19-SECURITY.md` and `deferred-items.md`, and left for a later round: they
+///   were found while planning the round that closed the sub-class, and a plan
+///   cannot both discover a threat and be the plan that measured it fail first.
 pub fn resolve_program(segment: &[Token]) -> ProgramResolution {
     // 1. An envelope key is refused on its own account, wherever it appears.
     for token in segment {
@@ -1408,6 +1500,41 @@ pub fn resolve_program(segment: &[Token]) -> ProgramResolution {
     while head < segment.len() && is_assignment_word(&segment[head].text) {
         head += 1;
     }
+
+    // 2b. A leading assignment whose VALUE names an envelope key.
+    //
+    // **The placement is the whole point of this check, not an implementation
+    // detail.** `19-SECURITY.md`'s measured `T-19-81` line binds the key in a
+    // segment that runs no program at all — `K=GIT_SSH_COMMAND; …` — so a check
+    // placed after resolution, where step 7's `GOVERNED_PROGRAMS` value check
+    // sits, is never reached for it: the `NoProgram` return below fires first.
+    //
+    // **The asymmetry with step 7 is deliberate and is recorded rather than
+    // tidied away.** This half costs one disclosed row —
+    // `FOO=GIT_ASKPASS echo hi` is refused, pinned in
+    // `tests/envelope_command_position.rs` beside the `echo FOO=GIT_ASKPASS`
+    // that still runs — while step 7's half sits at the boundary of the
+    // ACCEPTED `T-19-74` residual, which
+    // `the_residual_begins_exactly_at_the_command_line_boundary` pins and this
+    // rule does not move. Moving step 7 up here would refuse
+    // `X=git; env $X push --force origin main`, which is accepted (AR-19-10).
+    for token in &segment[..head] {
+        let Some((_, value)) = token.text.split_once('=') else {
+            continue;
+        };
+        if let Some(key) = envelope_env_key(value) {
+            return ProgramResolution::Refuse {
+                reason: ParkReason::HookBypassBlocked,
+                detail: format!(
+                    "this command binds the name of `{key}` — one of the environment keys \
+                     the envelope injects — to a shell variable, which is how the key is \
+                     removed a word at a time without ever being spelled where the guard \
+                     can see it (D-09, D-16)"
+                ),
+            };
+        }
+    }
+
     let Some(head_token) = segment.get(head) else {
         return ProgramResolution::NoProgram;
     };
@@ -1433,23 +1560,102 @@ pub fn resolve_program(segment: &[Token]) -> ProgramResolution {
         };
     }
 
-    // 5. The first token in any command position that names something governed.
+    // 5. COMMAND POSITION, not merely "the first token that looks governed".
+    //
+    // The skip rules and the two candidate kinds are unchanged from `19-11`;
+    // what changed is that finding a candidate is no longer the same thing as
+    // having placed it. See this function's doc for the rule and its cost.
+    let mut first: Option<(usize, ProgramResolution)> = None;
+    let mut candidates = 0usize;
+
     for (index, token) in segment.iter().enumerate().skip(head) {
         if token.expansion || token.text.starts_with('-') {
             continue;
         }
-        if GOVERNED_PROGRAMS.contains(&program_name(&token.text)) {
-            return ProgramResolution::Governed { index };
-        }
-        if token.text.split_whitespace().count() > 1
+        let found = if GOVERNED_PROGRAMS.contains(&program_name(&token.text)) {
+            ProgramResolution::Governed { index }
+        } else if token.text.split_whitespace().count() > 1
             && token
                 .text
                 .split_whitespace()
                 .next()
-                .is_some_and(|first| GOVERNED_PROGRAMS.contains(&program_name(first)))
+                .is_some_and(|word| GOVERNED_PROGRAMS.contains(&program_name(word)))
         {
-            return ProgramResolution::NestedPayload { index };
+            ProgramResolution::NestedPayload { index }
+        } else {
+            continue;
+        };
+
+        candidates += 1;
+        if first.is_none() {
+            // **The head shortcut.** The head IS the command position: nothing
+            // precedes it but assignment words, so no wrapper's flag grammar is
+            // in play and there is nothing to disambiguate. Answering here,
+            // without looking for competitors, is what keeps
+            // `git commit -m "git push --force is now blocked"` and
+            // `gh pr create --title "stop git push --force"` working — both
+            // measured permitted in `19-SECURITY.md`'s blast-radius table.
+            // Without it, every commit message and PR title that quotes a git
+            // command would be refused: `T-19-75` widened from `rg` to every
+            // commit, which is a control that fails into unusability and
+            // therefore gets switched off (AR-19-11).
+            if index == head {
+                return found;
+            }
+            first = Some((index, found));
         }
+    }
+
+    if let Some((index, found)) = first {
+        // **Two or more candidates behind a wrapper prefix cannot be placed.**
+        // Two governed names in one simple command with a wrapper between them
+        // means the command position depends on that wrapper's flag grammar —
+        // whether `-u` takes the next word, whether `--` ends the options —
+        // which is precisely the knowledge this resolver refuses to encode,
+        // because encoding it is a wrapper-name list wearing a flag's clothes.
+        // So the segment is REFUSED rather than mis-indexed. Mis-indexing is
+        // what made `env -u git git push --force origin main` a permit: the
+        // decoy captured the index, the real command became `argv[0]` of the
+        // classified argv, and `classify_git` read its verb as `git`.
+        if candidates >= 2 {
+            return ProgramResolution::Refuse {
+                reason: ParkReason::EnvelopeAssertionFailed,
+                detail: "this command names a program the envelope governs more than once \
+                         behind a prefix, so which of them is the command and which is an \
+                         option's operand cannot be established without knowing that \
+                         prefix's own flag grammar; refused rather than guessed at"
+                    .to_string(),
+            };
+        }
+
+        // **An expansion anywhere in the WRAPPER PREFIX region.** What that
+        // prefix does to the environment — and therefore which program runs and
+        // with what — is decided after the guard has answered. Restricted to
+        // this region deliberately: an expansion in the ASSIGNMENT prefix
+        // (`FOO=$BAR git status`) and one in the program's own ARGUMENTS
+        // (`git commit -m "$MSG"`) are untouched, and a segment reaching no
+        // governed program at all is untouched — which is what leaves the
+        // accepted `T-19-74` residual exactly where it is.
+        //
+        // The head itself is not examined here because step 3 already refused
+        // it. This is the half of `T-19-81` that closes the CLASS rather than
+        // the spelling: `env -u ${K}_COMMAND git fetch origin` is refused
+        // however the key name is assembled, without the guard ever learning
+        // what `-u` means.
+        if segment[head + 1..index].iter().any(|token| token.expansion) {
+            return ProgramResolution::Refuse {
+                reason: ParkReason::EnvelopeAssertionFailed,
+                detail: "a word between this command's head and the program the envelope \
+                         governs is assembled by shell expansion, so what that prefix does \
+                         to the environment the program runs in is not knowable before it \
+                         runs; refused rather than guessed at"
+                    .to_string(),
+            };
+        }
+
+        // Exactly one candidate behind a prefix whose words are all knowable:
+        // resolved as `19-11` and `19-12` already pin it.
+        return found;
     }
 
     // 6. `-c` is the shell's own spelling for "the next word is a command line".
@@ -1519,6 +1725,33 @@ pub fn pr_command_label(argv: &[&str]) -> Option<(&'static str, String)> {
         },
         _ => None,
     }
+}
+
+/// The governed program named by a forge argv's own first subcommand word, if
+/// any.
+///
+/// **The forge twin of [`classify_git`]'s governed-verb refusal, and a SECOND
+/// layer for the same reason.** `env -u gh gh pr create --title x` was measured
+/// at exit 0 with **no ledger line** (`19-SECURITY.md`, audit 2): the decoy
+/// captured the resolver's index, [`pr_command_label`] was then handed an argv
+/// whose subcommand chain begins `["gh", "pr", "create", …]`, no arm matched, and
+/// the cap was not exceeded — it was never counted. `classify_git`'s arm cannot
+/// see this, because a forge command never enters that function.
+///
+/// A `Some` here is a REFUSAL at the call site, taken **before** the ledger
+/// write, so a decoy never consumes cap budget.
+///
+/// After the command-position rule this argv no longer reaches the forge arm
+/// through `super::hooks::guard_in`, so this predicate is pinned by a unit test
+/// on the function itself. It is not dead code: it is what holds if resolution
+/// ever mis-indexes again.
+pub fn forge_subcommand_names_a_governed_program(argv: &[&str]) -> Option<&'static str> {
+    let rest = argv.get(1..)?;
+    let first = subcommand_words(rest).first().copied()?;
+    GOVERNED_PROGRAMS
+        .iter()
+        .copied()
+        .find(|governed| *governed == program_name(first))
 }
 
 /// Whether this argv creates a pull request (or a merge request) — D-19's three
@@ -2781,6 +3014,112 @@ mod tests {
             tampers_with_envelope_env("GIT_COMMITTER_NAME=x").is_none(),
             "a git variable the envelope does NOT inject is not this refusal's business"
         );
+    }
+
+    #[test]
+    fn classify_git_refuses_an_argv_whose_own_verb_is_a_governed_program() {
+        // **The second layer, pinned HERE rather than through the guard, and the
+        // placement is the honest one.** After the command-position rule
+        // `resolve_program` refuses these segments before `classify_git` is
+        // reached through `hooks::guard_in`, so a test driving the guard would
+        // pass on the FIRST layer and prove nothing about this arm. Asserting it
+        // on the pure function is the only way to observe it at all.
+        //
+        // It is not dead code and must not be deleted as unreachable: it is what
+        // holds if resolution ever mis-indexes again, which it has now done
+        // twice. Its fail-first was measured by reverting the arm, running this
+        // test, observing red, and restoring — recorded in `19-13-SUMMARY.md`.
+        for argv in [
+            ["git", "push", "--force"].as_slice(),
+            ["gh", "pr", "create"].as_slice(),
+            ["glab", "mr", "create"].as_slice(),
+            // Leading git options are scanned first, so the verb this arm reads
+            // is the one AFTER them.
+            ["-c", "user.name=x", "git", "push"].as_slice(),
+            // Basename normalisation, so an absolute path cannot walk around it.
+            ["/usr/bin/git", "push", "--force"].as_slice(),
+        ] {
+            assert!(
+                matches!(
+                    classify_git(argv, &ctx()),
+                    GitVerdict::Refuse {
+                        reason: ParkReason::EnvelopeAssertionFailed,
+                        ..
+                    }
+                ),
+                "`git {argv:?}` puts a governed program in its own VERB slot, which no \
+                 valid invocation does. Reaching the denylist's default arm and answering \
+                 `Allow` here is exactly how a mis-index became a permit (`T-19-60`, \
+                 audit 2)."
+            );
+        }
+
+        // The discrimination: an ordinary verb is untouched, and so is the
+        // `T-19-86` shape, whose verb is `submodule` — that residual is
+        // registered and deliberately still permitted.
+        assert!(matches!(
+            classify_git(&["status"], &ctx()),
+            GitVerdict::Allow
+        ));
+        assert!(matches!(
+            classify_git(
+                &["submodule", "foreach", "git", "push", "--force", "origin", "main"],
+                &ctx()
+            ),
+            GitVerdict::Allow
+        ));
+    }
+
+    #[test]
+    fn the_forge_predicate_names_a_governed_first_subcommand_word() {
+        // The forge twin, pinned on the pure function for the same reason: after
+        // the command-position rule it is unreachable through `guard_in`, and it
+        // is the layer that holds if resolution mis-indexes again. Its fail-first
+        // was measured the same way and is recorded in `19-13-SUMMARY.md`.
+        //
+        // The measured line: `env -u gh gh pr create --title x` exited 0 with NO
+        // ledger line, because `pr_command_label` saw the chain `["gh", "pr",
+        // "create", …]` and matched nothing. The cap was not exceeded — it was
+        // never counted, which is why this refusal has to run BEFORE the ledger
+        // write rather than after it.
+        assert_eq!(
+            forge_subcommand_names_a_governed_program(&["gh", "gh", "pr", "create", "--title"]),
+            Some("gh")
+        );
+        assert_eq!(
+            forge_subcommand_names_a_governed_program(&["gh", "git", "push", "--force"]),
+            Some("git")
+        );
+        assert_eq!(
+            forge_subcommand_names_a_governed_program(&["glab", "glab", "mr", "create"]),
+            Some("glab")
+        );
+        // Flags are skipped rather than terminating the scan, so a global option
+        // in front of the decoy does not hide it.
+        assert_eq!(
+            forge_subcommand_names_a_governed_program(&[
+                "gh", "--repo", "o/r", "gh", "pr", "create"
+            ]),
+            Some("gh")
+        );
+        // Basename normalisation on the decoy.
+        assert_eq!(
+            forge_subcommand_names_a_governed_program(&["gh", "/usr/bin/gh", "pr", "create"]),
+            Some("gh")
+        );
+
+        // Discrimination: an ordinary forge command names nothing governed, and
+        // a governed name appearing as an option VALUE rather than as the first
+        // subcommand word is not this predicate's business.
+        assert_eq!(
+            forge_subcommand_names_a_governed_program(&["gh", "pr", "create", "--title", "x"]),
+            None
+        );
+        assert_eq!(
+            forge_subcommand_names_a_governed_program(&["gh", "pr", "list", "--limit", "5"]),
+            None
+        );
+        assert_eq!(forge_subcommand_names_a_governed_program(&["gh"]), None);
     }
 
     #[test]

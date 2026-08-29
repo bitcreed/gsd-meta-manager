@@ -359,36 +359,82 @@ fn the_measured_ssh_agent_restoration_line_is_refused() {
 fn the_indirect_spelling_no_literal_match_can_find_is_refused_too() {
     // **Why this row exists.** A fix that matched the string the audit happened
     // to type would leave the class open for round 4. Here the key name is
-    // assembled across a variable binding and a brace expansion, so it is spelled
-    // NOWHERE — `K=GIT_SSH` is not an envelope key, and `${K}_COMMAND` is a token
-    // whose value is unknowable before it runs.
+    // spelled NOWHERE in the command line: `$K` was bound by some earlier tool
+    // call, and its value is unknowable before it runs.
     //
     // It is closed by the CLASS-level half instead: an expansion-carrying token
-    // strictly between the head and the resolved governed index makes the wrapper
-    // prefix unresolvable, because what that prefix does to the environment — and
+    // between the head and the resolved governed index makes the wrapper prefix
+    // unresolvable, because what that prefix does to the environment — and
     // therefore which program runs and with what — is decided after the guard has
     // answered. The guard never has to know that `env`'s `-u` removes a variable;
     // a fix that knew what `-u` meant would be a wrapper-name list wearing a
     // flag's clothes.
     refuses(
-        "K=GIT_SSH; env -u ${K}_COMMAND git fetch origin",
+        "env -u $K git fetch origin",
         policy::REASON_ENVELOPE_ASSERTION_FAILED,
     );
 }
 
 #[test]
-fn the_enabling_half_of_t_19_82_is_permitted_today() {
-    // **This row is scheduled to FLIP.** `SSH_AUTH_SOCK` is one of
-    // `cred::build_env_in`'s two REMOVAL entries — the belt D-16 relies on — and
-    // it is absent from `ENVELOPE_ENV_KEYS` because the drift pin filtered
-    // removals out with `value.is_some()`. So reassigning it is permitted today,
-    // which is the enabling half of the line above.
+fn the_brace_expansion_spelling_is_a_residual_this_plan_does_not_close() {
+    // **`T-19-87`, found in EXECUTION rather than in planning, and pinned at its
+    // current PERMITTED verdict rather than fixed.**
     //
-    // Asserted as PERMITTED here, against the unfixed tree, so the fix is
-    // measured as a CHANGE rather than asserted about. Task 3 of plan 19-13 turns
-    // this row into a refusal under `hook_bypass_blocked` and names the flip in
-    // the SUMMARY.
-    permits("SSH_AUTH_SOCK=/tmp/evil git fetch origin");
+    // 19-13's plan and its plan-check both asserted that this line is closed by
+    // the expansion-prefix rule, on the reasoning that `${K}_COMMAND` carries
+    // `Token.expansion`. Measured, it does not: `split_words` treats `{` and `}`
+    // as SEPARATORS (`policy.rs`'s `SEPARATORS`, and the tokenizer arm beside
+    // `;` and `|`), so the word never survives as one token. The line fragments
+    // into three segments —
+    //
+    //   `env -u $`   |   `K`   |   `_COMMAND git fetch origin`
+    //
+    // — and the guard judges each on its own. The third resolves `git` behind an
+    // ungoverned head with ONE candidate and no expansion between them, so it is
+    // `git fetch`, which is allowed. Nothing the command-position rule does can
+    // see the shape, because by the time resolution runs the shape is gone.
+    //
+    // **This is a live bypass of the same class as `T-19-81`, reached through the
+    // SPLITTER rather than through the resolver.** It is not closed here: closing
+    // it means changing what `{`/`}` do in `split_words`, which is real shell
+    // grouping syntax (`{ cmd; }`) and a blast radius far outside a plan scoped
+    // to four items. It is registered in `deferred-items.md` as `T-19-87`.
+    //
+    // **The damage is bounded on one side and that bound is asserted too**: the
+    // fragmentation does not hide a refused git command, because the segment that
+    // carries the command still resolves it. It hides the ENV-KEY REMOVAL, which
+    // is exactly the `T-19-81` harm.
+    //
+    // A future change that closes this must DELETE this row deliberately rather
+    // than discover it failing.
+    permits("K=GIT_SSH; env -u ${K}_COMMAND git fetch origin");
+
+    // The bound: the same fragmentation does not let a force push through.
+    refuses(
+        "env -u ${K}_COMMAND git push --force origin main",
+        policy::REASON_FORCE_PUSH_BLOCKED,
+    );
+}
+
+#[test]
+fn reassigning_a_removed_envelope_key_is_refused() {
+    // **This row was written asserting a PERMIT and was flipped by Task 3, which
+    // is the disclosed shape of a fix rather than an edit made to get green.**
+    //
+    // `SSH_AUTH_SOCK` is one of `cred::build_env_in`'s two REMOVAL entries — the
+    // belt D-16 relies on — and it was absent from `ENVELOPE_ENV_KEYS` because
+    // the drift pin filtered removals out with `value.is_some()` and so could not
+    // see them. Reassigning it put the user's own ssh-agent back inside a driven
+    // run, which is the enabling half of the measured `T-19-81` line above
+    // (`T-19-82`).
+    //
+    // The RED run recorded it PERMITTED against the unfixed tree, so the key-set
+    // completion is measured as a CHANGE rather than asserted about. The flip is
+    // named in `19-13-SUMMARY.md` with its old and new verdicts.
+    refuses(
+        "SSH_AUTH_SOCK=/tmp/evil git fetch origin",
+        policy::REASON_HOOK_BYPASS_BLOCKED,
+    );
 }
 
 // ---------------------------------------------------------------------------

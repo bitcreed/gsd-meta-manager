@@ -301,6 +301,40 @@ Two were re-verified directly because 19-11 touched their file:
 
 ---
 
+### Registered by plan 19-13, NOT an audit finding
+
+**Provenance, stated first because it is the point of keeping this separate.**
+The row below was **not** measured by audit 1 or audit 2. It was found while
+*planning* the round that closes `T-19-60`'s wrapper-operand sub-class, and it is
+recorded here by plan `19-13` so the boundary of what that round closed is
+bounded on both sides. The audit tables above are the audit's own provenance and
+this subsection is deliberately outside them. `T-19-86` is **registered and
+pinned, not fixed**: a plan cannot both discover a threat and be the plan that
+measured it fail first.
+
+| Threat ID | Category | Component | Severity | Disposition | Finding | Status |
+|---|---|---|---|---|---|---|
+| T-19-86 | Elevation of Privilege | `classify_git`'s denylist default arm, reached through a **governed program's own operand** | high | mitigate (unimplemented — registered, pinned, deferred) | A GOVERNED program handed a governed command as data runs it itself. These resolve at the **head** — correctly, because the head *is* the command position, and the head shortcut is what keeps `git commit -m "git push --force is now blocked"` working — and are then permitted by the denylist's default arm, whose verbs here are `submodule`, `rebase`, `bisect` and `p`. Measured against the tree at `a41e431`, one fresh tempdir per row: `git submodule foreach git push --force origin main` → **exit 0**; `git rebase -x "git push --force origin main" HEAD~3` → **exit 0**; `git bisect run sh -c "git push --force origin main"` → **exit 0**; `git -c alias.p='!git push --force origin main' p` → **exit 0**. Named nowhere in the phase before this registration. Re-measured after 19-13's command-position rule: all four still **exit 0**, by design. | OPEN — BLOCKING, deferred to a later round |
+
+**Consequence for the phase gate, stated rather than left to be inferred:**
+19-13 closes the **wrapper-operand** sub-class of `T-19-60` — a token that is not
+the effective program capturing the resolver's index because it is spelled
+`git`/`gh`/`glab` in a **wrapper's** operand slot — and closes `T-19-81`,
+`T-19-82` and `T-19-83`. It does **not** close `T-19-86`, so
+**`/gsd-secure-phase 19` is not cleared by 19-13 alone.**
+
+**Where the boundary is pinned**, so a future change that moves it must delete
+the rows deliberately rather than discover them failing:
+
+- `tests/envelope_command_position.rs` →
+  `the_t_19_86_residual_is_permitted_today_and_this_plan_leaves_it_permitted`
+  (all four spellings, asserted PERMITTED).
+- `src/envelope/policy.rs` → `resolve_program`'s doc, third bullet of "the three
+  shapes this does NOT cover", beside `T-19-74` and `T-19-75`.
+- `.planning/phases/19-gitsafe-git-blast-radius-envelope/deferred-items.md`.
+
+---
+
 ## T-19-60 after 19-11/19-12 — narrowed, not closed
 
 ### What the fix does deliver

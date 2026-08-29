@@ -133,3 +133,85 @@ identically. 19-11 touches only the `PreToolUse` guard's program resolution, whi
 **Not fixed here** — out of scope for a T-19-60 gap-closure plan, and the plan forbids taking
 on neighbouring findings. Recorded so the count is not mistaken for a 19-11 regression:
 19-11's gate is 1245 passed / 2 failed / 13 ignored, and the 2 are this pair.
+
+---
+
+## `T-19-86` — a governed program's own operand naming a governed command (registered by 19-13)
+
+**Symptom.** A GOVERNED program handed a governed command as data runs it itself, and the
+guard permits it. Measured against `a41e431`, one fresh tempdir per row, and re-measured
+unchanged after 19-13's command-position rule:
+
+```
+exit=0  git submodule foreach git push --force origin main
+exit=0  git rebase -x "git push --force origin main" HEAD~3
+exit=0  git bisect run sh -c "git push --force origin main"
+exit=0  git -c alias.p='!git push --force origin main' p
+```
+
+**Mechanism.** These resolve at the **head** — correctly, because the head *is* the command
+position — and are then permitted by `classify_git`'s denylist **default arm**, whose verbs
+here are `submodule`, `rebase`, `bisect` and (after `scan_leading` consumes `-c alias.p=…`)
+`p`. The head shortcut is not the defect and must not be removed: without it, every commit
+message and PR title quoting a git command would be refused (`T-19-75` widened from `rg` to
+every commit, AR-19-11).
+
+**Why 19-13 did not close it.** Found while *planning* 19-13, which is the round that closed
+`T-19-60`'s wrapper-operand sub-class. A plan cannot both discover a threat and be the plan
+that measured it fail first — that is the corpus-vacuity failure this phase has now recorded
+twice. 19-13 therefore **narrowed its closure claim** and registered this instead. Every
+statement 19-13 makes about `T-19-60` carries the qualifier *for the wrapper-operand
+sub-class*.
+
+**Pinned at its current PERMITTED verdict** in
+`tests/envelope_command_position.rs::the_t_19_86_residual_is_permitted_today_and_this_plan_leaves_it_permitted`,
+and disclosed in `resolve_program`'s own doc. A future change that moves the boundary must
+delete those rows deliberately rather than discover them failing.
+
+**Consequence.** `/gsd-secure-phase 19` is **not cleared by 19-13 alone.**
+
+**Fix direction (not prescriptive).** Extending `classify_git`'s denylist to `submodule`,
+`rebase`, `bisect` and `alias.*` config keys closes the four measured spellings and is a
+denylist, so it inherits every gap a denylist has. A structural answer would classify a
+governed verb's own command-valued operands the way `resolve_program` already classifies a
+`-c` payload — which needs a per-verb notion of which operand is a command line, and that is
+a design question rather than a one-function change.
+
+**Suggested owner.** A round-4 gap-closure plan, before `/gsd-secure-phase 19` is re-run.
+
+## `T-19-87` — `${VAR}` fragments a command so the guard never sees its shape (found during 19-13 execution)
+
+**Symptom.** An envelope key removed through a brace expansion is permitted:
+
+```
+exit=0  K=GIT_SSH; env -u ${K}_COMMAND git fetch origin
+```
+
+**Mechanism, and why it is not the resolver.** `split_words` treats `{` and `}` as
+**separators** (`policy.rs`'s `SEPARATORS`, and the tokenizer arm beside `;` and `|`), so
+`${K}_COMMAND` never survives as one expansion-carrying token. The line fragments into three
+segments — `env -u $` | `K` | `_COMMAND git fetch origin` — and the guard judges each on its
+own. The third resolves `git` behind an ungoverned head with exactly one candidate and no
+expansion between them, so it is `git fetch`, which is allowed. 19-13's expansion-prefix rule
+cannot see the shape, because by the time resolution runs the shape is gone.
+
+**How it was found.** 19-13's plan and its plan-check both asserted this line was closed by
+the expansion-prefix rule, reasoning that `${K}_COMMAND` carries `Token.expansion`. It does
+not. The claim was written from reading the tokenizer's `$` handling without running it; the
+executor caught it when the row stayed green after the fix. The equivalent brace-free
+spelling — `env -u $K git fetch origin` — **is** closed, and is what
+`the_indirect_spelling_no_literal_match_can_find_is_refused_too` now pins.
+
+**Bounded on one side, and that bound is asserted.** The fragmentation does not hide a refused
+git command: `env -u ${K}_COMMAND git push --force origin main` is still refused under
+`force_push_blocked`, because the segment carrying the command still resolves it. What it
+hides is the **env-key removal**, which is exactly the `T-19-81` harm.
+
+**Why it is not fixed here.** Closing it means changing what `{`/`}` do in `split_words`.
+Those are real shell grouping syntax (`{ cmd; }`), and the blast radius is every command the
+guard splits — far outside a plan scoped to four items. Pinned at its current PERMITTED
+verdict in
+`tests/envelope_command_position.rs::the_brace_expansion_spelling_is_a_residual_this_plan_does_not_close`.
+
+**Suggested owner.** The same round-4 plan as `T-19-86`. Both are splitter/classifier
+questions rather than resolver questions.

@@ -1074,6 +1074,29 @@ fn classify_segments(
                     }
 
                     "gh" | "glab" => {
+                        // The forge twin of `classify_git`'s governed-verb
+                        // refusal, and it runs BEFORE the ledger write on
+                        // purpose: `env -u gh gh pr create --title x` was
+                        // measured at exit 0 with NO ledger line, because
+                        // `pr_command_label` read a subcommand chain beginning
+                        // `gh` and recognised nothing. A decoy must be refused
+                        // rather than counted, or an agent can exhaust a run's
+                        // PR cap with commands that open no pull request.
+                        if let Some(governed) =
+                            policy::forge_subcommand_names_a_governed_program(&words[index..])
+                        {
+                            return Ok(Some((
+                                ParkReason::EnvelopeAssertionFailed,
+                                format!(
+                                    "gsd-meta-manager envelope: REFUSED (reason: {}) — this \
+                                     forge command's own first subcommand word is \
+                                     `{governed}`, a program the envelope governs, so the \
+                                     command that reaches `execve` is not the one being \
+                                     classified",
+                                    policy::REASON_ENVELOPE_ASSERTION_FAILED
+                                ),
+                            )));
+                        }
                         if let Some((platform, label)) =
                             policy::pr_command_label(&words[index..])
                         {
