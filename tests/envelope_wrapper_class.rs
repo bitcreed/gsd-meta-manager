@@ -1098,8 +1098,374 @@ fn the_residual_begins_exactly_at_the_command_line_boundary() {
     permits(root, "X=git; env $X push --force origin main");
 }
 
+// ===========================================================================
+// 8. `T-19-83` — the shape this corpus was STRUCTURALLY INCAPABLE of generating
+// ===========================================================================
+//
+// **The finding, in the auditor's own terms and not softened.** The `WRAPPERS`
+// alphabet above contains wrappers WITH operands — `env -u SOME_VAR`,
+// `runuser -u me --`, `nice -n 10`, `flock /tmp/lock` — but no operand whose
+// BASENAME is a governed program. So 1680 generated cases certified a fix that
+// the very next audit walked around with four characters: `env -u git`.
+//
+// That is `T-19-76`'s own failure mode one level up — the corpus certifying the
+// fix could not fail on the class it certifies — and it is now the **SECOND
+// consecutive round** in which that has happened. This section exists because of
+// that sentence, which is also why it must never be narrowed: a case that stops
+// being drawn is a case that stops being able to fail.
+//
+// **Why a separate property rather than more entries in `WRAPPERS`.** The
+// invariance property above compares the wrapped verdict to the UNWRAPPED base's
+// verdict on exit code AND D-24 identifier. A decoy wrapping is legitimately MORE
+// strict — it is refused for an unresolvable command position rather than for the
+// base's own reason — so folding these entries into `WRAPPERS` would break
+// invariance by being STRICTER, exactly as this file already records for the
+// `GIT_CONFIG_COUNT=0` assignment prefix. The property here is therefore refusal
+// carrying a D-24 identifier, not invariance. `WRAPPERS` is left untouched.
+
+/// Whole wrapper prefixes whose own option operand is spelled as a governed
+/// program.
+///
+/// **Mixing plausible real-world spellings with structurally identical nonsense
+/// is the point.** A UNIX account called `git` is an ordinary thing on a git
+/// server, and `made-up-wrapper-9000 --flag gh` is not a program at all — and the
+/// resolver must not be able to tell them apart, because the moment it can it is
+/// asking what the wrapper is CALLED.
+const DECOY_OPERANDS: &[&str] = &[
+    // The measured line. `env`'s `-u` names a variable to REMOVE; spelled `git`,
+    // it is a token in an operand slot that looks exactly like a program.
+    "env -u git",
+    // The forge name, which reaches `pr_command_label` and the ledger instead of
+    // `classify_git` — an entirely different decision path.
+    "env -u gh",
+    // The third governed name, which has no classifier arm of its own.
+    "env -u glab",
+    // Basename normalisation on the DECOY rather than on the program: a rule
+    // comparing raw token text would count one candidate here instead of two.
+    "env -u /usr/bin/git",
+    // The plausible real-world spelling, and the reason the disclosed cost of
+    // this fix is a cost rather than a curiosity.
+    "sudo -u git",
+    // The same shape from a wrapper whose name the production logic is
+    // mechanically asserted never to know.
+    "runuser -u git",
+    // The end-of-options form: `--` stands between the governed operand and the
+    // real program, so the two candidates are not adjacent.
+    "sudo -u gh --",
+    // The long-option spelling of the user operand.
+    "sudo --user git",
+    // A wrapper that does not exist, carrying a governed operand. A fix built on
+    // a list of wrapper names cannot possibly contain this one.
+    "made-up-wrapper-9000 --flag git",
+    // ...and its forge twin, so the made-up shape is exercised on both paths.
+    "made-up-wrapper-9000 --flag gh",
+];
+
+/// How many wrappings each (base, decoy) pair gets. 12 x 10 x 6 = 720.
+const VARIANTS_PER_DECOY_PAIR: usize = 6;
+
+/// The floors, asserted BEFORE the loop.
+const MIN_DECOY_OPERANDS: usize = 8;
+const MIN_DECOY_CASES: usize = 600;
+const MIN_DISTINCT_DECOY_CHAINS: usize = 100;
+
+/// One generated decoy wrapping.
+struct Decoyed {
+    command: String,
+    /// The whole chain including the decoy and its position — what "a distinct
+    /// decoy chain" counts.
+    chain: String,
+    recipe: String,
+    /// Whether an ordinary wrapper stands on BOTH sides of the decoy.
+    wrapped_on_both_sides: bool,
+}
+
+/// Wrap `base` exactly as [`wrap`] does — one drawn assignment prefix, a drawn
+/// depth of 0 to 3 ordinary wrappers, per-wrapper quoting, an optional outer
+/// shell layer — and then SPLICE `decoy` into that chain at a drawn index.
+///
+/// **The splice is specified rather than left to the implementer, and the reason
+/// is the same partial coverage this whole section exists to close.** Prepending
+/// the decoy to the base and wrapping the result would put it innermost every
+/// time and never exercise it *under* an ordinary wrapper. Drawing the index in
+/// `0..=depth` puts it outermost, innermost, and sandwiched between ordinary
+/// wrappers, and the last of those is the case the `wrapped_on_both_sides` floor
+/// proves actually occurs.
+fn wrap_with_decoy(rng: &mut Lcg, base: &str, decoy: &str) -> Decoyed {
+    let prefix = ASSIGNMENT_PREFIXES[rng.pick(ASSIGNMENT_PREFIXES.len())];
+    let layer = SHELL_LAYERS[rng.pick(SHELL_LAYERS.len())];
+    let quotes = layer.inner_quotes();
+    let depth = rng.pick(4);
+
+    let mut chain: Vec<&str> = Vec::with_capacity(depth + 1);
+    for _ in 0..depth {
+        chain.push(WRAPPERS[rng.pick(WRAPPERS.len())]);
+    }
+    let at = rng.pick(depth + 1);
+    chain.insert(at, decoy);
+
+    let mut spelled = String::new();
+    for entry in &chain {
+        // Quote the PROGRAM WORD, as `wrap` does: `"env" -u git` and
+        // `env -u git` are the same command, and a resolution that compared raw
+        // token text rather than the recovered word would tell them apart.
+        let quote = quotes[rng.pick(quotes.len())];
+        match entry.split_once(' ') {
+            Some((program, rest)) => spelled.push_str(&format!("{quote}{program}{quote} {rest} ")),
+            None => spelled.push_str(&format!("{quote}{entry}{quote} ")),
+        }
+    }
+
+    let inner = format!("{prefix}{spelled}{base}");
+    Decoyed {
+        command: layer.apply(&inner),
+        chain: format!("[{}] decoy@{at}", chain.join(", ")),
+        recipe: format!(
+            "prefix={prefix:?} layer={layer:?} depth={depth} decoy={decoy:?} at={at}"
+        ),
+        wrapped_on_both_sides: at > 0 && at < depth,
+    }
+}
+
+#[test]
+fn a_governed_program_in_a_wrappers_operand_slot_is_refused_in_every_generated_position() {
+    let envelope = TempDir::new().expect("a temporary envelope root");
+    let root = envelope.path();
+
+    // --- floor 1: the alphabet exists and is wide enough ------------------
+    assert!(
+        !DECOY_OPERANDS.is_empty(),
+        "an empty decoy alphabet makes every assertion below vacuous, which is the exact \
+         defect (`T-19-83`) this section was added to repair"
+    );
+    assert!(
+        DECOY_OPERANDS.len() >= MIN_DECOY_OPERANDS,
+        "the decoy alphabet must carry at least {MIN_DECOY_OPERANDS} entries spanning \
+         both plausible and nonsense spellings; a narrower one is a row per named shape \
+         wearing a property's clothes. Got {}",
+        DECOY_OPERANDS.len()
+    );
+
+    // --- floor 2: the bases are still refused unwrapped --------------------
+    //
+    // Measured rather than written down, for the same reason the invariance
+    // property measures its right-hand side: a corpus whose bases had quietly
+    // become permits would fail HERE rather than pass more easily.
+    for base in REFUSED_BASES {
+        let answer = verdict(root, base);
+        assert_eq!(
+            answer.code, 2,
+            "the UNWRAPPED base `{base}` must itself be refused, or every decoy assertion \
+             below is comparing a refusal against nothing. Got reason id: {}",
+            answer.reason_id
+        );
+    }
+
+    // --- the property ------------------------------------------------------
+    let mut rng = Lcg::new();
+    let mut chains: BTreeSet<String> = BTreeSet::new();
+    let mut used: BTreeSet<&str> = BTreeSet::new();
+    let mut both_sides = 0usize;
+    let mut cases = 0usize;
+
+    for base in REFUSED_BASES {
+        for decoy in DECOY_OPERANDS {
+            for _ in 0..VARIANTS_PER_DECOY_PAIR {
+                let case = wrap_with_decoy(&mut rng, base, decoy);
+                chains.insert(case.chain.clone());
+                used.insert(decoy);
+                if case.wrapped_on_both_sides {
+                    both_sides += 1;
+                }
+                cases += 1;
+
+                let got = verdict(root, &case.command);
+                assert_eq!(
+                    got.code,
+                    2,
+                    "\n\nA GOVERNED PROGRAM IN A WRAPPER'S OPERAND SLOT WAS PERMITTED.\n\
+                     \n  command : {}\
+                     \n  base    : {base}\
+                     \n  recipe  : {}\
+                     \n  got     : exit {} reason {}\
+                     \n  seed    : {SEED:#x}\n\
+                     \nA token that is not the effective program captured the resolver's \
+                     index because it is spelled as a governed program in an operand slot, \
+                     so the real command became `argv[0]` of the classified argv and its \
+                     verb was read as `git`/`gh`/`glab` — which the denylist's default arm \
+                     allows.\n\
+                     \n**The correct response is a change to the structural COMMAND \
+                     POSITION rule in `src/envelope/policy.rs`.** It is NOT a wrapper name \
+                     added to a list, it is NOT a wrapper FLAG added to a list — a rule \
+                     keyed on what `-u` means is a wrapper-name list wearing a flag's \
+                     clothes — and it is NOT a narrowing of this alphabet. This corpus \
+                     exists because the last one could not fail on its own class; making \
+                     it green by shrinking it would be the third time.\n",
+                    case.command,
+                    case.recipe,
+                    got.code,
+                    got.reason_id,
+                );
+                assert!(
+                    REASON_IDENTIFIERS.contains(&got.reason_id.as_str()),
+                    "\n\nREFUSED WITHOUT A D-24 IDENTIFIER.\n\
+                     \n  command : {}\
+                     \n  recipe  : {}\
+                     \n  reason  : {}\n\
+                     \nA refusal that parks under no member of D-24's taxonomy cannot be \
+                     found by a later reader grepping for a disarmed layer, and a row that \
+                     asserted only the exit code would pass on a refusal for an unrelated \
+                     cause.\n",
+                    case.command,
+                    case.recipe,
+                    got.reason_id,
+                );
+            }
+        }
+    }
+
+    // --- floors 3, 4, 5: the loop ran on something that matters ------------
+    assert!(
+        cases >= MIN_DECOY_CASES,
+        "the decoy property must run over at least {MIN_DECOY_CASES} generated cases. Got \
+         {cases}"
+    );
+    assert!(
+        chains.len() >= MIN_DISTINCT_DECOY_CHAINS,
+        "the decoy property must use at least {MIN_DISTINCT_DECOY_CHAINS} DISTINCT chains; \
+         hundreds of cases that all spelled `env -u git` at the innermost position would be \
+         one row counted hundreds of times. Got {}",
+        chains.len()
+    );
+    assert_eq!(
+        used.len(),
+        DECOY_OPERANDS.len(),
+        "every entry of `DECOY_OPERANDS` must appear in at least one generated case, or \
+         the alphabet is wider than the corpus and an entry nobody drew is an entry that \
+         cannot fail. Unused: {:?}",
+        DECOY_OPERANDS
+            .iter()
+            .filter(|entry| !used.contains(*entry))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        both_sides > 0,
+        "at least one generated case must have an ordinary wrapper on BOTH sides of the \
+         decoy. This is the floor that proves the SPLICE reaches the middle of a chain \
+         rather than only its ends — a decoy that is always innermost is never exercised \
+         under a wrapper, which is the same partial coverage this section exists to close."
+    );
+
+    println!(
+        "decoy corpus: {cases} generated cases, {} distinct decoy chains, \
+         {} decoy operands, {both_sides} cases wrapped on both sides, seed {SEED:#x}",
+        chains.len(),
+        DECOY_OPERANDS.len()
+    );
+}
+
+#[test]
+fn the_decoy_rule_discriminates_rather_than_blanket_denying_the_shape() {
+    let envelope = TempDir::new().expect("a temporary envelope root");
+    let root = envelope.path();
+
+    // **The row that tells "establishing command position" apart from "denying
+    // anything that looks like a decoy".** `env -u git ls` has exactly ONE
+    // governed candidate — the operand — and the command that actually runs is
+    // `ls`. Refusing it would be blanket-denying the SHAPE.
+    permits(root, "env -u git ls");
+
+    // **`T-19-74` / AR-19-10, in its DECOY form.** One candidate again — the
+    // decoy — so the segment still mis-indexes and `classify_git` judges the verb
+    // `$X`. This asserts an ACCEPTED RESIDUAL, not a desirable behaviour: it is
+    // inside the expansion-assembled class `19-11` accepted and this plan does
+    // not move. It is pinned because
+    // `the_residual_begins_exactly_at_the_command_line_boundary` pins only the
+    // decoy-free spelling, and an accepted boundary whose decoy form nobody wrote
+    // down is a boundary a later round rediscovers as a finding.
+    permits(root, "env -u git $X push --force origin main");
+
+    // **The discriminating pair from `19-SECURITY.md`, in ONE test so they cannot
+    // drift apart.** These two commands differ by a single word. Both must be
+    // refused; today the second exits 0, and that one word is the whole of
+    // `T-19-60`'s surviving wrapper-operand sub-class.
+    refuses_under(
+        root,
+        "env -u SOME_VAR git push --force origin main",
+        policy::REASON_FORCE_PUSH_BLOCKED,
+    );
+    refuses_under(
+        root,
+        "env -u git git push --force origin main",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+}
+
+#[test]
+fn the_disclosed_costs_of_the_command_position_rule_are_pinned_beside_the_spellings_that_work() {
+    // **Everything below asserts a COST of this fix, not a desirable
+    // behaviour.** A cost that is not pinned is a cost nobody can tell has grown,
+    // and each row is paired with the spelling that still works so the boundary
+    // of the cost is visible rather than asserted about. A future change that
+    // REDUCES one of these costs must delete its row deliberately rather than
+    // discover it failing.
+    let envelope = TempDir::new().expect("a temporary envelope root");
+    let root = envelope.path();
+
+    // Cost 1 — a UNIX account called `git` is indistinguishable from a decoy.
+    refuses_under(
+        root,
+        "sudo -u git git status",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+    permits(root, "git status");
+    permits(root, "sudo -E git status");
+
+    // Cost 2 — the same on the forge path, where the read command is ordinary.
+    refuses_under(
+        root,
+        "env -u gh gh pr list --limit 5",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+    permits(root, "gh pr list --limit 5");
+    permits(root, "env gh pr list --limit 5");
+
+    // Cost 3 — an expansion anywhere in the WRAPPER PREFIX region makes the
+    // prefix unresolvable, because what it does to the environment is decided
+    // after the guard has answered. Restricted to that region: an expansion in
+    // the assignment prefix or in the program's own arguments is untouched.
+    refuses_under(
+        root,
+        "timeout $T git fetch origin",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+    permits(root, "git fetch origin");
+    permits(root, "timeout 60 git fetch origin");
+}
+
+#[test]
+fn a_wrapped_forge_command_quoting_a_governed_name_is_refused_and_the_unwrapped_one_is_not() {
+    // Cost 4, in its own test with a root per row because each of these touches
+    // the PR ledger and a shared root would produce a cap refusal that looks like
+    // the verdict under test.
+    //
+    // This is `T-19-75`'s accepted class extended to governed heads rather than a
+    // new kind of cost: WRAPPED, the quoted title is a second candidate and the
+    // position cannot be established; UNWRAPPED, the head answers immediately and
+    // the title is just a string.
+    let wrapped = TempDir::new().expect("a temporary envelope root");
+    refuses_under(
+        wrapped.path(),
+        "env gh pr create --title \"git push --force\"",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+
+    let plain = TempDir::new().expect("a temporary envelope root");
+    permits(plain.path(), "gh pr create --title \"git push --force\"");
+}
+
 // ---------------------------------------------------------------------------
-// 7. The disclosure in the code and the disclosure in the test cannot drift
+// 9. The disclosure in the code and the disclosure in the test cannot drift
 //    apart (`T-19-79`, D-27)
 // ---------------------------------------------------------------------------
 
