@@ -179,7 +179,7 @@ a design question rather than a one-function change.
 
 **Suggested owner.** A round-4 gap-closure plan, before `/gsd-secure-phase 19` is re-run.
 
-## `T-19-87` — `${VAR}` fragments a command so the guard never sees its shape (found during 19-13 execution)
+## `T-19-87` — `${VAR}` fragments a command so the guard never sees its shape (found during 19-13 execution) — **CLOSED by 19-14 + 19-15**
 
 **Symptom.** An envelope key removed through a brace expansion is permitted:
 
@@ -202,19 +202,42 @@ executor caught it when the row stayed green after the fix. The equivalent brace
 spelling — `env -u $K git fetch origin` — **is** closed, and is what
 `the_indirect_spelling_no_literal_match_can_find_is_refused_too` now pins.
 
-**Bounded on one side, and that bound is asserted.** The fragmentation does not hide a refused
-git command: `env -u ${K}_COMMAND git push --force origin main` is still refused under
-`force_push_blocked`, because the segment carrying the command still resolves it. What it
-hides is the **env-key removal**, which is exactly the `T-19-81` harm.
+**~~Bounded on one side, and that bound is asserted.~~ THAT BOUND WAS MEASURED FALSE.** The
+entry originally claimed the fragmentation does not hide a refused git command, because the
+segment carrying the command still resolves it. `19-SECURITY.md`'s third audit measured that
+false one word to the right: the fragmentation hides `env -u GIT_SSH_COMMAND`, and that harm
+lands whether or not the git command behind it is itself refused. The test asserting the
+bound was **deleted** by plan 19-15 rather than re-worded, with a tombstone in
+`tests/envelope_command_position.rs` naming where its two rows went.
 
-**Why it is not fixed here.** Closing it means changing what `{`/`}` do in `split_words`.
-Those are real shell grouping syntax (`{ cmd; }`), and the blast radius is every command the
-guard splits — far outside a plan scoped to four items. Pinned at its current PERMITTED
-verdict in
-`tests/envelope_command_position.rs::the_brace_expansion_spelling_is_a_residual_this_plan_does_not_close`.
+### STATUS: **CLOSED** across plans 19-14 and 19-15
 
-**Suggested owner.** The same round-4 plan as `T-19-86`. Both are splitter/classifier
-questions rather than resolver questions.
+**Which rule closed each half:**
+
+* **Rule A — plan 19-14, the DECISION REGION** (`policy::expansion_in_decision_region`, called
+  once in `hooks::classify_segments`'s `Governed` arm). Six of the eight measured rows: every
+  spelling where the flush lands in a word the classifier's own matched arm READS — the git
+  verb, `config`'s key operand, the forge's first two subcommand words. `git ${X}push --force
+  origin main`, `git $(true)push …`, `git ${X}stash`, `git ${X}update-ref …`,
+  `git ${X}config core.hooksPath /tmp/x`, `gh ${X}pr create --title x`.
+* **Rule B — plan 19-15, the COMMAND-POSITION rule**
+  (`policy::resolve_program_with_head` over `policy::split_segments_with_heads`). The
+  remaining two rows, where the flush lands in a wrapper prefix SEVERED from the governed
+  program and no verb-slot rule can see the shape: `C=GIT_CONFIG; env -u ${C}_COUNT git fetch
+  origin` and `K=GIT_SSH; env -u ${K}_COMMAND git fetch origin`. Plus every further
+  split-point spelling found since — no literal fragment, one- and two-character tails, and
+  the `$(printf …)` substitution form.
+
+**Neither half changed what a brace does.** `SEPARATORS` is unchanged, `split_segments` keeps
+its signature and behaviour, and the flush flag is computed for `( ) { }` only, on a
+word-in-progress condition. `{ git status; }` and `( git status )` reach the same verdicts as
+`git status`, asserted as rows. Rule B's one disclosed cost —
+`ROOT=$(git rev-parse --show-toplevel) git status` refused while both halves alone are
+permitted — is pinned as a pair.
+
+Pinned in `tests/envelope_expansion_slots.rs` (the re-homed rows, the severed-prefix
+spellings, the cost pair, the grouping rows and the opener-exclusion permits) and in
+`tests/envelope_wrapper_class.rs` (the `SEVERED_PREFIXES` generative alphabet).
 
 ## `T-19-91` — a git classifier's own decision operand, assembled by expansion (registered by 19-14)
 

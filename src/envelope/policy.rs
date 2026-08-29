@@ -1066,6 +1066,35 @@ pub struct Token {
     /// double-quoted `$`, or a backtick. **The value is unknowable here**, which
     /// is the whole reason the flag exists rather than an attempt to evaluate it.
     pub expansion: bool,
+    /// For an OPERATOR token only: whether it **severed a word** — a word was in
+    /// progress at the instant the character arrived.
+    ///
+    /// **The discriminator, and the cases it tells apart, because that is the
+    /// whole of Rule B's safety.** It is computed for `(`, `)`, `{` and `}` and
+    /// for nothing else:
+    ///
+    /// * `${X}push`, `$(true)push`, `${C}NT` and `${C}` have a word in progress
+    ///   at every one of their boundaries, so each boundary is a flush and the
+    ///   fragment after it CONTINUES the enclosing word;
+    /// * `{ cmd; }` and `( cmd )` have a word in progress at NEITHER, because
+    ///   bash's own grammar requires it: `{` is a reserved word and must be
+    ///   followed by whitespace, and `}` must follow a `;` or a newline. A
+    ///   grouped command therefore keeps exactly today's segments.
+    ///
+    /// **The condition is a word BEFORE the character, never a word after it.**
+    /// The latter would mark `(cd /tmp && ls)` and refuse an ordinary subshell.
+    ///
+    /// **`;`, `|`, `&` and newline are always `false`**, and that is a safety
+    /// property rather than an omission: they are command operators in every
+    /// context, and marking `hi&&git` or `$X|grep` as a severed word would merge
+    /// two separate commands into one and refuse the second.
+    ///
+    /// What quoting already handles, so the flag never has to: a substitution
+    /// inside double quotes is consumed by the quote loop and never reaches the
+    /// separator arm at all, so `"$(pwd)"` produces no flush marker.
+    ///
+    /// Always `false` for an ordinary word.
+    pub word_splitting_flush: bool,
 }
 
 /// The shell control operators that end one simple command and begin the next.
@@ -1125,21 +1154,87 @@ pub fn split_command(cmd: &str) -> Option<Vec<String>> {
 /// classified only the first command would look at `echo` and allow the force
 /// push sitting behind the `&&`. Every segment is classified.
 pub fn split_segments(cmd: &str) -> Option<Vec<Vec<Token>>> {
+    Some(
+        split_segments_with_heads(cmd)?
+            .into_iter()
+            .map(|segment| segment.tokens)
+            .collect(),
+    )
+}
+
+/// One simple command, with the one fact about its FIRST token that the tokens
+/// themselves cannot carry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Segment {
+    /// The words of the simple command, exactly as [`split_segments`] reports
+    /// them.
+    pub tokens: Vec<Token>,
+    /// Whether the first token of this segment is at a **command position**.
+    ///
+    /// False when the operator IMMEDIATELY preceding the segment was a
+    /// word-splitting CLOSER — `}` or `)` with a word in progress before it (see
+    /// [`Token::word_splitting_flush`]). Such a segment is a fragment continuing
+    /// the enclosing word after an expansion, so what the shell will put in front
+    /// of its first token is unknowable.
+    pub head_is_command_position: bool,
+}
+
+/// [`split_segments`], plus a per-segment report of whether its head is at a
+/// command position.
+///
+/// **The one scan, not a second one.** `split_segments` is defined over this
+/// function rather than beside it, because the defect this whole round is about
+/// is a decision region derived from a scan other than the one the classifier
+/// runs — it has sat one slot over four times in this phase. There is one walk of
+/// the tokens here and every caller reads its answer.
+///
+/// **The opener is EXCLUDED, and that exclusion is what keeps ordinary shell
+/// working.** A segment following `{` is the parameter expansion's variable NAME
+/// and can never be a governed program. A segment following `(` is the command
+/// substitution's OWN CONTENTS, which IS at a genuine command position and must
+/// keep being classified rather than refused — which is what leaves
+/// `echo $(git rev-parse HEAD)`, `git log --format=%h $(git rev-parse HEAD)`,
+/// `ROOT=$(git rev-parse --show-toplevel)`, `DIR=$(mktemp -d)`,
+/// `RUN_ID=$(uuidgen)`, `CONFIG=$(cat cfg)` and `COMMAND=$(which git)`
+/// permitted. The first of those is named in [`resolve_program`]'s own doc as
+/// the bill of closing `T-19-74`.
+///
+/// **"IMMEDIATELY preceding" is load-bearing.** In `(git status)&&git fetch
+/// origin` the second segment's last preceding operator is `&&`, not `)`, so it
+/// is untouched. A rule that looked further back than one operator would refuse
+/// an ordinary sequence.
+pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
     let tokens = tokenize(cmd)?;
-    let mut segments: Vec<Vec<Token>> = Vec::new();
+    let mut segments: Vec<Segment> = Vec::new();
     let mut current: Vec<Token> = Vec::new();
+    // The state of the operator most recently passed. Before any operator there
+    // is nothing in front of the first token but the start of the line, which is
+    // a command position.
+    let mut last_operator_severed = false;
+    let mut head_is_command_position = true;
 
     for token in tokens {
         if token.operator {
             if !current.is_empty() {
-                segments.push(std::mem::take(&mut current));
+                segments.push(Segment {
+                    tokens: std::mem::take(&mut current),
+                    head_is_command_position,
+                });
             }
+            last_operator_severed =
+                token.word_splitting_flush && matches!(token.text.as_str(), "}" | ")");
             continue;
+        }
+        if current.is_empty() {
+            head_is_command_position = !last_operator_severed;
         }
         current.push(token);
     }
     if !current.is_empty() {
-        segments.push(current);
+        segments.push(Segment {
+            tokens: current,
+            head_is_command_position,
+        });
     }
 
     Some(segments)
@@ -1162,6 +1257,7 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
                     text: std::mem::take(&mut text),
                     operator: false,
                     expansion,
+                    word_splitting_flush: false,
                 });
                 started = false;
                 expansion = false;
@@ -1173,6 +1269,13 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
         match ch {
             ' ' | '\t' | '\r' => flush!(),
             '\n' | ';' | '|' | '&' | '(' | ')' | '{' | '}' => {
+                // **Read BEFORE the flush, because `flush!` clears `started`.**
+                // A word in progress at the instant one of these four characters
+                // arrives means the character split a word rather than ended a
+                // command. See `Token::word_splitting_flush` for the cases this
+                // tells apart and for why the other four separators are never
+                // marked.
+                let severed_a_word = started && matches!(ch, '(' | ')' | '{' | '}');
                 flush!();
                 // `&&` and `||` are one operator, not two. Which one it is does
                 // not matter to a classifier that treats every separator alike,
@@ -1186,6 +1289,7 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
                     text: op,
                     operator: true,
                     expansion: false,
+                    word_splitting_flush: severed_a_word,
                 });
             }
             '\'' => {
@@ -1260,6 +1364,7 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
             text,
             operator: false,
             expansion,
+            word_splitting_flush: false,
         });
     }
 
@@ -1646,6 +1751,23 @@ pub enum ProgramResolution {
 /// keeps `git commit -m "$MSG"`, `gh pr create --title "$TITLE"`,
 /// `gh api repos/o/r/pulls -f title="$T"` and `git -c user.name="$NAME" commit`
 /// working (`T-19-88`, `T-19-87` in part).
+///
+/// ## What IS covered about the segment's own HEAD, since 19-15
+///
+/// This function answers about a segment whose first token is at a **command
+/// position**. When it is not — a fragment continuing an enclosing word after an
+/// expansion — [`resolve_program_with_head`] refuses a governed resolution
+/// instead. `resolve_program` is that function with the head treated as real, so
+/// every caller holding a bare `&[Token]` is unchanged.
+///
+/// **That rule's disclosed cost, beside `T-19-74` and `T-19-75` rather than
+/// below them.** A command that places a governed program IMMEDIATELY after a
+/// substitution which carried a literal prefix is refused:
+/// `ROOT=$(git rev-parse --show-toplevel) git status` does not run, while
+/// `ROOT=$(git rev-parse --show-toplevel)` alone and `git status` alone both do.
+/// The cost is exactly that juxtaposition and nothing wider, and it is pinned as
+/// a PAIR in `tests/envelope_expansion_slots.rs` so a cost that grows is a cost
+/// something goes red about.
 pub fn resolve_program(segment: &[Token]) -> ProgramResolution {
     // 1. An envelope key is refused on its own account, wherever it appears.
     for token in segment {
@@ -1861,6 +1983,87 @@ pub fn resolve_program(segment: &[Token]) -> ProgramResolution {
     // 8. No governed program is reachable. See `ProgramResolution::Ungoverned`
     //    for why this is the answer and not a gap.
     ProgramResolution::Ungoverned
+}
+
+/// [`resolve_program`], for a segment that may not begin at a command position.
+///
+/// **A SEVERED PREFIX IS NOT A COMMAND POSITION (`T-19-87`, Rule B).** When
+/// `head_is_command_position` is false the segment is a fragment continuing an
+/// enclosing word after an expansion — [`Segment::head_is_command_position`]
+/// reports it from the flush flag on the operator immediately preceding the
+/// segment — so what the shell will put in front of its first token is
+/// unknowable. A governed program found there is REFUSED rather than classified.
+///
+/// This is step 5's existing wrapper-prefix rule applied where the prefix was
+/// SEVERED rather than merely expanded. The measured line it closes:
+///
+/// ```text
+/// C=GIT_CONFIG; env -u ${C}_COUNT git fetch origin
+///   ->  `C=GIT_CONFIG`  |  `env -u $`  |  `C`  |  `_COUNT git fetch origin`
+/// ```
+///
+/// In bash that is `env -u GIT_CONFIG_COUNT git fetch origin`: layer 3's
+/// `core.hooksPath` carrier removed, with `GIT_ASKPASS`, `GIT_CONFIG_GLOBAL` and
+/// `GIT_SSH_COMMAND` intact. The last fragment resolves `git` behind a clean
+/// one-word literal prefix whose verb is the literal `fetch`, so no verb-slot
+/// rule can see it — by the time resolution runs the shape is gone.
+///
+/// **The rule is POSITIONAL. It reads no name, no substring and no length.**
+///
+/// # The formulation that was WITHDRAWN, recorded with both measurements
+///
+/// An earlier draft keyed this on the literal fragment (`_COUNT`) being a
+/// substring of an [`ENVELOPE_ENV_KEYS`] entry. It was withdrawn on two
+/// measurements, and a later reader tempted by the textual version needs to find
+/// them here rather than repeat them:
+///
+/// * **Evadable — move the split point.** `C=GIT_CONFIG_COU; env -u ${C}NT git
+///   fetch origin` leaves the two-character fragment `NT`;
+///   `C=GIT_CONFIG_COUN; env -u ${C}T …` leaves one character; and the bare
+///   `env -u ${C} git fetch origin` leaves NO literal fragment at all, so there
+///   is nothing to match. Any minimum length is a floor an author ducks under by
+///   moving the cut one character to the left.
+/// * **Unshippable — it refuses ordinary shell.** The commonest `$(`-carrying
+///   shape in real use is an uppercase assignment, and `ROOT`, `DIR`, `RUN`,
+///   `CONFIG` and `COMMAND` all sit inside envelope key names —
+///   `GSD_MM_RUN_ID` included, which 19-14 added. `ROOT=$(git rev-parse
+///   --show-toplevel)`, `DIR=$(mktemp -d)`, `RUN_ID=$(uuidgen)`,
+///   `CONFIG=$(cat cfg)` and `COMMAND=$(which git)` would each be refused on
+///   every Bash tool call.
+///
+/// The positional rule refuses all three evasion spellings and permits all five
+/// assignments, because it decides about COMMAND POSITION. It has nothing to
+/// floor and nothing to duck under.
+///
+/// **The other resolutions pass through unchanged, and the order matters.** An
+/// envelope-key refusal (step 1) is more specific than this one and keeps its own
+/// `HookBypassBlocked` identifier; `NoProgram` and `Ungoverned` are permits about
+/// a segment that reaches nothing this envelope governs, and refusing those would
+/// deny `_COUNT ls` for nothing.
+pub fn resolve_program_with_head(
+    segment: &[Token],
+    head_is_command_position: bool,
+) -> ProgramResolution {
+    let resolved = resolve_program(segment);
+    if head_is_command_position {
+        return resolved;
+    }
+
+    match resolved {
+        ProgramResolution::Governed { .. } | ProgramResolution::NestedPayload { .. } => {
+            ProgramResolution::Refuse {
+                reason: ParkReason::EnvelopeAssertionFailed,
+                // Names the SHAPE and never quotes the command back (SAFE-04).
+                detail: "this command reaches a program the envelope governs from a fragment \
+                         that continues an enclosing word after a shell expansion, so what \
+                         the shell will put in front of that program is decided after the \
+                         guard has answered; the fragment's first word is not a command \
+                         position, and it is refused rather than guessed at"
+                    .to_string(),
+            }
+        }
+        other => other,
+    }
 }
 
 /// A word a classifier's matched arm READS, which the shell assembles at run

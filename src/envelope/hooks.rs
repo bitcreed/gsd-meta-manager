@@ -886,7 +886,11 @@ pub fn guard_in(
         );
     };
 
-    let Some(segments) = policy::split_segments(command) else {
+    // `split_segments_with_heads` rather than `split_segments`: the per-segment
+    // head report is what tells a simple command apart from a FRAGMENT continuing
+    // an enclosing word after an expansion, and it comes from the same scan that
+    // produced the segments rather than from a second one (`T-19-87`, Rule B).
+    let Some(segments) = policy::split_segments_with_heads(command) else {
         return deny(
             out,
             err,
@@ -948,7 +952,7 @@ pub fn guard_in(
 /// `depth` bounds the nested-command-line recursion at [`MAX_SHELL_RECURSION`].
 #[allow(clippy::too_many_arguments)]
 fn classify_segments(
-    segments: &[Vec<policy::Token>],
+    segments: &[policy::Segment],
     depth: usize,
     root: &Path,
     alias: &str,
@@ -956,10 +960,16 @@ fn classify_segments(
     envelope: &policy::EnvelopePolicy,
     push_ctx: &mut Option<policy::GitContext>,
 ) -> anyhow::Result<Option<(ParkReason, String)>> {
-    for segment in segments {
+    for entry in segments {
+        let segment = entry.tokens.as_slice();
         let words: Vec<&str> = segment.iter().map(|token| token.text.as_str()).collect();
 
-        match policy::resolve_program(segment) {
+        // The head report travels WITH the segment rather than being re-derived
+        // here, for the reason this module already records about the park reason:
+        // a caller that computed the same fact a second way is how two answers
+        // come to disagree. `head_is_command_position` is false only for a
+        // fragment continuing an enclosing word after an expansion.
+        match policy::resolve_program_with_head(segment, entry.head_is_command_position) {
             // A segment that runs no program at all (a bare `FOO=bar`), and a
             // segment that provably reaches no governed program in any command
             // position.
@@ -1008,7 +1018,12 @@ fn classify_segments(
                     )));
                 }
                 let payload = words[index];
-                match policy::split_segments(payload) {
+                // **The head report is threaded here too, and this path is the
+                // one that needs it most.** A `sh -c '…'` payload's braces are
+                // LITERAL until the payload is re-split, so the fragments only
+                // appear at this point — a re-split that dropped the report would
+                // leave every severed prefix reachable behind one `-c`.
+                match policy::split_segments_with_heads(payload) {
                     Some(inner) => {
                         if let Some(refusal) = classify_segments(
                             &inner,

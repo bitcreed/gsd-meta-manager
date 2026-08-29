@@ -1234,3 +1234,120 @@ audit found (`T-19-88`).
 gap has been the cell one slot over from what the corpus could draw; a fourth
 round certified by an alphabet containing no `$` would be the fourth consecutive
 round to certify a claim it could not have failed on.
+
+---
+
+### Execution record — plan 19-15 (Rule B). NOT an audit finding.
+
+**Provenance, stated first so a reader cannot mistake this for audit 3's own
+work.** Everything below was measured by the EXECUTOR of plan 19-15, against the
+tree at `cae2793` (19-14's post-state, "before") and after the Rule B fix. It
+follows the subsection plan 19-14 appended and edits nothing that precedes it.
+**Re-measuring and re-classifying these rows is `/gsd-secure-phase 19`'s job, not
+a plan's.** The audit tables above, the Security Audit Trail, the Accepted Risks
+Log, the Sign-Off and plan 19-14's subsection are untouched by plan 19-15.
+
+#### The carry-forward, confirmed RED before anything was written
+
+Plan 19-15's first action, before a single line of test or production code, was
+to re-run the two rows plan 19-14 left RED and confirm they were still red
+against its post-state. Both were — measured at exit 0 where exit 2 was
+required:
+
+```
+exit=0  C=GIT_CONFIG; env -u ${C}_COUNT git fetch origin    <- still RED, as 19-14 left it
+exit=0  K=GIT_SSH;    env -u ${K}_COMMAND git fetch origin  <- still RED, as 19-14 left it
+```
+
+Had either been green, Rule B would have been a rule nobody had shown was
+needed, and the correct action would have been to report it as a finding rather
+than proceed. The red-to-green transition below is therefore evidence rather
+than assertion: it is the one number a run that changed nothing could not
+produce.
+
+| Row | before (at `cae2793`) | after (Rule B) |
+|---|---|---|
+| `C=GIT_CONFIG; env -u ${C}_COUNT git fetch origin` | exit 0 | **exit 2**, `envelope_assertion_failed` |
+| `K=GIT_SSH; env -u ${K}_COMMAND git fetch origin` | exit 0 | **exit 2**, `envelope_assertion_failed` |
+
+#### The remaining severed-prefix spellings
+
+Same method: driven in-process through `hooks::guard_in`, one fresh `TempDir`
+envelope root per row. Pinned in `tests/envelope_expansion_slots.rs`.
+
+| Row | before | after |
+|---|---|---|
+| `env -u ${C} git fetch origin` (no literal fragment at all) | exit 0 | **exit 2**, `envelope_assertion_failed` |
+| `C=GIT_CONFIG_COU; env -u ${C}NT git fetch origin` (two-character tail) | exit 0 | **exit 2**, `envelope_assertion_failed` |
+| `C=GIT_CONFIG_COUN; env -u ${C}T git fetch origin` (one-character tail) | exit 0 | **exit 2**, `envelope_assertion_failed` |
+| `env -u $(printf %s%s GIT_CONFIG _COUNT) git fetch origin` (substitution) | exit 0 | **exit 2**, `envelope_assertion_failed` |
+| `K=GIT_SSH; env -u ${K}_COMMAND git push --force origin main` | exit 2, `force_push_blocked` | **exit 2**, `envelope_assertion_failed` |
+| `ROOT=$(git rev-parse --show-toplevel) git status` — **the disclosed COST** | exit 0 | **exit 2**, `envelope_assertion_failed` |
+
+One severed spelling is **excluded from Rule B's evidence and disclosed as
+such**: `C=GIT_CONFIG_COUNT; env -u ${C} git fetch origin` was already exit 2
+under `hook_bypass_blocked` at `cae2793`, because binding a WHOLE envelope key
+name in the same command line is refused on its own account by
+`resolve_program` step 2b (`T-19-81`). It is pinned at that identifier so nobody
+counts it as a Rule B row.
+
+#### The rule, and the formulation that was WITHDRAWN
+
+Rule B is **positional and reads no name, no substring and no length.**
+`tokenize` records that a `(`, `)`, `{` or `}` boundary was a word-splitting
+flush — a word was in progress when the character arrived — and a segment whose
+IMMEDIATELY preceding operator is a severing CLOSER (`}` or `)`) is a fragment
+continuing an enclosing word, so its first token is not a command position and a
+governed program found there is refused. The OPENER is excluded: after `{` is a
+variable name, and after `(` is the substitution's own contents, which IS a
+command position and keeps being classified.
+
+An earlier draft keyed the rule on the literal fragment being a substring of an
+`ENVELOPE_ENV_KEYS` entry. **It was withdrawn on two measurements, and both are
+recorded so the next audit does not propose it:**
+
+1. **Evadable — move the split point.** `${C}NT` leaves a two-character
+   fragment, `${C}T` leaves one, and the bare `${C}` leaves none at all. Any
+   minimum length is a floor an author ducks under by cutting one character
+   further left. Rows 1–4 of the table above are exactly those spellings, and
+   the positional rule refuses all four.
+2. **Unshippable — it refuses ordinary shell.** `ROOT`, `DIR`, `RUN`, `CONFIG`
+   and `COMMAND` all sit inside envelope key names, `GSD_MM_RUN_ID` included.
+   `ROOT=$(git rev-parse --show-toplevel)`, `DIR=$(mktemp -d)`,
+   `RUN_ID=$(uuidgen)`, `CONFIG=$(cat cfg)` and `COMMAND=$(which git)` would
+   each be refused on every Bash tool call. All five are measured exit 0 after
+   Rule B and pinned.
+
+`SEPARATORS` is unchanged, `split_segments` keeps its signature and behaviour,
+and the flush flag is computed for `( ) { }` only. `{ git status; }`,
+`( git status )` and `(git status)&&git fetch origin` reach exactly the verdicts
+their ungrouped spellings reach — measured, and pinned as rows.
+
+#### What is now closed, and what is NOT
+
+**Closed across plans 19-14 and 19-15:**
+
+* **`T-19-87`** — six of eight measured rows by Rule A (the decision region at
+  the classifiers' boundary, plan 19-14); the remaining two, plus every further
+  split-point spelling found since, by Rule B (the command-position rule, plan
+  19-15). Neither half changed what a brace does.
+* **`T-19-89`** — plan 19-14 widened `ASSIGNMENT_PREFIXES`, `REFUSED_BASES` and
+  `DECOY_OPERANDS`, added `EXPANSION_WRAPPERS` and a fresh-root forge-slot
+  property. Plan 19-15 adds the last two axes audit 3 named: `SHELL_LAYERS`
+  gains a brace-group and a subshell layer, and a `SEVERED_PREFIXES` alphabet
+  varies WHERE the split falls with a refusal property of its own. The
+  per-alphabet metacharacter floor now covers every alphabet in audit 3's axis
+  table, so an alphabet narrowed back turns a test red.
+
+**NOT closed — `/gsd-secure-phase 19` is NOT cleared by plan 19-15:**
+
+* **`T-19-86`** remains **OPEN at `high`** by explicit user scoping decision.
+  Untouched and unremediated; its four rows are still measured at exit 0 and
+  pinned unmodified.
+* **`T-19-91`** remains **registered OPEN at `high`** exactly as plan 19-14
+  wrote it, including the recorded fact that `reflog` and `symbolic-ref` have no
+  `pre-push` and no `pre-commit` second carrier.
+
+Because both remain open at `high`, this plan does not clear the phase gate, and
+re-measuring and re-classifying every row above is `/gsd-secure-phase 19`'s job
+rather than this plan's.

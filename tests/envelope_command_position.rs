@@ -375,46 +375,49 @@ fn the_indirect_spelling_no_literal_match_can_find_is_refused_too() {
     );
 }
 
-#[test]
-fn the_brace_expansion_spelling_is_a_residual_this_plan_does_not_close() {
-    // **`T-19-87`, found in EXECUTION rather than in planning, and pinned at its
-    // current PERMITTED verdict rather than fixed.**
-    //
-    // 19-13's plan and its plan-check both asserted that this line is closed by
-    // the expansion-prefix rule, on the reasoning that `${K}_COMMAND` carries
-    // `Token.expansion`. Measured, it does not: `split_words` treats `{` and `}`
-    // as SEPARATORS (`policy.rs`'s `SEPARATORS`, and the tokenizer arm beside
-    // `;` and `|`), so the word never survives as one token. The line fragments
-    // into three segments —
-    //
-    //   `env -u $`   |   `K`   |   `_COMMAND git fetch origin`
-    //
-    // — and the guard judges each on its own. The third resolves `git` behind an
-    // ungoverned head with ONE candidate and no expansion between them, so it is
-    // `git fetch`, which is allowed. Nothing the command-position rule does can
-    // see the shape, because by the time resolution runs the shape is gone.
-    //
-    // **This is a live bypass of the same class as `T-19-81`, reached through the
-    // SPLITTER rather than through the resolver.** It is not closed here: closing
-    // it means changing what `{`/`}` do in `split_words`, which is real shell
-    // grouping syntax (`{ cmd; }`) and a blast radius far outside a plan scoped
-    // to four items. It is registered in `deferred-items.md` as `T-19-87`.
-    //
-    // **The damage is bounded on one side and that bound is asserted too**: the
-    // fragmentation does not hide a refused git command, because the segment that
-    // carries the command still resolves it. It hides the ENV-KEY REMOVAL, which
-    // is exactly the `T-19-81` harm.
-    //
-    // A future change that closes this must DELETE this row deliberately rather
-    // than discover it failing.
-    permits("K=GIT_SSH; env -u ${K}_COMMAND git fetch origin");
-
-    // The bound: the same fragmentation does not let a force push through.
-    refuses(
-        "env -u ${K}_COMMAND git push --force origin main",
-        policy::REASON_FORCE_PUSH_BLOCKED,
-    );
-}
+// ---------------------------------------------------------------------------
+// TOMBSTONE — `the_brace_expansion_spelling_is_a_residual_this_plan_does_not_close`
+// was DELETED by plan 19-15
+// ---------------------------------------------------------------------------
+//
+// **It asserted a bound that was measured FALSE.** The test pinned `T-19-87` at
+// its then-PERMITTED verdict and, as the bound on the damage, stated:
+//
+//   "the fragmentation does not hide a refused git command, because the segment
+//    that carries the command still resolves it. It hides the ENV-KEY REMOVAL,
+//    which is exactly the `T-19-81` harm."
+//
+// `19-SECURITY.md`'s THIRD audit measured that bound false ONE WORD TO THE
+// RIGHT. The fragmentation hides `env -u GIT_SSH_COMMAND` — which removes
+// `IdentitiesOnly=yes`, `IdentityAgent=none` and `-F /dev/null` and puts the
+// user's own agent and default identity back within reach of a driven run
+// (D-16) — and that harm lands whether or not the git command behind it is
+// itself refused. A bound stated on the git command was a bound about the wrong
+// half of the line.
+//
+// **It was DELETED rather than re-worded, and that is the point.** A test
+// asserting a wrong bound is worse than no test, and re-wording it in place
+// would have been a bound wider than the mechanism for the SECOND time in the
+// same file. Both of its rows moved to `tests/envelope_expansion_slots.rs`, into
+// `the_re_homed_t_19_87_rows_carry_the_reason_identifiers_the_corrected_bound_implies`,
+// with their reason identifiers CORRECTED:
+//
+// | row | old verdict | new verdict |
+// |---|---|---|
+// | `K=GIT_SSH; env -u ${K}_COMMAND git fetch origin` | PERMITTED, exit 0 | REFUSED, `envelope_assertion_failed` |
+// | `… ${K}_COMMAND git push --force origin main` | REFUSED, `force_push_blocked` | REFUSED, `envelope_assertion_failed` |
+//
+// The second identifier changes because after Rule B the segment is refused for
+// an UNRESOLVABLE COMMAND POSITION before `classify_git` is ever reached, so
+// `force_push_blocked` is no longer the reason it is refused.
+//
+// **The class is closed by a COMMAND-POSITION rule and by no change whatever to
+// what a brace does.** `SEPARATORS` is untouched, `split_segments` keeps its
+// signature and behaviour, and `{ cmd; }` and `( cmd )` produce exactly the
+// segments they always did — asserted directly by
+// `a_grouped_command_reaches_the_same_verdict_as_its_ungrouped_spelling`. What
+// changed is that a segment whose immediately preceding operator SEVERED a word
+// is no longer treated as beginning at a command position.
 
 #[test]
 fn reassigning_a_removed_envelope_key_is_refused() {
