@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Autonomous Orchestration
-current_phase: 21
-current_phase_name: LLM Goal Layer & Prompt-Injection Hardening
+current_phase: 19
+current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: executing
-stopped_at: "Phase 21 gap-closure round 12 PLANNED: one plan (21-35) in one wave. Rounds 1-11 executed (21-01..21-34, merged, gate green: 1424 passed / 0 failed / 13 ignored, clippy exit 0); verification pass 12 scored 90/91 must-haves and ROADMAP 4/5 with gaps_remaining: [], but the independent code reviewer found one real gap the verifier missed — a producer/consumer wire-format mismatch: resume_terminal_argv (src/ui/screens/detail.rs:713) now emits the fused --resume=<id> as ONE argv element, while read_session_id (src/session_detector.rs:159-169) still scans args.windows(2) for the split b\"--resume\", so a session the TUI resumes can no longer have its id read back from /proc and goes silently undetectable. 21-35 teaches the consumer BOTH wire forms (the producer stays fused - round 11 measured that a `--` separator DELETES the resume feature), adds the producer<->consumer round-trip control that no single-sided test could have caught, and corrects in place the read_session_id doc comment whose (correct) sink-property security reasoning is exactly what hid the two-sided functional coupling. Plan-checker: VERIFICATION PASSED first iteration. ROADMAP criterion 4 stays permanently agent-unclosable (4/5 is the ceiling). Next action: /gsd-execute-phase 21 --gaps-only"
-last_updated: "2026-08-28T03:53:22.497Z"
-last_activity: 2026-08-27
-last_activity_desc: Phase 21 execution started
-state_head: c45a8ed3f81bfc51767a759c56c6b096a66a7421
+stopped_at: Completed 19-09-PLAN.md (G-19-1 closed)
+last_updated: "2026-08-29T02:44:29.242Z"
+last_activity: 2026-08-28
+last_activity_desc: Phase 19 execution started
+state_head: 45fe2e4d1df34824ba701c9df21ca0d5702998e4
 progress:
   total_phases: 10
   completed_phases: 6
-  total_plans: 87
-  completed_plans: 85
+  total_plans: 89
+  completed_plans: 87
   percent: 60
 ---
 
@@ -25,16 +25,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 21 — LLM Goal Layer & Prompt-Injection Hardening
+**Current focus:** Phase 19 — GITSAFE — Git & Blast-Radius Envelope
 
 ## Current Position
 
-Phase: 21 (LLM Goal Layer & Prompt-Injection Hardening) — EXECUTING
-Plan: 1 of 37
+Phase: 19 (GITSAFE — Git & Blast-Radius Envelope) — EXECUTING
+Plan: 2 of 10
   Rounds 1-11 executed and merged; gate green (1424 passed / 0 failed / 13 ignored, clippy exit 0).
   Verification pass 12: 90/91 must-haves, ROADMAP 4/5, gaps_remaining: [] — but the independent
   code reviewer found one gap the verifier missed, confirmed in source before planning.
-Status: Executing Phase 21
+Status: Ready to execute
   21-35 closes a producer/consumer wire-format mismatch: the producer emits the fused
   `--resume=<id>` (one argv element) while the consumer still parses only the split
   `["--resume", "<id>"]`, so TUI-resumed sessions became silently undetectable in /proc.
@@ -48,7 +48,7 @@ Status: Executing Phase 21
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-08-28 — Completed quick task 260828-15f: round-scope round-13 finding ids in `21-REVIEW.md`
+Last activity: 2026-08-28 — Phase 19 execution started
 
 ## Deferred Verification
 
@@ -196,6 +196,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 |------|----------|-------|-------|
 | Phase 18 P10 | 5h | 3 tasks | 6 files |
 | Phase 18 P11 | 45min | 3 tasks | 8 files |
+| Phase 19 P09 | 15 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -280,11 +281,11 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-08-25
-Stopped at: Round-7 planning boundary CLOSED — gsd-plan-checker ran against `21-19-PLAN.md` and
+Last session: 2026-08-29T02:44:28.659Z
+Stopped at: Completed 19-09-PLAN.md (G-19-1 closed)
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
-Resume file: `.planning/HANDOFF.json` + `.planning/phases/21-llm-goal-layer-prompt-injection-hardening/.continue-here.md`
+Resume file: None
 (both retained deliberately — the plan-checker step runs as a separate agent and needs them;
 delete only after round 7 executes).
 Note: `.planning/phases/19-gitsafe-git-blast-radius-envelope/.continue-here.md` is a stale
