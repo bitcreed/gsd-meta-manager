@@ -168,50 +168,98 @@ pub fn not_probed() -> ProtectionState {
 /// output change: it is rendered into the dry-run preview and, through
 /// [`envelope_notice`], into the run journal.
 ///
-/// The three parts, in this order and for this reason:
+/// ## The four movements, in this order and for this reason
 ///
-/// 1. **What IS mechanically guaranteed.** Claimed narrowly, because a claim
-///    wider than the mechanism is the thing that gets trusted and should not
-///    be.
-/// 2. **What is NOT.** Stated without hedging. Every clause here is one this
-///    codebase's own module docs already record — [`super`]'s three-layer
-///    contract names what each layer cannot see, [`super::cred`] states that an
-///    agent inside the run can execute the askpass responder and read the token,
-///    and `hooks::settings_value` records the one control with no git-hook
-///    second carrier. This paragraph agrees with them rather than restating them
-///    more comfortably.
-/// 3. **Therefore: enable server-side branch protection.** The phase's
-///    conclusion, stated as a recommendation rather than as a footnote, because
-///    it is the only boundary here that does not depend on the agent's
-///    cooperation.
+/// All three pinned parts are still here and still in that order; the opening
+/// sentence is the addition (G-19-1).
+///
+/// 1. **One sentence stating the ceiling.** What the whole envelope amounts to,
+///    ahead of any detail. A reader who stops after one sentence has still been
+///    told the true shape of it — which is the entire point, because the failure
+///    this layout fixes was a statement nobody finished.
+/// 2. **What IS mechanically guaranteed**, with its examples visibly separated.
+///    Claimed narrowly, because a claim wider than the mechanism is the thing
+///    that gets trusted and should not be.
+/// 3. **What is NOT**, with its examples visibly separated. Stated without
+///    hedging. Every clause here is one this codebase's own module docs already
+///    record — [`super`]'s three-layer contract names what each layer cannot
+///    see, [`super::cred`] states that an agent inside the run can execute the
+///    askpass responder and read the token, and `hooks::settings_value` records
+///    the one control with no git-hook second carrier. This movement agrees with
+///    them rather than restating them more comfortably.
+/// 4. **Therefore: enable server-side branch protection.** The phase's
+///    conclusion. Its *position* is now what makes it the conclusion, which is
+///    why the old self-describing clause about being a conclusion rather than a
+///    footnote is gone: the layout demonstrates it instead of asserting it.
+///
+/// ## Three rules for the next editor, each learned the expensive way
+///
+/// None of these is discoverable from the code, and each silently produces a
+/// wrong result rather than a compile error.
+///
+/// 1. **Indent with `\x20` escapes, never with literal spaces.** Rust's
+///    backslash-continuation strips every leading whitespace character on the
+///    next source line, so an indented example line written with real spaces
+///    collapses flush-left — reproducing exactly the undifferentiated block
+///    G-19-1 removed. Check indentation by reading the *rendered* constant, never
+///    the source.
+/// 2. **Keep the opening sentence clear of the later pinned phrases.** The pin
+///    test compares *first* occurrences, asserting that the offset of `cannot
+///    reach your ambient git credentials` is below that of `defeatable by an
+///    agent that can spawn an unsupervised`, which is below that of `enable
+///    server-side branch protection`. An opening sentence carrying the second or
+///    third of those verbatim fails the ordering assertion on a text whose parts
+///    are in the right order, and the message will not say so.
+/// 3. **Wrap around the pinned phrases, never through one.** A phrase split
+///    across a `\n` cannot match, and the failure then names the phrase rather
+///    than the wrapping, aiming the reader at the wrong thing entirely. The
+///    longest is `defeatable by an agent that can spawn an unsupervised`, at 53
+///    characters.
 ///
 /// **Do not soften part 2.** An overstated safety claim is worse than a stated
 /// limitation, because it gets trusted — and the incident this phase is built on
 /// had two failures, of which the second was reporting success over a deletion
 /// the agent had performed.
+///
+/// **G-19-1, 2026-08-28 — the compression was audited, not accidental.** The
+/// human reading pass found no claim overstated and still recorded this text as
+/// failing its own purpose: 250 whitespace tokens over three dense paragraphs
+/// that each fused a claim with several qualifications, with no visual
+/// separation anywhere. It was cut to 200 **without moving a single pinned
+/// phrase and without dropping one residual disclosure** — the separation is the
+/// fix, and the words under it are largely the words that were already there.
+/// Exactly two secondary clauses were dropped, as redundant rather than
+/// softened: the ledger's *"so the run cannot reset its own limit by deleting a
+/// file it can see"* (already implied by a ledger this repository does not
+/// contain) and the closing *"it is this envelope's conclusion rather than its
+/// footnote"*. `the_honesty_statement_stays_short_enough_that_a_reader_finishes_it`
+/// now holds the result at a token cap, so legibility here is a control rather
+/// than an intention — otherwise the text regrows one well-meaning
+/// clarification at a time.
 pub const SECTION_ENVELOPE: &str = "== What this envelope guarantees, and what it does not ==\n\
-    Mechanically guaranteed: this run cannot reach your ambient git credentials\n\
-    or your SSH agent — the agent socket is removed rather than emptied, and\n\
-    git's global and system configuration are redirected into a generated file\n\
-    that names no credential helper. A push that reaches git through the driven\n\
-    process tree passes the pre-push hook, which judges the refs git itself\n\
-    hands it rather than the command line it was asked about. The pull-request\n\
-    cap is enforced from an append-only ledger this repository does not contain,\n\
-    so the run cannot reset its own limit by deleting a file it can see.\n\
     \n\
-    Not guaranteed: client-side hooks, tool denies and env-injected git\n\
-    configuration are all defeatable by an agent that can spawn an unsupervised\n\
-    shell and chooses to. Each layer is documented with what it cannot see, an\n\
-    agent that unsets GIT_CONFIG_COUNT in a subshell is past the last of them,\n\
-    an agent that runs the askpass responder itself reads the token, and a\n\
-    settings file the agent's own CLI silently ignores leaves the pull-request\n\
-    cap unenforced, because no git hook observes a pull request. The only\n\
-    boundaries that do not depend on the agent's cooperation are the remote's\n\
-    own ruleset and the scope of the credential this run was given.\n\
+    Mechanism bounds this run's reach and pushes; a determined agent defeats\n\
+    everything below the remote.\n\
+    \n\
+    Guaranteed:\n\
+    \x20\x20\x20\x20This run cannot reach your ambient git credentials or SSH agent: the\n\
+    \x20\x20\x20\x20socket is removed, not emptied, and global and system git config is a\n\
+    \x20\x20\x20\x20generated file naming no credential helper.\n\
+    \x20\x20\x20\x20A push through the driven process tree passes the pre-push hook,\n\
+    \x20\x20\x20\x20judging the refs git hands it, not the command line asked about.\n\
+    \x20\x20\x20\x20Pull-request cap: an append-only ledger this repository does not contain.\n\
+    \n\
+    Not guaranteed: client-side hooks, tool denies and env-injected git config\n\
+    are all defeatable by an agent that can spawn an unsupervised shell.\n\
+    \x20\x20\x20\x20An agent that unsets GIT_CONFIG_COUNT in a subshell is past the last layer.\n\
+    \x20\x20\x20\x20An agent that runs the askpass responder itself reads the token.\n\
+    \x20\x20\x20\x20A settings file the agent's own CLI silently ignores leaves that cap\n\
+    \x20\x20\x20\x20unenforced: no git hook observes a pull request.\n\
+    \x20\x20\x20\x20Only the remote's own ruleset and the scope of the credential this\n\
+    \x20\x20\x20\x20run was given do not depend on the agent's cooperation.\n\
     \n\
     Therefore: enable server-side branch protection on this repository. It is\n\
-    the one control here an agent cannot talk its way past, and it is this\n\
-    envelope's conclusion rather than its footnote.";
+    the one control here an agent cannot talk its way past.";
 
 /// The whole envelope section — the statement plus the state of the one
 /// boundary it says you should rely on.
