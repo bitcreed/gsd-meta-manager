@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
-stopped_at: Completed 19-16-PLAN.md (corpus RED, handoff to 19-17)
-last_updated: "2026-08-29T23:45:06.526Z"
+stopped_at: Completed 19-17-PLAN.md
+last_updated: "2026-08-30T00:22:30.519Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: 6827d9e79fb8af1b97c326b364fcfe314fdd1bdf
+state_head: d06a4cfc11f65941792eca81b09cd36fc827393e
 progress:
   total_phases: 10
   completed_phases: 6
   total_plans: 99
-  completed_plans: 98
+  completed_plans: 99
   percent: 60
 ---
 
@@ -220,6 +220,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 19 P14 | 1h | 3 tasks | 6 files |
 | Phase 19 P15 | ~1h | 2 tasks | 7 files |
 | Phase 19 P16 | 1 session | 3 tasks | 5 files |
+| Phase 19 P17 | ~1 session | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -266,6 +267,10 @@ Recent decisions affecting current work:
 - [Phase 19]: The bare-brace Rule B row is spelled without its binding, because the bound spelling is already refused under hook_bypass_blocked and would be a control that could not fail on its class
 - [Phase 19]: 19-16: comma-list brace expansions produce N words, so only range spellings of the concatenated splice class assemble a real force push; comma spellings are corpus COVERAGE, labelled as such
 - [Phase 19]: 19-16: git push {--force,origin} main is cwd-dependent — exit 0 in the envelope namespace, exit 2 outside it under an unrelated arm — so it is pinned with the repository passed explicitly
+- [Phase 19]: The rule is INVERTED: a decision word must be provably LITERAL, so anything not provably literal is unresolvable and refuses
+- [Phase 19]: Clause 2(b) reads what a splice PRODUCES over the WHOLE WORD, quote-removed, never what its alternatives are called
+- [Phase 19]: A nested { inside an alternative is a fail-closed UNENUMERABLE trigger, not a recursion
+- [Phase 19]: T-19-93 is closed in the tokenizer's literal-brace branch with neither forge scan changed
 
 ### Pending Todos
 
@@ -324,8 +329,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-08-29T23:44:57.088Z
-Stopped at: Completed 19-16-PLAN.md (corpus RED, handoff to 19-17)
+Last session: 2026-08-30T00:22:20.717Z
+Stopped at: Completed 19-17-PLAN.md
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
 Resume file: None
