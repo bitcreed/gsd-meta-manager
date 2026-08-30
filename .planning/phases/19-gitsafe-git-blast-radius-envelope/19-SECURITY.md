@@ -2741,3 +2741,376 @@ refusal. **The inversion is sound and audit 5 says so plainly.** What it did not
 do is answer the second half of its own boundary question, and that is where the
 two blocking findings are: not one slot over, but one axis over — from how a
 word is written to which words arrive.
+
+---
+
+## Execution record — plan 19-18 (the corpus, RED). NOT an audit finding.
+
+**This is an execution record made by plan 19-18, not an audit finding.** It
+adds no threat, closes none, re-classifies none, and edits no audit table, no
+Security Audit Trail entry, no Accepted Risks Log row, no sign-off and no
+earlier appended subsection. Re-measuring and re-classifying these rows is
+`/gsd-secure-phase 19`'s job.
+
+**This plan CLOSES NOTHING.** `T-19-97`, `T-19-98` and `T-19-99` all stay OPEN
+at this plan's end. `T-19-99` is closed only when `19-19`'s rule is certified by
+the corpus written here, because a corpus is evidence about a control and there
+is no control yet. **`/gsd-secure-phase 19` is NOT cleared by this plan, by
+`19-19`, or by the two together**: `T-19-86` remains OPEN at `high` by explicit
+user scoping decision and `T-19-91` remains OPEN at `high` with three arms.
+Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.
+
+### The invariant this round is about, stated once
+
+> **The words the guard classifies must be exactly the words the program
+> receives, in the same order — no more and no fewer.**
+
+Round 4 established one half positively: a decision word must be provably
+LITERAL, evidenced while it is consumed. `Token.literal` is that half. The other
+half is that the word SURVIVES into argv, in its slot. Both `T-19-97` and
+`T-19-98` are fully literal by round 4's own test **and the bit is RIGHT about
+them** — measured directly against `policy::split_segments_with_heads`, which
+reports `(">/dev/null", literal = true)` and `("push", literal = true)` for
+`git >/dev/null push --force origin main`, against `("pus?", literal = false)`
+for `git pus? --force origin main`. It is the model that is incomplete.
+
+### Every audit-5 row reproduced
+
+All twenty-four rows reproduced at the verdict audit 5 recorded, measured
+against the BUILT BINARY at `fccb5de` — one fresh `GSD_MM_ENVELOPE_ROOT` per
+row via `mktemp -d`, the whole root walked afterwards. **No audit-5 row failed
+to reproduce**, so nothing was asserted over a measurement that disagreed with
+the audit.
+
+`T-19-97`, the sixteen rows (walk column is the whole walked root):
+
+| Command | exit | walk |
+|---|---|---|
+| `git >/dev/null push --force origin main` | 0 | empty |
+| `git 2>/dev/null push --force origin main` | 0 | empty |
+| `git 1>/dev/null push --force origin main` | 0 | empty |
+| `git >>/tmp/x push --force origin main` | 0 | empty |
+| `git > /tmp/o push --force origin main` | 0 | empty |
+| `git <<<x push --force origin main` | 0 | empty |
+| `git push>/dev/null --force origin main` | 0 | empty |
+| `git >/dev/null stash` | 0 | empty |
+| `git >/dev/null update-ref -d refs/heads/main` | 0 | empty |
+| `git >/dev/null config core.hooksPath /tmp/x` | 0 | empty |
+| `gh >/dev/null pr create --title x` | 0 | **empty** |
+| `gh >/dev/null api repos/o/r/pulls -f title=x` | 0 | **empty** |
+| `glab >/dev/null mr create --title x` | 0 | **empty** |
+| `bash -lc "git >/dev/null push --force origin main"` | 0 | empty |
+| `echo hi && git >/dev/null push --force origin main` | 0 | empty |
+| `git >/dev/null -c core.hooksPath=/dev/null push --force origin main` | 0 | empty |
+
+`T-19-98`, the eight rows — every `<NL>` a REAL newline preceded by a REAL
+backslash:
+
+| Command | exit | walk |
+|---|---|---|
+| `git pu\<NL>sh --force origin main` | 0 | empty |
+| `git \<NL>push --force origin main` | 0 | empty |
+| `git sta\<NL>sh` | 0 | empty |
+| `gh p\<NL>r create --title x` | 0 | **empty** |
+| `git config core.hooks\<NL>Path /tmp/x` | 0 | empty |
+| `git "pu\<NL>sh" --force origin main` | 0 | empty |
+| `bash -lc "git pu\<NL>sh --force origin main"` | 0 | empty |
+| `git -c core.hooks\<NL>Path=/dev/null pu\<NL>sh --force origin main` | 0 | empty |
+
+### The bash-shim argv for every claimed bypass
+
+Shims named `git`, `gh` and `glab` first on `PATH`. **Each shim writes its argv
+to a side file rather than to stdout**, because a row whose whole point is
+`>/dev/null` would otherwise swallow the very evidence it is driven for — the
+first shim draft printed nothing for eleven rows for exactly that reason.
+
+```
+git >/dev/null push --force origin main        -> ARGV[git]: [push] [--force] [origin] [main]
+git 2>/dev/null push --force origin main       -> ARGV[git]: [push] [--force] [origin] [main]
+git 1>/dev/null push --force origin main       -> ARGV[git]: [push] [--force] [origin] [main]
+git >>/tmp/x push --force origin main          -> ARGV[git]: [push] [--force] [origin] [main]
+git > /tmp/o push --force origin main          -> ARGV[git]: [push] [--force] [origin] [main]
+git <<<x push --force origin main              -> ARGV[git]: [push] [--force] [origin] [main]
+git push>/dev/null --force origin main         -> ARGV[git]: [push] [--force] [origin] [main]
+git >/dev/null stash                           -> ARGV[git]: [stash]
+git >/dev/null update-ref -d refs/heads/main   -> ARGV[git]: [update-ref] [-d] [refs/heads/main]
+git >/dev/null config core.hooksPath /tmp/x    -> ARGV[git]: [config] [core.hooksPath] [/tmp/x]
+gh   >/dev/null pr create --title x            -> ARGV[gh]: [pr] [create] [--title] [x]
+gh   >/dev/null api repos/o/r/pulls -f title=x -> ARGV[gh]: [api] [repos/o/r/pulls] [-f] [title=x]
+glab >/dev/null mr create --title x            -> ARGV[glab]: [mr] [create] [--title] [x]
+echo hi && git >/dev/null push --force origin main
+                                               -> ARGV[git]: [push] [--force] [origin] [main]
+git >/dev/null -c core.hooksPath=/dev/null push --force origin main
+                    -> ARGV[git]: [-c] [core.hooksPath=/dev/null] [push] [--force] [origin] [main]
+git pu\<NL>sh --force origin main              -> ARGV[git]: [push] [--force] [origin] [main]
+git \<NL>push --force origin main              -> ARGV[git]: [push] [--force] [origin] [main]
+git sta\<NL>sh                                 -> ARGV[git]: [stash]
+gh p\<NL>r create --title x                    -> ARGV[gh]: [pr] [create] [--title] [x]
+git config core.hooks\<NL>Path /tmp/x          -> ARGV[git]: [config] [core.hooksPath] [/tmp/x]
+git "pu\<NL>sh" --force origin main            -> ARGV[git]: [push] [--force] [origin] [main]
+git -c core.hooks\<NL>Path=/dev/null pu\<NL>sh --force origin main
+                    -> ARGV[git]: [-c] [core.hooksPath=/dev/null] [push] [--force] [origin] [main]
+```
+
+### The `od -c` bytes for the backslash-newline rows
+
+Every `T-19-98` row was written to a FILE, the file's bytes checked with
+`od -c`, and bash driven over the file — which is the step audit 5 discarded
+three candidates on.
+
+```
+git pu\<NL>sh --force origin main
+  0000000   g   i   t       p   u   \  \n   s   h       -   -   f   o   r
+  0000020   c   e       o   r   i   g   i   n       m   a   i   n  \n
+
+git \<NL>push --force origin main
+  0000000   g   i   t       \  \n   p   u   s   h       -   -   f   o   r
+  0000020   c   e       o   r   i   g   i   n       m   a   i   n  \n
+
+git sta\<NL>sh
+  0000000   g   i   t       s   t   a   \  \n   s   h  \n
+
+gh p\<NL>r create --title x
+  0000000   g   h       p   \  \n   r       c   r   e   a   t   e       -
+  0000020   -   t   i   t   l   e       x  \n
+
+git config core.hooks\<NL>Path /tmp/x
+  0000000   g   i   t       c   o   n   f   i   g       c   o   r   e   .
+  0000020   h   o   o   k   s   \  \n   P   a   t   h       /   t   m   p
+  0000040   /   x  \n
+
+git "pu\<NL>sh" --force origin main
+  0000000   g   i   t       "   p   u   \  \n   s   h   "       -   -   f
+  0000020   o   r   c   e       o   r   i   g   i   n       m   a   i   n
+  0000040  \n
+
+git -c core.hooks\<NL>Path=/dev/null pu\<NL>sh --force origin main
+  0000000   g   i   t       -   c       c   o   r   e   .   h   o   o   k
+  0000020   s   \  \n   P   a   t   h   =   /   d   e   v   /   n   u   l
+  0000040   l       p   u   \  \n   s   h       -   -   f   o   r   c   e
+  0000060       o   r   i   g   i   n       m   a   i   n  \n
+
+git push \<NL> origin refs/heads/gsd-auto/alpha/w
+  0000000   g   i   t       p   u   s   h       \  \n       o   r   i   g
+  0000020   i   n       r   e   f   s   /   h   e   a   d   s   /   g   s
+  0000040   d   -   a   u   t   o   /   a   l   p   h   a   /   w  \n
+```
+
+### The three-leg argument, each leg re-measured
+
+* **Layer 1** — the line begins `git >`, which does not match the
+  `Bash(git push:*)` prefix rule the agent CLI owns.
+* **Layer 2** — defeated on the same line:
+  `git >/dev/null -c core.hooksPath=/dev/null push --force origin main` → exit 0
+  with an empty walk.
+* **Layer 3** — disarmed. Re-measured on this machine at `fccb5de`:
+  `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/ENV_WINS git >/tmp/l3out -c core.hooksPath=/CLI_WINS config --get core.hooksPath`
+  prints **`/CLI_WINS`**; the PAIRED control (the same line without the `-c`)
+  prints **`/ENV_WINS`**. The command-line `-c` outranks the envelope's
+  env-injected setting (D-09), so no `pre-push` hook runs.
+
+**Three rows have NO SECOND CARRIER AT ALL** — `git stash`, `git update-ref` and
+the SAFE-06 PR cap (`T-19-35`) — so for those the guard is the only control, and
+`git config core.hooksPath` is the loss of the second carrier itself.
+
+### The seven cells found while PLANNING round 6
+
+Same provenance caveat `19-14` and `19-16` established: **found while planning,
+not by an audit.** All seven measured at exit 0 with empty walks at `fccb5de`,
+all seven confirmed under the shims, and all seven are **inside `T-19-97`'s
+class rather than new threats** — they are folded into `T-19-97`'s entry in
+`deferred-items.md` and no new threat ID is registered for them.
+
+| Cell | Line | exit | bash argv | Why the audit's rows do not reach it |
+|---|---|---|---|---|
+| `&>` | `git &>/tmp/o push --force origin main` | 0 | `[push] [--force] [origin] [main]` | `&` is in `SEPARATORS`, so the guard's separator arm splits ONE simple command into TWO. A redirection parser running after that arm never sees `&>` |
+| `{v}>` | `git {v}>/tmp/o push --force origin main` | 0 | `[push] [--force] [origin] [main]` | bash 4.1 fd allocation, carried into the verb slot by round 5's own literal-brace branch because `{v}` has no comma and no range. **Post-fix verdict left for `19-19`** |
+| `>\|` | `git >\|/tmp/o push --force origin main` | 0 | `[push] [--force] [origin] [main]` | a two-character operator no single-`>` rule reaches |
+| `<>` | `git <>/tmp/o push --force origin main` | 0 | `[push] [--force] [origin] [main]` | same, and the one operator whose first character is `<` and second is `>` |
+| `<<` | `git <<EOF push --force origin main` | 0 | `[push] [--force] [origin] [main]` | bash runs it even as a single line, warning `here-document at line 1 delimited by end-of-file` and running the command anyway |
+| `<file` | `touch input.txt && git <input.txt push --force origin main` | 0 | `[push] [--force] [origin] [main]` | **PRECONDITION row.** Without the file bash fails the redirection and runs NOTHING |
+| `x2>` | `git x2>/tmp/o push --force origin main` | 0 | **`[x2] [push] [--force] [origin] [main]`** | **the OVER-DELETION control.** An IO_NUMBER is a digits-only run since the START of the word, so `x2` IS argv and git itself rejects it. **Permitted today and it must STAY permitted** |
+
+Two further operators were measured because `19-19`'s production uniquely adds
+them and a corpus without them cannot fail on them:
+`git &>>/tmp/o push --force origin main` → exit 0, `[push] [--force] [origin]
+[main]`; `git <<-EOF push --force origin main` → exit 0, same argv; and their
+permitted twins `git &>>/tmp/o status` and `git <<-EOF status` → exit 0,
+`ARGV[git]: [status]`.
+
+### Where the hole actually is — the position controls
+
+Measured at `fccb5de`, so the displacement alphabet splices in the right place
+rather than in a position that is already closed:
+
+```
+exit=2  force_push_blocked   >/dev/null git push --force origin main       (already refused)
+exit=2  force_push_blocked   2>/dev/null git push --force origin main      (already refused)
+exit=2  force_push_blocked   env >/dev/null git push --force origin main   (already refused)
+exit=2  force_push_blocked   git push --force origin main >/dev/null       (already refused)
+exit=0  + ONE LEDGER LINE    >out gh pr create --title x                   (already COUNTED)
+                             walked listing: alpha/pr-ledger.ndjson (103 bytes)
+```
+
+`resolve_program` walks past a leading redirection as it would any wrapper
+operand and finds `git`. **The hole is a redirection standing BETWEEN the
+governed program and its decision words**, and a corpus that drew the prefix
+position would be green before the fix and would certify nothing.
+
+### The two pre-existing FALSE REFUSALS — the round REMOVES over-refusal
+
+Measured at `fccb5de` against a repository whose current branch is inside
+`refs/heads/gsd-auto/alpha/` with a local bare upstream, each beside its
+permitted one-line twin. **These are the same defect in the opposite direction:
+the guard reads a word the program never receives, and answers about it.**
+
+```
+exit=2 push_outside_namespace   git push origin refs/heads/gsd-auto/alpha/w > log.txt
+  "the refspec `>` resolves to `refs/heads/>`, which is outside `refs/heads/gsd-auto/alpha/`"
+exit=0                          git push origin refs/heads/gsd-auto/alpha/w      (twin)
+
+exit=2 push_outside_namespace   git push \<NL> origin refs/heads/gsd-auto/alpha/w
+  "the refspec `origin` resolves to `refs/heads/origin`, which is outside
+   `refs/heads/gsd-auto/alpha/`"
+exit=0                          git push origin refs/heads/gsd-auto/alpha/w      (twin)
+```
+
+Both derivations are taken from the MEASURED message and they are **DIFFERENT
+mechanisms**. The redirection word is read as an EXTRA REFSPEC. The
+`\`+newline is flushed by the whitespace after it and becomes its OWN WORD in
+the REMOTE slot, displacing every operand one slot right — which is `T-19-97`'s
+displacement arriving through `T-19-98`'s mechanism. Under the shims both lines
+print `ARGV[git]: [push] [origin] [refs/heads/gsd-auto/alpha/w]`.
+
+They are pinned at their PRE-FIX verdicts in two `#[test]` fns plan 19-18 names,
+which are the ONLY assertions in `tests/envelope_argv_deletion.rs` that `19-19`
+is permitted to REPLACE rather than only add to:
+
+* `the_redirected_in_namespace_push_is_falsely_refused_today_and_19_19_must_move_it`
+* `the_continued_in_namespace_push_is_falsely_refused_today_and_19_19_must_move_it`
+
+### The design question, answered, with the rejected option's measured cost
+
+**The REJECTED option:** refuse any governed simple command containing a token
+the shell deletes. Measured cost at `fccb5de` — every one of these is permitted
+today and would be refused:
+
+```
+exit=0  git log > out
+exit=0  git status > /tmp/s.txt
+exit=0  git diff > /tmp/d.patch
+exit=0  git commit -m "x" >> build.log
+exit=0  gh pr list 2>/dev/null
+exit=0  git fetch origin 2>&1 | tee log
+exit=0  + ONE LEDGER LINE   gh pr create --title x > /tmp/o
+```
+
+The last one is the decisive measurement: it is **COUNTED today**, and the
+rejected option would turn a correct COUNT into a false positive on ordinary
+forge syntax — the exact trade `T-19-93`'s bar forbids. **`19-19` models the
+deletion instead**, and this record states the choice before the rule exists so
+it is auditable rather than retrofitted.
+
+The same reasoning is why the four FORGE rows are written as a restored COUNT
+and not as a refusal. Each unwrapped form is measured at exit 0 with exactly one
+ledger file (`gh pr create --title x` → 103 bytes, `gh api repos/o/r/pulls -f
+title=x` → 112 bytes, `glab mr create --title x` → 105 bytes), and after
+deletion the surviving argv IS the counted one. **The SAFE-06 cap is bypassed
+UNCOUNTED rather than exceeded**, and the fix it demands is a restored count.
+
+### The rows whose POST-fix verdict `19-18` could not derive
+
+Three rows are **RECORDED, never asserted** — `tests/envelope_argv_deletion.rs`
+section 9 drives each and prints its verdict with no assertion about it. This
+plan measures PRE-fix, so its measure-first discipline cannot catch a wrong
+POST-fix expectation, and a row pinned at a verdict the rule cannot produce
+lands RED with `19-19` forbidden to edit it. `19-16` handled its two
+undeliverable rows exactly this way.
+
+| Row | measured at `fccb5de` | why `19-19` must derive it |
+|---|---|---|
+| `git >$F push --force origin main` | exit 2 `envelope_assertion_failed` — *``>$F`` is the git verb for this command* | round 4's bit fires on the `$` in what the guard reads as the VERB. After deletion the surviving argv is `push --force origin main`, so it stays refused with a DIFFERENT identifier. Also a PRECONDITION row: bash answers `ambiguous redirect` when `F` is unbound |
+| `git >*.log push --force origin main` | exit 2 `envelope_assertion_failed` — same message shape | same, through the glob. Also a PRECONDITION row when the glob matches more than one file |
+| `git {v}>/tmp/o push --force origin main` | exit 0, empty walk | `19-19` deliberately does not model a `{name}` fd prefix and marks it unresolvable — a different identifier reached by a different clause from its six siblings. Its permitted-half twin `git {v}>/tmp/o status` is exit 0 and is recorded the same way |
+
+For the same reason `{v}>/tmp/o` is kept OUT of `DISPLACING_REDIRECTIONS`: every
+entry there is asserted VERDICT-PRESERVING by the property's permitted arm, and
+this one would be STRICTER than its base.
+
+### Audit 5's three DISCARDED rows were NOT re-added
+
+Single-quoted `\`+newline, `\`+CR and `\`+TAB stay discarded and are not rows in
+any file. The single-quoted spelling was re-run ONCE as a sanity check of this
+round's shim harness — it printed `ARGV[git]: [pu\` / `sh] [--force] [origin]
+[main]`, i.e. one mangled word and no force push, confirming audit 5's discard —
+and it was not added as a row. Recorded here so audit 6 does not spend the
+measurement again.
+
+### The `T-19-17r` bookkeeping gap — RECORDED as OUTSTANDING, acceptance NOT made
+
+`19-17-SUMMARY.md` calls `T-19-17r` "the new over-refusal cost, **accepted** and
+pinned from both sides". Audit 5 confirmed the measurement and both pins —
+`rg "git status" {src,tests}` → exit 2, `rg "git status" src/` → exit 0, both at
+`tests/envelope_literal_decision.rs:1355-1379` with the producing clause named.
+But there is **no `AR-19-13` row in the Accepted Risks Log and no register
+row**, so it is described as accepted while documented nowhere an audit reads.
+
+**This plan records the gap and leaves it OPEN. It adds no `AR-19-13` row and
+makes no acceptance**, because accepting a risk is a human decision and audit 5
+explicitly declined to make it on the developer's behalf. The next round either
+adds the log row or drops the word from the summary — and this plan does
+neither.
+
+### Audit 5's disclosed corpus limit, forwarded to `19-19`
+
+`sh {-c,"git push --force …"}` is refused because a quote inside an alternative
+is unenumerable. That is CORRECT and fail-closed, but the corpus cannot
+distinguish that refusal from an enumerated one. It is forwarded to `19-19`
+rather than addressed here **because the only place the distinction is
+observable is a unit assertion over the private whole-word product scan in
+`policy.rs`'s own test module, and this plan may not touch `src/`.**
+
+### The corpus, and what it is now capable of failing on
+
+`tests/envelope_argv_deletion.rs` is the FIFTH evidence file — 17 `#[test]` fns,
+13 green and 4 RED. `tests/envelope_wrapper_class.rs` gains section 14: a SECOND
+named axis, `DELETION_CLASSES`, standing beside a byte-identical
+`UNREADABLE_CLASSES` (the diff is 1010 insertions and **zero deletions**; no
+existing floor, alphabet entry, property or assertion was lowered, deleted or
+narrowed), with five degenerate-proof quoting-aware predicates, an
+11-entry `DISPLACING_REDIRECTIONS` alphabet spliced between the governed program
+and its decision words, two `CONTINUATION_SPLICES`, and floors stated as EXACT
+equalities derived from the generation arithmetic — 330 cases over 15 slots,
+per class 165 / 135 / 240 / 15 / 15.
+
+**An execution-time finding, reported rather than absorbed.** The exact
+per-class equality caught a real defect in the first draft of
+`draws_an_attached_redirection`: reading the second `>` of `>>/tmp/x` as an
+operator attached to a literal run `>` made six of the eleven entries satisfy
+the ATTACHED class as well, over-counting it by 90 cases and collapsing the
+class-1/class-2 split the axis turns on. A floor stated as `>=` rather than `==`
+would not have caught it. The predicate now encodes bash's rule — the longest
+operator match at the start of a redirection, everything after it is the TARGET
+— and seven new degenerate-proofing assertions pin it.
+
+**The gate, observed.** `rtk proxy cargo test --no-fail-fast` →
+**1600 passed, 5 failed, 13 ignored**, `passed + failed = 1605`. Baseline was
+1584. This plan adds 21 new `#[test]` fns (17 + 4), and a red test RAN, so
+`1584 + 21 = 1605` exactly. Every failure name is one of this plan's five RED
+names; the two flaky `driver_reattach` tests passed in this run and their
+passing is not a change this plan made. `envelope_literal_decision` 43,
+`envelope_expansion_slots` 32 and `envelope_command_position` 18 are FULLY GREEN
+and byte-identical.
+
+### What this record does NOT do
+
+* It does not close `T-19-97`, `T-19-98` or `T-19-99`.
+* It does not clear `/gsd-secure-phase 19`. `T-19-86` and `T-19-91` remain OPEN
+  at `high`; `T-19-96`, `T-19-74`'s residual, `T-19-84`, `T-19-85` and
+  `T-19-61` … `T-19-73` are untouched.
+* It writes no unqualified "T-19-60 is closed". Only the WRAPPER-OPERAND
+  sub-class of `T-19-60` is closed; `T-19-86` and `T-19-91` are both sub-classes
+  of it and both remain open.
+* It changes not one line of `src/`. All three commits show ZERO `src/` hunks
+  under `git show --stat`, which is the evidence this plan/rule split exists to
+  produce.

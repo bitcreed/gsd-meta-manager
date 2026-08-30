@@ -665,3 +665,168 @@ all.
 remain OPEN at `high`, and `T-19-96` is registered open. Only the
 **wrapper-operand** sub-class of `T-19-60` is closed; `T-19-86` and `T-19-91` are
 both sub-classes of it.
+
+---
+
+## Round-6 corpus status (recorded by 19-18) — `T-19-97`, `T-19-98`, `T-19-99` all still OPEN
+
+Plan 19-18 wrote the corpus and the reproducers and STOPPED. **It closes
+nothing.** `19-19` writes the rule and is gated on the RED state recorded here.
+
+### `T-19-99` (medium, OPEN) — the corpus could not draw the deletion axis
+
+Audit 5's finding: `UNREADABLE_CLASSES` names seven classes, each with a
+degenerate-proof predicate and three kinds of floor, and every one of them is a
+word-**ASSEMBLY** class. `grep -rnE '"(git|gh|glab)[^"]*[<>][^"]*"' tests/ src/`
+found no guard-driven row carrying a redirection anywhere in the repository, and
+neither corpus file held a backslash-newline. The corpus was structurally
+incapable of generating, and so of failing on, `T-19-97` and `T-19-98`.
+
+**Corpus written and observed RED at `aa24f9d`.** `tests/envelope_wrapper_class.rs`
+gains section 14: `DELETION_CLASSES`, a SECOND named axis standing beside a
+byte-identical `UNREADABLE_CLASSES` (1010 insertions, **zero deletions**; no
+existing floor, alphabet entry, property or assertion lowered, deleted or
+narrowed). Five degenerate-proof quoting-aware predicates, an 11-entry
+`DISPLACING_REDIRECTIONS` alphabet spliced BETWEEN the governed program and its
+decision words, two `CONTINUATION_SPLICES`, and floors stated as EXACT
+equalities derived from the generation arithmetic: 330 cases over 15 slots, per
+class 165 / 135 / 240 / 15 / 15.
+
+**STATUS: OPEN.** `T-19-99` is closed only when `19-19`'s rule is certified by
+this corpus, because a corpus is evidence about a control and there is no
+control yet.
+
+### `T-19-97` (high, OPEN — BLOCKING) — a redirection is a word the shell DELETES
+
+Sixteen audit-5 rows re-measured at `fccb5de` — one fresh `GSD_MM_ENVELOPE_ROOT`
+per row, the whole root walked afterwards — **every one reproduced at exit 0**,
+the three forge rows with EMPTY walks. All confirmed under `bash` against
+argv-printing `git`/`gh`/`glab` shims that write argv to a side file rather than
+to stdout, so a `>/dev/null` row cannot swallow its own evidence. Layers 1, 2
+and 3 all defeated on a single line, with the D-09 `-c` precedence re-measured
+(`/CLI_WINS` against the paired `/ENV_WINS` control). Three rows have **no
+second carrier at all**.
+
+**The seven cells found while PLANNING round 6 are folded into this class rather
+than registered as new threat IDs**, with the provenance caveat `19-14`
+established (found while planning, not by an audit). All seven at exit 0 with
+empty walks at `fccb5de`, all confirmed under the shims:
+
+| Cell | Line | Why the audit's rows do not reach it as written |
+|---|---|---|
+| `&>` | `git &>/tmp/o push --force origin main` | `&` is in `SEPARATORS`, so the GUARD splits one simple command into two; bash's `&>` is ONE redirection operator |
+| `{v}>` | `git {v}>/tmp/o push --force origin main` | bash 4.1 fd allocation, carried into the verb slot by round 5's own literal-brace branch. **Post-fix verdict left for `19-19`**; recorded unasserted |
+| `>\|` | `git >\|/tmp/o push --force origin main` | two-character operator |
+| `<>` | `git <>/tmp/o push --force origin main` | two-character operator, first char `<` and second `>` |
+| `<<` | `git <<EOF push --force origin main` | bash runs it even as a single line |
+| `<file` | `touch input.txt && git <input.txt push --force origin main` | **PRECONDITION row** — without the file bash runs NOTHING |
+| `x2>` | `git x2>/tmp/o push --force origin main` | **the OVER-DELETION control.** `ARGV[git]: [x2] [push] [--force] [origin] [main]` — `x2` IS argv. **Permitted today and must STAY permitted** |
+
+**Corpus RED at `f964926`**, `tests/envelope_argv_deletion.rs` — the fifth
+evidence file. The PERMITTED half is pinned beside the refused half, so the
+corpus can also fail on a blanket refusal and on over-deletion.
+
+**STATUS: OPEN — BLOCKING.** No `src/` line changed. `19-19` writes the rule.
+
+### `T-19-98` (high, OPEN — BLOCKING) — a line continuation the tokenizer keeps
+
+Eight audit-5 rows re-measured at `fccb5de`, **every one reproduced at exit 0**,
+the forge row with an empty walk. Every row driven from a FILE whose bytes
+`od -c` verified before bash was driven over it, including the DOUBLE-QUOTED
+spelling that reaches the same place through the quote loop's own backslash
+branch.
+
+`tokenize`'s backslash arm (`policy.rs:2063-2072`) keeps the escaped character
+and deliberately does not clear `literal`, on the reasoning that escaping is
+what makes a character literal — **which is true of every character except a
+newline**, the one character a backslash DELETES rather than protects. Measured
+directly: `split_segments_with_heads("git pu\\`+NL+`sh --force origin main")`
+reports the token `("pu\nsh", literal = true)` where the program receives
+`push`.
+
+**Audit 5's three discarded rows are NOT re-added** — single-quoted
+`\`+newline, `\`+CR, `\`+TAB. The single-quoted spelling was re-run once as a
+sanity check of this round's shim harness and confirmed audit 5's discard
+(`ARGV[git]: [pu\` / `sh] …` — one mangled word, no force push); it was not
+added as a row. Recorded so audit 6 does not spend the measurement again.
+
+**STATUS: OPEN — BLOCKING.**
+
+### The two pre-existing FALSE REFUSALS this round REMOVES
+
+Measured at `fccb5de` in the in-namespace configuration, each beside its
+permitted one-line twin:
+
+* `git push origin refs/heads/gsd-auto/alpha/w > log.txt` → exit 2
+  `push_outside_namespace`, *the refspec `>` resolves to `refs/heads/>`*. The
+  redirection word is read as an EXTRA refspec.
+* `git push \`+NL+` origin refs/heads/gsd-auto/alpha/w` → exit 2
+  `push_outside_namespace`, *the refspec `origin` resolves to
+  `refs/heads/origin`*. **A different mechanism**: the whitespace after the
+  continuation flushes it into its own word in the REMOTE slot, so every operand
+  shifts one slot right — `T-19-97`'s displacement arriving through `T-19-98`'s
+  mechanism.
+
+Both pinned pre-fix in the two `#[test]` fns `19-19` is required to replace:
+`the_redirected_in_namespace_push_is_falsely_refused_today_and_19_19_must_move_it`
+and `the_continued_in_namespace_push_is_falsely_refused_today_and_19_19_must_move_it`.
+**The round removes two measured over-refusals rather than adding any.**
+
+### `T-19-17r` — the bookkeeping gap, OUTSTANDING and the acceptance NOT made
+
+`19-17-SUMMARY.md` calls `T-19-17r` "the new over-refusal cost, **accepted** and
+pinned from both sides". Audit 5 confirmed the measurement and both pins —
+`rg "git status" {src,tests}` → exit 2 and `rg "git status" src/` → exit 0, at
+`tests/envelope_literal_decision.rs:1355-1379` with the producing clause named
+— but there is **no `AR-19-13` row in the Accepted Risks Log and no register
+row**. It is described as accepted while documented nowhere an audit reads.
+
+**Plan 19-18 records this gap and leaves it OPEN. It adds no `AR-19-13` row and
+makes no acceptance.** Accepting a risk is a human decision and audit 5
+explicitly declined to make it on the developer's behalf. The next round either
+adds the log row or drops the word from the summary.
+
+**STATUS: OUTSTANDING — bookkeeping only, the cost itself is measured and pinned
+from both sides.**
+
+### Audit 5's disclosed corpus limit, forwarded to `19-19`
+
+`sh {-c,"git push --force …"}` is refused because a quote inside an alternative
+is unenumerable — correct and fail-closed, but the corpus cannot distinguish
+that refusal from an enumerated one. Forwarded to `19-19` because the only place
+the distinction is observable is a unit assertion over the private whole-word
+product scan in `policy.rs`'s own test module, and plan 19-18 may not touch
+`src/`.
+
+### `cargo clippy --tests -- -D warnings` fails at the base commit (found during 19-18)
+
+Pre-existing and OUT OF SCOPE for a plan with a zero-`src/`-hunks prohibition.
+Verified by removing this plan's new test file and re-running at `fccb5de`:
+exit 101, four lint errors, all in `src/` files this plan does not touch —
+three `clippy::bool_assert_comparison` at `src/browser.rs:155-157` and one
+`clippy::cmp_owned` at `src/project_creator.rs:146`. Plan 19-18's new code adds
+**zero** clippy findings. Fixing these requires a `src/` hunk and belongs to
+whichever round is allowed to make one.
+
+### Still OPEN and untouched by 19-18
+
+* **`T-19-86`** (high, OPEN) — by explicit user scoping decision. All four rows
+  still at exit 0 and
+  `the_t_19_86_residual_is_permitted_today_and_this_plan_leaves_it_permitted`
+  is green and UNMODIFIED.
+* **`T-19-91`** (high, OPEN) — three arms unweakened: `git reflog $S`,
+  `git reflog show $S` and `git symbolic-ref $S` at exit 0 with no second
+  carrier, and the bare `git push $REF` cwd-dependent and permitted
+  in-namespace, which is a THIRD arm and not "already fails closed". No remedy
+  added, no denylist extended.
+* **`T-19-96`** (medium, open) — unchanged.
+* **`T-19-74`** — accepted (AR-19-10); core rows frozen and untouched.
+* **`T-19-61` … `T-19-73`, `T-19-84`, `T-19-85`** — open, unaccepted, untouched.
+  `cred.rs`, `advisory.rs`, `scan.rs` and `config.rs` were not opened.
+* **`tests/driver_reattach.rs`** — pre-existing and flaky; both tests passed in
+  this plan's gate run, which is not a change 19-18 made and not a fix.
+
+**`/gsd-secure-phase 19` is NOT cleared by plan 19-18, by `19-19`, or by the two
+together.** `T-19-86` and `T-19-91` remain OPEN at `high`. Only the
+**wrapper-operand** sub-class of `T-19-60` is closed; `T-19-86` and `T-19-91`
+are both sub-classes of it and both remain open.
