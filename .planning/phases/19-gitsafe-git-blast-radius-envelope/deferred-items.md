@@ -830,3 +830,84 @@ whichever round is allowed to make one.
 together.** `T-19-86` and `T-19-91` remain OPEN at `high`. Only the
 **wrapper-operand** sub-class of `T-19-60` is closed; `T-19-86` and `T-19-91`
 are both sub-classes of it and both remain open.
+
+---
+
+## Round-6 closure (recorded by 19-19) — `T-19-97`, `T-19-98`, `T-19-99` CLOSED
+
+Plan `19-19` wrote the rule the `19-18` corpus was red against. All five RED
+names `19-18-SUMMARY.md` listed were confirmed **still failing** against
+`1d1229e` before any production line moved, and all five are green after.
+
+### `T-19-97` (high) — **CLOSED**
+
+**Closed by:** the redirection production consumed inside `tokenize`'s ONE walk
+— an optional **bare** digits-only IO_NUMBER, one of twelve operators
+(`< > >> <> >| <& >& &> &>> << <<- <<<`) matched longest-first with `&>`/`&>>`
+recognised **before `&` reaches the separator arm**, and the target word —
+emitting **no token for either the operator or the target**. A deleted word
+never becomes a `Token`, so every decision index is over the surviving argv
+automatically; no second reading site, no index primitive changed, and
+`first_unreadable_decision_word`'s one closure untouched.
+
+Anything the production does not COMPLETE marks the simple command
+UNRESOLVABLE (`Segment::redirection_unresolvable`) and is refused in the arms
+`resolve_program_with_head` already had — no second filter, no wildcard.
+
+`SEPARATORS` is byte-identical and `is_separator(">")` is still `false`.
+
+### `T-19-98` (high) — **CLOSED**
+
+**Closed by:** `\`+newline consumed as a LINE CONTINUATION producing **no
+character**, in the unquoted backslash arm and in the double-quote loop's
+backslash branch, and **never starting a word**. The single-quote loop is
+untouched. `Token::literal` is deliberately left TRUE — a deletion is not a
+rewrite, and the bit is right about these words.
+
+### `T-19-99` (medium) — **CLOSED**
+
+**Closed by:** `19-18`'s `DELETION_CLASSES` corpus certifying a control that
+now exists. The corpus was written FIRST and observed red in commits with zero
+`src/` hunks, so the round is not the sixth consecutive one to certify a claim
+it could not have failed on.
+
+### The cost, net NEGATIVE
+
+**Removed** — two measured FALSE REFUSALS, both pinned pre-fix by `19-18` in
+the two `#[test]` fns it named, both now exit 0 beside their one-line twins:
+`git push origin refs/heads/gsd-auto/alpha/w > log.txt` (the redirection word
+read as an extra refspec) and its `\`+newline spelling (the continuation
+flushed into the remote slot).
+
+**Added** — two shapes, each pinned beside its permitted twin: an unresolvable
+redirection in a **governed** simple command (`git >` refused, `ls >` and
+`cargo test >` permitted; bash does not run `git >` either), and a `{name}`
+fd-allocation prefix, deliberately not modelled (`git {v}>/tmp/o push …` and
+its permitted-half twin `git {v}>/tmp/o status` both refused).
+
+Ordinary redirection keeps working and `gh pr create --title x > /tmp/o` stays
+COUNTED with one ledger line — the measured cost that rejected the
+blanket-refusal design.
+
+### Unchanged and still OPEN
+
+`T-19-86` (high), `T-19-91` (high), `T-19-96` (medium), `T-19-74`'s residual,
+`T-19-84`, `T-19-85` and `T-19-61` … `T-19-73` are **untouched and
+unaccepted**. **`/gsd-secure-phase 19` is NOT cleared.**
+
+The **`T-19-17r` bookkeeping gap stays OUTSTANDING**: still no `AR-19-13` row
+and no register row, and `19-19` did **not** add the acceptance — that is a
+human decision audit 5 explicitly declined to make.
+
+Only the **wrapper-operand** sub-class of `T-19-60` is closed; `T-19-86` and
+`T-19-91` are both sub-classes of it and both remain open at `high`.
+
+### A threshold worth knowing about
+
+`wrapper_names_the_fix_must_not_know_are_absent_from_the_production_logic`
+requires production code (comments and the `#[cfg(test)]` module stripped) to
+exceed a QUARTER of `policy.rs`. `19-19`'s documentation pushed the ratio to
+**24.88%** and turned that control red; the assertion was NOT edited — the
+redundant prose was tightened until production code was back above the floor.
+**The margin is now thin.** The next round that documents `policy.rs` heavily
+should expect to meet this and budget prose accordingly.

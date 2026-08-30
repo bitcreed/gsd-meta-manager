@@ -3114,3 +3114,251 @@ and byte-identical.
 * It changes not one line of `src/`. All three commits show ZERO `src/` hunks
   under `git show --stat`, which is the evidence this plan/rule split exists to
   produce.
+
+---
+
+## Execution record — plan 19-19 (NOT an audit finding)
+
+**Written by plan `19-19` as an execution record.** It is not an audit, it makes
+no acceptance decision, and it edits nothing above it: no audit table, no
+Security Audit Trail row, no Accepted Risks Log row, no sign-off, and none of
+the appended records of plans 19-16, 19-17 or 19-18. Re-measuring and
+re-classifying these rows is `/gsd-secure-phase 19`'s job.
+
+**`/gsd-secure-phase 19` is NOT cleared by this plan.** `T-19-86` and `T-19-91`
+remain OPEN at `high`.
+
+### The invariant as implemented
+
+> **The words the guard classifies must be exactly the words the program
+> receives, in the same order — no more and no fewer.**
+
+`Token::literal` is the FIRST half and proves a word's BYTES. Audit 5 verified
+that half COMPLETE over word ASSEMBLY, and this plan does **not** replace it.
+Word survival is the SECOND half, and it proves a word's SURVIVAL and its SLOT.
+Both are needed, and `T-19-97` is why: `>/dev/null` is fully LITERAL by round 5's
+own test and **the bit is right about it** — yet the program never receives it.
+What was incomplete was the model, not the inversion.
+
+### The design question, answered explicitly
+
+**Chosen: (a) — `tokenize` MODELS the deletion, so decision-word indices are
+computed over the SURVIVING argv. Rejected: (b) — refusing any governed simple
+command containing a token the shell deletes.**
+
+Option (b)'s cost, measured and pinned by `19-18`. All permitted today, all
+refused under (b):
+
+| command | verdict today |
+|---|---|
+| `git log > out` | exit 0 |
+| `git status > /tmp/s.txt` | exit 0 |
+| `git diff > /tmp/d.patch` | exit 0 |
+| `git commit -m "x" >> build.log` | exit 0 |
+| `gh pr list 2>/dev/null` | exit 0 |
+| `git fetch origin 2>&1 \| tee log` | exit 0 |
+| **`gh pr create --title x > /tmp/o`** | **exit 0 WITH ONE LEDGER LINE** |
+
+That last row is decisive: (b) turns a correctly **COUNTED** pull-request
+creation into a refusal — a false negative traded for a false positive on
+ordinary syntax, which is exactly the trade `T-19-93`'s COUNT bar forbids.
+Ordinary redirection is common and it keeps working.
+
+### The production as implemented
+
+```
+[ IO_NUMBER ] OPERATOR WORD          operator AND target both DELETED, no token for either
+OPERATOR ∈ { < > >> <> >| <& >& &> &>> << <<- <<< }
+IO_NUMBER = a BARE digits-only run since the start of the word, and nothing else
+```
+
+* **`&>` and `&>>` are recognised BEFORE `&` reaches the separator arm**, by an
+  earlier match arm. `&` is in `SEPARATORS`, so without that ordering the guard
+  splits ONE simple command into TWO and a redirection parser running afterwards
+  never sees it.
+* **Fail-closed residue**: any unquoted `<`/`>` the production cannot complete
+  marks the simple command UNRESOLVABLE and refuses through the arms
+  `resolve_program_with_head` already has. A spelling nobody enumerated fails
+  closed rather than falling through as an ordinary word.
+* **`\`+newline** is consumed as a LINE CONTINUATION producing NO character, in
+  the unquoted arm and in the double-quote loop, and it never STARTS a word. The
+  SINGLE-quote loop is untouched — bash performs no continuation there
+  (`git 'pu\<NL>sh'` gives `[pu\<NL>sh]`, bytes verified with `od -c`) — and
+  audit 5's three discarded rows were not re-added.
+* **`literal` is NOT cleared** for a redirection word, a redirection target or a
+  continuation. A deletion is not a rewrite; the bit is right about all three,
+  and clearing it to obtain a refusal would have turned round 5's verdict pins
+  green while the inversion stopped being what produced them. `19-18`'s
+  non-vacuity pin (`literal == false` for `pus?`, `true` for `>/dev/null` and
+  `push`) is green and UNMODIFIED.
+
+**`SEPARATORS` is BYTE-IDENTICAL** — `git diff` reports zero changed lines
+matching `SEPARATORS: &[` — and **`policy::is_separator(">")` is still `false`**,
+with `separators_are_named_in_one_list_that_the_predicate_reads` green and
+unmodified. The doc's FIRST sentence was right and is kept; only its second
+sentence's unexamined consequence ("it stays an ordinary word and travels into
+the classifier with the rest") was corrected in place.
+
+### Every `19-18` RED row, before and after, with its reason identifier
+
+Confirmed still RED against `1d1229e` before any production line moved.
+
+| row | before | after | derivation |
+|---|---|---|---|
+| `git >/dev/null push --force origin main` | exit 0 | 2 `force_push_blocked` | operator+target deleted; surviving argv is `push --force origin main` |
+| `git 2>/dev/null push --force origin main` | exit 0 | 2 `force_push_blocked` | bare `2` is an IO_NUMBER, discarded with the redirection |
+| `git 1>/dev/null push --force origin main` | exit 0 | 2 `force_push_blocked` | same |
+| `git >>/tmp/x push --force origin main` | exit 0 | 2 `force_push_blocked` | `>>` matched before `>` |
+| `git > /tmp/o push --force origin main` | exit 0 | 2 `force_push_blocked` | whitespace allowed between operator and target |
+| `git <<<x push --force origin main` | exit 0 | 2 `force_push_blocked` | `<<<` matched before `<<` and `<` |
+| `git push>/dev/null --force origin main` | exit 0 | 2 `force_push_blocked` | attached operator terminates the word; `push` survives |
+| `bash -lc "git >/dev/null push --force origin main"` | exit 0 | 2 `force_push_blocked` | `NestedPayload` re-split carries the same fact |
+| `echo hi && git >/dev/null push --force origin main` | exit 0 | 2 `force_push_blocked` | per-command reset at the real operator |
+| `git >/dev/null stash` | exit 0 | 2 `force_push_blocked` | **no second carrier** |
+| `git >/dev/null update-ref -d refs/heads/main` | exit 0 | 2 `force_push_blocked` | **no second carrier** |
+| `git >/dev/null config core.hooksPath /tmp/x` | exit 0 | 2 `hook_bypass_blocked` | **no second carrier** — disarming the hook IS the loss of it |
+| `git >/dev/null -c core.hooksPath=/dev/null push --force origin main` | exit 0 | 2 `hook_bypass_blocked` | layer 2 defeated on the same line; step 1's identifier is kept (D-24) |
+| `git pu\<NL>sh --force origin main` | exit 0 | 2 `force_push_blocked` | continuation deleted; recovered word is `push` |
+| `git \<NL>push --force origin main` | exit 0 | 2 `force_push_blocked` | continuation does not START a word — two words, not three |
+| `git "pu\<NL>sh" --force origin main` | exit 0 | 2 `force_push_blocked` | the DOUBLE-QUOTE loop's own backslash branch |
+| `bash -lc "git pu\<NL>sh --force origin main"` | exit 0 | 2 `force_push_blocked` | nested payload |
+| `git sta\<NL>sh` | exit 0 | 2 `force_push_blocked` | **no second carrier** |
+| `git config core.hooks\<NL>Path /tmp/x` | exit 0 | 2 `hook_bypass_blocked` | **no second carrier** |
+| `git -c core.hooks\<NL>Path=/dev/null pu\<NL>sh --force origin main` | exit 0 | 2 `hook_bypass_blocked` | both words continued |
+| `git &>/tmp/o push --force origin main` | exit 0 | 2 `force_push_blocked` | `&>` matched before the separator arm |
+| `git >\|/tmp/o push --force origin main` | exit 0 | 2 `force_push_blocked` | two-character operator |
+| `git <>/tmp/o push --force origin main` | exit 0 | 2 `force_push_blocked` | two-character operator |
+| `git <<EOF push --force origin main` | exit 0 | 2 `force_push_blocked` | heredoc DELIMITER is the target; the body is not argv |
+| `touch input.txt && git <input.txt push --force origin main` | exit 0 | 2 `force_push_blocked` | precondition row |
+
+**The four FORGE rows assert a restored COUNT, not a refusal**, because the cap
+is bypassed **UNCOUNTED rather than exceeded** and has no second carrier
+(`T-19-35`). Each is evidenced by a **walked ledger listing** in a fresh
+`GSD_MM_ENVELOPE_ROOT`, not by an exit code:
+
+| row | before | after |
+|---|---|---|
+| `gh >/dev/null pr create --title x` | exit 0, **EMPTY WALK** | exit 0, **exactly ONE ledger line** |
+| `gh >/dev/null api repos/o/r/pulls -f title=x` | exit 0, **EMPTY WALK** | exit 0, **exactly ONE ledger line** |
+| `glab >/dev/null mr create --title x` | exit 0, **EMPTY WALK** | exit 0, **exactly ONE ledger line** |
+| `gh p\<NL>r create --title x` | exit 0, **EMPTY WALK** | exit 0, **exactly ONE ledger line** |
+
+Derivation: once the deletion is modelled the subcommand words are back in their
+slots, so `pr_command_label` matches and the creation is COUNTED. Refusing these
+would have traded a restored count for a false positive on ordinary forge syntax.
+
+### The three rows `19-18` measured but could not DERIVE — now derived and pinned
+
+| row | before | after | clause |
+|---|---|---|---|
+| `git >$F push --force origin main` | 2 `envelope_assertion_failed` | 2 `force_push_blocked` | **identifier change, not a verdict change.** The bit fired on what the guard read as the VERB; the target is now deleted whether or not its text is knowable, so `classify_git` answers about `push --force origin main` |
+| `git >*.log push --force origin main` | 2 `envelope_assertion_failed` | 2 `force_push_blocked` | same |
+| `git {v}>/tmp/o push --force origin main` | exit 0 | 2 `envelope_assertion_failed` | **a different clause from its six siblings** — the `{name}` fd prefix is not modelled, so the production does not complete and the command is UNRESOLVABLE |
+
+### The two over-refusals REMOVED — the round's cost, measured in the direction nobody expected
+
+| row | before | after | twin | derivation |
+|---|---|---|---|---|
+| `git push origin refs/heads/gsd-auto/alpha/w > log.txt` | **2 `push_outside_namespace`** | **exit 0** | one-line form, exit 0 | the redirection word was read as an EXTRA REFSPEC (*the refspec `>` resolves to `refs/heads/>`*) |
+| `git push \<NL> origin refs/heads/gsd-auto/alpha/w` | **2 `push_outside_namespace`** | **exit 0** | one-line form, exit 0 | the whitespace after the continuation FLUSHED it into its own WORD in the REMOTE slot, displacing every operand one slot right (*the refspec `origin` resolves to `refs/heads/origin`*) — `T-19-97`'s displacement arriving through `T-19-98`'s mechanism |
+
+`19-18` pinned both PRE-fix in two `#[test]` fns it NAMED for this purpose, and
+**replacing those two bodies was this plan's ONLY test deletion.** Every other
+`tests/` hunk is an addition and every other file under `tests/` is
+byte-identical — verified by reading the diff HUNKS, not the numstat total. Each
+replaced pin keeps its one-line twin and gains an **out-of-namespace control**
+(`git push origin refs/heads/main > log.txt`, still refused), so what the rule
+removed is the redirection being read as a decision word rather than the refspec
+check itself.
+
+### The controls that show this is a deletion MODEL and not a blanket refusal
+
+* **Over-deletion control, still PERMITTED**:
+  `git x2>/tmp/o push --force origin main`. Bash gives git
+  `ARGV[git]: [x2] [push] [--force] [origin] [main]` — `x2` IS argv, and git
+  itself answers `git: 'x2' is not a git command`. This is the axis's
+  `ls {git,svn}-repo`: over-deletion displaces every decision word LEFT, the
+  same defect mirrored.
+* **A QUOTED digit run is not an IO_NUMBER either.** Measured while executing:
+  `git "2">/tmp/o push --force origin main` gives bash `[2] [push] …`, so
+  reading the DEQUOTED word text would have over-deleted a real argv word. The
+  IO_NUMBER test is therefore over a *bare* digit run tracked while the word is
+  consumed — the same "collect the evidence where the word is consumed"
+  discipline `Token::literal` is built on. Pinned in the tokenizer table.
+* **Quoted `>` rows, still permitted**: `git commit -m ">"`,
+  `git log --grep='>'`, `git commit -m "a > b"`, `rg ">" src/`,
+  `--push-option="a>b"` — an operator is recognised only OUTSIDE quotes.
+* **The ordinary-redirection corpus, still permitted**, and
+  `gh pr create --title x > /tmp/o` **still COUNTED** with one ledger line.
+
+### What the rule NEWLY REFUSES, each beside its permitted twin
+
+| newly refused | permitted twin | clause |
+|---|---|---|
+| `git >` (2 `envelope_assertion_failed`) | `ls >`, `cargo test >` (exit 0) | unresolvable; the mark refuses only when a GOVERNED program is reached. **Bash does not run `git >` either** — `syntax error near unexpected token 'newline'` — so the refusal costs nothing anyone could have run |
+| `git {v}>/tmp/o push --force origin main` | `git >/dev/null push --force origin main` (modelled, classified) | `{name}` fd allocation deliberately not modelled |
+| `git {v}>/tmp/o status` (was exit 0) | `git >/dev/null status` (exit 0) | same clause — the mark asks whether the argv is KNOWABLE, not whether it is dangerous. **This is a genuinely new refusal and is disclosed rather than hidden** |
+
+Net: **two shapes newly refused, two measured false refusals removed.**
+
+### Audit 5's disclosed corpus limit — ADDRESSED
+
+`sh {-c,"git push --force …"}` is refused because a QUOTE inside an alternative
+makes the word's product set unenumerable — correct and fail-closed — but the
+corpus cannot tell that refusal apart from an ENUMERATED one, because both reach
+the same `envelope_assertion_failed` identifier through the same clause at the
+guard boundary. The distinction exists only inside the whole-word product scan,
+which is why it is a UNIT assertion:
+`an_unenumerable_brace_word_is_distinguishable_from_an_enumerated_governed_one`
+in `policy.rs`'s own `#[cfg(test)] mod tests`. It pins `products == None` for the
+quoted alternative and `products == Some(["git"])` for `{g..g}it`, with
+`{git,svn}-repo` as the control that keeps the `true` answer non-vacuous.
+`19-18` could not write it because it may not touch `src/`.
+
+### The decision region did NOT move, and no second reading site was needed
+
+`first_unreadable_decision_word` is **unchanged**, and so is its single
+`at(index, role)` closure. So are `scan_leading`, `config_key_operand_index`,
+`subcommand_word_indices` and `scan_gh_api`. A deleted word never becomes a
+`Token`, so every decision index is over the SURVIVING argv automatically —
+round 3's principle (*a decision region is derived from the same scan the
+classifier runs, never a second scan*) is **discharged, not weakened**.
+
+`resolve_program_with_head` keeps ONE arm per `ProgramResolution` variant and
+**no wildcard**; the deletion fact went into the arms that already existed. There
+is still exactly one post-filter.
+
+`src/envelope/hooks.rs` needed **no change**: `guard_in`'s split and the
+`NestedPayload` arm's re-split already go through `split_segments_with_heads` and
+`resolve_program_with_head`, so the fact threads by construction. That is the
+same property that made the second reading site unnecessary.
+
+### A control that moved for a reason worth recording
+
+`wrapper_names_the_fix_must_not_know_are_absent_from_the_production_logic`
+carries a POSITIVE CONTROL requiring that stripping comments and the
+`#[cfg(test)]` module leave more than a QUARTER of `policy.rs` — otherwise an
+absence assertion over what remains proves almost nothing. This plan's
+documentation and its two new test fns pushed the ratio to **24.88%** and turned
+that control red. **The assertion was not edited**; the redundant prose was
+tightened until production code was back above the floor. **The margin is now
+thin, and the next round that documents `policy.rs` heavily will trip it again** —
+recorded here so it is met as a known threshold rather than rediscovered.
+
+### What this record does NOT do
+
+* It writes no unqualified "T-19-60 is closed". Only the **WRAPPER-OPERAND**
+  sub-class of `T-19-60` is closed; `T-19-86` and `T-19-91` are both sub-classes
+  of it and both remain OPEN at `high`.
+* **The `T-19-17r` bookkeeping gap stays OUTSTANDING.** `19-17-SUMMARY.md` calls
+  it accepted; the measurement and both pins are confirmed; there is still no
+  `AR-19-13` row and no register row. **This plan does NOT accept it and adds no
+  `AR-19-13` row** — accepting a risk is a human decision and audit 5 explicitly
+  declined to make it.
+* It does not clear `/gsd-secure-phase 19`. `T-19-86` (four rows still at exit 0,
+  its control green and unmodified) and `T-19-91` (three arms — `reflog $S`,
+  `reflog show $S`, `symbolic-ref $S` at exit 0 with no second carrier, and the
+  bare `git push $REF` cwd-dependent and permitted in-namespace) remain OPEN at
+  `high`. `T-19-96`, `T-19-74`'s residual, `T-19-84`, `T-19-85` and
+  `T-19-61` … `T-19-73` are untouched and unaccepted.
+* It adds no crate. `Cargo.toml` and `Cargo.lock` are unchanged (`T-19-SC`).
