@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
-stopped_at: Completed 19-17-PLAN.md
-last_updated: "2026-08-30T00:22:30.519Z"
+stopped_at: Completed 19-18-PLAN.md (corpus RED; 19-19 writes the rule)
+last_updated: "2026-08-30T01:48:00.608Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: d06a4cfc11f65941792eca81b09cd36fc827393e
+state_head: 1e6a2c87713ae149863b674326e3844e0d964b46
 progress:
   total_phases: 10
   completed_phases: 6
-  total_plans: 99
-  completed_plans: 99
+  total_plans: 102
+  completed_plans: 101
   percent: 60
 ---
 
@@ -221,6 +221,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 19 P15 | ~1h | 2 tasks | 7 files |
 | Phase 19 P16 | 1 session | 3 tasks | 5 files |
 | Phase 19 P17 | ~1 session | 3 tasks | 6 files |
+| Phase 19 P18 | 75m | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -271,6 +272,9 @@ Recent decisions affecting current work:
 - [Phase 19]: Clause 2(b) reads what a splice PRODUCES over the WHOLE WORD, quote-removed, never what its alternatives are called
 - [Phase 19]: A nested { inside an alternative is a fail-closed UNENUMERABLE trigger, not a recursion
 - [Phase 19]: T-19-93 is closed in the tokenizer's literal-brace branch with neither forge scan changed
+- [Phase 19]: The four FORGE rows assert a RESTORED COUNT, not a refusal — the SAFE-06 cap is bypassed UNCOUNTED rather than exceeded (19-18)
+- [Phase 19]: Three rows whose post-fix verdict 19-18 cannot derive are RECORDED and never asserted: >$F, >*.log and {v}> (19-18)
+- [Phase 19]: T-19-17r's bookkeeping gap recorded OUTSTANDING; no AR-19-13 row added and no acceptance made (19-18)
 
 ### Pending Todos
 
@@ -299,6 +303,7 @@ Recent decisions affecting current work:
   autonomous-mode / checkpoint contract during Phase 20 research
 
 - T-19-86 (governed program's own operand names a governed command) and T-19-87 (${VAR} fragments a command past the splitter) are open, pinned and deferred to a round-4 plan; /gsd-secure-phase 19 cannot clear until they are closed
+- T-19-97/T-19-98/T-19-99 open — corpus RED at 1605 (passed+failed); 19-19 writes the rule. /gsd-secure-phase 19 NOT cleared: T-19-86 and T-19-91 remain open at high
 
 ### Quick Tasks Completed
 
@@ -329,8 +334,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-08-30T00:22:20.717Z
-Stopped at: Completed 19-17-PLAN.md
+Last session: 2026-08-30T01:47:49.698Z
+Stopped at: Completed 19-18-PLAN.md (corpus RED; 19-19 writes the rule)
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
 Resume file: None
