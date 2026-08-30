@@ -1176,23 +1176,19 @@ pub struct Token {
     /// **The fail-closed residue that keeps the production from being a sixth
     /// enumeration.** Bash's redirection rule is a finite grammar production —
     /// `[IO_NUMBER] OPERATOR WORD` — and [`tokenize`] consumes it, emitting no
-    /// token for either the operator or its target, so a deleted word never
-    /// becomes a `Token` at all. A spelling the production does not COMPLETE
-    /// does not fall through as an ordinary word: it is marked here, carried to
-    /// [`Segment::redirection_unresolvable`] and refused when a governed program
-    /// is reached.
+    /// token for either the operator or its target. A spelling the production
+    /// does not COMPLETE does not fall through as an ordinary word: it is marked
+    /// here, carried to [`Segment::redirection_unresolvable`] and refused when a
+    /// governed program is reached.
     ///
     /// Set for exactly two shapes, both measured:
     ///
     /// * an operator with no following target word — `git >`, which bash does
     ///   not run either (`syntax error near unexpected token 'newline'`);
-    /// * a `{name}` fd-allocation prefix (bash 4.1) — `git {v}>/tmp/o push
-    ///   --force origin main`, which bash runs as `[push] [--force] [origin]
-    ///   [main]`. Modelling it would mean unwinding round 5's literal-brace
-    ///   absorption, which buys nothing measurable, so it refuses instead.
+    /// * a `{name}` fd-allocation prefix (bash 4.1) — see
+    ///   [`is_fd_allocation_prefix`] for why it is not modelled.
     ///
-    /// Always `false` for an ordinary word and for a redirection the production
-    /// resolved.
+    /// Always `false` for an ordinary word and for a resolved redirection.
     pub redirection_unresolvable: bool,
 }
 
@@ -1320,24 +1316,18 @@ pub struct Segment {
     /// Whether this segment belongs to a **simple command carrying a redirection
     /// the parser could not resolve** (see [`Token::redirection_unresolvable`]).
     ///
-    /// **Why this is a property of the command and not of a word**, for the same
-    /// reason [`Segment::brace_spliced`] is: a redirection can stand anywhere in
-    /// a simple command and deletes words from ANYWHERE in its argv, so a
-    /// redirection the parser cannot complete means the argv a classifier would
-    /// read is not the argv that runs — about the whole command, not about one
-    /// word of it.
+    /// **A property of the COMMAND and not of a word**, for the same reason
+    /// [`Segment::brace_spliced`] is: a redirection stands anywhere in a simple
+    /// command and deletes words from anywhere in its argv.
     ///
     /// Computed in [`split_segments_with_heads`] — the ONE walk — from the
     /// operator tokens the tokenizer marked, applied to every segment of the
     /// simple command **including the one already pushed when the operator
     /// arrived**, and reset at each REAL command operator.
     ///
-    /// **It refuses only when a GOVERNED program is reached**, which is the cost
+    /// **It refuses only when a GOVERNED program is reached**, the cost
     /// containment [`Segment::brace_spliced`] already establishes: `ls >` stays
-    /// permitted, `git >` does not. There is deliberately no clause-2(b)
-    /// analogue — a redirection cannot PRODUCE a governed program the way a
-    /// brace splice can, because its target is REMOVED from argv rather than
-    /// spliced into it.
+    /// permitted, `git >` does not.
     pub redirection_unresolvable: bool,
 }
 
@@ -2067,21 +2057,20 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
 
     // **The redirection production, consumed inside the ONE walk.**
     //
-    // The invariant this serves, in one sentence: *the words the guard
-    // classifies must be exactly the words the program receives, in the same
-    // order — no more and no fewer.* This is the SECOND half of round 5's rule
-    // rather than a replacement for it — `Token::literal` is the first half and
-    // proves a word's BYTES, and this proves its SURVIVAL and its SLOT. Both are
-    // needed: `>/dev/null` is fully LITERAL by round 5's own test and the bit is
-    // RIGHT about it, yet the program never receives it.
+    // The invariant, in one sentence: *the words the guard classifies must be
+    // exactly the words the program receives, in the same order — no more and no
+    // fewer.* This is the SECOND half of round 5's rule rather than a
+    // replacement for it — `Token::literal` is the first half and proves a
+    // word's BYTES; this proves its SURVIVAL and its SLOT. Both are needed:
+    // `>/dev/null` is fully LITERAL by round 5's own test and the bit is RIGHT
+    // about it, yet the program never receives it.
     //
     // **Consumed here, so a deleted word never becomes a `Token` at all**, which
     // is why every downstream index — `scan_leading`'s verb index,
     // `config_key_operand_index`, `subcommand_word_indices`, `scan_gh_api`'s own
     // walk — is over the SURVIVING argv automatically, and why
     // `first_unreadable_decision_word`'s one `at(index, role)` closure needs no
-    // change. Round 3's principle (a decision region derived from the same scan
-    // the classifier runs, never a second scan) is discharged, not weakened.
+    // change. Round 3's principle is discharged, not weakened.
     //
     // `$op_start` is the index of the operator's FIRST character.
     macro_rules! consume_redirection {
@@ -2275,11 +2264,10 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
             // ordinary word. `SEPARATORS` is unchanged and `is_separator(">")`
             // is still false: a redirection does not start a new command.
             //
-            // **Only OUTSIDE quotes.** A quoted `>` never reaches this arm — the
-            // quote loops consume it — which is why `git commit -m ">"`,
-            // `git log --grep='>'`, `git commit -m "a > b"`, `rg ">" src/` and
-            // `--push-option="a>b"` all stay permitted. A BACKSLASH-escaped `>`
-            // never reaches it either, for the same reason.
+            // **Only OUTSIDE quotes.** A quoted or backslash-escaped `>` never
+            // reaches this arm — the quote loops and the backslash arm consume
+            // it — which is why `git commit -m ">"`, `git log --grep='>'`,
+            // `rg ">" src/` and `--push-option="a>b"` stay permitted.
             '<' | '>' => {
                 consume_redirection!(index - 1);
             }
@@ -2400,29 +2388,16 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
                     // below — "escaping is exactly what makes a character
                     // literal" — is true of every character it names and wrong
                     // only for the one it does not: a backslash DELETES a
-                    // newline rather than protecting it. Bash removes BOTH
-                    // characters before the word is assembled, so this produces
-                    // NO character.
-                    //
-                    // **It must not START a word**, which is why `begin_word!`
-                    // is not called: `git \<NL>push --force origin main` gives
-                    // bash `ARGV[git]: [push] [--force] [origin] [main]` — two
-                    // words, not three — and a continuation that started one
-                    // would flush an empty word into the REMOTE slot, which is
-                    // the displacement `T-19-98` is about.
-                    //
-                    // **`literal` is deliberately left TRUE.** A deletion is not
-                    // a rewrite: the word is handed to the program byte for
-                    // byte, round 5's bit is RIGHT about it, and clearing the
-                    // bit to obtain a refusal would make it wrong about a word
-                    // it is right about.
-                    //
-                    // The SINGLE-quote loop is untouched, and that is measured
-                    // rather than assumed: bash performs no continuation inside
-                    // single quotes — `git 'pu\<NL>sh' --force origin main`
-                    // gives `[pu\<NL>sh]`, bytes verified with `od -c`. For the
-                    // same reason `\`+CR and `\`+TAB stay ordinary escapes here:
-                    // they are genuine escapes of those characters.
+                    // newline rather than protecting it, so this produces NO
+                    // character. **It must not START a word** (hence no
+                    // `begin_word!`): `git \<NL>push --force origin main` gives
+                    // bash two words, not three, and a continuation that started
+                    // one would flush an empty word into the REMOTE slot — the
+                    // displacement `T-19-98` is about. **`literal` stays TRUE**:
+                    // a deletion is not a rewrite. The SINGLE-quote loop is
+                    // untouched, measured rather than assumed —
+                    // `git 'pu\<NL>sh'` gives `[pu\<NL>sh]`, bytes verified with
+                    // `od -c` — and `\`+CR and `\`+TAB stay ordinary escapes.
                     index += 1;
                 } else {
                     begin_word!();
@@ -2882,6 +2857,26 @@ pub enum ProgramResolution {
 ///   Registered by `19-16`, pinned at its measured verdict, and NOT fixed: the
 ///   decision region is not widened here, and widening it to
 ///   [`classify_push`]'s flags is the same move as closing `T-19-91`.
+/// * **`T-19-19r` — over-refusal from the redirection rule, and it is NET
+///   NEGATIVE.** Two shapes are newly refused, each pinned in
+///   `tests/envelope_argv_deletion.rs` beside its PERMITTED twin so a later
+///   reader can tell a cost that was accepted from one that grew: an
+///   UNRESOLVABLE redirection in a governed simple command (`git >` refused,
+///   twin `ls >` permitted — and bash does not run `git >` either, answering
+///   `syntax error near unexpected token 'newline'`), and a `{name}`
+///   FD-ALLOCATION prefix, which is deliberately not modelled
+///   (`git {v}>/tmp/o push --force origin main` and its permitted-half twin
+///   `git {v}>/tmp/o status` both refused, twin `git >/dev/null push …`
+///   modelled and classified). Against that, the rule REMOVES two measured
+///   FALSE REFUSALS that existed before it:
+///   `git push origin refs/heads/gsd-auto/alpha/w > log.txt` and its
+///   `\`+newline spelling, both at exit 2 `push_outside_namespace` before and
+///   exit 0 after, matching their one-line twins. Ordinary redirection keeps
+///   working — `git log > out`, `git status > /tmp/s.txt`,
+///   `git commit -m "x" >> build.log`, `gh pr list 2>/dev/null`,
+///   `git fetch origin 2>&1 | tee log` — and `gh pr create --title x > /tmp/o`
+///   stays COUNTED with a ledger line, which is the measured cost that rejected
+///   the blanket-refusal design.
 ///
 /// ## What IS covered in the program's own arguments, since 19-14
 ///
@@ -3253,6 +3248,25 @@ pub fn resolve_program_with_head(entry: &Segment) -> ProgramResolution {
                         .to_string(),
                 };
             }
+            // **The same answer, one axis over.** Rule B and clause 2(a) above
+            // answer about words the guard READS that the shell REWRITES or
+            // SPLICES; this answers about words it reads that never ARRIVE. A
+            // redirection the parser could not resolve into a complete
+            // (operator, target) pair means the shell deletes an unknown span
+            // from argv, so which words reach the program — and in which slots —
+            // is not knowable before it runs.
+            if entry.redirection_unresolvable {
+                return ProgramResolution::Refuse {
+                    reason: ParkReason::EnvelopeAssertionFailed,
+                    // Names the SHAPE and never quotes the command back (SAFE-04).
+                    detail: "this command reaches a program the envelope governs through a \
+                             redirection the guard cannot resolve into an operator and its \
+                             target, so the shell removes words from its argv that the guard \
+                             cannot identify; which words reach the program is not knowable \
+                             before it runs, and it is refused rather than guessed at"
+                        .to_string(),
+                };
+            }
             resolved
         }
 
@@ -3270,6 +3284,18 @@ pub fn resolve_program_with_head(entry: &Segment) -> ProgramResolution {
         // attached**: `ls {git,svn}-repo` produces `git-repo` and `svn-repo`,
         // neither governed, and stays PERMITTED. A mention test would refuse it,
         // and a mention test is one slot away from the class.
+        //
+        // **There is deliberately NO clause-2(b) analogue for the redirection
+        // mark, and the asymmetry has a reason rather than being an omission.**
+        // A brace splice can PRODUCE a governed program out of words that name
+        // nothing, which is why the half above exists. A redirection cannot: its
+        // target is REMOVED from argv rather than spliced into it, so it can
+        // only ever delete words from a command, never conjure a program into
+        // one. So `ls >` stays PERMITTED on the same cost containment
+        // `brace_spliced` already establishes — the mark refuses only when a
+        // governed program is actually reached. A rule that denied what it did
+        // not recognise would deny `ls`, `cargo test` and `rg`, which is how a
+        // safety control gets switched off (AR-19-11).
         ProgramResolution::NoProgram | ProgramResolution::Ungoverned => {
             if entry.brace_spliced && entry.splice_can_produce_governed {
                 return ProgramResolution::Refuse {

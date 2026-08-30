@@ -951,31 +951,35 @@ fn the_over_deletion_control_stays_permitted_because_x2_is_a_real_argv_word() {
 // ===========================================================================
 
 #[test]
-fn the_redirected_in_namespace_push_is_falsely_refused_today_and_19_19_must_move_it() {
-    // **THIS PIN RECORDS A FALSE REFUSAL MEASURED BEFORE THE RULE EXISTED.**
-    // `19-19` REPLACES this body with the exit-0 assertion, and that replacement
-    // is the evidence the round REMOVED over-refusal rather than adding it. This
-    // test and its sibling below are the ONLY assertions in this file `19-19` is
-    // permitted to replace rather than only add to. Naming them here is what
-    // makes the handoff expressible: a pin the next plan must move, under a
-    // prohibition allowing only additions, is a plan that cannot be executed.
+fn the_redirected_in_namespace_push_is_no_longer_falsely_refused_because_19_19_moved_it() {
+    // **THIS PIN NOW RECORDS OVER-REFUSAL REMOVED, and the verdict it used to
+    // hold is kept below so the movement stays legible.** `19-18` wrote this
+    // body as a PRE-FIX pin and NAMED it for `19-19` to replace; replacing it is
+    // `19-19`'s one permitted test deletion, and every other hunk `19-19` writes
+    // under `tests/` is an addition. A pin the next plan must move, under a
+    // prohibition allowing only additions, is a plan that cannot be executed —
+    // which is why `19-18` named it rather than leaving it to be discovered.
     //
-    // **The derivation, taken from the MEASURED message and not from a
-    // description of it.** Driven against a repository whose current branch is
-    // inside `refs/heads/gsd-auto/alpha/`, with a local bare upstream:
-    //
+    // **BEFORE (measured by `19-18`, at `1d1229e`):**
     //   git push origin refs/heads/gsd-auto/alpha/w > log.txt
     //     -> exit 2  REFUSED (reason: push_outside_namespace) — the refspec `>`
     //        resolves to `refs/heads/>`, which is outside `refs/heads/gsd-auto/alpha/`
-    //   git push origin refs/heads/gsd-auto/alpha/w            (twin)
-    //     -> exit 0
     //
-    // The redirection word is read as an EXTRA REFSPEC the program never
-    // receives. Confirmed under the shim, which shows what git actually gets:
+    // **AFTER (this rule):** exit 0, matching its one-line twin.
+    //
+    // **The derivation, taken from the MEASURED message and not from a
+    // description of it.** The refusal was never about the push: `>` and its
+    // target `log.txt` are DELETED by bash, and the guard was reading `>` as an
+    // EXTRA REFSPEC the program never receives. Confirmed under the shim, which
+    // shows what git actually gets:
     //   -> ARGV[git]: [push] [origin] [refs/heads/gsd-auto/alpha/w]
+    // Once the production deletes the operator and its target, the surviving
+    // argv IS the twin's, so `only_refs_inside_the_namespace_are_allowed` sees
+    // one in-namespace refspec and permits it.
     //
-    // This is the SAME defect as `T-19-97`, in the opposite direction: the guard
-    // reads a word the program never receives, and answers about it.
+    // This is the SAME defect as `T-19-97`, in the opposite direction — the
+    // guard read a word the program never receives and answered about it — which
+    // is why modelling deletion REMOVES cost here rather than adding it.
     let repo = in_namespace_repo();
     let work = repo.path().join("work");
 
@@ -986,21 +990,21 @@ fn the_redirected_in_namespace_push_is_falsely_refused_today_and_19_19_must_move
         "git push origin refs/heads/gsd-auto/alpha/w > log.txt",
     );
     assert_eq!(
-        answer.code, 2,
-        "PRE-FIX PIN: this in-namespace push is FALSELY REFUSED today. If it is already \
-         permitted, the cost this round claims to remove was never there and that is a \
-         FINDING, not a green test. stdout: {} stderr: {}",
+        answer.code, 0,
+        "OVER-REFUSAL REMOVED: this in-namespace push was FALSELY REFUSED at exit 2 \
+         `push_outside_namespace` before the rule existed, and the rule must move it to \
+         exit 0. A round that left it refused would have modelled deletion wrongly. \
+         stdout: {} stderr: {}",
         answer.stdout, answer.stderr
     );
     assert!(
-        answer.reason().contains(policy::REASON_PUSH_OUTSIDE_NAMESPACE),
-        "and the false refusal must be the MEASURED one — the redirection word read as an \
-         extra refspec. Got: {}",
-        answer.reason()
+        answer.stdout.is_empty(),
+        "a permit answers nothing at all. Got: {}",
+        answer.stdout
     );
 
-    // The permitted one-line twin, which is what `19-19` must move the row above
-    // to. Green before AND after; `19-19` keeps this assertion.
+    // The permitted one-line twin, which is what the row above now matches.
+    // Green BEFORE and AFTER; `19-19` keeps this assertion unchanged.
     let twin_envelope = TempDir::new().unwrap();
     let twin = ask_in(
         twin_envelope.path(),
@@ -1013,28 +1017,52 @@ fn the_redirected_in_namespace_push_is_falsely_refused_today_and_19_19_must_move
          changed. stdout: {} stderr: {}",
         twin.stdout, twin.stderr
     );
+
+    // **And the control that keeps the removal from being a blanket permit**:
+    // an OUT-of-namespace refspec behind the same redirection is still refused,
+    // so the rule deleted the redirection rather than the decision.
+    let control_envelope = TempDir::new().unwrap();
+    let control = ask_in(
+        control_envelope.path(),
+        Some(&work),
+        "git push origin refs/heads/main > log.txt",
+    );
+    assert_eq!(
+        control.code, 2,
+        "the redirection is deleted, NOT the refspec check: an out-of-namespace push \
+         behind the same redirection must still be refused. stdout: {} stderr: {}",
+        control.stdout, control.stderr
+    );
+    assert!(
+        control.reason().contains(policy::REASON_PUSH_OUTSIDE_NAMESPACE),
+        "and under the namespace identifier. Got: {}",
+        control.reason()
+    );
 }
 
 #[test]
-fn the_continued_in_namespace_push_is_falsely_refused_today_and_19_19_must_move_it() {
-    // **THIS PIN RECORDS A FALSE REFUSAL MEASURED BEFORE THE RULE EXISTED.**
-    // `19-19` REPLACES this body with the exit-0 assertion, and that replacement
-    // is the evidence the round REMOVED over-refusal rather than adding it.
+fn the_continued_in_namespace_push_is_no_longer_falsely_refused_because_19_19_moved_it() {
+    // **THIS PIN NOW RECORDS OVER-REFUSAL REMOVED**, and it is the second and
+    // last of the two `#[test]` bodies `19-18` NAMED for `19-19` to replace.
     //
-    // **A DIFFERENT mechanism from its sibling above, and the comment says so
-    // rather than leaving it to be inferred.** Measured message:
-    //
+    // **BEFORE (measured by `19-18`, at `1d1229e`):**
     //   git push \<NL> origin refs/heads/gsd-auto/alpha/w
     //     -> exit 2  REFUSED (reason: push_outside_namespace) — the refspec `origin`
     //        resolves to `refs/heads/origin`, which is outside `refs/heads/gsd-auto/alpha/`
-    //   git push origin refs/heads/gsd-auto/alpha/w            (twin)
-    //     -> exit 0
     //
-    // The mechanism is DISPLACEMENT, not a mangled word. The whitespace AFTER the
-    // continuation flushes it, so `\`+newline becomes its OWN WORD occupying the
-    // REMOTE slot and every operand shifts one slot right — `origin` is then read
-    // as a refspec. **That is `T-19-97`'s displacement arriving through
-    // `T-19-98`'s mechanism.**
+    // **AFTER (this rule):** exit 0, matching its one-line twin.
+    //
+    // **A DIFFERENT mechanism from its sibling above, and the comment says so
+    // rather than leaving it to be inferred.** The mechanism is DISPLACEMENT,
+    // not a mangled word: the whitespace AFTER the continuation flushed it, so
+    // `\`+newline became its OWN WORD occupying the REMOTE slot and every
+    // operand shifted one slot right — `origin` was then read as a refspec.
+    // **That is `T-19-97`'s displacement arriving through `T-19-98`'s
+    // mechanism**, which is why one rule moves both rows.
+    //
+    // The derivation of the exit 0: `\`+newline is now consumed producing NO
+    // character and, crucially, WITHOUT starting a word, so nothing occupies the
+    // remote slot and every operand is back where the program receives it.
     //
     // Bytes verified with `od -c` before bash was driven over them:
     //
@@ -1053,17 +1081,16 @@ fn the_continued_in_namespace_push_is_falsely_refused_today_and_19_19_must_move_
         "git push \\\n origin refs/heads/gsd-auto/alpha/w",
     );
     assert_eq!(
-        answer.code, 2,
-        "PRE-FIX PIN: this in-namespace push is FALSELY REFUSED today. If it is already \
-         permitted, the cost this round claims to remove was never there and that is a \
-         FINDING, not a green test. stdout: {} stderr: {}",
+        answer.code, 0,
+        "OVER-REFUSAL REMOVED: this in-namespace push was FALSELY REFUSED at exit 2 \
+         `push_outside_namespace` before the rule existed — `origin` displaced into the \
+         refspec slot — and the rule must move it to exit 0. stdout: {} stderr: {}",
         answer.stdout, answer.stderr
     );
     assert!(
-        answer.reason().contains(policy::REASON_PUSH_OUTSIDE_NAMESPACE),
-        "and the false refusal must be the MEASURED one — `origin` displaced into the \
-         refspec slot. Got: {}",
-        answer.reason()
+        answer.stdout.is_empty(),
+        "a permit answers nothing at all. Got: {}",
+        answer.stdout
     );
 
     let twin_envelope = TempDir::new().unwrap();
@@ -1076,6 +1103,26 @@ fn the_continued_in_namespace_push_is_falsely_refused_today_and_19_19_must_move_
         twin.code, 0,
         "the one-line twin is PERMITTED. stdout: {} stderr: {}",
         twin.stdout, twin.stderr
+    );
+
+    // **The control that keeps the removal from being a blanket permit**: the
+    // continuation is deleted, the DECISION is not. An out-of-namespace refspec
+    // written with the same continuation is still refused.
+    let control_envelope = TempDir::new().unwrap();
+    let control = ask_in(
+        control_envelope.path(),
+        Some(&work),
+        "git push \\\n origin refs/heads/main",
+    );
+    assert_eq!(
+        control.code, 2,
+        "the continuation is deleted, NOT the refspec check. stdout: {} stderr: {}",
+        control.stdout, control.stderr
+    );
+    assert!(
+        control.reason().contains(policy::REASON_PUSH_OUTSIDE_NAMESPACE),
+        "and under the namespace identifier. Got: {}",
+        control.reason()
     );
 }
 
@@ -1131,6 +1178,110 @@ fn the_three_undeliverable_rows_are_recorded_here_and_left_for_19_19_to_pin() {
         "deferred: {v}> permitted-half twin",
         "git {v}>/tmp/o status",
     );
+}
+
+// ===========================================================================
+// 9b. Those same rows, now DERIVED and PINNED by 19-19 — ADDED, not edited
+// ===========================================================================
+
+#[test]
+fn the_expansion_carrying_redirections_stay_refused_under_a_changed_reason_identifier() {
+    // **A REASON-IDENTIFIER change, not a verdict change**, and `19-18`
+    // deliberately left it for `19-19` to measure rather than guess.
+    //
+    // BEFORE: exit 2 `envelope_assertion_failed`. Round 5's literalness bit
+    // fired on the `$` and on the glob in what the guard read as the VERB — the
+    // measured message named the word: *`>$F` is the git verb for this command,
+    // and the shell may rewrite it before the program sees it*.
+    //
+    // AFTER: exit 2 `force_push_blocked`. **The derivation**: the redirection
+    // production deletes `>` together with its target — and the target is
+    // deleted whether or not its own text is knowable, because a word bash
+    // removes from argv is removed regardless of what it would have expanded to.
+    // So the surviving argv is `push --force origin main`, and `classify_git`'s
+    // force-push arm answers about it directly. The literalness bit never sees
+    // these words because they are no longer words.
+    //
+    // **The identifier is what makes this row non-vacuous.** Both verdicts are
+    // exit 2, so asserting the exit code alone would pass for the wrong reason
+    // (D-24) — and passing for the wrong reason is precisely what would happen
+    // if the target had NOT been deleted and the bit had fired again.
+    //
+    // Both are also PRECONDITION rows under bash: it answers `ambiguous
+    // redirect` when `F` is unbound and when the glob matches more than one
+    // file. That does not change the guard's answer, which is given before bash
+    // runs at all.
+    refuses(
+        "git >$F push --force origin main",
+        policy::REASON_FORCE_PUSH_BLOCKED,
+    );
+    refuses(
+        "git >*.log push --force origin main",
+        policy::REASON_FORCE_PUSH_BLOCKED,
+    );
+}
+
+#[test]
+fn the_fd_allocation_prefix_is_refused_by_the_unresolvable_clause_and_not_by_its_siblings() {
+    // **The seventh planning cell, and the one row in its group that reaches a
+    // DIFFERENT clause — which is exactly why `19-18` refused to pin it.**
+    //
+    // Its six siblings in section 3 land on `force_push_blocked` because their
+    // redirection is DELETED and the surviving argv is the dangerous one. This
+    // one does not. `{v}` is absorbed into the word by round 5's literal-brace
+    // branch (correctly — a `{`…`}` pair with no comma and no range is passed
+    // through unchanged by bash), so the word in progress when `>` arrives is
+    // neither empty nor a bare digits-only IO_NUMBER. `19-19` deliberately does
+    // NOT model bash 4.1 fd allocation — unwinding round 5's absorption to do so
+    // would cost the thing it buys, and `git {v}>/tmp/o push` is not a shape
+    // anyone writes — so the production does not COMPLETE and the simple command
+    // is marked UNRESOLVABLE instead.
+    //
+    // BEFORE: exit 0, empty walk. AFTER: exit 2 `envelope_assertion_failed`,
+    // reached by the unresolvable clause rather than by a classifier.
+    refuses(
+        "git {v}>/tmp/o push --force origin main",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+
+    // **Its PERMITTED-HALF TWIN, refused by the SAME clause — and this is the
+    // cost, stated rather than hidden.** `git {v}>/tmp/o status` was exit 0 and
+    // is now refused, because the unresolvable mark asks whether the argv is
+    // KNOWABLE and not whether it is dangerous. That is a genuinely new refusal
+    // and it is disclosed in `resolve_program`'s doc beside the other residuals.
+    //
+    // **This twin is also why `19-18` kept `{v}>` OUT of
+    // `DISPLACING_REDIRECTIONS`**, whose property asserts verdict PRESERVATION
+    // over permitted bases: this splice is STRICTER than its base, so it would
+    // have broken an invariant that is right about every other entry.
+    refuses(
+        "git {v}>/tmp/o status",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+}
+
+#[test]
+fn an_unresolvable_redirection_refuses_a_governed_program_and_spares_an_ungoverned_one() {
+    // **The new cost and its permitted twin, pinned as a PAIR** — because the
+    // pair is the whole claim. The mark is computed for both commands; what
+    // differs is only whether a GOVERNED program is reached, which is the cost
+    // containment `Segment::brace_spliced` already establishes.
+    //
+    // A rule that denied whatever it could not recognise would deny `ls`,
+    // `cargo test` and `rg` — and a control that fails into unusability gets
+    // switched off (AR-19-11). So the ungoverned half must stay permitted, and
+    // asserting only the refusing half would not show that it does.
+    //
+    // **The disclosure that keeps this cost honest: bash does not run `git >`
+    // either.** It answers `syntax error near unexpected token 'newline'` and
+    // executes nothing, so the refusal costs a user nothing they could have run.
+    refuses("git >", policy::REASON_ENVELOPE_ASSERTION_FAILED);
+    permits("ls >");
+
+    // And the containment is not an accident of `ls` being short: an ungoverned
+    // program with an unresolvable redirection anywhere in its command line
+    // stays permitted too.
+    permits("cargo test >");
 }
 
 // ===========================================================================
