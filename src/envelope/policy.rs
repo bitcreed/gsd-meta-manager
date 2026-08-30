@@ -1095,6 +1095,67 @@ pub struct Token {
     ///
     /// Always `false` for an ordinary word.
     pub word_splitting_flush: bool,
+    /// **POSITIVE evidence that the shell hands this word to the program
+    /// byte-identically to how it is written.**
+    ///
+    /// This is the inversion round 5 makes, and the direction is the whole of
+    /// it. `expansion` above answers "did the tokenizer SEE one of the two
+    /// characters that mark an expansion" — an enumeration of the ways bash
+    /// assembles a word, guarded one at a time, which has not converged in five
+    /// rounds. This answers the opposite question: **is this word literal**, so
+    /// that anything not provably literal is unresolvable and refuses. Brace
+    /// expansion, pathname expansion, tilde expansion, `$IFS`-driven re-splitting
+    /// and the mechanisms nobody has enumerated are one rule rather than five.
+    ///
+    /// **The evidence is collected HERE, while the word is consumed, and it can
+    /// never be recovered from [`Token::text`] afterwards.** `text` has had its
+    /// quoting removed, so in it `gh api "repos/{owner}/{repo}/pulls"` — literal,
+    /// and COUNTED today — is indistinguishable from an unquoted word the shell
+    /// rewrites.
+    ///
+    /// Cleared when the tokenizer consumes, **OUTSIDE quotes**:
+    ///
+    /// | class | characters | why it is not literal |
+    /// |---|---|---|
+    /// | expansion | `$`, `` ` `` | parameter, command and arithmetic expansion — and every `$IFS` re-split of the result. The value is unknowable here |
+    /// | pathname | `*`, `?`, `[` | the result depends on the working directory, so it is unknowable **whether or not a file matches today** — a precondition an agent satisfies with `touch push` in the same tool call |
+    /// | tilde | `~` | the result depends on the passwd database of the machine the command will run on |
+    /// | brace | a `{`…`}` pair classified as an EXPANSION, or a `{` with no match | bash splices its alternatives back into the enclosing command, so the word never exists as written |
+    ///
+    /// Inside DOUBLE quotes only `$` and `` ` `` clear it: the other classes do
+    /// not expand there, and treating them as if they did would refuse
+    /// `gh api "repos/{owner}/{repo}/pulls"`, which is counted today.
+    ///
+    /// **Deliberately NOT cleared** for anything inside single quotes; for a
+    /// backslash-escaped character, because escaping is exactly what makes a
+    /// character literal; or for a `{`…`}` pair with no comma and no range, which
+    /// bash passes through unchanged — `printf "[%s]" repos/{owner}/{repo}/pulls`
+    /// prints `[repos/{owner}/{repo}/pulls]`, measured.
+    ///
+    /// **This is not a second `expansion`.** `expansion` stays exactly as it is,
+    /// because [`resolve_program`] steps 3 and 5 decide on it and this rule does
+    /// not move them; this bit is read at the DECISION boundary, in the one
+    /// closure of [`first_unreadable_decision_word`].
+    pub literal: bool,
+    /// For an OPERATOR token only: this `{` or `}` belongs to a `{`…`}` pair the
+    /// tokenizer classified as a brace EXPANSION, or to a `{` it could not match
+    /// at all.
+    ///
+    /// A brace expansion is a property of the enclosing SIMPLE COMMAND rather
+    /// than of a word — bash splices its alternatives back in around whatever
+    /// else is there — so the fact is carried to [`Segment`] and applied to every
+    /// segment of that command. See [`Segment::brace_spliced`].
+    pub brace_splice: bool,
+    /// For the OPERATOR token that opened the word's FIRST brace expansion only:
+    /// a word the splice can PRODUCE has a basename in [`GOVERNED_PROGRAMS`], or
+    /// its products could not be enumerated at all.
+    ///
+    /// **Products, never names**, and the two are one slot apart:
+    /// `{g..g}it push --force origin main` runs `git push --force origin main`
+    /// under bash and its only alternative is `g`, which names nothing.
+    /// See [`brace_word_products`] for the whole-word scan that computes them and
+    /// for every trigger that makes a product set unenumerable.
+    pub splice_can_produce_governed: bool,
 }
 
 /// The shell control operators that end one simple command and begin the next.
@@ -1162,7 +1223,7 @@ pub fn split_segments(cmd: &str) -> Option<Vec<Vec<Token>>> {
     )
 }
 
-/// One simple command, with the one fact about its FIRST token that the tokens
+/// One simple command, with the facts about its CONTEXT that the tokens
 /// themselves cannot carry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
@@ -1177,6 +1238,36 @@ pub struct Segment {
     /// the enclosing word after an expansion, so what the shell will put in front
     /// of its first token is unknowable.
     pub head_is_command_position: bool,
+    /// Whether this segment belongs to a **simple command a brace expansion
+    /// splices into**.
+    ///
+    /// **Why this is a property of the command and not of a word.**
+    /// `git {push,--force} origin main` splits into `git`, `push,--force` and
+    /// `origin main`. The first segment resolves `Governed` with an EMPTY argv
+    /// and [`classify_git`] answers `Allow` for a bare `git`, so there is no
+    /// decision WORD to test at all — while bash runs
+    /// `git push --force origin main`. The argv the classifier reads is not the
+    /// argv that runs, so the whole simple command is unresolvable.
+    ///
+    /// Computed in [`split_segments_with_heads`] — the ONE walk — from the
+    /// operator tokens the tokenizer marked, applied to every segment of the
+    /// simple command **including the one already pushed when the `{` arrived**,
+    /// and reset at each REAL command operator (`;`, `&&`, `||`, `|`, `&`,
+    /// newline) because those end the simple command.
+    pub brace_spliced: bool,
+    /// Whether a word this command's splice can PRODUCE has a basename in
+    /// [`GOVERNED_PROGRAMS`], or the products could not be enumerated at all.
+    ///
+    /// **The second half of clause 2, and both halves are load-bearing.**
+    /// [`Segment::brace_spliced`] alone permits `{git,push,--force,origin,main}`,
+    /// whose single segment's basename is not a governed program and where
+    /// nothing resolves `Governed` at all. This half alone permits
+    /// `git push {--force,origin} main`, where the governed word is outside the
+    /// braces and what the splice hides is `--force`.
+    ///
+    /// A product set that could not be computed cannot be cleared, so
+    /// unenumerable answers `true` here — fail closed.
+    pub splice_can_produce_governed: bool,
 }
 
 /// [`split_segments`], plus a per-segment report of whether its head is at a
@@ -1212,6 +1303,14 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
     // a command position.
     let mut last_operator_severed = false;
     let mut head_is_command_position = true;
+    // The brace facts of the simple command being accumulated. `command_start`
+    // is where its segments begin in `segments`, so a `{` that arrives AFTER a
+    // segment was already pushed — `git {push,--force} origin main`, where `git`
+    // is pushed the instant the `{` is seen — still marks that segment. This is
+    // the same walk, not a second one.
+    let mut command_start = 0usize;
+    let mut brace_spliced = false;
+    let mut splice_can_produce_governed = false;
 
     for token in tokens {
         if token.operator {
@@ -1219,7 +1318,28 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
                 segments.push(Segment {
                     tokens: std::mem::take(&mut current),
                     head_is_command_position,
+                    brace_spliced,
+                    splice_can_produce_governed,
                 });
+            }
+            if token.brace_splice {
+                brace_spliced = true;
+                splice_can_produce_governed |= token.splice_can_produce_governed;
+                // Retroactive, because bash splices words back in around
+                // whatever is already there: everything since the last REAL
+                // command operator is part of the command this `{` splices into.
+                for segment in &mut segments[command_start..] {
+                    segment.brace_spliced = true;
+                    segment.splice_can_produce_governed |= splice_can_produce_governed;
+                }
+            }
+            // A REAL command operator ends the simple command; `(`, `)`, `{` and
+            // `}` do not, which is exactly why the fact is per-command rather
+            // than per-segment.
+            if matches!(token.text.as_str(), ";" | "&&" | "||" | "|" | "&" | "\n") {
+                command_start = segments.len();
+                brace_spliced = false;
+                splice_can_produce_governed = false;
             }
             last_operator_severed =
                 token.word_splitting_flush && matches!(token.text.as_str(), "}" | ")");
@@ -1234,19 +1354,462 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
         segments.push(Segment {
             tokens: current,
             head_is_command_position,
+            brace_spliced,
+            splice_can_produce_governed,
         });
     }
 
     Some(segments)
 }
 
+/// The characters that make a word non-literal because the SHELL rewrites it or
+/// because its result is not knowable at guard time.
+///
+/// `{` is deliberately absent: whether a `{` rewrites the word is a question
+/// about the PAIR, answered by the tokenizer's three-way classification, not
+/// about the character. `printf "[%s]" repos/{owner}/{repo}/pulls` prints its
+/// argument unchanged.
+const REWRITING_CHARACTERS: &[char] = &['$', '`', '*', '?', '[', '~'];
+
+/// The most words one brace-expanded shell word may produce before the guard
+/// stops enumerating and refuses instead.
+///
+/// A cap rather than an unbounded product, because the whole point of the scan
+/// is that it runs on the agent's critical path inside `PreToolUse`; a word over
+/// the cap is UNENUMERABLE, which is a refusal. `{a..z}` is 26 and fits.
+const MAX_BRACE_PRODUCTS: usize = 64;
+
+/// What the whole-word brace scan concluded about one shell word.
+#[derive(Debug, PartialEq, Eq)]
+struct BraceProducts {
+    /// Every word the splice can produce, or `None` when they could not be
+    /// enumerated at all.
+    products: Option<Vec<String>>,
+}
+
+impl BraceProducts {
+    /// Clause 2(b)'s question. `None` answers `true`: **a product set that
+    /// cannot be computed cannot be cleared**, so unenumerable fails closed.
+    fn can_produce_governed(&self) -> bool {
+        match &self.products {
+            None => true,
+            Some(products) => products
+                .iter()
+                .any(|product| GOVERNED_PROGRAMS.contains(&program_name(product))),
+        }
+    }
+
+    /// The unenumerable answer, spelled once so every trigger returns the same
+    /// thing.
+    fn unenumerable() -> Self {
+        Self { products: None }
+    }
+}
+
+/// Every word a brace-expanded shell word can PRODUCE, composed over the WHOLE
+/// WORD.
+///
+/// **Products, never names, and that distinction is the finding that reshaped
+/// round 5.** A splice concatenated with literal characters produces a governed
+/// program no alternative spells. All eight of these are measured at exit 0
+/// against the pre-`19-17` tree, and bash assembles the range spellings into a
+/// real `git push --force origin main`:
+///
+/// ```text
+/// {g..g}it push --force origin main            {g,g}{i,i}{t,t} push --force origin main
+/// g{i,i}t push --force origin main             {g..g..1}it push --force origin main
+/// {g..g}{i..i}t push --force origin main       {g{i,i}t,x} push --force origin main
+/// "g"{i,i}"t" push --force origin main         {g..g}"it" push --force origin main
+/// ```
+///
+/// None is reached by asking what the alternatives are CALLED — they are `g`,
+/// `i`, `t` and `x`, which name nothing — nor by the word-level literalness bit,
+/// because the composed word never exists as a token.
+///
+/// **The extent is the WHOLE WORD and it never stops at a `{` or a `}`.** It
+/// runs from `start` — the beginning of the word in progress when the first
+/// expansion `{` arrived — forward to the next unquoted whitespace or REAL
+/// command operator (`;`, `&&`, `||`, `|`, `&`, newline). **Bash composes across
+/// `{`s**, so a per-`{` computation whose prefix and suffix runs ended at a brace
+/// would answer `g` and `it` for `{g..g}{i..i}t` — neither governed, both sets
+/// enumerating cleanly — and rows 3, 4 and 5 above would be permitted. That is
+/// the whole of this clause's safety and it is stated at the definition rather
+/// than as a caveat somewhere else.
+///
+/// **Literal runs are joined with their QUOTING REMOVED**, on the same footing
+/// [`Token::text`] already stands on, because quote removal is bash's own last
+/// word-expansion step. A quoted run IS literal by the Token bit's own test, so
+/// a word of quoted runs enumerates cleanly — and joined as written the product
+/// of `"g"{i,i}"t"` reads `"g"i"t"`, whose basename is not governed.
+///
+/// **A word whose products cannot be ENUMERATED is refused, and every trigger
+/// lives here beside the scan** — an escape hatch a shorter scan can never reach
+/// is not a control:
+///
+/// * an unmatched `{` or a stray `}` anywhere in the extent;
+/// * a range that is not exactly two endpoints, **which explicitly includes the
+///   increment form `{a..b..n}`**: it is neither a comma list nor a two-endpoint
+///   range, and `{g..g..1}it push --force origin main` is measured at exit 0;
+/// * a range whose endpoints are not both single characters or both integers;
+/// * **an alternative or a range member that itself contains a `{`** — the
+///   NESTED case, taken as a TRIGGER rather than by composing recursively,
+///   because a fail-closed refusal needs no recursion depth, no bound and no
+///   second reading where a recursive composition needs all three.
+///   `{g{i,i}t,x} push --force origin main` is measured at exit 0 and its
+///   top-level alternatives are `g{i,i}t` and `x`, neither governed;
+/// * an expansion or a literal run carrying a `$`, a backtick, a glob character
+///   or a tilde — the same class [`Token::literal`] is cleared for;
+/// * a quote inside an expansion's contents, which this scan does not resolve;
+/// * a cartesian count over [`MAX_BRACE_PRODUCTS`].
+///
+/// **This is narrower than a mention test, not wider**, and the control is
+/// pinned: `ls {git,svn}-repo` produces `git-repo` and `svn-repo`, neither of
+/// whose basename is governed, and stays PERMITTED.
+///
+/// Hand-rolled against `std`, like every other parser in this module, so no
+/// crate is added (`T-19-SC`).
+fn brace_word_products(chars: &[char], start: usize) -> BraceProducts {
+    // Each element is the alternatives one part of the word contributes. A
+    // literal run contributes exactly one.
+    let mut parts: Vec<Vec<String>> = Vec::new();
+    let mut run = String::new();
+    let mut unenumerable = false;
+    let mut index = start;
+
+    while index < chars.len() {
+        let ch = chars[index];
+        match ch {
+            // The extent ends here: unquoted whitespace, or a REAL command
+            // operator. Never a `{` and never a `}`.
+            ' ' | '\t' | '\r' | '\n' | ';' | '|' | '&' => break,
+            '\'' => {
+                index += 1;
+                loop {
+                    match chars.get(index) {
+                        Some('\'') => {
+                            index += 1;
+                            break;
+                        }
+                        Some(inner) => {
+                            run.push(*inner);
+                            index += 1;
+                        }
+                        None => {
+                            unenumerable = true;
+                            break;
+                        }
+                    }
+                }
+                if unenumerable {
+                    break;
+                }
+            }
+            '"' => {
+                index += 1;
+                loop {
+                    match chars.get(index) {
+                        Some('"') => {
+                            index += 1;
+                            break;
+                        }
+                        Some('\\') => {
+                            match chars.get(index + 1) {
+                                Some(esc @ ('"' | '\\' | '$' | '`')) => run.push(*esc),
+                                Some(other) => {
+                                    run.push('\\');
+                                    run.push(*other);
+                                }
+                                None => unenumerable = true,
+                            }
+                            index += 2;
+                        }
+                        // Expansion still happens inside double quotes, so the
+                        // run is not literal and the product is not knowable.
+                        Some('$' | '`') => {
+                            unenumerable = true;
+                            break;
+                        }
+                        Some(inner) => {
+                            run.push(*inner);
+                            index += 1;
+                        }
+                        None => {
+                            unenumerable = true;
+                            break;
+                        }
+                    }
+                    if unenumerable {
+                        break;
+                    }
+                }
+                if unenumerable {
+                    break;
+                }
+            }
+            '\\' => match chars.get(index + 1) {
+                // Escaping is exactly what makes a character literal.
+                Some(escaped) => {
+                    run.push(*escaped);
+                    index += 2;
+                }
+                None => {
+                    unenumerable = true;
+                    break;
+                }
+            },
+            '{' => {
+                let Some(close) = matching_brace(chars, index) else {
+                    unenumerable = true;
+                    break;
+                };
+                let contents: String = chars[index + 1..close].iter().collect();
+                match brace_alternatives(&contents) {
+                    BracePair::Expansion(alternatives) => {
+                        parts.push(vec![std::mem::take(&mut run)]);
+                        parts.push(alternatives);
+                    }
+                    // No comma and no range: bash passes it through unchanged,
+                    // so it is ordinary literal text in this word.
+                    BracePair::Literal => {
+                        run.push('{');
+                        run.push_str(&contents);
+                        run.push('}');
+                    }
+                    BracePair::Unenumerable => {
+                        unenumerable = true;
+                        break;
+                    }
+                }
+                index = close + 1;
+            }
+            // A `}` reached at the top level of the extent has no opener: an
+            // unmatched brace, which is unenumerable.
+            '}' => {
+                unenumerable = true;
+                break;
+            }
+            _ => {
+                if REWRITING_CHARACTERS.contains(&ch) {
+                    unenumerable = true;
+                    break;
+                }
+                run.push(ch);
+                index += 1;
+            }
+        }
+    }
+
+    if unenumerable {
+        return BraceProducts::unenumerable();
+    }
+    parts.push(vec![run]);
+
+    let count = parts
+        .iter()
+        .try_fold(1usize, |total, part| total.checked_mul(part.len()));
+    match count {
+        Some(total) if total <= MAX_BRACE_PRODUCTS => {}
+        _ => return BraceProducts::unenumerable(),
+    }
+
+    // The cartesian product itself, over every expansion in the word.
+    let mut products = vec![String::new()];
+    for part in &parts {
+        let mut next = Vec::with_capacity(products.len() * part.len());
+        for product in &products {
+            for alternative in part {
+                next.push(format!("{product}{alternative}"));
+            }
+        }
+        products = next;
+    }
+
+    BraceProducts {
+        products: Some(products),
+    }
+}
+
+/// What one `{`…`}` pair is, in bash's own terms.
+enum BracePair {
+    /// A comma list or a two-endpoint range: bash splices these alternatives
+    /// back into the enclosing command.
+    Expansion(Vec<String>),
+    /// No comma and no range: bash passes the pair through unchanged, which is
+    /// what makes `gh`'s documented `repos/{owner}/{repo}/pulls` one word.
+    Literal,
+    /// The pair exists but its alternatives cannot be enumerated. Refuse.
+    Unenumerable,
+}
+
+/// The index of the `}` matching the `{` at `open`, counting nesting and
+/// respecting quotes, or `None` for an unmatched brace.
+fn matching_brace(chars: &[char], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut index = open;
+    while index < chars.len() {
+        match chars[index] {
+            '\\' => index += 1,
+            '\'' => {
+                index += 1;
+                while index < chars.len() && chars[index] != '\'' {
+                    index += 1;
+                }
+                if index >= chars.len() {
+                    return None;
+                }
+            }
+            '"' => {
+                index += 1;
+                while index < chars.len() && chars[index] != '"' {
+                    if chars[index] == '\\' {
+                        index += 1;
+                    }
+                    index += 1;
+                }
+                if index >= chars.len() {
+                    return None;
+                }
+            }
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+/// Classify one brace pair's contents and enumerate its alternatives.
+///
+/// Comma FIRST, because bash reads `{a,b..c}` as a three-way… no: as the
+/// two-element comma list `a` and `b..c`. A comma anywhere at the top level
+/// makes the pair a list.
+fn brace_alternatives(contents: &str) -> BracePair {
+    let chars: Vec<char> = contents.chars().collect();
+    let commas = top_level_split(&chars, ',');
+    if commas.len() > 1 {
+        return match members_are_enumerable(&commas) {
+            true => BracePair::Expansion(commas),
+            false => BracePair::Unenumerable,
+        };
+    }
+
+    if contents.contains("..") {
+        // A range. Exactly two endpoints or nothing: `{a..b..n}` is the
+        // INCREMENT form, which is neither a comma list nor a two-endpoint
+        // range, and `{g..g..1}it push --force origin main` is measured at exit
+        // 0 against the pre-`19-17` tree.
+        let endpoints: Vec<&str> = contents.split("..").collect();
+        if endpoints.len() != 2 {
+            return BracePair::Unenumerable;
+        }
+        let (from, to) = (endpoints[0], endpoints[1]);
+        if let (Ok(from), Ok(to)) = (from.parse::<i64>(), to.parse::<i64>()) {
+            let span = (from - to).unsigned_abs() as usize;
+            if span >= MAX_BRACE_PRODUCTS {
+                return BracePair::Unenumerable;
+            }
+            let range: Vec<String> = if from <= to {
+                (from..=to).map(|n| n.to_string()).collect()
+            } else {
+                (to..=from).rev().map(|n| n.to_string()).collect()
+            };
+            return BracePair::Expansion(range);
+        }
+        let (from, to) = (from.chars().collect::<Vec<_>>(), to.chars().collect::<Vec<_>>());
+        if from.len() != 1 || to.len() != 1 {
+            return BracePair::Unenumerable;
+        }
+        let (from, to) = (from[0] as u32, to[0] as u32);
+        if from.abs_diff(to) as usize >= MAX_BRACE_PRODUCTS {
+            return BracePair::Unenumerable;
+        }
+        let range: Vec<String> = if from <= to {
+            (from..=to).filter_map(char::from_u32).map(String::from).collect()
+        } else {
+            (to..=from)
+                .rev()
+                .filter_map(char::from_u32)
+                .map(String::from)
+                .collect()
+        };
+        return match members_are_enumerable(&range) {
+            true => BracePair::Expansion(range),
+            false => BracePair::Unenumerable,
+        };
+    }
+
+    BracePair::Literal
+}
+
+/// Whether every alternative or range member is itself a literal run this scan
+/// can compose.
+///
+/// A member containing a `{` is the NESTED case and is a fail-closed TRIGGER
+/// rather than a recursion: `{g{i,i}t,x} push --force origin main` decomposes
+/// into the top-level alternatives `g{i,i}t` and `x`, neither of which is
+/// governed, and it is measured at exit 0 against the pre-`19-17` tree.
+fn members_are_enumerable(members: &[String]) -> bool {
+    members.iter().all(|member| {
+        !member.contains('{')
+            && !member.contains('}')
+            && !member.contains('\'')
+            && !member.contains('"')
+            && !member.chars().any(|ch| REWRITING_CHARACTERS.contains(&ch))
+    })
+}
+
+/// Split on `separator` at brace depth zero and outside quotes.
+fn top_level_split(chars: &[char], separator: char) -> Vec<String> {
+    let mut parts = vec![String::new()];
+    let mut depth = 0usize;
+    let mut index = 0usize;
+    while index < chars.len() {
+        let ch = chars[index];
+        match ch {
+            '{' => {
+                depth += 1;
+                parts.last_mut().expect("one part always exists").push(ch);
+            }
+            '}' => {
+                depth = depth.saturating_sub(1);
+                parts.last_mut().expect("one part always exists").push(ch);
+            }
+            _ if ch == separator && depth == 0 => parts.push(String::new()),
+            _ => parts.last_mut().expect("one part always exists").push(ch),
+        }
+        index += 1;
+    }
+    parts
+}
+
 /// The quoting state machine behind [`split_command`] and [`split_segments`].
 fn tokenize(cmd: &str) -> Option<Vec<Token>> {
+    let chars: Vec<char> = cmd.chars().collect();
     let mut tokens: Vec<Token> = Vec::new();
     let mut text = String::new();
     let mut started = false;
     let mut expansion = false;
-    let mut chars = cmd.chars().peekable();
+    // Positive evidence, per WORD: cleared the moment the tokenizer consumes
+    // something outside quotes that the shell rewrites. See `Token::literal`.
+    let mut literal = true;
+    // Where the word in progress began in `chars`. The whole-word product scan's
+    // extent starts here, not at the `{`.
+    let mut word_start = 0usize;
+    // We are inside a shell word a brace expansion splices. It survives the
+    // `{`/`}` operator flushes — those cut the word into fragments but the SHELL
+    // word continues — and is reset at a real word boundary.
+    let mut splice_word = false;
+    // Whether the character just consumed into the word was an UNQUOTED `$`.
+    // `"$"{a,b}` is not a parameter expansion, and `text.ends_with('$')` cannot
+    // tell the two apart because `text` has had its quoting removed already.
+    let mut last_was_unquoted_dollar = false;
+    let mut index = 0usize;
 
     // A word ends; push it if one was started at all. `started` distinguishes
     // an empty word that was written (`""`) from no word at all.
@@ -1258,74 +1821,226 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
                     operator: false,
                     expansion,
                     word_splitting_flush: false,
+                    literal: literal && !splice_word,
+                    brace_splice: false,
+                    splice_can_produce_governed: false,
                 });
                 started = false;
                 expansion = false;
+                literal = true;
             }
         };
     }
 
-    while let Some(ch) = chars.next() {
+    // `index` has already advanced past the character being handled, so the word
+    // begins one back. The whole-word product scan's extent starts here.
+    macro_rules! begin_word {
+        () => {
+            if !started {
+                started = true;
+                word_start = index - 1;
+            }
+        };
+    }
+
+    while index < chars.len() {
+        let ch = chars[index];
+        index += 1;
+        // A `$` reaches the ordinary-word arm below and nowhere else, so this is
+        // exactly "the previous character was an unquoted `$`".
+        let previous_was_unquoted_dollar = last_was_unquoted_dollar;
+        last_was_unquoted_dollar = ch == '$';
         match ch {
-            ' ' | '\t' | '\r' => flush!(),
-            '\n' | ';' | '|' | '&' | '(' | ')' | '{' | '}' => {
+            ' ' | '\t' | '\r' => {
+                flush!();
+                splice_word = false;
+            }
+            '{' => {
+                // **Bash's own three questions about a `{`, each answer naming
+                // the case it tells apart.**
+                //
+                // 1. A `{` immediately preceded IN-WORD by an unquoted `$` is a
+                //    PARAMETER expansion. Today's behaviour EXACTLY — separator,
+                //    word-splitting flush — and **this case exists to keep Rule B
+                //    load-bearing.** Fold it into case 3 and `${C}_COUNT` becomes
+                //    one word: `C=GIT_CONFIG; env -u ${C}_COUNT git fetch origin`
+                //    would then be refused by `resolve_program` step 5's prefix
+                //    rule instead of by Rule B, every verdict pin in the suite
+                //    would stay green, and Rule B would quietly be dead code.
+                //    `rule_b_still_reports_a_severed_head_as_not_a_command_position`
+                //    is the mechanism pin that turns that red.
+                let parameter_expansion = started && previous_was_unquoted_dollar;
+                // 2. A `{` that is a COMPLETE WORD — nothing in progress before
+                //    it and whitespace, a newline or end-of-input after it — is
+                //    bash's reserved word opening a GROUP. Today's behaviour
+                //    EXACTLY, so `{ cmd; }` keeps its segments byte-for-byte and
+                //    the `echo hi && git push --force` class stays closed one
+                //    level in.
+                let reserved_word = !started
+                    && chars
+                        .get(index)
+                        .is_none_or(|next| matches!(next, ' ' | '\t' | '\r' | '\n'));
+
+                let mut brace_splice = false;
+                let mut splice_can_produce_governed = false;
+                if !parameter_expansion && !reserved_word {
+                    // 3. Otherwise a brace-pair CANDIDATE, resolved by scanning
+                    //    ahead for the matching `}`.
+                    let opened = index - 1;
+                    match matching_brace(&chars, opened) {
+                        Some(close) => {
+                            let contents: String = chars[opened + 1..close].iter().collect();
+                            match brace_alternatives(&contents) {
+                                // A LITERAL pair: no comma, no range. Bash passes
+                                // it through unchanged, so the `{`, its contents
+                                // and the `}` are absorbed as ordinary word
+                                // characters and the word survives whole.
+                                // Measured: `printf "[%s]" repos/{owner}/{repo}/pulls`
+                                // prints `[repos/{owner}/{repo}/pulls]`, which is
+                                // why `gh`'s documented `{owner}`/`{repo}`
+                                // placeholders reach `endpoint_is_pulls` intact
+                                // and the creation is COUNTED (`T-19-93`).
+                                BracePair::Literal => {
+                                    begin_word!();
+                                    text.push('{');
+                                    text.push_str(&contents);
+                                    text.push('}');
+                                    index = close + 1;
+                                    continue;
+                                }
+                                // A brace EXPANSION, or a pair whose
+                                // alternatives cannot be enumerated: today's
+                                // segmentation, unchanged, PLUS the mark.
+                                BracePair::Expansion(_) | BracePair::Unenumerable => {
+                                    brace_splice = true;
+                                }
+                            }
+                        }
+                        // No matching `}` at all: unclassifiable, so today's
+                        // segmentation PLUS the mark, fail-closed. Bash would
+                        // treat this `{` literally; the guard refuses what it
+                        // cannot establish instead. The cost is nil for an
+                        // ungoverned command, because the mark only refuses when
+                        // a governed program is reached or produced.
+                        None => brace_splice = true,
+                    }
+
+                    if brace_splice {
+                        // **The product scan is a WHOLE-WORD scan and it runs
+                        // ONCE, at the word's FIRST expansion `{`.** Its extent
+                        // begins at the start of the word in progress — not at
+                        // this `{` — and reaches to the next unquoted whitespace
+                        // or REAL command operator, never stopping at a `{` or a
+                        // `}`. Later `{`s in the same word are already covered by
+                        // it, so nothing is computed twice.
+                        if !splice_word {
+                            let start = if started { word_start } else { opened };
+                            splice_can_produce_governed =
+                                brace_word_products(&chars, start).can_produce_governed();
+                        }
+                        splice_word = true;
+                        literal = false;
+                    }
+                }
+
+                let severed_a_word = started;
+                flush!();
+                tokens.push(Token {
+                    text: "{".to_string(),
+                    operator: true,
+                    expansion: false,
+                    word_splitting_flush: severed_a_word,
+                    literal: true,
+                    brace_splice,
+                    splice_can_produce_governed,
+                });
+            }
+            '\n' | ';' | '|' | '&' | '(' | ')' | '}' => {
                 // **Read BEFORE the flush, because `flush!` clears `started`.**
                 // A word in progress at the instant one of these four characters
                 // arrives means the character split a word rather than ended a
                 // command. See `Token::word_splitting_flush` for the cases this
                 // tells apart and for why the other four separators are never
                 // marked.
-                let severed_a_word = started && matches!(ch, '(' | ')' | '{' | '}');
+                let severed_a_word = started && matches!(ch, '(' | ')' | '}');
                 flush!();
                 // `&&` and `||` are one operator, not two. Which one it is does
                 // not matter to a classifier that treats every separator alike,
                 // but consuming both characters keeps the token list honest.
                 let mut op = ch.to_string();
-                if (ch == '&' || ch == '|') && chars.peek() == Some(&ch) {
-                    chars.next();
+                if (ch == '&' || ch == '|') && chars.get(index) == Some(&ch) {
+                    index += 1;
                     op.push(ch);
+                }
+                // A REAL command operator ends the shell word as well as the
+                // simple command; `(`, `)` and `}` cut a word into fragments that
+                // still belong to it.
+                if matches!(ch, '\n' | ';' | '|' | '&') {
+                    splice_word = false;
                 }
                 tokens.push(Token {
                     text: op,
                     operator: true,
                     expansion: false,
                     word_splitting_flush: severed_a_word,
+                    literal: true,
+                    brace_splice: false,
+                    splice_can_produce_governed: false,
                 });
             }
             '\'' => {
-                started = true;
+                begin_word!();
                 // Single quotes are literal all the way through, including `$`.
                 loop {
-                    match chars.next() {
-                        Some('\'') => break,
-                        Some(inner) => text.push(inner),
+                    match chars.get(index) {
+                        Some('\'') => {
+                            index += 1;
+                            break;
+                        }
+                        Some(inner) => {
+                            text.push(*inner);
+                            index += 1;
+                        }
                         // An unterminated quote has no knowable word boundary.
                         None => return None,
                     }
                 }
             }
             '"' => {
-                started = true;
+                begin_word!();
                 loop {
-                    match chars.next() {
-                        Some('"') => break,
-                        Some('\\') => match chars.next() {
+                    match chars.get(index) {
+                        Some('"') => {
+                            index += 1;
+                            break;
+                        }
+                        Some('\\') => match chars.get(index + 1) {
                             // Only these four are escapes inside double quotes;
                             // every other backslash is a literal backslash, and
                             // a splitter that dropped it would change the word.
-                            Some(esc @ ('"' | '\\' | '$' | '`')) => text.push(esc),
+                            Some(esc @ ('"' | '\\' | '$' | '`')) => {
+                                text.push(*esc);
+                                index += 2;
+                            }
                             Some(other) => {
                                 text.push('\\');
-                                text.push(other);
+                                text.push(*other);
+                                index += 2;
                             }
                             None => return None,
                         },
                         Some(inner) => {
-                            // Expansion still happens inside double quotes.
-                            if inner == '$' || inner == '`' {
+                            // Expansion still happens inside double quotes — and
+                            // ONLY expansion does. A glob, a tilde or a brace
+                            // inside double quotes is passed through byte for
+                            // byte, which is why `gh api "repos/{owner}/{repo}/pulls"`
+                            // is literal and counted today.
+                            if *inner == '$' || *inner == '`' {
                                 expansion = true;
+                                literal = false;
                             }
-                            text.push(inner);
+                            text.push(*inner);
+                            index += 1;
                         }
                         None => return None,
                     }
@@ -1333,23 +2048,27 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
             }
             '\\' => {
                 // A trailing backslash is a line continuation whose second half
-                // this function was never given, so `?` refuses the whole input.
-                let escaped = chars.next()?;
-                started = true;
+                // this function was never given, so this refuses the whole input.
+                let escaped = *chars.get(index)?;
+                begin_word!();
+                index += 1;
+                // Escaping is exactly what makes a character literal, so the bit
+                // is deliberately not cleared here.
                 text.push(escaped);
             }
             '#' if !started => {
                 // A comment runs to end of line; nothing after it is a command.
-                for next in chars.by_ref() {
-                    if next == '\n' {
-                        break;
-                    }
+                while index < chars.len() && chars[index] != '\n' {
+                    index += 1;
                 }
             }
             _ => {
-                started = true;
+                begin_word!();
                 if ch == '$' || ch == '`' {
                     expansion = true;
+                }
+                if REWRITING_CHARACTERS.contains(&ch) {
+                    literal = false;
                 }
                 text.push(ch);
             }
@@ -1365,6 +2084,9 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
             operator: false,
             expansion,
             word_splitting_flush: false,
+            literal: literal && !splice_word,
+            brace_splice: false,
+            splice_can_produce_governed: false,
         });
     }
 
@@ -3236,6 +3958,261 @@ mod tests {
     fn an_empty_quoted_word_is_a_word_and_an_empty_line_is_no_words() {
         assert_eq!(split_command(r#"echo "" x"#).unwrap(), vec!["echo", "", "x"]);
         assert!(split_command("   ").unwrap().is_empty());
+    }
+
+    /// Which of the tokenizer's three `{` cases a line took, read off the token
+    /// stream rather than asserted about the implementation.
+    #[derive(Debug, PartialEq, Eq)]
+    enum BraceCase {
+        /// Case 1 or case 2: today's behaviour byte-for-byte — a `{` operator
+        /// with no splice mark. The two are told apart by the flush flag.
+        PassedThrough { flush: bool },
+        /// Case 3, literal branch: no `{` operator token at all, because the
+        /// pair was absorbed into the word.
+        Absorbed,
+        /// Case 3, expansion or unmatched branch: today's segmentation PLUS the
+        /// mark.
+        Spliced { produces_governed: bool },
+    }
+
+    fn brace_case(cmd: &str) -> BraceCase {
+        let tokens = tokenize(cmd).unwrap_or_else(|| panic!("`{cmd}` tokenizes"));
+        match tokens
+            .iter()
+            .find(|token| token.operator && token.text == "{")
+        {
+            None => BraceCase::Absorbed,
+            Some(open) if open.brace_splice => BraceCase::Spliced {
+                produces_governed: tokens
+                    .iter()
+                    .any(|token| token.splice_can_produce_governed),
+            },
+            Some(open) => BraceCase::PassedThrough {
+                flush: open.word_splitting_flush,
+            },
+        }
+    }
+
+    fn words(cmd: &str) -> Vec<String> {
+        split_command(cmd).unwrap_or_else(|| panic!("`{cmd}` splits"))
+    }
+
+    /// The products of ONE word, scanned from its first character — the column
+    /// that is per WORD rather than per `{`.
+    fn products_of(word: &str) -> Option<Vec<String>> {
+        let chars: Vec<char> = word.chars().collect();
+        brace_word_products(&chars, 0).products
+    }
+
+    fn some(products: &[&str]) -> Option<Vec<String>> {
+        Some(products.iter().map(|p| (*p).to_string()).collect())
+    }
+
+    #[test]
+    fn the_tokenizers_three_way_brace_classification_and_its_per_word_products() {
+        // **The load-bearing arithmetic of this table is its PRODUCTS column.**
+        // Nothing else here distinguishes `{g..g}{i..i}t` from `{a,b}`: both are
+        // brace expansions, both set the same mark, both keep today's
+        // segmentation. A per-`{` implementation answers `g` and `it` for the
+        // first — neither governed, both sets enumerating cleanly — and one that
+        // joined its literal runs AS WRITTEN answers `"g"i"t"` for
+        // `"g"{i,i}"t"`. Each of those turns a row below red, which is why the
+        // products are asserted here rather than only a verdict somewhere else.
+
+        // --- case 1: a `{` preceded in-word by an unquoted `$` -------------
+        //
+        // Today's behaviour EXACTLY, and this case exists so that Rule B stays
+        // load-bearing: `${C}_COUNT` must keep fragmenting.
+        assert_eq!(
+            brace_case("${X}push"),
+            BraceCase::PassedThrough { flush: true },
+            "a parameter expansion is a separator with a word-splitting flush, as it was \
+             before this round. Folding it into case 3 makes `${{C}}_COUNT` one word and \
+             Rule B dead code."
+        );
+        assert_eq!(words("${X}push"), vec!["$", "{", "X", "}", "push"]);
+
+        // --- case 2: a `{` that is a complete word -------------------------
+        assert_eq!(
+            brace_case("{ cmd; }"),
+            BraceCase::PassedThrough { flush: false },
+            "bash's reserved word opening a GROUP. `{{ cmd; }}` keeps its segments \
+             byte-for-byte, or the `echo hi && git push --force` class re-opens one level in."
+        );
+        assert_eq!(
+            split_segments("( cmd )")
+                .unwrap()
+                .iter()
+                .map(|segment| segment.iter().map(|t| t.text.clone()).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            vec![vec!["cmd".to_string()]],
+            "`(` and `)` are not touched by this round at all"
+        );
+
+        // --- case 3, literal branch: no comma and no range ------------------
+        //
+        // Measured: `printf "[%s]" repos/{owner}/{repo}/pulls` prints
+        // `[repos/{owner}/{repo}/pulls]` — bash passes the pair through.
+        assert_eq!(brace_case("repos/{owner}/{repo}/pulls"), BraceCase::Absorbed);
+        assert_eq!(
+            words("gh api repos/{owner}/{repo}/pulls -f title=x"),
+            vec!["gh", "api", "repos/{owner}/{repo}/pulls", "-f", "title=x"],
+            "the endpoint must reach `scan_gh_api` as ONE word, or `endpoint_is_pulls` \
+             cannot read it and the creation is never COUNTED (`T-19-93`)"
+        );
+        assert_eq!(brace_case("git reflog delete HEAD@{0}"), BraceCase::Absorbed);
+        assert_eq!(
+            words("git reflog delete HEAD@{0}"),
+            vec!["git", "reflog", "delete", "HEAD@{0}"]
+        );
+        assert_eq!(
+            brace_case("gh api \"repos/{owner}/{repo}/pulls\""),
+            BraceCase::Absorbed,
+            "inside double quotes the braces never reach the classification at all, and \
+             this spelling is COUNTED today"
+        );
+        assert_eq!(brace_case("echo '{a,b}'"), BraceCase::Absorbed);
+        assert_eq!(
+            words("echo '{a,b}'"),
+            vec!["echo", "{a,b}"],
+            "single quotes make it literal; a comma inside them is not a splice"
+        );
+
+        // --- case 3, expansion branch --------------------------------------
+        for (cmd, produces_governed) in [
+            ("git {push,--force} origin main", false),
+            ("{git,push,--force,origin,main}", true),
+            ("{g..g}it push", true),
+            ("g{i,i}t push", true),
+            ("{g..g}{i..i}t push", true),
+            ("{g,g}{i,i}{t,t} push", true),
+            ("{g..g..1}it push", true),
+            ("{g{i,i}t,x} push", true),
+            ("\"g\"{i,i}\"t\" push", true),
+            ("{g..g}\"it\" push", true),
+            ("echo {a,b}", false),
+            ("ls {git,svn}-repo", false),
+            ("cp x{,.bak}", false),
+        ] {
+            assert_eq!(
+                brace_case(cmd),
+                BraceCase::Spliced { produces_governed },
+                "`{cmd}` is a brace EXPANSION; its splice marks the enclosing simple command \
+                 and its products decide clause 2(b)"
+            );
+        }
+
+        // --- case 3, unmatched: fail closed --------------------------------
+        assert_eq!(
+            brace_case("x{"),
+            BraceCase::Spliced {
+                produces_governed: true
+            },
+            "an unmatched brace is unclassifiable, so it is marked and its products are \
+             unenumerable — refusing what cannot be established"
+        );
+
+        // --- the PRODUCTS column, per WORD ---------------------------------
+        assert_eq!(products_of("{a,b}"), some(&["a", "b"]));
+        assert_eq!(products_of("{a..d}"), some(&["a", "b", "c", "d"]));
+        assert_eq!(products_of("{1..3}"), some(&["1", "2", "3"]));
+        assert_eq!(products_of("x{,.bak}"), some(&["x", "x.bak"]));
+        assert_eq!(products_of("{git,svn}-repo"), some(&["git-repo", "svn-repo"]));
+        assert_eq!(products_of("{git,x}"), some(&["git", "x"]));
+
+        // The six that PRODUCE `git`, none of which any alternative spells.
+        assert_eq!(products_of("{g..g}it"), some(&["git"]));
+        assert_eq!(products_of("g{i,i}t"), some(&["git", "git"]));
+        assert_eq!(
+            products_of("{g..g}{i..i}t"),
+            some(&["git"]),
+            "composed across BOTH `{{`s. A per-`{{` scan answers `g` and `it` here, neither \
+             governed and both enumerating cleanly, and the command is permitted."
+        );
+        assert_eq!(
+            products_of("{g,g}{i,i}{t,t}"),
+            some(&["git", "git", "git", "git", "git", "git", "git", "git"])
+        );
+        assert_eq!(
+            products_of("\"g\"{i,i}\"t\""),
+            some(&["git", "git"]),
+            "the literal runs are joined with their QUOTING REMOVED. Joined as written this \
+             reads `\"g\"i\"t\"`, whose basename is not governed."
+        );
+        assert_eq!(products_of("{g..g}\"it\""), some(&["git"]));
+
+        // The two that are UNENUMERABLE, and each is a trigger of its own.
+        assert_eq!(
+            products_of("{g..g..1}it"),
+            None,
+            "the INCREMENT form is neither a comma list nor a two-endpoint range, so it \
+             falls outside every other trigger and needs one of its own"
+        );
+        assert_eq!(
+            products_of("{g{i,i}t,x}"),
+            None,
+            "a NESTED `{{` inside an alternative is a fail-closed TRIGGER rather than a \
+             recursion. Decomposed into top-level alternatives this is `g{{i,i}}t` and `x`, \
+             neither governed."
+        );
+        assert_eq!(products_of("x{"), None, "an unmatched brace");
+        assert_eq!(products_of("{a,b}$X"), None, "a `$` in a literal run");
+        assert_eq!(products_of("{a,b}*"), None, "a glob in a literal run");
+        assert_eq!(products_of("{a,b}~"), None, "a tilde in a literal run");
+        assert_eq!(products_of("{$X,b}"), None, "a `$` inside an alternative");
+        assert_eq!(products_of("{a..zzz}"), None, "endpoints that are not single characters");
+        assert_eq!(products_of("{1..9999}"), None, "a range over the product cap");
+
+        // The extent stops at unquoted whitespace and at a REAL command
+        // operator, and NEVER at a `{` or a `}`.
+        assert_eq!(
+            products_of("{g..g}it push --force origin main"),
+            some(&["git"]),
+            "the extent ends at the first unquoted space, so the operands are not products"
+        );
+        assert_eq!(products_of("{a,b};git"), some(&["a", "b"]));
+        assert_eq!(products_of("{a,b}|git"), some(&["a", "b"]));
+        assert_eq!(products_of("{a,b}&&git"), some(&["a", "b"]));
+    }
+
+    #[test]
+    fn the_brace_splice_fact_reaches_every_segment_of_the_simple_command() {
+        // The mark is a property of the simple COMMAND, so it applies to the
+        // segment that was already pushed when the `{` arrived — `git` here —
+        // and it resets at the next REAL command operator.
+        let segments = split_segments_with_heads("git {push,--force} origin main").unwrap();
+        assert!(
+            segments.iter().all(|segment| segment.brace_spliced),
+            "every segment of `git {{push,--force}} origin main` belongs to one spliced \
+             simple command, including the `git` pushed before the `{{` was seen: {segments:?}"
+        );
+        assert!(
+            segments
+                .iter()
+                .all(|segment| !segment.splice_can_produce_governed),
+            "its products are `push` and `--force`; neither basename is governed, so this \
+             command is reached by clause 2(a) and NOT by 2(b)"
+        );
+
+        let mixed = split_segments_with_heads("echo {a,b} && git status").unwrap();
+        let git = mixed
+            .iter()
+            .find(|segment| segment.tokens.first().is_some_and(|t| t.text == "git"))
+            .expect("one segment begins with `git`");
+        assert!(
+            !git.brace_spliced,
+            "`&&` ends the simple command, so the splice in front of it must not reach \
+             `git status`: {mixed:?}"
+        );
+
+        let produced = split_segments_with_heads("{env,git} push --force origin main").unwrap();
+        assert!(
+            produced
+                .iter()
+                .all(|segment| segment.splice_can_produce_governed),
+            "nothing here resolves `Governed` — the head word is `env,git` — so only the \
+             PRODUCTS reach it: {produced:?}"
+        );
     }
 
     #[test]
