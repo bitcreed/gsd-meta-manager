@@ -3,18 +3,19 @@ phase: 19
 slug: gitsafe-git-blast-radius-envelope
 status: blocked
 # threats_open = count of OPEN threats at or above workflow.security_block_on severity (high)
-threats_open: 4
+threats_open: 3
 asvs_level: 1
 block_on: high
 created: 2026-08-29
 updated: 2026-08-29
 register_authored_at_plan_time: true
-audited_against: HEAD (ad847b4) — the FIFTH audit judges the tree after plans
-  19-16 (the RED corpus) and 19-17 (the inverted rule). Audit 4 judged b72237e
-  (after 19-14/19-15); audit 3 judged 228e4bc (after 19-13); audit 2 judged
-  b8605ef (after 19-11/19-12); audit 1 judged 0ec1fcb.
-register_totals: 111 total / 90 closed / 21 open / 4 at or above `high`
-# the four blocking: T-19-86, T-19-91, T-19-97, T-19-98
+audited_against: HEAD (9534198) — the SIXTH audit judges the tree after plans
+  19-18 (the deletion-axis corpus, RED) and 19-19 (the deletion rule). Audit 5
+  judged ad847b4 (after 19-16/19-17); audit 4 judged b72237e (after
+  19-14/19-15); audit 3 judged 228e4bc (after 19-13); audit 2 judged b8605ef
+  (after 19-11/19-12); audit 1 judged 0ec1fcb.
+register_totals: 114 total / 93 closed / 21 open / 3 at or above `high`
+# the three blocking: T-19-86, T-19-91, T-19-100
 ---
 
 # Phase 19 — Security
@@ -1151,6 +1152,7 @@ are open below `high` and unaccepted.
 | 2026-08-29 (audit 3) | 101 | 82 | 19 | 3 (`T-19-86`, `T-19-87`, `T-19-88`) | `/gsd-secure-phase 19` re-run after 19-13 — one `gsd-security-auditor` subagent (opus), `ISOLATION=none` at `228e4bc`; every closure re-measured against the built binary and every new finding confirmed in `bash` against an argv-printing shim |
 | 2026-08-29 (audit 4) | 107 | 86 | 21 | 4 (`T-19-86`, `T-19-91`, `T-19-92`, `T-19-93`) | `/gsd-secure-phase 19` re-run after 19-14 and 19-15 — one `gsd-security-auditor` subagent (opus), `ISOLATION=none` at `b72237e`; every closure re-measured against the built binary with a fresh envelope root per row and the directory walked afterwards, and every new finding confirmed in `bash` against argv-printing `git`/`gh`/`glab` shims |
 | 2026-08-29 (audit 5) | 111 | 90 | 21 | 4 (`T-19-86`, `T-19-91`, `T-19-97`, `T-19-98`) | `/gsd-secure-phase 19` re-run after 19-16 and 19-17 — one `gsd-security-auditor` subagent (opus), `ISOLATION=none` at `ad847b4`; every closure re-measured against the built binary with a fresh envelope root per row and the directory walked afterwards, `T-19-93` verified on the COUNT bar by a walked ledger listing, and every new finding confirmed under `bash` against argv-printing shims with five candidates discarded |
+| 2026-08-29 (audit 6) | 114 | 93 | 21 | 3 (`T-19-86`, `T-19-91`, `T-19-100`) | `/gsd-secure-phase 19` re-run after 19-18 and 19-19 — one `gsd-security-auditor` subagent (opus), `ISOLATION=none` at `9534198`; every closure re-measured against the built binary with a fresh envelope root per row and the directory walked afterwards, the four forge rows verified on the COUNT bar by a walked ledger listing with the cap firing on call 2, over-deletion probed as the silent direction, and the one new blocking finding confirmed against the REAL `git` binary by performing a force push that rewrote a bare remote's `main` |
 
 ### Audit 4 method (re-audit after plans 19-14 and 19-15)
 
@@ -3362,3 +3364,453 @@ recorded here so it is met as a known threshold rather than rediscovered.
   `high`. `T-19-96`, `T-19-74`'s residual, `T-19-84`, `T-19-85` and
   `T-19-61` … `T-19-73` are untouched and unaccepted.
 * It adds no crate. `Cargo.toml` and `Cargo.lock` are unchanged (`T-19-SC`).
+
+---
+
+## Threats found by audit 6 (2026-08-29, after plans 19-18 and 19-19)
+
+**Provenance, stated first.** The two subsections above this one were written by
+the EXECUTORS of plans 19-18 and 19-19 and are deliberately outside the audit
+tables; audit 6 left them, and every earlier appended subsection, byte-identical
+(checksummed before and after writing). Everything from here to the end of the
+file is **audit 6's own**, measured against the built binary at `9534198` with a
+fresh `GSD_MM_ENVELOPE_ROOT` per row and the envelope directory walked
+afterwards, and with every claimed bypass re-run under `bash` against
+argv-printing `git`/`gh`/`glab` shims that **write to a side file rather than to
+stdout** — the trap `19-18` recorded, and mandatory here because a row whose
+whole point is `>/dev/null` otherwise swallows its own evidence.
+
+### The question this audit was set, answered plainly
+
+**Is there a THIRD thing the guard assumes about the relationship between the
+command line it reads and the argv the program receives?**
+
+**The command-line-to-argv boundary is now correctly modelled. Audit 6 found no
+third shell mechanism, and says so plainly.** Word ASSEMBLY (round 5) and word
+DELETION (round 6) are the two halves, and together they are complete over the
+transformation bash performs between the string and `execve`. Audit 6
+enumerated what stands between a command line and argv one mechanism at a time —
+quote removal, every expansion, redirection, line continuation, assignment-prefix
+removal, control-operator splitting, here-document delimiters, pipeline and group
+nesting — and every one is either modelled or fails closed. There is **no
+reordering or relocation step in a simple command** for a third rule to miss:
+bash removes words (redirections, assignments) and rewrites words (expansions),
+and it does nothing else to their order. The invariant `19-19` states —
+
+> *the words the guard classifies must be exactly the words the program
+> receives, in the same order — no more and no fewer*
+
+— is **true of the implementation as measured**, on all 27 redirection rows, all
+11 continuation rows, all four forge COUNT rows and every over-deletion control.
+
+**And the class is still open, because the boundary was never the whole
+question.** Having reconstructed argv correctly, the guard must still decide
+**which word in it is the verb** — and it does that with a hand-maintained
+enumeration of *git's own option grammar* that **fails OPEN** on any option it
+does not know. That is the third assumption, and it is not about the shell at
+all:
+
+* `git --attr-source HEAD push --force origin main` → **exit 0**. Every word is
+  literal, no word is deleted, the order is preserved, and the guard reads all
+  six words. `Token.literal` is `true` for every one of them and **the bit is
+  right**. The guard simply calls `HEAD` the verb where git calls `push` the
+  verb, because `--attr-source` consumes its value and `GIT_GLOBAL_VALUE_OPTS`
+  does not say so (`T-19-100`).
+
+**So the pattern held for a sixth round, and it moved axis again** — from *how a
+word is written* (rounds 1–5), to *which words arrive* (round 6), to **whose
+grammar decides which arriving word is the verb**. Rounds 1–6 all modelled the
+SHELL. Nothing in this phase models the CALLEE.
+
+### The new rows
+
+| Threat ID | Category | Component | Severity | Disposition | Finding | Status |
+|---|---|---|---|---|---|---|
+| **T-19-100** | **Elevation of Privilege** | **`scan_leading` / `leading_git_option` / `GIT_GLOBAL_VALUE_OPTS` (`policy.rs:460-489`) — an incomplete, unpinned enumeration of git's own global-option grammar, which fails OPEN** | **high** | **mitigate (unimplemented)** | **`scan_leading` finds the git verb by walking leading `-`-initial tokens and asking `leading_git_option` how many words each occupies. For an option it does not recognise the answer is `(None, 1)`, so the loop advances one word, hits the option's VALUE, sees it does not start with `-`, and **breaks with that value as the verb**. `classify_git` then finds a verb in no denylist arm and answers `Allow`. `GIT_GLOBAL_VALUE_OPTS` lists five options; git 2.43 has **two more** that consume a separate value, and the list also carries `--super-prefix`, which git 2.43 no longer accepts — it is **out of step in both directions**. Measured at `9534198`, one fresh root per row, walk after: `git --attr-source HEAD push --force origin main` → **exit 0**; `git --attr-source HEAD stash` → **0**; `git --attr-source HEAD update-ref -d refs/heads/main` → **0**; `git --attr-source HEAD config core.hooksPath /tmp/x` → **0**; `git --attr-source HEAD reflog delete HEAD@{0}` → **0**; `git --attr-source HEAD symbolic-ref HEAD refs/heads/x` → **0**; and the whole set again under `--shallow-file /tmp/s`: `push --force`, `stash`, `update-ref -d`, `config core.hooksPath`, `reflog delete` all → **0**. The ATTACHED spellings are correctly refused — `git --attr-source=HEAD push --force origin main` → **exit 2** `force_push_blocked` — so this is the separate-value form specifically. **Confirmed against the REAL git binary, not argued**: `git --attr-source XVALUE version` prints `git version 2.43.0` (the value was consumed and the verb was reached) against the control `git --bogus-opt XVALUE version` → `unknown option: --bogus-opt`; `git --shallow-file /tmp/s stash` really ran stash (`Saved working directory and index state WIP on rewritten`); `git --attr-source HEAD update-ref -d refs/heads/nonexistent` exits 0. Under the shims bash hands git `ARGV[git]: [--attr-source] [HEAD] [push] [--force] [origin] [main]` — every word literal, none deleted, order preserved. **A REAL destructive force push was performed**, which no predecessor row in this phase demonstrated: in a fixture with a bare upstream, `git --attr-source HEAD push --force origin rewritten:main` printed `+ fd70e8d...347b427 rewritten -> main (forced update)` and the remote `main` was rewritten to an unrelated history. **The three-leg argument, each leg measured.** Layer 1 — the line begins `git --attr-source`, which does not match the `Bash(git push:*)` prefix rule the agent CLI owns. Layer 2 — exit 0 above, empty walk. Layer 3 — `git --attr-source HEAD -c core.hooksPath=/dev/null push --force origin main` → **exit 0**, and re-measured on this machine `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/ENV_WINS git --attr-source HEAD -c core.hooksPath=/CLI_WINS config --get core.hooksPath` prints **`/CLI_WINS`** with the paired control (same line without `-c`) printing **`/ENV_WINS`**, so no `pre-push` hook runs. Credentials — `GIT_ASKPASS`, `GIT_CONFIG_GLOBAL/SYSTEM` and `GIT_SSH_COMMAND` are untouched, so the push authenticates. Four of the rows have **no second carrier at all** — `git stash`, `git update-ref`, `git reflog delete` and `git config core.hooksPath`, where disarming the hook IS the loss of the carrier. **NOT covered by AR-19-03.** That acceptance is a denylist over *git verbs*, resting on "the pre-push and pre-commit hooks make the denylist's gaps non-fatal"; here the permitted word is not a git verb at all, it is an option's operand, and the same line disarms the hooks. **NOT the same class as `T-19-91`/`T-19-96`**, which are classifier arms answering `Allow` on an operand they cannot READ; here every word is read and readable and the verb INDEX is wrong. **Not word assembly and not word deletion**: `19-19`'s invariant holds on these lines exactly. **The asymmetry that names the fix**: `resolve_program`'s wrapper axis solved this identical problem by failing CLOSED — a governed candidate whose command position cannot be established structurally is `Refuse`, not mis-indexed (audit 3, `T-19-60`) — and audit 6 re-confirmed it holds (`env --chdir=/tmp`, `env -C /tmp`, `timeout --signal TERM 60`, `nice -n 5`, `sudo -u nobody`, `env -S "…"` all → exit 2). `scan_leading` is the one arm that was never given that treatment. **`GIT_GLOBAL_VALUE_OPTS` has NO drift pin and no test reference anywhere** — `grep -rn GIT_GLOBAL_VALUE_OPTS src/ tests/` returns exactly two hits, its definition and its single use — where the phase's other hand-maintained surface list, `ENVELOPE_ENV_KEYS`, was given a re-sourced pin with four named floors after being wrong twice (`T-19-82`, `T-19-90`). | **OPEN — BLOCKING** |
+| T-19-101 | Spoofing | every generative alphabet, and both named class axes (`UNREADABLE_CLASSES`, `DELETION_CLASSES`) | medium | mitigate | **`T-19-76`'s failure mode for the SIXTH consecutive round, and this time the axis moved rather than the cell.** Round 6's corpus is real and it closed `T-19-99` outright — `DELETION_CLASSES` stands beside a byte-identical `UNREADABLE_CLASSES`, and audit 5's own two greps, which returned NOTHING at `ad847b4`, now return **35** and **69** hits for a redirection character inside a driven string and carry eleven real backslash-newline escapes. But **both axes are axes of the SHELL's grammar**: `UNREADABLE_CLASSES`' seven classes are ways bash REWRITES a word, `DELETION_CLASSES`' five are ways bash REMOVES one. **Nothing anywhere in `tests/` models the CALLEE's grammar** — verified mechanically: `grep -rn "attr-source\|shallow-file\|GIT_GLOBAL_VALUE_OPTS" tests/` returns **nothing at all**, and no alphabet carries a leading git option that consumes a separate word. The corpus is therefore structurally incapable of generating, and so of failing on, `T-19-100`. This is the same finding as `T-19-76`, `T-19-83`, `T-19-89`, `T-19-95` and `T-19-99`, one axis further out — and the axis is again the point: each round widened the alphabets along the axis its own control is about, so the corpus keeps modelling exactly the control it certifies and nothing beside it. | open — below `high` (non-blocking) |
+| T-19-102 | Denial of Service | `push_operands` / `PUSH_VALUE_OPTS` (`policy.rs:509`) — the same enumeration defect, in the over-refusal direction | low | mitigate | `PUSH_VALUE_OPTS` is `["repo", "push-option", "receive-pack", "exec"]`. `git push` in git 2.43 also consumes a separate value for `--recurse-submodules`, which is absent, so its value is read as a push OPERAND and the real repository is then read as a refspec. Measured in a fixture repository on `refs/heads/gsd-auto/alpha/w` with an upstream configured: `git push --recurse-submodules on-demand origin refs/heads/gsd-auto/alpha/w` → **exit 2 `push_outside_namespace`** (*the refspec `origin` resolves to `refs/heads/origin`*), while its twin `git push origin refs/heads/gsd-auto/alpha/w` → **exit 0** and real git runs the line to completion (`Everything up-to-date`). A **false refusal of an ordinary in-namespace push**, the same class of cost `19-19` measured itself removing two of. Rated `low`: it is a usability cost inside driven runs, legible rather than silent, and it fails in the safe direction. Recorded separately from `T-19-100` because the component and the direction both differ, and this phase's discipline is not to let one row imply what it did not measure. The short spellings are **not** affected — `git push -o ci.skip origin refs/heads/gsd-auto/alpha/w` and `--push-option ci.skip` both → exit 0. | open — below `high` (non-blocking) |
+
+*Status: open · closed · open — below `high` threshold (non-blocking)*
+*Severity: critical > high > medium > low — only open threats at or above `workflow.security_block_on` count toward `threats_open`*
+
+`T-19-101` and `T-19-102` are open below the `high` threshold and do **not**
+count toward `threats_open`. `T-19-100` does.
+
+### Audit 6's bookkeeping, re-derived from audit 5's group rows
+
+| Group | Count | Closed | Open |
+|---|---|---|---|
+| Everything through audit 5 | 111 | 90 | 21 (4 at `high`) |
+| Closed by plans 19-18 / 19-19, re-measured by audit 6 (`T-19-97`, `T-19-98`, `T-19-99`) | — | +3 | −3 |
+| Found by audit 6 (`T-19-100` … `T-19-102`) | 3 | 0 | 3 (1 at `high`) |
+| **Total after audit 6** | **114** | **93** | **21 (3 at `high`)** |
+
+The three that count toward `threats_open`: `T-19-86`, `T-19-91`, `T-19-100`.
+The eighteen that do not: `T-19-61` … `T-19-73` (13), `T-19-84`, `T-19-85`,
+`T-19-96`, `T-19-101`, `T-19-102`.
+
+### The closures, re-measured rather than accepted from the summaries
+
+Driven as
+`printf '<PreToolUse JSON>' | GSD_MM_ENVELOPE_ROOT=$(mktemp -d) ./target/debug/gsd-meta-manager envelope guard alpha`,
+one fresh root per row, the envelope directory walked with `os.walk`
+afterwards.
+
+* **`T-19-97` — CLOSED, and the operator set is complete.** All sixteen audit-5
+  rows and all seven planning cells are at `exit=2` with an empty walk, including
+  the `&`-separator fragmentation cell `git &>/tmp/o push --force origin main`,
+  `&>>`, `>|`, `<>`, `<<`, `<<-EOF`, `<<<`, `>>`, the space-separated
+  `git > /tmp/o push …`, the attached `git push>/dev/null --force …`, the
+  precondition row `git <input.txt push …`, the nested payload, the brace group
+  `{ git >/dev/null push --force origin main; }` and the sequence
+  `echo hi && git >/dev/null …`. **Audit 6 swept the redirection operators the
+  corpus does not enumerate and every one is also modelled**: `22>` (multi-digit
+  fd), `2>&1`, `>&2`, `2>&-`, `0<&-`, `3<&0`, `2>>`, and the pipeline position
+  `echo x | git >/dev/null push --force origin main` — all `exit=2`. The
+  fd-allocation forms fail CLOSED as disclosed: `git {v}>/tmp/o push …` and
+  `git {v}<&1 push …` → `exit=2 envelope_assertion_failed`.
+* **`T-19-98` — CLOSED.** All eight rows at `exit=2` with an empty walk, except
+  the forge row, which is a restored COUNT (below). The double-quoted spelling,
+  the nested `bash -lc` payload and the two-continuation
+  `git -c core.hooks\`+NL+`Path=/dev/null pu\`+NL+`sh …` all refuse under the
+  identifier `19-19` derives. **Audit 5's three discarded rows stay correctly
+  permitted** and were re-measured to confirm the single-quote loop was not
+  touched: `git 'pu\`+NL+`sh' …`, `git pu\`+CR+`sh …` and `git pu\`+TAB+`sh …`
+  all → exit 0, which is right, because bash performs no continuation in any of
+  them.
+* **The four FORGE rows — CLOSED on the COUNT bar, evidenced by a walked ledger
+  listing rather than an exit code.** In one fresh root, two calls each:
+  `gh >/dev/null pr create --title x`, `gh >/dev/null api repos/o/r/pulls -f
+  title=x`, `glab >/dev/null mr create --title x` and
+  `gh p\`+NL+`r create --title x` are all **call 1 exit 0 with exactly one
+  ledger line, call 2 exit 2 `pr_cap_exceeded` with two** — byte-for-byte the
+  behaviour of the unwrapped controls. A refusal here would have been the
+  regression and there is none.
+* **`T-19-99` — CLOSED.** The two greps audit 5 ran to prove the corpus could
+  not draw the class now return 35 and 69 hits, `DELETION_CLASSES`,
+  `DISPLACING_REDIRECTIONS` and `CONTINUATION_SPLICES` all exist, and the corpus
+  demonstrably failed on its own class: `19-18` committed 5 named RED tests with
+  **zero `src/` hunks** and `19-19` turned all 5 green. **The corpus's NEW blind
+  spot is `T-19-101`.**
+* **`T-19-93` did not degrade under the new rule.** Re-measured: the unquoted
+  placeholder form is still counted (call 2 `pr_cap_exceeded`, two ledger
+  lines), the `-X POST` spelling is counted, and the `…/pulls/7` boundary still
+  writes **zero** ledger lines in both the quoted and unquoted spellings.
+
+### The two removed over-refusals — genuinely correct, and masking no real refusal
+
+Measured in a purpose-built fixture on `refs/heads/gsd-auto/alpha/w` with a local
+bare upstream, the repository passed as the guard's working directory:
+
+```
+exit=0  git push origin refs/heads/gsd-auto/alpha/w > log.txt      <- was 2, now correct
+exit=0  git push \<NL> origin refs/heads/gsd-auto/alpha/w          <- was 2, now correct
+exit=0  git push origin refs/heads/gsd-auto/alpha/w                <- the one-line twin
+exit=2  push_outside_namespace   git push origin refs/heads/main > log.txt
+exit=2  push_outside_namespace   git push origin refs/heads/main
+exit=2  force_push_blocked       git push --force origin refs/heads/gsd-auto/alpha/w > log.txt
+```
+
+**Both removals are correct and neither masks a real refusal.** The
+out-of-namespace control still refuses *through* a redirection, and a `--force`
+behind a redirection still refuses — so what the rule removed is the redirection
+being read as a decision word, not the refspec check and not the flag check.
+
+### Ordinary redirection, and the deletion model's two-sided controls
+
+Every ordinary row is still permitted and the counted one is still counted:
+`git log > out`, `git status > /tmp/s.txt`, `git diff > /tmp/d.patch`,
+`git commit -m "x" >> build.log`, `gh pr list 2>/dev/null`,
+`git fetch origin 2>&1 | tee log` and `gh pr create --title x > /tmp/o`
+(**one ledger line, cap fires on call 2**). The quoted-operator corpus is
+unaffected: `git commit -m ">"`, `git log --grep='>'`, `git commit -m "a > b"`,
+`rg ">" src/` and `--push-option="a>b"` all exit 0. The two disclosed new
+refusals fire exactly as `19-19` records — `git >` and `git {v}>/tmp/o status`
+at `exit=2`, beside `ls >` and `git >/dev/null status` at exit 0.
+
+**Over-deletion: audit 6 probed the silent direction and found none, and the
+argument is structural rather than a list.** Every row where bash KEEPS a word
+the guard might have deleted is permitted, and each was confirmed under the
+shims: `git "2" >/tmp/o push …` → `[2] [push] …`, `git 2 >/tmp/o push …` →
+`[2] [push] …`, `git ">"/dev/null push …` and `git \>/dev/null push …` →
+`[>/dev/null] [push] …`, `git 2x>/tmp/o push …` → `[2x] [push] …`, and the
+mandated control `git x2>/tmp/o push --force origin main` → **exit 0** with
+`[x2] [push] [--force] [origin] [main]`. Real git rejects every one of those
+words as a verb (`git: 'x2' is not a git command`, and the same for `2`, `2x`
+and `>/dev/null`), so each permit is correct. **Over-deletion on this axis
+cannot produce a bypass by construction**: for the guard to delete the real verb
+it must see an operator immediately before it that bash does not, in which case
+that operator-shaped word becomes bash's own `argv[0]` — and `>`-initial and
+digit-initial words are not git verbs. Over-deletion here can only over-refuse
+or permit something harmless, which is why the mirror of `ls {git,svn}-repo`
+holds on this axis too.
+
+### The known-open set, as audit 6 verified it
+
+- **`T-19-86` (high, OPEN, unaccepted, deferred by explicit user scoping
+  decision).** All four rows re-measured at `9534198`, fresh root each, all at
+  **exit 0**: `git submodule foreach git push --force origin main`,
+  `git rebase -x "git push --force origin main" HEAD~3`,
+  `git bisect run sh -c "git push --force origin main"`,
+  `git -c alias.p='!git push --force origin main' p`. Exactly as registered.
+  Counts toward `threats_open`.
+- **`T-19-91` (high, OPEN, three arms).** `git reflog $S`, `git reflog show $S`
+  and `git symbolic-ref $S` reproduce at **exit 0**; `git symbolic-ref HEAD $R`
+  → 2 `force_push_blocked` and `git push origin $REF` → 2
+  `push_outside_namespace` still fail closed; and the third arm reproduces in
+  the in-namespace fixture — `git push $REF` → **exit 0**, cwd-dependent and
+  permitted in the configuration the envelope exists for, **not** "already fails
+  closed". The record is correct as `19-19` leaves it and the second-carrier
+  asymmetry is unweakened. Counts toward `threats_open`.
+- **`T-19-96` (medium, OPEN, registered, not fixed).** `git push --forc? origin
+  refs/heads/gsd-auto/alpha/w` → **exit 0**, its literal twin → exit 2
+  `force_push_blocked`. Unchanged by round 6. Audit 6 notes it is now one of
+  THREE arms of the same shape as `T-19-91` and, with `T-19-100`, one of four
+  places a `classify_push`/`scan_leading` decision is made on a word the
+  decision region does not cover.
+- **`T-19-74` (medium, closed/accepted — AR-19-10).** Core rows frozen and
+  re-measured permitted: `env $X push --force origin main` → **0** and
+  `X=git; env $X push --force origin main` → **0**. `T-19-84` remains open and
+  unaccepted.
+- **`T-19-61` … `T-19-73`, `T-19-84`, `T-19-85` — carried forward untouched**,
+  open and unaccepted at their original severities, all below `high`. Plans
+  19-18 and 19-19 touched `src/envelope/policy.rs` and one test file only;
+  `cred.rs`, `mod.rs`, `advisory.rs`, `scan.rs`, `config.rs` and **`hooks.rs`**
+  were not opened, so `T-19-61` … `T-19-73` cannot have moved.
+- **`T-19-SC` — still holds.** Neither `Cargo.toml` nor `Cargo.lock` was touched
+  by any plan-19-18 or plan-19-19 commit.
+- **`T-19-17r` — still OUTSTANDING, and audit 6 does not resolve it either.**
+  The measurement and both pins are re-confirmed (`rg "git status" {src,tests}`
+  → exit 2 `envelope_assertion_failed`, `rg "git status" src/` → exit 0). There
+  is still **no `AR-19-13` row and no register row**. `19-18` and `19-19` both
+  correctly declined to make the acceptance and both avoided calling it
+  accepted. **Accepting a risk is a human decision and this audit does not make
+  it**, for the same reason audit 5 declined. The next round either adds the log
+  row or drops the word from `19-17-SUMMARY.md`.
+
+### The four execution-time judgements, assessed independently
+
+1. **The IO_NUMBER over-deletion bug — the fix is CORRECT, and audit 6 probed
+   the direction it guards and found nothing left.** The plan's production
+   ("digits-only run since word start") was genuinely ambiguous about quoting,
+   and tested over the *dequoted* text it over-deletes: bash gives
+   `git "2">/tmp/o push --force origin main` the argv `[2] [push] [--force]
+   [origin] [main]`, confirmed by audit 6 under the shims. The fix — tracking
+   bare-ness while the word is consumed — is the same "collect the evidence
+   where the word is consumed" discipline `Token::literal` is built on, and it
+   is the right generalisation rather than a special case for the quoted digit.
+   Both mandated controls hold: `git x2>/tmp/o push --force origin main` and
+   `git "2">/tmp/o push --force origin main` are **permitted**, and audit 6
+   added four more over-deletion probes (the space-separated `2`, the
+   double-quoted, single-quoted and backslash-escaped `>`) which are all
+   permitted and all confirmed harmless against real git. **Finding it by
+   measurement rather than from the plan is the round's best moment**, and
+   reporting it as a deviation rather than absorbing it is correct.
+2. **`hooks.rs` needing no change — CORRECT, and verified rather than accepted.**
+   `git diff --stat 1d1229e..HEAD -- src/` is exactly one file,
+   `src/envelope/policy.rs`. The claim that the fact threads by construction is
+   checkable and checks out: `redirection_unresolvable` is set in `tokenize`,
+   carried on `Token` and `Segment`, and **read at exactly one decision site** —
+   `resolve_program_with_head` (`policy.rs:3258`) — with the only other
+   occurrence a unit test. **No second reading site was introduced**, and
+   round 3's principle is discharged rather than weakened: a deleted word never
+   becomes a `Token`, so every decision index is over the surviving argv
+   automatically. The post-filter is exhaustive with one arm per variant
+   (`Governed | NestedPayload`, `NoProgram | Ungoverned`, `Refuse`) and **no
+   wildcard** — the only `other =>` in the function is inside a doc comment
+   describing the form it replaced.
+3. **The production/comment ratio control — the CALL was right, the CONTROL is
+   no longer meaningful as written.** Not editing an assertion to go green is
+   the correct instinct and the only acceptable one; tightening prose instead of
+   lowering a floor is exactly the discipline five rounds of plan-check exist to
+   enforce. **But audit 6 re-derived the ratio independently and the margin is
+   ~0.09 percentage points** — about 250 bytes of headroom in a 262 KB file.
+   At that margin the control has stopped measuring what it was written to
+   measure. Its purpose is anti-vacuity: an absence assertion over
+   `production_code` proves nothing if the stripper ate the file. With ~66 KB of
+   stripped production code that purpose is served with enormous margin, and the
+   floor now functions as a **documentation budget** whose red says "the
+   stripper broke" while meaning "someone wrote comments". Worse, it now pulls
+   directly against this phase's own doc-disclosure pins — controls such as
+   `resolve_programs_own_doc_still_discloses_the_residual_it_does_not_cover`
+   REQUIRE specific paragraphs to exist, so a ratio floor rewards deleting the
+   prose another control requires. **Audit 6's judgement: keep the anti-vacuity
+   property, re-express it as an absolute floor on stripped production bytes
+   rather than a ratio against a file whose comment volume is itself a
+   deliberate security artifact.** Recorded as an observation, not registered as
+   a threat: nothing is unprotected today.
+4. **The third flake — correctly classified, but it is not new.** Audit 6 ran
+   `a_relocated_copy_of_the_stub_refuses_instead_of_acting` eight times in
+   isolation: **8/8 green**, and green in the full gate. It does belong beside
+   the two `driver_reattach` flakes — same kind of item, environmental rather
+   than about the policy under test. **One correction:
+   `deferred-items.md` has carried it since 19-07**, under
+   "`tests/envelope_tracer.rs` — ETXTBSY when a just-copied stub is exec'd",
+   with the same symptom string, the same write-then-exec diagnosis, the same
+   "once in ~6 full-suite runs" frequency and a fix direction. `19-19-SUMMARY.md`
+   presents it as newly observed. That is a provenance slip and not a defect,
+   and the re-observation independently corroborates the 19-07 frequency
+   estimate. It touches no threat's evidence: the test is `T-19-01`'s, and a
+   flake that ERRORS rather than passing vacuously cannot mask a regression.
+
+### Gates observed
+
+`rtk proxy cargo test --no-fail-fast` redirected to a file and counted with
+`rtk proxy grep` (a plain `grep` is rewritten by the RTK hook, which strips the
+`test result:` lines a count is read from — the trap `19-19` hit and recorded):
+**1610 passed, 0 failed, 13 ignored** over 41 result lines,
+`passed + failed = 1610`, matching `19-19-SUMMARY.md` exactly. All twelve
+`envelope_*` binaries ran. The two flaky `driver_reattach` tests passed in this
+run. `rtk proxy cargo clippy -- -D warnings` exits 0;
+`cargo clippy --all-targets` was already failing at the base commit on four
+pre-existing lints in `src/browser.rs` and `src/project_creator.rs` and is out
+of scope.
+
+**Provenance discipline.** Plans 19-13 through 19-19's appended subsections and
+every earlier audit's own tables are left **byte-identical**; audit 6 checksummed
+the whole body below the frontmatter before and after writing. Audit 6's
+corrections to statements made in those subsections are recorded as audit-6
+findings BESIDE them rather than as edits to them.
+
+---
+
+## Audit 6 — what the round-6 control can and cannot fail on
+
+### The principle rounds 3, 4 and 5 established still holds
+
+A decision region must be derived from the same scan the classifier runs, and
+there is one walk. `first_unreadable_decision_word` is unchanged, including its
+single `at(index, role)` closure; `scan_leading`, `config_key_operand_index`,
+`subcommand_word_indices` and `scan_gh_api` are untouched;
+`split_segments` is still defined over `split_segments_with_heads`;
+`SEPARATORS` is byte-identical — one commit in the whole phase (`84a9b05`,
+plan 19-05) has ever touched that line — and `is_separator` is a bare
+`SEPARATORS.contains`, so `is_separator(">")` is `false`. The deletion fact was
+added to the arms `resolve_program_with_head` already had rather than to a new
+reading site. **Adding `>` and `<` to `SEPARATORS` was prohibited and was not
+done**; audit 6 re-affirms that the doc's reasoning is correct.
+
+### Where the boundary now is, in one paragraph
+
+**Rounds 5 and 6 together decide two halves of one invariant, and audit 6 finds
+that invariant COMPLETE.** A decision word must be provably LITERAL, evidenced
+positively while it is consumed; and the words the guard classifies must be
+exactly the words the program receives, in the same order — modelled by deleting
+what bash deletes, with a fail-closed residue for any redirection the production
+cannot complete. Audit 6 enumerated bash's transformations between the command
+string and `execve` against them one at a time and **found no third mechanism**:
+there is no reordering step, splitting and rewriting are the assembly half,
+removal is the deletion half, and every operator, fd form, heredoc spelling,
+nesting and pipeline position probed is either modelled or refuses.
+
+**What they cannot fail on is not a property of the shell at all.** Having built
+argv correctly, the guard must locate the verb WITHIN it, and that requires
+knowing the CALLEE's option grammar:
+
+- **an option of git's own that consumes a separate word** — `--attr-source`,
+  `--shallow-file` (`T-19-100`), where the guard fails OPEN on an option it does
+  not know, and where the same list already carries an option (`--super-prefix`)
+  that the installed git rejects;
+- **a classifier arm's own operand or flag outside the decision region** —
+  `T-19-91` (`reflog`, `symbolic-ref`, the bare `push $REF`) and `T-19-96` (a
+  push flag), both registered;
+- **a whole command line handed to a governed program as data** — `T-19-86`,
+  unchanged, and the one residual that has survived every round.
+
+**The one-sentence version for the next round.** Six rounds have modelled the
+shell — how a word is written, then which words arrive — and none has modelled
+the program the words are handed to; `T-19-101` is the mechanical form of it, in
+that no alphabet in this phase contains a single leading option of git's own that
+consumes a separate word.
+
+### Suggested closure, in order — (d) FIRST, for the sixth round running
+
+1. **(d) — widen the corpus BEFORE certifying anything.** Add a THIRD named
+   axis beside `UNREADABLE_CLASSES` and `DELETION_CLASSES` — *a word whose SLOT
+   the callee's own option grammar decides* — with a `GIT_GLOBAL_OPTIONS`
+   alphabet carrying separate-value options (`-C`, `-c`, `--git-dir`,
+   `--work-tree`, `--namespace`, `--config-env`, **`--attr-source`**,
+   **`--shallow-file`**) and value-less ones (`--no-pager`, `--bare`,
+   `--literal-pathspecs`) spliced between the governed program and its decision
+   words, with the `MIN_*`-floor pattern asserting the corpus generates them.
+   **Listed first for the sixth round running**, and for the sixth round running
+   it is the recommendation the previous audit made in a different cell and the
+   next gap was in the cell it did not name.
+2. **(a) — `T-19-100`, and make it fail CLOSED rather than complete a list.**
+   Completing `GIT_GLOBAL_VALUE_OPTS` closes today's two cells and will be wrong
+   again at the next git release — this list is already wrong in both directions
+   against git 2.43. The durable shape is the one `resolve_program`'s wrapper
+   axis already uses: **a leading option `leading_git_option` does not recognise
+   makes the verb slot unestablished, and an unestablished verb is `Refuse`, not
+   the next non-`-` word.** The paired cost must be pinned from both sides
+   exactly as Rule B's and clause 2's were: every value-less global option
+   (`--no-pager`, `--bare`, `--literal-pathspecs`, `--no-optional-locks`,
+   `--no-replace-objects`, the pathspec family) must keep reaching its ungrouped
+   verdict, and `git --no-pager status` must stay exit 0. Whichever shape is
+   chosen, give the list the drift pin `ENVELOPE_ENV_KEYS` was given after being
+   wrong twice — sourced from a place that changes when git's grammar does, with
+   a floor that turns red if it is narrowed.
+3. **(b) — `T-19-102`**, the same enumeration in `push_operands`, closed by the
+   same change and measured the same way: the in-namespace twin must keep
+   reaching exit 0.
+4. **(c)** — then `T-19-86`, `T-19-91` and `T-19-96`, which are three arms of
+   one shape: a classifier arm answering `Allow` on an operand, flag or payload
+   outside the decision region.
+
+Then, and separately: add the `AR-19-13` row for `T-19-17r` or stop calling it
+accepted; and re-express the production/comment ratio control as an absolute
+floor on stripped production bytes.
+
+---
+
+## Audit 6 Sign-Off
+
+- [x] All threats have a disposition (mitigate / accept / transfer)
+- [x] Accepted risks documented in Accepted Risks Log — twelve, unchanged by
+      round 6; audit 6 accepts nothing new
+- [x] Every closure re-measured against the built binary at `9534198` with a
+      fresh envelope root per row and the directory walked afterwards
+- [x] Every new finding confirmed under `bash` against argv-printing shims
+      **writing to a side file**, and `T-19-100` additionally confirmed against
+      the REAL `git` binary, including a real force push that rewrote a bare
+      remote's `main`
+- [x] The four forge rows verified on the COUNT bar by a walked ledger listing
+      with the cap firing on the second call, not by an exit code
+- [x] Over-deletion probed as the silent direction and none found; the two
+      mandated over-deletion controls (`x2>`, `"2">`) remain permitted
+- [x] `SEPARATORS` byte-identical and `is_separator(">") == false` verified
+      mechanically; `>` and `<` were not added
+- [x] Plans 19-13 … 19-19's appended subsections left byte-identical, verified
+      by checksum before and after writing
+- [x] Gate observed: `rtk proxy cargo test --no-fail-fast` → **1610 passed, 0
+      failed, 13 ignored**, `passed + failed = 1610`, matching
+      `19-19-SUMMARY.md` exactly; all twelve `envelope_*` binaries ran;
+      `cargo clippy -- -D warnings` exit 0
+- [ ] `threats_open: 0` confirmed — **3 open at `high`: `T-19-86`, `T-19-91`,
+      `T-19-100`**
+- [ ] `status: verified` set in frontmatter
+
+**Approval: blocked, 2026-08-29 (audit 6).**
+
+**Not accepted here.** `T-19-100` is a high-severity, empirically confirmed
+bypass which defeats layers 1, 2 and 3 on a single line with the credential
+intact, carries four rows with **no second carrier**, and is the only finding in
+six rounds demonstrated by performing a real destructive force push against a
+real remote. `T-19-86` and `T-19-91` remain open at `high` by scoping decision
+and by round discipline respectively. Accepting any of the three is a human
+decision and this audit does not make it.
+
+**Progress is real, and the boundary question is answered.** Round 6 closed
+`T-19-97` and `T-19-98` structurally rather than row by row — a finite grammar
+production with a fail-closed residue, not an enumeration of spellings — and
+closed `T-19-99` with a second named axis that demonstrably failed on its own
+class before the rule existed. It did so while **removing** two measured false
+refusals, which is the first round in this phase whose net effect on over-refusal
+was negative, and it modelled the deletion inside the one walk so no second
+reading site was needed and `hooks.rs` was not opened. Audit 6 says plainly what
+five rounds of this phase have been building toward: **the command-line-to-argv
+boundary is now correctly modelled, and there is no third shell mechanism.** The
+open class is one level past that boundary — having reconstructed argv, the guard
+must decide which word in it is the verb, and it asks a hand-maintained list
+about another program's grammar and fails open when the list is silent. Six
+rounds have modelled the shell. The next one has to model git.
