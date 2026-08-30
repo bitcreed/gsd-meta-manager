@@ -1170,13 +1170,48 @@ pub struct Token {
     /// See [`brace_word_products`] for the whole-word scan that computes them and
     /// for every trigger that makes a product set unenumerable.
     pub splice_can_produce_governed: bool,
+    /// For an OPERATOR token only: an unquoted `<` or `>` the redirection
+    /// production could NOT resolve into a complete (operator, target) pair.
+    ///
+    /// **The fail-closed residue that keeps the production from being a sixth
+    /// enumeration.** Bash's redirection rule is a finite grammar production —
+    /// `[IO_NUMBER] OPERATOR WORD` — and [`tokenize`] consumes it, emitting no
+    /// token for either the operator or its target, so a deleted word never
+    /// becomes a `Token` at all. A spelling the production does not COMPLETE
+    /// does not fall through as an ordinary word: it is marked here, carried to
+    /// [`Segment::redirection_unresolvable`] and refused when a governed program
+    /// is reached.
+    ///
+    /// Set for exactly two shapes, both measured:
+    ///
+    /// * an operator with no following target word — `git >`, which bash does
+    ///   not run either (`syntax error near unexpected token 'newline'`);
+    /// * a `{name}` fd-allocation prefix (bash 4.1) — `git {v}>/tmp/o push
+    ///   --force origin main`, which bash runs as `[push] [--force] [origin]
+    ///   [main]`. Modelling it would mean unwinding round 5's literal-brace
+    ///   absorption, which buys nothing measurable, so it refuses instead.
+    ///
+    /// Always `false` for an ordinary word and for a redirection the production
+    /// resolved.
+    pub redirection_unresolvable: bool,
 }
 
 /// The shell control operators that end one simple command and begin the next.
 ///
 /// `>` and `<` are deliberately absent: a redirection does not start a new
 /// command, so treating it as a separator would hide the command it redirects.
-/// It stays an ordinary word and travels into the classifier with the rest.
+///
+/// **That reasoning is right, and only the sentence that used to follow it was
+/// wrong.** It read "it stays an ordinary word and travels into the classifier
+/// with the rest" — which is exactly `T-19-97`: bash DELETES a redirection's
+/// operator and its target from argv before `execve`, so a word that travelled
+/// into the classifier was a word the program never received, displacing every
+/// decision word one slot right. What `<` and `>` are is what bash's lexer
+/// already makes them: **word-terminating METACHARACTERS whose operator and
+/// target are deleted**, which is neither a separator nor an ordinary word.
+/// [`tokenize`] consumes that production; this list is unchanged, and
+/// [`is_separator`] stays `false` for `>` because a redirection still does not
+/// start a command.
 const SEPARATORS: &[&str] = &[";", "&&", "||", "|", "&", "\n", "(", ")", "{", "}"];
 
 /// Split a shell command line into words, POSIX quoting rules applied.
@@ -1282,6 +1317,28 @@ pub struct Segment {
     /// A product set that could not be computed cannot be cleared, so
     /// unenumerable answers `true` here — fail closed.
     pub splice_can_produce_governed: bool,
+    /// Whether this segment belongs to a **simple command carrying a redirection
+    /// the parser could not resolve** (see [`Token::redirection_unresolvable`]).
+    ///
+    /// **Why this is a property of the command and not of a word**, for the same
+    /// reason [`Segment::brace_spliced`] is: a redirection can stand anywhere in
+    /// a simple command and deletes words from ANYWHERE in its argv, so a
+    /// redirection the parser cannot complete means the argv a classifier would
+    /// read is not the argv that runs — about the whole command, not about one
+    /// word of it.
+    ///
+    /// Computed in [`split_segments_with_heads`] — the ONE walk — from the
+    /// operator tokens the tokenizer marked, applied to every segment of the
+    /// simple command **including the one already pushed when the operator
+    /// arrived**, and reset at each REAL command operator.
+    ///
+    /// **It refuses only when a GOVERNED program is reached**, which is the cost
+    /// containment [`Segment::brace_spliced`] already establishes: `ls >` stays
+    /// permitted, `git >` does not. There is deliberately no clause-2(b)
+    /// analogue — a redirection cannot PRODUCE a governed program the way a
+    /// brace splice can, because its target is REMOVED from argv rather than
+    /// spliced into it.
+    pub redirection_unresolvable: bool,
 }
 
 /// [`split_segments`], plus a per-segment report of whether its head is at a
@@ -1325,6 +1382,10 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
     let mut command_start = 0usize;
     let mut brace_spliced = false;
     let mut splice_can_produce_governed = false;
+    // The redirection fact of the simple command being accumulated, carried the
+    // same way and for the same reason: an unresolvable `>` that arrives after
+    // `git` was already pushed — `git >` — must still mark that segment.
+    let mut redirection_unresolvable = false;
 
     for token in tokens {
         if token.operator {
@@ -1334,7 +1395,17 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
                     head_is_command_position,
                     brace_spliced,
                     splice_can_produce_governed,
+                    redirection_unresolvable,
                 });
+            }
+            if token.redirection_unresolvable {
+                redirection_unresolvable = true;
+                // Retroactive for the same reason the brace mark is: a
+                // redirection belongs to the whole simple command, so everything
+                // since the last REAL command operator carries the fact.
+                for segment in &mut segments[command_start..] {
+                    segment.redirection_unresolvable = true;
+                }
             }
             if token.brace_splice {
                 brace_spliced = true;
@@ -1354,6 +1425,7 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
                 command_start = segments.len();
                 brace_spliced = false;
                 splice_can_produce_governed = false;
+                redirection_unresolvable = false;
             }
             last_operator_severed =
                 token.word_splitting_flush && matches!(token.text.as_str(), "}" | ")");
@@ -1370,6 +1442,7 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
             head_is_command_position,
             brace_spliced,
             splice_can_produce_governed,
+            redirection_unresolvable,
         });
     }
 
@@ -1802,6 +1875,129 @@ fn top_level_split(chars: &[char], separator: char) -> Vec<String> {
     parts
 }
 
+/// The length of the redirection operator beginning at `index`, longest match
+/// first, or `None` if no operator begins there.
+///
+/// **Bash's production is a FINITE grammar rule, which is why modelling it is
+/// not a sixth enumeration.** Rounds 1–3 enumerated open-ended, value-dependent
+/// ways a word can be REWRITTEN; this is one closed rule with twelve operators,
+/// and anything it does not COMPLETE fails closed through
+/// [`Token::redirection_unresolvable`] rather than falling through as a word.
+///
+/// `&>` and `&>>` are here, and the caller matches them BEFORE `&` reaches the
+/// separator arm — see [`tokenize`]. Without that ordering
+/// `git &>/tmp/o push --force origin main`, which is ONE simple command to bash
+/// (`ARGV[git]: [push] [--force] [origin] [main]`, measured), is split into TWO
+/// segments and a redirection parser running afterwards never sees it.
+fn redirection_operator_len(chars: &[char], index: usize) -> Option<usize> {
+    let at = |offset: usize| chars.get(index + offset).copied();
+    match at(0)? {
+        '<' => match (at(1), at(2)) {
+            (Some('<'), Some('<')) => Some(3), // <<<  here-string
+            (Some('<'), Some('-')) => Some(3), // <<-  heredoc, leading tabs stripped
+            (Some('<'), _) => Some(2),         // <<   heredoc
+            (Some('>'), _) => Some(2),         // <>   open read-write
+            (Some('&'), _) => Some(2),         // <&   duplicate input fd
+            _ => Some(1),                      // <
+        },
+        '>' => match at(1) {
+            Some('>') => Some(2), // >>  append
+            Some('|') => Some(2), // >|  clobber past `noclobber`
+            Some('&') => Some(2), // >&  duplicate output fd
+            _ => Some(1),         // >
+        },
+        '&' => match (at(1), at(2)) {
+            (Some('>'), Some('>')) => Some(3), // &>>
+            (Some('>'), _) => Some(2),         // &>
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Advance past a redirection's TARGET word, returning the index after it, or
+/// `None` when the production has no target to complete it.
+///
+/// The target gets **the same quoting rules any word gets**, because it is an
+/// ordinary shell word — bash simply removes it from argv rather than passing
+/// it. Its text is never needed, only its extent, because the whole point is
+/// that it produces no [`Token`] at all.
+///
+/// For `<<` and `<<-` the target is the heredoc DELIMITER. The body is not argv
+/// and this function does not model it: bash runs a single-line heredoc anyway
+/// (warning `here-document at line 1 delimited by end-of-file`) and
+/// `git <<EOF push --force origin main` gives `[push] [--force] [origin]
+/// [main]`, measured.
+fn skip_redirection_target(chars: &[char], mut index: usize) -> Option<usize> {
+    // Bash allows whitespace between the operator and its target:
+    // `git > /tmp/o push --force origin main` gives `[push] [--force] [origin]
+    // [main]`, measured.
+    while matches!(chars.get(index), Some(' ' | '\t')) {
+        index += 1;
+    }
+    let start = index;
+    while let Some(&ch) = chars.get(index) {
+        match ch {
+            // A metacharacter ends the target. A target that never began means
+            // the production did not complete — `git >` — which fails closed.
+            ' ' | '\t' | '\r' | '\n' | ';' | '|' | '&' | '(' | ')' | '<' | '>' => break,
+            '\'' => {
+                index += 1;
+                loop {
+                    match chars.get(index) {
+                        Some('\'') => {
+                            index += 1;
+                            break;
+                        }
+                        Some(_) => index += 1,
+                        // An unterminated quote has no knowable boundary.
+                        None => return None,
+                    }
+                }
+            }
+            '"' => {
+                index += 1;
+                loop {
+                    match chars.get(index) {
+                        Some('"') => {
+                            index += 1;
+                            break;
+                        }
+                        Some('\\') if chars.get(index + 1).is_some() => index += 2,
+                        Some(_) => index += 1,
+                        None => return None,
+                    }
+                }
+            }
+            '\\' => {
+                chars.get(index + 1)?;
+                index += 2;
+            }
+            _ => index += 1,
+        }
+    }
+    if index == start { None } else { Some(index) }
+}
+
+/// Whether the word in progress before a redirection operator is a bash 4.1
+/// `{name}` FD-ALLOCATION prefix.
+///
+/// **Deliberately not modelled, and refused rather than guessed at.** Round 5's
+/// literal-brace branch absorbs `{v}` into the word as ordinary characters
+/// (correctly — `printf "[%s]" repos/{owner}/{repo}/pulls` prints its argument
+/// unchanged), so unwinding that to model an fd allocation would cost the very
+/// thing it buys. `git {v}>/tmp/o push --force origin main` is not a shape
+/// anyone writes; it is marked unresolvable and refuses when it reaches a
+/// governed program.
+fn is_fd_allocation_prefix(word: &str) -> bool {
+    let Some(inner) = word.strip_prefix('{').and_then(|w| w.strip_suffix('}')) else {
+        return false;
+    };
+    !inner.is_empty()
+        && !inner.starts_with(|c: char| c.is_ascii_digit())
+        && inner.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// The quoting state machine behind [`split_command`] and [`split_segments`].
 fn tokenize(cmd: &str) -> Option<Vec<Token>> {
     let chars: Vec<char> = cmd.chars().collect();
@@ -1823,6 +2019,16 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
     // `"$"{a,b}` is not a parameter expansion, and `text.ends_with('$')` cannot
     // tell the two apart because `text` has had its quoting removed already.
     let mut last_was_unquoted_dollar = false;
+    // Whether every character of the word in progress arrived BARE — through the
+    // ordinary-word arm, unquoted and unescaped — and was an ASCII digit. An
+    // IO_NUMBER is a bare digits-only run and nothing else: measured,
+    // `git "2">/tmp/o push --force origin main` gives bash
+    // `ARGV[git]: [2] [push] [--force] [origin] [main]`, so a QUOTED digit run is
+    // a real argv word. Reading `Token::text` here would not do — its quoting has
+    // already been removed, so `"2"` and `2` are indistinguishable in it, which
+    // is the same "the evidence must be collected while the word is consumed"
+    // reasoning `Token::literal` is built on.
+    let mut word_all_bare_digits = true;
     let mut index = 0usize;
 
     // A word ends; push it if one was started at all. `started` distinguishes
@@ -1838,10 +2044,12 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
                     literal: literal && !splice_word,
                     brace_splice: false,
                     splice_can_produce_governed: false,
+                    redirection_unresolvable: false,
                 });
                 started = false;
                 expansion = false;
                 literal = true;
+                word_all_bare_digits = true;
             }
         };
     }
@@ -1855,6 +2063,85 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
                 word_start = index - 1;
             }
         };
+    }
+
+    // **The redirection production, consumed inside the ONE walk.**
+    //
+    // The invariant this serves, in one sentence: *the words the guard
+    // classifies must be exactly the words the program receives, in the same
+    // order — no more and no fewer.* This is the SECOND half of round 5's rule
+    // rather than a replacement for it — `Token::literal` is the first half and
+    // proves a word's BYTES, and this proves its SURVIVAL and its SLOT. Both are
+    // needed: `>/dev/null` is fully LITERAL by round 5's own test and the bit is
+    // RIGHT about it, yet the program never receives it.
+    //
+    // **Consumed here, so a deleted word never becomes a `Token` at all**, which
+    // is why every downstream index — `scan_leading`'s verb index,
+    // `config_key_operand_index`, `subcommand_word_indices`, `scan_gh_api`'s own
+    // walk — is over the SURVIVING argv automatically, and why
+    // `first_unreadable_decision_word`'s one `at(index, role)` closure needs no
+    // change. Round 3's principle (a decision region derived from the same scan
+    // the classifier runs, never a second scan) is discharged, not weakened.
+    //
+    // `$op_start` is the index of the operator's FIRST character.
+    macro_rules! consume_redirection {
+        ($op_start:expr) => {{
+            let op_start = $op_start;
+            let mut unresolvable = false;
+
+            // 1. **The fd prefix, which is a DIGITS-ONLY run since the start of
+            //    the word and NOTHING ELSE.** Over-deletion is as dangerous as
+            //    under-deletion — it displaces every decision word LEFT — and
+            //    `git x2>/tmp/o push --force origin main` is the control:
+            //    bash gives git `[x2] [push] [--force] [origin] [main]`, so `x2`
+            //    is a real argv word the operator merely TERMINATED, and it is
+            //    FLUSHED rather than discarded.
+            if started {
+                if word_all_bare_digits && !text.is_empty() {
+                    // An IO_NUMBER, discarded with the redirection it belongs
+                    // to: `git 2>/dev/null push …` gives `[push] …`.
+                    text.clear();
+                    started = false;
+                    expansion = false;
+                    literal = true;
+                    word_all_bare_digits = true;
+                } else {
+                    // `{v}>` is not modelled; see `is_fd_allocation_prefix`.
+                    unresolvable = is_fd_allocation_prefix(&text);
+                    flush!();
+                }
+            }
+
+            // 2. The operator, longest match first.
+            let op_len = redirection_operator_len(&chars, op_start).unwrap_or(1);
+
+            // 3. The target word — **and neither it nor the operator emits a
+            //    token.** A production that does not complete fails closed
+            //    rather than falling through as an ordinary word.
+            match skip_redirection_target(&chars, op_start + op_len) {
+                Some(after) => index = after,
+                None => {
+                    unresolvable = true;
+                    index = op_start + op_len;
+                }
+            }
+
+            if unresolvable {
+                tokens.push(Token {
+                    text: chars[op_start..op_start + op_len].iter().collect(),
+                    operator: true,
+                    expansion: false,
+                    word_splitting_flush: false,
+                    literal: true,
+                    brace_splice: false,
+                    splice_can_produce_governed: false,
+                    redirection_unresolvable: true,
+                });
+            }
+
+            // A redirection is a word boundary exactly as whitespace is.
+            splice_word = false;
+        }};
     }
 
     while index < chars.len() {
@@ -1916,6 +2203,7 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
                                 // and the creation is COUNTED (`T-19-93`).
                                 BracePair::Literal => {
                                     begin_word!();
+                                    word_all_bare_digits = false;
                                     text.push('{');
                                     text.push_str(&contents);
                                     text.push('}');
@@ -1967,7 +2255,33 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
                     literal: true,
                     brace_splice,
                     splice_can_produce_governed,
+                    redirection_unresolvable: false,
                 });
+            }
+            // **`&>` and `&>>` are recognised HERE, before `&` reaches the
+            // separator arm below and before its `&&` two-character
+            // consumption.** `&` is in `SEPARATORS`, so without this arm the
+            // guard splits ONE simple command into TWO — `git`, then
+            // `>/tmp/o push --force origin main` — and a redirection parser
+            // running after the separator arm never sees it. Measured:
+            // `git &>/tmp/o push --force origin main` is one simple command to
+            // bash, `ARGV[git]: [push] [--force] [origin] [main]`. Match arms
+            // are tried in order, and that order is the whole of this fix.
+            '&' if chars.get(index) == Some(&'>') => {
+                consume_redirection!(index - 1);
+            }
+            // An unquoted `<` or `>` is a word-terminating METACHARACTER, which
+            // is what bash's lexer already makes it — neither a separator nor an
+            // ordinary word. `SEPARATORS` is unchanged and `is_separator(">")`
+            // is still false: a redirection does not start a new command.
+            //
+            // **Only OUTSIDE quotes.** A quoted `>` never reaches this arm — the
+            // quote loops consume it — which is why `git commit -m ">"`,
+            // `git log --grep='>'`, `git commit -m "a > b"`, `rg ">" src/` and
+            // `--push-option="a>b"` all stay permitted. A BACKSLASH-escaped `>`
+            // never reaches it either, for the same reason.
+            '<' | '>' => {
+                consume_redirection!(index - 1);
             }
             '\n' | ';' | '|' | '&' | '(' | ')' | '}' => {
                 // **Read BEFORE the flush, because `flush!` clears `started`.**
@@ -2000,10 +2314,13 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
                     literal: true,
                     brace_splice: false,
                     splice_can_produce_governed: false,
+                    redirection_unresolvable: false,
                 });
             }
             '\'' => {
                 begin_word!();
+                // A quoted digit run is NOT an IO_NUMBER; see the flag's doc.
+                word_all_bare_digits = false;
                 // Single quotes are literal all the way through, including `$`.
                 loop {
                     match chars.get(index) {
@@ -2022,6 +2339,8 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
             }
             '"' => {
                 begin_word!();
+                // A quoted digit run is NOT an IO_NUMBER; see the flag's doc.
+                word_all_bare_digits = false;
                 loop {
                     match chars.get(index) {
                         Some('"') => {
@@ -2029,6 +2348,18 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
                             break;
                         }
                         Some('\\') => match chars.get(index + 1) {
+                            // **Bash performs the LINE CONTINUATION inside
+                            // double quotes too**, and this branch is reached
+                            // instead of the top-level one, which is why it is a
+                            // spelling of its own rather than the same row.
+                            // Measured: `git "pu\<NL>sh" --force origin main`
+                            // gives `ARGV[git]: [push] [--force] [origin]
+                            // [main]`. Both characters are deleted, producing no
+                            // character; `literal` stays true because a deletion
+                            // is not a rewrite.
+                            Some('\n') => {
+                                index += 2;
+                            }
                             // Only these four are escapes inside double quotes;
                             // every other backslash is a literal backslash, and
                             // a splitter that dropped it would change the word.
@@ -2064,11 +2395,45 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
                 // A trailing backslash is a line continuation whose second half
                 // this function was never given, so this refuses the whole input.
                 let escaped = *chars.get(index)?;
-                begin_word!();
-                index += 1;
-                // Escaping is exactly what makes a character literal, so the bit
-                // is deliberately not cleared here.
-                text.push(escaped);
+                if escaped == '\n' {
+                    // **A LINE CONTINUATION, not an escape.** The reasoning
+                    // below — "escaping is exactly what makes a character
+                    // literal" — is true of every character it names and wrong
+                    // only for the one it does not: a backslash DELETES a
+                    // newline rather than protecting it. Bash removes BOTH
+                    // characters before the word is assembled, so this produces
+                    // NO character.
+                    //
+                    // **It must not START a word**, which is why `begin_word!`
+                    // is not called: `git \<NL>push --force origin main` gives
+                    // bash `ARGV[git]: [push] [--force] [origin] [main]` — two
+                    // words, not three — and a continuation that started one
+                    // would flush an empty word into the REMOTE slot, which is
+                    // the displacement `T-19-98` is about.
+                    //
+                    // **`literal` is deliberately left TRUE.** A deletion is not
+                    // a rewrite: the word is handed to the program byte for
+                    // byte, round 5's bit is RIGHT about it, and clearing the
+                    // bit to obtain a refusal would make it wrong about a word
+                    // it is right about.
+                    //
+                    // The SINGLE-quote loop is untouched, and that is measured
+                    // rather than assumed: bash performs no continuation inside
+                    // single quotes — `git 'pu\<NL>sh' --force origin main`
+                    // gives `[pu\<NL>sh]`, bytes verified with `od -c`. For the
+                    // same reason `\`+CR and `\`+TAB stay ordinary escapes here:
+                    // they are genuine escapes of those characters.
+                    index += 1;
+                } else {
+                    begin_word!();
+                    // An ESCAPED digit is not a bare one: `git \2>/tmp/o push`
+                    // is the word `2` to bash, not an fd.
+                    word_all_bare_digits = false;
+                    index += 1;
+                    // Escaping is exactly what makes a character literal, so the
+                    // bit is deliberately not cleared here.
+                    text.push(escaped);
+                }
             }
             '#' if !started => {
                 // A comment runs to end of line; nothing after it is a command.
@@ -2078,6 +2443,7 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
             }
             _ => {
                 begin_word!();
+                word_all_bare_digits &= ch.is_ascii_digit();
                 if ch == '$' || ch == '`' {
                     expansion = true;
                 }
@@ -2101,6 +2467,7 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
             literal: literal && !splice_word,
             brace_splice: false,
             splice_can_produce_governed: false,
+            redirection_unresolvable: false,
         });
     }
 
@@ -4495,6 +4862,275 @@ mod tests {
             assert!(is_separator(op), "{op}");
         }
         assert!(!is_separator(">"), "a redirection does not start a command");
+    }
+
+    // ---- the redirection production and the line continuation (round 6) ----
+
+    /// Whether any segment of `cmd` carries the unresolvable-redirection mark.
+    fn unresolvable(cmd: &str) -> bool {
+        split_segments_with_heads(cmd)
+            .unwrap_or_else(|| panic!("`{cmd}` must tokenize"))
+            .iter()
+            .any(|segment| segment.redirection_unresolvable)
+    }
+
+    #[test]
+    fn the_redirection_and_continuation_table_recovers_exactly_the_argv_bash_runs() {
+        // **The invariant, and the whole of round 6: the words the guard
+        // classifies must be exactly the words the program receives, in the same
+        // order — no more and no fewer.** Every expected argv below was measured
+        // under bash against argv-printing shims that write to a SIDE FILE
+        // rather than stdout, precisely because eleven of these rows redirect
+        // stdout and would otherwise print nothing.
+        //
+        // Each row is `(command, surviving words, is the command unresolvable)`.
+        for (cmd, expected, marked) in [
+            // --- the redirection production: operator AND target deleted ---
+            // ARGV[git]: [push] [--force] [origin] [main] for every one of these.
+            (
+                "git >/dev/null push --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+                false,
+            ),
+            // A bare digits-only run since the word start IS an IO_NUMBER.
+            (
+                "git 2>/dev/null push --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+                false,
+            ),
+            // **The OVER-DELETION control, and the row that makes this table
+            // non-decorative.** `x2` is NOT digits-only, so bash ends the word
+            // `x2` and begins the redirection: `ARGV[git]: [x2] [push] [--force]
+            // [origin] [main]`. `x2` IS argv, and real git answers
+            // `git: 'x2' is not a git command`. An implementation that deleted
+            // any word part before a `>` turns this row RED — and nothing else
+            // in this table's columns distinguishes over-deletion from the
+            // model.
+            (
+                "git x2>/tmp/o push --force origin main",
+                vec!["git", "x2", "push", "--force", "origin", "main"],
+                false,
+            ),
+            // A QUOTED digit run is not an IO_NUMBER either: measured,
+            // `ARGV[git]: [2] [push] [--force] [origin] [main]`.
+            (
+                "git \"2\">/tmp/o push --force origin main",
+                vec!["git", "2", "push", "--force", "origin", "main"],
+                false,
+            ),
+            // An ATTACHED operator terminates the word before it; the operator
+            // need not be its own word and `push` survives.
+            (
+                "git push>/dev/null --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+                false,
+            ),
+            // Whitespace is allowed between the operator and its target.
+            (
+                "git > /tmp/o push --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+                false,
+            ),
+            // `&>` recognised BEFORE `&` reaches the separator arm — one simple
+            // command to bash, and two segments to the guard without this.
+            (
+                "git &>/tmp/o push --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+                false,
+            ),
+            (
+                "git &>>/tmp/o push --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+                false,
+            ),
+            // The multi-character operators no single-`>` rule reaches.
+            (
+                "git <<<x push --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+                false,
+            ),
+            (
+                "git >|/tmp/o push --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+                false,
+            ),
+            (
+                "git <>/tmp/o push --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+                false,
+            ),
+            (
+                "git >>/tmp/x push --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+                false,
+            ),
+            // A heredoc: the DELIMITER is the target and is deleted; the body is
+            // not argv and is not modelled.
+            (
+                "git <<EOF push --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+                false,
+            ),
+            // `2>&1` — the fd-duplicating operator, target `1`.
+            (
+                "git fetch origin 2>&1",
+                vec!["git", "fetch", "origin"],
+                false,
+            ),
+            // --- fail-closed: a production that does not COMPLETE ---
+            // `git >` — bash does not run this either (`syntax error near
+            // unexpected token 'newline'`). Its permitted twin `ls >` carries
+            // the same mark and is NOT refused, because the mark only refuses
+            // when a governed program is reached.
+            ("git >", vec!["git", ">"], true),
+            ("ls >", vec!["ls", ">"], true),
+            // A `{name}` fd-allocation prefix is deliberately not modelled.
+            (
+                "git {v}>/tmp/o push --force origin main",
+                vec!["git", "{v}", ">", "push", "--force", "origin", "main"],
+                true,
+            ),
+            // --- quoting: an operator is recognised only OUTSIDE quotes ---
+            // These rows turn RED for an implementation that ignores quoting,
+            // and nothing else in the table's columns catches that.
+            (
+                "git commit -m \">\"",
+                vec!["git", "commit", "-m", ">"],
+                false,
+            ),
+            (
+                "git log --grep='>'",
+                vec!["git", "log", "--grep=>"],
+                false,
+            ),
+            ("rg \">\" src/", vec!["rg", ">", "src/"], false),
+            // A BACKSLASH-escaped operator is a literal character too:
+            // `ARGV[git]: [>x] [push]`, measured.
+            ("git \\>x push", vec!["git", ">x", "push"], false),
+            // --- the line continuation: two characters bash DELETES ---
+            // `git pu\<NL>sh --force origin main`
+            //   -> ARGV[git]: [push] [--force] [origin] [main]
+            (
+                "git pu\\\nsh --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+                false,
+            ),
+            // It must NOT start a word: two words here, not three.
+            (
+                "git \\\npush --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+                false,
+            ),
+            // Bash performs the continuation inside DOUBLE quotes too, through
+            // the quote loop's own backslash branch.
+            (
+                "git \"pu\\\nsh\" --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+                false,
+            ),
+            // **The SINGLE-quote loop is untouched**, and this row is why:
+            // bash performs no continuation there, and
+            // `git 'pu\<NL>sh' --force origin main` gives `[pu\<NL>sh]` —
+            // bytes verified with `od -c`.
+            (
+                "git 'pu\\\nsh' --force origin main",
+                vec!["git", "pu\\\nsh", "--force", "origin", "main"],
+                false,
+            ),
+            // The displacement row: the whitespace AFTER a continuation used to
+            // flush it into its own word occupying the REMOTE slot.
+            (
+                "git push \\\n origin refs/heads/gsd-auto/alpha/w",
+                vec!["git", "push", "origin", "refs/heads/gsd-auto/alpha/w"],
+                false,
+            ),
+        ] {
+            assert_eq!(
+                words(cmd),
+                expected,
+                "the words recovered from `{cmd:?}` must be exactly the argv bash runs"
+            );
+            assert_eq!(
+                unresolvable(cmd),
+                marked,
+                "the unresolvable mark for `{cmd:?}`"
+            );
+        }
+
+        // **`literal` is NOT cleared by any of this, and a deletion is not a
+        // rewrite.** Round 5's bit stays RIGHT about the words it is right
+        // about; clearing it to obtain a refusal would turn every one of round
+        // 5's verdict pins green while the inversion quietly stopped being the
+        // thing that produced them.
+        for cmd in [
+            "git pu\\\nsh --force origin main",
+            "git \"pu\\\nsh\" --force origin main",
+        ] {
+            assert!(
+                tokenize(cmd)
+                    .unwrap()
+                    .iter()
+                    .all(|token| token.literal),
+                "every word of `{cmd:?}` is handed to the program byte for byte"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unenumerable_brace_word_is_distinguishable_from_an_enumerated_governed_one() {
+        // **Audit 5's disclosed CORPUS LIMIT, addressed in the one place the
+        // distinction is observable.** `sh {-c,"git push --force …"}` is refused
+        // because a QUOTE inside an alternative makes the word's product set
+        // unenumerable — correct, and fail-closed. But the corpus cannot tell
+        // that refusal apart from an ENUMERATED one: both reach the same
+        // `envelope_assertion_failed` identifier through the same clause at the
+        // guard boundary. The difference exists only inside the whole-word
+        // product scan, which is why this is a unit assertion and not a driven
+        // row.
+        let scan = |word: &str| {
+            let chars: Vec<char> = word.chars().collect();
+            brace_word_products(&chars, 0)
+        };
+
+        // UNENUMERABLE — `products` is `None`, and `can_produce_governed`
+        // answers `true` because a set that cannot be computed cannot be
+        // cleared, not because a governed name was found in it.
+        let quoted_alternative = scan("{-c,\"git push --force origin main\"}");
+        assert_eq!(
+            quoted_alternative.products, None,
+            "a quote inside an alternative is UNENUMERABLE: bash's quote removal \
+             happens after the splice, so the products are not knowable here"
+        );
+        assert!(
+            quoted_alternative.can_produce_governed(),
+            "and it fails CLOSED"
+        );
+
+        // ENUMERATED — a real product set, and a governed BASENAME actually in
+        // it. `{g..g}it` produces exactly `git`, which no alternative spells:
+        // products, never names, and the two are one slot apart.
+        let range = scan("{g..g}it");
+        assert_eq!(
+            range.products,
+            Some(vec!["git".to_string()]),
+            "the products are ENUMERATED, and the governed word is the one the \
+             splice PRODUCES rather than one any alternative spells"
+        );
+        assert!(range.can_produce_governed());
+
+        // The control that keeps the two answers apart from each other: an
+        // enumerated set with NO governed product is cleared, so `true` above
+        // is not vacuous.
+        let benign = scan("{git,svn}-repo");
+        assert_eq!(
+            benign.products,
+            Some(vec!["git-repo".to_string(), "svn-repo".to_string()])
+        );
+        assert!(
+            !benign.can_produce_governed(),
+            "`ls {{git,svn}}-repo` stays PERMITTED — a mention test would refuse \
+             it, and a mention test is one slot away from the class"
+        );
     }
 
     // ---- pull-request creation (D-19's three shapes) ----
