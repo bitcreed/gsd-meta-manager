@@ -3609,3 +3609,1013 @@ fn a_governed_program_behind_a_brace_severed_prefix_is_refused_wherever_the_spli
          whole-word={splice_cases} concatenated={concatenated_cases}"
     );
 }
+
+// ===========================================================================
+// 14. `T-19-99` — the SECOND AXIS: the words the shell DELETES
+// ===========================================================================
+//
+// **The gap moved AXIS, not one slot over, and this section must be legible as a
+// second axis rather than as two more entries in section 13.**
+//
+// Audit 5 enumerated bash's word expansions one at a time against round 5's
+// inverted rule and found **no gap in word ASSEMBLY** — `T-19-92` … `T-19-95`
+// closed, `T-19-93` on the harder COUNT bar. What that inversion answers is
+// *"is this word handed over as written"*. What it does not answer is *"is this
+// word handed over at all"*.
+//
+// So `UNREADABLE_CLASSES` and its seven predicates are **word-ASSEMBLY classes**,
+// and audit 5's `T-19-99` is that every one of them is:
+//
+// > `grep -rnE '"(git|gh|glab)[^"]*[<>][^"]*"' tests/ src/` finds **no
+// > guard-driven row carrying a redirection anywhere in the repository**. The
+// > corpus is therefore structurally incapable of generating, and so of failing
+// > on, `T-19-97` and `T-19-98`.
+//
+// **The seven assembly classes are NOT touched, NOT widened and NOT relaxed.**
+// `UNREADABLE_CLASSES`, `brace_pairs`, the seven predicates, the
+// degenerate-proofing block, `MIN_UNREADABLE_GENERATED_CASES`,
+// `MIN_GENERATED_CASES_PER_UNREADABLE_CLASS` and `MIN_UNREADABLE_FORGE_SLOT_CASES`
+// are byte-identical. Smuggling a `>` into them would model DELETION as if it
+// were ASSEMBLY and lose exactly the distinction this round is about — which is
+// how a corpus comes to model the control it certifies and nothing beside it.
+//
+// **The invariant this axis is written against, stated once.** The words the
+// guard classifies must be exactly the words the program receives, in the same
+// order — no more and no fewer. Two mechanisms sit outside the literalness bit,
+// and both words are perfectly LITERAL by its own test, correctly so: a
+// REDIRECTION is a word the guard reads and the shell deletes from argv,
+// displacing every decision word one slot right (`T-19-97`); a BACKSLASH-NEWLINE
+// is two characters bash deletes before the word is assembled and `tokenize`
+// keeps (`T-19-98`).
+//
+// **A deletion entry is VERDICT-PRESERVING after the fix, which is the opposite
+// of the brace axis and is why this section has a permitted arm at all.** A brace
+// expansion spliced into a permitted governed command is REFUSED after `19-17`,
+// so `19-16` had to keep it out of the invariance-preserving alphabets. A
+// redirection changes no verdict: after `19-19` the surviving argv is what the
+// classifier already answers about. `git >/dev/null status` is permitted today
+// and must stay permitted; `git >/dev/null push --force origin main` is permitted
+// today and must become refused. Both halves are drawn below, or the property
+// could not fail on an implementation that simply refuses everything carrying
+// a `>`.
+//
+// **THIS SECTION IS RED AT PLAN 19-18'S END, BY DESIGN**, except the permitted
+// arm, the degenerate-proofing block and the counting floors. The refusal
+// assertions cannot pass until `19-19`'s rule exists.
+
+/// One whitespace-delimited word of a command, with a per-character record of
+/// whether the character was inside quotes.
+///
+/// **Quoting is tracked because a quoted `>` is an ordinary character.**
+/// `git log --grep='>'` is pinned PERMITTED in
+/// `tests/envelope_argv_deletion.rs`, and a predicate that counted it would make
+/// the floors below satisfiable by a row the rule must never touch — the same
+/// discipline `draws_a_glob` and `draws_a_tilde` already use.
+struct DeletionWord {
+    chars: Vec<char>,
+    quoted: Vec<bool>,
+}
+
+/// Split an entry into words on UNQUOTED whitespace, carrying the quote mask.
+fn deletion_words(entry: &str) -> Vec<DeletionWord> {
+    let mut words: Vec<DeletionWord> = Vec::new();
+    let mut chars: Vec<char> = Vec::new();
+    let mut quoted: Vec<bool> = Vec::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut started = false;
+
+    for ch in entry.chars() {
+        match ch {
+            '\'' if !in_double => {
+                in_single = !in_single;
+                started = true;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                started = true;
+            }
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if started {
+                    words.push(DeletionWord {
+                        chars: std::mem::take(&mut chars),
+                        quoted: std::mem::take(&mut quoted),
+                    });
+                    started = false;
+                }
+            }
+            c => {
+                chars.push(c);
+                quoted.push(in_single || in_double);
+                started = true;
+            }
+        }
+    }
+    if started {
+        words.push(DeletionWord { chars, quoted });
+    }
+    words
+}
+
+/// Bash's redirection operators, LONGEST FIRST so the match is the longest one.
+///
+/// `<<-` and `&>>` are named here and DRAWN by `DISPLACING_REDIRECTIONS` below,
+/// because they are the two spellings `19-19`'s production uniquely adds: a class
+/// list that named them without an entry drawing them would be a floor nothing
+/// satisfies.
+const REDIRECTION_OPERATORS: &[&str] = &[
+    "&>>", "<<<", "<<-", "&>", ">>", "<<", ">|", "<>", ">&", "<&", ">", "<",
+];
+
+/// The longest redirection operator starting at `index`, if the whole operator is
+/// UNQUOTED.
+fn operator_at(word: &DeletionWord, index: usize) -> Option<&'static str> {
+    for operator in REDIRECTION_OPERATORS {
+        let width = operator.chars().count();
+        if index + width > word.chars.len() {
+            continue;
+        }
+        if (index..index + width).any(|k| word.quoted[k]) {
+            continue;
+        }
+        if word.chars[index..index + width]
+            .iter()
+            .copied()
+            .eq(operator.chars())
+        {
+            return Some(operator);
+        }
+    }
+    None
+}
+
+/// The length of the leading all-digits run of a word — bash's IO_NUMBER.
+///
+/// **An IO_NUMBER is a digits-only run since the START of the word.** That single
+/// rule is what makes `git 2>/dev/null push …` a redirection and
+/// `git x2>/tmp/o push …` a command with the real argv word `x2` — the
+/// OVER-DELETION control pinned PERMITTED in `tests/envelope_argv_deletion.rs`.
+fn io_number_width(word: &DeletionWord) -> usize {
+    word.chars
+        .iter()
+        .zip(word.quoted.iter())
+        .take_while(|(c, q)| !**q && c.is_ascii_digit())
+        .count()
+}
+
+/// **Class 1** — an unquoted redirection operator standing as its OWN
+/// whitespace-delimited word or LEADING one, with a following word.
+///
+/// `git >/dev/null push …`, `git > /tmp/o push …` and `git 2>/dev/null push …`
+/// satisfy this. `git push>/dev/null …` does NOT: the operator does not lead the
+/// word, which is exactly why class 2 is separate.
+fn draws_a_separate_word_redirection(entry: &str) -> bool {
+    let words = deletion_words(entry);
+    if words.len() < 2 {
+        return false;
+    }
+    words.iter().enumerate().any(|(index, word)| {
+        index + 1 < words.len() && operator_at(word, io_number_width(word)).is_some()
+    })
+}
+
+/// **Class 2** — an unquoted redirection operator with a NON-EMPTY literal run
+/// before it INSIDE the same whitespace-delimited word, where that run is not an
+/// IO_NUMBER.
+///
+/// **Class 1 cannot satisfy this, and that is the whole reason the class is
+/// separate**: the operator need not be its own word, and a whitespace-delimited
+/// predicate walks straight around it. `git push>/dev/null --force …` is measured
+/// at exit 0 today and prints `ARGV[git]: [push] [--force] [origin] [main]`.
+///
+/// The OVER-DELETION control `git x2>/tmp/o push …` draws this class too, which
+/// is what makes the class drawable in BOTH directions: a rule that deleted the
+/// whole word rather than the redirection would lose the real argv word `x2`.
+///
+/// **Only the FIRST operator occurrence in the word is considered, and getting
+/// that wrong over-counted the class by 90 cases when this predicate was first
+/// written.** A naive "some operator has a non-empty run before it" reads the
+/// second `>` of `>>/tmp/x` as attached to a literal run `>`, and likewise for
+/// `<<<x`, `<>/tmp/o`, `&>/tmp/o`, `&>>/tmp/o` and `<<-EOF` — six of the eleven
+/// entries, every one of which is a SEPARATE-WORD redirection. Bash takes the
+/// LONGEST operator match at the start of the redirection and everything after it
+/// is the TARGET, never a literal run, which is exactly what this now encodes.
+fn draws_an_attached_redirection(entry: &str) -> bool {
+    deletion_words(entry).iter().any(|word| {
+        let fd = io_number_width(word);
+        (0..word.chars.len())
+            .find(|index| operator_at(word, *index).is_some())
+            .is_some_and(|first| first > fd)
+    })
+}
+
+/// **Class 3** — a MULTI-CHARACTER or FD-CARRYING operator: `>>`, `2>`, `1>`,
+/// `<<<`, `<<`, `<<-`, `>|`, `<>`, `>&`, `<&`, `&>`, `&>>`.
+///
+/// **A bare `>` cannot satisfy this**, and the class exists because five of the
+/// seven cells found while planning round 6 are exactly here — `&>`, `>|`, `<>`,
+/// `<<EOF` and `{v}>`.
+fn draws_a_multi_character_or_fd_operator(entry: &str) -> bool {
+    deletion_words(entry).iter().any(|word| {
+        let fd = io_number_width(word);
+        if fd > 0 && operator_at(word, fd).is_some() {
+            return true;
+        }
+        (0..word.chars.len())
+            .any(|index| operator_at(word, index).is_some_and(|op| op.chars().count() > 1))
+    })
+}
+
+/// Every unquoted backslash-newline in an entry, as `(index of the backslash,
+/// total length)`.
+///
+/// Only SINGLE quotes suppress a line continuation — bash performs the
+/// continuation inside double quotes, which is why
+/// `git "pu\`+NL+`sh" --force origin main` is a row in
+/// `tests/envelope_argv_deletion.rs` and the single-quoted spelling is one of
+/// audit 5's three DISCARDED measurements.
+fn line_continuations(entry: &str) -> (Vec<usize>, Vec<char>) {
+    let chars: Vec<char> = entry.chars().collect();
+    let mut found = Vec::new();
+    let mut in_single = false;
+    let mut index = 0usize;
+    while index < chars.len() {
+        match chars[index] {
+            '\'' => in_single = !in_single,
+            '\\' if !in_single && chars.get(index + 1) == Some(&'\n') => {
+                found.push(index);
+                index += 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    (found, chars)
+}
+
+/// **Class 4** — character-pair deletion INSIDE a word: a backslash-newline with
+/// a non-empty literal run on BOTH sides inside one word.
+///
+/// `git pu\`+NL+`sh --force origin main` satisfies this. **Class 5 cannot.**
+fn draws_a_continuation_inside_a_word(entry: &str) -> bool {
+    let (found, chars) = line_continuations(entry);
+    found.iter().any(|&index| {
+        let left = index > 0 && !chars[index - 1].is_whitespace();
+        let right = chars
+            .get(index + 2)
+            .is_some_and(|c| !c.is_whitespace());
+        left && right
+    })
+}
+
+/// **Class 5** — character-pair deletion at a word BOUNDARY: a backslash-newline
+/// with whitespace or a word boundary on at least one side.
+///
+/// `git \`+NL+`push --force origin main` satisfies this, and so does the second
+/// pre-existing FALSE REFUSAL `git push \`+NL+` origin refs/heads/gsd-auto/alpha/w`,
+/// where the whitespace AFTER the continuation flushes it into its own word in
+/// the REMOTE slot. **Class 4 cannot satisfy this and class 5 cannot satisfy
+/// class 4**, which is the split that makes the pair non-degenerate.
+fn draws_a_continuation_at_a_word_boundary(entry: &str) -> bool {
+    let (found, chars) = line_continuations(entry);
+    found.iter().any(|&index| {
+        let left_boundary = index == 0 || chars[index - 1].is_whitespace();
+        let right_boundary = chars
+            .get(index + 2)
+            .is_none_or(|c| c.is_whitespace());
+        left_boundary || right_boundary
+    })
+}
+
+/// One named class and the predicate that decides whether an entry draws it.
+type DeletionClass = (&'static str, fn(&str) -> bool);
+
+/// The FIVE classes, named once so the per-alphabet floor, the per-class floor
+/// and the counted floor all count the same thing.
+///
+/// **A SECOND axis standing beside `UNREADABLE_CLASSES`, not two more entries in
+/// it.** The seven above are ways bash ASSEMBLES a word the guard cannot read;
+/// the five below are ways bash DELETES something the guard counted.
+const DELETION_CLASSES: &[DeletionClass] = &[
+    ("separate-word redirection", draws_a_separate_word_redirection),
+    ("attached redirection", draws_an_attached_redirection),
+    (
+        "multi-character or fd operator",
+        draws_a_multi_character_or_fd_operator,
+    ),
+    ("continuation inside a word", draws_a_continuation_inside_a_word),
+    (
+        "continuation at a word boundary",
+        draws_a_continuation_at_a_word_boundary,
+    ),
+];
+
+/// Whether an entry draws ANY of the five.
+fn carries_a_deletion_class(entry: &str) -> bool {
+    DELETION_CLASSES
+        .iter()
+        .any(|(_, predicate)| predicate(entry))
+}
+
+#[test]
+fn the_corpus_can_draw_every_one_of_the_five_deletion_classes() {
+    // **The degenerate-proofing, asserted rather than described**, in the shape
+    // `the_corpus_can_draw_every_one_of_the_seven_unreadable_classes` already
+    // uses. If any pair below collapsed, the floors would be satisfiable by an
+    // alphabet that cannot generate the cells this round is about — which is
+    // exactly how the last two plan-check rounds each found a live cell.
+    assert!(
+        draws_a_separate_word_redirection("git >/dev/null push --force origin main"),
+        "`git >/dev/null push …` IS a separate-word redirection"
+    );
+    assert!(
+        !draws_an_attached_redirection("git >/dev/null push --force origin main"),
+        "`git >/dev/null push …` must NOT satisfy the ATTACHED class: a corpus of \
+         separate-word redirections cannot fail on `git push>/dev/null --force …`, which is \
+         measured at exit 0 today"
+    );
+    assert!(
+        draws_an_attached_redirection("git push>/dev/null --force origin main"),
+        "`git push>/dev/null --force …` IS an attached redirection — the operator need not \
+         be its own word, and a whitespace-delimited predicate walks straight around it"
+    );
+
+    assert!(
+        draws_a_separate_word_redirection("git > /tmp/o push --force origin main"),
+        "the operator as its OWN word is still a separate-word redirection"
+    );
+    assert!(
+        !draws_a_multi_character_or_fd_operator("git > /tmp/o push --force origin main"),
+        "a bare `>` must NOT satisfy the multi-character-or-fd class: a corpus of bare `>` \
+         entries cannot fail on `&>`, `>|`, `<>`, `<<` or `<<-`, five of which are cells \
+         measured at exit 0 today"
+    );
+    assert!(
+        draws_a_multi_character_or_fd_operator("git 2>/dev/null push --force origin main"),
+        "`2>` IS fd-carrying"
+    );
+    for spelling in [
+        "git >>/tmp/x push --force origin main",
+        "git <<<x push --force origin main",
+        "git >|/tmp/o push --force origin main",
+        "git <>/tmp/o push --force origin main",
+        "git &>/tmp/o push --force origin main",
+        "git &>>/tmp/o push --force origin main",
+        "git <<-EOF push --force origin main",
+    ] {
+        assert!(
+            draws_a_multi_character_or_fd_operator(spelling),
+            "`{spelling}` carries a MULTI-CHARACTER operator and must draw class 3"
+        );
+        // **And none of them is ATTACHED.** This is the degenerate-proofing for a
+        // real bug in the first draft of `draws_an_attached_redirection`, caught
+        // by the exact per-class count below: reading the second `>` of
+        // `>>/tmp/x` as an operator attached to a literal run `>` made six of the
+        // eleven entries satisfy class 2 as well, over-counting it by 90 cases
+        // and collapsing the class-1/class-2 split this axis turns on. Bash takes
+        // the LONGEST operator match at the start of a redirection; everything
+        // after it is the TARGET.
+        assert!(
+            !draws_an_attached_redirection(spelling),
+            "`{spelling}` is a SEPARATE-WORD redirection, not an attached one. If this is \
+             true the class-1/class-2 split has collapsed and a corpus of separate-word \
+             redirections would satisfy the attached floor — which is a corpus that cannot \
+             fail on `git push>/dev/null --force …`."
+        );
+    }
+
+    assert!(
+        draws_a_continuation_inside_a_word("git pu\\\nsh --force origin main"),
+        "`pu\\`+NL+`sh` IS a continuation inside a word"
+    );
+    assert!(
+        !draws_a_continuation_at_a_word_boundary("git pu\\\nsh --force origin main"),
+        "`pu\\`+NL+`sh` must NOT satisfy the BOUNDARY class: a corpus of in-word \
+         continuations cannot fail on `git \\`+NL+`push …`, nor on the second pre-existing \
+         FALSE REFUSAL, whose whole mechanism is the flush the trailing whitespace causes"
+    );
+    assert!(
+        draws_a_continuation_at_a_word_boundary("git \\\npush --force origin main"),
+        "`git \\`+NL+`push …` IS a boundary continuation"
+    );
+    assert!(
+        !draws_a_continuation_inside_a_word("git \\\npush --force origin main"),
+        "`git \\`+NL+`push …` must NOT satisfy the IN-WORD class: the two are different \
+         mechanisms and the split is what makes the pair non-degenerate"
+    );
+
+    // The QUOTING control. A quoted `>` is an ordinary character, and
+    // `git log --grep='>'` is pinned PERMITTED in
+    // `tests/envelope_argv_deletion.rs`. A predicate that counted it would make
+    // every floor below satisfiable by a row the rule must never touch.
+    for (class, predicate) in DELETION_CLASSES {
+        assert!(
+            !predicate("git log --grep='>'"),
+            "`git log --grep='>'` must satisfy NO deletion class, and it satisfies \
+             `{class}`. A quoted redirection character is an ordinary character."
+        );
+        assert!(
+            !predicate("git commit -m \"a > b\""),
+            "`git commit -m \"a > b\"` must satisfy NO deletion class, and it satisfies \
+             `{class}`."
+        );
+    }
+
+    // And the OVER-DELETION control DOES draw a class — the class must be
+    // drawable in both directions, or the corpus cannot fail on a rule that
+    // deletes too much.
+    assert!(
+        draws_an_attached_redirection("git x2>/tmp/o push --force origin main"),
+        "`git x2>/tmp/o push …` draws the ATTACHED class. It is pinned PERMITTED in \
+         `tests/envelope_argv_deletion.rs` because bash gives git `[x2] [push] [--force] \
+         [origin] [main]` — an IO_NUMBER is a digits-only run since the START of the word, \
+         so `x2` IS argv. This is the row that tells a deletion MODEL apart from a rule \
+         that deletes any word part before a `>`."
+    );
+    assert!(
+        !draws_an_attached_redirection("git 2>/dev/null push --force origin main"),
+        "`2>` is an IO_NUMBER and NOT a literal run: it must not satisfy the attached class, \
+         or the over-deletion control's whole distinction is lost"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 14a. The alphabets — spliced where the hole ACTUALLY is
+// ---------------------------------------------------------------------------
+
+/// The displacement alphabet, spliced **between the governed program and its
+/// decision words**.
+///
+/// **Not a wrapper prefix and not a trailing operand.** Measured at this file's
+/// base commit: `>/dev/null git push --force origin main`,
+/// `2>/dev/null git …`, `env >/dev/null git …` and
+/// `git push --force origin main >/dev/null` are ALL already refused at exit 2
+/// `force_push_blocked` — `resolve_program` walks past a leading redirection as
+/// it would any wrapper operand and finds `git` — and
+/// `>out gh pr create --title x` is already correctly COUNTED. An alphabet
+/// drawing those positions would give a property that is GREEN before the fix and
+/// certifies nothing.
+///
+/// **Every entry here is VERDICT-PRESERVING after the fix**, which is why the
+/// property below asserts refusal over refused bases and PERMISSION over
+/// permitted ones. This is the opposite of `19-16`'s brace entries, which had to
+/// be kept out of the invariance-preserving alphabets because they are STRICTER
+/// than their bases after `19-17`.
+///
+/// **`&>>/tmp/o` and `<<-EOF` are minimum entries because they are the two
+/// spellings `19-19`'s production uniquely adds**, and both are measured at this
+/// file's base commit: `git &>>/tmp/o push --force origin main` and
+/// `git <<-EOF push --force origin main` are at exit 0 with
+/// `ARGV[git]: [push] [--force] [origin] [main]` under the shims, and
+/// `git &>>/tmp/o status` and `git <<-EOF status` are at exit 0 with
+/// `ARGV[git]: [status]` — live on the refused half and verdict-preserving on the
+/// permitted half, so both arms can draw them.
+///
+/// **`{v}>/tmp/o` is DELIBERATELY NOT an entry here.** Every entry must be
+/// verdict-PRESERVING, because the permitted arm asserts the spliced verdict
+/// EQUALS the unspliced one. A `{name}` fd-allocation prefix is the one spelling
+/// `19-19` does **not** model — it is marked unresolvable and refuses — so
+/// `git {v}>/tmp/o status` would be STRICTER than its base and would break
+/// invariance in exactly the direction `19-16` recorded for the
+/// `GIT_CONFIG_COUNT=0` prefix, turning this property permanently red in a file
+/// `19-19` may not edit. It is RECORDED instead, unasserted, in
+/// `tests/envelope_argv_deletion.rs` section 9. This is the same call `19-16`
+/// made when it gave `SEVERED_BRACE_PREFIXES` its own alphabet rather than
+/// lowering a floor its class could not satisfy.
+const DISPLACING_REDIRECTIONS: &[&str] = &[
+    ">/dev/null",
+    "2>/dev/null",
+    "1>/dev/null",
+    ">>/tmp/x",
+    "> /tmp/o",
+    "<<<x",
+    ">|/tmp/o",
+    "<>/tmp/o",
+    "&>/tmp/o",
+    "&>>/tmp/o",
+    "<<-EOF",
+];
+
+/// Where a redirection entry is spliced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum RedirectionSplice {
+    /// Its own whitespace-delimited word — class 1.
+    AsItsOwnWord,
+    /// Appended to the decision word at the slot — class 2.
+    AttachedToTheDecisionWord,
+}
+
+const REDIRECTION_SPLICES: &[RedirectionSplice] = &[
+    RedirectionSplice::AsItsOwnWord,
+    RedirectionSplice::AttachedToTheDecisionWord,
+];
+
+/// The backslash-newline splice points — the second alphabet of this axis.
+///
+/// Two points rather than two strings, because what distinguishes `T-19-98`'s two
+/// classes is WHERE the pair sits, not what it spells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ContinuationSplice {
+    /// Between two words — class 5, the mechanism of the second pre-existing
+    /// FALSE REFUSAL.
+    AtTheWordBoundary,
+    /// Halfway through the decision word — class 4, `git pu\`+NL+`sh …`.
+    InsideTheWord,
+}
+
+const CONTINUATION_SPLICES: &[ContinuationSplice] = &[
+    ContinuationSplice::AtTheWordBoundary,
+    ContinuationSplice::InsideTheWord,
+];
+
+/// Bases whose UNWRAPPED form is REFUSED — measured in the property's own floor
+/// before the splice loop runs.
+const DELETION_REFUSED_BASES: &[&str] = &[
+    "git push --force origin main",
+    "git push -f origin main",
+    // No second carrier at all: for these the guard is the only control.
+    "git stash",
+    "git update-ref -d refs/heads/main",
+    // Disarms layer 3, which is the loss of the second carrier.
+    "git config core.hooksPath /tmp/x",
+];
+
+/// Bases whose UNWRAPPED form is PERMITTED. **Without this half the property
+/// cannot fail on an implementation that refuses everything carrying a `>`**, and
+/// reading git state is the first thing a driven run does.
+const DELETION_PERMITTED_BASES: &[&str] = &[
+    "git status",
+    "git log --oneline",
+    "git diff",
+    "gh pr list --limit 5",
+];
+
+/// The splice slots of a base: strictly BETWEEN the governed program (word 0) and
+/// its decision words, capped at two so the generated corpus stays bounded.
+fn deletion_slots(base: &str) -> std::ops::Range<usize> {
+    1..base.split_whitespace().count().min(3)
+}
+
+/// Splice one redirection entry into `base` at `slot`.
+fn redirection_case(base: &str, slot: usize, entry: &str, splice: RedirectionSplice) -> String {
+    let mut words: Vec<String> = base.split_whitespace().map(str::to_string).collect();
+    match splice {
+        RedirectionSplice::AsItsOwnWord => words.insert(slot, entry.to_string()),
+        RedirectionSplice::AttachedToTheDecisionWord => {
+            words[slot] = format!("{}{entry}", words[slot]);
+        }
+    }
+    words.join(" ")
+}
+
+/// Whether an entry may be ATTACHED to a decision word.
+///
+/// **An entry beginning with an fd digit may not.** Appending `2>/dev/null` to
+/// `push` spells `push2>/dev/null`, which bash reads as the argv word `push2`
+/// plus a redirection — a DIFFERENT decision word, not a displaced one, and a
+/// verdict `19-19` could not restore. That is the over-deletion control's rule
+/// running in the other direction, and it is why the class-2 predicate excludes
+/// the IO_NUMBER run.
+fn is_attachable(entry: &str) -> bool {
+    !entry.starts_with(|c: char| c.is_ascii_digit())
+}
+
+/// Splice a backslash-newline into `base` at `slot`.
+fn continuation_case(base: &str, slot: usize, splice: ContinuationSplice) -> String {
+    let mut words: Vec<String> = base.split_whitespace().map(str::to_string).collect();
+    match splice {
+        ContinuationSplice::AtTheWordBoundary => words.insert(slot, "\\\n".to_string()),
+        ContinuationSplice::InsideTheWord => {
+            let word: Vec<char> = words[slot].chars().collect();
+            let half = (word.len() / 2).max(1);
+            let head: String = word[..half].iter().collect();
+            let tail: String = word[half..].iter().collect();
+            words[slot] = format!("{head}\\\n{tail}");
+        }
+    }
+    words.join(" ")
+}
+
+/// Every case this axis generates, as `(base, slot, label, command)`.
+///
+/// One function so the counting floor below and the guard-driven property count
+/// exactly the same thing — a second enumeration would be a second thing to keep
+/// in step.
+fn deletion_cases(bases: &[&'static str]) -> Vec<(&'static str, usize, String, String)> {
+    let mut cases = Vec::new();
+    for base in bases.iter().copied() {
+        for slot in deletion_slots(base) {
+            for entry in DISPLACING_REDIRECTIONS {
+                for splice in REDIRECTION_SPLICES {
+                    if *splice == RedirectionSplice::AttachedToTheDecisionWord
+                        && !is_attachable(entry)
+                    {
+                        continue;
+                    }
+                    cases.push((
+                        base,
+                        slot,
+                        format!("{splice:?}({entry})"),
+                        redirection_case(base, slot, entry, *splice),
+                    ));
+                }
+            }
+            for splice in CONTINUATION_SPLICES {
+                cases.push((
+                    base,
+                    slot,
+                    format!("{splice:?}"),
+                    continuation_case(base, slot, *splice),
+                ));
+            }
+        }
+    }
+    cases
+}
+
+// ---------------------------------------------------------------------------
+// 14b. The floors — per ALPHABET, per CLASS, and COUNTED over generated cases
+// ---------------------------------------------------------------------------
+
+/// The arithmetic, STATED rather than guessed, because audit 5 found `19-16` set
+/// a floor of 50 against a maximum of 40 by construction.
+///
+/// `DISPLACING_REDIRECTIONS` has 11 entries. Nine of them are attachable (all but
+/// `2>/dev/null` and `1>/dev/null`, which would fuse an fd digit onto the decision
+/// word). `CONTINUATION_SPLICES` has 2. So each SLOT emits
+/// `11 + 9 + 2 = 22` cases.
+///
+/// Slots are `1..min(words, 3)`, so a two-word base has one and every longer base
+/// has two:
+///
+/// * refused  — 2 + 2 + 1 + 2 + 2 = **9 slots** -> 9 x 22 = **198** cases
+/// * permitted — 1 + 2 + 1 + 2 = **6 slots** -> 6 x 22 = **132** cases
+/// * total = **330** cases over **15** slots
+///
+/// The floors are EXACT equalities, so losing one case turns them red. Nothing in
+/// `src/` can move them: they are a pure function of the alphabets in this file.
+const DELETION_CASES: usize = 330;
+const DELETION_REFUSED_CASES: usize = 198;
+const DELETION_PERMITTED_CASES: usize = 132;
+const DELETION_SLOTS: usize = 15;
+const MIN_DELETION_CLASSES: usize = 5;
+const MIN_DISPLACING_REDIRECTIONS: usize = 11;
+
+/// The per-class counts over all 330 generated commands, derived the same way:
+///
+/// * class 1 (separate-word) — the 11 own-word cases at each of 15 slots = **165**
+/// * class 2 (attached) — the 9 attached cases at each of 15 slots = **135**
+/// * class 3 (multi-char or fd) — own-word: every entry but `>/dev/null` and
+///   `> /tmp/o` (9) = 135; attached: every ATTACHABLE entry but those same two
+///   (7) = 105; total **240**
+/// * class 4 (continuation in a word) — one per slot = **15**
+/// * class 5 (continuation at a boundary) — one per slot = **15**
+const DELETION_CLASS_COUNTS: &[(&str, usize)] = &[
+    ("separate-word redirection", 165),
+    ("attached redirection", 135),
+    ("multi-character or fd operator", 240),
+    ("continuation inside a word", 15),
+    ("continuation at a word boundary", 15),
+];
+
+#[test]
+fn every_alphabet_this_round_widens_can_draw_a_word_the_shell_deletes() {
+    // **The direct mechanical inverse of audit 5's `T-19-99`.** The auditor
+    // established the defect by grepping for a guard-driven row carrying a
+    // redirection and finding NONE anywhere in the repository; this asserts the
+    // repaired fact, so narrowing the alphabet back turns this red instead of
+    // quietly restoring a corpus that cannot fail on its own class.
+    //
+    // The predicate is evaluated on a REPRESENTATIVE SPLICED COMMAND rather than
+    // on the bare entry, because these entries are splice FRAGMENTS: `>/dev/null`
+    // standing alone has no following word and no decision word to displace.
+    assert!(
+        DELETION_CLASSES.len() >= MIN_DELETION_CLASSES,
+        "the deletion axis must name at least {MIN_DELETION_CLASSES} classes"
+    );
+    assert!(
+        DISPLACING_REDIRECTIONS.len() >= MIN_DISPLACING_REDIRECTIONS,
+        "`DISPLACING_REDIRECTIONS` must carry at least {MIN_DISPLACING_REDIRECTIONS} entries. \
+         The correct response to a red here is to RESTORE entries, never to lower this floor."
+    );
+
+    for entry in DISPLACING_REDIRECTIONS {
+        let spliced = redirection_case(
+            "git push --force origin main",
+            1,
+            entry,
+            RedirectionSplice::AsItsOwnWord,
+        );
+        assert!(
+            carries_a_deletion_class(&spliced),
+            "`DISPLACING_REDIRECTIONS` entry `{entry}` draws NO deletion class when spliced \
+             between the program and its decision words (`{spliced}`).\n\n\
+             An alphabet entry that cannot DRAW a class is an entry whose property cannot \
+             FAIL on one, and every case generated from it certifies a claim about a class \
+             it could never have exercised. It is `T-19-76`'s failure mode for the FIFTH \
+             consecutive round, after `T-19-83`, `T-19-89` and `T-19-95`.\n\n\
+             The correct response is to RESTORE the entry, never to delete this floor."
+        );
+    }
+
+    // The two operators `19-19`'s production uniquely adds must be DRAWN, not
+    // merely named in class 3's doc. A class list naming a spelling no entry
+    // draws is a floor nothing satisfies.
+    for required in ["&>>/tmp/o", "<<-EOF"] {
+        assert!(
+            DISPLACING_REDIRECTIONS.contains(&required),
+            "`{required}` must be an entry: it is one of the two spellings `19-19`'s \
+             production uniquely adds, and a corpus without it cannot fail on the operator \
+             the fix adds beyond what any other row exercises"
+        );
+    }
+
+    // And `{v}>` must NOT be one, for the reason the alphabet's doc gives.
+    assert!(
+        !DISPLACING_REDIRECTIONS
+            .iter()
+            .any(|entry| entry.contains("{v}")),
+        "`{{v}}>/tmp/o` must NOT be an entry. Every entry here is asserted VERDICT-PRESERVING \
+         by the permitted arm below, and `19-19` deliberately does not model a `{{name}}` fd \
+         prefix — so it would be STRICTER than its base and would turn this property \
+         permanently red in a file `19-19` may not edit. It is RECORDED unasserted in \
+         `tests/envelope_argv_deletion.rs` section 9 instead."
+    );
+
+    for splice in CONTINUATION_SPLICES {
+        let spliced = continuation_case("git push --force origin main", 1, *splice);
+        assert!(
+            carries_a_deletion_class(&spliced),
+            "`CONTINUATION_SPLICES` point {splice:?} draws NO deletion class (`{spliced:?}`)"
+        );
+    }
+}
+
+#[test]
+fn the_generated_corpus_really_produces_each_deletion_class_in_quantity() {
+    // **An alphabet floor is not a generation floor.** An entry can sit in an
+    // alphabet and be drawn by nothing, or be drawn once out of hundreds of
+    // cases — which is a corpus that can technically fail on the class and
+    // practically never does. This counts what the generator ACTUALLY emits.
+    //
+    // **Green today and after**: it drives no guard call at all, and no
+    // production change can move it. The counts are a pure function of the
+    // alphabets above, which is exactly what makes the exact equalities safe.
+    let refused = deletion_cases(DELETION_REFUSED_BASES);
+    let permitted = deletion_cases(DELETION_PERMITTED_BASES);
+
+    assert_eq!(
+        refused.len(),
+        DELETION_REFUSED_CASES,
+        "the refused arm's generation count must equal the stated arithmetic exactly, so \
+         losing one case turns this red. `19-16` set a floor of 50 against a maximum of 40 \
+         by construction and it was invisible until the rule landed."
+    );
+    assert_eq!(
+        permitted.len(),
+        DELETION_PERMITTED_CASES,
+        "the permitted arm's generation count must equal the stated arithmetic exactly"
+    );
+
+    let all: Vec<&(&str, usize, String, String)> = refused.iter().chain(permitted.iter()).collect();
+    assert_eq!(all.len(), DELETION_CASES);
+
+    let slots: BTreeSet<(&str, usize)> = all.iter().map(|(base, slot, _, _)| (*base, *slot)).collect();
+    assert_eq!(
+        slots.len(),
+        DELETION_SLOTS,
+        "every splice slot must have been generated. Seen: {slots:?}"
+    );
+
+    let mut per_class: BTreeMap<&str, usize> = BTreeMap::new();
+    for (_, _, _, command) in &all {
+        for (class, predicate) in DELETION_CLASSES {
+            if predicate(command) {
+                *per_class.entry(class).or_default() += 1;
+            }
+        }
+    }
+
+    for (class, expected) in DELETION_CLASS_COUNTS {
+        let got = per_class.get(class).copied().unwrap_or(0);
+        assert_eq!(
+            got, *expected,
+            "the generator emitted {got} cases of the deletion class `{class}`, and the \
+             stated arithmetic derives {expected}.\n\n\
+             This is `T-19-99` counted rather than read. The correct response to a shortfall \
+             is to RESTORE entries, never to lower the number. Full counts: {per_class:?}"
+        );
+    }
+
+    // Recorded so the SUMMARY carries measured counts rather than described ones.
+    println!(
+        "deletion axis: {} cases ({} refused, {} permitted) over {} slots from {} \
+         redirection entries and {} continuation splice points.\nper class: {per_class:?}",
+        all.len(),
+        refused.len(),
+        permitted.len(),
+        slots.len(),
+        DISPLACING_REDIRECTIONS.len(),
+        CONTINUATION_SPLICES.len(),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 14c. The generative property — RED against the pre-fix tree
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_word_the_shell_deletes_between_the_program_and_its_decision_words_is_not_a_decision_word() {
+    // **Modelled directly on
+    // `a_forge_decision_slot_carrying_a_splice_or_a_glob_is_refused_in_every_generated_slot`**,
+    // with the PERMITTED arm running FIRST so that today's failure output is
+    // itself evidence the permitted half passed. A property whose permitted arm
+    // is unobservable until the fix lands cannot be said to fail in both
+    // directions.
+    //
+    // Measured against the built binary while this plan was written: of the 198
+    // refused-arm cases, **124 are at exit 0 today** and 74 are already refused
+    // for a position the splice did not reach. All 132 permitted-arm cases are at
+    // exit 0 today, with no anomalies.
+    //
+    // **The refusal arm asserts the exit code and an EMPTY WALK, not a reason
+    // identifier.** After `19-19` the surviving argv is the dangerous one, and
+    // which D-24 identifier it lands on legitimately differs by base and by
+    // splice — `git push&>/tmp/o --force origin main`, for example, is refused
+    // today under `push_outside_namespace` and must be refused after under
+    // `force_push_blocked`. Pinning the identifier would be pinning a verdict
+    // this plan cannot derive.
+
+    // --- floor 0: the POSITIVE control for the walk -----------------------
+    let control = TempDir::new().expect("a temporary envelope root");
+    permits(control.path(), "gh pr create --title x");
+    assert_eq!(
+        ledger_lines_under(control.path()).len(),
+        1,
+        "a PERMITTED `gh pr create` writes exactly one ledger line, and the walk must be \
+         able to find it. If this is 0 the walk is blind and every empty-walk assertion \
+         below is vacuous. Files: {:?}",
+        files_under(control.path())
+    );
+
+    // --- floor 1: every base answers what the arm it is in claims ---------
+    let mut base_verdicts: BTreeMap<&str, Verdict> = BTreeMap::new();
+    for base in DELETION_PERMITTED_BASES {
+        let envelope = TempDir::new().expect("a temporary envelope root");
+        let got = verdict(envelope.path(), base);
+        assert_eq!(
+            got.code, 0,
+            "the UNWRAPPED base `{base}` must be PERMITTED, or every case built on it is \
+             green or red for the base's own reason. Got reason id: {}",
+            got.reason_id
+        );
+        base_verdicts.insert(base, got);
+    }
+    for base in DELETION_REFUSED_BASES {
+        let envelope = TempDir::new().expect("a temporary envelope root");
+        let got = verdict(envelope.path(), base);
+        assert_eq!(
+            got.code, 2,
+            "the UNWRAPPED base `{base}` must be REFUSED, or the splice cannot be what makes \
+             the difference. Got reason id: {}",
+            got.reason_id
+        );
+        assert!(
+            REASON_IDENTIFIERS.contains(&got.reason_id.as_str()),
+            "and refused under a D-24 identifier. Got: {}",
+            got.reason_id
+        );
+    }
+
+    // --- the PERMITTED arm: a deletion entry is VERDICT-PRESERVING --------
+    //
+    // Runs first, and is GREEN today. Without it, an implementation that simply
+    // refused every governed simple command containing a token the shell deletes
+    // would satisfy the whole refusal arm below — while refusing `git log > out`,
+    // `git status > /tmp/s.txt` and `gh pr create --title x > /tmp/o`, whose
+    // measured cost `tests/envelope_argv_deletion.rs` pins row by row.
+    let mut permitted_cases = 0usize;
+    for (base, slot, label, command) in deletion_cases(DELETION_PERMITTED_BASES) {
+        let envelope = TempDir::new().expect("a temporary envelope root");
+        let got = verdict(envelope.path(), &command);
+        let expected = base_verdicts.get(base).expect("the base was measured");
+        assert_eq!(
+            got,
+            *expected,
+            "\n\nA DELETION ENTRY CHANGED A PERMITTED VERDICT.\n\
+             \n  command : {command:?}\
+             \n  base    : {base}\
+             \n  slot    : {slot}\
+             \n  splice  : {label}\
+             \n  got     : exit {} reason {}\n\
+             \nA redirection and a line continuation are VERDICT-PRESERVING: after the fix \
+             the surviving argv is exactly the base's argv, so the classifier must reach the \
+             base's verdict. Confirmed under bash shims — `git >/dev/null status` prints \
+             `ARGV[git]: [status]` and `git status<<-EOF` prints `ARGV[git]: [status]`.\n\
+             \n**A red here is the fix having become a blanket refusal of anything carrying \
+             a `>`**, which would refuse the ordinary-redirection corpus pinned in \
+             `tests/envelope_argv_deletion.rs` and turn a correct COUNT into a false \
+             positive — the trade `T-19-93`'s bar forbids. It is NOT a reason to narrow \
+             this alphabet.",
+            got.code,
+            got.reason_id,
+        );
+        permitted_cases += 1;
+    }
+
+    // --- the REFUSED arm: RED against the pre-fix tree --------------------
+    let mut refused_cases = 0usize;
+    let mut slots_seen: BTreeSet<(&str, usize)> = BTreeSet::new();
+    let mut classes_seen: BTreeSet<&str> = BTreeSet::new();
+
+    for (base, slot, label, command) in deletion_cases(DELETION_REFUSED_BASES) {
+        slots_seen.insert((base, slot));
+        for (class, predicate) in DELETION_CLASSES {
+            if predicate(&command) {
+                classes_seen.insert(class);
+            }
+        }
+
+        // A fresh root per case, because a permitted forge command writes a
+        // ledger line and a shared root would exhaust the cap and turn later
+        // cases red for a reason that has nothing to do with the splice.
+        let envelope = TempDir::new().expect("a temporary envelope root");
+        let got = verdict(envelope.path(), &command);
+
+        assert_eq!(
+            got.code,
+            2,
+            "\n\nA WORD THE SHELL DELETES DISPLACED THE DECISION WORD AND THE COMMAND WAS \
+             PERMITTED.\n\
+             \n  command : {command:?}\
+             \n  base    : {base}\
+             \n  slot    : {slot}\
+             \n  splice  : {label}\
+             \n  got     : exit {} reason {}\
+             \n  seed    : {SEED:#x}\n\
+             \nA redirection is a word the guard reads and `execve` NEVER SEES: bash removes \
+             the operator and its target before the program runs, displacing every decision \
+             word one slot right. A backslash-newline is two characters bash DELETES before \
+             the word is assembled and `tokenize` keeps. Either way the argv the classifier \
+             answers about is not the argv that runs.\n\
+             \n`SEPARATORS` contains neither `>` nor `<` — correctly, because a redirection \
+             does not start a new command — and `scan_leading` skips only tokens beginning \
+             with `-`, so `>/dev/null` becomes the git VERB and `classify_git` finds it in \
+             no denylist arm.\n\
+             \n**The correct response is to MODEL THE DELETION in `src/envelope/policy.rs` \
+             so the argv the classifier reads is the argv that runs.** It is NOT `>` added \
+             to `SEPARATORS` — the doc there records why, and \
+             `a_redirection_operator_is_not_a_separator_and_this_round_must_not_make_it_one` \
+             pins it. It is NOT a blanket refusal of anything carrying a `>` — the permitted \
+             arm above and the ordinary-redirection corpus in \
+             `tests/envelope_argv_deletion.rs` measure that option's cost. And it is NOT a \
+             narrowing of `DISPLACING_REDIRECTIONS`, `CONTINUATION_SPLICES` or the five \
+             `DELETION_CLASSES`.",
+            got.code,
+            got.reason_id,
+        );
+
+        let written = ledger_lines_under(envelope.path());
+        assert!(
+            written.is_empty(),
+            "`{command:?}` was refused, but a pull-request ledger line was written somewhere \
+             under the envelope root — cap budget consumed for a command that never opens a \
+             pull request. Found: {written:?} Files: {:?}",
+            files_under(envelope.path())
+        );
+
+        refused_cases += 1;
+    }
+
+    // --- the floors, reachable only once the arm above is green -----------
+    assert_eq!(
+        permitted_cases, DELETION_PERMITTED_CASES,
+        "the permitted arm must run every generated case"
+    );
+    assert_eq!(
+        refused_cases, DELETION_REFUSED_CASES,
+        "the refused arm must run every generated case"
+    );
+    assert_eq!(
+        slots_seen.len(),
+        DELETION_REFUSED_BASES
+            .iter()
+            .map(|base| deletion_slots(base).len())
+            .sum::<usize>(),
+        "every splice slot of every refused base must have been generated. Seen: {slots_seen:?}"
+    );
+    assert_eq!(
+        classes_seen.len(),
+        DELETION_CLASSES.len(),
+        "the refused arm must draw ALL FIVE deletion classes — a property that could only \
+         draw some would certify the fix for part of `T-19-97`/`T-19-98` while staying \
+         silent on the rest. Seen: {classes_seen:?}"
+    );
+
+    println!(
+        "deletion axis drove {permitted_cases} permitted and {refused_cases} refused cases \
+         over {} slots, drawing {} classes.",
+        slots_seen.len(),
+        classes_seen.len()
+    );
+}
