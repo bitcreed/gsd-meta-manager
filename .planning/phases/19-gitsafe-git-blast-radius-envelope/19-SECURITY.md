@@ -2021,3 +2021,302 @@ were not opened. Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed;
 
 **No `src/` file was modified by any of this plan's three commits**, and neither
 `Cargo.toml` nor `Cargo.lock` was touched (`T-19-SC`).
+
+---
+
+## Execution record — plan 19-17 (the inverted rule)
+
+**This subsection is an EXECUTION RECORD made by plan 19-17, not an audit
+finding.** It appends to this document and edits nothing above it: no audit
+table, no Security Audit Trail entry, no Accepted Risks Log row, no sign-off,
+and none of the appended subsections of plans 19-13, 19-14, 19-15 or 19-16.
+Re-measuring and re-classifying these rows is `/gsd-secure-phase 19`'s job.
+
+### Read this first: the gate is NOT cleared
+
+**`/gsd-secure-phase 19` is NOT cleared by this plan.**
+
+* **`T-19-86`** — OPEN at `high`, by explicit user scoping decision. Untouched.
+  All four rows re-measured at exit 0 against the built binary.
+* **`T-19-91`** — OPEN at `high`. Its code-side RECORD is corrected here; the
+  remedy is unchanged and no decision-operand rule was added.
+* **`T-19-96`** — registered open, pinned at its measured verdict, not fixed.
+* **`T-19-61` … `T-19-73`, `T-19-84`, `T-19-85`** — open, unaccepted, untouched.
+* **`T-19-74`** — accepted (AR-19-10); core rows re-measured permitted.
+
+Only the **wrapper-operand** sub-class of `T-19-60` is closed. `T-19-86` and
+`T-19-91` are both sub-classes of it and both remain OPEN at `high`.
+
+### The definition of LITERAL, as implemented
+
+A decision word must be **LITERAL — the shell hands it to the program
+byte-identically to how it is written.** The evidence is POSITIVE and is
+collected by `policy::tokenize` while the word is consumed, as `Token.literal`.
+It is never a test on the recovered text, because that text has had its quoting
+removed and could not tell `gh api "repos/{owner}/{repo}/pulls"` — literal, and
+counted before this plan — from a word the shell rewrites.
+
+The bit is cleared when the tokenizer consumes, **outside quotes**:
+
+| class | characters | why it is not literal |
+|---|---|---|
+| expansion | `$`, `` ` `` | parameter, command and arithmetic expansion, and every `$IFS` re-split of the result |
+| pathname | `*`, `?`, `[` | the result depends on the working directory, so it is unknowable **whether or not a file matches today** — a precondition an agent satisfies with `touch push` in the same tool call |
+| tilde | `~` | the result depends on the passwd database of the machine the command will run on |
+| brace | a `{`…`}` pair classified as an EXPANSION, or a `{` with no match | bash splices its alternatives back into the enclosing command, so the word never exists as written |
+
+Inside DOUBLE quotes only `$` and `` ` `` clear it. It is **deliberately not
+cleared** for anything inside single quotes, for a backslash-escaped character
+(escaping is exactly what makes a character literal), or for a `{`…`}` pair with
+no comma and no range, which bash passes through unchanged.
+
+It is **not a second `expansion`**: `Token.expansion` is unchanged, because
+`resolve_program` steps 3 and 5 decide on it and this plan did not move them.
+
+### The two clauses
+
+**Clause 1 — the word.** `first_unreadable_decision_word` (renamed from
+`expansion_in_decision_region`) reads the bit in the **one closure** that read
+`Token.expansion`. Every clause above it is unchanged and every index is still
+reported by the scan the classifier itself runs. **The decision region did not
+move.**
+
+**Clause 2 — the simple command**, folded into `resolve_program_with_head`. A
+command a brace expansion splices into is refused when **(a)** a segment
+resolves `Governed`/`NestedPayload`, **or (b)** a word the splice can PRODUCE has
+a governed basename, or the products cannot be enumerated. The product scan is a
+**whole-word** scan reaching to the next unquoted whitespace or real command
+operator, **never stopping at a `{` or `}`**, joining literal runs with their
+**quoting removed**.
+
+### Every `19-16` RED row, before and after
+
+Measured against `./target/debug/gsd-meta-manager envelope guard alpha`, one
+fresh `GSD_MM_ENVELOPE_ROOT` per row, the envelope directory walked afterwards.
+"before" is `19-16`'s recorded measurement at `09e83bd`, re-confirmed by this
+plan's RED run before any production line moved.
+
+#### `T-19-92` — clause 2(a): a segment resolves `Governed`
+
+| command | before | after | reason id | walk |
+|---|---|---|---|---|
+| `git {-c,core.hooksPath=/dev/null,push,--force,origin,main}` | 0 | **2** | `envelope_assertion_failed` | empty |
+| `git {push,--force} origin main` | 0 | **2** | `envelope_assertion_failed` | empty |
+| `git {update-ref,-d,refs/heads/main}` | 0 | **2** | `envelope_assertion_failed` | empty |
+| `git {config,core.hooksPath,/tmp/x}` | 0 | **2** | `envelope_assertion_failed` | empty |
+| `git {stash,-q}` | 0 | **2** | `envelope_assertion_failed` | empty |
+| `git {--no-pager,push} --force origin main` | 0 | **2** | `envelope_assertion_failed` | empty |
+| `git push origin refs/heads/gsd-auto/alpha/w --forc{e,e}` | 0 | **2** | `envelope_assertion_failed` | empty |
+| `gh {pr,create} --title x` | 0 | **2** | `envelope_assertion_failed` | empty |
+| `gh {api,repos/o/r/pulls} -f title=x` | 0 | **2** | `envelope_assertion_failed` | empty |
+| `glab {mr,create} --title x` | 0 | **2** | `envelope_assertion_failed` | empty |
+| `bash -lc "git {push,--force} origin main"` | 0 | **2** | `envelope_assertion_failed` | empty |
+| `git push {--force,origin} main` (in namespace) | 0 | **2** | `envelope_assertion_failed` | empty |
+
+The last row was cwd-dependent before (exit 0 in namespace, exit 2 out of it
+under an unrelated arm). It is now refused before any push context is resolved,
+so the verdict no longer depends on the repository.
+
+#### `T-19-92` — clause 2(b): NOTHING in the line resolves `Governed`
+
+The head word is `it`, `g`, `t`, or a comma list naming nothing. No
+alternative-NAME test reaches any of these, and the composed word never exists
+as a token.
+
+| command | before | after | how it is reached |
+|---|---|---|---|
+| `{git,push,--force,origin,main}` | 0 | **2** | products contain `git` |
+| `{env,git} push --force origin main` | 0 | **2** | products contain `git` |
+| `{g..g}it push --force origin main` | 0 | **2** | concatenated: product `git` |
+| `g{i,i}t push --force origin main` | 0 | **2** | concatenated: product `git` |
+| `g{it,x} push --force origin main` | 0 | **2** | concatenated: product `git` |
+| `{g,x}it push --force origin main` | 0 | **2** | concatenated: product `git` |
+| `{g..g}{i..i}t push --force origin main` | 0 | **2** | **multi-expansion**: composed ACROSS both `{`s |
+| `{g,g}{i,i}{t,t} push --force origin main` | 0 | **2** | **multi-expansion**: 8 products, all `git` |
+| `{g..g..1}it push --force origin main` | 0 | **2** | **UNENUMERABLE**: increment range |
+| `{g{i,i}t,x} push --force origin main` | 0 | **2** | **UNENUMERABLE**: nested `{` in an alternative |
+| `"g"{i,i}"t" push --force origin main` | 0 | **2** | quoted runs, joined **quote-removed** |
+| `{g..g}"it" push --force origin main` | 0 | **2** | quoted run, joined **quote-removed** |
+| `{g..g}h pr create --title x` | 0 | **2** | product `gh`; walk empty |
+| `{g,x}{h,h} pr create --title x` | 0 | **2** | product `gh`; walk empty |
+
+Rows 7–8 are why the scan is whole-word rather than per-`{`: a per-`{`
+computation answers `g` and `it` for `{g..g}{i..i}t`, neither governed and both
+enumerating cleanly. Row 10 is why a nested `{` is a fail-closed trigger rather
+than a recursion. Rows 11–12 are why the runs are quote-removed before they are
+joined.
+
+#### `T-19-94` and the glob decision-operand cells — clause 1
+
+| command | before | after | decision word |
+|---|---|---|---|
+| `git pus? --force origin main` | 0 | **2** | the git verb |
+| `git ?ush --force origin main` | 0 | **2** | the git verb |
+| `git stas?` | 0 | **2** | the git verb (no second carrier) |
+| `touch push && git pus? --force origin main` | 0 | **2** | the git verb of the second segment |
+| `gh p? create --title x` | 0 | **2** | a forge subcommand word; walk empty |
+| `git config core.hooksPat? /tmp/x` | 0 | **2** | the `git config` key operand |
+| `gh api repos/o/r/pul?s -f title=x` | 0 | **2** | the `gh api` endpoint; walk empty |
+| `gh api repos/o/r/pulls -? title=x` | 0 | **2** | a `gh api` word whose flag-ness decides |
+| `git ~push --force origin main` | 0 | **2** | the git verb (CLASS COVERAGE, not a measured bypass) |
+
+The `-?` row is a **finding of this execution**, not of `19-16`'s enumerated
+corpus: it was caught by the generative property
+`a_forge_decision_slot_carrying_a_splice_or_a_glob_is_refused_in_every_generated_slot`
+after clauses 1 and 2 had landed. `api_flag_ness_is_unreadable` is a textual
+INDEX-selection predicate and still knew only `$` and a backtick, so a `?` or a
+`{` in a flag marker put the word in no part of the region at all. It is widened
+to the same class the bit covers, for the same reason `scan_leading`'s `-c` key
+half is. That is the axis-vs-enumeration value `19-16`'s widening was for.
+
+### `T-19-93` — closed by COUNT, and the evidence is a walked LEDGER LISTING
+
+Closed by the tokenizer's literal-brace branch and by nothing else. **Neither
+forge scan was changed.**
+
+```
+gh api repos/{owner}/{repo}/pulls -f title=x   (one fresh envelope root, walked)
+  call 1 -> exit 0
+    alpha/pr-ledger.ndjson (112 bytes)      ledger lines found: 1
+  call 2 -> exit 2  reason pr_cap_exceeded
+    alpha/pr-ledger.ndjson (224 bytes)      ledger lines found: 2
+
+gh api "repos/{owner}/{repo}/pulls" -f title=x   (the positive control)
+  call 1 -> exit 0    1 ledger line
+  call 2 -> exit 2    pr_cap_exceeded
+
+gh api repos/{owner}/{repo}/pulls/7 -f body=x    (the BOUNDARY)
+  call 1 -> exit 0    ledger lines found: 0
+  call 2 -> exit 0    ledger lines found: 0
+```
+
+Before this plan the unquoted form was exit 0 with an **empty walk** on both
+calls — the SAFE-06 cap BYPASSED rather than exceeded, with no second carrier
+(`T-19-35`). It now behaves byte-for-byte like the quoted spelling, and the
+`…/pulls/7` boundary still writes nothing, so the tolerance did not degrade into
+"any endpoint with braces counts".
+
+**Why the tokenizer rather than the forge scans**, recorded so a later reader can
+check the reasoning rather than the outcome. It is where the defect is: the
+braces are literal in bash and the tokenizer was wrong about them, so a tolerance
+in `endpoint_is_pulls` would be a second consumer compensating for a splitter
+that mangles the word — the shape this phase produced four times. It generalises:
+the same spelling can appear in a git verb, a `config` key operand and a `-c`
+assignment, and a scan tolerance fixes one cell. And it is free: the tokenizer
+had to learn to tell a brace expansion from a brace pair anyway for `T-19-92`.
+
+### What the inversion NEWLY REFUSES, each with its permitted twin and clause
+
+| refused after 19-17 | clause | permitted twin (measured, before AND after) |
+|---|---|---|
+| `git commit -m {a,b}` | 2a | `git commit -m ab` — exit 0 |
+| `git add {src,tests}/x.rs` | 2a | `git add src/x.rs tests/x.rs` — exit 0 |
+| `rg "git status" {src,tests}` | 2a | `rg "git status" src/` — exit 0 |
+| `echo {git,x}` | **2b's own over-refusal** | `echo git` — exit 0 |
+| `git config --get-regexp branch.*` | 1 | `git config --get-regexp 'branch.*'` — exit 0 |
+| `git -c 'user.na*e=x' commit -m y` | 1 (textual) | `git -c user.name="$NAME" commit -m x` — exit 0 |
+| `gh api repos/o/r/pulls -? title=x` | 1 | `gh api repos/o/r/pulls -f title="$T"` — exit 0 |
+
+**`ls {git,svn}-repo` is PERMITTED — measured exit 0 — and it is the control that
+makes clause 2(b) a PRODUCT test rather than a MENTION test.** Its products are
+`git-repo` and `svn-repo`, neither of whose basename is governed. A rule that
+refused it would be testing for a mention, and a mention test is one slot away
+from the class.
+
+The whole allow corpus is re-measured at exit 0: `echo {a,b}`,
+`mkdir -p {src,tests}`, `cp x{,.bak}`, `ls *.rs`, `rg "x" src/*`,
+`git add src/*.rs`, `cd ~/projects`, `git commit -m "use ${HOME} here"`,
+`gh pr create --title 'fix $PATH handling'`, `git config user.email "$EMAIL"`,
+`echo $(git rev-parse HEAD)`, `ROOT=$(git rev-parse --show-toplevel)`,
+`{ git status; }`, `( git status )`, `(git status)&&git fetch origin`,
+`git log -1 HEAD@{0}` and `git reflog show HEAD@{0}`. The grouping refusals still
+fire: `{ git push --force origin main; }`, `( git push --force origin main )` and
+`git reflog delete HEAD@{0}` are all exit 2 under `force_push_blocked`.
+
+### The two rows `19-16` measured but could not derive
+
+| row | pre-fix | post-fix | classification |
+|---|---|---|---|
+| `FOO={a,b} git status` | 2 `envelope_assertion_failed` | 2 `envelope_assertion_failed` | **INTERACTION, not a new cost.** Rule B's geometry still holds — `}` severs the word and `head_is_command_position` is `false` — and clause 2(a) reaches the same segment. Asserted over the MECHANISM as well as the verdict, because a verdict alone cannot tell "still an interaction" from "newly a cost" |
+| `rg "git status" {src,tests}` | 0 | 2 `envelope_assertion_failed` | **A NEW COST, by clause 2(a).** The segment `rg "git status"` resolves `NestedPayload` and the simple command is brace-spliced. It is the widest cost this round adds: bash runs `rg "git status" src tests`, in which nothing governed executes |
+
+### The exhaustive post-filter
+
+`resolve_program_with_head` closes the fail-open seam audit 4 flagged but did not
+register. It was `Governed | NestedPayload => Refuse, other => other`; a future
+variant meaning "this segment reaches a program the envelope governs" would have
+compiled, passed a severed head silently and turned no test red. Its five arms:
+
+1. `Governed` — refuse on a severed head (Rule B) or a brace-spliced command (2a);
+2. `NestedPayload` — the same, and this is what reaches `rg "git status" {src,tests}`;
+3. `NoProgram` — pass, unless clause 2(b) fires;
+4. `Ungoverned` — pass, unless clause 2(b) fires; this is the arm the whole
+   PRODUCE class arrives on, since nothing in it resolves `Governed`;
+5. `Refuse` — passes through WHOLE, so step 1's `HookBypassBlocked` is not
+   overwritten by this one.
+
+**No wildcard arm.** A sixth variant is now an E0004.
+
+### The `T-19-91` correction — record only, threat stays OPEN at `high`
+
+`resolve_program`'s fourth residual bullet argued that `push`'s "refspec operand
+already fails CLOSED". That is corrected. The narrow claim — `git push origin
+$REF` is refused — is right and was re-measured at exit 2. The **bare**
+`git push $REF` is a different shape: `push_needs_resolved_dests` answers true,
+so the verdict is resolved from a repository and is **cwd-dependent, measured at
+exit 0 in a repository whose current branch is inside the envelope's namespace**,
+which is the state a driven run is designed to be in.
+
+So `classify_push`'s refspec operand is a **third arm of `T-19-91`'s shape**
+beside `classify_reflog`'s and `classify_symbolic_ref`'s. `T-19-91` is **not
+closed, not renumbered, not re-scoped**, and the second-carrier statement is
+unweakened: `push` has `pre-push` behind it while `reflog` and `symbolic-ref`
+have no `pre-push` and no `pre-commit` — git runs no hook for either. The operand
+rows are re-measured unchanged: `git reflog $S`, `git reflog show $S` and
+`git symbolic-ref $S` all exit 0; `git symbolic-ref HEAD $R` exits 2.
+
+### Rule B is still load-bearing, asserted mechanically
+
+The parameter-expansion case (a `{` immediately preceded in-word by an unquoted
+`$`) keeps today's behaviour byte-for-byte, and it exists for exactly this
+reason. `rule_b_still_reports_a_severed_head_as_not_a_command_position` asserts
+over `policy::split_segments_with_heads` directly rather than over an exit code,
+and it is green and unmodified: `C=GIT_CONFIG; env -u ${C}_COUNT git fetch
+origin` still reports `head_is_command_position == false` on its last segment.
+`SEPARATORS` is byte-for-byte unchanged, and `(` and `)` were not touched.
+
+### Two findings about `19-16`'s test files
+
+Both are recorded in the files themselves as well as here. Neither is fixable by
+any production change, and neither is a defect in the rule.
+
+1. **`MIN_UNREADABLE_FORGE_SLOT_CASES` was unreachable by construction.** It was
+   50 against a stated arithmetic of "7 slots x 2 spellings x (1 or 4
+   displacers) x 2 depths = 68", while the loop gives one displacer to six slots
+   and four to `ApiDisplacedEndpoint` — `(6 + 4) x 2 x 2 = 40`. It was invisible
+   until the rule landed, because the property failed earlier at its per-case
+   refusal assertion. Corrected to the recounted 40. **No refusal assertion was
+   touched and no alphabet was narrowed**; all 40 cases are refused with an empty
+   walk.
+2. **`the_marked_payload_splice_is_measured_pre_fix_and_deliberately_not_pinned_post_fix`
+   pinned `exit 0` despite its name, its own comment and `19-16-SUMMARY.md` all
+   saying it asserts nothing post-fix.** Its failure message scopes itself to
+   "if this changes BEFORE `19-17` runs", so it was a handoff guard, and its
+   contract was discharged by this plan's confirmed RED run at `09e83bd`. **The
+   rule was not weakened to keep it green**: dropping `NestedPayload` from clause
+   2(a) would have passed it and traded a disclosed false positive for a possible
+   false negative in a clause the plan states twice as load-bearing.
+
+### The gate
+
+`rtk proxy cargo test --no-fail-fast`: **1584 passed, 0 failed, 13 ignored**.
+`passed + failed` = **1584** = `19-16`'s recorded 1580 **plus the 4 new `#[test]`
+functions** this plan adds — two in `policy.rs`'s own test module (the
+brace-classification table with its per-WORD products column, and the
+segment-level splice-fact pin) and two in `tests/envelope_literal_decision.rs`
+(the two deferred cost rows). A red test RAN, so red→green leaves the total
+unchanged and the increase is the new functions and nothing else. All 26 of
+`19-16`'s RED names are green. `cargo build` and `cargo clippy -- -D warnings`
+exit 0; `cargo clippy --all-targets` reports the same **four** pre-existing
+warnings and no fifth. No crate was added and neither `Cargo.toml` nor
+`Cargo.lock` was touched (`T-19-SC`).

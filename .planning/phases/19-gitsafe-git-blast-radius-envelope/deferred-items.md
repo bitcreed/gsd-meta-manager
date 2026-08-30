@@ -588,3 +588,80 @@ reproduced force pushes (a comma list of N alternatives produces N words, and th
 surplus word lands where real git rejects it), and `git push {--force,origin} main`
 is cwd-dependent — exit 0 in the namespace a driven run is designed to be in,
 exit 2 outside it under an unrelated arm.
+
+---
+
+## Round-5 closure status (recorded by 19-17) — `T-19-92` … `T-19-95` CLOSED
+
+Plan 19-17 wrote the rule the `19-16` corpus was left RED against. All 26 RED
+names were confirmed still failing against `09e83bd` before any production line
+moved, and all 26 are green after. Full record, with every before/after verdict
+and the walked ledger listings, is in `19-SECURITY.md`'s appended plan-19-17
+execution record.
+
+* **`T-19-92` — CLOSED, by clause 2.** The tokenizer gained bash's own three-way
+  question about `{`: a parameter expansion (case 1, today's behaviour, which is
+  what keeps Rule B load-bearing), the reserved word opening a group (case 2,
+  today's behaviour, so `{ cmd; }` is unchanged), or a brace pair resolved by
+  lookahead. A pair carrying a comma or a two-endpoint range MARKS the enclosing
+  simple command, and `resolve_program_with_head` refuses it when a segment
+  resolves `Governed`/`NestedPayload` (**2a**) or when a word the whole-word
+  product scan can PRODUCE has a governed basename, or the products cannot be
+  enumerated (**2b**). Both halves were needed: `{git,push,--force,origin,main}`
+  is reached only by 2(b) and `git push {--force,origin} main` only by 2(a).
+  Products rather than names, because no alternative of `{g..g}it` spells `git`;
+  whole-word rather than per-`{`, because a per-`{` scan answers `g` and `it` for
+  `{g..g}{i..i}t`; quote-removed, because otherwise `"g"{i,i}"t"` reads
+  `"g"i"t"`. `SEPARATORS` is unchanged and `(`/`)` were not touched.
+* **`T-19-93` — CLOSED, by COUNT, in the tokenizer's literal-brace branch and
+  nothing else.** `gh api repos/{owner}/{repo}/pulls -f title=x` now writes
+  exactly one ledger line and a second creation in the same root is refused under
+  `pr_cap_exceeded`; `…/pulls/7` still writes nothing. **Neither forge scan was
+  changed.** The rejected alternative — a placeholder tolerance in
+  `endpoint_is_pulls` — is recorded in that function's own doc with its three
+  reasons.
+* **`T-19-94` — CLOSED, by clause 1**, subsumed by the inversion rather than
+  added beside it: `*`, `?` and `[` are three of the classes that clear
+  `Token.literal`, read in the ONE closure that read `Token.expansion`, over a
+  region that did not move. Operands stay free — `git add src/*.rs` and
+  `rg "x" src/*` are re-measured permitted.
+* **`T-19-95` — CLOSED.** The rule is certified by a corpus that can draw a brace
+  expansion, a literal brace pair, a concatenated splice, a multi-expansion word,
+  a range, a glob and a tilde, with per-alphabet and per-class floors — and that
+  corpus was observed RED first, in commits with zero `src/` hunks. The axis
+  earned its keep beyond the enumerated rows: the generative forge-slot property
+  caught `gh api repos/o/r/pulls -? title=x`, a cell no enumerated row covered,
+  after clauses 1 and 2 had already landed.
+
+### Still OPEN and untouched by 19-17
+
+* **`T-19-86`** (high, OPEN) — unchanged, by explicit user scoping decision. All
+  four rows re-measured at exit 0 against the built binary.
+* **`T-19-91`** (high, OPEN) — the code-side RECORD is corrected (the bare
+  `git push $REF` is cwd-dependent and permitted in the in-namespace
+  configuration, making `classify_push`'s refspec operand a third arm of the
+  shape). **Not closed, not renumbered, remedy unchanged**, second-carrier
+  asymmetry unweakened.
+* **`T-19-96`** (medium, open) — registered by `19-16`, re-measured at exit 0 and
+  its literal twin at exit 2 under `force_push_blocked`, **not fixed**. Widening
+  the decision region to `classify_push`'s flags is the same move as closing
+  `T-19-91` and is the next round's to decide.
+* **`T-19-74`** — accepted (AR-19-10); core rows re-measured permitted.
+* **`T-19-61` … `T-19-73`, `T-19-84`, `T-19-85`** — open, unaccepted, untouched.
+  `cred.rs`, `advisory.rs`, `scan.rs` and `config.rs` were not opened.
+
+### Newly disclosed cost, accepted (`T-19-17r`)
+
+A brace expansion anywhere in a governed simple command, a splice whose products
+name a governed program even in an ungoverned command, and a glob or tilde in a
+decision word are now refused. Every one is pinned in
+`tests/envelope_literal_decision.rs` beside its PERMITTED twin and the clause
+that produces it, and `ls {git,svn}-repo` is pinned permitted as the control that
+keeps clause 2(b) a product test rather than a mention test. The widest is
+`rg "git status" {src,tests}` (clause 2a), where nothing governed executes at
+all.
+
+**`/gsd-secure-phase 19` is NOT cleared by plan 19-17.** `T-19-86` and `T-19-91`
+remain OPEN at `high`, and `T-19-96` is registered open. Only the
+**wrapper-operand** sub-class of `T-19-60` is closed; `T-19-86` and `T-19-91` are
+both sub-classes of it.

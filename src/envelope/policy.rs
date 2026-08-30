@@ -2470,11 +2470,51 @@ pub enum ProgramResolution {
 ///   have no `pre-push` and no `pre-commit` behind them — git runs no hook for
 ///   either — and [`classify_reflog`]'s own refusal text records that the
 ///   reflog is the recovery path for every other destructive git operation.
-///   Only `git push` has a hook behind it, and its refspec operand already
-///   fails CLOSED: an unreadable refspec does not carry the namespace prefix,
-///   so `git push origin $REF` is refused. The residual is pinned in
-///   `tests/envelope_expansion_slots.rs` and registered in `19-SECURITY.md` and
+///   Only `git push` has a hook behind it. **That asymmetry is correct and it is
+///   the whole of the argument; what used to be written beside it was not.**
+///
+///   This bullet used to add that `push`'s "refspec operand already fails
+///   CLOSED". It does not, and the correction is recorded here rather than
+///   quietly dropped. The narrow claim below — that `git push origin $REF` is
+///   refused, an unreadable refspec not carrying the namespace prefix — is
+///   RIGHT and audit 4 re-measured it at exit 2. The BARE `git push $REF` is a
+///   different shape: [`push_needs_resolved_dests`] answers true for it, so the
+///   verdict is resolved from a repository and is **cwd-dependent — measured at
+///   exit 0 in a repository whose current branch is inside the envelope's
+///   namespace, which is the state a driven run is DESIGNED to be in**, and at
+///   exit 2 (`push_outside_namespace`) elsewhere, for a reason that has nothing
+///   to do with the operand. Audit 4 measured it and `19-16` reproduced it in a
+///   purpose-built fixture with the repository passed to `guard_in` explicitly.
+///
+///   So [`classify_push`]'s refspec operand is a **THIRD arm of `T-19-91`'s
+///   shape**, beside [`classify_reflog`]'s and [`classify_symbolic_ref`]'s,
+///   rather than the one arm that was already closed. `T-19-91` stays **OPEN at
+///   `high`**: this is a correction to the RECORD and not to the remedy, no
+///   decision-operand rule was added for `reflog`, `symbolic-ref` or `push`, and
+///   the residual is pinned in `tests/envelope_expansion_slots.rs` and
+///   `tests/envelope_literal_decision.rs` and registered in `19-SECURITY.md` and
 ///   `deferred-items.md`.
+/// * **`T-19-17r` — over-refusal from the literalness rule, disclosed here
+///   beside the residuals rather than left to be found.** Since `19-17` a brace
+///   expansion anywhere in a governed simple command is refused
+///   (`git commit -m {a,b}`, `git add {src,tests}/x.rs`,
+///   `rg "git status" {src,tests}`), a splice whose PRODUCTS name a governed
+///   program is refused even in an ungoverned command (`echo {git,x}`), and a
+///   glob or tilde in a DECISION word is refused
+///   (`git config --get-regexp branch.*` unquoted). The `-c` key-half class is
+///   widened textually, so `git -c 'user.na*e=x' commit` is refused even though
+///   the quoting made the character literal — disclosed, and essentially zero,
+///   because no legal git config key can carry one of these characters. Every
+///   one is pinned in `tests/envelope_literal_decision.rs` beside its PERMITTED
+///   twin and the clause that produces it, and `ls {git,svn}-repo` is pinned
+///   permitted as the control that keeps clause 2(b) a PRODUCT test rather than
+///   a mention test.
+/// * **`T-19-96` — a glob in a PUSH FLAG, one slot outside the decision
+///   region.** `git push --forc? origin refs/heads/gsd-auto/alpha/w` is measured
+///   at exit 0 and its literal twin at exit 2 under `force_push_blocked`.
+///   Registered by `19-16`, pinned at its measured verdict, and NOT fixed: the
+///   decision region is not widened here, and widening it to
+///   [`classify_push`]'s flags is the same move as closing `T-19-91`.
 ///
 /// ## What IS covered in the program's own arguments, since 19-14
 ///
