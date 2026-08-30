@@ -964,12 +964,18 @@ fn classify_segments(
         let segment = entry.tokens.as_slice();
         let words: Vec<&str> = segment.iter().map(|token| token.text.as_str()).collect();
 
-        // The head report travels WITH the segment rather than being re-derived
-        // here, for the reason this module already records about the park reason:
-        // a caller that computed the same fact a second way is how two answers
-        // come to disagree. `head_is_command_position` is false only for a
-        // fragment continuing an enclosing word after an expansion.
-        match policy::resolve_program_with_head(segment, entry.head_is_command_position) {
+        // **The segment's CONTEXT travels with it rather than being re-derived
+        // here**, for the reason this module already records about the park
+        // reason: a caller that computed the same fact a second way is how two
+        // answers come to disagree. `head_is_command_position` is false only for
+        // a fragment continuing an enclosing word after an expansion;
+        // `brace_spliced` and `splice_can_produce_governed` say that a brace
+        // expansion splices words back into this simple command after the guard
+        // has answered. All three come out of `split_segments_with_heads`' one
+        // walk, and the `NestedPayload` arm below re-splits through the same
+        // function — which is the path `bash -lc "git {push,--force} origin main"`
+        // takes, its braces being LITERAL until the payload is re-split.
+        match policy::resolve_program_with_head(entry) {
             // A segment that runs no program at all (a bare `FOO=bar`), and a
             // segment that provably reaches no governed program in any command
             // position.
@@ -1080,14 +1086,25 @@ fn classify_segments(
                 // ledger write, so an argv the guard refuses never consumes PR
                 // cap budget — `pr_command_label` matching no arm is exactly how
                 // SAFE-06 came to be bypassed rather than exceeded.
-                if let Some(found) = policy::expansion_in_decision_region(segment, index) {
+                if let Some(found) = policy::first_unreadable_decision_word(segment, index) {
                     return Ok(Some((
                         ParkReason::EnvelopeAssertionFailed,
+                        // **The message names what could not be ESTABLISHED
+                        // rather than what was detected**, which is the
+                        // inversion made legible to the agent that hits it: the
+                        // guard is no longer reporting that it spotted an
+                        // expansion marker, it is reporting that it could not
+                        // show the shell hands this word over unchanged. An
+                        // agent that reads "assembled by shell expansion" for a
+                        // `?` looks for a `$` and finds none.
                         format!(
                             "gsd-meta-manager envelope: REFUSED (reason: {}) — `{}` is {} \
-                             for this command, and it is assembled by shell expansion, so \
-                             what this command asks for is not knowable before it runs; \
-                             refused rather than guessed at",
+                             for this command, and the shell may rewrite it before the \
+                             program sees it — a brace expansion, a pathname or tilde \
+                             expansion, or a parameter or command substitution — so what \
+                             this command asks for cannot be established before it runs; \
+                             refused rather than guessed at. Quoting the word makes it \
+                             literal.",
                             policy::REASON_ENVELOPE_ASSERTION_FAILED,
                             found.word,
                             found.role

@@ -3229,8 +3229,28 @@ fn the_generated_corpus_really_produces_each_unreadable_class_in_quantity() {
 // 13b. The forge slots, carrying a SPLICE and a GLOB
 // ---------------------------------------------------------------------------
 
-/// 7 slots x 2 spellings x (1 or 4 displacers) x 2 depths = 68, over the floor.
-const MIN_UNREADABLE_FORGE_SLOT_CASES: usize = 50;
+/// **The arithmetic, recounted by plan 19-17 because `19-16`'s was wrong and the
+/// floor it produced was unreachable by construction.**
+///
+/// `19-16` wrote "7 slots x 2 spellings x (1 or 4 displacers) x 2 depths = 68"
+/// and set the floor at 50. The loop below gives ONE displacer to six slots and
+/// four to `ApiDisplacedEndpoint`, so the real count is
+/// `(6 x 1 + 1 x 4) = 10` slot-displacer pairs `x 2 spellings x 2 depths = 40`.
+///
+/// **This was invisible until the rule landed**, and that is the only reason it
+/// is corrected here rather than in the round that wrote it: the property failed
+/// earlier, at its per-case refusal assertion, so the floor was never reached.
+/// With `19-17`'s rule in place all 40 cases are refused with an empty walk and
+/// execution reached this line for the first time.
+///
+/// **No assertion about a REFUSAL was touched and no alphabet was narrowed.**
+/// This is a self-consistency check on the generator's own count, and no
+/// production change can move it — it is a pure function of the alphabet sizes
+/// in this file. Raising the generated count instead by giving every slot all
+/// four displacers would emit duplicates, because `forge_slot_case` ignores the
+/// displacer for every slot but `ApiDisplacedEndpoint`, and a floor satisfied by
+/// duplicate cases is the dishonest counting this file's floors exist against.
+const MIN_UNREADABLE_FORGE_SLOT_CASES: usize = 40;
 
 #[test]
 fn a_forge_decision_slot_carrying_a_splice_or_a_glob_is_refused_in_every_generated_slot() {

@@ -1302,25 +1302,117 @@ fn the_marked_payload_splice_is_measured_pre_fix_and_deliberately_not_pinned_pos
     //
     // This test asserts only the measurement, so it passes today either way and
     // records the pre-fix fact for `19-17` to compare against.
+    //
+    // -----------------------------------------------------------------------
+    // **PLAN 19-17 FINDING, and the one edit it made to this file's existing
+    // rows. It is recorded here rather than only in a SUMMARY.**
+    //
+    // The sentence above and this function's own NAME say the post-fix verdict
+    // is deliberately NOT pinned — and `19-16-SUMMARY.md` repeats it: "measured
+    // exit 0 TODAY, NOTHING asserted post-fix". But the assertion `19-16`
+    // actually wrote was a plain `assert_eq!(answer.code, 0)`, which runs after
+    // the fix as well as before it, and whose own failure message scopes itself
+    // to "if this changes BEFORE `19-17` runs". It was a HANDOFF GUARD, and its
+    // contract was discharged: `19-17` confirmed it at exit 0 against `09e83bd`
+    // before moving a line of production code, in the run whose verbatim output
+    // its SUMMARY carries.
+    //
+    // **The rule refuses this line, by clause 2(a), exactly as specified**: the
+    // segment `rg "git status"` resolves `NestedPayload` and its simple command
+    // is brace-spliced. Plan 19-17's Task 2 orders this row measured after the
+    // rule exists and pinned WITH its clause, which is done in
+    // `the_marked_payload_splice_is_refused_by_clause_2a_and_that_is_a_pinned_cost`
+    // below.
+    //
+    // **The rule was NOT weakened to keep this assertion green**, and that was
+    // the fork. Dropping `NestedPayload` from clause 2(a) would have made this
+    // row pass; it would also have traded a disclosed false positive for a
+    // possible false negative in a safety clause the plan states twice as
+    // load-bearing. Editing an assertion about a PERMIT is the smaller loss than
+    // narrowing a refusal, and it is the one that leaves the control intact.
+    // -----------------------------------------------------------------------
     let envelope = TempDir::new().unwrap();
     let answer = ask(envelope.path(), "rg \"git status\" {src,tests}");
     println!(
-        "measured pre-fix, NOT pinned post-fix: `rg \"git status\" {{src,tests}}` -> exit {} \
-         reason {:?}",
+        "measured pre-fix at `09e83bd`: exit 0. Measured post-fix here: `rg \"git status\" \
+         {{src,tests}}` -> exit {} reason {:?}",
         answer.code,
         answer.reason()
     );
-    assert_eq!(
-        answer.code, 0,
-        "measured at exit 0 at this file's base commit. If this changes before `19-17` \
-         runs, the classification handed forward is stale and must be re-derived rather \
-         than re-used. stdout: {} stderr: {}",
-        answer.stdout, answer.stderr
-    );
 
     // Its unambiguous sibling IS pinned, because that one needs no resolution
-    // this plan cannot state.
+    // this plan cannot state. It is the other half of the cost: the splice is
+    // what moved, and nothing else did.
     permits("rg \"git status\" src/");
+}
+
+// ===========================================================================
+// 10b. The two deferred rows, MEASURED AFTER THE RULE EXISTS and pinned with
+//      the clause that produced each — plan 19-17's Task 2, item 5
+// ===========================================================================
+
+#[test]
+fn the_marked_payload_splice_is_refused_by_clause_2a_and_that_is_a_pinned_cost() {
+    // **Measured after the rule exists, which is the only order in which this
+    // verdict could be derived rather than guessed.** `19-16` measured it at
+    // exit 0 pre-fix and deliberately pinned no post-fix expectation, because a
+    // plan that measures PRE-fix has no method that would catch a wrong post-fix
+    // expectation.
+    //
+    // Derivation — clause 2(a): the segment `rg "git status"` resolves
+    // `NestedPayload` (its quoted payload's first word is a governed program),
+    // and its simple command is brace-spliced, so the argv the classifier would
+    // read is not the argv that runs.
+    //
+    //   refused after 19-17            clause  permitted twin (before AND after)
+    //   rg "git status" {src,tests}    2a      rg "git status" src/
+    //
+    // **This is a COST, not a desirable behaviour**, and it is the widest one
+    // this round adds: bash runs `rg "git status" src tests`, in which nothing
+    // governed executes at all. It is disclosed rather than discovered, and it
+    // is pinned from both sides so a later round that reduces it must delete
+    // this row deliberately rather than find it already green.
+    refuses(
+        "rg \"git status\" {src,tests}",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+    permits("rg \"git status\" src/");
+}
+
+#[test]
+fn the_assignment_value_splice_stays_an_interaction_after_the_rule_and_not_a_new_cost() {
+    // **The other deferred row, measured after the rule exists.**
+    // `FOO={a,b} git status` was already refused pre-fix, at exit 2 under
+    // `envelope_assertion_failed`, because `}` is a word-splitting closer: the
+    // segment `git status` reports `head_is_command_position == false` and Rule
+    // B refuses it. `19-16` classified it an INTERACTION rather than a cost and
+    // could not state whether that survived the rule.
+    //
+    // It does, and both clauses now reach it: Rule B still fires on the severed
+    // head — which `rule_b_still_reports_a_severed_head_as_not_a_command_position`
+    // asserts over the MECHANISM rather than over this exit code — and clause
+    // 2(a) reaches the same segment because the simple command is brace-spliced.
+    // The identifier is unchanged, so nothing this round adds is load-bearing
+    // for this line and it is NOT counted as a new cost.
+    //
+    // Asserted over the mechanism as well as the verdict, because a verdict
+    // alone cannot tell "still an interaction" from "newly a cost".
+    let segments = policy::split_segments_with_heads("FOO={a,b} git status")
+        .expect("`FOO={a,b} git status` splits into segments");
+    let last = segments.last().expect("at least one segment");
+    assert!(
+        !last.head_is_command_position,
+        "Rule B's geometry must still hold for this line — the `}}` severed the word, so \
+         `git status` is not at a command position. If this is true, the line is refused \
+         only by the clause this round added and it became a NEW cost. Segments: {segments:?}"
+    );
+    assert!(
+        last.brace_spliced,
+        "and clause 2(a) reaches the same segment. Segments: {segments:?}"
+    );
+
+    refuses("FOO={a,b} git status", policy::REASON_ENVELOPE_ASSERTION_FAILED);
+    permits("FOO=ab git status");
 }
 
 // ===========================================================================

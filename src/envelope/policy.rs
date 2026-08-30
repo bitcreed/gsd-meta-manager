@@ -363,27 +363,41 @@ fn scan_leading(argv: &[&str]) -> (usize, Option<GitVerdict>) {
             // interpolates anything, which is `T-19-75` widened from `rg` to
             // ordinary configuration (AR-19-11).
             //
-            // **Textual rather than expansion-flagged**, because this function
-            // is a pure argv function and must stay one: it is called by
+            // **Textual rather than bit-flagged, and this is the ONE exception
+            // to that rule in the whole module**, because this function is a
+            // pure argv function and must stay one: it is called by
             // [`push_needs_resolved_dests`] before classification and by
             // [`classify_git`] during it, from `&[&str]` in both cases. The
-            // `Token.expansion` bit is consulted once, at the decision
-            // boundary, by [`expansion_in_decision_region`].
+            // `Token.literal` bit is consulted once, at the decision boundary,
+            // by [`first_unreadable_decision_word`].
+            //
+            // **The class is the same class the bit covers** — `$` and a
+            // backtick, plus `*`, `?`, `[`, `~` and `{`, because a key half the
+            // shell rewrites is a key half this scan cannot compare. **Its cost
+            // is disclosed and it is a false POSITIVE**: a pure argv function
+            // sees the word after the tokenizer removed its quoting and cannot
+            // tell that the quoting made the character literal, so
+            // `git -c 'user.na*e=x' commit -m y` is refused too. That cost is
+            // essentially zero and the reason is stated rather than assumed — a
+            // git config key is `section.key` over alphanumerics, `.`, `-` and
+            // `_`, so no LEGAL key can carry one of these characters. It is
+            // pinned in `tests/envelope_literal_decision.rs` beside its permitted
+            // twin rather than argued.
             //
             // Both callers inherit the refusal, which is the point of there
             // being one scan.
             let key = config_key_of(assignment);
-            if key.contains('$') || key.contains('`') {
+            if key.chars().any(|ch| REWRITING_CHARACTERS.contains(&ch) || ch == '{') {
                 return (
                     index,
                     Some(refuse(
                         ParkReason::EnvelopeAssertionFailed,
                         format!(
-                            "the key half of `git -c {assignment}` is assembled by shell \
-                             expansion, so whether this command sets core.hooksPath at \
-                             command-line precedence — the one form that outranks the \
-                             envelope's own env-injected setting (D-09) — is not knowable \
-                             before it runs; refused rather than guessed at"
+                            "the key half of `git -c {assignment}` carries a character the \
+                             shell may rewrite, so whether this command sets core.hooksPath \
+                             at command-line precedence — the one form that outranks the \
+                             envelope's own env-injected setting (D-09) — cannot be \
+                             established before it runs; refused rather than guessed at"
                         ),
                     )),
                 );
@@ -759,7 +773,7 @@ impl<'a> ConfigScan<'a> {
 
 /// The single walk of a `git config` argv, over which both
 /// [`classify_config`] and the `config` half of
-/// [`expansion_in_decision_region`] are defined.
+/// [`first_unreadable_decision_word`] are defined.
 ///
 /// **The index primitive, for the reason [`scan_leading`]'s doc already records
 /// for its two callers**: a second copy of a loop is a second thing to keep in
@@ -2465,14 +2479,23 @@ pub enum ProgramResolution {
 /// ## What IS covered in the program's own arguments, since 19-14
 ///
 /// The exemption above is no longer total, and the boundary is exact.
-/// [`expansion_in_decision_region`] refuses an expansion in the words each
-/// matched classifier arm READS — the git verb, `config`'s key operand, a
+/// [`first_unreadable_decision_word`] refuses a word each matched classifier arm
+/// READS that is not provably LITERAL — the git verb, `config`'s key operand, a
 /// forge's first two subcommand words, and the `gh api` endpoint, method and
 /// flag-ness words — before either classifier runs and before the ledger write.
 /// Everything to the right of those is an OPERAND and stays free, which is what
 /// keeps `git commit -m "$MSG"`, `gh pr create --title "$TITLE"`,
 /// `gh api repos/o/r/pulls -f title="$T"` and `git -c user.name="$NAME" commit`
 /// working (`T-19-88`, `T-19-87` in part).
+///
+/// ## What IS covered about the whole simple command, since 19-17
+///
+/// [`resolve_program_with_head`] refuses a command a brace expansion splices
+/// into, on both halves of clause 2 — a segment resolving `Governed` or
+/// `NestedPayload`, and a word the splice can PRODUCE whose basename is
+/// governed or whose products cannot be enumerated. That is the one control in
+/// this module that is not about a word, because a brace expansion is not a
+/// word-level fact.
 ///
 /// ## What IS covered about the segment's own HEAD, since 19-15
 ///
@@ -2651,7 +2674,7 @@ pub fn resolve_program(segment: &[Token]) -> ProgramResolution {
         // exempt, and that is `T-19-88`.** Audit 3 quoted the sentence above as
         // the disclosure that left the VERB SLOT open; the classifier's own
         // decision words are now checked by
-        // [`expansion_in_decision_region`], at the one call site in
+        // [`first_unreadable_decision_word`], at the one call site in
         // `super::hooks::classify_segments`. Nothing about this rule changed —
         // it still governs only the prefix — but a reader meeting it should not
         // conclude that everything after the head is free.
@@ -2762,29 +2785,102 @@ pub fn resolve_program(segment: &[Token]) -> ProgramResolution {
 /// `HookBypassBlocked` identifier; `NoProgram` and `Ungoverned` are permits about
 /// a segment that reaches nothing this envelope governs, and refusing those would
 /// deny `_COUNT ls` for nothing.
-pub fn resolve_program_with_head(
-    segment: &[Token],
-    head_is_command_position: bool,
-) -> ProgramResolution {
+///
+/// ## Clause 2, folded in here rather than added beside it
+///
+/// A brace expansion is a property of the SIMPLE COMMAND, not of a word:
+/// `git {push,--force} origin main` splits into `git`, `push,--force` and
+/// `origin main`, the first resolves `Governed` with an EMPTY argv, and
+/// [`classify_git`] answers `Allow` for a bare `git`. There is no decision word
+/// to test. So a command a brace expansion splices into is unresolvable and is
+/// refused when **(a)** any of its segments resolves `Governed` or
+/// `NestedPayload`, **or (b)** any word the splice can PRODUCE has a governed
+/// basename — or its products could not be enumerated at all.
+///
+/// **Both halves are load-bearing**, and each has a measured row the other does
+/// not reach. (a) alone permits `{git,push,--force,origin,main}`, whose single
+/// segment's basename is not a governed program. (b) alone permits
+/// `git push {--force,origin} main`, where the governed word is outside the
+/// braces and what the splice hides is `--force`.
+///
+/// **It is folded into THIS function rather than added beside it** because two
+/// post-filters over one resolution are two things to keep in step, and the day
+/// they drift is the day one permits what the other refuses.
+///
+/// ## The match is EXHAUSTIVE, one arm per variant
+///
+/// It used to be `Governed | NestedPayload => Refuse, other => other`. That
+/// wildcard means a future variant meaning "this segment reaches a program the
+/// envelope governs" would compile, pass a severed head silently, and turn no
+/// test red. One arm per [`ProgramResolution`] variant makes a sixth an E0004 —
+/// the discipline `T-19-45` already establishes for `PermissionMode`.
+pub fn resolve_program_with_head(entry: &Segment) -> ProgramResolution {
+    let segment = entry.tokens.as_slice();
     let resolved = resolve_program(segment);
-    if head_is_command_position {
-        return resolved;
-    }
 
     match resolved {
+        // Rule B (a severed head) and clause 2(a) (a brace-spliced simple
+        // command) are the same answer about the same fact: the argv that runs
+        // is not the argv the classifier would read.
         ProgramResolution::Governed { .. } | ProgramResolution::NestedPayload { .. } => {
-            ProgramResolution::Refuse {
-                reason: ParkReason::EnvelopeAssertionFailed,
-                // Names the SHAPE and never quotes the command back (SAFE-04).
-                detail: "this command reaches a program the envelope governs from a fragment \
-                         that continues an enclosing word after a shell expansion, so what \
-                         the shell will put in front of that program is decided after the \
-                         guard has answered; the fragment's first word is not a command \
-                         position, and it is refused rather than guessed at"
-                    .to_string(),
+            if !entry.head_is_command_position {
+                return ProgramResolution::Refuse {
+                    reason: ParkReason::EnvelopeAssertionFailed,
+                    // Names the SHAPE and never quotes the command back (SAFE-04).
+                    detail: "this command reaches a program the envelope governs from a \
+                             fragment that continues an enclosing word after a shell \
+                             expansion, so what the shell will put in front of that program \
+                             is decided after the guard has answered; the fragment's first \
+                             word is not a command position, and it is refused rather than \
+                             guessed at"
+                        .to_string(),
+                };
             }
+            if entry.brace_spliced {
+                return ProgramResolution::Refuse {
+                    reason: ParkReason::EnvelopeAssertionFailed,
+                    detail: "a brace expansion splices words back into this command after \
+                             the guard has answered, so the argv a classifier would read is \
+                             not the argv that runs; the command cannot be established as \
+                             literal and is refused rather than guessed at"
+                        .to_string(),
+                };
+            }
+            resolved
         }
-        other => other,
+
+        // **Clause 2(b), and this half is what reaches the rows nothing else
+        // does.** `{git,push,--force,origin,main}`, `{env,git} push --force …`,
+        // `{g..g}it push --force …`, `g{i,i}t push --force …`,
+        // `{g..g}{i..i}t push --force …`, `{g,g}{i,i}{t,t} push --force …`,
+        // `"g"{i,i}"t" push --force …`, `{g..g}"it" push --force …` and the
+        // unenumerable `{g..g..1}it push --force …` and `{g{i,i}t,x} push --force
+        // …` are ALL measured at exit 0 against the pre-`19-17` tree, and in
+        // every one of them nothing resolves `Governed` at all — the head word is
+        // `it`, `g`, `t` or a comma list naming nothing.
+        //
+        // **It reads PRODUCTS rather than names, and there is a control
+        // attached**: `ls {git,svn}-repo` produces `git-repo` and `svn-repo`,
+        // neither governed, and stays PERMITTED. A mention test would refuse it,
+        // and a mention test is one slot away from the class.
+        ProgramResolution::NoProgram | ProgramResolution::Ungoverned => {
+            if entry.brace_spliced && entry.splice_can_produce_governed {
+                return ProgramResolution::Refuse {
+                    reason: ParkReason::EnvelopeAssertionFailed,
+                    detail: "a brace expansion in this command can produce a word naming a \
+                             program the envelope governs, or its alternatives cannot be \
+                             enumerated at all, so what this command runs is not knowable \
+                             before it runs; refused rather than guessed at"
+                        .to_string(),
+                };
+            }
+            resolved
+        }
+
+        // A refusal passes through WHOLE, keeping its own more specific
+        // identifier: step 1's `HookBypassBlocked` must not be overwritten by
+        // this one.
+        ProgramResolution::Refuse { .. } => resolved,
     }
 }
 
@@ -2822,19 +2918,73 @@ pub struct DecisionWord {
 /// applies to `git -c`, and it is what leaves
 /// `gh api repos/o/r/pulls -f title="$T"` alone: `-f` has a readable key half,
 /// and `title="$T"` neither begins with `-` nor with a marker.
+///
+/// **The marker class is the same class [`Token::literal`] is cleared for, and
+/// it tracks that class rather than restating a subset of it.** `-?` and
+/// `-{f,x}` are the SAME hole as `-$F`: a `?` is resolved from the working
+/// directory and a `{` is spliced back into the command, so whether the word is
+/// a flag at all is no more knowable than when a `$` assembles it, and
+/// `gh api repos/o/r/pulls -? title=x` was measured at exit 0 with an EMPTY walk
+/// — the SAFE-06 cap BYPASSED rather than exceeded, with no second carrier
+/// (`T-19-35`). A clause written for only two of the seven characters leaves the
+/// other five in no part of the region at all.
+///
+/// **This selects an INDEX; it does not decide.** It is a pure `&str` predicate
+/// because this is a pure argv function, and the readability question about the
+/// word it names is answered by `Token.literal` in
+/// [`first_unreadable_decision_word`]'s one closure — so a QUOTED `-'*'` is
+/// named here and then passes there, because quoting made it literal.
 fn api_flag_ness_is_unreadable(word: &str) -> bool {
-    if word.starts_with('$') || word.starts_with('`') {
+    let rewritten = |text: &str| {
+        text.chars()
+            .any(|ch| REWRITING_CHARACTERS.contains(&ch) || ch == '{')
+    };
+    if word.starts_with(|ch| REWRITING_CHARACTERS.contains(&ch) || ch == '{') {
         return true;
     }
     if word.starts_with('-') {
         let key = word.split_once('=').map(|(key, _)| key).unwrap_or(word);
-        return key.contains('$') || key.contains('`');
+        return rewritten(key);
     }
     false
 }
 
-/// The first word a governed program's classifier DECIDES ON that the shell
-/// assembles at run time, or `None`.
+/// The first word a governed program's classifier DECIDES ON that is **not
+/// provably LITERAL**, or `None`.
+///
+/// ## The inversion, and why it is one rather than a sixth enumeration
+///
+/// Rounds 1–3 enumerated the ways a shell assembles a word and guarded each: an
+/// expansion bit at the decision boundary (Rule A), a severed head behind a
+/// word-splitting closer (Rule B). **That did not converge in five rounds** —
+/// each rule decides on one signal, and neither can fail on the ways bash makes
+/// a word that set no signal at all: brace expansion, pathname expansion, tilde
+/// expansion, `$IFS`-driven re-splitting.
+///
+/// So the question changes direction. **A decision word must be LITERAL — the
+/// shell must hand it to the program byte-identically to how it is written — and
+/// anything that is not provably literal is unresolvable and refuses.** That is
+/// positive evidence of literalness instead of an enumeration of
+/// non-literalness, and it closes every mechanism above, plus the ones nobody
+/// has enumerated, in ONE rule. The evidence is [`Token::literal`], collected by
+/// `tokenize` while the word is consumed; it is read HERE, in the one closure
+/// that used to read `Token.expansion`, and nowhere else.
+///
+/// **The boundary is the same boundary, and it is what keeps the cost small.**
+/// Operands are deliberately free: a rule that refused every non-literal word in
+/// a governed segment would refuse ordinary commit messages and pull-request
+/// titles, and a control that fails into unusability gets switched off
+/// (AR-19-11). `git commit -m "use ${HOME} here"`,
+/// `gh pr create --title 'fix $PATH handling'`, `git add src/*.rs` and
+/// `rg "x" src/*` all keep working, and
+/// `gh api repos/{owner}/{repo}/pulls -f title=x` — `gh`'s own documented
+/// placeholder syntax, literal in bash — stays COUNTED.
+///
+/// **The whole rule is not here.** A brace expansion is a property of the
+/// SIMPLE COMMAND rather than of a word — `git {push,--force} origin main` has
+/// no decision word to test at all — so clause 2 lives in
+/// [`resolve_program_with_head`], reading [`Segment::brace_spliced`] and
+/// [`Segment::splice_can_produce_governed`].
 ///
 /// **The root cause this closes, in one paragraph.**
 /// `super::hooks::classify_segments` collapses each [`Token`] to its `text`
@@ -2887,15 +3037,20 @@ fn api_flag_ness_is_unreadable(word: &str) -> bool {
 ///
 /// A governed program with no classifier arm has no decision region here; the
 /// fail-closed arm in `classify_segments` already refuses it.
-pub fn expansion_in_decision_region(segment: &[Token], governed: usize) -> Option<DecisionWord> {
+pub fn first_unreadable_decision_word(segment: &[Token], governed: usize) -> Option<DecisionWord> {
     let words: Vec<&str> = segment.iter().map(|token| token.text.as_str()).collect();
     let program = program_name(words.get(governed)?);
 
-    // The one place the expansion bit is read. Every clause below reports an
-    // index; this turns an index into a finding.
+    // **The ONE place the bit is read, and the whole of the inversion.** Every
+    // clause below reports an index; this turns an index into a finding. It used
+    // to ask `token.expansion` — did the tokenizer SEE one of two characters —
+    // and it now asks for positive evidence that the shell hands this word over
+    // unchanged. If a second reading site is ever needed here, the decision
+    // region was not factored the way `19-14` claims and audit 4 verified, and
+    // that is a finding to report rather than a place to add one.
     let at = |index: usize, role: &'static str| -> Option<DecisionWord> {
         let token = segment.get(index)?;
-        token.expansion.then(|| DecisionWord {
+        (!token.literal).then(|| DecisionWord {
             index,
             word: token.text.clone(),
             role,
@@ -3070,7 +3225,7 @@ const FORGE_VALUE_OPTS: &[&str] = &["-R", "--repo", "--hostname"];
 /// order.
 ///
 /// **The index primitive, and [`subcommand_words`] is defined over it.** The
-/// decision region [`expansion_in_decision_region`] computes has to name the
+/// decision region [`first_unreadable_decision_word`] computes has to name the
 /// words `pr_command_label` matches its arms on, at the positions they occupy in
 /// the segment — and the only way to be sure it names the same words is to take
 /// them from the same walk. A second copy of this loop would be a second thing
@@ -3152,7 +3307,7 @@ struct GhApiScan {
 
 /// The single walk of a `gh api` argv, over which both
 /// [`gh_api_posts_a_pull_request`] and the `api` half of
-/// [`expansion_in_decision_region`] are defined.
+/// [`first_unreadable_decision_word`] are defined.
 ///
 /// **This primitive is not symmetry with [`subcommand_word_indices`], it is a
 /// MEASURED hole, and the reason is recorded here rather than left to be
@@ -3248,6 +3403,34 @@ fn gh_api_posts_a_pull_request(rest: &[&str]) -> bool {
 /// `https://api.github.com/repos/o/r/pulls`, and `/repos/o/r/pulls?state=open`
 /// are the same endpoint. A single pull request (`…/pulls/7`) is **not** the
 /// collection, and a `POST` to it is a review comment rather than a creation.
+///
+/// ## `T-19-93`, and why this function was NOT changed
+///
+/// `gh api repos/{owner}/{repo}/pulls -f title=x` is `gh`'s own documented
+/// placeholder syntax, not an evasion, and it was measured at exit 0 with an
+/// EMPTY envelope walk — the SAFE-06 cap BYPASSED rather than exceeded, with no
+/// second carrier (`T-19-35`). **The correctness bar was COUNT, not refuse**: an
+/// agent following `gh`'s own manual must not be denied, because a control that
+/// fails into unusability gets switched off (AR-19-11).
+///
+/// It is closed in the TOKENIZER and nowhere else. Bash passes a comma-free
+/// brace pair through unchanged — `printf "[%s]" repos/{owner}/{repo}/pulls`
+/// prints it byte-identically, measured — so `tokenize` classifies it as a
+/// LITERAL pair and absorbs it into the word. The endpoint therefore reaches
+/// [`scan_gh_api`] intact and **this function already answers `true` for it**,
+/// with no change to either forge scan.
+///
+/// **The rejected alternative was a placeholder tolerance HERE**, and it was
+/// rejected for three reasons a later reader can check. It is a second consumer
+/// compensating for a splitter that mangles the word, which is the defect this
+/// phase produced four times. It fixes one cell and leaves the identical
+/// spelling one slot over in a git verb, a `config` key operand and a `-c`
+/// assignment. And it would still have been needed on top of the tokenizer work
+/// `T-19-92` required anyway.
+///
+/// The boundary is unchanged and pinned: `repos/{owner}/{repo}/pulls/7` is a
+/// single pull request and stays UNCOUNTED, so the tolerance cannot degrade into
+/// "any endpoint with braces counts".
 fn endpoint_is_pulls(endpoint: &str) -> bool {
     let path = endpoint.split(['?', '#']).next().unwrap_or(endpoint);
     path.trim_end_matches('/').rsplit('/').next() == Some("pulls")
