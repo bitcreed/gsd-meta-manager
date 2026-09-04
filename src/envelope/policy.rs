@@ -4820,6 +4820,40 @@ pub fn classify_pr_command(argv: &[&str]) -> bool {
 /// unhandled, `gh --repo o/r pr create` yields the words `o/r pr create` and the
 /// subcommand match on `["pr", "create"]` fails — a creation form that is not
 /// counted, which is the under-counting direction the cap exists to prevent.
+///
+/// # `--hostname` IS KEPT, AND THE REASON IS MEASURED — A CORRECTION TO AUDIT 8
+///
+/// Audit 8 suggested removing `--hostname` as a stale entry of the `--comment` /
+/// `--super-prefix` shape. **Re-measured against the built binary, removing it
+/// would be a REGRESSION in the UNDER-COUNTING direction**, which is the one the
+/// cap exists to prevent (`T-19-35`):
+///
+/// ```text
+/// glab --hostname gitlab.com mr create --title x   -> exit 0, exactly ONE pr-ledger line
+/// glab --host     gitlab.com mr create --title x   -> exit 0, ZERO pr-ledger lines
+/// ```
+///
+/// `--host` is NOT in this constant, so its VALUE `gitlab.com` is read as the
+/// first subcommand word, `["gitlab.com", "mr", "create", …]` matches no creation
+/// arm, and the creation form goes UNCOUNTED. Removing `--hostname` moves the
+/// first row onto the second row's behaviour.
+///
+/// **The entry is ASYMMETRIC by construction and this says so rather than
+/// implying a single callee.** Measured: `gh pr create --hostname` answers
+/// ``unknown flag: --hostname``, so the entry is **INERT for `gh`** — it cannot
+/// mis-index a `gh` command that runs — while it is **load-bearing for `glab`**,
+/// whose grammar is **UNCONFIRMED because `glab` is not installed on this
+/// machine**. That is the whole difference from `--comment` and
+/// `--super-prefix`, which were removed because the callee that DOES run
+/// rejects them and the entry was therefore live in the OVER-consuming
+/// direction.
+///
+/// The `gh` half is pinned two-sided by
+/// [`the_forge_value_opts_gh_half_is_pinned_two_sided_and_the_glab_half_cannot_be`].
+/// **The `glab` half CANNOT be pinned on this machine and is NOT** — a pin that
+/// skips is a fail-open pin, so it is left unwritten and stated rather than
+/// faked. The `glab --host` cell is carried forward UNFIXED for the same reason;
+/// audits 7 and 8 both explicitly declined to upgrade it.
 const FORGE_VALUE_OPTS: &[&str] = &["-R", "--repo", "--hostname"];
 
 /// The INDICES into `rest` of the non-flag words of a subcommand chain, in
@@ -4866,6 +4900,26 @@ fn subcommand_words<'a>(rest: &[&'a str]) -> Vec<&'a str> {
 }
 
 /// Long and short flags of `gh api` that take a **separate** following value.
+///
+/// **Membership is a MEASUREMENT of the installed `gh`, not a reading of its
+/// help text** (`T-19-106`). [`scan_gh_api`] skips a word for every entry here,
+/// so a stale entry makes the guard read the WRONG word as the endpoint — the
+/// same mis-index shape `--comment` had in [`CONFIG_VALUE_OPTS`] and
+/// `--super-prefix` had in [`GIT_GLOBAL_VALUE_OPTS`], in a third constant.
+/// [`every_gh_api_value_opt_really_takes_a_separate_value_on_the_installed_gh`]
+/// re-runs a two-sided probe over this constant on every test run.
+///
+/// **This constant went unpinned for one round because the stated reason was a
+/// fact about a DIFFERENT CALLEE** — that `glab` is not installed — which is
+/// audit 8's finding. `GH_API_VALUE_OPTS` is a pure `gh api` constant, `gh`
+/// 2.45.0 IS installed, and the pin can run today.
+///
+/// **The probe is ENDPOINT-LESS — `gh api <opt>` — and that is required rather
+/// than incidental.** It is what keeps every row off the network: the
+/// endpoint-bearing spelling `gh api repos/o/r --paginate` is measured to make a
+/// REAL HTTP REQUEST (it returns a 404 body), so a pin written that way would be
+/// non-hermetic and would fail on a machine without network or auth — a flaky pin
+/// in the fail-open direction.
 const GH_API_VALUE_OPTS: &[&str] = &[
     "-X",
     "--method",
@@ -7478,6 +7532,210 @@ mod tests {
                  skips a word git reads as the config key. Probe answered: {text}"
             );
         }
+    }
+
+    /// Run `gh` with the given arguments and report stdout+stderr.
+    ///
+    /// **It MUST NOT skip when `gh` is absent**: a skipped pin is a fail-open pin,
+    /// and this phase has been punished for that shape six times.
+    fn gh_grammar_probe(args: &[&str]) -> String {
+        let output = std::process::Command::new("gh")
+            .args(args)
+            .env("GH_NO_UPDATE_NOTIFIER", "1")
+            .env("GH_PROMPT_DISABLED", "1")
+            .output()
+            .expect(
+                "the `gh api` grammar drift pin requires a real `gh` on PATH. It is \
+                 deliberately NOT written to skip when `gh` is absent: a skipped pin is a \
+                 fail-open pin. `gh` 2.45.0 is the measured version and this constant is a \
+                 claim about ITS grammar.",
+            );
+        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&output.stderr));
+        text
+    }
+
+    #[test]
+    fn every_gh_api_value_opt_really_takes_a_separate_value_on_the_installed_gh() {
+        // **`T-19-106`'s remaining half.** `scan_gh_api` skips a word for every
+        // `GH_API_VALUE_OPTS` entry, so a stale entry makes the guard read the
+        // WRONG word as the endpoint — the same mis-index that made
+        // `git config --comment core.hooksPath /dev/null` exit 0 with `/dev/null`
+        // read as the key. **This constant went unpinned for a round because the
+        // stated reason was a fact about a DIFFERENT CALLEE** (`glab` is not
+        // installed); `gh` 2.45.0 IS installed and the pin runs today.
+        //
+        // **EVERY PROBE IS ENDPOINT-LESS AND TOUCHES NO NETWORK.** The
+        // endpoint-bearing spelling `gh api repos/o/r --paginate` is measured to
+        // make a real HTTP request, which would make this pin non-hermetic and
+        // fail-open on a machine without network or auth.
+
+        // --- floor: the seventeen measured entries are present. The correct
+        //     response to this failing is to RESTORE the measured entry, never to
+        //     lower the floor.
+        assert!(
+            GH_API_VALUE_OPTS.len() >= 17,
+            "`GH_API_VALUE_OPTS` must carry at least the seventeen spellings measured as \
+             separate-value flags on `gh` 2.45.0. A constant short of that makes `scan_gh_api` \
+             read a flag's VALUE as the endpoint. RESTORE the entry; do not lower the floor. \
+             Got: {GH_API_VALUE_OPTS:?}"
+        );
+
+        // --- THE PROBE, READING `gh`'S OWN CLASSIFICATION rather than inferring
+        //     one. Invoked with no value, `gh api <opt>` answers in one of exactly
+        //     three ways, measured:
+        //
+        //       -X / --method  -> flag needs an argument            VALUE-TAKING
+        //       --bogus-opt    -> unknown flag: --bogus-opt         DOES NOT EXIST
+        //       --paginate     -> accepts 1 arg(s), received 0      EXISTS, TAKES NO VALUE
+        let classify = |option: &str| -> (bool, bool, String) {
+            let text = gh_grammar_probe(&["api", option]);
+            let unknown = text.contains(&format!("unknown flag: {option}"));
+            let needs = text.contains("flag needs an argument");
+            (needs, unknown, text)
+        };
+
+        // --- NEGATIVE CONTROL 1: an option `gh` does not have.
+        let (bogus_needs, bogus_unknown, bogus_text) = classify("--bogus-opt");
+        assert!(
+            bogus_unknown && !bogus_needs,
+            "the probe must classify `--bogus-opt` as NOT EXISTING, in `gh`'s own words \
+             `unknown flag: --bogus-opt`. If it does not, it is not reading `gh`'s answer and \
+             every classification below is vacuous. Got: {bogus_text}"
+        );
+
+        // --- **NEGATIVE CONTROL 2, AND ITS MEASURED STRING IS PINNED RATHER THAN
+        //     A PARAPHRASE OF IT.** `gh api --paginate` answers
+        //     `accepts 1 arg(s), received 0`.
+        //
+        //     **WHAT THAT STRING MEANS, AND WHY IT IS THE RIGHT CONTROL: it is a
+        //     POSITIONAL error, not a flag-level one.** `gh` ACCEPTED `--paginate`,
+        //     consumed NO value for it, and got as far as complaining about the
+        //     missing ENDPOINT — which is exactly the *exists-and-requires-no-value*
+        //     answer this classifier has to be held to. Without it the pin passes
+        //     on a probe reporting `needs an argument` for everything, which is the
+        //     vacuity `19-23`'s `CONFIG_VALUE_OPTS` redesign exists to exclude.
+        //
+        //     **PROVENANCE, recorded rather than smoothed over**: both the corpus
+        //     plan and this plan first DESCRIBED this as a flag-level answer, and a
+        //     plan-check measured it and corrected them. That is why the measured
+        //     STRING is pinned and the description is not.
+        let paginate = gh_grammar_probe(&["api", "--paginate"]);
+        assert!(
+            paginate.contains("accepts 1 arg(s), received 0"),
+            "the probe must classify `gh api --paginate` with `gh`'s own POSITIONAL error \
+             `accepts 1 arg(s), received 0` — the flag was ACCEPTED and consumed NO value, so \
+             `gh` reached the missing-endpoint complaint. **Without this control the pin \
+             passes on a probe that reports `needs an argument` for everything.** Note this is \
+             deliberately the ENDPOINT-LESS spelling: `gh api repos/o/r --paginate` makes a \
+             REAL HTTP REQUEST and would make this pin non-hermetic. Got: {paginate}"
+        );
+        assert!(
+            !paginate.contains("flag needs an argument"),
+            "`--paginate` must NOT answer `flag needs an argument`, or the two controls are \
+             indistinguishable and the second one proves nothing. Got: {paginate}"
+        );
+        assert!(
+            !GH_API_VALUE_OPTS.contains(&"--paginate"),
+            "`--paginate` takes NO value on this `gh` and must NOT be in `GH_API_VALUE_OPTS`. \
+             An entry for it would make `scan_gh_api` skip the ENDPOINT."
+        );
+
+        // --- the pin itself, TWO-SIDED, over EVERY entry.
+        for option in GH_API_VALUE_OPTS {
+            let (needs, unknown, text) = classify(option);
+            assert!(
+                !unknown,
+                "the installed `gh` does not have `gh api {option}`, which `GH_API_VALUE_OPTS` \
+                 claims takes a separate value. A stale entry here makes `scan_gh_api` skip a \
+                 word `gh` does not skip, so the guard reads the WRONG word as the endpoint. \
+                 **Remove the entry.** Probe answered: {text}"
+            );
+            assert!(
+                needs,
+                "`gh api {option}` must answer `flag needs an argument`, which is `gh`'s own \
+                 statement that `{option}` consumes a SEPARATE following word. It did not, so \
+                 this entry claims a grammar the installed `gh` does not have. Probe \
+                 answered: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_forge_value_opts_gh_half_is_pinned_two_sided_and_the_glab_half_cannot_be() {
+        // **`--hostname` IS KEPT, AND THIS IS A CORRECTION TO AUDIT 8'S OWN
+        // SUGGESTION, MEASURED RATHER THAN ARGUED.** Removing it would move a
+        // COUNTED `glab` creation form to UNCOUNTED — the under-counting direction
+        // the cap exists to prevent (`T-19-35`) — because `subcommand_word_indices`
+        // would then read the option's VALUE as the first subcommand word.
+        //
+        // Re-measured against the built binary while writing this:
+        //
+        //     glab --hostname gitlab.com mr create --title x  -> exactly ONE ledger line
+        //     glab --host     gitlab.com mr create --title x  -> ZERO ledger lines
+        //
+        // The mechanism behind those two rows is asserted here directly, which is
+        // stronger than the ledger walk because it names WHY they differ.
+        let with_entry = subcommand_words(&["--hostname", "gitlab.com", "mr", "create", "--title", "x"]);
+        assert_eq!(
+            with_entry,
+            vec!["mr", "create", "x"],
+            "`--hostname` is in `FORGE_VALUE_OPTS`, so its VALUE is skipped and the creation \
+             form is COUNTED. Measured: this spelling leaves exactly ONE pr-ledger line."
+        );
+        assert!(
+            classify_pr_command(&["glab", "--hostname", "gitlab.com", "mr", "create", "--title", "x"]),
+            "**REMOVING `--hostname` WOULD BE A REGRESSION IN THE UNDER-COUNTING DIRECTION.** \
+             With the entry present this creation form is counted; without it the option's \
+             VALUE becomes the first subcommand word and it is not."
+        );
+        let without_entry = subcommand_words(&["--host", "gitlab.com", "mr", "create", "--title", "x"]);
+        assert_eq!(
+            without_entry,
+            vec!["gitlab.com", "mr", "create", "x"],
+            "**THE CONTROL THAT MAKES THE ROW ABOVE MEAN SOMETHING.** `--host` is NOT in \
+             `FORGE_VALUE_OPTS`, so its value `gitlab.com` is read as the first subcommand \
+             word and the creation form goes UNCOUNTED — measured at ZERO ledger lines. This \
+             is the `glab --host` cell, carried forward UNFIXED because `glab` is not \
+             installed and a pin that skips is fail-open."
+        );
+        assert!(
+            !classify_pr_command(&["glab", "--host", "gitlab.com", "mr", "create", "--title", "x"]),
+            "the uncounted control must stay uncounted, or the two rows do not discriminate."
+        );
+
+        // --- THE `gh` HALF, TWO-SIDED against the real callee.
+        for option in ["-R", "--repo"] {
+            let text = gh_grammar_probe(&["pr", "create", option]);
+            assert!(
+                text.contains("flag needs an argument"),
+                "`gh pr create {option}` must answer `flag needs an argument`, which is `gh`'s \
+                 own statement that it consumes a SEPARATE following word — the grammar \
+                 `FORGE_VALUE_OPTS` claims for it. Got: {text}"
+            );
+        }
+        let hostname = gh_grammar_probe(&["pr", "create", "--hostname"]);
+        assert!(
+            hostname.contains("unknown flag: --hostname"),
+            "**THE ASYMMETRY, PINNED RATHER THAN DESCRIBED.** `gh pr create --hostname` must \
+             answer `unknown flag: --hostname`: the entry is INERT for `gh` and therefore \
+             cannot mis-index a `gh` command that runs, while it is LOAD-BEARING for `glab`. \
+             That is the whole difference from `--comment` and `--super-prefix`, which were \
+             REMOVED because the callee that does run rejects them and the entry was live in \
+             the OVER-consuming direction. Got: {hostname}"
+        );
+
+        // --- **AND THE `glab` HALF IS NOT PINNED, STATED PLAINLY.** `glab` is not
+        //     installed on this machine, so a two-sided pin cannot run against its
+        //     real callee. **A pin that skips is a fail-open pin**, so none is
+        //     written here rather than one that silently passes. Audits 7 and 8
+        //     both explicitly declined to upgrade this cell, and this round carries
+        //     it forward unfixed for the same measured reason.
+        assert!(
+            FORGE_VALUE_OPTS.contains(&"--hostname"),
+            "`--hostname` must stay in `FORGE_VALUE_OPTS`. Removing it is an UNDER-COUNTING \
+             regression, measured above. Got: {FORGE_VALUE_OPTS:?}"
+        );
     }
 
     #[test]

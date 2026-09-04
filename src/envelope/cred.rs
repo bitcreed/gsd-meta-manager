@@ -243,33 +243,64 @@ fn config_env(pairs: &[(&str, &OsStr)]) -> Vec<(OsString, OsString)> {
 /// An agent that unsets `GIT_CONFIG_COUNT` in a subshell **escapes this layer**.
 /// That is not a hole this project can close client-side.
 ///
-/// **FIVE forms outrank this injection, and four of them were PERMITTED until
-/// plan 19-23.** This paragraph previously claimed there was one. That claim was
-/// false, and it is corrected here rather than left standing, because a claim in
-/// the code that the project's own evidence contradicts is a residual disclosure
-/// pinned to exist rather than to be true (`T-19-84`). Every row was measured
-/// against `git version 2.43.0` with the exact triplet [`hooks_path_env`] emits
-/// as the control — it alone resolves `core.hooksPath` to `/ENV_WINS`:
+/// **This paragraph states the REGIONS each closure covers, and it COUNTS
+/// NOTHING** (`T-19-109`). It has been corrected twice. It first claimed ONE
+/// form outranked this injection; plan 19-23 replaced that with a table of
+/// **FIVE**; and measurement then found a **SIXTH** — a non-`!` `alias.<name>`
+/// body beginning `-c include.path=<file>`, which git re-parses as a git command
+/// line in-process. **So the counted claim was wrong the day it was written, both
+/// times.** A count of six would be wrong the moment a seventh is found: a
+/// counted completeness claim is strictly harder to keep true than a statement of
+/// reach, and that is `T-19-84`'s, `T-19-107`'s and `T-19-109`'s shared shape — a
+/// residual disclosure pinned to exist rather than to be true. Every fact below
+/// was measured against `git version 2.43.0` with the exact triplet
+/// [`hooks_path_env`] emits as the control; it alone resolves `core.hooksPath` to
+/// `/ENV_WINS`.
 ///
-/// | Form | Resolves to | Closed by |
-/// |---|---|---|
-/// | `git -c core.hooksPath=… push` | command-line precedence | plan 19-02, by name at the tool boundary |
-/// | `git -c include.path=<file>` | `/INCLUDE_WINS` | 19-23's confinement clause (`policy::config_key_names_an_indirection_section`) |
-/// | `git -c includeIf.<cond>.path=<file>` | `/INCLUDE_WINS` | the same clause — it reads the SECTION, so the condition family is covered by construction |
-/// | `git --config-env=include.path=<VAR>` | `/INCLUDE_WINS` | the same clause, reached through the second carrier |
-/// | `GIT_CONFIG_PARAMETERS="'core.hooksPath=…'"` | `/PARAM_WINS` | 19-23's `ENVELOPE_ENV_KEYS` entry (`T-19-104`) |
+/// **THE REGIONS THAT ARE COVERED:**
 ///
-/// All four legs were reproduced end to end against a bare remote with this
-/// hook layer delivered exactly as it is delivered in production: a plain
-/// in-namespace push is refused and leaves the remote ref UNMOVED, while the
-/// same push under an indirection carrier or under `GIT_CONFIG_PARAMETERS`
-/// completes at rc 0 and MOVES it.
+/// * **The argv LEADING-OPTION region**, which `policy::scan_leading` walks —
+///   the by-name `core.hooksPath` deny (plan 19-02); the CONFINEMENT clause over
+///   assignments whose key names an indirection SECTION, i.e. a value git splices
+///   a FILE in from (plan 19-23, `policy::config_key_names_an_indirection_section`);
+///   and the RE-PARSE clause over assignments whose key names a section whose
+///   value git re-parses as a git COMMAND LINE including its own leading options
+///   (plan 19-25, `policy::config_key_names_a_reparsed_command_section`). Both
+///   clauses read the SECTION, so each covers its family by construction rather
+///   than by enumeration, and both reach the `-c` and `--config-env` carriers.
+/// * **The ENVIRONMENT**, which `policy::resolve_program`'s step-1 check reads —
+///   `ENVELOPE_ENV_KEYS`, with a second, defeating-keys pin SOURCE beside it so a
+///   key the envelope neither sets nor removes but which DEFEATS one it sets
+///   cannot go uncovered (plan 19-23, `T-19-104`).
+/// * **The `git config` WRITE OPERAND**, which `policy::classify_config` reads —
+///   the by-name `core.hooksPath` deny, and plan 19-25's re-parse clause, which
+///   is required there rather than symmetric because a persisted alias does not
+///   have to WIN a precedence contest against this injection; it only has to
+///   EXIST.
 ///
-/// **The closures above are client-side and are not guarantees either.** The
-/// confinement clause fails OPEN on a future git that adds a THIRD indirection
-/// section, and no automated control covers that direction. Neither the denials
-/// nor this injection is a guarantee; server-side branch protection is the only
-/// boundary that does not depend on the agent's cooperation.
+/// **WHAT IS NOT COVERED, AND NONE OF IT HAS AN AUTOMATED CONTROL:**
+///
+/// * a `!`-bodied alias body carrying a carrier in its OWN command line — the
+///   `!` arm is a measured carve-out (a `!` body runs in a CHILD that inherits
+///   this injection), and a body that then applies its own command-line carrier
+///   inside that child reaches `core.hooksPath` anyway. That is `T-19-86`;
+/// * an alias already persisted in a config file the guard never saw a write to —
+///   the guard is stateless and argv-only, so a repo-local `.git/config` alias
+///   predating the run is live;
+/// * a future git that adds a THIRD indirection section;
+/// * a future git that re-parses a SECOND config value as a git command line.
+///
+/// An agent that unsets `GIT_CONFIG_COUNT` in a subshell escapes this layer
+/// entirely, as stated above.
+///
+/// The reproductions behind the covered regions were run end to end against a
+/// bare remote with this hook layer delivered exactly as it is delivered in
+/// production: a plain in-namespace push is refused and leaves the remote ref
+/// UNMOVED, while the same push under a carrier completes at rc 0 and MOVES it.
+///
+/// **The closures above are client-side and are not guarantees either.** Neither
+/// the denials nor this injection is a guarantee; server-side branch protection
+/// is the only boundary that does not depend on the agent's cooperation.
 pub fn hooks_path_env(hooks_dir: &Path) -> Vec<(OsString, OsString)> {
     config_env(&[("core.hooksPath", hooks_dir.as_os_str())])
 }
