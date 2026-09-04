@@ -964,6 +964,70 @@ fn classify_segments(
         let segment = entry.tokens.as_slice();
         let words: Vec<&str> = segment.iter().map(|token| token.text.as_str()).collect();
 
+        // **THIS ENVELOPE'S OWN CONTROLS ARE FILES, AND A COMMAND THAT NAMES ONE
+        // IS A COMMAND THIS FUNCTION CANNOT JUDGE.** The ledger SAFE-06 counts
+        // in, both hook stubs layer 3 IS, the generated `gitconfig` and `askpass`
+        // and the settings file are all ordinary files under
+        // `envelope_dir_in(root, alias)`, writable by the same uid the driven
+        // process runs as — because git must exec the hooks, the agent CLI must
+        // read the settings and this guard must append the ledger. Measured:
+        // `rm -f <ledger>` resets a cap `SECTION_ENVELOPE` lists under
+        // **Guaranteed**, and `cp /bin/true <hooks>/pre-push` removed layer 3 and
+        // let a force push MOVE a bare remote's `main` without touching
+        // `GIT_CONFIG_COUNT` at all.
+        //
+        // **Placing it before the `match` is load-bearing in THREE ways**, in the
+        // shape `first_unreadable_decision_word`'s own placement comment below
+        // uses for two of them:
+        //
+        // 1. **It runs before the resolution match**, so a GOVERNED program
+        //    touching a carrier is reached too. An equivalent rule inside the
+        //    `NoProgram | Ungoverned` arm would cover `rm -f <ledger>` and MISS
+        //    `git config --file <env>/<alias>/gitconfig alias.x '<body>'`, which
+        //    resolves `Governed` and never reaches that arm. A command touching
+        //    this envelope's own carriers is unjudgeable regardless of which
+        //    program it names.
+        // 2. **It runs before the ledger write**, so a command the guard refuses
+        //    never consumes PR-cap budget — the same reason the unreadable
+        //    decision word is tested where it is.
+        // 3. **It re-raises at DEPTH through the `NestedPayload` arm**, which
+        //    re-enters this function on the re-split payload with the same `root`
+        //    and `alias`. So `bash -lc "rm -f <ledger>"` is reached by THIS clause
+        //    rather than by a second one — a consequence of the placement rather
+        //    than an extra mechanism.
+        //
+        // **One reading site, from the walk this loop already does**, on the
+        // segment it already holds: no second pass, no second scan of the argv, no
+        // filter after `resolve_program_with_head` answered, and no new
+        // `ParkReason` — this is the same general unresolvable identifier the
+        // sibling refusals carry, and deliberately NOT `HookBypassBlocked`, which
+        // names a config-KEY mechanism this refusal does not use (D-24).
+        //
+        // `envelope_dir_in` is a validate-then-`join` behind
+        // `is_plain_path_component` with NO filesystem probe, and the predicate it
+        // feeds normalises LEXICALLY and follows no link, so this clause obeys the
+        // three latency rules stated above and introduces no TOCTOU. `None` here
+        // is an alias this envelope could never have built a directory for, so
+        // there is no directory to protect.
+        //
+        // **It fails OPEN in four named directions and none has an automated
+        // control** — a redirection target, an expansion-borne operand, a symlink
+        // and a relative path, the last two NARROWED by a measured partial
+        // mitigation rather than closed. They are stated in full on
+        // `policy::envelope_carrier_operand`.
+        if let Some(envelope_dir) = super::envelope_dir_in(root, alias) {
+            if policy::envelope_carrier_operand(segment, &envelope_dir) {
+                return Ok(Some((
+                    ParkReason::EnvelopeAssertionFailed,
+                    format!(
+                        "gsd-meta-manager envelope: REFUSED (reason: {}) — {}",
+                        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+                        policy::envelope_carrier_refusal(&envelope_dir)
+                    ),
+                )));
+            }
+        }
+
         // **The segment's CONTEXT travels with it rather than being re-derived
         // here**, for the reason this module already records about the park
         // reason: a caller that computed the same fact a second way is how two

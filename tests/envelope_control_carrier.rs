@@ -2006,3 +2006,197 @@ fn the_guaranteed_cap_clause_is_pinned_at_its_current_text_and_19_27_must_change
          the longest is 53 characters. Offsets: {first} {second} {third}"
     );
 }
+
+// ===========================================================================
+// SECTION 11 — PLAN 19-27's OWN ADDITIONS: the ORDERING the carrier clause
+// establishes, and the two rows an `Ungoverned`-arm placement would MISS
+//
+// **ADDITIONS ONLY.** Not one row of sections 0-10 was edited or deleted.
+// Sections 2, 3 and 4 already pin the four fail-open directions, the two
+// near-miss controls and the ordinary-operand half at exit 0 **BEFORE AND
+// AFTER** — `19-26` wrote them that way deliberately — so this plan re-asserts
+// none of them and adds nothing there. They were re-driven against the built
+// binary after the fix and every one is still PERMITTED.
+//
+// Every row below was MEASURED against the built binary before it was written,
+// with a CONTROL beside it, and every post-fix verdict here is DERIVED from the
+// placement rather than guessed.
+// ===========================================================================
+
+#[test]
+fn the_carrier_clause_and_an_existing_refusal_land_at_different_identifiers_by_segment_order() {
+    // **THE MECHANICAL PROOF THAT THE CLAUSE IS RAISED IN THE ONE PER-SEGMENT
+    // WALK RATHER THAN IN A SECOND PASS.** `classify_segments` returns the FIRST
+    // refusal it reaches, walking segments in order. So the SAME two acts,
+    // written in the two orders, must answer at TWO DIFFERENT identifiers.
+    //
+    // **A second pass — a filter applied after the loop, or a scan of the whole
+    // argv — would answer the same identifier for both**, because it would no
+    // longer be the walk's position that decided. That is what this pair is for,
+    // and it is why the two identifiers are asserted rather than merely the exit
+    // code.
+    refuses_carrier(
+        |root| {
+            format!(
+                "rm -f {}/alpha/pr-ledger.ndjson && git push --force origin main",
+                root.display()
+            )
+        },
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+        "the CARRIER segment comes FIRST, so the carrier clause answers and the force push is \
+         never classified. Measured.",
+    );
+    refuses_carrier(
+        |root| {
+            format!(
+                "git push --force origin main && rm -f {}/alpha/pr-ledger.ndjson",
+                root.display()
+            )
+        },
+        policy::REASON_FORCE_PUSH_BLOCKED,
+        "the FORCE PUSH comes first, so `classify_git` answers and the carrier segment is never \
+         reached. **The identifier is `force_push_blocked` and not the carrier clause's**, which \
+         is the whole point of the pair. Measured.",
+    );
+
+    // **THE CONTROL.** The same line with the carrier replaced by an ordinary
+    // path still answers `force_push_blocked` — so the first row's identifier is
+    // a fact about the CARRIER and not about the segment order alone.
+    refuses(
+        "rm -f /tmp/x && git push --force origin main",
+        policy::REASON_FORCE_PUSH_BLOCKED,
+        "the control: an ordinary first segment leaves the force push to answer. Measured exit 2 \
+         `force_push_blocked`.",
+    );
+}
+
+#[test]
+fn a_carrier_operand_beside_a_hooks_path_assignment_answers_the_carrier_clause_and_not_the_deny() {
+    // **THE SECOND ORDERING PIN, WITHIN ONE SEGMENT — and this one is a fact
+    // about the PLACEMENT rather than about the walk.** The clause is raised
+    // BEFORE `resolve_program_with_head`, so a single segment carrying BOTH a
+    // `core.hooksPath` assignment and a carrier operand answers the CARRIER
+    // clause. A rule placed in the `Ungoverned` arm, or anywhere after the
+    // resolution match, would let `scan_leading` answer first and this row would
+    // land at `hook_bypass_blocked`.
+    //
+    // **This is also the D-24 discrimination.** The two refusals name two
+    // different mechanisms — a config KEY and a file OPERAND — and a refusal that
+    // named the wrong one would attribute the decision to a mechanism that did not
+    // produce it.
+    refuses_carrier(
+        |root| {
+            format!(
+                "git -c core.hooksPath=/dev/null config --file {}/alpha/gitconfig --get x",
+                root.display()
+            )
+        },
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+        "one segment, both acts. The carrier clause runs BEFORE the resolution match, so it \
+         answers. Measured.",
+    );
+
+    // **THE CONTROL, and it is what makes the row above non-vacuous**: the same
+    // assignment WITHOUT a carrier operand still answers `hook_bypass_blocked`, so
+    // the deny is alive and the row above is not passing because the deny broke.
+    refuses(
+        "git -c core.hooksPath=/dev/null status",
+        policy::REASON_HOOK_BYPASS_BLOCKED,
+        "the control: the hooks-path deny is UNPERTURBED. Measured exit 2 \
+         `hook_bypass_blocked`, unchanged by this plan.",
+    );
+}
+
+#[test]
+fn after_19_27_a_governed_program_touching_a_carrier_is_refused_and_an_ungoverned_placement_misses_it()
+{
+    // **THE ROW THAT EXISTS TO TURN A MIS-PLACED RULE RED.** Both spellings below
+    // resolve `Governed` — `git config` and `git status` are programs this
+    // envelope governs — so a rule written into the `NoProgram | Ungoverned` arm
+    // would never be consulted for either, and both would be PERMITTED. Their
+    // controls prove that: with the SAME command and a directory that is NOT this
+    // run's envelope, both are at **exit 0**.
+    //
+    // **THE SPELLING IS DELIBERATE, AND THE ROW `19-27`'s PLAN NAMED WOULD NOT
+    // HAVE WORKED.** `git config --file <env>/alpha/gitconfig alias.x '<body>'` is
+    // refused at `envelope_assertion_failed` — but so is its control OUTSIDE the
+    // envelope, by round 9's re-parse clause, at the SAME identifier. That row
+    // would stay green under a mis-placed rule and would certify nothing. Both
+    // rows here use a key that earns no other refusal, so the carrier clause is
+    // the ONLY thing that can produce the verdict; the overlap is recorded below
+    // rather than papered over.
+    refuses_carrier(
+        |root| {
+            format!(
+                "git config --file {}/alpha/gitconfig --get user.name",
+                root.display()
+            )
+        },
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+        "a GOVERNED `git config` whose `--file` operand is the envelope's own generated \
+         gitconfig. It resolves `Governed` and never reaches the `Ungoverned` arm. Measured.",
+    );
+    permits(
+        "git config --file /tmp/not-an-envelope/gitconfig --get user.name",
+        "the control: the SAME governed command with a directory that is not this run's \
+         envelope. **Measured exit 0** — so the row above is a fact about the CARRIER and not \
+         about `git config --file` being refused generally.",
+    );
+
+    refuses_carrier(
+        |root| format!("git --git-dir {}/alpha/gh status", root.display()),
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+        "a second governed spelling, through a leading git option rather than a subcommand \
+         operand — the clause reads WORDS and never a program's grammar. Measured.",
+    );
+    permits(
+        "git --git-dir /tmp/not-an-envelope/gh status",
+        "the control for the second spelling. **Measured exit 0.**",
+    );
+
+    // **THE RECORDED OVERLAP, stated rather than left for a later reader to
+    // discover.** `git config --file <ENV>/alpha/gitconfig alias.x '<body>'` — the
+    // spelling the plan named — really is refused by the carrier clause, and its
+    // outside-the-envelope twin is refused by round 9's re-parse clause at the
+    // same reason identifier with a different MESSAGE. Both are printed, neither
+    // is asserted, because an assertion over the identifier alone could not tell
+    // the two mechanisms apart and an assertion over the message would be pinning
+    // round 9's wording from round 10's file.
+    record_only("the plan's own governed spelling, CARRIER", |root| {
+        format!(
+            "git config --file {}/alpha/gitconfig alias.x 'push --force origin main'",
+            root.display()
+        )
+    });
+    record_only("the plan's own governed spelling, CONTROL outside", |_| {
+        "git config --file /tmp/not-an-envelope/gitconfig alias.x 'push --force origin main'"
+            .to_string()
+    });
+}
+
+#[test]
+fn after_19_27_a_nested_payload_carrier_is_reached_by_the_same_clause_through_re_entry() {
+    // **REACHED BY THE SAME CLAUSE, NOT BY A SECOND ONE.** The `NestedPayload`
+    // arm re-splits the payload and re-enters `classify_segments` with the same
+    // `root` and `alias`, so the carrier clause is raised again at depth on the
+    // inner segments. That is a CONSEQUENCE of putting it at the top of the
+    // per-segment loop rather than an extra mechanism, and it is why no second
+    // reading site was needed for a wrapped spelling.
+    refuses_carrier(
+        |root| {
+            format!(
+                "bash -lc \"rm -f {}/alpha/pr-ledger.ndjson\"",
+                root.display()
+            )
+        },
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+        "the payload is one WORD to the outer segment — whose own words name no envelope path — \
+         so the refusal can only come from the re-entered call on the re-split payload. \
+         Measured.",
+    );
+    permits(
+        "bash -lc \"rm -f /tmp/not-an-envelope/pr-ledger.ndjson\"",
+        "the control: the same wrapper and the same program with an ordinary path. **Measured \
+         exit 0**, so the row above is not passing because `bash -lc` is refused generally.",
+    );
+}
