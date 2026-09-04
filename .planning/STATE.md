@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
-stopped_at: Completed 19-24-PLAN.md (corpus RED; 19-25 writes the rules)
-last_updated: "2026-09-04T06:43:55.777Z"
+stopped_at: Completed 19-25-PLAN.md
+last_updated: "2026-09-04T15:35:27.683Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: 32a3b35197585b99a4fff8cf8c87ff588044289d
+state_head: 089fb18335c280345c8a346b257db1ce2c253466
 progress:
   total_phases: 10
   completed_phases: 6
   total_plans: 104
-  completed_plans: 103
+  completed_plans: 104
   percent: 60
 ---
 
@@ -226,6 +226,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 19 P21 | 1 session | 3 tasks | 5 files |
 | Phase 19 P22 | 1h | 3 tasks | 4 files |
 | Phase 19 P24 | 2h | 3 tasks | 4 files |
+| Phase 19 P25 | ~3h | 4 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -292,6 +293,10 @@ Recent decisions affecting current work:
 - [Phase 19]: A SIXTH class on the EXISTING config-resolution axis, not a fifth axis — the region moved, not the axis
 - [Phase 19]: The shell-alias carve-out is git's own one-byte rule, fenced mechanically rather than by care
 - [Phase 19]: T-19-108 will close only AS SCOPED; audit 7's !-bodied destructive pair is T-19-86 and stays open at high
+- [Phase 19]: Option (b) adopted for T-19-108: option (a) rejected on three MEASURED grounds (second tokenizer, depth-3 recursion, carriers with no readable body)
+- [Phase 19]: The re-parse value test reads the CARRIER as well as the first byte — measured, --config-env=alias.q='!EVIL' resolves /INCLUDE_WINS
+- [Phase 19]: Region 2 gates on !is_read plus a VALUE WORD because is_write is blind to a dash-leading value
+- [Phase 19]: T-19-110 registered OPEN and NOT fixed: widening is_write moves verdicts with no corpus able to fail on them
 
 ### Pending Todos
 
@@ -322,6 +327,7 @@ Recent decisions affecting current work:
 - T-19-86 (governed program's own operand names a governed command) and T-19-87 (${VAR} fragments a command past the splitter) are open, pinned and deferred to a round-4 plan; /gsd-secure-phase 19 cannot clear until they are closed
 - T-19-97/T-19-98/T-19-99 open — corpus RED at 1605 (passed+failed); 19-19 writes the rule. /gsd-secure-phase 19 NOT cleared: T-19-86 and T-19-91 remain open at high
 - 19-21: tests/envelope_callee_grammar.rs pins `git --super-prefix x push --force origin main` at force_push_blocked while pinning `git --super-prefix x status` at envelope_assertion_failed — identical leading tokens, so no rule obeying 19-21's prohibitions satisfies both. Row left RED. Both refuse at exit 2; only the identifier differs. **RESOLVED 2026-09-04 (989f21a)** — the 19-21 executor's analysis was verified by measurement against the built binary (fresh envelope root per row, root walked after) and HELD: both spellings refuse at exit 2 with an empty walk, `--super-prefix` is absent from GIT_GLOBAL_VALUE_OPTS after 19-21, and git 2.43.0 rejects it bare, separate and attached. `force_push_blocked` was a PRE-fix observation mislabelled as post-fix. Row 937 corrected to envelope_assertion_failed; exit code and empty walk still asserted; no `src/` change and no second reading site. All thirteen envelope_* binaries green; passed+failed = 1639, 0 failures. **This does NOT clear `/gsd-secure-phase 19`** — T-19-86 and T-19-91 remain OPEN at high, T-19-17r stays OUTSTANDING (no AR-19-13, not accepted), and only the WRAPPER-OPERAND sub-class of T-19-60 is closed.
+- T-19-110 (NEW, high): scan_config under-reads a dash-leading config value, so git config core.hooksPath -c and -- exit 0 while /dev/null and - are refused. Found by 19-25, deliberately not fixed — needs a RED corpus first.
 
 ### Quick Tasks Completed
 
@@ -352,11 +358,11 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-04T06:43:46.051Z
-Stopped at: Completed 19-24-PLAN.md (corpus RED; 19-25 writes the rules)
+Last session: 2026-09-04T15:35:13.249Z
+Stopped at: Completed 19-25-PLAN.md
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
-Resume file: .planning/phases/19-gitsafe-git-blast-radius-envelope/19-25-PLAN.md
+Resume file: None
 (both retained deliberately — the plan-checker step runs as a separate agent and needs them;
 delete only after round 7 executes).
 Note: `.planning/phases/19-gitsafe-git-blast-radius-envelope/.continue-here.md` is a stale
