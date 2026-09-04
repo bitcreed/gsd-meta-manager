@@ -2637,3 +2637,147 @@ and is recorded as correct.
   not renumbered.
 
 **Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.**
+
+---
+
+## Plan 19-30 — round 12's CORPUS (the rules are `19-31`'s)
+
+**This plan closes NOTHING.** It wrote the corpus and the reproducers and
+STOPPED, with **zero `src/` hunks in all three commits**. `T-19-86`, `T-19-91`,
+`T-19-111`, `T-19-112`, `T-19-116`, `T-19-119` and `T-19-121` all remain OPEN at
+`high`; `T-19-120` is open at `medium`; **`/gsd-secure-phase 19` is NOT cleared
+by this plan, by `19-31`, or by the two together.**
+
+### `T-19-119` — registered at `high`, corpus RED
+
+**`lexical_absolute_components` (`policy.rs:5457-5476`) requires the WORD to
+start with `/`, so a path carried INSIDE a token is invisible to BOTH halves of
+`protected_carrier_named`'s path set while `Token.literal` is TRUE.** None of the
+seven declared directions: no `$`, no `~`, no glob, no brace, no prior read, no
+symlink, and the path IS absolute.
+
+Driven END TO END twice with a control beside every leg:
+
+* a REBUILT bare remote moved `0bd5d44` → `6efde46` on a force push the hook had
+  refused, after `dd if=/bin/true of=<BINARY>` (exit 0) where its twin
+  `cp /bin/true <BINARY>` is exit 2; restored to a refusal by putting the binary
+  back. Layer 2 measured separately: replaced binary exit 0, real binary exit 2.
+* a FIRED PR cap reset in ONE persistent root: 1 permit + 3 `pr_cap_exceeded`, 4
+  ledger lines, `dd if=/dev/null of=<ledger>` exit 0 (twin `cp /dev/null` exit 2),
+  ledger truncated to 0, call 5 PERMITTED again.
+
+It reaches `C-01` … `C-10`. **Corpus:** `tests/envelope_interior_path.rs`
+(8 rows RED) and `CONTROL_CARRIER_INTERIOR_PATH` in
+`tests/envelope_wrapper_class.rs` (1 property RED).
+
+### `T-19-121` — registered at `high`, corpus RECORDED (not asserted)
+
+`git -c credential.helper=store credential fill` returns the ambient username and
+password on ONE permitted line, against the same call without the `-c` at exit 128
+with the secret ABSENT. Measured at this round's posture with `19-29`'s injected
+empty-helper pair present. The whole key-shape space is recorded: exact key, both
+case variants and the **URL-SCOPED** `credential.https://github.com.helper` all
+reach the secret; `credentialx.helper`, `notcredential.helper` and
+`credential.helperx` do not; `--config-env=credential.helper=<VAR>` does.
+
+**The guard rows are RECORDED and asserted in NEITHER direction, because
+`19-31`'s clause is SEVERABLE** and `19-31` may only ADD to the evidence file.
+
+### `T-19-120` — registered at `medium`
+
+`MAX_LEDGER_BYTES` bounds the ledger's SIZE where the failure is its KIND. A FIFO
+stats at 0, passes the bound, and `std::fs::read` blocks: **exit 124 after
+20.02 s**, against 0.42 s for an 8 366 000-byte regular ledger and 0.01 s for a
+fresh root. **The fix belongs INSIDE the same `Ok` arm**; the fresh-root row is
+asserted exit 0 BEFORE AND AFTER so a check placed outside it turns one evidence
+file red instead of the suite. **The behavioural half — what the agent CLI does
+with a hook that never returns — is UNMEASURED and claimed in neither
+direction.**
+
+### The residue, RESTATED as a CONDITION with NO count
+
+> This predicate reads every `/`-ANCHORED SUBSTRING of every LITERAL word, in
+> either word class, against both paths. It is silent about a word the SHELL MAY
+> REWRITE; about a word whose text carries NO ABSOLUTE PATH ANYWHERE; and about a
+> word that reaches a protected path ONLY THROUGH A LINK. The spellings are
+> INSTANCES and are not counted.
+
+**The one-character correction is *"a word that IS NOT ABSOLUTE"* becoming *"a
+word whose text carries no absolute path anywhere in it."*** **The production docs
+still enumerate SEVEN directions and `19-31` restates them.** None of this is
+handed to a pin, a schedule or a version witness.
+
+### TWO FALSE CLAIMS, registered as `19-31`'s to correct WHETHER OR NOT ANY FIX LANDS
+
+* **`cred.rs:420-425`** bounds the `-c credential.helper=` residue on the claim
+  that the spelling *"is ARGV-VISIBLE and is already governed by `scan_leading`'s
+  leading-option region and layer 2's whole grammar"*. **ARGV-VISIBLE it is;
+  GOVERNED it is not** — the by-name deny covers `core.hooksPath`, round 8's
+  clause covers `include.path`, and nothing covers `credential.helper`, measured
+  exit 0 on four surfaces. `T-19-84`/`T-19-107`/`T-19-109`/`T-19-115`'s shape a
+  SIXTH time.
+* **`policy.rs:5743`** cites `dd if=X of=Y` as the reason a read cannot be told
+  from a write. **`dd if=<ledger> of=/tmp/stolen` is exit 0** — the guard refuses
+  it NEITHER way. If the fix lands the sentence becomes TRUE and needs a WR-02
+  note; if it is severed the example must be replaced by `tee F`.
+
+### `policy.rs:9719`'s comment — `19-31`'s WR-02 correction, named in advance
+
+The reason given for the `./alpha/pr-ledger.ndjson` unit pin — *"stripping it must
+not turn a relative word into an absolute one"* — goes STALE, because under the
+new rule a relative word DOES yield absolute candidates while that row still
+answers `false` for a different reason (two components against three). **The row
+does not move; only its stated reason does.**
+
+### `T-19-116` is NOT closed by `T-19-119`
+
+Closing `T-19-119` refuses every option-attached spelling of the binary path,
+including the one that moved a bare remote's `main`. **The declared harm stays
+reachable**, all four re-measured at exit 0: `cp /bin/true $(command -v
+gsd-meta-manager)` (expansion-borne), the tilde spelling, `cd <parent> && cp
+/bin/true gsd-meta-manager` (relative), and a `PATH` symlink whose target
+`current_exe()` reports. **None is an option attachment. `T-19-116` stays OPEN at
+`high`.**
+
+### The disclosed COST of the mandated design
+
+Any word whose text contains this run's own envelope directory or binary path as
+a `/`-anchored substring is refused after `19-31` **even where the program would
+not have used that substring as a path**. Three instances measured and RECORDED at
+both verdicts; a fourth — the same URL with `?` instead of `#` — stays PERMITTED
+because `?` clears `Token.literal`, which is recorded as the discriminating
+observation.
+
+### Still OPEN and unchanged by this plan
+
+- **`T-19-86`** — OPEN at `high` by explicit user scoping decision; not fixed, not
+  narrowed, not re-scoped, not re-classified; its rows stay at exit 0 and its pins
+  green and UNMODIFIED. **`T-19-111` is kept OUT of it.**
+- **`T-19-91`** — OPEN at `high`, three arms unweakened.
+- **`T-19-111`** — OPEN at `high`, **NO rule**, corpus rows RECORDED in neither
+  direction; `19-27`'s five-site attribution correction stays as performed.
+- **`T-19-112`, `T-19-113`** — NARROWED, still NOT CLOSED. `T-19-119` is a FOURTH
+  route to `T-19-112`'s cap reset, and closing it narrows further without closing.
+- **`T-19-115`** — no rule; the condition is RESTATED, not closed.
+- **`T-19-96`, `T-19-110`, `T-19-74`** — registered open and unfixed;
+  `T-19-74`'s core rows stay frozen.
+- **`T-19-84`, `T-19-85`, `T-19-61` … `T-19-73`** — open and unaccepted;
+  `scan.rs` and `config.rs` were not opened.
+- **`C-08`'s behavioural half** and **`T-19-120`'s behavioural half** — UNMEASURED,
+  claimed in neither direction.
+- **`C-11` … `C-15`** — control (e), no rule, unaccepted. **`C-15`'s `pr_cap_*`
+  stays unclamped, deliberately.**
+- **The `glab --host` forge cell** — unfixed, `FORGE_VALUE_OPTS` keeps
+  `--hostname`, and **`glab` is confirmed NOT INSTALLED** so every `glab` row is
+  recorded as unmeasurable against its callee and no pin that would skip was
+  written.
+- **`T-19-104`'s `GIT_CONFIG_PARAMETERS` carrier** — **measured differently from
+  the plan's stated expectation**: it is exit 2 `hook_bypass_blocked` at the
+  guard, not exit 0. Real git DOES resolve the helper from it, so the reach is
+  real and the guard already refuses the carrier. Recorded, not asserted.
+- **`T-19-17r`** — OUTSTANDING for the **FOURTEENTH** time. No `AR-19-13`, no
+  Accepted-Risks-Log row, and the word "accepted" is applied to it nowhere.
+  `AR-19-04` and `AR-19-05` are carried forward not un-accepted, not re-rated and
+  not renumbered, and **`T-19-23` is NOT marked closed.**
+
+**Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.**
