@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
-stopped_at: Completed 19-18-PLAN.md (corpus RED; 19-19 writes the rule)
-last_updated: "2026-08-30T01:48:00.608Z"
+stopped_at: Completed 19-20-PLAN.md — corpus RED at 1631, handoff contract is the seven after_19_21_* / callee-axis names
+last_updated: "2026-09-04T02:19:52.879Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: 1e6a2c87713ae149863b674326e3844e0d964b46
+state_head: f5f53bc91f2c5e28092c7264d116fe6d489cec44
 progress:
   total_phases: 10
   completed_phases: 6
-  total_plans: 102
-  completed_plans: 101
+  total_plans: 100
+  completed_plans: 99
   percent: 60
 ---
 
@@ -222,6 +222,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 19 P16 | 1 session | 3 tasks | 5 files |
 | Phase 19 P17 | ~1 session | 3 tasks | 6 files |
 | Phase 19 P18 | 75m | 3 tasks | 4 files |
+| Phase 19 P20 | 1 session | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -275,6 +276,9 @@ Recent decisions affecting current work:
 - [Phase 19]: The four FORGE rows assert a RESTORED COUNT, not a refusal — the SAFE-06 cap is bypassed UNCOUNTED rather than exceeded (19-18)
 - [Phase 19]: Three rows whose post-fix verdict 19-18 cannot derive are RECORDED and never asserted: >$F, >*.log and {v}> (19-18)
 - [Phase 19]: T-19-17r's bookkeeping gap recorded OUTSTANDING; no AR-19-13 row added and no acceptance made (19-18)
+- [Phase 19]: 19-20: the callee's grammar is a THIRD corpus axis, not more entries in either shell axis — both existing axes are axes of bash and audit 6 verified that boundary closed
+- [Phase 19]: 19-20: assert the POST-fix verdict wherever derivable so the row is red now and green after — no pin for the next plan to move, and no replacement exception needed
+- [Phase 19]: 19-20: the anti-vacuity ratio floor is REPLACED by absolute per-file byte floors (40k/20k), not lowered — 428 bytes of comment headroom made it a documentation budget
 
 ### Pending Todos
 
@@ -334,11 +338,11 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-08-30T01:47:49.698Z
-Stopped at: Completed 19-18-PLAN.md (corpus RED; 19-19 writes the rule)
+Last session: 2026-09-04T02:19:52.220Z
+Stopped at: Completed 19-20-PLAN.md — corpus RED at 1631, handoff contract is the seven after_19_21_* / callee-axis names
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
-Resume file: None
+Resume file: .planning/phases/19-gitsafe-git-blast-radius-envelope/19-21-PLAN.md
 (both retained deliberately — the plan-checker step runs as a separate agent and needs them;
 delete only after round 7 executes).
 Note: `.planning/phases/19-gitsafe-git-blast-radius-envelope/.continue-here.md` is a stale
