@@ -1325,3 +1325,120 @@ pre-existing, environmental and out of scope — do not "fix" them.
 `HOOKS_MIN_PRODUCTION_BYTES = 20_000`. **`policy.rs`'s ratio is now 22.37%, so the
 25% ratio assertion `19-20` deleted would be RED TODAY.** Both floors unchanged by
 this plan, which is granted no deletion of any kind.
+
+## Round 8 closure (plan 19-23) — the rules exist and the corpus certifies them
+
+Recorded by plan 19-23. Every row was re-measured against the BUILT BINARY with
+one fresh `GSD_MM_ENVELOPE_ROOT` per row and the envelope directory WALKED
+afterwards (EMPTY on every row), and every precedence claim was re-confirmed
+against the REAL `git` binary (`git version 2.43.0`) with the exact
+`GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` triplet `cred::hooks_path_env` emits as the
+control — reproduced this round rather than cited from `19-22`.
+
+**`19-22`'s complete RED set was confirmed STILL RED before any production line
+moved.** All nine names were failing at `b9d8eca`; none was already green.
+
+### `T-19-103` — git's own CONFIG RESOLUTION reaches `core.hooksPath` — **CLOSED**
+
+**Closed by the CONFINEMENT CLAUSE** in `scan_leading`'s existing
+`if let Some(assignment)` block, ordered after the rewriting-character refusal and
+before `is_hooks_path_key`: a key whose **SECTION** names an indirection
+(`config_key_names_an_indirection_section`, compared `eq_ignore_ascii_case`
+against `INDIRECTION_SECTIONS`) makes the command unresolvable at
+`ParkReason::EnvelopeAssertionFailed`, raised inside the ONE scan and returned
+through the channel that already carried two refusals.
+
+The SUBSECTION and the VARIABLE are **never read**, so `includeIf`'s open
+condition family and any future variable in either section are covered by
+construction. A DOTLESS key stays CONFINED, which is what keeps
+`CALLEE_KNOWN_LEADING_PREFIX` and round 7's whole generative property green. No
+new `ParkReason`, no second reading site, `hooks.rs` unopened.
+
+**RESIDUE, disclosed and NOT handed to any control**: a future git that adds a
+THIRD indirection section is not covered, the rule **fails OPEN** on it, and there
+is **NO automated control over that direction**. The real-git pin holds the
+REVERSE direction and cannot observe a section it does not name. Re-audit by a
+human is the only compensating control.
+
+**Disclosed over-refusal**: `git -c include.pathx=/tmp/evil.cfg status` — a key
+git IGNORES, refused because the rule reads the section and not the variable.
+Safe direction.
+
+### `T-19-104` — `GIT_CONFIG_PARAMETERS` absent from `ENVELOPE_ENV_KEYS` — **CLOSED**
+
+**Closed by one `ENVELOPE_ENV_KEYS` entry**, which turns all six rows green
+through the mechanism that already worked — the three-spelling
+`GIT_CONFIG_COUNT=0` discriminator was already refused; only the LIST was short.
+`GIT_CONFIG_NOSYSTEM` was added beside it as a MEASURED DEFEAT with an **INERT**
+harm, **never called a bypass**.
+
+**Closed durably by a SECOND PIN SOURCE**, `ENVELOPE_ENV_DEFEATING_KEYS`, because
+the existing drift pin is sourced from the keys the envelope SETS or REMOVES and
+**structurally cannot see** a key the envelope neither sets nor removes but which
+DEFEATS one it does. Each entry carries the defeated key in the DATA and each
+defeat is MEASURED against real git. The `write_gitconfig` double pointer that
+makes `GIT_CONFIG_NOSYSTEM`'s harm inert is now itself pinned, so a later change
+cannot spend the inertness silently.
+
+### `T-19-105` — the corpus could not draw the config-resolution axis — **CLOSED**
+
+Closed in the only sense available to it: `19-22`'s corpus was written first,
+observed RED in commits with zero `src/` hunks, and **confirmed still RED before
+any production line moved here**. It now certifies controls that exist.
+
+**One defect in that corpus was found by execution and corrected**: the five
+`--force` composition rows asserted `force_push_blocked` while the demotion of
+those rows to verdict-only controls was stated in the control's own comment, in
+`19-22-SUMMARY.md`, in `19-22-PLAN-CHECK.md` Check 4 and 5, and in
+`19-23-PLAN.md:668` — and implemented in none of them. It was unsatisfiable
+against section 7's ordering pin. The executor halted and reported rather than
+working around it; the orchestrator authorized a named, narrow correction scoped
+to the identifier constant on those five rows, and decided CARRIER BEFORE VERB
+explicitly. See the plan-19-23 execution record in `19-SECURITY.md`.
+
+### `T-19-106` — the callee-grammar drift pin's REACH — **CLOSED**
+
+`CONFIG_VALUE_OPTS` **LOST `--comment`** — `git config --comment core.hooksPath
+/dev/null` moved from exit 0 (with `/dev/null` read as the key) to exit 2
+`hook_bypass_blocked`, agreeing with its twin — and gained a two-sided real-git
+pin that reads git's own classification (``requires a value`` / ``unknown
+option``), needing no per-entry variant value. The four STRUCTURAL arms of
+`leading_git_option` are pinned; the two whose stated premises this git
+contradicts (`-c<rest>`, `-C/tmp`) had their docs corrected **without their
+behaviour changing**, and arm 4's one-element restriction is recorded.
+
+**`FORGE_VALUE_OPTS` and `GH_API_VALUE_OPTS` remain UNPINNED** — `glab` is
+confirmed not installed and a pin that skips is fail-open. `subcommand_word_indices`
+untouched.
+
+### `T-19-107` — the "ZERO over-refusal cost on git 2.43.0" claim — **CLOSED**
+
+False by one measured row. `-v` joined `GIT_GLOBAL_SELF_CONTAINED_OPTS` after the
+probe classified it, and `git -v` and `git -v status` moved from exit 2
+`envelope_assertion_failed` to exit 0 beside `git --version`. The claim is
+corrected in the constants' docs and the pin's doc, and **recorded BESIDE**
+`19-21-SUMMARY.md` and the appended plan-19-21 record rather than as an edit to
+either.
+
+### Still OPEN and unchanged by this plan
+
+- **`T-19-86`** — OPEN at `high` by explicit user scoping decision. Four
+  registered rows still at exit 0, pin green and UNMODIFIED, and the
+  **PERSISTED-ALIAS arm still at exit 0 on both calls**, re-measured this round.
+  **Closing `T-19-103` RESTORES layer 3's catch of that arm — a RESTORATION, never
+  a closure.**
+- **`T-19-91`** — OPEN at `high`, arms unweakened, no decision-operand rule added,
+  no denylist extended.
+- **`T-19-96`** — left exactly as pinned by `19-16`.
+- **`T-19-74`** — core rows frozen.
+- **`T-19-84`, `T-19-85`, `T-19-61` … `T-19-73`** — open and unaccepted by
+  explicit user decision. The `cred.rs:241-248` doc correction is the ONE named,
+  narrow exception and `T-19-61` … `T-19-73` were NOT taken on.
+- **the `glab --host` forge cell** — carried forward UNFIXED with its
+  unconfirmed-callee caveat, deliberately not upgraded without evidence.
+- **the `T-19-17r` bookkeeping gap** — still **OUTSTANDING**. No
+  Accepted-Risks-Log row, no `AR-19-13`, and the word "accepted" is not applied to
+  it. Accepting a risk is a human decision and three audits declined to make it.
+
+**`T-19-86` and `T-19-91` remain OPEN at `high`, so `/gsd-secure-phase 19` is NOT
+cleared by this plan.** Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.
