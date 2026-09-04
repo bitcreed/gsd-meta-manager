@@ -52,7 +52,7 @@
 // ============================================================================
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use gsd_meta_manager::envelope::{hooks, policy};
 use tempfile::TempDir;
@@ -7845,6 +7845,64 @@ const NEAR_MISS_ROOT_PLACEHOLDER: &str = "<ENVX>";
 /// would be doing filesystem I/O, which is what rule (a) must not do.
 const SYMLINK_MARKER: &str = "/tmp/link-into-the-envelope-root";
 
+/// **`C-10` — THE BINARY EVERY HOOK STUB AND THE GUARD REGISTRATION EXEC.**
+///
+/// **This is an EXACT-PATH constant and not a directory, and the difference is
+/// MEASURED rather than aesthetic.** The envelope DIRECTORY is a PREFIX
+/// boundary because this envelope owns every byte under it — `rm -rf
+/// <ENV>/alpha` takes NINE carriers in one call. **The binary's directory is
+/// shared with everything else the user installed**, so a prefix over it would
+/// refuse `ls ~/.cargo/bin` and every `cargo install`. The two near-miss
+/// controls in [`CONTROL_CARRIER_BINARY_NEAR_MISSES`] pin that from both sides.
+///
+/// A SENTINEL rather than a real path, for the same reason
+/// [`REPRESENTATIVE_ENVELOPE_ROOT`] is one: the class predicates are pure text
+/// functions. The GUARD-DRIVEN properties substitute `std::env::current_exe()`
+/// for [`BINARY_PLACEHOLDER`] instead — the same call `hooks::install`
+/// (`hooks.rs:92`) makes to decide what to BAKE INTO the stub.
+const REPRESENTATIVE_BINARY_PATH: &str = "/tmp/gsd-binary-dir/gsd-meta-manager";
+
+/// The DIRECTORY the binary lives in — deliberately NOT a boundary.
+const REPRESENTATIVE_BINARY_PARENT: &str = "/tmp/gsd-binary-dir";
+
+/// The placeholder each alphabet entry carries where the guard's own binary goes.
+const BINARY_PLACEHOLDER: &str = "<BIN>";
+
+/// The placeholder for the binary's PARENT DIRECTORY, which is not a carrier.
+const BINARY_PARENT_PLACEHOLDER: &str = "<BINPAR>";
+
+/// The envelope root spelled RELATIVE TO `$HOME`, which is what a `~` spelling
+/// carries.
+///
+/// `dirs::data_local_dir()` is `$HOME/.local/share` on Linux and `envelope_root`
+/// joins `gsd-meta-manager/envelope` onto it (`mod.rs:175-181`).
+const TILDE_ENVELOPE_RELATIVE: &str = ".local/share/gsd-meta-manager/envelope";
+
+/// Whether a word carries a PATHNAME-EXPANSION metacharacter.
+///
+/// **Round 5's `Token.literal` table names EXPANSION, PATHNAME, TILDE and BRACE
+/// as the four classes that clear the bit, and rule (a) requires the bit.** This
+/// is the PATHNAME half. `REWRITING_CHARACTERS` (`policy.rs:2535`) is
+/// `$ ` ` * ? [ ~`; the three characters here are the ones that make a word a
+/// GLOB rather than a substitution or a tilde spelling.
+fn word_has_pathname_metacharacter(word: &str) -> bool {
+    word.contains('*') || word.contains('?') || word.contains('[')
+}
+
+/// Whether a word carries a BRACE LIST — `{a,b}`.
+///
+/// A brace LIST rather than a bare brace: `{` alone is a `SEPARATORS` entry and
+/// a word containing one without a comma and a closing brace is not brace
+/// expansion.
+fn word_has_brace_list(word: &str) -> bool {
+    word.contains('{') && word.contains(',') && word.contains('}')
+}
+
+/// Whether a word is TILDE-BORNE and names a path under the envelope root.
+fn word_is_tilde_borne_carrier(word: &str) -> bool {
+    word.starts_with('~') && word.contains(TILDE_ENVELOPE_RELATIVE)
+}
+
 /// The basenames of the files the envelope's own controls live in.
 ///
 /// `config` is deliberately ABSENT — it is `.git/config`'s basename and belongs
@@ -7912,20 +7970,43 @@ fn carrier_basename(word: &str) -> &str {
 ///
 /// A redirection TARGET is deliberately excluded: bash deletes it before
 /// `execve`, so it is not an operand at all. That exclusion IS class 2.
+///
+/// **REFINED BY ROUND 11: a word carrying a PATHNAME-EXPANSION metacharacter or
+/// a BRACE LIST is excluded and handed to classes 9 and 10.** The word
+/// `<ENV>/alph?` starts with the root and satisfied this predicate before the
+/// refinement — but it is NOT `Token.literal`, so rule (a) does not reach it and
+/// putting it here would count a PERMITTED entry inside a fail-closed class.
+/// The refinement is what lets the two live on the same axis without collapsing.
 fn draws_an_envelope_root_operand(command: &str) -> bool {
     carrier_words(command).iter().any(|word| {
         !word.is_redirection_target
             && !word.quoted
             && word.text.starts_with(REPRESENTATIVE_ENVELOPE_ROOT)
+            && !word_has_pathname_metacharacter(&word.text)
+            && !word_has_brace_list(&word.text)
     })
 }
 
-/// **CLASS 2** — a non-governed command whose REDIRECTION TARGET is a control
-/// carrier. **Fail-open direction (i), NOT closed.**
+/// **CLASS 2** — a non-governed command whose ABSOLUTE LITERAL REDIRECTION
+/// TARGET is a control carrier. **Fail-open direction (i) TODAY, and the class
+/// `19-29`'s widened SIGHT closes.**
+///
+/// **REFINED BY ROUND 11, AND THIS IS THE REFINEMENT WHOSE ABSENCE WOULD HAVE
+/// DONE MORE THAN FIRE A FENCE.** The predicate was
+/// `is_redirection_target && starts_with(ROOT)` with **no literalness guard at
+/// all**, so this round's own `: > <ENV>/alpha/pr-ledger.ndjso?` and
+/// `: > <ENV>/alpha/{pr-ledger.ndjson,x}` entries satisfied it — **and class 2's
+/// alphabet is simultaneously the one MOVING to the fail-closed arm**, so the
+/// collision would have placed PERMITTED glob and brace targets inside a
+/// property that asserts REFUSAL. The metacharacter and brace-list spellings are
+/// handed to classes 9 and 10, which are verdict-PRESERVING.
 fn draws_a_redirection_target_carrier(command: &str) -> bool {
-    carrier_words(command)
-        .iter()
-        .any(|word| word.is_redirection_target && word.text.starts_with(REPRESENTATIVE_ENVELOPE_ROOT))
+    carrier_words(command).iter().any(|word| {
+        word.is_redirection_target
+            && word.text.starts_with(REPRESENTATIVE_ENVELOPE_ROOT)
+            && !word_has_pathname_metacharacter(&word.text)
+            && !word_has_brace_list(&word.text)
+    })
 }
 
 /// **CLASS 3** — a non-governed command whose carrier operand is
@@ -7948,11 +8029,20 @@ fn draws_a_symlinked_carrier(command: &str) -> bool {
 
 /// **CLASS 5** — a non-governed command whose carrier operand is RELATIVE.
 /// **Fail-open direction (iv), NARROWED but NOT closed.**
+///
+/// **REFINED BY ROUND 11: a word beginning with a TILDE is excluded and handed
+/// to class 8.** A `~` spelling does not begin with `/`, so it satisfied this
+/// predicate before the refinement — but it is not a relative path, it is an
+/// ABSOLUTE path the shell has not expanded yet, and the two fail open for
+/// completely different reasons: class 5 because the guard has no cwd, class 8
+/// because expanding a `~` means reading the ENVIRONMENT the command will run
+/// in.
 fn draws_a_relative_carrier(command: &str) -> bool {
     carrier_words(command).iter().any(|word| {
         !word.is_redirection_target
             && !word.quoted
             && !word.text.starts_with('/')
+            && !word.text.starts_with('~')
             && !word.text.contains('$')
             && !REPO_SIDE_CARRIER_PATHS
                 .iter()
@@ -7972,11 +8062,15 @@ fn draws_a_repo_side_carrier(command: &str) -> bool {
 /// **CLASS 7** — a non-governed command whose operand is an ORDINARY path.
 /// **The permitted control that stops the rule being "refuse every `rm`".**
 ///
-/// Defined as the COMPLEMENT of the six carrier classes, and that is correct
+/// Defined as the COMPLEMENT of the TEN carrier classes, and that is correct
 /// rather than degenerate: its whole content is "no control carrier is named in
-/// any of the six ways". It is proved non-vacuous below by asserting that its own
-/// representative satisfies it and that each of the other six representatives
+/// any of the ten ways". It is proved non-vacuous below by asserting that its own
+/// representative satisfies it and that each of the other ten representatives
 /// does not.
+///
+/// **EXTENDED BY ROUND 11 to exclude classes 8 … 11 as well.** Without that, a
+/// tilde, glob, brace or BINARY entry would satisfy class 7 too and the counts
+/// would call a live carrier "an ordinary path operand", which is untrue.
 fn draws_an_ordinary_operand(command: &str) -> bool {
     !draws_an_envelope_root_operand(command)
         && !draws_a_redirection_target_carrier(command)
@@ -7984,14 +8078,86 @@ fn draws_an_ordinary_operand(command: &str) -> bool {
         && !draws_a_symlinked_carrier(command)
         && !draws_a_relative_carrier(command)
         && !draws_a_repo_side_carrier(command)
+        && !draws_a_tilde_borne_carrier(command)
+        && !draws_a_glob_borne_carrier(command)
+        && !draws_a_brace_borne_carrier(command)
+        && !draws_the_guards_own_binary(command)
+}
+
+/// **CLASS 8** — a carrier word spelled with a TILDE, in EITHER word position.
+/// **Fail-open direction (v) — one of the THREE the docs do not name.**
+///
+/// **`19-29` WRITES NO RULE FOR THIS CLASS, AND THE REASON IS MECHANICAL.**
+/// Expanding a `~` means reading the ENVIRONMENT the command will run in, and
+/// the guard is forbidden that (`hooks.rs:771-816`). The fix is the residue's
+/// ARITHMETIC: the docs say FOUR directions and there are SEVEN.
+///
+/// **It draws in BOTH word positions — the cell nobody had drawn.**
+fn draws_a_tilde_borne_carrier(command: &str) -> bool {
+    carrier_words(command)
+        .iter()
+        .any(|word| word_is_tilde_borne_carrier(&word.text))
+}
+
+/// **CLASS 9** — a carrier word spelled with a PATHNAME-EXPANSION
+/// metacharacter, in EITHER word position. **Fail-open direction (vi).**
+///
+/// **`19-29` WRITES NO RULE FOR THIS CLASS EITHER**: expanding a glob means
+/// reading the FILESYSTEM on the guard's critical path, which is the I/O
+/// `hooks.rs:771-816` forbids and the TOCTOU `mod.rs:196-203` forbids.
+fn draws_a_glob_borne_carrier(command: &str) -> bool {
+    carrier_words(command).iter().any(|word| {
+        word.text.starts_with(REPRESENTATIVE_ENVELOPE_ROOT)
+            && word_has_pathname_metacharacter(&word.text)
+    })
+}
+
+/// **CLASS 10** — a carrier word spelled as a BRACE LIST, in EITHER word
+/// position. **Fail-open direction (vii).**
+///
+/// Round 5's literalness table names BRACE as its fourth class and round 10's
+/// corpus carried not one.
+fn draws_a_brace_borne_carrier(command: &str) -> bool {
+    carrier_words(command).iter().any(|word| {
+        word.text.starts_with(REPRESENTATIVE_ENVELOPE_ROOT) && word_has_brace_list(&word.text)
+    })
+}
+
+/// **CLASS 11** — a command naming the GUARD'S OWN BINARY, in EITHER word
+/// position. **`C-10`, `T-19-116`, `high` — and the class `19-29`'s widened
+/// PATH SET closes.**
+///
+/// **THE COMPARISON IS EXACT-PATH AND NOT A PREFIX**, and the predicate says so
+/// mechanically: `REPRESENTATIVE_BINARY_PARENT` is a prefix of
+/// `REPRESENTATIVE_BINARY_PATH`, so a `starts_with` here would draw the
+/// near-miss controls too and this class would silently assert them refused.
+///
+/// **This class EXISTS because class 1 does not draw the binary — it is not
+/// under the envelope root — and class 7, the complement, WOULD.** An entry
+/// asserted PERMITTED by class 7's arm is an entry `19-29` refuses, landing
+/// permanently red in a file `19-29` may not edit.
+fn draws_the_guards_own_binary(command: &str) -> bool {
+    carrier_words(command)
+        .iter()
+        .any(|word| word.text == REPRESENTATIVE_BINARY_PATH)
 }
 
 /// One named class and the predicate that decides whether a command draws it.
 type ControlCarrierClass = (&'static str, fn(&str) -> bool);
 
-/// The SEVEN classes of the CONTROL-CARRIER axis — **the FIFTH axis** — named
+/// The ELEVEN classes of the CONTROL-CARRIER axis — **the FIFTH axis** — named
 /// once so the per-alphabet floor, the per-class floor and the counted floor all
 /// count the same thing.
+///
+/// **ROUND 11 TOOK IT FROM SEVEN TO ELEVEN, AND FOUR OF THE CHANGES WERE FORCED
+/// BY MEASUREMENT RATHER THAN CHOSEN FOR SYMMETRY.** Classes 8, 9 and 10 are the
+/// three spellings that clear `Token.literal` without a `$` — the classes round
+/// 5's own literalness table names and round 10's corpus could not draw. Class
+/// 11 is `C-10`, the carrier OUTSIDE the envelope root that class 1 cannot draw
+/// and class 7 would have.
+///
+/// **Class 7 stays at index 6**, because it is the COMPLEMENT and the
+/// existing-axis fence at (C) below skips it by index with its reason stated.
 const CONTROL_CARRIER_CLASSES: &[ControlCarrierClass] = &[
     (
         "an absolute literal operand under the envelope root",
@@ -8012,9 +8178,13 @@ const CONTROL_CARRIER_CLASSES: &[ControlCarrierClass] = &[
     ("a relative carrier operand", draws_a_relative_carrier),
     ("a repo-side control carrier", draws_a_repo_side_carrier),
     ("an ordinary path operand", draws_an_ordinary_operand),
+    ("a tilde-borne carrier word", draws_a_tilde_borne_carrier),
+    ("a glob-borne carrier word", draws_a_glob_borne_carrier),
+    ("a brace-list-borne carrier word", draws_a_brace_borne_carrier),
+    ("the guard's own binary", draws_the_guards_own_binary),
 ];
 
-/// Whether a command draws ANY of the seven.
+/// Whether a command draws ANY of the eleven.
 fn carries_a_control_carrier_class(command: &str) -> bool {
     CONTROL_CARRIER_CLASSES
         .iter()
@@ -8030,6 +8200,10 @@ const CONTROL_CARRIER_REPRESENTATIVES: &[&str] = &[
     "rm -f pr-ledger.ndjson",
     "sed -i s/x/y/ .git/config",
     "rm -f /tmp/x",
+    "rm -rf ~/.local/share/gsd-meta-manager/envelope/alpha",
+    "rm -rf <ENV>/alph?",
+    "rm -f <ENV>/alpha/{pr-ledger.ndjson,x}",
+    "cp /bin/true <BIN>",
 ];
 
 /// **THE FAIL-CLOSED ALPHABET, WITH ITS OWN PROPERTY.**
@@ -8068,21 +8242,140 @@ const ENVELOPE_ROOT_OPERAND_CARRIERS: &[&str] = &[
     "cd <ENV>/alpha",
 ];
 
-/// **FAIL-OPEN DIRECTION (i)** — verdict-PRESERVING, in the invariance arm.
+/// **FAIL-OPEN DIRECTION (i) — AND ROUND 11 MOVED THIS ALPHABET OUT OF THE
+/// INVARIANCE ARM AND INTO A FAIL-CLOSED ONE.**
 ///
-/// **Rule (a)'s SILENCE IS A PERMIT here, and the mechanism is not a choice.**
-/// `tokenize` (`policy.rs:2264-2279`, `T-19-97`) consumes bash's redirection
-/// production and emits NO TOKEN for the operator OR ITS TARGET, so the carrier
-/// path is not a word at all. A rule that read redirection targets would have to
-/// re-open a model five rounds have pinned shut: `SEPARATORS` (`policy.rs:2281`)
-/// has ONE commit in the whole phase (`84a9b05`), `is_separator(">") == false` by
-/// construction, and round 6's over-deletion control pins
-/// `git x2>/tmp/o push --force origin main` PERMITTED.
+/// **WHY THE ARM CHANGED, STATED RATHER THAN LEFT TO BE INFERRED.** All four
+/// entries carry ABSOLUTE LITERAL targets under the envelope root, and `19-28`
+/// measured them REFUSED after `19-29` — the widened SIGHT reaches a pathname
+/// redirection target. **Leaving them here would put entries whose verdict the
+/// fix CHANGES into the invariance-preserving arm**, which is `19-18`'s `{v}>`
+/// blocker, `19-20`'s `GIT_GLOBAL_UNKNOWN_OPTIONS` split, `19-22`'s
+/// indirection/confined split, `19-24`'s re-parsed/confined split and `19-26`'s
+/// own envelope-root split, **a SIXTH time**. The verdict-PRESERVING targets —
+/// expansion-borne, tilde, glob and brace — live in
+/// [`CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING`] instead.
+///
+/// **What has NOT changed is the reason the direction was real.** `tokenize`
+/// (`policy.rs:2264-2279`, `T-19-97`) consumes bash's redirection production and
+/// emits NO TOKEN for the operator OR ITS TARGET, so the carrier path is not a
+/// word at all — and `19-29` does NOT change that. It carries the target on the
+/// SEGMENT the way `Segment::redirection_unresolvable` already travels.
+/// `SEPARATORS` (`policy.rs:2297`) still has ONE commit in the whole phase
+/// (`84a9b05`), `is_separator(">") == false` by construction, and round 6's
+/// over-deletion control still pins `git x2>/tmp/o push --force origin main`
+/// PERMITTED. **The SEGMENT-COUNT pins in `tests/envelope_carrier_reach.rs` are
+/// what make that falsifiable.**
 const CONTROL_CARRIER_REDIRECTION_TARGETS: &[&str] = &[
     ": > <ENV>/alpha/pr-ledger.ndjson",
     "printf 'exit 0' > <ENV>/alpha/hooks/pre-push",
     "echo evil > <ENV>/alpha/askpass",
     "cat /tmp/evil >> <ENV>/alpha/gitconfig",
+];
+
+/// **`C-10` — THE BINARY. A FAIL-CLOSED ALPHABET, NEW IN ROUND 11.**
+///
+/// **WHY IT NEEDS ITS OWN ALPHABET AND CLASS.** `C-10` is OUTSIDE the envelope
+/// root, so class 1 does not draw it — and class 7, the complement, WOULD.
+/// Leaving it there would assert PERMITTED a row `19-29` refuses, landing
+/// permanently red in a file `19-29` may not edit. That is the same shape as
+/// putting an entry whose verdict the fix changes into the invariance arm, one
+/// carrier over.
+///
+/// **Its near-miss controls live in [`CONTROL_CARRIER_ORDINARY_OPERANDS`] and
+/// are asserted BY NAME by the PATH-PREFIX-NOT-BASENAME fence**, the way
+/// `CONTROL_CARRIER_NEAR_MISSES` already is: a clause written as a DIRECTORY
+/// PREFIX over the binary's parent turns them red, and only an EXACT-PATH
+/// comparison keeps them green.
+///
+/// The last entry is the REDIRECTION spelling, which needs BOTH of `19-29`'s
+/// widenings at once — the widened path set to know the binary is a carrier, and
+/// the widened sight to see a redirection target at all.
+const CONTROL_CARRIER_BINARY: &[&str] = &[
+    "cp /bin/true <BIN>",
+    "mv /bin/true <BIN>",
+    "install -m 0755 /bin/true <BIN>",
+    "ln -f /bin/true <BIN>",
+    "printf 'x' > <BIN>",
+];
+
+/// The binary's EXACT-PATH-not-PREFIX near-miss controls, asserted BY NAME.
+const CONTROL_CARRIER_BINARY_NEAR_MISSES: &[&str] =
+    &["cp /bin/true <BINPAR>/some-other-file", "ls <BINPAR>"];
+
+/// **THE VERDICT-PRESERVING REDIRECTION TARGETS — NEW IN ROUND 11, in the
+/// INVARIANCE arm.**
+///
+/// `19-29` widens what rule (a) SEES to pathname redirection targets, but the
+/// four conditions apply unchanged over the widened sight: **a target that is
+/// not `Token.literal`, or does not resolve under a carrier path, stays
+/// PERMITTED.** These four are exactly that residue, one per remaining
+/// direction, and pinning them at exit 0 BEFORE AND AFTER is what makes a rule
+/// that quietly widened past its stated boundary turn this file RED.
+///
+/// **A RELATIVE redirection target is deliberately ABSENT, and the reason is
+/// recorded rather than left as a gap.** Class 5 is an OPERAND class — round 11
+/// refined it to exclude tildes and did not widen it to redirection targets — so
+/// `: > pr-ledger.ndjson` would draw NO carrier class and be counted as class 7,
+/// "an ordinary path operand", which is untrue. The relative direction is drawn
+/// in operand position by [`CONTROL_CARRIER_RELATIVE`].
+const CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING: &[&str] = &[
+    "H=$(git config --get core.hooksPath); : > $H/../pr-ledger.ndjson",
+    ": > ~/.local/share/gsd-meta-manager/envelope/alpha/pr-ledger.ndjson",
+    ": > <ENV>/alpha/pr-ledger.ndjso?",
+    ": > <ENV>/alpha/{pr-ledger.ndjson,x}",
+];
+
+/// **FAIL-OPEN DIRECTION (v) — TILDE. NEW IN ROUND 11, verdict-PRESERVING.**
+///
+/// **One of the THREE directions the docs do not name.** Round 5's
+/// `Token.literal` table names EXPANSION, PATHNAME, TILDE and BRACE as the four
+/// classes that clear the bit; rule (a) requires the bit; and round 10's corpus
+/// drew only the first. `19-29` writes NO rule here — expanding a `~` means
+/// reading the ENVIRONMENT the command will run in — so the fix is the residue's
+/// ARITHMETIC: the docs say FOUR directions and there are SEVEN.
+///
+/// **It draws in BOTH word positions**, which is the cell nobody had drawn. The
+/// third entry is under `shred`, a program name absent from both production
+/// halves.
+const CONTROL_CARRIER_TILDE_BORNE: &[&str] = &[
+    "rm -rf ~/.local/share/gsd-meta-manager/envelope/alpha",
+    "cp /bin/true ~/.local/share/gsd-meta-manager/envelope/alpha/hooks/pre-push",
+    "shred -u ~/.local/share/gsd-meta-manager/envelope/alpha/pr-ledger.ndjson",
+    "echo evil > ~/.local/share/gsd-meta-manager/envelope/alpha/askpass",
+];
+
+/// **FAIL-OPEN DIRECTION (vi) — PATHNAME EXPANSION. NEW IN ROUND 11,
+/// verdict-PRESERVING.**
+///
+/// `19-29` writes no rule here either: expanding a glob means reading the
+/// FILESYSTEM on the guard's critical path. Measured live: `rm -rf <ENV>/alph?`
+/// takes NINE carriers in one call at exit 0 while its absolute-literal twin is
+/// exit 2. The third entry is under `unlink`, absent from both production halves.
+const CONTROL_CARRIER_GLOB_BORNE: &[&str] = &[
+    "rm -rf <ENV>/alph?",
+    "rm -f <ENV>/alpha/*",
+    "unlink <ENV>/alpha/pr-ledger.ndjso?",
+    "printf 'exit 0' > <ENV>/alpha/hooks/pre-pus?",
+];
+
+/// **FAIL-OPEN DIRECTION (vii) — BRACE LIST. NEW IN ROUND 11,
+/// verdict-PRESERVING.**
+///
+/// **AND THE RECORD THAT ONE OF THESE COSTS NOTHING, WHICH IS THE HONEST HALF.**
+/// `tests/envelope_carrier_reach.rs` drove each spelling under a real `bash`:
+/// the OPERAND spellings all REACH the file, and so does a glob in
+/// redirection-target position when it matches exactly one path — but
+/// `: > <ENV>/alpha/{pr-ledger.ndjson,x}` does **NOT**, because brace expansion
+/// produces TWO words and a redirection target must be ONE, so bash answers
+/// `ambiguous redirect`. **The entry stays — it is verdict-preserving either way
+/// and the axis must be able to DRAW the spelling — and the record says which
+/// kind of permit it is.** The third entry is under `shred`.
+const CONTROL_CARRIER_BRACE_BORNE: &[&str] = &[
+    "rm -f <ENV>/alpha/{pr-ledger.ndjson,x}",
+    "rm -rf <ENV>/{alpha,beta}",
+    "shred -u <ENV>/alpha/{askpass,x}",
+    "echo evil > <ENV>/alpha/{askpass,x}",
 ];
 
 /// **FAIL-OPEN DIRECTION (ii)** — verdict-PRESERVING, in the invariance arm.
@@ -8157,6 +8450,13 @@ const CONTROL_CARRIER_ORDINARY_OPERANDS: &[&str] = &[
     "git config --get core.hooksPath",
     "rm -f /tmp/pr-ledger.ndjson",
     "cat <ENVX>/alpha/pr-ledger.ndjson",
+    // **ROUND 11's `--signed no`, FROM THE OTHER SIDE.** The envelope DIRECTORY
+    // is a PREFIX boundary; the BINARY is an EXACT-PATH one, because its
+    // directory is shared with everything else the user installed. A clause
+    // written as a directory prefix over the binary's parent turns both of these
+    // red — and would refuse `ls ~/.cargo/bin` and every `cargo install`.
+    "cp /bin/true <BINPAR>/some-other-file",
+    "ls <BINPAR>",
 ];
 
 /// The near-miss entries the PATH-PREFIX-NOT-BASENAME fence asserts BY NAME.
@@ -8175,22 +8475,55 @@ const CONTROL_CARRIER_NEAR_MISSES: &[&str] = &[
 const CONTROL_CARRIER_GOVERNED_TWIN: &str = "git config --get core.hooksPath";
 
 /// Every alphabet on this axis, for the disjointness and class fences.
+///
+/// **TWELVE after round 11**, and the SLOT count below counts these.
 const CONTROL_CARRIER_ALPHABETS: &[(&str, &[&str])] = &[
     ("ENVELOPE_ROOT_OPERAND_CARRIERS", ENVELOPE_ROOT_OPERAND_CARRIERS),
     ("CONTROL_CARRIER_REDIRECTION_TARGETS", CONTROL_CARRIER_REDIRECTION_TARGETS),
+    ("CONTROL_CARRIER_BINARY", CONTROL_CARRIER_BINARY),
     ("CONTROL_CARRIER_EXPANSION_BORNE", CONTROL_CARRIER_EXPANSION_BORNE),
     ("CONTROL_CARRIER_SYMLINKED", CONTROL_CARRIER_SYMLINKED),
     ("CONTROL_CARRIER_RELATIVE", CONTROL_CARRIER_RELATIVE),
     ("CONTROL_CARRIER_REPO_SIDE", CONTROL_CARRIER_REPO_SIDE),
     ("CONTROL_CARRIER_ORDINARY_OPERANDS", CONTROL_CARRIER_ORDINARY_OPERANDS),
+    (
+        "CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING",
+        CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING,
+    ),
+    ("CONTROL_CARRIER_TILDE_BORNE", CONTROL_CARRIER_TILDE_BORNE),
+    ("CONTROL_CARRIER_GLOB_BORNE", CONTROL_CARRIER_GLOB_BORNE),
+    ("CONTROL_CARRIER_BRACE_BORNE", CONTROL_CARRIER_BRACE_BORNE),
 ];
 
-/// The FIVE verdict-PRESERVING alphabets the invariance arm DRIVES.
+/// **THE FAIL-CLOSED ARM — THREE alphabets after round 11.**
 ///
-/// The sixth verdict-preserving alphabet — `CONTROL_CARRIER_REPO_SIDE` — is
-/// RECORDED instead, for the reason stated on its own constant.
-const CONTROL_CARRIER_INVARIANCE_ALPHABETS: &[(&str, &[&str])] = &[
+/// Every entry here is REFUSED after `19-29` and PERMITTED today, which is what
+/// makes the fail-closed property RED before the fix and green after.
+/// `CONTROL_CARRIER_REDIRECTION_TARGETS` MOVED here from the invariance arm and
+/// `CONTROL_CARRIER_BINARY` is new; `ENVELOPE_ROOT_OPERAND_CARRIERS` was already
+/// fail-closed and is unchanged.
+const CONTROL_CARRIER_FAIL_CLOSED_ALPHABETS: &[(&str, &[&str])] = &[
+    ("ENVELOPE_ROOT_OPERAND_CARRIERS", ENVELOPE_ROOT_OPERAND_CARRIERS),
     ("CONTROL_CARRIER_REDIRECTION_TARGETS", CONTROL_CARRIER_REDIRECTION_TARGETS),
+    ("CONTROL_CARRIER_BINARY", CONTROL_CARRIER_BINARY),
+];
+
+/// The EIGHT verdict-PRESERVING alphabets the invariance arm DRIVES.
+///
+/// The ninth verdict-preserving alphabet — `CONTROL_CARRIER_REPO_SIDE` — is
+/// RECORDED instead, for the reason stated on its own constant.
+///
+/// **`CONTROL_CARRIER_REDIRECTION_TARGETS` IS NO LONGER HERE**, and its own doc
+/// states why: its four entries' verdict the fix CHANGES, so leaving them in
+/// this arm would be `19-18`'s `{v}>` blocker for a sixth time.
+const CONTROL_CARRIER_INVARIANCE_ALPHABETS: &[(&str, &[&str])] = &[
+    (
+        "CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING",
+        CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING,
+    ),
+    ("CONTROL_CARRIER_TILDE_BORNE", CONTROL_CARRIER_TILDE_BORNE),
+    ("CONTROL_CARRIER_GLOB_BORNE", CONTROL_CARRIER_GLOB_BORNE),
+    ("CONTROL_CARRIER_BRACE_BORNE", CONTROL_CARRIER_BRACE_BORNE),
     ("CONTROL_CARRIER_EXPANSION_BORNE", CONTROL_CARRIER_EXPANSION_BORNE),
     ("CONTROL_CARRIER_SYMLINKED", CONTROL_CARRIER_SYMLINKED),
     ("CONTROL_CARRIER_RELATIVE", CONTROL_CARRIER_RELATIVE),
@@ -8203,10 +8536,26 @@ fn control_carrier_representative(entry: &str) -> String {
     entry
         .replace(ENVELOPE_ROOT_PLACEHOLDER, REPRESENTATIVE_ENVELOPE_ROOT)
         .replace(NEAR_MISS_ROOT_PLACEHOLDER, REPRESENTATIVE_NEAR_MISS_ROOT)
+        .replace(BINARY_PARENT_PLACEHOLDER, REPRESENTATIVE_BINARY_PARENT)
+        .replace(BINARY_PLACEHOLDER, REPRESENTATIVE_BINARY_PATH)
 }
 
-/// Substitute a REAL envelope root into an alphabet entry, for the GUARD-DRIVEN
-/// properties.
+/// **THE BINARY THIS GUARD IS RUNNING AS**, for the guard-driven properties.
+///
+/// `std::env::current_exe()` is the same call `hooks::install` (`hooks.rs:92`)
+/// makes to decide what to BAKE INTO the stub. Under `cargo test` it is this
+/// test binary, which is the right subject: the claim is about *the binary the
+/// process answering the guard call is running as*.
+fn control_carrier_binary() -> PathBuf {
+    std::env::current_exe().expect("the running test binary has a path")
+}
+
+/// Substitute a REAL envelope root and the REAL binary into an alphabet entry,
+/// for the GUARD-DRIVEN properties.
+///
+/// **`<BINPAR>` is substituted BEFORE `<BIN>`**, because `<BIN>` is a prefix of
+/// neither but the two placeholders share their first four characters and a
+/// naive order would leave `<BINPAR>` half-replaced.
 fn control_carrier_command(entry: &str, root: &Path) -> String {
     let root = root.display().to_string();
     let mut near_miss = root.clone().into_bytes();
@@ -8214,9 +8563,17 @@ fn control_carrier_command(entry: &str, root: &Path) -> String {
         *last = if *last == b'z' { b'y' } else { b'z' };
     }
     let near_miss = String::from_utf8(near_miss).expect("a temporary path is ASCII");
+    let binary = control_carrier_binary();
+    let binary_parent = binary
+        .parent()
+        .expect("the running binary has a parent directory")
+        .display()
+        .to_string();
     entry
         .replace(ENVELOPE_ROOT_PLACEHOLDER, &root)
         .replace(NEAR_MISS_ROOT_PLACEHOLDER, &near_miss)
+        .replace(BINARY_PARENT_PLACEHOLDER, &binary_parent)
+        .replace(BINARY_PLACEHOLDER, &binary.display().to_string())
 }
 
 /// The ORDINARY TWIN of a fail-closed entry: the same command with a directory
@@ -8229,8 +8586,18 @@ fn control_carrier_command(entry: &str, root: &Path) -> String {
 /// nothing.
 const NOT_AN_ENVELOPE_ROOT: &str = "/tmp/not-an-envelope-root";
 
+/// The BINARY entries' ordinary twin: a file in the same directory that is not
+/// the binary.
+///
+/// **This is the same discrimination the near-miss controls make, applied as a
+/// twin**: the entry and its twin differ in exactly the property the clause is
+/// supposed to read — the identity of the path — and in nothing else.
+const NOT_THE_GUARDS_BINARY: &str = "<BINPAR>/some-other-file";
+
 fn control_carrier_ordinary_twin(entry: &str) -> String {
-    entry.replace(ENVELOPE_ROOT_PLACEHOLDER, NOT_AN_ENVELOPE_ROOT)
+    entry
+        .replace(ENVELOPE_ROOT_PLACEHOLDER, NOT_AN_ENVELOPE_ROOT)
+        .replace(BINARY_PLACEHOLDER, NOT_THE_GUARDS_BINARY)
 }
 
 // ---------------------------------------------------------------------------
@@ -8246,57 +8613,100 @@ fn control_carrier_ordinary_twin(entry: &str) -> String {
 /// splice into a governed base precisely because their claim is about a governed
 /// program's argv, and this axis has none.
 ///
-/// * envelope-root operands — **11** entries (9 rows + 2 measured mitigations)
-/// * redirection targets    — **4**
-/// * expansion-borne        — **2**
-/// * symlinked              — **2**
-/// * relative               — **2**
-/// * repo-side              — **6**
-/// * ordinary operands      — **11** (9 rows + 2 near-miss controls)
-/// * total = 11 + 4 + 2 + 2 + 2 + 6 + 11 = **38** cases
-/// * slots = one per alphabet = **7**
+/// **RE-DERIVED IN ROUND 11 FROM THE THREE REFINEMENTS AS WELL AS THE FOUR NEW
+/// CLASSES.** The counts move because three PREDICATES changed, not only because
+/// four classes were added, and re-deriving them from the alphabets alone would
+/// miss that.
+///
+/// * envelope-root operands       — **11** entries (9 rows + 2 measured mitigations)
+/// * redirection targets          — **4**  (MOVED to the fail-closed arm)
+/// * binary                       — **5**  (NEW, fail-closed)
+/// * expansion-borne              — **2**
+/// * symlinked                    — **2**
+/// * relative                     — **2**
+/// * repo-side                    — **6**
+/// * ordinary operands            — **13** (11 + the 2 binary near-miss controls)
+/// * redirection targets, preserving — **4** (NEW)
+/// * tilde-borne                  — **4**  (NEW)
+/// * glob-borne                   — **4**  (NEW)
+/// * brace-list-borne             — **4**  (NEW)
+/// * total = 11 + 4 + 5 + 2 + 2 + 2 + 6 + 13 + 4 + 4 + 4 + 4 = **61** cases
+/// * slots = one per alphabet = **12**
 ///
 /// The floors are EXACT equalities, so losing one case turns them red. Nothing in
 /// `src/` can move them: they are a pure function of the alphabets in this file.
-const CONTROL_CARRIER_CASES: usize = 38;
-const CONTROL_CARRIER_SLOTS: usize = 7;
-const MIN_CONTROL_CARRIER_CLASSES: usize = 7;
+/// **Audit 5 found `19-16` set a floor of 50 against a maximum of 40 BY
+/// CONSTRUCTION, so the arithmetic is stated and CHECKED against the alphabets
+/// rather than against the prose.**
+const CONTROL_CARRIER_CASES: usize = 61;
+const CONTROL_CARRIER_SLOTS: usize = 12;
+const MIN_CONTROL_CARRIER_CLASSES: usize = 11;
 const MIN_ENVELOPE_ROOT_OPERAND_CARRIERS: usize = 11;
 const MIN_CONTROL_CARRIER_REDIRECTION_TARGETS: usize = 4;
+const MIN_CONTROL_CARRIER_BINARY: usize = 5;
 const MIN_CONTROL_CARRIER_EXPANSION_BORNE: usize = 2;
 const MIN_CONTROL_CARRIER_SYMLINKED: usize = 2;
 const MIN_CONTROL_CARRIER_RELATIVE: usize = 2;
 const MIN_CONTROL_CARRIER_REPO_SIDE: usize = 6;
-const MIN_CONTROL_CARRIER_ORDINARY_OPERANDS: usize = 11;
+const MIN_CONTROL_CARRIER_ORDINARY_OPERANDS: usize = 13;
+const MIN_CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING: usize = 4;
+const MIN_CONTROL_CARRIER_TILDE_BORNE: usize = 4;
+const MIN_CONTROL_CARRIER_GLOB_BORNE: usize = 4;
+const MIN_CONTROL_CARRIER_BRACE_BORNE: usize = 4;
 
-/// The per-class counts over all 38 generated commands, DERIVED from the
-/// alphabets:
+/// The per-class counts over all 61 generated commands, DERIVED from the
+/// alphabets and from the three refinements:
 ///
-/// * class 1 (envelope-root operand) — all **11** fail-closed entries. No other
-///   alphabet names an absolute word under the root as an operand.
-/// * class 2 (redirection target)    — the **4** redirection entries.
-/// * class 3 (expansion-borne)       — the **2** expansion entries.
+/// * class 1 (envelope-root operand) — the **11** fail-closed entries. **The
+///   metacharacter and brace-list refinement is what keeps the four glob and
+///   brace OPERAND entries out**; without it this would read 17 and three
+///   classes would have collapsed.
+/// * class 2 (redirection target)    — the **4** absolute-literal redirection
+///   entries. **The same refinement keeps out the glob and brace TARGETS** —
+///   `: > <ENV>/alpha/pr-ledger.ndjso?`, `: > <ENV>/alpha/{pr-ledger.ndjson,x}`,
+///   `printf 'exit 0' > <ENV>/alpha/hooks/pre-pus?` and
+///   `echo evil > <ENV>/alpha/{askpass,x}` — which would otherwise have been
+///   counted inside a FAIL-CLOSED class while being PERMITTED.
+/// * class 3 (expansion-borne)       — the 2 expansion entries PLUS the
+///   expansion-borne redirection TARGET in the preserving alphabet = **3**.
+///   That overlap is RECORDED: direction (ii) and direction (i) compound, and
+///   the compounded row is drawn once in each position.
 /// * class 4 (symlinked)             — the 2 symlink entries PLUS the `ln -s`
 ///   MITIGATION in the fail-closed alphabet, which names the marker as its second
 ///   operand = **3**. That overlap is the RECORD that direction (iii) is
 ///   NARROWED.
 /// * class 5 (relative)              — the **2** relative entries. `rg
-///   'pr-ledger.ndjson' src/` is QUOTED and correctly does not count.
+///   'pr-ledger.ndjson' src/` is QUOTED and correctly does not count, and the
+///   tilde refinement keeps the four tilde entries out.
 /// * class 6 (repo-side)             — the **6** repo-side entries.
-/// * class 7 (ordinary)              — the **11** ordinary entries, and only
-///   those, because class 7 is the complement of the six.
+/// * class 7 (ordinary)              — the **13** ordinary entries, and only
+///   those, because class 7 is the complement of the ten. **The two binary
+///   near-miss controls count HERE and not in class 11**, which is the
+///   exact-path boundary asserted at the predicate level.
+/// * class 8 (tilde-borne)           — the 4 tilde entries PLUS the tilde
+///   redirection TARGET in the preserving alphabet = **5**.
+/// * class 9 (glob-borne)            — the 4 glob entries PLUS the glob
+///   redirection TARGET in the preserving alphabet = **5**.
+/// * class 10 (brace-list-borne)     — the 4 brace entries PLUS the brace
+///   redirection TARGET in the preserving alphabet = **5**.
+/// * class 11 (the guard's own binary) — the **5** binary entries, and NOT the
+///   two near-miss controls.
 const CONTROL_CARRIER_CLASS_COUNTS: &[(&str, usize)] = &[
     ("an absolute literal operand under the envelope root", 11),
     ("a redirection target under the envelope root", 4),
-    ("an expansion-borne carrier operand", 2),
+    ("an expansion-borne carrier operand", 3),
     ("a symlinked carrier operand", 3),
     ("a relative carrier operand", 2),
     ("a repo-side control carrier", 6),
-    ("an ordinary path operand", 11),
+    ("an ordinary path operand", 13),
+    ("a tilde-borne carrier word", 5),
+    ("a glob-borne carrier word", 5),
+    ("a brace-list-borne carrier word", 5),
+    ("the guard's own binary", 5),
 ];
 
 #[test]
-fn the_corpus_can_draw_every_one_of_the_seven_control_carrier_classes() {
+fn the_corpus_can_draw_every_one_of_the_eleven_control_carrier_classes() {
     // **THE DEGENERATE-PROOFING, ASSERTED RATHER THAN DESCRIBED**, in the shape
     // `the_corpus_can_draw_every_one_of_the_seven_unreadable_classes`,
     // `..._five_deletion_classes`, `..._five_callee_grammar_classes` and
@@ -8315,7 +8725,7 @@ fn the_corpus_can_draw_every_one_of_the_seven_control_carrier_classes() {
         "one representative per class, in class order"
     );
 
-    // -- each representative satisfies its OWN class and NONE of the other six.
+    // -- each representative satisfies its OWN class and NONE of the other TEN.
     for (index, (name, predicate)) in CONTROL_CARRIER_CLASSES.iter().enumerate() {
         let mine = control_carrier_representative(CONTROL_CARRIER_REPRESENTATIVES[index]);
         assert!(
@@ -8334,7 +8744,13 @@ fn the_corpus_can_draw_every_one_of_the_seven_control_carrier_classes() {
                  \n  also satisfies class {other} (`{other_name}`)\n\n\
                  If a pair collapses, the floors below become satisfiable by an alphabet that \
                  cannot generate the cells this round is about — which is exactly how the last \
-                 five plan-check rounds each found a live cell."
+                 five plan-check rounds each found a live cell.\n\n\
+                 **ROUND 11 REFINED THREE PREDICATES FOR EXACTLY THIS REASON** — class 1 and \
+                 class 2 to exclude a pathname-expansion metacharacter or a brace list, class \
+                 5 to exclude a tilde — and class 2's was the one that would have done more \
+                 than fire this fence: its alphabet is simultaneously the one MOVING to the \
+                 fail-closed arm, so an unrefined class 2 would have placed PERMITTED glob and \
+                 brace targets inside a property that asserts REFUSAL."
             );
         }
     }
@@ -8565,6 +8981,27 @@ fn every_alphabet_this_round_widens_can_draw_a_fact_about_the_file_a_control_liv
             CONTROL_CARRIER_ORDINARY_OPERANDS,
             MIN_CONTROL_CARRIER_ORDINARY_OPERANDS,
         ),
+        ("CONTROL_CARRIER_BINARY", CONTROL_CARRIER_BINARY, MIN_CONTROL_CARRIER_BINARY),
+        (
+            "CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING",
+            CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING,
+            MIN_CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING,
+        ),
+        (
+            "CONTROL_CARRIER_TILDE_BORNE",
+            CONTROL_CARRIER_TILDE_BORNE,
+            MIN_CONTROL_CARRIER_TILDE_BORNE,
+        ),
+        (
+            "CONTROL_CARRIER_GLOB_BORNE",
+            CONTROL_CARRIER_GLOB_BORNE,
+            MIN_CONTROL_CARRIER_GLOB_BORNE,
+        ),
+        (
+            "CONTROL_CARRIER_BRACE_BORNE",
+            CONTROL_CARRIER_BRACE_BORNE,
+            MIN_CONTROL_CARRIER_BRACE_BORNE,
+        ),
     ] {
         assert!(
             entries.len() >= floor,
@@ -8658,15 +9095,35 @@ fn the_control_carrier_alphabets_are_pairwise_disjoint_and_the_fail_closed_one_i
     //    not edit.
     for (name, entries) in CONTROL_CARRIER_INVARIANCE_ALPHABETS {
         for entry in *entries {
-            assert!(
-                !ENVELOPE_ROOT_OPERAND_CARRIERS.contains(entry),
-                "\n\n`{entry}` is in the invariance-arm alphabet `{name}` AND in \
-                 `ENVELOPE_ROOT_OPERAND_CARRIERS`.\n\n\
-                 **MUST NOT PUT AN ENTRY WHOSE VERDICT THE FIX CHANGES INTO THE \
-                 INVARIANCE-PRESERVING ARM.** This is `19-18`'s `{{v}}>` blocker, `19-20`'s \
-                 `GIT_GLOBAL_UNKNOWN_OPTIONS` split, `19-22`'s indirection/confined split and \
-                 `19-24`'s re-parsed/confined split, one KIND over."
-            );
+            for (closed_name, closed) in CONTROL_CARRIER_FAIL_CLOSED_ALPHABETS {
+                assert!(
+                    !closed.contains(entry),
+                    "\n\n`{entry}` is in the invariance-arm alphabet `{name}` AND in the \
+                     fail-closed alphabet `{closed_name}`.\n\n\
+                     **MUST NOT PUT AN ENTRY WHOSE VERDICT THE FIX CHANGES INTO THE \
+                     INVARIANCE-PRESERVING ARM.** This is `19-18`'s `{{v}}>` blocker, \
+                     `19-20`'s `GIT_GLOBAL_UNKNOWN_OPTIONS` split, `19-22`'s \
+                     indirection/confined split, `19-24`'s re-parsed/confined split and \
+                     `19-26`'s own envelope-root split — **and round 11 is the SIXTH time it \
+                     has been forced by measurement**, when \
+                     `CONTROL_CARRIER_REDIRECTION_TARGETS` moved arm because all four of its \
+                     entries are refused after `19-29`."
+                );
+            }
+        }
+    }
+
+    // -- **THE THREE FAIL-CLOSED ALPHABETS ARE PAIRWISE DISJOINT FROM EACH
+    //    OTHER TOO**, so the fail-closed property below drives each entry once
+    //    and the class counts do not double-count a command.
+    for (i, (left_name, left)) in CONTROL_CARRIER_FAIL_CLOSED_ALPHABETS.iter().enumerate() {
+        for (right_name, right) in CONTROL_CARRIER_FAIL_CLOSED_ALPHABETS.iter().skip(i + 1) {
+            for entry in *left {
+                assert!(
+                    !right.contains(entry),
+                    "`{entry}` is in BOTH fail-closed alphabets `{left_name}` and `{right_name}`"
+                );
+            }
         }
     }
 
@@ -8677,8 +9134,9 @@ fn the_control_carrier_alphabets_are_pairwise_disjoint_and_the_fail_closed_one_i
     //    commands is GREEN before the fix and certifies nothing — the TENTH
     //    consecutive instance of `T-19-76`'s failure mode, produced by the corpus
     //    rather than found by the next audit.
-    for entry in ENVELOPE_ROOT_OPERAND_CARRIERS {
-        let twin = control_carrier_ordinary_twin(entry);
+    for (_, entries) in CONTROL_CARRIER_FAIL_CLOSED_ALPHABETS {
+      for entry in *entries {
+        let twin = control_carrier_command(&control_carrier_ordinary_twin(entry), Path::new("/tmp"));
         let envelope = TempDir::new().expect("a temporary envelope root");
         let got = verdict(envelope.path(), &twin);
         assert_eq!(
@@ -8687,11 +9145,13 @@ fn the_control_carrier_alphabets_are_pairwise_disjoint_and_the_fail_closed_one_i
              \n  entry : {entry}\
              \n  twin  : {twin}\
              \n  got   : exit {} reason {}\n\n\
-             The entire content of `T-19-112` and `T-19-113` is that a command layer 2 LETS \
-             THROUGH removes a control. If the twin were already refused, this axis's \
-             fail-closed property would be green before `19-27` and would certify nothing.",
+             The entire content of `T-19-112`, `T-19-113`, `T-19-116` and `T-19-118` is \
+             that a command layer 2 LETS THROUGH removes a control. If the twin were already \
+             refused, this axis's fail-closed property would be green before the fix and would \
+             certify nothing.",
             got.code, got.reason_id,
         );
+      }
     }
 }
 
@@ -8745,6 +9205,41 @@ fn the_carrier_rule_may_not_be_a_denylist_of_program_names() {
             .collect::<Vec<_>>()
     );
     println!("the NO-PROGRAM-NAMES fence is carried by: {unknown:?}");
+
+    // -- **EXTENDED BY ROUND 11 TO THIS ROUND'S OWN CLASSES.** A fence that only
+    //    covered class 1 would say nothing about whether the BINARY clause or
+    //    the three spelling classes had been written as a denylist. **At least
+    //    one entry of each must name a program the guard's production logic does
+    //    not know.**
+    for (name, entries) in [
+        ("CONTROL_CARRIER_BINARY", CONTROL_CARRIER_BINARY),
+        ("CONTROL_CARRIER_TILDE_BORNE", CONTROL_CARRIER_TILDE_BORNE),
+        ("CONTROL_CARRIER_GLOB_BORNE", CONTROL_CARRIER_GLOB_BORNE),
+        ("CONTROL_CARRIER_BRACE_BORNE", CONTROL_CARRIER_BRACE_BORNE),
+    ] {
+        let unknown: Vec<&str> = entries
+            .iter()
+            .filter_map(|entry| entry.split_whitespace().next())
+            .filter(|program| {
+                !policy_production.contains(*program) && !hooks_production.contains(*program)
+            })
+            .collect();
+        assert!(
+            !unknown.is_empty(),
+            "\n\n**`{name}` MUST NAME AT LEAST ONE PROGRAM THE GUARD'S PRODUCTION LOGIC DOES \
+             NOT KNOW.**\n\n\
+             `19-29` widens rule (a)'s PATH SET and what it SEES, and neither widening may \
+             teach the guard a program name. D-08's whole argument is that `resolve_program` \
+             never asks what the wrapper is CALLED. **The correct response is to DELETE the \
+             program name from `src/`, never to delete this assertion.**\n\n\
+             Programs named: {:?}",
+            entries
+                .iter()
+                .filter_map(|entry| entry.split_whitespace().next())
+                .collect::<Vec<_>>()
+        );
+        println!("  {name} carries the fence with: {unknown:?}");
+    }
 }
 
 #[test]
@@ -8772,6 +9267,100 @@ fn the_carrier_rule_must_resolve_a_path_prefix_and_not_a_basename() {
             "`{command}` must NOT draw class 1: it names no path under the envelope root."
         );
     }
+
+    // -- **THE BINARY'S EXACT-PATH-NOT-PREFIX CONTROLS, ASSERTED BY NAME.**
+    //    **The two boundary KINDS differ and the reason is MEASURED rather than
+    //    aesthetic.** The envelope DIRECTORY is a PREFIX boundary because this
+    //    envelope owns every byte under it — `rm -rf <ENV>/alpha` takes NINE
+    //    carriers in one call. **The BINARY is an EXACT-PATH boundary because
+    //    its directory is shared with everything else the user installed**: a
+    //    prefix over `~/.cargo/bin` would refuse `ls ~/.cargo/bin` and every
+    //    `cargo install`, and under `cargo test` it would refuse
+    //    `ls target/debug/deps`.
+    for near_miss in CONTROL_CARRIER_BINARY_NEAR_MISSES {
+        assert!(
+            CONTROL_CARRIER_ORDINARY_OPERANDS.contains(near_miss),
+            "\n\n**`{near_miss}` MUST BE IN `CONTROL_CARRIER_ORDINARY_OPERANDS`, BY NAME.**\n\n\
+             These two are ROUND 11's `--signed no`, one from each side:\n\
+             \x20 * `cp /bin/true <BINPAR>/some-other-file` — a SIBLING of the binary in the \
+             same directory;\n\
+             \x20 * `ls <BINPAR>` — a READ of the binary's own directory.\n\n\
+             **A clause written as a DIRECTORY PREFIX over the binary's parent turns BOTH of \
+             these RED. Only an EXACT-PATH comparison keeps them green.**"
+        );
+        let command = control_carrier_representative(near_miss);
+        assert!(
+            !draws_the_guards_own_binary(&command),
+            "`{command}` must NOT draw class 11. The predicate compares the path's IDENTITY \
+             and not its neighbourhood, and `REPRESENTATIVE_BINARY_PARENT` is a PREFIX of \
+             `REPRESENTATIVE_BINARY_PATH` — so a `starts_with` in that predicate would draw \
+             these two and silently assert them refused."
+        );
+        assert!(
+            draws_an_ordinary_operand(&command),
+            "`{command}` must draw class 7, the ordinary complement."
+        );
+    }
+}
+
+#[test]
+fn the_control_carrier_axis_can_draw_a_tilde_a_glob_and_a_brace_list_inside_a_carrier_path() {
+    // **THE NO-EXPANSION-SPELLING FENCE — ROUND 11's NEW MECHANICAL ASSERTION,
+    // AND THE ONE THAT WOULD HAVE CAUGHT `T-19-115` A ROUND EARLIER.**
+    //
+    // Rule (a) decides on `Token.literal` — round 5's own bit — and therefore
+    // inherits round 5's whole class list by construction. Round 5's literalness
+    // table names EXPANSION, PATHNAME, TILDE and BRACE as the four classes that
+    // clear the bit. **Round 10's corpus drew ONE of the four**: every one of
+    // `ENVELOPE_ROOT_OPERAND_CARRIERS`' eleven entries is an absolute literal
+    // path and `CONTROL_CARRIER_EXPANSION_BORNE` is exactly two `$(…)` entries,
+    // so the axis was STRUCTURALLY INCAPABLE of failing on three of the rule's
+    // own silences.
+    //
+    // **This counts ENTRIES rather than reading prose**, because the absence of
+    // exactly that is `T-19-115`, and a floor that cannot fail on a class is how
+    // this failure mode reached its tenth consecutive round.
+    //
+    // **GREEN today and after.**
+    let mut tilde = 0usize;
+    let mut glob = 0usize;
+    let mut brace = 0usize;
+    for (_, entries) in CONTROL_CARRIER_ALPHABETS {
+        for entry in *entries {
+            let command = control_carrier_representative(entry);
+            for word in carrier_words(&command) {
+                if word_is_tilde_borne_carrier(&word.text) {
+                    tilde += 1;
+                }
+                if word.text.starts_with(REPRESENTATIVE_ENVELOPE_ROOT)
+                    && word_has_pathname_metacharacter(&word.text)
+                {
+                    glob += 1;
+                }
+                if word.text.starts_with(REPRESENTATIVE_ENVELOPE_ROOT)
+                    && word_has_brace_list(&word.text)
+                {
+                    brace += 1;
+                }
+            }
+        }
+    }
+    for (what, count) in [("a TILDE", tilde), ("a GLOB", glob), ("a BRACE LIST", brace)] {
+        assert!(
+            count > 0,
+            "\n\n**THE AXIS MUST BE ABLE TO DRAW {what} INSIDE A CARRIER PATH, AND IT DRAWS \
+             {count}.**\n\n\
+             Round 5's `Token.literal` table names EXPANSION, PATHNAME, TILDE and BRACE as the \
+             four classes that clear the bit rule (a) requires. An axis that cannot DRAW one \
+             of them cannot FAIL on it, and every floor it satisfies certifies a claim about a \
+             class it could never have exercised.\n\n\
+             **THE CORRECT RESPONSE IS TO ADD THE SPELLING, NEVER TO RELAX THIS FENCE.**"
+        );
+    }
+    println!(
+        "the NO-EXPANSION-SPELLING fence counts {tilde} tilde, {glob} glob and {brace} \
+         brace-list carrier words across the twelve alphabets."
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -8795,15 +9384,17 @@ fn a_command_whose_operand_resolves_under_the_envelope_root_is_refused_after_19_
     // `classify_segments` (`hooks.rs:954-961`) already carries `root` and
     // `alias`, so no new input is introduced.
     let mut cases = 0usize;
-    for entry in ENVELOPE_ROOT_OPERAND_CARRIERS {
+    for (alphabet, entries) in [("ENVELOPE_ROOT_OPERAND_CARRIERS", ENVELOPE_ROOT_OPERAND_CARRIERS)] {
+      for entry in entries {
         let envelope = TempDir::new().expect("a temporary envelope root");
         let command = control_carrier_command(entry, envelope.path());
         let got = verdict(envelope.path(), &command);
         assert_eq!(
             got.code,
             2,
-            "\n\nA COMMAND WHOSE OPERAND IS ONE OF THIS ENVELOPE'S OWN CONTROL CARRIERS WAS \
+            "\n\nA COMMAND THAT NAMES ONE OF THIS ENVELOPE'S OWN CONTROL CARRIERS WAS \
              PERMITTED.\n\
+             \n  alphabet: {alphabet}\
              \n  entry   : {entry}\
              \n  command : {command}\
              \n  got     : exit {} reason {}\n\
@@ -8820,7 +9411,14 @@ fn a_command_whose_operand_resolves_under_the_envelope_root_is_refused_after_19_
              \n**This rule reads an OPERAND PATH and never a PROGRAM NAME** — the \
              NO-PROGRAM-NAMES fence above is the corpus's own proof — and it FAILS OPEN in \
              FOUR named directions whose entries are pinned PERMITTED in the invariance arm \
-             below.",
+             below.\n\
+             \n**ROUND 11 ADDED TWO MORE FAIL-CLOSED ALPHABETS TO THIS ARM.** \
+             `CONTROL_CARRIER_REDIRECTION_TARGETS` MOVED here from the invariance arm — all \
+             four of its entries carry ABSOLUTE LITERAL targets under the envelope root, and \
+             `19-29`'s widened SIGHT reaches them. `CONTROL_CARRIER_BINARY` is new: `C-10`, \
+             the binary every hook stub and the guard registration exec, which takes LAYER 2 \
+             AND LAYER 3 in one permitted call and which `19-29`'s widened PATH SET reaches as \
+             an EXACT PATH.",
             got.code,
             got.reason_id,
         );
@@ -8842,16 +9440,109 @@ fn a_command_whose_operand_resolves_under_the_envelope_root_is_refused_after_19_
             files_under(envelope.path())
         );
         cases += 1;
+      }
     }
     assert_eq!(
         cases,
         ENVELOPE_ROOT_OPERAND_CARRIERS.len(),
-        "the fail-closed arm must run every generated case"
+        "round 10's fail-closed arm must run every generated case"
+    );
+}
+
+/// The TWO fail-closed alphabets round 11 ADDS — the ones `19-29` turns green.
+///
+/// **They are a SEPARATE property from round 10's, and the split is honest
+/// rather than cosmetic.** `ENVELOPE_ROOT_OPERAND_CARRIERS` is GREEN today:
+/// `19-27` landed its rule. These two are RED today and green only after
+/// `19-29`. Folding them into one property would make round 10's landed rule
+/// indistinguishable from round 11's unlanded one, and a later reader could not
+/// tell which half a red belonged to.
+const CONTROL_CARRIER_FAIL_CLOSED_AFTER_19_29: &[(&str, &[&str])] = &[
+    ("CONTROL_CARRIER_REDIRECTION_TARGETS", CONTROL_CARRIER_REDIRECTION_TARGETS),
+    ("CONTROL_CARRIER_BINARY", CONTROL_CARRIER_BINARY),
+];
+
+#[test]
+fn a_command_that_names_a_carrier_rule_a_cannot_see_is_refused_after_19_29() {
+    // **ROUND 11's FAIL-CLOSED ARM. RED at this plan's end BY DESIGN.**
+    //
+    // Two alphabets, two widenings, and neither is a widening of the other:
+    //
+    // * **`CONTROL_CARRIER_REDIRECTION_TARGETS`** — the carrier is INSIDE the
+    //   envelope root and the write arrives as a REDIRECTION TARGET, which rule
+    //   (a) cannot SEE. This alphabet MOVED here out of the invariance arm,
+    //   because all four of its entries' verdict the fix CHANGES. `19-29` widens
+    //   what the rule sees to pathname redirection targets, carried on the
+    //   SEGMENT the way `Segment::redirection_unresolvable` already travels —
+    //   **never as a token in the stream**, which would split a redirected simple
+    //   command and turn round 6's headline refusal into a permit. The
+    //   SEGMENT-COUNT pins in `tests/envelope_carrier_reach.rs` make that
+    //   falsifiable.
+    // * **`CONTROL_CARRIER_BINARY`** — `C-10`, `T-19-116`, `high`. The carrier is
+    //   OUTSIDE the envelope root entirely, so no amount of widened SIGHT reaches
+    //   it; `19-29` widens the PATH SET to
+    //   `{envelope_dir_in(root, alias)} ∪ {the binary this guard is running as}`,
+    //   the second as an **EXACT PATH** and not a prefix. Driven end to end in
+    //   `tests/envelope_carrier_reach.rs`: with the binary replaced by
+    //   `/bin/true`, a force push the hook had REFUSED COMPLETED and MOVED a bare
+    //   remote's `main`, and the replaced binary answered exit 0 to a guard call
+    //   the real binary answered exit 2 to. **Layer 2 and layer 3 in one
+    //   permitted call.**
+    //
+    // The reason identifier is the GENERAL unresolvable one,
+    // `envelope_assertion_failed`, for both — the clause fires before any
+    // classifier has looked at the command, so it is not one a classifier would
+    // have earned (D-24).
+    let mut cases = 0usize;
+    for (alphabet, entries) in CONTROL_CARRIER_FAIL_CLOSED_AFTER_19_29 {
+        for entry in *entries {
+            let envelope = TempDir::new().expect("a temporary envelope root");
+            let command = control_carrier_command(entry, envelope.path());
+            let got = verdict(envelope.path(), &command);
+            assert_eq!(
+                got.code, 2,
+                "\n\nA COMMAND NAMING A CARRIER RULE (a) CANNOT SEE WAS PERMITTED.\n\
+                 \n  alphabet: {alphabet}\
+                 \n  entry   : {entry}\
+                 \n  command : {command}\
+                 \n  got     : exit {} reason {}\n\
+                 \n**MEASURED AT THIS PLAN'S BASE: every entry here is exit 0 with an EMPTY \
+                 walk.** That is what makes this property RED before the fix and able to \
+                 certify something after it. Its ORDINARY TWINS are asserted PERMITTED by the \
+                 permitted-base fence above, so this arm is not merely drawing commands that \
+                 were already refused.",
+                got.code, got.reason_id,
+            );
+            assert_eq!(
+                got.reason_id,
+                policy::REASON_ENVELOPE_ASSERTION_FAILED,
+                "`{command}` must be refused UNDER `{}`, the GENERAL unresolvable identifier. \
+                 Got: {}",
+                policy::REASON_ENVELOPE_ASSERTION_FAILED,
+                got.reason_id,
+            );
+            let written = ledger_lines_under(envelope.path());
+            assert!(
+                written.is_empty(),
+                "`{command}` was refused, but a pull-request ledger line was written. Found: \
+                 {written:?} Files: {:?}",
+                files_under(envelope.path())
+            );
+            cases += 1;
+        }
+    }
+    assert_eq!(
+        cases,
+        CONTROL_CARRIER_FAIL_CLOSED_AFTER_19_29
+            .iter()
+            .map(|(_, entries)| entries.len())
+            .sum::<usize>(),
+        "round 11's fail-closed arm must run every generated case"
     );
 }
 
 #[test]
-fn the_five_verdict_preserving_control_carrier_alphabets_stay_permitted_before_and_after() {
+fn the_verdict_preserving_control_carrier_alphabets_stay_permitted_before_and_after() {
     // **THE INVARIANCE ARM. GREEN today and after.**
     //
     // **THIS IS WHAT MAKES THE CORPUS ABLE TO FAIL ON A RULE THAT QUIETLY WIDENED
