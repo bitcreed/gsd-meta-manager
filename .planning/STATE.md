@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
-stopped_at: Completed 19-23-PLAN.md (the rules; T-19-103..107 closed, gate NOT cleared)
-last_updated: "2026-09-03T00:00:00.000Z"
+stopped_at: Completed 19-24-PLAN.md (corpus RED; 19-25 writes the rules)
+last_updated: "2026-09-04T06:43:55.777Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: 2190cf5
+state_head: 32a3b35197585b99a4fff8cf8c87ff588044289d
 progress:
   total_phases: 10
   completed_phases: 6
-  total_plans: 102
-  completed_plans: 101
+  total_plans: 104
+  completed_plans: 103
   percent: 60
 ---
 
@@ -225,6 +225,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 19 P20 | 1 session | 3 tasks | 4 files |
 | Phase 19 P21 | 1 session | 3 tasks | 5 files |
 | Phase 19 P22 | 1h | 3 tasks | 4 files |
+| Phase 19 P24 | 2h | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -288,6 +289,9 @@ Recent decisions affecting current work:
 - [Phase 19]: 19-22: a dotless -c key stays CONFINED — refusing it would turn round 7's whole generative property red behind CALLEE_KNOWN_LEADING_PREFIX
 - [Phase 19]: 19-22: CONFIG_RESOLUTION_CLASSES is a FOURTH axis beside three byte-identical command-line axes — what the verb runs under, not the command line
 - [Phase 19]: 19-22: GIT_CONFIG_NOSYSTEM recorded as a measured DEFEAT with an INERT harm — never a new threat ID, never a bypass
+- [Phase 19]: A SIXTH class on the EXISTING config-resolution axis, not a fifth axis — the region moved, not the axis
+- [Phase 19]: The shell-alias carve-out is git's own one-byte rule, fenced mechanically rather than by care
+- [Phase 19]: T-19-108 will close only AS SCOPED; audit 7's !-bodied destructive pair is T-19-86 and stays open at high
 
 ### Pending Todos
 
@@ -348,11 +352,11 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-03 — plan 19-23 executed (the rules)
-Stopped at: Completed 19-22-PLAN.md (corpus RED; 19-23 writes the rules)
+Last session: 2026-09-04T06:43:46.051Z
+Stopped at: Completed 19-24-PLAN.md (corpus RED; 19-25 writes the rules)
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
-Resume file: None
+Resume file: .planning/phases/19-gitsafe-git-blast-radius-envelope/19-25-PLAN.md
 (both retained deliberately — the plan-checker step runs as a separate agent and needs them;
 delete only after round 7 executes).
 Note: `.planning/phases/19-gitsafe-git-blast-radius-envelope/.continue-here.md` is a stale

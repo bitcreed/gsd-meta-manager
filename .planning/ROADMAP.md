@@ -370,7 +370,7 @@ Plans:
 
 - [x] 19-22-PLAN.md
 - [x] 19-23-PLAN.md
-- [ ] 19-24-PLAN.md — Round 9 corpus, RED. T-19-105 for the ninth round: `CONFIG_RESOLUTION_CLASSES`'s five classes are all argv or environment carriers and nothing models a carrier riding inside a config VALUE the round-8 clause CONFINED, so the corpus cannot fail on T-19-108. Adds a SIXTH class on the SAME axis (audit 8's finding is that the region moved, not the axis), a `CONFIG_REPARSED_VALUE_CARRIERS` alphabet in both the `-c` and persisted deliveries, and an EIGHTH evidence file. Fences the seam found at plan time: git's shell-alias rule is a ONE-BYTE fact, and a blanket `alias.*` refusal turns two registered T-19-86 rows permanently red in files the round may not edit
+- [x] 19-24-PLAN.md — Round 9 corpus, RED. T-19-105 for the ninth round: `CONFIG_RESOLUTION_CLASSES`'s five classes are all argv or environment carriers and nothing models a carrier riding inside a config VALUE the round-8 clause CONFINED, so the corpus cannot fail on T-19-108. Adds a SIXTH class on the SAME axis (audit 8's finding is that the region moved, not the axis), a `CONFIG_REPARSED_VALUE_CARRIERS` alphabet in both the `-c` and persisted deliveries, and an EIGHTH evidence file. Fences the seam found at plan time: git's shell-alias rule is a ONE-BYTE fact, and a blanket `alias.*` refusal turns two registered T-19-86 rows permanently red in files the round may not edit
 - [ ] 19-25-PLAN.md — Round 9 rules. **Option (b): an assignment whose key names a value git RE-PARSES as a command line is unbounded and refuses** — option (a) costed by measurement and rejected (a second tokenizer for git's own `split_cmdline`, attacker-reachable recursion at depth 2, and carriers that deliver no readable body). `REPARSED_COMMAND_SECTIONS` beside `INDIRECTION_SECTIONS`, reading the SECTION plus git's one-byte shell rule, asked at the TWO decision regions that already read that word. **T-19-108 closes only AS SCOPED — audit 7's `!`-bodied destructive pair still works, and that is T-19-86.** Three fail-open directions stated and handed to no control; both residues gain a revisit condition and a non-skipping version witness. **T-19-86 and T-19-91 stay open at `high` — `/gsd-secure-phase 19` is NOT cleared**
 
 - [x] 19-18-PLAN-CHECK.md
@@ -720,7 +720,7 @@ Gap closure, round 13 (verification pass 13 scored **98/100 must-haves, 4/5 ROAD
 | 16. Run Journal & State Substrate | 6/6 | Complete    | 2026-07-29 |
 | 17. Supervisor | 8/8 | Complete    | 2026-07-29 |
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
-| 19. GITSAFE — Git & Blast-Radius Envelope | 22/23 | In Progress|  |
+| 19. GITSAFE — Git & Blast-Radius Envelope | 24/25 | In Progress|  |
 | 20. Deterministic Decision Router & Run Bounds | 5/5 | In Progress|  |
 | 21. LLM Goal Layer & Prompt-Injection Hardening | 37/37 | In Progress|  |
 | 22. Container Execution Target | 0/? | Not started | - |
