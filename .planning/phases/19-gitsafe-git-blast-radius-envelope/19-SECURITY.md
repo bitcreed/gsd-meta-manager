@@ -7213,3 +7213,456 @@ plan does not fix).
 
 **Every commit shows ZERO `src/` hunks**, which is the evidence this split exists to
 produce: the corpus was capable of failing before any production line moved.
+
+## Execution record — plan 19-25 (the rules). NOT an audit finding.
+
+**This subsection is appended by plan 19-25's executor. It edits nothing that
+precedes it — no audit table, no Security Audit Trail row, no Accepted Risks Log
+row, no Sign-Off, and no earlier appended subsection, including the plan-19-21
+blocker-row resolution record and the plan-19-22, 19-23 and 19-24 records. It
+re-measures and re-classifies nothing in an audit's tables; that is
+`/gsd-secure-phase 19`'s job.**
+
+### STATED FIRST
+
+**`/gsd-secure-phase 19` is NOT cleared by this plan.** `T-19-86` remains **OPEN
+at `high`** — recorded by audit 8 as measurably WIDER than the register credits —
+and `T-19-91` remains **OPEN at `high`** with its arms unweakened. `T-19-96` is
+registered open, `T-19-74`'s core rows are frozen, and `T-19-61` … `T-19-73`,
+`T-19-84` and `T-19-85` are open and unaccepted. **Only the WRAPPER-OPERAND
+sub-class of `T-19-60` is closed**; no unqualified "T-19-60 is closed" appears in
+this plan's output.
+
+**`T-19-108` closes only AS SCOPED, and audit 7's `!`-bodied destructive pair
+STILL WORKS after this plan.**
+
+```
+git config alias.q '!git -c include.path=<evil> push --force origin HEAD:refs/heads/main'
+git q
+```
+
+That pair — which rewrote a bare remote's `main` from `ac303dc` to `9f62444` at
+`fb43577`, and which `19-24` re-measured moving the ref again (`d833ba0` →
+`9687d94`) after `19-23` landed — is a whole command line handed to a governed
+program as DATA, which is **`T-19-86`**: out of scope by explicit user decision,
+with both its rows pinned PERMITTED in files this plan may not edit. This plan
+does not close, narrow or re-scope it. It is asserted still working, mechanically,
+by
+`tests/envelope_reparsed_value.rs::audit_7s_shell_bodied_destructive_pair_still_works_after_this_round_and_is_not_closed`
+and by the third arm of the `REPARSED_COMMAND_SECTIONS` real-git pin, which pins
+that direction as MEASURED rather than describing it.
+
+### `19-24`'s RED set — confirmed STILL RED before any production line moved
+
+Re-run against the unmodified tree at `57d715b`, before the first fix commit.
+**Verbatim:**
+
+```
+tests/envelope_reparsed_value.rs
+failures:
+    after_19_25_a_persisted_alias_carrying_an_indirection_is_refused_in_every_spelling
+    after_19_25_a_reparsed_alias_value_carrying_an_indirection_is_refused
+    after_19_25_a_reparsed_alias_value_reaching_the_by_name_hooks_deny_is_refused
+    after_19_25_defining_an_ordinary_non_shell_alias_is_refused_and_its_twin_is_not
+    after_19_25_the_case_varied_and_second_carrier_spellings_are_refused_too
+    after_19_25_the_scan_order_decides_which_clause_names_a_line_carrying_both
+    after_19_25_the_three_non_shell_boundary_spellings_are_refused
+
+test result: FAILED. 22 passed; 7 failed; 0 ignored; 0 measured; 0 filtered out
+
+tests/envelope_wrapper_class.rs
+failures:
+    a_carrier_inside_a_confined_config_value_fails_closed_in_both_deliveries
+
+test result: FAILED. 40 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+**Eight RED, matching `19-24-SUMMARY.md`'s recorded handoff set exactly. No row
+expected RED came up green**, so the rules below are rules the corpus had already
+shown were needed.
+
+| RED name | before | after | reason id | clause that produced it |
+|---|---|---|---|---|
+| `…a_reparsed_alias_value_carrying_an_indirection_is_refused` | exit 0 | exit 2 | `envelope_assertion_failed` | region 1 re-parse clause |
+| `…a_reparsed_alias_value_reaching_the_by_name_hooks_deny_is_refused` | exit 0 | exit 2 | `envelope_assertion_failed` | region 1 re-parse clause |
+| `…the_case_varied_and_second_carrier_spellings_are_refused_too` | exit 0 | exit 2 | `envelope_assertion_failed` | region 1, `eq_ignore_ascii_case` section + `--config-env` unreadable-value arm |
+| `…the_three_non_shell_boundary_spellings_are_refused` | exit 0 | exit 2 | `envelope_assertion_failed` | region 1, git's one-byte rule |
+| `…the_scan_order_decides_which_clause_names_a_line_carrying_both` | exit 2 `hook_bypass_blocked` | exit 2 | `envelope_assertion_failed` (alias first) / `hook_bypass_blocked` (hooks first) | region 1, ordered before `is_hooks_path_key` inside the ONE left-to-right walk |
+| `…a_persisted_alias_carrying_an_indirection_is_refused_in_every_spelling` | exit 0 | exit 2 | `envelope_assertion_failed` | **region 2** |
+| `…defining_an_ordinary_non_shell_alias_is_refused_and_its_twin_is_not` | exit 0 | exit 2 | `envelope_assertion_failed` | regions 1 **and** 2 (its fourth row is persisted) |
+| `a_carrier_inside_a_confined_config_value_fails_closed_in_both_deliveries` | exit 0 | exit 2 | (asserts exit code + empty walk, never the identifier) | both regions |
+
+**Region 1 alone moved five of the seven.** The two that remained were exactly the
+persisted rows — the mechanical confirmation of `19-24`'s deviation-1 finding that
+the class-2 overlap holds per-delivery and that **a rule inside `scan_leading`
+alone closes only one of the two deliveries.**
+
+### The design question, ANSWERED: option (b), with option (a) costed by MEASUREMENT
+
+**Option (a) — scan the confined value, applying the same clause recursively with
+a stated depth bound — is REJECTED on three measured grounds, not on preference:**
+
+1. **It needs a SECOND TOKENIZER.** Git splits an alias body with its OWN rules,
+   not the shell's — measured, `git -c alias.m='config --get "core.hooksPath"' m`
+   RESOLVES where the literally-quoted key is an `invalid key` error. Implementing
+   a foreign grammar the guard cannot observe is the exact class of unmeasured
+   claim `T-19-106` and `T-19-107` were both registered for.
+2. **It needs UNBOUNDED RECURSION.** Measured at depth 2 **and depth 3**: both
+   resolve `/INCLUDE_WINS`. Any stated depth bound therefore leaves a fail-open
+   residue at depth N+1 that **an attacker reaches TODAY by adding one nesting
+   level** — strictly worse than round 8's residue, which needs a future git.
+3. **It cannot read a body it does not have.** `--config-env=alias.q=<VAR>`
+   delivers the body through an environment variable NAME and `git -c alias.q` has
+   no value half at all, so option (a) collapses to option (b) at exactly the
+   carriers that matter.
+
+**Option (b) — ADOPTED.** An assignment whose key names a value git re-parses as a
+command line is one the guard cannot bound, on exactly the footing round 8's
+confinement clause already means.
+
+### K1 / K2 / K3 — three kinds, one reaches layer 3
+
+Re-measured at this plan's base against `git version 2.43.0`, with
+`cred::hooks_path_env`'s own triplet as the control:
+
+```
+control, no carrier                                              -> /ENV_WINS
+-c alias.a='-c include.path=<f> config --get core.hooksPath' a   -> /INCLUDE_WINS   K1
+-c alias.b='!git config --get core.hooksPath' b                  -> /ENV_WINS       K2
+-c alias.g='config --get core.hooksPath !x' g   (`!` not first)  -> /ENV_WINS
+-c alias.q='"!git config --get core.hooksPath"' q  (QUOTED)      -> expansion failed; '!git …'
+                                                                    is not a git command
+-c alias.t='<TAB>!git …' t                                       -> expansion of alias 't' failed
+```
+
+* **K1** — re-parsed as a GIT command line, IN-PROCESS, including its leading
+  options. `alias.<name>` with a non-`!` body. **The only member**, and the whole
+  of `T-19-108`.
+* **K2** — re-parsed as a SHELL command line run as a CHILD that **INHERITS** the
+  injection. `19-24` measured four representatives with the child's environment
+  dumped; `core.pager` and `core.editor` were not exercised and are not claimed.
+  **K2 needs no entry because the child inherits — a measurement, not a category
+  argument.**
+* **K3** — re-parsed as a FILE PATH spliced at the directive's precedence. Closed
+  by `19-23`.
+
+So `REPARSED_COMMAND_SECTIONS` names **one section**, and it names it because that
+section is where K1 lives.
+
+### The two-region rule, and why region 2 is REQUIRED rather than symmetric
+
+Region 1 is `scan_leading`'s existing `if let Some(assignment)` block, ordered
+after the confinement clause and **before** `is_hooks_path_key`, returned through
+the `(usize, Option<GitVerdict>)` channel that already carried three refusals.
+Region 2 is `classify_config`'s key operand — the operand `is_hooks_path_key`
+already reads and already refuses `git config core.hooksPath /dev/null` at
+`hook_bypass_blocked`.
+
+**The persistence asymmetry with `include.path` is what makes region 2
+load-bearing, and getting it backwards would have shipped an inert clause.** A
+persisted include must WIN a precedence contest against the envelope's injection
+and LOSES — audit 8 measured it INERT at repo-local, `--worktree` and GLOBAL. **An
+alias does not have to win anything; it only has to EXIST**, and `19-24` measured
+both a `--global` and a repo-local alias LIVE at `/INCLUDE_WINS` under the
+envelope's own `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` redirect. **No `include.path`
+or `includeIf` clause was added at region 2**, and
+`git config include.path /tmp/evil.cfg` is pinned PERMITTED twice so that adding
+one lands red.
+
+**No third reading site was created, confirmed mechanically.** `git diff` over the
+three fix commits shows no hunk in `first_unreadable_decision_word`,
+`config_key_operand_index`, `subcommand_word_indices`, `scan_gh_api` or
+`resolve_program_with_head`; `src/envelope/hooks.rs` has ZERO diff lines; and **no
+`ParkReason` variant was added** — the refusal is
+`ParkReason::EnvelopeAssertionFailed`, with a message naming THIS mechanism rather
+than the include one (D-24). **The two ordering rows landed at their deliberately
+DIFFERENT identifiers** (`envelope_assertion_failed` when the alias assignment
+comes first, `hook_bypass_blocked` when the hooks key does), which is the
+mechanical proof the clause is raised inside the ONE left-to-right walk and not in
+a second pass.
+
+### The three fail-open directions — stated, and handed to NO control
+
+**This rule fails OPEN in three named directions and NOT ONE of them has an
+automated control.** All three are written into `REPARSED_COMMAND_SECTIONS`'s doc,
+the predicate's doc, the value helper's doc and this record, in these words:
+
+1. **An `alias.*` already present in a config file the guard never saw a write
+   to.** The guard is stateless and argv-only; `git co` is an unknown verb at exit
+   0 and stays there. A repo-local `.git/config` alias predating the run is LIVE.
+   `T-19-86`'s shape; stays open.
+2. **A `!`-bodied body carrying its own carrier.** Audit 7's destructive pair,
+   still working — see STATED FIRST. `T-19-86`.
+3. **A future git that re-parses a SECOND config value as a git command line with
+   its own leading options.** Same shape as `INDIRECTION_SECTIONS`'s residue, same
+   absence of control. The real-git pin holds only the REVERSE direction and its
+   own doc opens by saying so, because it iterates the constant's entries and an
+   entry that does not exist is never probed.
+
+**None of these is handed to the pin or to any other control.** Round 7's clause
+hid exactly this behind a pin and a plan-check caught it; that is not repeated
+here.
+
+### The revisit condition and the version witness
+
+Both `INDIRECTION_SECTIONS` and `REPARSED_COMMAND_SECTIONS` gain a revisit
+condition in `AR-19-03`'s shape — a named, concrete trigger and what to do when it
+fires: when the installed `git --version` differs from
+`CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION` (`git version 2.43.0`),
+**both constants are re-derived against the new git and the recorded version is
+updated.** `the_config_section_constants_record_the_git_version_they_were_derived_against`
+fires on that; it **cannot skip, cannot warn without failing, and does not pass
+when `git` is absent**. Its cost is stated rather than hidden: **it fires on every
+git upgrade, including harmless ones — and that IS the schedule**, the thing that
+turns *a human reads the release notes* into *a test fires*.
+
+**THE WITNESS IS A SCHEDULE, NOT A CONTROL.**
+
+It observes exactly one bit — that the installed version string moved off the
+recorded one — so it can say **WHEN to look**. **It cannot say WHAT changed.** It
+does not observe a third indirection section appearing, it does not observe a
+second re-parsed config value appearing, and **it stays GREEN on a git that adds
+one without changing its version string.** The no-control claim above is therefore
+**unchanged and stands beside it**: there is NO automated control over any of the
+three fail-open directions, and the witness merely schedules the human re-audit
+that is the only control there is.
+
+**Provenance, recorded rather than presented as a sentence that was always
+right.** An earlier draft of plan `19-25` stated the no-control claim and added
+the witness in the same breath, in a way that read as the witness BEING the
+control — **`T-19-107`'s own shape arriving in the round that inherited it** — and
+a plan-check caught it, exactly as a plan-check caught round 7's residue hidden
+behind a pin that could not observe it. That provenance is carried in both
+constants' docs and in the witness's own doc.
+
+**NO ACCEPTANCE WAS MADE.** No `AR-` row was added, no risk was accepted, and the
+word "accepted" is applied to neither residue.
+
+### The cost, measured from BOTH sides — ordinary aliases do NOT all keep working
+
+**Defining a non-shell alias is refused; using one is not.**
+
+| refused after `19-25` (a DEFINITION) | permitted twin (does the same work) |
+|---|---|
+| `git -c alias.st=status st` | `git status` |
+| `git -c alias.lg="log --oneline" lg` | `git log --oneline` |
+| `git -c alias.co=checkout co` | `git checkout` |
+| `git config alias.co checkout` | `git checkout` |
+| `git config alias.st status` | `git status` |
+| `git config alias.lg 'log --oneline'` | `git log --oneline` |
+
+**INVOCATION is untouched at exit 0, before and after**: `git p`, `git co`,
+`git st`, `git lg`, `git z`, `git q`. Round 8's whole permitted half stays green,
+and round 7's generative property stays green behind
+`CALLEE_KNOWN_LEADING_PREFIX = "-c a=b"` because a dotless key names no section and
+is CONFINED. The discrimination controls `git -c aliasx.q=…` and
+`git -c notalias.q=…` stay at exit 0 — a prefix test reddens the first, a substring
+test the second, and only a SECTION comparison keeps both.
+
+**Two further disclosed over-refusals, stated rather than discovered later:**
+`git -c alias.q status` (no `=`) is refused although real git resolves the control
+value — **no harm behind that refusal**, and the corpus says so; and every
+`--config-env` alias assignment is refused because its value half is a variable
+NAME the guard does not read.
+
+### A carrier-reading requirement that was MEASURED, not assumed
+
+`git --config-env=alias.q='!EVIL'`, where the variable `!EVIL` holds a **non-`!`**
+body, resolves **`/INCLUDE_WINS`**. **A first-byte test applied uniformly across
+both carriers would read the `!` of a variable NAME as git's shell rule and fail
+OPEN on exactly that row.** So `reparsed_command_assignment_is_a_shell_body` reads
+the CARRIER — from `argv[index]`, the token `scan_leading`'s loop already holds —
+and treats every `--config-env` value as unreadable. **No new reading site, no
+second pass, and no arm added to `leading_git_option`.** The row is pinned from
+both sides in `policy.rs`'s own real-git pin.
+
+### `T-19-109` — the count replaced by REGIONS, as a NAMED NARROW exception
+
+`cred.rs`'s `hooks_path_env` limit paragraph claimed **"FIVE forms outrank this
+injection"** with a five-row table. Measured, there is a **SIXTH** — a non-`!`
+`alias.<name>` body beginning `-c include.path=<file>` — so the counted claim was
+wrong the day it was written, **for the second time** (it first claimed ONE). The
+paragraph now states the REGIONS each closure covers — the argv leading-option
+region, the environment, and the `git config` write operand — and what is NOT
+covered, **counting nothing**. The client-side / branch-protection closing sentence
+is kept.
+
+**Recorded as an exception rather than presented as ordinary scope**: this is a
+named, narrow, deliberate exception to this phase's `cred.rs` fence, granted on
+`19-23`'s standard. **ZERO non-doc lines changed**, verified by
+`git diff --unified=0` over the file filtered for lines that are not `///`
+returning **0**. `T-19-61` … `T-19-73` are NOT taken on; `config_env`,
+`hooks_path_env`'s body, `write_gitconfig`, `build_env_in` and `EnvelopeEnv` were
+not opened.
+
+### The `RESTORATION of layer 3's catch` correction — recorded BESIDE, never as an edit
+
+The claim that closing `T-19-103` is a **RESTORATION of layer 3's catch** appears
+in the plan-19-22 record, the plan-19-23 record and `19-23-SUMMARY.md`. **It is
+true only for an alias body carrying no carrier of its own.** When the body carries
+its own carrier the catch is ABSENT — measured in `policy.rs`'s own pin, where a
+`!` body with no carrier resolves `/ENV_WINS` (the child inherits) while the same
+body carrying `-c include.path=<f>` in its own command line resolves
+`/INCLUDE_WINS`.
+
+**Those three documents are NOT edited.** The correction is recorded here, beside
+them, which is the provenance discipline audits 7 and 8 both used for this exact
+shape. `19-24-SUMMARY.md` is likewise not edited.
+
+### `T-19-106` — both halves closed
+
+**The `gh api` pin, written and running.** All seventeen `GH_API_VALUE_OPTS`
+entries answer ``flag needs an argument`` against real `gh` 2.45.0, probed
+**ENDPOINT-LESSLY** (`gh api <opt>`) so **no row touches the network** — the
+endpoint-bearing spelling `gh api repos/o/r --paginate` is measured to make a real
+HTTP request, which would make the pin non-hermetic and fail-open without network
+or auth. **Both negative controls, with their MEASURED strings pinned rather than
+paraphrased:**
+
+```
+gh api --bogus-opt   -> unknown flag: --bogus-opt
+gh api --paginate    -> accepts 1 arg(s), received 0
+```
+
+The second is a **POSITIONAL** error rather than a flag-level one, which is
+precisely why it is the right control: `gh` **accepted** `--paginate`, consumed
+**no** value for it, and got as far as complaining about the missing endpoint —
+the *exists-and-requires-no-value* answer the classifier must be held to. Without
+it the pin passes on a probe reporting *needs an argument* for everything, the
+vacuity `19-23`'s `CONFIG_VALUE_OPTS` redesign exists to exclude. **Provenance:
+both plans first described this as a flag-level answer and a plan-check measured
+it and corrected them**, which is why the string is pinned and the description is
+not. The pin does not skip when `gh` is absent, and it records that the reason for
+its earlier absence was a fact about a **different callee**.
+
+**`--hostname` is KEPT in `FORGE_VALUE_OPTS` — a correction to audit 8's own
+suggestion, measured.** Re-measured against the built binary at this plan's base:
+
+```
+glab --hostname gitlab.com mr create --title x   -> exit 0, exactly ONE pr-ledger line
+glab --host     gitlab.com mr create --title x   -> exit 0, ZERO pr-ledger lines
+```
+
+Removing the entry moves a **counted** creation form to **UNCOUNTED** — the
+under-counting direction the cap exists to prevent (`T-19-35`). **The entry is
+asymmetric by construction and the doc says so**: `gh pr create --hostname` answers
+``unknown flag: --hostname``, so it is **INERT for `gh`** and **load-bearing for
+`glab`**, whose callee is **UNCONFIRMED because `glab` is not installed**
+(re-verified: `command -v glab` finds nothing). That is the whole difference from
+`--comment` and `--super-prefix`, which were removed because the callee that does
+run rejects them. **The `gh` half is pinned two-sided; the `glab` half CANNOT be
+pinned on this machine and is NOT** — a pin that skips is a fail-open pin. The
+`glab --host` cell is carried forward **UNFIXED**, and `subcommand_word_indices` is
+not otherwise touched.
+
+### A FINDING this plan MADE and did NOT fix — region 2's operand grammar
+
+**It is NOT `T-19-108`, and it is registered rather than closed.**
+
+`scan_config`'s walk treats any word beginning with `-` as an OPTION. **Git 2.43.0
+does not agree**: once the KEY operand has been seen, the next word is the VALUE
+whatever its first byte is. Measured against real git with both config pointers at
+an empty file:
+
+```
+git config alias.x -q                    -> exit 0, alias.x=-q
+git config alias.y --global              -> exit 0, alias.y=--global
+git config alias.z -- -c foo             -> exit 0, alias.z=--
+git config core.hooksPath -c             -> exit 0, core.hooksPath=-c
+```
+
+**Measured against the BUILT BINARY**, the consequence for the guard:
+
+```
+exit 2 hook_bypass_blocked   git config core.hooksPath /dev/null
+exit 2 hook_bypass_blocked   git config core.hooksPath -
+exit 0                       git config core.hooksPath -c        <- BYPASS
+exit 0                       git config core.hooksPath --        <- BYPASS
+```
+
+So **plan 19-02's by-name `core.hooksPath` deny at region 2 is reachable past by
+any value whose first byte is `-`, other than a bare `-`** (which `scan_config`
+collects as an operand). This is a gap in region 2's **operand grammar**, not in
+the re-parse question.
+
+**It blocked this plan's mandated region-2 gate and forced a derivation.**
+`T-19-108`'s HEADLINE persisted row is `git config alias.p '-c include.path=<f>
+…'`, whose value begins with `-`, so `is_write` is FALSE for it and a clause gated
+on `is_write` would have been blind to the one row it exists for. The re-parse
+clause therefore gates on `!is_read` plus a **VALUE WORD**, read through the new
+`ConfigScan::value_word`, indexed off `key_operand`'s own index into the same walk.
+`config_key_operand_index` is unchanged.
+
+**`is_write` itself was deliberately NOT widened.** Correcting it moves verdicts
+for keys outside this round's class with **no corpus able to fail on them**, and
+this phase's whole discipline is that a rule is written against a corpus observed
+RED first. The rows are **RECORDED, never asserted** — in
+`tests/envelope_reparsed_value.rs::the_region_2_operand_grammar_gap_is_recorded_by_19_25_and_is_not_closed_by_it`
+— because asserting them PERMITTED would pin a bypass as correct and asserting
+them REFUSED would pin a verdict this round did not produce, which is `19-22`'s
+failure mode. Registered in `deferred-items.md` as **`T-19-110`, OPEN at `high`**.
+
+### A probe error, recorded rather than hidden
+
+The K2 arm of the `REPARSED_COMMAND_SECTIONS` real-git pin was first written with
+the body `!git -c include.path=<f> config --get core.hooksPath` and measured
+`/INCLUDE_WINS`. **That was not a contradiction of the `!` carve-out** — it is
+fail-open direction (ii), a `!` body carrying its OWN carrier, which is `T-19-86`.
+The INHERITANCE fact needs a body whose own command line carries nothing. Both are
+now pinned as separate arms. Recorded because a probe error that looks like a
+finding is exactly the shape that gets asserted by mistake, which is why `19-24`
+recorded its own.
+
+### The mechanism pins and the anti-vacuity floors, re-measured
+
+Rounds 5, 6, 7 and 8's mechanisms are all non-dead and green. `SEPARATORS` is
+**byte-identical** and `policy::is_separator(">")` is `false`. `Token.literal`,
+`Token.expansion`, `Token.word_splitting_flush`, `Token.brace_splice`,
+`Segment.head_is_command_position` and `Segment.redirection_unresolvable` are
+unchanged. Round 8's confinement clause is non-dead with both discrimination
+controls green.
+
+| | measured at this plan's end | floor |
+|---|---|---|
+| `policy.rs` production half | **261,386** bytes | `POLICY_MIN_PRODUCTION_BYTES = 40_000`, proportional `>= 180_000` |
+| `hooks.rs` production half | **74,357** bytes | `HOOKS_MIN_PRODUCTION_BYTES = 20_000` |
+| deep anchor | `fn forbidden_repo_path` at production line **5,141** of **5,162** | present |
+| sentinel | exactly **ONE** `#[cfg(test)]`, at line **5,163** | count asserted |
+
+All three stripper protections keep their present strictness; both byte floors keep
+their values; nothing was lowered. This plan only GREW the production half.
+
+`policy.rs`'s stale proportional-floor comment is **not touched** — it was already
+recorded as documentation drift by `19-24` and this plan was not assigned it; it is
+now staler, since the production half grew from 228,101 to 261,386 bytes.
+
+### The gate
+
+`rtk proxy cargo test --no-fail-fast`, counts read with `rtk proxy grep` over a
+redirected log (D-34).
+
+| | |
+|---|---|
+| `19-24`'s recorded `passed + failed` | **1710** |
+| observed `passed + failed` | **1720** (1720 passed, **0** failed, 13 ignored) |
+| new `#[test]` fns, counted from `git show` | 3 + 5 + 2 = **10** |
+| identity | 1710 + 10 = **1720** ✓ no disagreement |
+
+**A red test RAN, so red→green leaves the total unchanged and every increase comes
+only from new `#[test]` fns.** **ZERO failures** — none of the three documented
+flakes fired, which is not evidence they are fixed. **All FIFTEEN `envelope_*`
+binaries RAN.** `cargo build` and `cargo clippy -- -D warnings` exit 0
+(`cargo clippy --tests` is NOT the gate and still fails at base on four
+pre-existing lints).
+
+`git diff --numstat` over `tests/` shows **294 insertions and ZERO deletions**
+across all four commits, and `tests/envelope_command_position.rs` and
+`tests/envelope_config_resolution.rs` show ZERO diff lines.
+
+### `T-19-17r` — still OUTSTANDING, and this plan did NOT accept it
+
+**No Accepted-Risks-Log row was added, no `AR-19-13` was created (verified: count
+0), and the word "accepted" is not applied to `T-19-17r` anywhere in this plan's
+artifacts.** Five audits and plans running have deliberately left the acceptance
+unmade because it is a human decision. The next round either adds the log row or
+drops the word from `19-17-SUMMARY.md`; this plan does neither.

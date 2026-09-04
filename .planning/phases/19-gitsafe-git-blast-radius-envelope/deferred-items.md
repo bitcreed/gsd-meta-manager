@@ -1609,3 +1609,145 @@ here and left for a later round.
 - **the three documented flakes** — the two `tests/driver_reattach.rs` failures and
   the `tests/envelope_tracer.rs` ETXTBSY stub-write race, all pre-existing,
   environmental and out of scope.
+
+## Plan 19-25 — the rules (round 9's second half)
+
+**`/gsd-secure-phase 19` is NOT cleared by this plan.** `T-19-86` and `T-19-91`
+both remain OPEN at `high`. Only the WRAPPER-OPERAND sub-class of `T-19-60` is
+closed.
+
+### `T-19-108` — a carrier inside a value the guard CONFINED — **CLOSED AS SCOPED**, `high`
+
+**Closed for the NON-SHELL alias body, in all three deliveries:**
+
+- the `-c` carrier and the `--config-env` carrier, by the RE-PARSE clause in
+  `scan_leading`'s existing assignment block — `REPARSED_COMMAND_SECTIONS` +
+  `config_key_names_a_reparsed_command_section` +
+  `reparsed_command_assignment_is_a_shell_body`, at
+  `ParkReason::EnvelopeAssertionFailed`, ordered after the confinement clause and
+  before `is_hooks_path_key`;
+- the PERSISTED write, by the same question asked at `classify_config`'s key
+  operand — the operand `is_hooks_path_key` already reads — with git's one-byte
+  rule applied to the VALUE WORD via `ConfigScan::value_word`;
+- at both keys the body can carry: `include.path` and `core.hooksPath` by name.
+
+**NOT CLOSED — and this arm stays OPEN under `T-19-86`:** a `!`-bodied alias body
+carrying its own carrier. `git config alias.q '!git -c include.path=<evil> push
+--force origin HEAD:refs/heads/main'` then `git q` — **audit 7's destructive pair
+STILL WORKS after this plan**, and it is asserted still working rather than
+described. A `!` body is a whole command line handed to a governed program as
+DATA, which is `T-19-86`: open at `high`, out of scope by explicit user decision,
+with both its rows pinned PERMITTED in files this plan may not edit.
+
+**Three fail-open directions, none with an automated control**: an `alias.*`
+already persisted where the guard never saw the write; the `!`-bodied arm above;
+and a future git that re-parses a SECOND config value as a git command line. All
+three are stated in the constant's doc, the predicate's doc, the refusal helper's
+doc and the plan-19-25 record, and **none is handed to a pin**. A revisit
+condition plus a non-skipping version witness was added to BOTH
+`INDIRECTION_SECTIONS` and `REPARSED_COMMAND_SECTIONS`; **the witness is a
+SCHEDULE, not a CONTROL** — it says WHEN to look and cannot say WHAT changed —
+so the residues stay uncovered. **No `AR-` row was added and no risk was
+accepted.**
+
+### `T-19-109` — the counted-completeness claim — **CLOSED**, `low`
+
+`cred.rs`'s `hooks_path_env` limit paragraph's counted "FIVE forms" table is
+replaced by a statement of the REGIONS each closure covers — the argv
+leading-option region, the environment, the `git config` write operand — and what
+is NOT covered, **counting nothing**. A named, narrow exception to this phase's
+`cred.rs` fence, changing **ZERO non-doc lines** (verified). The "RESTORATION of
+layer 3's catch" correction is recorded BESIDE the 19-22 and 19-23 subsections and
+`19-23-SUMMARY.md` rather than as an edit to any of them.
+
+### `T-19-106` — the drift pins' REACH — **CLOSED**, `medium`
+
+Both halves done. `GH_API_VALUE_OPTS` gets its two-sided pin over all seventeen
+entries against real `gh` 2.45.0, in the **ENDPOINT-LESS** probe form so no row
+touches the network, with **both** negative controls and their **measured strings**
+pinned rather than paraphrased (`unknown flag: --bogus-opt`; `accepts 1 arg(s),
+received 0`, a POSITIONAL error). It does not skip when `gh` is absent.
+**`--hostname` is KEPT in `FORGE_VALUE_OPTS`** with its measured reason recorded —
+removal is an under-counting regression (`T-19-35`), the entry is INERT for `gh`
+and load-bearing for `glab`. The `gh` half is pinned two-sided; the `glab` half
+cannot be pinned on this machine and is NOT.
+
+### `T-19-105` — the corpus could not draw the class — **CLOSED**, `medium`
+
+Closed by `19-24`'s sixth class on the existing config-resolution axis, which is
+what a corpus is for: it failed on this class before any production line moved,
+and this plan's clause is the rule it certified.
+
+### `T-19-110` — region 2's OPERAND GRAMMAR under-reads a dash-leading value — **OPEN**, `high`
+
+**NEW. Found by `19-25` while writing region 2, and NOT fixed by it.**
+
+`scan_config`'s walk treats any word beginning with `-` as an OPTION, so
+`is_write`'s classic-form test (`key_operand_count() >= 2`) does not see a VALUE
+whose first byte is `-`. Git 2.43.0 does not agree: once the KEY has been seen the
+next word is the VALUE whatever its first byte is. Measured against real git with
+both config pointers at an empty file:
+
+```
+git config alias.x -q         -> exit 0, alias.x=-q
+git config alias.y --global   -> exit 0, alias.y=--global
+git config core.hooksPath -c  -> exit 0, core.hooksPath=-c
+```
+
+Measured against the BUILT BINARY, the consequence is that **plan 19-02's by-name
+`core.hooksPath` deny at region 2 is reachable past**:
+
+```
+exit 2 hook_bypass_blocked   git config core.hooksPath /dev/null
+exit 2 hook_bypass_blocked   git config core.hooksPath -
+exit 0                       git config core.hooksPath -c
+exit 0                       git config core.hooksPath --
+```
+
+**This is NOT `T-19-108`** — it is a gap in region 2's operand grammar, not in the
+re-parse question. `19-25`'s re-parse clause is not blind to it (it reads
+`ConfigScan::value_word`, the WORD after the key), so the clause's own reach is
+complete; **the rest of the gap is not closed.**
+
+**Why it was not fixed here:** correcting it means widening `is_write`, which moves
+verdicts for keys outside this round's class with **no corpus able to fail on
+them**. The discipline this phase exists to enforce is that a rule is written
+against a corpus observed RED first, and that corpus does not exist yet. The rows
+are RECORDED (never asserted) in
+`tests/envelope_reparsed_value.rs::the_region_2_operand_grammar_gap_is_recorded_by_19_25_and_is_not_closed_by_it`,
+beside the two spellings the deny does reach.
+
+**The remedy shape for a future round:** write the RED corpus first — every
+`git config <key> <dash-leading-value>` spelling, both the `core.hooksPath` family
+and the discrimination controls — then correct the operand walk, not `is_write`'s
+threshold alone.
+
+### Unchanged and still OPEN at this plan's end
+
+- **`T-19-86`** — OPEN at `high` by explicit user scoping decision. Its four
+  registered rows and its persisted-alias arm still exit 0, its pins are green and
+  UNMODIFIED. **Recorded MEASURABLY WIDER than the register credits**, including
+  `T-19-108`'s unclosed `!`-bodied arm, and **audit 7's destructive pair still
+  works after this plan.** Not fixed, not narrowed, not re-scoped.
+- **`T-19-91`** — OPEN at `high`, arms unweakened, no decision-operand rule added
+  and no denylist extended.
+- **`T-19-96`** — left exactly as pinned by `19-16`.
+- **`T-19-74`** — core rows frozen.
+- **`T-19-84`, `T-19-85`, `T-19-61` … `T-19-73`** — open and unaccepted by explicit
+  user decision. The ONE named exception taken is `cred.rs`'s `hooks_path_env`
+  limit paragraph (doc only, zero non-doc lines); `advisory.rs`, `scan.rs`,
+  `config.rs`, `mod.rs` and `hooks.rs` were not opened.
+- **the `glab --host` forge cell** — carried forward UNFIXED. `command -v glab`
+  re-run and found nothing, so the callee's grammar is unconfirmed and it is NOT
+  claimed as a live bypass; a pin that skips is fail-open.
+- **`policy.rs`'s stale proportional-floor comment** — documentation drift,
+  recorded, not fixed; now staler, since the production half grew from 228,101 to
+  261,386 bytes.
+- **the `T-19-17r` bookkeeping gap** — still **OUTSTANDING**. `19-17-SUMMARY.md`
+  calls it "accepted"; audits 5 through 8 and plans 19-22 through 19-24 all
+  declined to make the acceptance. **This plan adds no Accepted-Risks-Log row,
+  creates no `AR-19-13` (verified: count 0), and does not apply the word
+  "accepted" to it**, because accepting a risk is a human decision.
+- **the three documented flakes** — the two `tests/driver_reattach.rs` failures and
+  the `tests/envelope_tracer.rs` ETXTBSY stub-write race. **None fired in this
+  plan's gate run**; absence is not evidence they are fixed.
