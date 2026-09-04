@@ -5449,8 +5449,13 @@ pub fn forbidden_repo_path(rel: &Path, contains_nested_git: bool) -> Option<Park
 /// repeated separators collapsed, and **no link followed and no filesystem
 /// consulted**.
 ///
-/// `None` for a word that is not ABSOLUTE, which is fail-open direction (iv) and
-/// is stated as such on the predicate below.
+/// `None` for a string that is not ABSOLUTE. **Note what that is and is not a
+/// statement about**: it is about the STRING this function was handed, not about
+/// the WORD the guard read. Since the interior scan below feeds it every
+/// `/`-anchored substring of a word, a word that is not itself absolute can still
+/// produce candidates this function answers `Some` for — which is why the
+/// predicate's residue is now stated over *a word whose TEXT carries no absolute
+/// path anywhere in it* rather than over *a word that is not absolute*.
 ///
 /// `..` at the root collapses to the root, exactly as a kernel path walk would:
 /// `/..` is `/`. That is textual too — the collapse never asks what `/` contains.
@@ -5475,6 +5480,62 @@ fn lexical_absolute_components(word: &str) -> Option<Vec<&str>> {
     Some(components)
 }
 
+/// Every `/`-ANCHORED SUBSTRING of one word's text — the candidate set both
+/// halves of [`protected_carrier_named`]'s path set are now applied over.
+///
+/// # WHAT IT IS FOR: A WORD CAN CARRY A PATH WITHOUT BEING ONE
+///
+/// [`lexical_absolute_components`] asks whether the WORD begins with `/`. That is
+/// one character short of what a shell word can carry: `dd of=/p`, `tar -C/p`,
+/// `cp -t/p`, `rsync host:/p`, `PATH=/usr/bin:/p` and `R=/p` all deliver `/p` to
+/// the program while the WORD begins with `d`, `-`, `h`, `P` or `R`. This
+/// function turns the word into the candidates that reading requires, and asks
+/// **nothing whatever about what precedes a `/`**.
+///
+/// # WHY IT IS NOT A LIST OF ATTACHMENT CHARACTERS
+///
+/// **Because a character list is a PROGRAM-GRAMMAR ENUMERATION, and that is
+/// D-08's defect one level over.** `dd`'s `of=` is not an option at all — it is
+/// that program's OPERAND grammar. `tar -C/p` attaches with nothing. `rsync
+/// host:/p` attaches with a `:`. `--opt=a=/p` attaches after a SECOND `=`. A
+/// predicate that asked what precedes a `/` would have to know every program's
+/// grammar, which is exactly what [`resolve_program`] never asks and what
+/// `wrapper_names_the_fix_must_not_know_are_absent_from_the_production_logic`
+/// forbids one level over. Asking only *does this word's text contain an absolute
+/// path* is a lexical fact about the WORD and about no program.
+///
+/// # CONTAINMENT, STATED PRECISELY RATHER THAN APPROXIMATELY
+///
+/// It is **not** the shorthand *"`i == 0` is today's rule"*.
+/// [`lexical_absolute_components`] strips leading `./`s **before** it tests
+/// `starts_with('/')`, so `.//abs/p` is accepted today at no `/`-index of its own.
+/// The exact statement is: **for every word today's rule answers `Some(v)` for,
+/// the string it actually NORMALISES — the word with its leading `./`s stripped —
+/// begins with `/`, is therefore itself one of these candidates, and re-normalises
+/// to exactly `v`.** The candidate set contains today's answer BYTE FOR BYTE, and
+/// the `./` strip can only ADD answers (`./abs` is `None` today and yields `[abs]`
+/// here), never remove one. **So no refusal that exists today can be lost, and the
+/// reason is containment of the NORMALISED STRING rather than of the index.**
+///
+/// # WHY THE COST IS BOUNDED BY THE PATH SET RATHER THAN BY THE SPLIT
+///
+/// Splitting produces more CANDIDATES; a candidate is refused only if it prefixes
+/// the envelope directory component-wise ([`word_is_within`]) or EQUALS the
+/// guard's own binary ([`word_is_exactly`]). `word_is_within` returns early on
+/// `word.len() < dir.len()` over COMPONENT VECTORS, so a short candidate can never
+/// match a directory of three or more components; `word_is_exactly` requires full
+/// equality against a full binary path. `sed s/x/y/` yields `[x, y]`, `[y]` and
+/// `[]`; `https://github.com/o/r` yields `[github.com, o, r]` and shorter;
+/// `HEAD:refs/heads/gsd-auto/alpha/w` yields `[heads, gsd-auto, alpha, w]`;
+/// `--git-dir=/tmp/g` yields `[tmp, g]`. **None of them can match, and the
+/// over-refusal surface is therefore exactly the one stated in
+/// [`protected_carrier_named`]'s disclosed cost.**
+fn slash_anchored_candidates(word: &str) -> impl Iterator<Item = &str> {
+    word.char_indices()
+        .filter(|(_, character)| *character == '/')
+        .map(|(index, _)| &word[index..])
+}
+
 /// Whether one WORD names a path that is, or sits under, `envelope_dir` — the
 /// **PREFIX** half of [`protected_carrier_named`]'s path set, split out so the
 /// unit pins can drive the path conditions without building a [`Token`] for each.
@@ -5488,10 +5549,15 @@ fn lexical_absolute_components(word: &str) -> Option<Vec<&str>> {
 /// measured rather than aesthetic: this envelope owns every byte under this
 /// directory, and `rm -rf <root>/<alias>` takes nine carriers in one call. See
 /// [`word_is_exactly`] for the boundary that must NOT be written this way.
+///
+/// **The comparison is applied over every [`slash_anchored_candidates`] candidate
+/// of the word rather than over the word alone**, because a word can carry a path
+/// without being one — `tar -C<dir>` and `dd of=<dir>/x` deliver the directory to
+/// the program while the word begins with `t` and `o`. The NORMALISATION and the
+/// COMPARISON are unchanged; only the set of strings they are applied to grew, and
+/// it grew by a set that CONTAINS the old one (see the containment paragraph on
+/// [`slash_anchored_candidates`]), so no answer of `true` can be lost.
 fn word_is_within(word: &str, envelope_dir: &Path) -> bool {
-    let Some(word) = lexical_absolute_components(word) else {
-        return false;
-    };
     let envelope_text = envelope_dir.to_string_lossy();
     let Some(dir) = lexical_absolute_components(&envelope_text) else {
         // A relative envelope directory names nothing this predicate can bound.
@@ -5500,10 +5566,23 @@ fn word_is_within(word: &str, envelope_dir: &Path) -> bool {
         // panicking on a shape the caller must already have refused.
         return false;
     };
-    if dir.is_empty() || word.len() < dir.len() {
+    if dir.is_empty() {
         return false;
     }
-    word[..dir.len()] == dir[..]
+    slash_anchored_candidates(word).any(|candidate| {
+        let Some(word) = lexical_absolute_components(candidate) else {
+            return false;
+        };
+        // The early return over COMPONENT VECTORS, unchanged and applied PER
+        // CANDIDATE: it is the mechanical reason the interior scan costs nothing.
+        // A candidate shorter than a three-or-more-component envelope directory
+        // cannot match it at all, which is what keeps `sed s/x/y/`,
+        // `https://github.com/o/r` and `rm -f /tmp/pr-ledger.ndjson` permitted.
+        if word.len() < dir.len() {
+            return false;
+        }
+        word[..dir.len()] == dir[..]
+    })
 }
 
 /// Whether one WORD names **exactly** `file` — the **EXACT-PATH** half of
@@ -5530,10 +5609,17 @@ fn word_is_within(word: &str, envelope_dir: &Path) -> bool {
 /// A `file` that normalises to the root itself answers `false` rather than
 /// matching `/`: a protected path of `/` would refuse every absolute word on the
 /// line, which is not a boundary, it is an outage.
+///
+/// **The equality is applied over every [`slash_anchored_candidates`] candidate of
+/// the word rather than over the word alone**, for the reason
+/// [`word_is_within`] states: `dd if=/bin/true of=<binary>` and
+/// `tar --directory=<binary>` name the binary while the word begins with `o` and
+/// `-`. **The EQUALITY itself does not widen** — a candidate naming a SIBLING of
+/// the binary can never equal the full binary path, which is what keeps
+/// `cp /bin/true <parent>/some-other-file`, `ls <parent>` and
+/// `PATH=/usr/bin:<parent> mytool` permitted in the attached spellings as well as
+/// in the separated ones.
 fn word_is_exactly(word: &str, file: &Path) -> bool {
-    let Some(word) = lexical_absolute_components(word) else {
-        return false;
-    };
     let file_text = file.to_string_lossy();
     let Some(file) = lexical_absolute_components(&file_text) else {
         // A relative binary path names nothing this predicate can compare
@@ -5543,7 +5629,11 @@ fn word_is_exactly(word: &str, file: &Path) -> bool {
         // `protected_carrier_named`'s own signature.
         return false;
     };
-    !file.is_empty() && word == file
+    if file.is_empty() {
+        return false;
+    }
+    slash_anchored_candidates(word)
+        .any(|candidate| lexical_absolute_components(candidate).is_some_and(|word| word == file))
 }
 
 /// Which protected path a command named, if it named one.
@@ -5612,11 +5702,20 @@ pub enum ProtectedPath {
 ///
 /// # FOUR CONDITIONS, AND EACH IS A BOUNDARY RATHER THAN A CONVENIENCE
 ///
-/// * **ABSOLUTE**, because the guard has no cwd. `guard_in` takes a
-///   `project_root: Option<&Path>` from [`super::cred::PROJECT_ROOT_ENV`], which is the
-///   JOURNAL locator and not the shell's working directory, and there is no other
-///   source. A rule that guessed would be wrong for exactly the commands it
-///   matters for.
+/// * **THE WORD'S TEXT MUST CARRY AN ABSOLUTE PATH SOMEWHERE**, because the guard
+///   has no cwd. `guard_in` takes a `project_root: Option<&Path>` from
+///   [`super::cred::PROJECT_ROOT_ENV`], which is the JOURNAL locator and not the
+///   shell's working directory, and there is no other source. A rule that guessed
+///   would be wrong for exactly the commands it matters for. **This condition used
+///   to read *"the WORD must BE absolute"*, and that was one character short of
+///   what a shell word can carry**: `dd of=/p`, `tar -C/p`, `cp -t/p`,
+///   `rsync host:/p`, `PATH=/usr/bin:/p` and `R=/p` all deliver `/p` to the
+///   program while the word begins with something else. The condition is now
+///   applied over every [`slash_anchored_candidates`] candidate of the word, so it
+///   asks whether the TEXT carries an absolute path and never what precedes a `/`
+///   — which is a lexical fact about the WORD and about no program, and is why it
+///   is not a list of attachment characters (see that function's own doc for the
+///   D-08 argument).
 /// * **LITERAL** ([`Token::literal`]), because a word the shell may rewrite is a
 ///   word the guard cannot resolve — and refusing every non-literal operand of an
 ///   UNGOVERNED command would deny `rm $TMPDIR/x` and `cp "$SRC" "$DST"`, which is
@@ -5627,6 +5726,15 @@ pub enum ProtectedPath {
 ///   that already parses the target ([`skip_redirection_target`]). **So a change
 ///   that cleared, repurposed or widened it would silently move THREE rules at
 ///   once**, as well as turning rounds 5 and 6's verdict pins vacuous.
+///   **THE FILTER STILL RUNS FIRST, AND THAT ORDER IS LOAD-BEARING NOW THAT THE
+///   TEXT IS SCANNED AT EVERY OFFSET.** A candidate is never produced from a word
+///   the shell may rewrite: the interior scan reads a word's text at any offset,
+///   but only after that word has already been established as one the shell will
+///   deliver unchanged. A scan applied BEFORE the filter would refuse
+///   `rm ~/x`, `rm <env>/alph?` and `rm ${ROOT}/alpha/x` — every tilde, glob,
+///   brace and expansion-borne spelling in both word classes — all of which are
+///   pinned PERMITTED, and none of which the guard can resolve without reading the
+///   environment or the filesystem.
 /// * **LEXICALLY NORMALISED, WITH NO LINK FOLLOWED.** `.` dropped, repeated
 ///   separators collapsed and `..` collapsed TEXTUALLY — which is what catches
 ///   `<env>/<alias>/hooks/../pr-ledger.ndjson`, the shape audit 9's own composite
@@ -5661,73 +5769,105 @@ pub enum ProtectedPath {
 /// fail-closed default. Its SILENCE IS A PERMIT**, exactly as
 /// [`INDIRECTION_SECTIONS`]'s is.
 ///
-/// **THE CONDITION, WHICH IS THE HONEST FORM OF IT.** This predicate is silent
-/// about a word the SHELL MAY REWRITE, about a word that IS NOT ABSOLUTE, and
-/// about a word that reaches a protected path ONLY THROUGH A LINK — **and it is
-/// silent about all three in EITHER word class and over BOTH paths.** The
-/// spellings below are INSTANCES of that condition and are not a complete list;
-/// a list that stopped would imply a completeness the measurement denies, which
-/// is `T-19-107`'s registered shape in a shorter sentence. **Round 5's own
+/// **THE CONDITION, WHICH IS THE HONEST FORM OF IT — AND IT IS STATED OVER WHAT
+/// THIS PREDICATE READS, WITH NO COUNT.**
+///
+/// > **This predicate reads every `/`-ANCHORED SUBSTRING of every LITERAL word, in
+/// > either word class, against both paths. It is silent about a word the SHELL
+/// > MAY REWRITE, because the guard cannot know its final text; about a word whose
+/// > TEXT CARRIES NO ABSOLUTE PATH ANYWHERE, because there is nothing in it to
+/// > normalise; and about a word that reaches a protected path ONLY THROUGH A
+/// > LINK, because no lexical reading of the text names it.**
+///
+/// **NO COUNT IS WRITTEN, AND THAT IS DELIBERATE.** This paragraph used to say
+/// *"SEVEN spellings are MEASURED"* and, before that, *"four"*. Each number was
+/// correct only until the next round found a spelling it had not, and a count is a
+/// completeness claim the measurement cannot support — `T-19-107`'s registered
+/// shape in a shorter sentence. The condition above is checkable against the code;
+/// a count is a fact about how hard someone looked. **The spellings below are
+/// INSTANCES of the condition and are not a list of it.**
+///
+/// **AND ONE CHARACTER OF THE CONDITION MOVED THIS ROUND, UNDER THE WR-02
+/// DISCIPLINE.** The second clause used to read *"a word that IS NOT ABSOLUTE"*.
+/// That was true of the code when it was written — [`lexical_absolute_components`]
+/// was applied to the WORD — and it is false of the code now: the scan reads the
+/// word's TEXT at every `/`, so a word that is not itself absolute can still carry
+/// an absolute path this predicate reaches. The clause is now
+/// *"a word whose TEXT carries no absolute path anywhere in it."*
+///
+/// **INSTANCES OF THE FIRST CLAUSE — a word the shell may rewrite.** Round 5's own
 /// literalness table names EXPANSION, PATHNAME, TILDE and BRACE as the classes
-/// that clear [`Token::literal`], so this rule inherits that whole class list by
-/// construction rather than by enumeration.**
+/// that clear [`Token::literal`], so this predicate inherits that whole class list
+/// by construction rather than by enumeration.
 ///
-/// **SEVEN spellings are MEASURED, and not one of them has an automated
-/// control:**
+/// * **An EXPANSION-BORNE word cannot be resolved.**
+///   `D=$(git config --get core.hooksPath); rm -f $D/../pr-ledger.ndjson` — audit
+///   9's own composite — and `cp /bin/true $(command -v gsd-meta-manager)` one
+///   path over. Note what it actually is: the carrier's location is fetched by a
+///   **PERMITTED GOVERNED READ** (`git config --get` resolves `Governed` and is
+///   allowed) and then acted on by an ungoverned command. **NARROWED by this round
+///   in ONE direction only**: `R=<env>/<alias>; rm -rf $R` is now refused at the
+///   ASSIGNMENT, because that is where the path is literal — but a value the
+///   shell produced is not.
+/// * **A TILDE.** `rm -rf ~/.local/share/gsd-meta-manager/envelope/<alias>` is
+///   permitted while its absolute twin is refused, measured. **No rule is written
+///   for this and none can be**: resolving a tilde needs the ENVIRONMENT, which
+///   this guard may not read at guard time.
+/// * **A GLOB.** `rm -rf <env>/alph?` takes nine carriers in one call. **No rule
+///   is written for this and none can be**: resolving a glob needs the FILESYSTEM,
+///   which the latency and TOCTOU rules below forbid.
+/// * **A BRACE LIST.** `rm -f <env>/<alias>/{pr-ledger.ndjson,x}`. No rule, for
+///   the same reason as the tilde and the glob — and in redirection-target
+///   position bash answers `ambiguous redirect` and reaches no file at all,
+///   measured, so that one is a permit that costs nothing.
 ///
-/// 1. **A REDIRECTION whose target is any of the six below.** **NARROWED by this
-///    round and explicitly NOT CLOSED.** An ABSOLUTE LITERAL pathname target
-///    under either protected path is now refused — the path travels on
-///    [`Segment::redirection_targets`], produced by the walk that already skips
-///    it. So direction (i) stops being a direction of its own and becomes a
-///    **second WORD CLASS the other six apply over**. `SEPARATORS` did not move,
-///    `is_separator(">")` is still `false`, no token entered the stream, and
-///    round 6's over-deletion control still pins
-///    `git x2>/tmp/o push --force origin main` PERMITTED.
-/// 2. **An EXPANSION-BORNE word cannot be resolved.**
-///    `D=$(git config --get core.hooksPath); rm -f $D/../pr-ledger.ndjson` — audit
-///    9's own composite — and `cp /bin/true $(command -v gsd-meta-manager)` one
-///    path over. Note what it actually is: the carrier's location is
-///    fetched by a **PERMITTED GOVERNED READ** (`git config --get` resolves
-///    `Governed` and is allowed) and then acted on by an ungoverned command.
-/// 3. **A SYMLINK is not followed.** `..` is collapsed lexically; a link is not.
-///    **NARROWED, and the word is NARROWED rather than closed**: `ln -s <env>/…
-///    /tmp/l` names an envelope path as the link command's OWN operand and IS
-///    refused, so a link must PREDATE the run or be made by a means that names no
-///    envelope path. **Over the BINARY there is no such partial mitigation**: a
-///    link on `PATH` whose target `current_exe()` reports is a third string
-///    neither half of the path set covers.
-/// 4. **A RELATIVE word is not resolved**, because the guard has no cwd.
-///    **NARROWED over the DIRECTORY and not over the binary**: `cd <env>/<alias>`
-///    names an envelope path as its own operand and is refused, and the
-///    two-segment composite `cd <env>/<alias> && rm -f pr-ledger.ndjson` is
-///    refused BY SEGMENT ONE — while `cd <binary-parent>` names a directory the
-///    exact-path clause deliberately does not cover, so segment one is not a
-///    mitigation there at all.
-/// 5. **A TILDE.** `rm -rf ~/.local/share/gsd-meta-manager/envelope/<alias>` is
-///    permitted while its absolute twin is refused, measured. **No rule is
-///    written for this and none can be**: resolving a tilde needs the
-///    ENVIRONMENT, which this guard may not read at guard time.
-/// 6. **A GLOB.** `rm -rf <env>/alph?` takes nine carriers in one call.
-///    **No rule is written for this and none can be**: resolving a glob needs the
-///    FILESYSTEM, which the latency and TOCTOU rules below forbid.
-/// 7. **A BRACE LIST.** `rm -f <env>/<alias>/{pr-ledger.ndjson,x}`. No rule, for
-///    the same reason as 5 and 6 — and in redirection-target position bash
-///    answers `ambiguous redirect` and reaches no file at all, measured, so that
-///    one is a permit that costs nothing.
+/// **INSTANCES OF THE SECOND CLAUSE — a word whose text carries no absolute path
+/// anywhere.**
 ///
-/// **Each silence now applies over TWO word classes and TWO paths. The path set
-/// grew, the word set grew, and the silences did NOT shrink.** Saying *"direction
-/// (i) is closed"* would be false and saying *"it is unreachable"* would be the
-/// sentence measurement disproved. **NARROWED is the word.**
+/// * **A RELATIVE word is not resolved**, because the guard has no cwd, and it is
+///   this clause rather than the first that covers it: `pr-ledger.ndjson` carries
+///   no `/` at all, and `./alpha/pr-ledger.ndjson` yields only candidates too
+///   SHORT to prefix a three-component envelope directory. **NARROWED over the
+///   DIRECTORY and not over the binary**: `cd <env>/<alias>` names an envelope
+///   path as its own operand and is refused, and the two-segment composite
+///   `cd <env>/<alias> && rm -f pr-ledger.ndjson` is refused BY SEGMENT ONE —
+///   while `cd <binary-parent>` names a directory the exact-path clause
+///   deliberately does not cover, so segment one is not a mitigation there at all.
 ///
-/// # NO REVISIT CONDITION AND NO VERSION WITNESS IS CREATED FOR ANY OF THESE
+/// **INSTANCES OF THE THIRD CLAUSE — a word that reaches a protected path only
+/// through a link.**
+///
+/// * **A SYMLINK is not followed.** `..` is collapsed lexically; a link is not.
+///   **NARROWED over the directory, and the word is NARROWED rather than closed**:
+///   `ln -s <env>/… /tmp/l` names an envelope path as the link command's OWN
+///   operand and IS refused, so a link must PREDATE the run or be made by a means
+///   that names no envelope path. **Over the BINARY there is no such partial
+///   mitigation**: a link on `PATH` whose target `current_exe()` reports is a
+///   third string neither half of the path set covers.
+///
+/// **AND THE REDIRECTION CHANNEL IS NOT A DIRECTION OF ITS OWN.** Round 11 made an
+/// ABSOLUTE LITERAL pathname target under either protected path refused — the path
+/// travels on [`Segment::redirection_targets`], produced by the walk that already
+/// skips it — so it stopped being a silence and became **a second WORD CLASS the
+/// whole condition applies over**. `SEPARATORS` did not move, `is_separator(">")`
+/// is still `false`, no token entered the stream, and round 6's over-deletion
+/// control still pins `git x2>/tmp/o push --force origin main` PERMITTED.
+///
+/// **The condition applies over TWO word classes and TWO paths. The path set grew,
+/// the word set grew, the words are now read at every offset, and the condition
+/// did NOT shrink.** Saying *"the interior spellings are closed"* would be false
+/// and saying *"they are unreachable"* would be the sentence measurement
+/// disproved. **NARROWED is the word.**
+///
+/// # NO REVISIT CONDITION AND NO VERSION WITNESS IS CREATED FOR THE CONDITION OR
+/// FOR ANY INSTANCE OF IT
 ///
 /// **And that is a decision with a reason, not an omission.**
 /// [`CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION`] schedules a human
 /// re-audit against a FUTURE GIT, which is the right shape for a residue that
-/// arrives when someone else ships something. **All seven are reachable by the
-/// driven agent TODAY.** A schedule over them would observe the wrong thing
+/// arrives when someone else ships something. **Every clause of the condition
+/// above, and every instance of it named here, is reachable by the driven agent
+/// TODAY.** A schedule over them would observe the wrong thing
 /// entirely — a version string that never moves while the residue is exercised —
 /// and attaching one would be `T-19-107`'s shape arriving in the round that
 /// inherited the lesson. They are stated here, in the refusal's doc, in
@@ -5742,6 +5882,20 @@ pub enum ProtectedPath {
 /// The guard cannot tell a read from a write without knowing every program's
 /// grammar — is `dd if=X of=Y` a read of `X` or a write of `Y`? is `tee F` a
 /// read? — and an enumeration that tried would be a program-name list again.
+///
+/// **A WR-02 NOTE ON THAT `dd` EXAMPLE, BECAUSE IT WAS FALSE OF THIS CODE WHEN IT
+/// WAS WRITTEN.** The sentence cites `dd if=X of=Y` as a command whose direction
+/// the guard cannot tell and therefore refuses either way. It was right-SOUNDING
+/// because the ambiguity it describes is real; it was FALSE about this code,
+/// because until the interior scan landed, `dd if=<ledger> of=/tmp/stolen` was
+/// **exit 0 — measured** — so the guard refused it NEITHER way and the example
+/// illustrated nothing. What made it false is the boundary this round moved: the
+/// path sat after an `=` inside a word, and the rule read only words that BEGAN
+/// with `/`. What makes it true now is that the same word's `/`-anchored
+/// candidates are read, so both the `if=` and the `of=` spelling reach the path
+/// set and both are refused — which is exactly the "either way" the sentence
+/// claims. `tee F`, beside it, was refused throughout.
+///
 /// **The permitted twin is that the path can still be NAMED**:
 /// `git config --get core.hooksPath` stays at exit 0 and reports the directory,
 /// and the refusal below names it too, so a human debugging a run loses nothing
@@ -5757,6 +5911,38 @@ pub enum ProtectedPath {
 /// rather than a prefix, `ls <binary-parent>`, `cargo install` into that
 /// directory and every sibling file in it stay permitted, which is the whole
 /// reason that half is written as an equality.
+///
+/// **THE COST THE INTERIOR SCAN ADDED, STATED IN ITS GENERAL FORM RATHER THAN BY
+/// ITS EASIEST INSTANCE.** Reading a word at every `/` means the word need not be
+/// a path for its text to be read as one:
+///
+/// > **Any word whose text contains THIS RUN'S OWN envelope directory or THIS
+/// > RUN'S OWN binary path as a `/`-anchored substring is now refused — EVEN WHERE
+/// > THE PROGRAM WOULD NOT HAVE USED THAT SUBSTRING AS A PATH.** As a value, a
+/// > pattern, a commit message, a URL fragment, or a relative path that merely
+/// > happens to contain it.
+///
+/// **It fails CLOSED, and it is bounded** — not by the split, which produces many
+/// candidates, but by the PATH SET, which accepts almost none of them. A candidate
+/// is compared only against this run's own directory and this run's own binary;
+/// [`word_is_within`] returns early over COMPONENT VECTORS on
+/// `word.len() < dir.len()` and [`word_is_exactly`] demands full equality. So the
+/// surface is not *"words containing a slash"* — it is *"words containing THESE
+/// TWO PATHS"*, and it is the same family as `cat <ledger>` being refused above.
+/// Measured instances, which sit UNDER the surface rather than describing it:
+///
+/// * a RELATIVE word that textually contains the carrier path — the most reachable
+///   of them, and the one that shows the surface is about TEXT and not about
+///   position;
+/// * a URL whose `#`-fragment contains it, which reaches the path set although no
+///   program would ever open that substring. **Its `?`-spelling does NOT**, and the
+///   difference is instructive rather than incidental: `?` is a pathname-expansion
+///   metacharacter, so [`Token::literal`] is false and the scan never runs on the
+///   word at all. **That is why this surface must be described over what the
+///   predicate READS rather than over what a URL looks like.**
+///
+/// **Written down here rather than met later**, which is the whole difference
+/// between a cost and a defect.
 ///
 /// # THE REJECTED OPTIONS, COSTED
 ///
@@ -5852,7 +6038,9 @@ pub fn envelope_carrier_refusal(matched: ProtectedPath, path: &Path) -> String {
              in — the pull-request ledger, the hook stubs and the generated git configuration — \
              so what those controls will be while the command runs cannot be established from \
              this command line, and it is refused rather than guessed at. The path is read \
-             whether it stands as an operand or after a redirection operator. To proceed: name \
+             whether it stands alone as a word, is carried INSIDE a longer word — after an \
+             option's `=`, attached to a short option, or after any other character — or \
+             follows a redirection operator. To proceed: name \
              a path outside that directory. The envelope's own files are not this run's to read \
              or write, and `git config --get core.hooksPath` still reports the directory for a \
              human debugging the run",
@@ -5862,7 +6050,9 @@ pub fn envelope_carrier_refusal(matched: ProtectedPath, path: &Path) -> String {
             "this command names `{}`, the binary this run's own guard and hook stubs are \
              executed from — so what will judge the commands after it cannot be established \
              from this command line, and it is refused rather than guessed at. The path is read \
-             whether it stands as an operand or after a redirection operator. To proceed: name \
+             whether it stands alone as a word, is carried INSIDE a longer word — after an \
+             option's `=`, attached to a short option, or after any other character — or \
+             follows a redirection operator. To proceed: name \
              a path other than that one file; the directory it sits in is not protected and \
              every other file in it is untouched by this refusal. `command -v` still reports \
              the path for a human debugging the run",
@@ -9716,8 +9906,18 @@ mod tests {
             ),
             (
                 "./alpha/pr-ledger.ndjson",
-                "relative again, with the leading `./` the normaliser strips: stripping it must \
-                 not turn a relative word into an absolute one",
+                "relative again — and **the REASON changed under the widened rule while the \
+                 ANSWER did not, so this comment is a WR-02 correction rather than a moved \
+                 assertion**. It used to say *\"stripping the leading `./` must not turn a \
+                 relative word into an absolute one\"*, which was true of the code that read \
+                 only the WHOLE word. It is false of the code now: the scan reads every \
+                 `/`-anchored substring, so this relative word DOES yield the absolute \
+                 candidates `/alpha/pr-ledger.ndjson` and `/pr-ledger.ndjson`. It still answers \
+                 `false` for a DIFFERENT reason — the longest of those candidates normalises to \
+                 TWO components against the envelope directory's THREE, and `word_is_within` \
+                 returns early on `word.len() < dir.len()`. **A relative word whose candidate IS \
+                 long enough answers `true`, and that row is pinned immediately below as the \
+                 disclosed over-refusal it is**",
             ),
         ] {
             assert!(
@@ -9725,6 +9925,39 @@ mod tests {
                 "`{outside}` must answer `false`: {why}."
             );
         }
+    }
+
+    #[test]
+    fn a_relative_word_whose_text_carries_the_whole_carrier_path_is_refused_and_that_is_the_disclosed_cost(
+    ) {
+        // **THE OTHER SIDE OF THE ROW ABOVE, AND THE MOST REACHABLE INSTANCE OF
+        // THE NEW OVER-REFUSAL SURFACE.** The row above answers `false` because
+        // its candidates are too SHORT, not because it is relative — and a pin
+        // that showed only that side would let a reader conclude that relative
+        // words are excluded as a class. They are not.
+        //
+        // **This is a COST that is written down rather than met later.** It is
+        // stated in its general form in `protected_carrier_named`'s disclosed-cost
+        // section: any word whose text contains this run's own envelope directory
+        // or binary path as a `/`-anchored substring is refused, even where the
+        // program would not have used that substring as a path. It fails CLOSED
+        // and it is bounded to THIS RUN'S OWN two paths.
+        let dir = pin_envelope_dir();
+        assert!(
+            word_is_within("./tmp/envroot/alpha/pr-ledger.ndjson", &dir),
+            "a RELATIVE word whose text carries the whole carrier path yields the candidate \
+             `/tmp/envroot/alpha/pr-ledger.ndjson`, which IS under the envelope directory. The \
+             correct response to a red here is to check the DESIGN, not to relax the row: the \
+             scan reads text at every offset by construction, and a rule that excluded relative \
+             words as a class could not read `tar -C/tmp/envroot/alpha` either."
+        );
+        assert!(
+            !word_is_within("./tmp/envrooz/alpha/pr-ledger.ndjson", &dir),
+            "**THE DISCRIMINATING CONTROL, differing in ONE CHARACTER.** The same relative shape \
+             over an envelope-root spelling that is not this run's root answers `false`. If it \
+             did not, the surface would be `words containing a slash` rather than `words \
+             containing THESE TWO PATHS`, and every cost row in the corpus would be red."
+        );
     }
 
     #[test]
@@ -9861,6 +10094,16 @@ mod tests {
              compares against the guard's own binary went unchecked."
         );
         assert!(
+            code.contains("fn slash_anchored_candidates"),
+            "the sliced region must contain `fn slash_anchored_candidates`, the CANDIDATE helper \
+             the interior scan is built on. **It sits AT OR AFTER the slice anchor for exactly \
+             this reason**: a helper placed ABOVE `fn lexical_absolute_components` would be new \
+             path logic sitting OUTSIDE the one assertion standing between this predicate and a \
+             TOCTOU on the guard's critical path, and this slice would certify the region while \
+             the new logic went unchecked. A future edit that moved it, or a future slice that \
+             missed it, must fail HERE rather than pass quietly."
+        );
+        assert!(
             code.contains("pub fn envelope_carrier_refusal"),
             "the sliced region must contain `pub fn envelope_carrier_refusal`, which is its \
              last item — so the slice covers the whole of the new logic rather than its head."
@@ -9895,6 +10138,274 @@ mod tests {
                  answered by a link the agent made one instruction ago.\n\n\
                  **The correct response is to REMOVE THE CALL, never to relax this assertion.** \
                  Every probe of the real filesystem belongs in a test."
+            );
+        }
+    }
+
+    // =======================================================================
+    // ROUND 12 — the path carried INSIDE a word, at the unit level
+    //
+    // **These pin the CANDIDATE SET and the two comparisons directly, so the
+    // cost is measured at the predicate as well as through the guard.** Every
+    // refusing row below has a twin that differs in ONE thing — the attachment
+    // is identical on both sides and only the interior PATH changes — which is
+    // what makes each pair a measurement of the PATH SET rather than of the
+    // attachment character.
+    // =======================================================================
+
+    /// The candidate component lists one word produces, in order — the thing the
+    /// cost argument is actually about.
+    fn candidate_components(word: &str) -> Vec<Vec<&str>> {
+        slash_anchored_candidates(word)
+            .filter_map(lexical_absolute_components)
+            .collect()
+    }
+
+    fn pin_binary() -> std::path::PathBuf {
+        std::path::PathBuf::from("/opt/tools/gsd-meta-manager")
+    }
+
+    #[test]
+    fn a_carrier_path_attached_by_an_equals_sign_is_reached_and_its_unprotected_twin_is_not() {
+        let dir = pin_envelope_dir();
+        for attached in [
+            "of=/tmp/envroot/alpha/pr-ledger.ndjson",
+            "if=/tmp/envroot/alpha/pr-ledger.ndjson",
+            "--directory=/tmp/envroot/alpha",
+            "--target-directory=/tmp/envroot/alpha",
+            "--reference=/tmp/envroot/alpha/pr-ledger.ndjson",
+            "--temp-dir=/tmp/envroot/alpha",
+            "--git-dir=/tmp/envroot/alpha",
+        ] {
+            assert!(
+                word_is_within(attached, &dir),
+                "`{attached}` carries the envelope directory after an `=` and must be reached. \
+                 The word begins with `o`, `i` or `-`, so a rule that asked whether the WORD \
+                 begins with `/` answers `false` here — which is the whole of `T-19-119`."
+            );
+        }
+        // **THE DISCRIMINATING TWINS: the SAME attachment, a different path.**
+        for twin in [
+            "of=/tmp/g/x",
+            "--directory=/tmp/g",
+            "--git-dir=/tmp/g",
+            "--reference=/tmp/pr-ledger.ndjson",
+        ] {
+            assert!(
+                !word_is_within(twin, &dir),
+                "`{twin}` uses the SAME attachment and a path outside the set, and must answer \
+                 `false`. A row whose twin failed the same way would measure the `=` rather than \
+                 the path set. `--git-dir=/tmp/g` alone is pinned PERMITTED in four test files \
+                 and named in five doc sites here."
+            );
+        }
+    }
+
+    #[test]
+    fn a_carrier_path_attached_with_no_equals_sign_at_all_is_reached_the_same_way() {
+        // **THE ROW AN `=`-KEYED RULE WOULD MISS.** `tar -C<path>` and
+        // `cp -t<path>` carry an absolute path with NO `=` anywhere in the word,
+        // and real `bash` reaches the directory for both. A list of attachment
+        // characters would be a PROGRAM-GRAMMAR ENUMERATION — D-08's defect one
+        // level over — and would be one character short the day the next program
+        // ships a different one.
+        let dir = pin_envelope_dir();
+        for attached in [
+            "-C/tmp/envroot/alpha",
+            "-t/tmp/envroot/alpha",
+            "host:/tmp/envroot/alpha",
+            "/usr/bin:/tmp/envroot/alpha",
+            "PATH=/usr/bin:/tmp/envroot/alpha",
+        ] {
+            assert!(
+                word_is_within(attached, &dir),
+                "`{attached}` attaches the path with something other than an `=` — a bare short \
+                 option, a `:`, or both at once — and must be reached. **`PATH=/usr/bin:<dir>` \
+                 is also why the design is not `split at the first = and test the tail`**: that \
+                 tail normalises to `[usr, bin:tmp, envroot, alpha]`, which is not the envelope \
+                 directory at all."
+            );
+        }
+        for twin in ["-C/tmp/g", "-t/tmp/g", "host:/tmp/g", "PATH=/usr/bin:/tmp/g"] {
+            assert!(
+                !word_is_within(twin, &dir),
+                "`{twin}` is the same attachment over an unprotected path and must answer \
+                 `false`."
+            );
+        }
+    }
+
+    #[test]
+    fn a_carrier_path_behind_two_equals_signs_is_reached_because_nothing_asks_what_precedes_a_slash()
+    {
+        let dir = pin_envelope_dir();
+        assert!(
+            word_is_within("--opt=a=/tmp/envroot/alpha/x", &dir),
+            "a path behind a SECOND `=` must be reached. A rule that split at the FIRST `=` \
+             tests `a=/tmp/envroot/alpha/x`, which normalises to nothing at all."
+        );
+        assert!(
+            !word_is_within("--opt=a=/tmp/g/x", &dir),
+            "and its unprotected twin must not be."
+        );
+    }
+
+    #[test]
+    fn an_assignment_prefix_is_read_by_its_value_and_no_exception_is_written_for_assignments() {
+        // **BOTH VERDICTS, SO THE ROW DISCRIMINATES RATHER THAN MERELY
+        // PERMITTING.** `FOO=/tmp/x cmd` stays permitted **because `/tmp/x` is
+        // not a protected path**, not because assignment prefixes are excluded —
+        // and an exception for them would be a SHELL-GRAMMAR enumeration of the
+        // same forbidden kind as a program-grammar one.
+        let dir = pin_envelope_dir();
+        assert!(
+            word_is_within("GSD_MM_ENVELOPE_ROOT=/tmp/envroot/alpha", &dir),
+            "an assignment whose VALUE is under this run's own envelope directory must be \
+             reached. **The consequence is a GAIN rather than a cost**: it closes \
+             `R=<env>/<alias>; rm -rf $R`, whose `rm` operand is expansion-borne and permitted, \
+             leaving the assignment as the only place the path is literal."
+        );
+        assert!(
+            word_is_within("R=/tmp/envroot/alpha", &dir),
+            "the same with no command after it."
+        );
+        assert!(
+            !word_is_within("GSD_MM_ENVELOPE_ROOT=/tmp/fresh", &dir),
+            "**THE CONTROL THAT KEEPS THE PAIR HONEST.** `GSD_MM_ENVELOPE_ROOT=/tmp/fresh gh pr \
+             create` is pinned PERMITTED against the built binary, and it stays permitted \
+             because `/tmp/fresh` is not protected — the two rows differ ONLY in whether the \
+             assigned value is under this run's own envelope directory."
+        );
+        assert!(!word_is_within("R=/tmp/g", &dir), "and the bare twin.");
+    }
+
+    #[test]
+    fn the_binary_half_is_reached_through_every_attachment_and_still_refuses_to_be_a_prefix() {
+        let binary = pin_binary();
+        for attached in [
+            "/opt/tools/gsd-meta-manager",
+            "of=/opt/tools/gsd-meta-manager",
+            "--directory=/opt/tools/gsd-meta-manager",
+            "-C/opt/tools/gsd-meta-manager",
+            "--opt=a=/opt/tools/gsd-meta-manager",
+            "BIN=/opt/tools/gsd-meta-manager",
+            "of=/opt/tools/./gsd-meta-manager",
+            "of=/opt/tools/x/../gsd-meta-manager",
+        ] {
+            assert!(
+                word_is_exactly(attached, &binary),
+                "`{attached}` names the guard's own binary and must be reached — the EXACT-PATH \
+                 half must be reachable by the interior scan too, not only the prefix half."
+            );
+        }
+        // **THE EXACT-PATH-NOT-PREFIX CONTROLS, in the ATTACHED spellings.** The
+        // binary half is an EQUALITY because its directory is shared with
+        // everything else the user installed. A candidate naming a SIBLING or the
+        // PARENT can never equal the full binary path, and a clause widened to a
+        // directory prefix turns these red rather than turning a driven run
+        // unusable (AR-19-11).
+        for near_miss in [
+            "of=/opt/tools/some-other-file",
+            "of=/opt/tools",
+            "-C/opt/tools",
+            "PATH=/usr/bin:/opt/tools",
+            "of=/opt/tools/gsd-meta-managerx",
+            "of=/opt/tools/gsd-meta-manager/x",
+        ] {
+            assert!(
+                !word_is_exactly(near_miss, &binary),
+                "`{near_miss}` must answer `false`: it names a sibling, the parent, an extended \
+                 name or a path beneath the binary, and this half is an EQUALITY. \
+                 `cp /bin/true <parent>/some-other-file` and `ls <parent>` are pinned PERMITTED \
+                 against the built binary for exactly this reason."
+            );
+        }
+    }
+
+    #[test]
+    fn every_cost_shape_produces_candidates_that_cannot_match_and_the_component_lists_say_why() {
+        // **THE COST, PINNED AT THE UNIT LEVEL WITH THE COMPONENT LISTS WRITTEN
+        // OUT.** The mechanical reason the interior scan costs nothing is
+        // `word_is_within`'s early return over COMPONENT VECTORS: a candidate
+        // shorter than a three-component envelope directory cannot match it, and
+        // a candidate with the wrong FIRST component cannot either. These are the
+        // shapes audit 11 named, each measured before it was written.
+        let dir = pin_envelope_dir();
+        let binary = pin_binary();
+
+        assert_eq!(
+            candidate_components("--author=A <a@b.c>"),
+            Vec::<Vec<&str>>::new(),
+            "a word with NO `/` in it produces NO CANDIDATE AT ALL — there is nothing to scan."
+        );
+        assert_eq!(
+            candidate_components("--format=%H"),
+            Vec::<Vec<&str>>::new(),
+            "the same, and `git log --format=%H` is pinned PERMITTED against the built binary."
+        );
+        assert_eq!(
+            candidate_components("s/x/y/"),
+            vec![vec!["x", "y"], vec!["y"], Vec::<&str>::new()],
+            "`sed s/x/y/`'s substitution produces THREE candidates, the longest of which is TWO \
+             components — shorter than any three-component envelope directory."
+        );
+        assert_eq!(
+            candidate_components("https://github.com/o/r"),
+            vec![
+                vec!["github.com", "o", "r"],
+                vec!["github.com", "o", "r"],
+                vec!["o", "r"],
+                vec!["r"],
+            ],
+            "a URL produces four candidates and the longest has the WRONG FIRST COMPONENT."
+        );
+        assert_eq!(
+            candidate_components("HEAD:refs/heads/gsd-auto/alpha/w"),
+            vec![
+                vec!["heads", "gsd-auto", "alpha", "w"],
+                vec!["gsd-auto", "alpha", "w"],
+                vec!["alpha", "w"],
+                vec!["w"],
+            ],
+            "a refspec is long enough to reach the length test and fails the FIRST COMPONENT — \
+             which is why `git push origin HEAD:refs/heads/gsd-auto/<alias>/w` stays permitted \
+             even though it carries the alias."
+        );
+        assert_eq!(
+            candidate_components("--git-dir=/tmp/g"),
+            vec![vec!["tmp", "g"], vec!["g"]],
+            "the most-pinned permitted row in the phase: two candidates, neither under the \
+             envelope root."
+        );
+        assert_eq!(
+            candidate_components("src/"),
+            vec![Vec::<&str>::new()],
+            "a trailing separator on a relative word produces the EMPTY component list, which \
+             is shorter than every directory and equal to no binary."
+        );
+
+        // And the verdicts themselves, so the component lists above are not just
+        // arithmetic about strings.
+        for permitted in [
+            "--author=A <a@b.c>",
+            "--format=%H",
+            "s/x/y/",
+            "https://github.com/o/r",
+            "HEAD:refs/heads/gsd-auto/alpha/w",
+            "--git-dir=/tmp/g",
+            "src/",
+            "/tmp/pr-ledger.ndjson",
+            "rg pr-ledger.ndjson",
+        ] {
+            assert!(
+                !word_is_within(permitted, &dir),
+                "`{permitted}` is a COST shape and must stay permitted at the directory half. A \
+                 red here is a finding about the RULE — it would mean the scan widened past the \
+                 PATH SET — and never an assertion to relax."
+            );
+            assert!(
+                !word_is_exactly(permitted, &binary),
+                "`{permitted}` must stay permitted at the binary half too."
             );
         }
     }
