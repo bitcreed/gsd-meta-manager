@@ -5786,3 +5786,1218 @@ fn an_option_the_installed_git_rejects_fails_closed_on_every_base() {
         "the fail-closed arm must run every generated unknown-alphabet case"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 16. The FOURTH named axis — `CONFIG_RESOLUTION_CLASSES`
+//
+// **A FOURTH axis standing beside three BYTE-IDENTICAL command-line axes, not
+// more entries in any of them.** `UNREADABLE_CLASSES` names seven ways bash
+// ASSEMBLES a word; `DELETION_CLASSES` names five ways bash DELETES one;
+// `CALLEE_GRAMMAR_CLASSES` names five ways GIT's own option grammar decides which
+// arriving word is the verb. **All three are axes of how a COMMAND LINE becomes
+// an argv and which word in it is the verb.** The five below are about something
+// else entirely: **what that verb RUNS UNDER.**
+//
+// Audit 7's framing is the reason there is a fourth axis rather than more entries
+// in the third: git turns a command line into behaviour in THREE stages, and this
+// phase now models one. The gap moved off the command line — from *how a word is
+// written* (round 5), to *which words arrive* (round 6), to *which arriving word
+// is the verb* (round 7), to **what that verb runs under** (round 8). Audit 7
+// verified mechanically that nothing anywhere modelled it:
+// `grep -rn "include\.path\|includeIf" src/ tests/` returned **nothing at all**
+// and `grep -rn "GIT_CONFIG_PARAMETERS" src/ tests/` returned **nothing at all**.
+//
+// **An axis smuggled into an existing one stops being legible as one** — which is
+// how a corpus comes to model exactly the control it certifies and nothing beside
+// it. Nothing in sections 13, 14 or 15 is touched by this section, and neither
+// are `POLICY_MIN_PRODUCTION_BYTES`, `HOOKS_MIN_PRODUCTION_BYTES` or
+// `wrapper_names_the_fix_must_not_know_are_absent_from_the_production_logic`.
+// **This round is granted no deletion of any kind**; `19-20`'s ratio deletion was
+// a named one-off and there is no equivalent here.
+//
+// Every per-row verdict, every derivation and every real-git probe behind this
+// section lives in `tests/envelope_config_resolution.rs`, the round's own
+// evidence file.
+// ---------------------------------------------------------------------------
+
+/// One config assignment a `-c` / `--config-env` carrier delivers in the LEADING
+/// region of a governed command: the carrier that delivered it, the KEY half and
+/// the VALUE half.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfigAssignment {
+    carrier: String,
+    key: String,
+    #[allow(dead_code)]
+    value: String,
+}
+
+/// Split a command into (the `GIT_CONFIG*`-shaped names assigned in the
+/// ASSIGNMENT-PREFIX region, the index of the governed program, the words).
+///
+/// **The prefix region is where `resolve_program`'s step-1 check reads**, and it
+/// is a different place from where `scan_leading` reads. Recognising the two
+/// separately is what lets class 3 exist at all: an environment carrier puts no
+/// `-c` on the line, so no predicate that only walks leading options could ever
+/// draw it.
+fn config_prefix_split(command: &str) -> (Vec<String>, usize, Vec<&str>) {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let mut names = Vec::new();
+    let mut index = 0;
+    while index < words.len() {
+        let token = words[index].trim_end_matches(';');
+        if token == "env" || token == "export" {
+            index += 1;
+            continue;
+        }
+        if token.starts_with('-') {
+            break;
+        }
+        let Some((name, _)) = token.split_once('=') else {
+            break;
+        };
+        let plausible = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+        if !plausible {
+            break;
+        }
+        names.push(name.to_string());
+        index += 1;
+    }
+    (names, index, words)
+}
+
+/// Every config assignment carried in the leading region of the governed command.
+///
+/// Walked exactly as `scan_leading` walks it: from the word AFTER the program,
+/// stopping at the first word that is not `-`-initial (that word is the VERB) and
+/// at a bare `-` or `--`. Arm (a) of `leading_git_option` returns the NEXT TOKEN
+/// as the assignment for a bare `-c` / `--config-env` and arm (b) returns the
+/// attached one, so both spellings are read here for the same reason the guard
+/// reads both.
+///
+/// **An option AFTER the verb is not read at all**, which is why
+/// `git push -c include.path=… --force origin main` satisfies NO class — see the
+/// quoting-and-position control below.
+fn config_assignments(command: &str) -> Vec<ConfigAssignment> {
+    let (_, program, words) = config_prefix_split(command);
+    let mut out = Vec::new();
+    let mut index = program + 1;
+    let push = |out: &mut Vec<ConfigAssignment>, carrier: &str, text: &str| {
+        let (key, value) = text.split_once('=').unwrap_or((text, ""));
+        out.push(ConfigAssignment {
+            carrier: carrier.to_string(),
+            key: key.to_string(),
+            value: value.to_string(),
+        });
+    };
+    while index < words.len() {
+        let token = words[index];
+        if !token.starts_with('-') || token == "-" || token == "--" {
+            break;
+        }
+        if token == "-c" || token == "--config-env" {
+            if let Some(next) = words.get(index + 1) {
+                push(&mut out, token, next);
+            }
+            index += 2;
+        } else if let Some(rest) = token.strip_prefix("--config-env=") {
+            push(&mut out, "--config-env", rest);
+            index += 1;
+        } else if token.len() > 2 && token.starts_with("-c") {
+            push(&mut out, "-c", &token[2..]);
+            index += 1;
+        } else {
+            index += 1;
+        }
+    }
+    out
+}
+
+/// The SECTION half of a config key — the text before the FIRST `.`, or the empty
+/// string for a key with no `.` at all.
+///
+/// **A dotless key has no section**, and real git says so: `git -c a=b config
+/// --get a` answers `error: key does not contain a section: a` while
+/// `git -c a=b version` RUNS at rc 0. That measurement is asserted in
+/// `tests/envelope_config_resolution.rs`.
+fn config_section(key: &str) -> &str {
+    key.split_once('.').map(|(section, _)| section).unwrap_or("")
+}
+
+/// The VARIABLE half — the text after the LAST `.`.
+///
+/// Git folds the SECTION and the VARIABLE to lower case and leaves the SUBSECTION
+/// case-sensitive, measured against `git version 2.43.0` with the envelope's own
+/// injection as the control.
+fn config_variable(key: &str) -> &str {
+    key.rsplit_once('.')
+        .map(|(_, variable)| variable)
+        .unwrap_or("")
+}
+
+/// Whether a config key names a section that pulls FURTHER configuration in.
+///
+/// `include` and `includeIf` are the two, ASCII-case-folded because git folds the
+/// section. **Only the SECTION is read** — not the subsection and not the
+/// variable — which is the whole design: `[include]` honours exactly one variable
+/// and `includeIf`'s subsection is an open condition family, so not reading either
+/// covers both by construction.
+fn config_key_is_an_indirection(key: &str) -> bool {
+    let section = config_section(key).to_ascii_lowercase();
+    section == "include" || section == "includeif"
+}
+
+/// **Class 1** — a command-line carrier of a config INDIRECTION.
+///
+/// A `-c` or `--config-env` assignment whose key names a section that pulls
+/// further configuration in **at the precedence of the directive that named it**,
+/// i.e. at command-line precedence, without the string `core.hooksPath` appearing
+/// anywhere. **This is the class `T-19-103` lives in.**
+fn draws_a_config_indirection_carrier(command: &str) -> bool {
+    config_assignments(command)
+        .iter()
+        .any(|a| config_key_is_an_indirection(&a.key))
+}
+
+/// **Class 2** — a command-line carrier of a CONFINED assignment.
+///
+/// A `-c` assignment whose effect is BOUNDED to the key it names.
+/// **Class 1 cannot satisfy this and class 2 cannot satisfy class 1**, and that
+/// split IS the resolution question: a guard that could not tell the two apart
+/// would either miss `T-19-103` or refuse every `-c` — and
+/// `git -c user.name="$NAME" commit -m x`, pinned PERMITTED in
+/// `tests/envelope_config_resolution.rs`, is this axis's `ls {git,svn}-repo`.
+fn draws_a_confined_config_carrier(command: &str) -> bool {
+    config_assignments(command)
+        .iter()
+        .any(|a| !config_key_is_an_indirection(&a.key))
+}
+
+/// **Class 3** — an ENVIRONMENT carrier of configuration.
+///
+/// A word that sets configuration git reads with **no `-c` on the line at all**.
+/// `GIT_CONFIG_PARAMETERS` is git's own internal carrier for `-c`, it OUTRANKS
+/// the envelope's injected triplet (measured `/PARAM_WINS` against the control's
+/// `/ENV_WINS`), and git EXPORTS it, so one prefix disarms every git SUBPROCESS
+/// of the command.
+///
+/// **The command line is not involved**, which is why this class cannot live in
+/// any of the three existing axes: all three walk argv words, and this one is
+/// read by `resolve_program`'s step-1 check over the assignment-prefix region.
+fn draws_an_environment_config_carrier(command: &str) -> bool {
+    config_prefix_split(command)
+        .0
+        .iter()
+        .any(|name| name.to_ascii_uppercase().starts_with("GIT_CONFIG"))
+}
+
+/// **Class 4** — a CASE-VARIED spelling of an indirection.
+///
+/// Git folds the SECTION and the VARIABLE to lower case while leaving the
+/// SUBSECTION case-sensitive. Measured in both halves of the key against
+/// `git version 2.43.0` with the envelope's own injection as the control:
+/// `-c INCLUDE.PATH=<f>` resolves to `/INCLUDE_WINS`, and so does
+/// `-c INCLUDEIF.gitdir:<p>.PATH=<f>`.
+///
+/// **`git -c include.path=…` must NOT satisfy this**, or class 4 would be a
+/// second name for class 1 and its floor would be satisfiable without a single
+/// case-varied spelling being drawn.
+fn draws_a_case_varied_indirection(command: &str) -> bool {
+    config_assignments(command).iter().any(|a| {
+        config_key_is_an_indirection(&a.key)
+            && (config_section(&a.key) != config_section(&a.key).to_ascii_lowercase()
+                || config_variable(&a.key) != config_variable(&a.key).to_ascii_lowercase())
+    })
+}
+
+/// **Class 5** — an OPTION-CARRIER delivery of an indirection.
+///
+/// `--config-env=include.path=<VAR>` and its separate-word form
+/// `--config-env include.path=<VAR>`: the SECOND carrier `scan_leading` reads,
+/// and the one whose value is an environment variable NAME rather than a value.
+/// Real git resolves it identically — measured `/INCLUDE_WINS` through both
+/// spellings — which is why one clause covers both.
+fn draws_an_option_carrier_indirection(command: &str) -> bool {
+    config_assignments(command)
+        .iter()
+        .any(|a| a.carrier == "--config-env" && config_key_is_an_indirection(&a.key))
+}
+
+/// One named class and the predicate that decides whether a spliced command draws
+/// it.
+type ConfigResolutionClass = (&'static str, fn(&str) -> bool);
+
+/// The FIVE classes of the CONFIG-RESOLUTION axis, named once so the per-alphabet
+/// floor, the per-class floor and the counted floor all count the same thing.
+const CONFIG_RESOLUTION_CLASSES: &[ConfigResolutionClass] = &[
+    (
+        "a command-line carrier of a config indirection",
+        draws_a_config_indirection_carrier,
+    ),
+    (
+        "a command-line carrier of a confined assignment",
+        draws_a_confined_config_carrier,
+    ),
+    (
+        "an environment carrier of configuration",
+        draws_an_environment_config_carrier,
+    ),
+    (
+        "a case-varied spelling of an indirection",
+        draws_a_case_varied_indirection,
+    ),
+    (
+        "an option-carrier delivery of an indirection",
+        draws_an_option_carrier_indirection,
+    ),
+];
+
+/// Whether a spliced command draws ANY of the five.
+fn carries_a_config_resolution_class(command: &str) -> bool {
+    CONFIG_RESOLUTION_CLASSES
+        .iter()
+        .any(|(_, predicate)| predicate(command))
+}
+
+#[test]
+fn the_corpus_can_draw_every_one_of_the_five_config_resolution_classes() {
+    // **The degenerate-proofing, ASSERTED rather than described**, in the shape
+    // `the_corpus_can_draw_every_one_of_the_seven_unreadable_classes` and
+    // `the_corpus_can_draw_every_one_of_the_five_callee_grammar_classes` already
+    // use. If any pair below collapsed, the floors would be satisfiable by an
+    // alphabet that cannot generate the cells this round is about — which is
+    // exactly how the last four plan-check rounds each found a live cell.
+    //
+    // **GREEN today and after.** It drives no guard call and no production change
+    // can move it.
+
+    // -- class 1 versus class 2. **This pair IS the resolution question.**
+    assert!(
+        draws_a_config_indirection_carrier("git -c include.path=/tmp/e status"),
+        "`git -c include.path=/tmp/e status` IS a config indirection: measured against real \
+         git with the envelope's own injection as the control, it makes \
+         `git config --get core.hooksPath` print `/INCLUDE_WINS` where the injection alone \
+         prints `/ENV_WINS`"
+    );
+    assert!(
+        !draws_a_confined_config_carrier("git -c include.path=/tmp/e status"),
+        "`git -c include.path=/tmp/e status` must NOT satisfy the CONFINED class. A corpus \
+         that conflated the two could not fail on `T-19-103`, whose entire mechanism is an \
+         assignment whose effect is NOT bounded to the key it names."
+    );
+    assert!(
+        draws_a_confined_config_carrier("git -c user.name=x status"),
+        "`git -c user.name=x status` IS a confined assignment — its effect is bounded to the \
+         key it names"
+    );
+    assert!(
+        !draws_a_config_indirection_carrier("git -c user.name=x status"),
+        "`git -c user.name=x status` must NOT satisfy the INDIRECTION class. **This is the \
+         split that tells a resolution MODEL apart from a blanket refusal of anything spelled \
+         `-c`**, and a corpus that collapsed it could not fail on a rule that refused \
+         `git -c user.name=\"$NAME\" commit -m x` — the row pinned PERMITTED in \
+         `tests/envelope_config_resolution.rs` as this axis's `ls {{git,svn}}-repo`."
+    );
+
+    // -- class 3, which involves NO command line at all.
+    assert!(
+        draws_an_environment_config_carrier(
+            "GIT_CONFIG_PARAMETERS=\"'core.hooksPath=/x'\" git status"
+        ),
+        "`GIT_CONFIG_PARAMETERS=… git status` IS an environment carrier"
+    );
+    for not_env in [
+        "GIT_CONFIG_PARAMETERS=\"'core.hooksPath=/x'\" git status",
+        "env GIT_CONFIG_PARAMETERS=\"'core.hooksPath=/x'\" git status",
+    ] {
+        assert!(
+            !draws_a_config_indirection_carrier(not_env),
+            "`{not_env}` must satisfy NEITHER command-line class: there is no `-c` on the \
+             line at all. **That is why this class cannot live in any of the three existing \
+             axes** — all three walk argv words and this one is read from the \
+             assignment-prefix region."
+        );
+        assert!(!draws_a_confined_config_carrier(not_env));
+        assert!(draws_an_environment_config_carrier(not_env));
+    }
+
+    // -- class 4, and the case distinction that is load-bearing.
+    assert!(
+        draws_a_case_varied_indirection("git -c INCLUDE.PATH=/tmp/e status"),
+        "`INCLUDE.PATH` IS a case-varied spelling — git folds the SECTION and the VARIABLE, \
+         measured `/INCLUDE_WINS`"
+    );
+    assert!(
+        !draws_a_case_varied_indirection("git -c include.path=/tmp/e status"),
+        "the already-lower-case spelling must NOT satisfy class 4, or class 4 is a second \
+         name for class 1 and its floor is satisfiable without a single case-varied spelling \
+         being drawn"
+    );
+
+    // -- class 5, the second carrier, in both spellings.
+    for spelling in [
+        "git --config-env=include.path=V status",
+        "git --config-env include.path=V status",
+    ] {
+        assert!(
+            draws_an_option_carrier_indirection(spelling),
+            "`{spelling}` IS an option-carrier delivery of an indirection"
+        );
+    }
+    assert!(
+        !draws_an_option_carrier_indirection("git -c include.path=/tmp/e status"),
+        "a `-c` delivery must NOT satisfy class 5, or class 5 is a second name for class 1"
+    );
+
+    // -- THE QUOTING-AND-POSITION CONTROL. A config-shaped word that is neither a
+    //    carrier nor in the scan's view must satisfy NO class, or the floors
+    //    become satisfiable by a row the rules must NEVER touch.
+    for (class, predicate) in CONFIG_RESOLUTION_CLASSES {
+        for control in [
+            "git commit -m \"include.path=/tmp/e\"",
+            "git log --grep='include.path=/tmp/e'",
+            "git push -c include.path=/tmp/e --force origin main",
+        ] {
+            assert!(
+                !predicate(control),
+                "`{control}` must satisfy NO config-resolution class, and it satisfies \
+                 `{class}`.\n\n\
+                 The first is a config-shaped word inside a quoted OPERAND — measured at exit \
+                 0 today and it must stay there. The second is quoted. The third sits AFTER \
+                 the verb, which `scan_leading` does not read at all. A predicate that \
+                 counted any of them would make every floor below satisfiable by a row the \
+                 rules must never touch, and would put the fix's blast radius outside the \
+                 region it is allowed to decide in."
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 16a. The THREE alphabets — and the split between them is the SEAM FENCE
+//      rather than a tidy-up
+// ---------------------------------------------------------------------------
+
+/// The ONLY alphabet the invariance-preserving arm draws.
+///
+/// Entries are spliced **between the governed program and its decision words**,
+/// because that is the position `scan_leading` reads. **Every entry is
+/// VERDICT-PRESERVING** — measured permitted on a permitted base and measured at
+/// the base's own identifier on a refused base, before AND after. Measured at
+/// this section's base commit over all 70 generated cases: 40 permits and 30
+/// `force_push_blocked`, walks EMPTY throughout.
+///
+/// **`-c a=b` is a MINIMUM entry and its presence is asserted BY NAME below.**
+/// `tests/envelope_wrapper_class.rs:5197` defines
+/// `CALLEE_KNOWN_LEADING_PREFIX: &str = "-c a=b"` and round 7's ENTIRE
+/// callee-grammar generative property is spliced behind it; real git RUNS
+/// `git -c a=b version` at rc 0 and errors only when something READS the key. A
+/// rule that refused a key it cannot decompose into a section would refuse
+/// `-c a=b` and turn round 7's whole property **permanently red in a file `19-23`
+/// may not edit**, which is `19-18`'s `{v}>` blocker one axis over.
+///
+/// **`-c notinclude.path=…` and `-c includepath=…` are the DISCRIMINATION
+/// CONTROLS** — this round's `--signed no`. A rule written as
+/// `key.contains("include")` turns both red; only a rule that compares the
+/// SECTION keeps them green.
+const CONFIG_CONFINED_CARRIERS: &[&str] = &[
+    "-c user.name=x",
+    "-c core.pager=cat",
+    "-c a=b",
+    "-c notinclude.path=/tmp/e",
+    "-c includepath=/tmp/e",
+];
+
+/// A SEPARATE alphabet with its OWN fail-closed property, spliced at the same
+/// position.
+///
+/// **Kept out of `CONFIG_CONFINED_CARRIERS`, and out of the invariance arm,
+/// because its entries are NOT verdict-preserving — this is `19-18`'s `{v}>`
+/// blocker and `19-20`'s `GIT_GLOBAL_UNKNOWN_OPTIONS` split, one axis over, and it
+/// is the single most likely way this seam breaks.** The invariance arm asserts
+/// that a spliced verdict EQUALS the unspliced one. **An indirection carrier is
+/// refused after `19-23` even on a PERMITTED base** — `git -c include.path=…
+/// status` is measured at exit 0 today and is refused after — so it would be
+/// STRICTER than its base and would turn that property permanently red in a file
+/// `19-23` may not edit.
+///
+/// Every entry was measured against the REAL git binary and OUTRANKS the
+/// envelope's own `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` injection: control
+/// `/ENV_WINS`, each of these `/INCLUDE_WINS`. **A carrier that does not outrank
+/// the injection is not an indirection and is not a reproducer.**
+const CONFIG_INDIRECTION_CARRIERS: &[&str] = &[
+    "-c include.path=/tmp/evil.cfg",
+    "-c includeIf.gitdir:/tmp/.path=/tmp/evil.cfg",
+    "-c INCLUDE.PATH=/tmp/evil.cfg",
+    "--config-env=include.path=EVILVAR",
+    "--config-env include.path=EVILVAR",
+];
+
+/// A SEPARATE alphabet with the same fail-closed property, spliced as an
+/// ASSIGNMENT PREFIX rather than between the program and its decision words —
+/// because that is where `resolve_program`'s step-1 check reads.
+///
+/// The three spellings mirror the three spellings of the paired discriminator
+/// `GIT_CONFIG_COUNT=0` exactly, and that is what makes every post-fix verdict on
+/// this alphabet DERIVABLE: all three of the discriminator's spellings are
+/// measured at exit 2 `hook_bypass_blocked` TODAY, on both a refused and a
+/// permitted base, for a key that IS in `ENVELOPE_ENV_KEYS`.
+///
+/// **`GIT_CONFIG_PARAMETERS` is absent from `ENVELOPE_ENV_KEYS`, git EXPORTS it,
+/// and it OUTRANKS the injection** (measured `/PARAM_WINS`). Not
+/// verdict-preserving, for the same reason as the alphabet above.
+const CONFIG_ENV_CARRIERS: &[&str] = &[
+    "GIT_CONFIG_PARAMETERS=\"'core.hooksPath=/tmp/nohooks'\"",
+    "env GIT_CONFIG_PARAMETERS=\"'core.hooksPath=/tmp/nohooks'\"",
+    "export GIT_CONFIG_PARAMETERS=\"'core.hooksPath=/tmp/nohooks'\";",
+];
+
+/// Where a command-line alphabet entry is spliced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ConfigSplice {
+    /// Immediately after the governed program — the first thing `scan_leading`
+    /// reads.
+    ImmediatelyAfterTheProgram,
+    /// After a leading option the guard ALREADY knows.
+    ///
+    /// **The scan is a LOOP, so the gap is not confined to the first slot.** The
+    /// known prefix is `CALLEE_KNOWN_LEADING_PREFIX` — `-c a=b` — which makes the
+    /// dotless fence below directly load-bearing for this axis too: every case at
+    /// this splice begins `git -c a=b …`.
+    AfterAKnownLeadingOption,
+}
+
+const CONFIG_SPLICES: &[ConfigSplice] = &[
+    ConfigSplice::ImmediatelyAfterTheProgram,
+    ConfigSplice::AfterAKnownLeadingOption,
+];
+
+/// Bases whose UNWRAPPED form is REFUSED. Measured: all three at exit 2
+/// `force_push_blocked`, walks EMPTY.
+const CONFIG_REFUSED_BASES: &[&str] = &[
+    "git push --force origin main",
+    "git stash",
+    "git update-ref -d refs/heads/main",
+];
+
+/// Bases whose UNWRAPPED form is PERMITTED.
+///
+/// **THE PERMITTED-BASE FENCE'S SUBJECT, and this axis's whole constraint.** The
+/// entire content of `T-19-103` is that an indirection disarms layer 3 on a line
+/// layer 2 LETS THROUGH, so a property drawing only refused bases would be GREEN
+/// before `19-23` and would certify nothing. Measured at this section's base
+/// commit: `git -c include.path=/tmp/evil.cfg push --force origin main` is
+/// ALREADY exit 2 `force_push_blocked` for its VERB, as are its `bash -lc`,
+/// `echo hi &&`, `>/dev/null` and `--attr-source HEAD` compositions — five
+/// CONTROLS, not reproducers.
+///
+/// The three named bases are the ones audit 7 used. `git push origin
+/// refs/heads/gsd-auto/alpha/w` names its refspec, so
+/// `push_needs_resolved_dests` answers FALSE for it and no repository is consulted
+/// — this section stays repository-free (D-35, `T-19-80`).
+const CONFIG_PERMITTED_BASES: &[&str] = &[
+    "git status",
+    "git commit -m x",
+    "git push origin refs/heads/gsd-auto/alpha/w",
+    "git log --oneline",
+];
+
+/// Splice one command-line alphabet entry into `base`.
+fn config_case(base: &str, entry: &str, splice: ConfigSplice) -> String {
+    let words: Vec<&str> = base.split_whitespace().collect();
+    let program = words[0];
+    let rest = words[1..].join(" ");
+    match splice {
+        ConfigSplice::ImmediatelyAfterTheProgram => format!("{program} {entry} {rest}"),
+        ConfigSplice::AfterAKnownLeadingOption => {
+            format!("{program} {CALLEE_KNOWN_LEADING_PREFIX} {entry} {rest}")
+        }
+    }
+}
+
+/// Splice one ENVIRONMENT alphabet entry into `base` — as an assignment PREFIX,
+/// which is a different position and therefore a different generator.
+fn config_env_case(base: &str, entry: &str) -> String {
+    format!("{entry} {base}")
+}
+
+/// Every command-line case this axis generates, as `(base, splice, label,
+/// command)`.
+///
+/// One function so the counting floor and the guard-driven properties count
+/// exactly the same thing — a second enumeration would be a second thing to keep
+/// in step.
+fn config_cases(
+    bases: &[&'static str],
+    alphabet: &[&str],
+) -> Vec<(&'static str, ConfigSplice, String, String)> {
+    let mut cases = Vec::new();
+    for base in bases.iter().copied() {
+        for splice in CONFIG_SPLICES {
+            for entry in alphabet {
+                cases.push((
+                    base,
+                    *splice,
+                    format!("{splice:?}({entry})"),
+                    config_case(base, entry, *splice),
+                ));
+            }
+        }
+    }
+    cases
+}
+
+/// Every ENVIRONMENT case, as `(base, label, command)`.
+fn config_env_cases(bases: &[&'static str]) -> Vec<(&'static str, String, String)> {
+    let mut cases = Vec::new();
+    for base in bases.iter().copied() {
+        for entry in CONFIG_ENV_CARRIERS {
+            cases.push((
+                base,
+                format!("AssignmentPrefix({entry})"),
+                config_env_case(base, entry),
+            ));
+        }
+    }
+    cases
+}
+
+// ---------------------------------------------------------------------------
+// 16b. The floors — per ALPHABET, per CLASS, and COUNTED over generated cases
+// ---------------------------------------------------------------------------
+
+/// The arithmetic, STATED rather than guessed, because audit 5 found `19-16` set a
+/// floor of 50 against a maximum of 40 by construction.
+///
+/// There are 3 refused bases and 4 permitted bases = **7 bases**.
+///
+/// * confined      — 5 entries x 2 splices x 7 bases = **70** cases
+/// * indirection   — 5 entries x 2 splices x 7 bases = **70** cases
+/// * environment   — 3 entries x 1 prefix position x 7 bases = **21** cases
+/// * total = **161** cases
+///
+/// Split by the arm the base is in:
+///
+/// * refused bases  — (5 x 2 + 5 x 2) x 3 + 3 x 3 = 60 + 9 = **69**
+/// * permitted bases — (5 x 2 + 5 x 2) x 4 + 3 x 4 = 80 + 12 = **92**
+///
+/// Slots are `(base, splice position)` pairs: 7 x 2 command-line slots plus 7
+/// assignment-prefix slots = **21**.
+///
+/// The floors are EXACT equalities, so losing one case turns them red. Nothing in
+/// `src/` can move them: they are a pure function of the alphabets in this file.
+const CONFIG_RESOLUTION_CASES: usize = 161;
+const CONFIG_RESOLUTION_REFUSED_CASES: usize = 69;
+const CONFIG_RESOLUTION_PERMITTED_CASES: usize = 92;
+const CONFIG_RESOLUTION_SLOTS: usize = 21;
+const MIN_CONFIG_RESOLUTION_CLASSES: usize = 5;
+const MIN_CONFIG_CONFINED_CARRIERS: usize = 5;
+const MIN_CONFIG_INDIRECTION_CARRIERS: usize = 5;
+const MIN_CONFIG_ENV_CARRIERS: usize = 3;
+
+/// The per-class counts over all 161 generated commands, derived from the
+/// alphabets and the splice sets:
+///
+/// * class 1 (indirection) — the 5 indirection entries at each of 14 command-line
+///   slots = **70**
+/// * class 2 (confined) — the 5 confined entries at each of 14 slots = 70; PLUS
+///   the `-c a=b` of `CALLEE_KNOWN_LEADING_PREFIX`, which is itself a confined
+///   assignment, in every `AfterAKnownLeadingOption` case of the INDIRECTION
+///   alphabet: 5 entries x 7 bases = 35. (The confined alphabet's own
+///   `AfterAKnownLeadingOption` cases already satisfy the class through their own
+///   entry and are not double-counted.) 70 + 35 = **105**
+/// * class 3 (environment) — the 3 environment entries at each of 7 prefix slots
+///   = **21**
+/// * class 4 (case-varied) — the 2 case-varied indirection entries
+///   (`-c INCLUDE.PATH=…` and `-c includeIf.gitdir:…`, whose SECTION is not
+///   already lower case) at each of 14 slots = **28**
+/// * class 5 (option-carrier) — the 2 `--config-env` entries at each of 14 slots
+///   = **28**
+const CONFIG_RESOLUTION_CLASS_COUNTS: &[(&str, usize)] = &[
+    ("a command-line carrier of a config indirection", 70),
+    ("a command-line carrier of a confined assignment", 105),
+    ("an environment carrier of configuration", 21),
+    ("a case-varied spelling of an indirection", 28),
+    ("an option-carrier delivery of an indirection", 28),
+];
+
+#[test]
+fn every_alphabet_this_round_widens_can_draw_a_fact_about_what_the_verb_runs_under() {
+    // **The direct mechanical inverse of audit 7's `T-19-105`.** The auditor
+    // established the defect by grepping `src/` and `tests/` for `include.path`,
+    // `includeIf` and `GIT_CONFIG_PARAMETERS` and finding NOTHING AT ALL; this
+    // asserts the repaired fact, so narrowing an alphabet back turns this red
+    // instead of quietly restoring a corpus that cannot fail on its own class.
+    //
+    // The predicate is evaluated on a REPRESENTATIVE SPLICED COMMAND rather than
+    // on the bare entry, the way sections 14 and 15's are, because these entries
+    // are splice FRAGMENTS.
+    //
+    // **GREEN today and after.**
+    assert!(
+        CONFIG_RESOLUTION_CLASSES.len() >= MIN_CONFIG_RESOLUTION_CLASSES,
+        "the config-resolution axis must name at least {MIN_CONFIG_RESOLUTION_CLASSES} classes"
+    );
+    assert!(
+        CONFIG_CONFINED_CARRIERS.len() >= MIN_CONFIG_CONFINED_CARRIERS,
+        "`CONFIG_CONFINED_CARRIERS` must carry at least {MIN_CONFIG_CONFINED_CARRIERS} \
+         entries. **The correct response to a red here is to RESTORE entries, never to lower \
+         this floor.** `T-19-105` is `T-19-76`'s failure mode for the EIGHTH consecutive \
+         round, and for the THIRD round running the gap moved AXIS rather than one cell over."
+    );
+    assert!(
+        CONFIG_INDIRECTION_CARRIERS.len() >= MIN_CONFIG_INDIRECTION_CARRIERS,
+        "`CONFIG_INDIRECTION_CARRIERS` must carry at least \
+         {MIN_CONFIG_INDIRECTION_CARRIERS} entries"
+    );
+    assert!(
+        CONFIG_ENV_CARRIERS.len() >= MIN_CONFIG_ENV_CARRIERS,
+        "`CONFIG_ENV_CARRIERS` must carry at least {MIN_CONFIG_ENV_CARRIERS} entries — one \
+         per environment spelling the paired `GIT_CONFIG_COUNT` discriminator is measured in"
+    );
+
+    // -- every entry of every alphabet must DRAW a class when spliced.
+    for entry in CONFIG_CONFINED_CARRIERS
+        .iter()
+        .chain(CONFIG_INDIRECTION_CARRIERS.iter())
+    {
+        let spliced = config_case(
+            "git push --force origin main",
+            entry,
+            ConfigSplice::ImmediatelyAfterTheProgram,
+        );
+        assert!(
+            carries_a_config_resolution_class(&spliced),
+            "alphabet entry `{entry}` draws NO config-resolution class when spliced between \
+             the program and its decision words (`{spliced}`).\n\n\
+             An alphabet entry that cannot DRAW a class is an entry whose property cannot \
+             FAIL on one, and every case generated from it certifies a claim about a class it \
+             could never have exercised. It is `T-19-76`'s failure mode for the EIGHTH \
+             consecutive round, after `T-19-83`, `T-19-89`, `T-19-95`, `T-19-99` and \
+             `T-19-101`.\n\n\
+             The correct response is to RESTORE the entry, never to delete this floor."
+        );
+    }
+    for entry in CONFIG_ENV_CARRIERS {
+        let spliced = config_env_case("git status", entry);
+        assert!(
+            draws_an_environment_config_carrier(&spliced),
+            "`CONFIG_ENV_CARRIERS` entry `{entry}` draws NO environment class when spliced as \
+             an assignment prefix (`{spliced}`)"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // **THE DOTLESS FENCE** — the mechanical assertion that would otherwise
+    // have blocked this round, written in the shape section 14b's `{v}>`
+    // exclusion already uses.
+    // ---------------------------------------------------------------------
+    for entry in CONFIG_INDIRECTION_CARRIERS {
+        for assignment in config_assignments(&config_case(
+            "git status",
+            entry,
+            ConfigSplice::ImmediatelyAfterTheProgram,
+        )) {
+            assert!(
+                assignment.key.contains('.'),
+                "\n\nA DOTLESS KEY IS IN `CONFIG_INDIRECTION_CARRIERS`: `{entry}` delivers \
+                 the key `{}`.\n\n\
+                 A `-c` key with no `.` at all names NO CONFIG SECTION and therefore cannot \
+                 be an indirection — real git says so: `git -c a=b config --get a` answers \
+                 `error: key does not contain a section: a`, while `git -c a=b version` RUNS \
+                 at rc 0.\n\n\
+                 **`CALLEE_KNOWN_LEADING_PREFIX` at tests/envelope_wrapper_class.rs:5197 is \
+                 `\"-c a=b\"`, and round 7's ENTIRE callee-grammar generative property is \
+                 spliced behind it.** A rule that refused a key it cannot decompose into a \
+                 section would refuse `-c a=b`, turn that whole property PERMANENTLY RED in a \
+                 file `19-23` may not edit, and reproduce `19-18`'s `{{v}}>` blocker one axis \
+                 over.\n\n\
+                 The correct response is to CONFINE dotless keys, never to edit round 7's \
+                 property.",
+                assignment.key
+            );
+        }
+    }
+    assert!(
+        CONFIG_CONFINED_CARRIERS.contains(&CALLEE_KNOWN_LEADING_PREFIX),
+        "\n\n`{CALLEE_KNOWN_LEADING_PREFIX}` — `CALLEE_KNOWN_LEADING_PREFIX` at \
+         tests/envelope_wrapper_class.rs:5197 — must be an entry of \
+         `CONFIG_CONFINED_CARRIERS`, and must be asserted VERDICT-PRESERVING by the \
+         invariance arm below.\n\n\
+         Round 7's ENTIRE callee-grammar generative property is spliced behind it, and real \
+         git RUNS `git -c a=b version` at rc 0. Confining it is CORRECT BY DESIGN, not a \
+         concession. Asserting it here by name is what stops a later round from quietly \
+         moving it into the indirection alphabet."
+    );
+
+    // ---------------------------------------------------------------------
+    // **THE DISJOINTNESS ASSERTION.** The three alphabets must not overlap, or
+    // the invariance arm would draw an entry whose verdict the fix CHANGES.
+    // ---------------------------------------------------------------------
+    for entry in CONFIG_INDIRECTION_CARRIERS.iter().chain(CONFIG_ENV_CARRIERS) {
+        assert!(
+            !CONFIG_CONFINED_CARRIERS.contains(entry),
+            "`{entry}` appears in BOTH `CONFIG_CONFINED_CARRIERS` and one of the fail-closed \
+             alphabets.\n\n\
+             `CONFIG_CONFINED_CARRIERS` entries are asserted VERDICT-PRESERVING by the \
+             invariance arm. **An indirection carrier and an environment carrier are both \
+             REFUSED after `19-23` even on a PERMITTED base** — `git -c include.path=… \
+             status` and `GIT_CONFIG_PARAMETERS=… git status` are both measured at exit 0 \
+             today and both refused after — so either would be STRICTER than its base and \
+             would turn the invariance arm permanently red in a file `19-23` may not edit. \
+             **This is `19-18`'s `{{v}}>` blocker and `19-20`'s `GIT_GLOBAL_UNKNOWN_OPTIONS` \
+             split, one axis over, and it is the single most likely way this seam breaks.**"
+        );
+    }
+    for entry in CONFIG_ENV_CARRIERS {
+        assert!(
+            !CONFIG_INDIRECTION_CARRIERS.contains(entry),
+            "`{entry}` appears in BOTH fail-closed alphabets. They are spliced at DIFFERENT \
+             positions — between the program and its decision words versus as an assignment \
+             prefix — and the counting floors would double-count an entry in both."
+        );
+    }
+    for entry in CONFIG_CONFINED_CARRIERS {
+        assert!(
+            !draws_a_config_indirection_carrier(&config_case(
+                "git status",
+                entry,
+                ConfigSplice::ImmediatelyAfterTheProgram
+            )),
+            "`{entry}` is in the CONFINED alphabet but DRAWS the indirection class. \
+             Membership of the confined alphabet is an assertion that the entry is \
+             verdict-preserving, and an indirection is not."
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // **THE PERMITTED-BASE FENCE** — this axis's own version of the `{v}>`
+    // lesson, and the constraint the whole corpus is shaped by.
+    // ---------------------------------------------------------------------
+    for required in [
+        "git status",
+        "git commit -m x",
+        "git push origin refs/heads/gsd-auto/alpha/w",
+    ] {
+        assert!(
+            CONFIG_PERMITTED_BASES.contains(&required),
+            "\n\n`{required}` must be one of `CONFIG_PERMITTED_BASES`.\n\n\
+             **A `T-19-103` reproducer must be built on a base LAYER 2 PERMITS.** The whole \
+             content of an indirection is that it disarms layer 3 on a line layer 2 lets \
+             THROUGH. Measured at this section's base commit, fresh root per row, walk EMPTY: \
+             `git -c include.path=/tmp/evil.cfg push --force origin main` is ALREADY exit 2 \
+             `force_push_blocked` for its VERB, and so are its `bash -lc`, `echo hi &&`, \
+             `>/dev/null` and `--attr-source HEAD` compositions — **five CONTROLS, not \
+             reproducers**.\n\n\
+             A property drawing only refused bases is GREEN before the fix and certifies \
+             nothing about config resolution: the eighth consecutive instance of `T-19-76`'s \
+             failure mode, produced by the corpus rather than found by the next audit. These \
+             three are the bases audit 7 itself used."
+        );
+    }
+    assert!(
+        !CONFIG_PERMITTED_BASES
+            .iter()
+            .any(|base| base.contains("--force")),
+        "no `CONFIG_PERMITTED_BASES` entry may carry `--force`: every `--force` base is \
+         already refused for its VERB and certifies nothing about config resolution"
+    );
+}
+
+#[test]
+fn the_generated_corpus_really_produces_each_config_resolution_class_in_quantity() {
+    // **An alphabet floor is not a generation floor.** An entry can sit in an
+    // alphabet and be drawn by nothing, or be drawn once out of hundreds of cases
+    // — which is a corpus that can technically fail on the class and practically
+    // never does. This counts what the generator ACTUALLY emits.
+    //
+    // **Green today and after**: it drives no guard call at all, and no production
+    // change can move it. The counts are a pure function of the alphabets above,
+    // which is exactly what makes the exact equalities safe.
+    let mut all: Vec<String> = Vec::new();
+    let mut slots: BTreeSet<(&str, &str)> = BTreeSet::new();
+
+    let mut refused_count = 0usize;
+    let mut permitted_count = 0usize;
+
+    for (bases, counter) in [
+        (CONFIG_REFUSED_BASES, &mut refused_count),
+        (CONFIG_PERMITTED_BASES, &mut permitted_count),
+    ] {
+        for alphabet in [CONFIG_CONFINED_CARRIERS, CONFIG_INDIRECTION_CARRIERS] {
+            for (base, splice, _, command) in config_cases(bases, alphabet) {
+                slots.insert((
+                    base,
+                    match splice {
+                        ConfigSplice::ImmediatelyAfterTheProgram => "ImmediatelyAfterTheProgram",
+                        ConfigSplice::AfterAKnownLeadingOption => "AfterAKnownLeadingOption",
+                    },
+                ));
+                all.push(command);
+                *counter += 1;
+            }
+        }
+        for (base, _, command) in config_env_cases(bases) {
+            slots.insert((base, "AssignmentPrefix"));
+            all.push(command);
+            *counter += 1;
+        }
+    }
+
+    assert_eq!(
+        refused_count, CONFIG_RESOLUTION_REFUSED_CASES,
+        "the refused-base generation count must equal the stated arithmetic exactly, so \
+         losing one case turns this red. `19-16` set a floor of 50 against a maximum of 40 by \
+         construction and it was invisible until the rule landed."
+    );
+    assert_eq!(
+        permitted_count, CONFIG_RESOLUTION_PERMITTED_CASES,
+        "the permitted-base generation count must equal the stated arithmetic exactly"
+    );
+    assert_eq!(all.len(), CONFIG_RESOLUTION_CASES);
+    assert_eq!(
+        slots.len(),
+        CONFIG_RESOLUTION_SLOTS,
+        "every splice slot must have been generated — 7 bases x 2 command-line positions plus \
+         7 assignment-prefix positions. Seen: {slots:?}"
+    );
+
+    let mut per_class: BTreeMap<&str, usize> = BTreeMap::new();
+    for command in &all {
+        for (class, predicate) in CONFIG_RESOLUTION_CLASSES {
+            if predicate(command) {
+                *per_class.entry(class).or_default() += 1;
+            }
+        }
+    }
+
+    for (class, expected) in CONFIG_RESOLUTION_CLASS_COUNTS {
+        let got = per_class.get(class).copied().unwrap_or(0);
+        assert_eq!(
+            got, *expected,
+            "the generator emitted {got} cases of the config-resolution class `{class}`, and \
+             the stated arithmetic derives {expected}.\n\n\
+             This is `T-19-105` counted rather than read. The correct response to a shortfall \
+             is to RESTORE entries, never to lower the number. Full counts: {per_class:?}"
+        );
+    }
+
+    // Recorded so the SUMMARY carries measured counts rather than described ones.
+    println!(
+        "config-resolution axis: {} cases ({refused_count} on refused bases, \
+         {permitted_count} on permitted bases) over {} slots from {} confined, {} indirection \
+         and {} environment entries.\nper class: {per_class:?}",
+        all.len(),
+        slots.len(),
+        CONFIG_CONFINED_CARRIERS.len(),
+        CONFIG_INDIRECTION_CARRIERS.len(),
+        CONFIG_ENV_CARRIERS.len(),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 16c. The generative properties — the invariance arm GREEN today, the two
+//      fail-closed arms RED against the pre-fix tree
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_confined_config_assignment_never_changes_a_verdict() {
+    // **The INVARIANCE arm, and the ONLY alphabet it draws is
+    // `CONFIG_CONFINED_CARRIERS`.** It runs as its own test and is GREEN TODAY, so
+    // this round's failure output is itself evidence that the permitted half
+    // passed. A property whose permitted arm is unobservable until the fix lands
+    // cannot be said to fail in both directions.
+    //
+    // Measured against the built binary at this section's base commit over all 70
+    // generated cases: **40 permits and 30 `force_push_blocked`**, walks EMPTY
+    // throughout, no anomalies.
+    //
+    // **Without this arm, an implementation that simply refused every governed
+    // command carrying a `-c` would satisfy both fail-closed arms below** — while
+    // refusing `git -c user.name="$NAME" commit -m x`, `git -c core.pager=cat log`
+    // and `git -c a=b status`, whose measured cost
+    // `tests/envelope_config_resolution.rs` pins row by row. **That is the shape
+    // this fix is ONE WRONG STEP away from** (AR-19-11), and setting `user.name`
+    // on the command line is exactly what a driven run does to make its commits
+    // attributable.
+
+    // --- floor 0: the POSITIVE control for the walk -----------------------
+    let control = TempDir::new().expect("a temporary envelope root");
+    permits(control.path(), "gh pr create --title x");
+    assert_eq!(
+        ledger_lines_under(control.path()).len(),
+        1,
+        "a PERMITTED `gh pr create` writes exactly one ledger line, and the walk must be able \
+         to find it. If this is 0 the walk is blind and every empty-walk assertion below is \
+         vacuous. Files: {:?}",
+        files_under(control.path())
+    );
+
+    // --- floor 1: every base answers what the arm it is in claims ---------
+    let mut base_verdicts: BTreeMap<&str, Verdict> = BTreeMap::new();
+    for base in CONFIG_PERMITTED_BASES {
+        let envelope = TempDir::new().expect("a temporary envelope root");
+        let got = verdict(envelope.path(), base);
+        assert_eq!(
+            got.code, 0,
+            "the UNWRAPPED base `{base}` must be PERMITTED, or every case built on it is \
+             green or red for the base's own reason — and the whole permitted-base constraint \
+             of this axis rests on it. Got reason id: {}",
+            got.reason_id
+        );
+        base_verdicts.insert(base, got);
+    }
+    for base in CONFIG_REFUSED_BASES {
+        let envelope = TempDir::new().expect("a temporary envelope root");
+        let got = verdict(envelope.path(), base);
+        assert_eq!(
+            got.code, 2,
+            "the UNWRAPPED base `{base}` must be REFUSED. Got reason id: {}",
+            got.reason_id
+        );
+        assert!(
+            REASON_IDENTIFIERS.contains(&got.reason_id.as_str()),
+            "and refused under a D-24 identifier. Got: {}",
+            got.reason_id
+        );
+        base_verdicts.insert(base, got);
+    }
+
+    // --- the invariance assertion -----------------------------------------
+    let mut cases = 0usize;
+    for bases in [CONFIG_PERMITTED_BASES, CONFIG_REFUSED_BASES] {
+        for (base, splice, label, command) in config_cases(bases, CONFIG_CONFINED_CARRIERS) {
+            let envelope = TempDir::new().expect("a temporary envelope root");
+            let got = verdict(envelope.path(), &command);
+            let expected = base_verdicts.get(base).expect("the base was measured");
+            assert_eq!(
+                got,
+                *expected,
+                "\n\nA CONFINED CONFIG ASSIGNMENT CHANGED A VERDICT.\n\
+                 \n  command : {command:?}\
+                 \n  base    : {base}\
+                 \n  splice  : {splice:?} / {label}\
+                 \n  got     : exit {} reason {}\
+                 \n  seed    : {SEED:#x}\n\
+                 \nEvery entry of `CONFIG_CONFINED_CARRIERS` names a config key whose effect \
+                 is BOUNDED to the key it names: measured against real git with the \
+                 envelope's own injection as the control, none of them changes what \
+                 `git config --get core.hooksPath` resolves to.\n\
+                 \n**A red here is the fix having become a blanket refusal of anything \
+                 spelled `-c`**, which is a guard nobody can use and therefore a control that \
+                 gets switched off (AR-19-11). It is NOT a reason to narrow this alphabet, \
+                 and it is NOT a reason to move an entry into `CONFIG_INDIRECTION_CARRIERS` \
+                 — that alphabet's membership is a MEASUREMENT against the real git binary, \
+                 and an entry there is asserted to OUTRANK the envelope's injection.\n\
+                 \n**If the red entry is `-c a=b`, the damage is wider than this file**: it \
+                 is `CALLEE_KNOWN_LEADING_PREFIX` (line 5197) and round 7's entire \
+                 callee-grammar property is spliced behind it.\n\
+                 \n**If the red entry is `-c notinclude.path=…` or `-c includepath=…`, the \
+                 rule became a substring match on `include`** rather than a comparison of the \
+                 SECTION. Those two are this round's `--signed no`.",
+                got.code,
+                got.reason_id,
+            );
+            cases += 1;
+        }
+    }
+
+    assert_eq!(
+        cases,
+        CONFIG_CONFINED_CARRIERS.len() * CONFIG_SPLICES.len() * 7,
+        "the invariance arm must run every generated confined case"
+    );
+    println!("config-resolution invariance arm drove {cases} verdict-preserving cases.");
+}
+
+#[test]
+fn a_config_indirection_the_guard_cannot_bound_fails_closed_on_every_base() {
+    // **The indirection alphabet's OWN property, separate because its entries are
+    // NOT verdict-preserving.** An indirection carrier is REFUSED after `19-23` on
+    // BOTH kinds of base — that is the whole point of the inversion — so it cannot
+    // be drawn by the invariance arm without turning that property permanently red
+    // in a file `19-23` may not edit. This is `19-18`'s `{v}>` blocker one axis
+    // over, prevented by CONSTRUCTION rather than by care.
+    //
+    // Measured against the built binary at this section's base commit: of the 70
+    // cases, the **30 on refused bases are already refused** (for their VERB,
+    // which the missing key check happens not to prevent) and **all 40 on
+    // permitted bases are at exit 0**. Those 40 are what makes this property RED.
+    //
+    // **The assertion is the exit code and an EMPTY WALK, never the reason
+    // identifier.** An indirection carrier on a refused base is refused TODAY for
+    // its verb and after the fix for its carrier — a reason-identifier change on a
+    // row whose verdict never moves. Identifiers belong in the NAMED per-row pins
+    // of `tests/envelope_config_resolution.rs`, where each carries its own written
+    // derivation, and in the two ordering pins there that fix the scan order.
+    let control = TempDir::new().expect("a temporary envelope root");
+    permits(control.path(), "gh pr create --title x");
+    assert_eq!(
+        ledger_lines_under(control.path()).len(),
+        1,
+        "the walk's POSITIVE control must find a line, or every empty-walk assertion below is \
+         vacuous. Files: {:?}",
+        files_under(control.path())
+    );
+
+    let mut cases = 0usize;
+    let mut classes_seen: BTreeSet<&str> = BTreeSet::new();
+    for bases in [CONFIG_REFUSED_BASES, CONFIG_PERMITTED_BASES] {
+        for (base, splice, label, command) in config_cases(bases, CONFIG_INDIRECTION_CARRIERS) {
+            for (class, predicate) in CONFIG_RESOLUTION_CLASSES {
+                if predicate(&command) {
+                    classes_seen.insert(class);
+                }
+            }
+
+            // A fresh root per case, because a permitted forge command writes a
+            // ledger line and a shared root would exhaust the cap and turn later
+            // cases red for a reason that has nothing to do with the carrier.
+            let envelope = TempDir::new().expect("a temporary envelope root");
+            let got = verdict(envelope.path(), &command);
+
+            assert_eq!(
+                got.code,
+                2,
+                "\n\nA CONFIG INDIRECTION DISARMED THE HOOK AND THE COMMAND WAS PERMITTED.\n\
+                 \n  command : {command:?}\
+                 \n  base    : {base}\
+                 \n  splice  : {splice:?} / {label}\
+                 \n  got     : exit {} reason {}\
+                 \n  seed    : {SEED:#x}\n\
+                 \n`scan_leading` decides exactly ONE question about a `-c` assignment: is the \
+                 KEY half `core.hooksPath` (D-09, `is_hooks_path_key` at `policy.rs:750`)? \
+                 Git's config resolution has an INDIRECTION that check does not model. A key \
+                 in the `include` or `includeIf` section names a FILE whose contents are \
+                 spliced in **at the precedence of the directive that named them** — i.e. at \
+                 command-line precedence, outranking the envelope's env-injected triplet — \
+                 **without the string `core.hooksPath` appearing anywhere on the line.** \
+                 Measured against real git with the envelope's own \
+                 `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` injection as the control: the control \
+                 alone prints `/ENV_WINS`, and every entry of this alphabet makes the same \
+                 command print `/INCLUDE_WINS`.\n\
+                 \n**Every word here is literal, every word arrives in order, and the word \
+                 the guard calls the verb IS the word git calls the verb.** Rounds 5, 6 and 7 \
+                 are all RIGHT about this line and all three are pinned non-vacuous in \
+                 `tests/envelope_config_resolution.rs`. What is wrong is one layer further \
+                 out: the guard reasoned correctly about the command line and then assumed a \
+                 CONFIGURATION git will not resolve.\n\
+                 \n**The correct response is to make the guard ask `can I establish what \
+                 core.hooksPath will be` instead of `does this assignment spell \
+                 core.hooksPath`.** It is NOT a blanket refusal of every `-c` — the invariance \
+                 arm above and the eight ordinary invocations in \
+                 `tests/envelope_config_resolution.rs` measure that option's cost. It is NOT \
+                 a substring match on `include` — `-c notinclude.path=…` and \
+                 `-c includepath=…` are pinned PERMITTED before and after. And it is NOT a \
+                 refusal of a key that cannot be decomposed into a section — `-c a=b` is \
+                 `CALLEE_KNOWN_LEADING_PREFIX` and round 7's entire property is spliced \
+                 behind it.",
+                got.code,
+                got.reason_id,
+            );
+
+            let written = ledger_lines_under(envelope.path());
+            assert!(
+                written.is_empty(),
+                "`{command:?}` was refused, but a pull-request ledger line was written \
+                 somewhere under the envelope root. Found: {written:?} Files: {:?}",
+                files_under(envelope.path())
+            );
+            cases += 1;
+        }
+    }
+
+    assert_eq!(
+        cases,
+        CONFIG_INDIRECTION_CARRIERS.len() * CONFIG_SPLICES.len() * 7,
+        "the fail-closed arm must run every generated indirection case"
+    );
+    assert!(
+        classes_seen.len() >= 4,
+        "the indirection arm must draw at least FOUR config-resolution classes — the \
+         indirection class, the case-varied class, the option-carrier class, and the confined \
+         class through `CALLEE_KNOWN_LEADING_PREFIX` at the second splice. It cannot draw the \
+         environment class, and that is deliberate: `CONFIG_ENV_CARRIERS` is spliced at a \
+         different position and has its own property. Seen: {classes_seen:?}"
+    );
+}
+
+#[test]
+fn an_environment_carrier_of_configuration_fails_closed_on_every_base() {
+    // **The environment alphabet's OWN property**, separate for two reasons: its
+    // entries are not verdict-preserving, and they are spliced at a DIFFERENT
+    // POSITION — as an assignment PREFIX, which is where `resolve_program`'s
+    // step-1 check reads rather than where `scan_leading` reads.
+    //
+    // Measured at this section's base commit: of the 21 cases, the 9 on refused
+    // bases are already refused for their verb and **all 12 on permitted bases are
+    // at exit 0**. Those 12 are what makes this property RED.
+    //
+    // **The post-fix verdict is DERIVED, not guessed.** All three environment
+    // spellings of the paired discriminator `GIT_CONFIG_COUNT=0` — the bare
+    // prefix, `export …;` and `env …` — are measured at exit 2
+    // `hook_bypass_blocked` TODAY on BOTH a refused and a permitted base, for a
+    // key that IS in `ENVELOPE_ENV_KEYS`. One list entry therefore derives every
+    // case here.
+    //
+    // **Why the existing drift pin STRUCTURALLY CANNOT SEE THIS.** It is sourced
+    // from `cred::EnvelopeEnv::with_run_id(build_env_in(…))` — from the keys the
+    // envelope SETS or REMOVES — and `GIT_CONFIG_PARAMETERS` is a key the envelope
+    // neither sets nor removes but which DEFEATS one it sets. The fix is a SECOND
+    // SOURCE, not a wider filter.
+    let mut cases = 0usize;
+    for bases in [CONFIG_REFUSED_BASES, CONFIG_PERMITTED_BASES] {
+        for (base, label, command) in config_env_cases(bases) {
+            let envelope = TempDir::new().expect("a temporary envelope root");
+            let got = verdict(envelope.path(), &command);
+            assert_eq!(
+                got.code,
+                2,
+                "\n\nAN ENVIRONMENT CARRIER OF CONFIGURATION WAS PERMITTED.\n\
+                 \n  command : {command:?}\
+                 \n  base    : {base}\
+                 \n  splice  : {label}\
+                 \n  got     : exit {} reason {}\n\
+                 \n`GIT_CONFIG_PARAMETERS` is git's OWN internal carrier for `-c`. Measured \
+                 against real git with the envelope's own injection as the control, it prints \
+                 `/PARAM_WINS` where the injection alone prints `/ENV_WINS` — **it OUTRANKS \
+                 the triplet the envelope delivers `core.hooksPath` through.** Git EXPORTS \
+                 it, so ONE PREFIX DISARMS EVERY GIT SUBPROCESS of the command, which is how \
+                 it composes with `T-19-86`. Confirmed end to end in \
+                 `tests/envelope_config_resolution.rs`: an in-namespace push the `pre-push` \
+                 hook refuses completed and MOVED a bare remote's ref under this carrier, \
+                 with the SHAs recorded before and after.\n\
+                 \n**This is a gap in the LIST, not in the mechanism**, and the paired \
+                 discriminator is what proves it: all three spellings of \
+                 `GIT_CONFIG_COUNT=0` are refused TODAY at `hook_bypass_blocked`, on both a \
+                 refused and a permitted base. The correct response is to add \
+                 `GIT_CONFIG_PARAMETERS` to `ENVELOPE_ENV_KEYS` — one entry, whose disclosed \
+                 bare-word cost (`echo GIT_CONFIG_PARAMETERS`) is pinned in \
+                 `tests/envelope_config_resolution.rs` beside its measured twin.",
+                got.code,
+                got.reason_id,
+            );
+
+            let written = ledger_lines_under(envelope.path());
+            assert!(
+                written.is_empty(),
+                "`{command:?}` was refused, but a pull-request ledger line was written \
+                 somewhere under the envelope root. Found: {written:?} Files: {:?}",
+                files_under(envelope.path())
+            );
+            cases += 1;
+        }
+    }
+
+    assert_eq!(
+        cases,
+        CONFIG_ENV_CARRIERS.len() * 7,
+        "the environment fail-closed arm must run every generated case"
+    );
+}
