@@ -4169,3 +4169,311 @@ Two commits under `tests/` only, **zero `src/` hunks in each**:
 
 Gate: `passed + failed` = **1631**, against a baseline of 1610 and exactly 21 new
 `#[test]` fns — the identity holds. All thirteen `envelope_*` binaries ran.
+
+---
+
+## Execution record — plan 19-21 (the rule). NOT an audit finding.
+
+**Written by plan 19-21's executor, appended after the plan-19-20 record and
+touching nothing above this line.** No audit table, no Security Audit Trail
+entry, no Accepted Risks Log row, no Sign-Off and no earlier appended subsection
+was edited. Re-measuring and re-classifying these rows is `/gsd-secure-phase
+19`'s job, not this record's.
+
+### FIRST: `/gsd-secure-phase 19` is NOT cleared by this plan
+
+- **`T-19-86` remains OPEN at `high`**, by explicit user scoping decision. Its
+  four rows still exit 0 and its pin is green and unmodified.
+- **`T-19-91` remains OPEN at `high`**, arms unweakened: `git reflog $S`,
+  `git reflog show $S` and `git symbolic-ref $S` at exit 0 with **no second
+  carrier**, and bare `git push $REF` at exit 0 in the in-namespace
+  configuration. No decision-operand rule was added for `reflog`,
+  `symbolic-ref` or `push`, and the denylist was not extended.
+- **Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.** `T-19-86` and
+  `T-19-91` are both sub-classes of it and both remain open at `high`.
+- `T-19-96` stays registered and unfixed. `T-19-74`'s core rows stay frozen.
+  `T-19-61` … `T-19-73`, `T-19-84` and `T-19-85` are untouched.
+
+### THE BLOCKER THIS ROUND FOUND AND DID NOT WORK AROUND
+
+**`19-20`'s corpus contains two rows that no rule obeying this plan's
+prohibitions can satisfy at once, and the executor reported it rather than
+editing an assertion.**
+
+| | Row | Pinned reason | Where |
+|---|---|---|---|
+| A | `git --super-prefix x status` | `envelope_assertion_failed` | `after_19_21_the_unknown_option_cost_rows_are_refused_beside_their_permitted_twins` (RED, must go green) |
+| B | `git --super-prefix x push --force origin main` | `force_push_blocked` | `the_already_correct_planning_cells_keep_their_verdicts_as_controls` (green at `097dba2`, labelled "green today and after") |
+
+**The proof that they are incompatible.** The two commands carry IDENTICAL
+leading tokens — `--super-prefix x` — and `scan_leading` is a pure function of
+argv that sees them identically up to the verb. Row A requires `scan_leading`
+to return `Some(refusal)` for those tokens. `classify_git` returns that refusal
+immediately, so row B is then `envelope_assertion_failed` too. For row B to be
+`force_push_blocked` the CLASSIFIER's verdict must take precedence over
+`scan_leading`'s refusal — which is a filter in `classify_git` after
+`scan_leading` returned, a second reading site, and explicitly prohibited by
+this plan.
+
+**Row B's own comment shows it is a PRE-fix observation mis-labelled.** It reads
+"the two-sided twin of the stale-entry cell, which is what proves the entry is
+what moves the verb index" — it is `force_push_blocked` today precisely BECAUSE
+`--super-prefix` is in `GIT_GLOBAL_VALUE_OPTS` and swallows `x`. Removing that
+stale entry, which this round's own evidence requires, necessarily moves it.
+
+**Safety is unaffected: both rows are REFUSED under both rules at exit 2, with
+an empty walk.** Only the reason identifier differs, and
+`envelope_assertion_failed` is the more honest of the two — naming
+`force_push_blocked` for a command whose verb the guard admits it cannot
+establish would attribute the refusal to a mechanism that did not produce it.
+The row is left RED. Resolving it is a decision about `19-20`'s assertion, which
+this plan may not make.
+
+The sibling row `git -C/tmp push --force origin main`, in the same test, was the
+same shape and WAS resolvable — see the deviation below.
+
+### The rule as implemented
+
+**An unestablished verb slot is a refusal, not the next non-`-` word.**
+`leading_git_option` answered a word count, and for a spelling it did not
+recognise the answer was one — so `scan_leading` advanced a single word, landed
+on the option's VALUE, saw it did not begin with `-`, and broke with that value
+as the verb; `classify_git` found it in no denylist arm and answered `Allow`.
+The answer is now three-valued — self-contained, consumes a separate word, or
+**grammar not established** — and the third produces a refusal at
+`ParkReason::EnvelopeAssertionFailed` **inside the one scan**, returned through
+the `(usize, Option<GitVerdict>)` channel that already carried the
+unreadable-key refusal. That is the same fail-closed treatment
+`resolve_program`'s wrapper axis has had since audit 3, applied to the one arm
+of the same question that was never given it.
+
+Mechanically checked: `git diff --stat` over `src/` for this plan is **exactly
+one file**; no new `ParkReason` variant; `hooks.rs` not opened;
+`first_unreadable_decision_word`, `config_key_operand_index`,
+`subcommand_word_indices`, `scan_gh_api` and `resolve_program_with_head` have no
+hunk; the post-filter gains no arm.
+
+### The design question, answered — four options, three rejected on measured grounds
+
+| # | Option | Verdict and cost |
+|---|---|---|
+| i | Complete `GIT_GLOBAL_VALUE_OPTS` | **REJECTED.** It closes today's two cells and is wrong again at the next git release. The list was already wrong in BOTH directions against the installed git — `--attr-source` and `--shallow-file` absent, `--super-prefix` present and answering `unknown option:`. Completing an enumeration does not change the failure DIRECTION, which is the defect |
+| ii | Ask git for its grammar at GUARD time | **REJECTED on two independent grounds.** The guard runs synchronously on the agent's `PreToolUse` critical path and `push_needs_resolved_dests` exists precisely because a reproduced 180–240 second hang made per-call shelling out unacceptable; and a guard that asks the program it is guarding to describe its own grammar can be lied to by a `git` earlier on `PATH` — the same surface this phase's own argv-printing shims demonstrate. There is also nothing machine-readable to read: git's global options live in prose and `--list-cmds=` lists commands, not options |
+| iii | Derive it at build or envelope-construction time | **REJECTED.** The probing binary is not the guarded binary, the result is non-hermetic, and a probe that failed would have to fail closed — a guard nobody can build |
+| iv | **ADOPTED** — invert the failure direction in the guard, pin the constants against real git in a TEST | **The knowledge required is exactly ONE BIT per option: does it consume the next word.** Three structural rules supply it with no knowledge of git at all and run FIRST — a `--`-prefixed token containing `=` is self-contained whatever the option is, `--` ends the options, and a non-`-` token ends the scan — so only the remaining spellings need a constant, and the ABSENCE of the bit becomes a refusal |
+
+### The two constants, and the removal that is part of the fix
+
+`GIT_GLOBAL_VALUE_OPTS` **gained** `--attr-source` and `--shallow-file` and
+**lost** `--super-prefix`. `GIT_GLOBAL_SELF_CONTAINED_OPTS` is entirely new
+knowledge: before the inversion, silence meant "one word", so there was nothing
+to enumerate. Every member of both came from `19-20`'s recorded two-sided probe,
+re-run here against `git version 2.43.0`, not from a plan's text.
+
+**`--super-prefix`'s removal is as much of the fix as the two additions.** A
+stale entry is fail-open in the OVER-consuming direction, which is a **bypass**
+and not an over-refusal: measured, `git --super-prefix push --force origin main`
+exited **0**, because the scan swallowed the real verb `push` as the option's
+value and read `origin` as the verb. It is inert only because git itself rejects
+the option — **a stale entry for an option git ACCEPTS would be a live bypass.**
+
+Two categories were considered and rejected in the constants' own docs rather
+than silently not taken: a third `Terminates` answer, which would turn
+`git --exec-path push --force origin main` into a permit (a control that ADDS a
+permit needs stronger evidence than one that preserves a refusal); and a
+`--no-*` convention rule, which would absorb `--no-advice` and `--no-lazy-fetch`
+silently instead of surfacing them as the one refusal each that tells a
+maintainer the constant needs a row.
+
+### The drift pin, with its own limit stated correctly
+
+Four new `#[test]` fns in `policy.rs`'s own `#[cfg(test)] mod tests` run the
+two-sided probe against the installed `git` over **every entry of both
+constants and of `PUSH_VALUE_OPTS`**. It exists because `GIT_GLOBAL_VALUE_OPTS`
+had **no pin and no test reference anywhere** — audit 6 measured exactly two
+mentions of it in the whole repository — which is how it came to be wrong in
+both directions. It **catches `--super-prefix` today**: the entry was verified
+red before removal by re-adding a rejected option (`--no-advice`) to the
+constant and observing the pin fail.
+
+- Negative controls in both arms: `--bogus-opt` must classify as NOT ACCEPTED,
+  and a value-taking spelling must FAIL the self-contained probe, so a probe
+  answering the same for everything turns red.
+- The two constants are asserted **disjoint**.
+- The **UNPROBED** set is bounded at two and named: `--help` and `-h`, because
+  `git --help XVALUE version` answers `No manual entry for gitXVALUE`, which
+  neither reaches a verb nor names the following word as a value. They are in
+  neither constant and take the fail-closed path.
+- Floors with their arithmetic beside them: ≥ 6 value-taking (the six spellings
+  the corpus's class-1 alphabet splices by name), ≥ 8 self-contained (the seven
+  pinned by name elsewhere, plus one). Each failure message says the correct
+  response is to RESTORE entries, never to lower the floor.
+- It does **NOT** skip when git is absent; it panics. A skipped pin is a
+  fail-open pin.
+
+**Its limit, stated correctly rather than comfortably.** It pins the constants
+against the **DEVELOPER's** git, not the runtime git, and **the fail-closed
+default covers only the SILENT case.** A MISSING bit costs a refusal. A **WRONG**
+bit costs a **shifted verb** — a self-contained entry a runtime git treats as
+value-taking, or a value-taking entry it rejects, makes `scan_leading` step over
+or land short of the real verb, which is exactly the `--super-prefix` mechanism
+this round measured at exit 0. **So this pin is the only control over the
+wrong-bit direction, and a constant that outruns the runtime git is a bypass
+rather than an over-refusal.**
+
+### The over-refusal cost, measured from both sides
+
+**ZERO on git 2.43.0.** Every option this git accepts is classified by the probe
+and enumerated, so the only rows moving permitted → refused are ones git ITSELF
+rejects — refusals of commands that already do nothing.
+
+**One refusal per newly added global option on a FUTURE git**, until the
+constant learns it. `--no-advice` and `--no-lazy-fetch` are the measured
+stand-ins: real global options in later releases, rejected by this one, both in
+the corpus so the future cost is checkable rather than argued.
+
+**The three-step recovery, in the order the refusal message offers it:** spell
+the option with its value attached (`--option=value`), which needs no constant
+change because git's own grammar makes an attached value self-contained —
+**offered first and never alone, because an attached spelling is always
+self-contained but is NOT always accepted**: `git --shallow-file=/tmp/s version`
+answers `unknown option: --shallow-file=/tmp/s` on this git, while
+`--attr-source=`, `--git-dir=`, `--namespace=` and `--work-tree=` all reach the
+verb; or drop the option; or add the spelling to the constant, which the drift
+pin will name. The message names the OPTION TOKEN and never quotes the command
+back (SAFE-04).
+
+### What the rule newly REFUSES, each beside its permitted twin
+
+| Command | before | after | twin, still exit 0 |
+|---|---|---|---|
+| `git --bogus-opt status` | 0 | 2 `envelope_assertion_failed` | `git status` |
+| `git --no-advice status` | 0 | 2 `envelope_assertion_failed` | `git status` |
+| `git --no-lazy-fetch status` | 0 | 2 `envelope_assertion_failed` | `git log --oneline` |
+| `git --super-prefix x status` | 0 | 2 `envelope_assertion_failed` | `git status` |
+| `git -pc user.name=x status` | 0 | 2 `envelope_assertion_failed` | `git -c user.name="$NAME" commit -m x` |
+
+### What the rule newly REFUSES that was a live bypass
+
+| Command | before | after |
+|---|---|---|
+| `git --attr-source HEAD push --force origin main` | 0 | 2 `force_push_blocked` |
+| `git --attr-source HEAD stash` | 0 | 2 `force_push_blocked` |
+| `git --attr-source HEAD update-ref -d refs/heads/main` | 0 | 2 `force_push_blocked` |
+| `git --attr-source HEAD config core.hooksPath /tmp/x` | 0 | 2 `hook_bypass_blocked` |
+| `git --attr-source HEAD reflog delete HEAD@{0}` | 0 | 2 `force_push_blocked` |
+| `git --attr-source HEAD symbolic-ref HEAD refs/heads/x` | 0 | 2 `force_push_blocked` |
+| `git --shallow-file /tmp/s push --force origin main` | 0 | 2 `force_push_blocked` |
+| `git --shallow-file /tmp/s stash` | 0 | 2 `force_push_blocked` |
+| `git --attr-source HEAD -c core.hooksPath=/dev/null push --force origin main` | 0 | 2 `hook_bypass_blocked` |
+| `git --super-prefix push --force origin main` | 0 | 2 `envelope_assertion_failed` |
+| `git -c a=b --attr-source HEAD push --force origin main` | 0 | 2 `force_push_blocked` |
+| `git >/dev/null --attr-source HEAD push --force origin main` | 0 | 2 `force_push_blocked` |
+| `git --attr-source HEAD >/dev/null push --force origin main` | 0 | 2 `force_push_blocked` |
+| `git --attr-so`+`\`+NL+`urce HEAD push --force origin main` | 0 | 2 `force_push_blocked` |
+| `bash -lc "git --attr-source HEAD push --force origin main"` | 0 | 2 `force_push_blocked` |
+| `echo hi && git --attr-source HEAD push --force origin main` | 0 | 2 `force_push_blocked` |
+
+Four of these have **no second carrier at all** — `stash`, `update-ref -d`,
+`reflog delete` and `config core.hooksPath`, where disarming the hook IS the
+loss of the carrier.
+
+### What the rule newly PERMITS, with its control beside it
+
+| Command | before | after |
+|---|---|---|
+| `git push --recurse-submodules on-demand origin refs/heads/gsd-auto/alpha/w` | 2 `push_outside_namespace` | **0** |
+| `git push --signed no origin refs/heads/gsd-auto/alpha/w` (**CONTROL**) | 2 `push_outside_namespace` | 2 `push_outside_namespace` |
+
+`PUSH_VALUE_OPTS` gained `recurse-submodules` and **nothing else**. `git push -h`
+spells `--recurse-submodules (check|on-demand|no)` and
+`--signed[=(yes|no|if-asked)]` — a REQUIRED value and an ATTACHED-ONLY optional
+one — and the two look alike while git treats them differently: `no` becomes the
+repository. The `--signed` control stays REFUSED, so a list completed from the
+help text lands red. `push_operands` deliberately does NOT get the fail-closed
+default (its unknown-flag direction is an over-refusal, not a bypass, and a
+fail-closed version would refuse `git push --dry-run origin <ref>` — AR-19-11);
+its OVER-consuming direction is covered by the drift pin, whose negative
+controls are `--signed` and `--dry-run`.
+
+### The three rows `19-20` could not derive — MEASURED and pinned with their clauses
+
+| Command | measured after | the clause that produced it |
+|---|---|---|
+| `git --attr-source $T push --force origin main` | 2 `force_push_blocked` | `--attr-source` now consumes `$T`, so `$T` is an option OPERAND outside the decision region — as `$MSG` is in `git commit -m "$MSG"`. Round 5's rule no longer reaches it; `classify_push`'s denied-flag arm answers. **The identifier MOVED while the exit code did not.** |
+| `git --attr-source *.x push --force origin main` | 2 `force_push_blocked` | the same clause, through the glob half of round 5's rule rather than the parameter-expansion half |
+| `git --attr-source HEAD {push,--force} origin main` | 2 `envelope_assertion_failed` | a DIFFERENT rule: `19-17`'s WHOLE-COMMAND brace rule in `resolve_program_with_head`, which is not a decision-word rule and does not care which slot the braces occupy. **The one of the three whose identifier did not move**, and the row that shows this round did not pay for its rule by narrowing an earlier one's |
+
+**None became PERMITTED**, so the finding those rows were watched for — a value
+slot that stops being guarded, over-consumption in the `--super-prefix`
+direction — did not arise.
+
+### The controls that show this is a grammar MODEL, not a blanket refusal
+
+- **Twelve ordinary invocations still at exit 0**: `git --no-pager status`,
+  `git --no-pager log --oneline`, `git -c user.name="$NAME" commit -m x`,
+  `git --git-dir=/tmp/g status`, `git -C /tmp status`, `git --bare status`,
+  `git --literal-pathspecs status`, `git --no-optional-locks status`,
+  `git --exec-path status`, `git --version`, `git --attr-source HEAD status`,
+  `git --shallow-file /tmp/s log --oneline`. **`git --no-pager status` is this
+  axis's `ls {git,svn}-repo`**: a rule that refused it would be a blanket
+  refusal of anything beginning with `-`, which is how a safety control gets
+  switched off (AR-19-11).
+- `git - push --force origin main` still at **exit 0** — the rule was not widened
+  into non-`-`-prefixed words — and `git -- push --force origin main` still at
+  exit 2 `force_push_blocked`.
+- **The four mechanism pins, green and unmodified.** `Token.literal` is `false`
+  for `pus?` and `true` for `--attr-source`, `HEAD` and `push` — round 5's bit is
+  RIGHT about every word of the bypass line and was not falsified to obtain a
+  refusal. `git >/dev/null push --force origin main` refused and
+  `git x2>/tmp/o push --force origin main` PERMITTED — round 6's deletion model
+  is non-dead. Rule B's severed-head geometry reports
+  `head_is_command_position == false` for the severed spellings and `true` for
+  `{ git status; }`. `is_separator(">") == false` with `SEPARATORS`
+  byte-identical.
+- `wrapper_names_the_fix_must_not_know_are_absent_from_the_production_logic`
+  green under `19-20`'s absolute byte floors. **It fired once during this round**
+  and correctly: a `#[cfg(test)]` constant declared beside
+  `GIT_GLOBAL_VALUE_OPTS` truncated that control's view of `policy.rs` at line
+  600, because its stripper treats the first `#[cfg(test)]` line as the end of
+  production logic. The constant was moved into the test module and the reason
+  is recorded in its doc.
+
+### `T-19-17r` — the bookkeeping gap, still OUTSTANDING
+
+`19-17-SUMMARY.md` calls it "accepted". Audits 5 and 6 both confirmed the
+measurement and both pins and **both explicitly declined to make the acceptance,
+because accepting a risk is a human decision.** This plan does not make it
+either. **No Accepted-Risks-Log row was added, no register row was added, and
+the word "accepted" is not applied to `T-19-17r` anywhere in this round's code,
+test names, comments, SUMMARY or this subsection.** The gap is recorded as
+OUTSTANDING for the third round running.
+
+### What this record does NOT do
+
+- It closes `T-19-100`, `T-19-102` and `T-19-101` **in this plan's own words**
+  and leaves the re-measurement and re-classification to `/gsd-secure-phase 19`.
+- It makes **no acceptance** of any risk.
+- The **`glab --host` forge cell** stays carried forward, **unconfirmed against
+  its callee** — `glab` is not installed on this machine, so it is not claimed as
+  a live bypass — and unfixed. `FORGE_VALUE_OPTS`, `GH_API_VALUE_OPTS` and
+  `subcommand_word_indices` were not touched.
+- `T-19-86`, `T-19-91`, `T-19-96` and `T-19-74` are untouched and open, so
+  **`/gsd-secure-phase 19` is not cleared.**
+
+### What this plan produced
+
+Three commits, `src/envelope/policy.rs` the only `src/` file in any of them:
+
+1. `e592f38` — the inversion, the two constants, and four drift-pin `#[test]`
+   fns.
+2. `fe49142` — `T-19-102`'s one-entry fix and the three derived rows appended.
+3. `077f5fe` — the spawn-allowlist declaration and its stricter local
+   compensating control.
+
+Gate: `passed + failed` = **1639**, against `19-20`'s **1631** and exactly **8**
+new `#[test]` fns counted from `git show` — the identity holds. All thirteen
+`envelope_*` binaries ran. `git diff --numstat` over `tests/` shows **zero
+deletions**. `cargo clippy -- -D warnings` exits 0. Two failures: the documented
+`driver_reattach` flake, and the blocker row recorded at the top of this
+subsection.

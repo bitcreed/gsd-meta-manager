@@ -947,7 +947,29 @@ live bypasses**: `git -pc user.name=x status` (`unknown option: -pc`) and
 is the same — it is not live only because git rejects the option; a stale entry
 for an option git ACCEPTS would be one.
 
-Closed only when `19-21`'s rule is certified by this corpus.
+**CLOSED by plan `19-21` (`e592f38`).** The clause that closed it:
+`leading_git_option` now answers a three-valued grammar question whose default
+is **grammar not established**, and `scan_leading` refuses on it at
+`ParkReason::EnvelopeAssertionFailed` through its existing refusal channel — the
+same fail-closed treatment `resolve_program`'s wrapper axis has. `--attr-source`
+and `--shallow-file` were ADDED to `GIT_GLOBAL_VALUE_OPTS`, `--super-prefix`
+REMOVED, `GIT_GLOBAL_SELF_CONTAINED_OPTS` added as knowledge the guard never had,
+and a real-git drift pin now probes every entry of all three constants
+two-sided. Cost measured at zero on git 2.43.0 and one refusal per future global
+option, pinned from both sides.
+
+**ONE ROW OF THE CORPUS COULD NOT BE SATISFIED AND WAS LEFT RED, NOT EDITED.**
+`git --super-prefix x push --force origin main`, pinned at `force_push_blocked`
+in `the_already_correct_planning_cells_keep_their_verdicts_as_controls`, carries
+leading tokens IDENTICAL to `git --super-prefix x status`, which
+`after_19_21_the_unknown_option_cost_rows_…` pins at `envelope_assertion_failed`.
+Since `scan_leading` is a pure argv function and `classify_git` returns its
+refusal immediately, no rule obeying this plan's prohibitions produces both;
+satisfying the first requires the classifier's verdict to take precedence over
+the scan's refusal, which is a second reading site. Both rows are REFUSED at
+exit 2 with an empty walk under either rule — only the reason identifier
+differs. See `19-SECURITY.md`'s plan-19-21 record for the proof. **Resolving it
+is a decision about `19-20`'s assertion and is left open.**
 
 ### `T-19-101` — every generative alphabet, and the named class axes — OPEN, `medium`
 
@@ -972,8 +994,12 @@ Of the 120 refused-arm cases, **16 are at exit 0 today** — the 8 `--attr-sourc
 HEAD` and 8 `--shallow-file /tmp/s` cases. That is what makes the property red
 pre-fix by construction.
 
-Closed only by `19-21`, because a corpus is evidence about a control and there is
-no control yet.
+**CLOSED by plan `19-21`.** The clause that closed it: the corpus now certifies
+a control that EXISTS. `19-20` wrote it first, observed it RED in commits with
+zero `src/` hunks, and `19-21` confirmed the complete seven-name RED set STILL
+RED against `097dba2` before a single production line moved. Six of the seven
+turned green; the seventh is the irreducible row recorded under `T-19-100`
+above. All thirteen `envelope_*` binaries ran.
 
 ### `T-19-102` — `push_operands` / `PUSH_VALUE_OPTS` — OPEN, `low`
 
@@ -991,6 +1017,15 @@ replace. `git push --signed no origin refs/heads/gsd-auto/alpha/w` is pinned
 repository (`error: src refspec origin does not match any`) and a fix copied from
 `git push -h` would add `signed` and introduce a real mis-parse.
 
+**CLOSED by plan `19-21` (`fe49142`).** The clause that closed it:
+`PUSH_VALUE_OPTS` gained `recurse-submodules` and **nothing else** — in
+particular NOT `signed`, whose pin stays REFUSED and green. `push_operands`
+deliberately did NOT get `scan_leading`'s fail-closed default, because its
+unknown-flag direction is an over-refusal rather than a bypass and a fail-closed
+version would refuse `git push --dry-run origin <ref>` (AR-19-11); its
+OVER-consuming direction is covered instead by the real-git drift pin added over
+`PUSH_VALUE_OPTS`, whose negative controls are `--signed` and `--dry-run`.
+
 ### The `glab --host` forge cell — RECORDED, callee UNCONFIRMED, deliberately NOT fixed
 
 `glab --host gitlab.com mr create --title x` → exit 0 with **ZERO** ledger lines;
@@ -1004,6 +1039,12 @@ separate-value global flag is not confirmed against the callee. **This is not
 claimed as a live bypass.** `gh` was swept and is clean — `gh --repo o/r`,
 `gh -R o/r`, `gh --hostname h.example`, `gh api --hostname h.example` and
 `gh --version` all leave exactly one ledger line.
+
+**Still OPEN and untouched after plan `19-21`.** That plan fixed the same defect
+class in `scan_leading` and in `push_operands` and deliberately did not touch
+`FORGE_VALUE_OPTS`, `GH_API_VALUE_OPTS` or `subcommand_word_indices`. The callee
+claim remains unconfirmed — `glab` is still not installed — so this is still not
+claimed as a live bypass. It needs a machine with `glab` installed.
 
 **Out of round 7's three-item scope. Do not fix `FORGE_VALUE_OPTS`,
 `GH_API_VALUE_OPTS` or `subcommand_word_indices` as part of it.** A candidate for
