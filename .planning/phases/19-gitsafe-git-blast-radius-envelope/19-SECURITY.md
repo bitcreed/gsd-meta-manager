@@ -3,22 +3,24 @@ phase: 19
 slug: gitsafe-git-blast-radius-envelope
 status: blocked
 # threats_open = count of OPEN threats at or above workflow.security_block_on severity (high)
-threats_open: 6
+threats_open: 7
 asvs_level: 1
 block_on: high
 created: 2026-08-29
 updated: 2026-09-04
 register_authored_at_plan_time: true
-audited_against: HEAD (0092009) — the TENTH audit judges the tree after plans
-  19-26 (the control-carrier corpus, RED) and 19-27 (the carrier-operand rule and
-  the corrections). Audit 9 judged cc65220 (after 19-24/19-25); audit 8 judged
+audited_against: HEAD (1e56389) — the ELEVENTH audit judges the tree after plans
+  19-28 (the carrier-reach corpus, RED) and 19-29 (the redirection-target channel,
+  the exact-path binary clause, the credential control and the ledger bound).
+  Audit 10 judged 0092009 (after 19-26/19-27); audit 9 judged cc65220 (after
+  19-24/19-25); audit 8 judged
   fb43577 (after 19-22/19-23); audit 7 judged 3110d4a (after 19-20/19-21); audit
   6 judged 9534198 (after 19-18/19-19); audit 5 judged ad847b4 (after
   19-16/19-17); audit 4 judged b72237e (after 19-14/19-15); audit 3 judged
   228e4bc (after 19-13); audit 2 judged b8605ef (after 19-11/19-12); audit 1
   judged 0ec1fcb.
-register_totals: 130 total / 103 closed / 27 open / 6 at or above `high`
-# the six blocking: T-19-86, T-19-91, T-19-111, T-19-112, T-19-116, T-19-118
+register_totals: 133 total / 105 closed / 28 open / 7 at or above `high`
+# the seven blocking: T-19-86, T-19-91, T-19-111, T-19-112, T-19-116, T-19-119, T-19-121
 ---
 
 # Phase 19 — Security
@@ -1160,6 +1162,50 @@ are open below `high` and unaccepted.
 | 2026-09-03 (audit 8) | 121 | 99 | 22 | 3 (`T-19-86`, `T-19-91`, `T-19-108`) | `/gsd-secure-phase 19` re-run after 19-22 and 19-23 — one `gsd-security-auditor` subagent (opus), `ISOLATION=none` at `fb43577`; every closure re-measured against the built binary with a fresh envelope root per row and the root walked afterwards, the config-resolution precedence table re-measured against the REAL `git` binary with the envelope's own injection as the control including the repo-local, WORKTREE and GLOBAL persisted paths audit 7 had not reached, and the one new blocking finding confirmed by re-running audit 7's OWN destructive command pair at `fb43577` — it still rewrote a bare remote's `main` |
 | 2026-09-04 (audit 9) | 126 | 102 | 24 | 4 (`T-19-86`, `T-19-91`, `T-19-111`, `T-19-112`) | `/gsd-secure-phase 19` re-run after 19-24 and 19-25 — one `gsd-security-auditor` subagent (opus), `ISOLATION=none` at `cc65220`; every closure re-measured against the built binary with a fresh envelope root per row and the root walked afterwards, `alias` re-confirmed as the ONLY K1 section by sweeping twenty-one config keys against the REAL `git` binary with the envelope's own injection as the control, and the two new blocking findings confirmed end to end — a `.git/config` alias written by `printf >>` that rewrote a bare remote's `main`, with the same alias carrying no carrier REFUSED beside it, and a PR-cap reset driven through the guard until the cap fired and again after the deletion the guard permitted |
 | 2026-09-04 (audit 10) | 130 | 103 | 27 | 6 (`T-19-86`, `T-19-91`, `T-19-111`, `T-19-112`, `T-19-116`, `T-19-118`) | `/gsd-secure-phase 19` re-run after 19-26 and 19-27 — one `gsd-security-auditor` subagent (opus), `ISOLATION=none` at `0092009`; every closure re-measured against the built binary with a fresh envelope root per row and the root walked afterwards, rule (a)'s narrowing verified real over nineteen refused rows with both ordering-pin pairs at their different identifiers and all ten fail-open rows re-measured permitted, `C-15` re-driven end to end against a default-caps control, and the two new blocking findings confirmed against the REAL `git` binary — a replaced exec target that let a force push the hook had refused MOVE a bare remote's `main` with `GIT_CONFIG_COUNT` untouched and restored to a refusal by putting the binary back, and a `credential.helper = store` appended to the generated gitconfig that made `git credential fill` return the ambient secret against a control in which the same file named no helper |
+| 2026-09-04 (audit 11) | 133 | 105 | 28 | 7 (`T-19-86`, `T-19-91`, `T-19-111`, `T-19-112`, `T-19-116`, `T-19-119`, `T-19-121`) | `/gsd-secure-phase 19` re-run after 19-28 and 19-29 — one `gsd-security-auditor` subagent (opus), `ISOLATION=none` at `1e56389`; every closure re-measured against the built binary with a fresh envelope root per row and the root walked afterwards, round 5's literalness bit and round 6's deletion model re-verified INTACT three ways with the SEGMENT-COUNT pins read for falsifiability in both the SPLIT and the DISPLACED variant, the redirection channel swept over all seven pathname operators and the five non-pathname ones, the empty-`credential.helper` control re-driven against real git with the URL-SCOPED cell probed and eight env strip-spellings measured, the ledger bound driven to its exact discrimination byte, and the two new blocking findings confirmed against the REAL `git` binary — an option-attached write that replaced the guard's own binary and let a force push the hook had refused MOVE a bare remote's `main` (`835b6be` -> `40ad7f7`), restored to a refusal by putting the binary back and reproduced on the ledger as a fired PR cap reset against its space-separated twin at exit 2; and a `-c credential.helper=store` that returned the ambient `~/.git-credentials` secret on a permitted line at round 10's posture as well as this one |
+
+### Audit 11 method (re-audit after plans 19-28 and 19-29)
+
+**State A** (prior SECURITY.md, `status: blocked`, `threats_open: 6`), ASVS L1,
+`block_on: high`, `ISOLATION=none` on the main checkout at `1e56389`. The mandate
+was to TEST audit 10's claim now that the disposition is done: **is the plane
+finished, are the residues true as stated, and does anything this round installed
+create a new reachable state?**
+
+Method, in order:
+
+1. Read `19-SECURITY.md`, `19-28-SUMMARY.md` and `19-29-SUMMARY.md`, plus the two
+   appended execution records.
+2. Built the tree at `1e56389` and drove the **binary** — `printf '<PreToolUse
+   JSON>' | GSD_MM_ENVELOPE_ROOT=$(mktemp -d) ./target/debug/gsd-meta-manager
+   envelope guard alpha` — with a fresh envelope root per row and `os.walk` over
+   the whole root afterwards, the walk proved non-blind on every pass by
+   `gh pr create --title x` leaving exactly one `alpha/pr-ledger.ndjson` line.
+3. Treated each of the round's THREE new mechanisms as new attack surface as well
+   as new defence: the `Segment`-borne redirection channel (does it undo round 5
+   or round 6?), the exact-path binary clause (can it be turned into a denial?),
+   the empty-`credential.helper` injection (does it add env-reachable state?) and
+   the ledger bound (can it be turned into a denial or a bypass?).
+4. Re-derived round 5 and round 6's integrity three ways — `SEPARATORS` by
+   `git log -L`, `is_separator(">")` from the source, and `segment.tokens` from
+   the SEGMENT-COUNT pins, which were READ for falsifiability in both the SPLIT
+   and the DISPLACED variant rather than accepted green.
+5. Swept the cells adjacent to all six named axes: the redirection channel over
+   all twelve operators in both quote forms and both segment positions and
+   through the `NestedPayload` recursion; the binary clause at every plausible
+   write spelling; the credential control at the URL-scoped key and at eight
+   environment spellings that would strip the injected pair; the ledger bound at
+   its exact discrimination byte and at a file whose length is not its size.
+6. Rebuilt a bare-remote fixture with `pre-push`/`pre-commit` in `stub_body`'s
+   exact three-line shape delivered through the envelope's own
+   `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0` triplet, and
+   measured every leg **with a control beside it**, recording the bare remote's
+   SHA before and after each.
+7. Measured the credential legs against real git in a fake HOME holding a
+   `~/.git-credentials`, at THIS round's posture and again at round 10's, to tell
+   a regression from a pre-existing gap.
+8. Confirmed every claimed bypass reaches the file under a real `bash`.
+9. Read the gate with `rtk proxy grep` over a redirected log (D-34).
 
 ### Audit 10 method (re-audit after plans 19-26 and 19-27)
 
@@ -11537,3 +11583,641 @@ ETXTBSY race did NOT fire** in the gate run or in this plan's measurements —
 what the guard does about that seam**, so its absence is RECORDED and its
 relation to this round's change is stated in NEITHER direction: absence is not
 evidence it is fixed, and it is not evidence this round affected it.
+
+---
+
+## Threats found by audit 11 (2026-09-04, after plans 19-28 and 19-29)
+
+**Provenance, stated first.** The two subsections above this one were written by
+the EXECUTORS of plans 19-28 and 19-29; they are deliberately outside the audit
+tables. Audit 11 left them, every earlier appended subsection and every earlier
+audit's own tables **byte-identical** — the body below the frontmatter was
+checksummed before writing (`sha256 8f65ad89f70afb72d2…` over the 821,703 bytes
+below the frontmatter of the 822,705-byte file), and this audit's write changes
+the frontmatter, adds one Security-Audit-Trail row, one method subsection and
+everything from here to the end of the file, **deleting nothing**. Everything
+below is **audit 11's own**, measured against the built binary at `1e56389` with
+a fresh `GSD_MM_ENVELOPE_ROOT` per row and the whole envelope root walked
+afterwards, and with every claimed bypass confirmed against the **real `git`
+binary** in a rebuilt bare-remote fixture with a control beside every leg.
+
+### The question this audit was set, answered plainly
+
+**Audit 10 said the modelled surface is complete and the remaining work was
+disposition, not discovery. Now that the disposition is done: is the plane
+finished, are the residues true as stated, and does anything this round installed
+create a new reachable state?**
+
+**Three answers, and they are not the same answer.**
+
+1. **The plane is finished. Audit 10 was right and audit 11 says so plainly.**
+   Fifteen carriers, fifteen letters, and after `19-29` ten of them have a rule
+   rather than nine. Audit 11 swept the cells adjacent to all six named axes and
+   found **no twelfth plane** — no carrier that is neither an argv nor a file, no
+   new way to change *when* the guard runs, no state it carries between calls
+   that `19-26` did not enumerate. **The eleventh question was the right one and
+   it is answered.**
+
+2. **Nothing this round INSTALLED creates a new reachable state, and each of the
+   three new mechanisms was probed as attack surface in its own right.** The
+   `Segment`-borne redirection channel did not undo round 5 or round 6 — verified
+   below at the byte, the token and the verdict. The empty-`credential.helper`
+   injection adds no env-reachable state, because `ENVELOPE_ENV_KEYS` covers
+   `GIT_CONFIG_KEY_`/`GIT_CONFIG_VALUE_` by PREFIX and therefore covered the new
+   pair by construction — eight env spellings measured, all exit 2. The
+   exact-path binary clause refuses nothing it should not: both near-miss
+   controls stay exit 0. **The ledger bound cannot be turned into a bypass** — it
+   is a `stat` before both the read and the append, and it fails closed.
+
+3. **But the residues are NOT true as stated, and the plane's own arithmetic is
+   wrong for the third consecutive round.** `19-29` corrected the residue from
+   FOUR directions to SEVEN and stated it as a CONDITION rather than a list —
+   which is the right remedy and audit 11 endorses the form. **The condition it
+   states is still not the condition the code implements.** The docs say the rule
+   is silent about *a word the SHELL MAY REWRITE*, *a word that IS NOT ABSOLUTE*
+   and *a word that reaches a protected path ONLY THROUGH A LINK*. There is a
+   fourth silence, it belongs to none of those three, and it is the widest of all
+   of them: **a word that is fully literal, needs no expansion, no cwd and no
+   link, and names an absolute path — carried as an OPTION-ATTACHED value.**
+   `dd if=/bin/true of=<BINARY>` is **exit 0**, and audit 11 drove it end to end
+   until a bare remote's `main` moved.
+
+**So the honest one-sentence answer: the plane is finished, the round's three
+mechanisms are sound, and the round's own residue statement is incomplete in the
+cell one CHARACTER over from the one it just corrected.**
+
+### The new rows
+
+| Threat ID | Category | Component | Severity | Disposition | Finding | Status |
+|---|---|---|---|---|---|---|
+| **T-19-119** | **Elevation of Privilege / Tampering** | **`lexical_absolute_components` (`policy.rs:5457-5475`), the normaliser BOTH halves of `protected_carrier_named`'s path set are built on. It returns `None` unless the WORD ITSELF begins with `/`** | **high** | **mitigate (unimplemented — not among the seven declared directions, named nowhere)** | **AN OPTION-ATTACHED PATH IS INVISIBLE TO BOTH HALVES OF THE RULE, IT REACHES EVERY ONE OF `C-01` … `C-10`, AND AUDIT 11 DROVE IT END TO END AGAINST REAL GIT.** A word like `of=/abs/path` or `--target-directory=/abs/path` carries an absolute path inside a token that does not START with `/`, so `lexical_absolute_components` answers `None` and both `word_is_within` and `word_is_exactly` answer `false`. `Token.literal` is TRUE for it — there is no `$`, no `~`, no glob and no brace — so **it is none of the seven declared directions**, and it needs no prior read, no symlink, no cwd and no expansion. **THE BINARY, DRIVEN END TO END** in a rebuilt bare-remote fixture with `pre-push`/`pre-commit` in `stub_body`'s exact three-line shape delivered through the envelope's own `GIT_CONFIG_COUNT`/`KEY_0`/`VALUE_0` triplet: **LEG A (control)** — real binary in place, `git push --force origin HEAD:refs/heads/main` → **REFUSED by the hook**, remote `main` UNMOVED at `835b6be`. **LEG B** — `dd if=/bin/true of=<BINARY>` is **exit 0 through the guard** (against `cp /bin/true <BINARY>` at **exit 2**, the same program-free pair differing only in the `=` join), then the same push → **COMPLETED, remote `main` `835b6be` → `40ad7f7` MOVED**. **LEG B-control** — binary restored, remote rewound, same push → **REFUSED, UNMOVED**. **LAYER 2 separately**: the replaced binary answering `envelope guard alpha` on `git push --force origin main` → **exit 0 (PERMIT)**. **THE LEDGER, DRIVEN END TO END**: four `gh pr create` calls in one persistent root → 1 permit then 3 `pr_cap_exceeded`, four ledger lines; `dd if=/dev/null of=<ENV>/alpha/pr-ledger.ndjson` → **exit 0**, ledger truncated to 0; call 5 → **PERMITTED again**; the twin `cp /dev/null <ENV>/alpha/pr-ledger.ndjson` → **exit 2**. **THE CLASS IS BROAD AND EVERY ROW WAS CONFIRMED TO REACH THE FILE UNDER REAL `bash`**: `dd of=`, `tar --directory=`, `cp --target-directory=`, `rsync --temp-dir=`, `chmod --reference=`, `python3 --out=` and `git --git-dir=` are all **exit 0** over the envelope root, while every space-separated twin is **exit 2**. **AND THE PREDICATE'S OWN DOC CITES THIS SPELLING AS ONE IT REFUSES**: `policy.rs:5743` argues the disclosed read over-refusal is unavoidable because *"is `dd if=X of=Y` a read of `X` or a write of `Y`?"* — measured, `dd if=<ENV>/alpha/pr-ledger.ndjson of=/tmp/stolen` is **exit 0** and is neither. **This re-opens `T-19-116` and re-opens `T-19-112`'s cap route by a spelling neither round drew**, and it is `T-19-76`'s failure mode for the ELEVENTH consecutive round — the round widened the corpus to eleven classes and every carrier path in all eleven is either a bare absolute word or one of the six declared rewrites; **not one entry anywhere carries a path after an `=`.** | **OPEN — BLOCKING** |
+| **T-19-121** | **Information Disclosure / Elevation of Privilege** | **`git -c credential.helper=<value>` on one permitted command line. `scan_leading`'s leading-option region READS the word; no rule REFUSES it** | **high** | **mitigate (unimplemented)** | **THE RUN REACHES THE USER'S AMBIENT GIT CREDENTIAL ON A SINGLE PERMITTED COMMAND LINE, WITH NO FILE WRITE AT ALL — the same harm `T-19-118` registers and `T-19-23`'s declared subject.** Measured against real git in a fake HOME holding `~/.git-credentials`, with the envelope's FULL posture applied (the generated `gitconfig` on both `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM`, and `19-29`'s own empty-`credential.helper` pair injected): `git -c credential.helper=store credential fill` for `https://github.com` returns the **ambient username and password**, against the same call without the `-c` at **exit 128, secret ABSENT**. Through the guard, `git -c credential.helper=store` is **exit 0** on `credential fill`, on `fetch origin`, on `ls-remote origin` and on an in-namespace `push`. **IT IS PRE-EXISTING AND THIS ROUND DID NOT CREATE IT** — audit 11 re-measured it at round 10's exact posture (generated file, no injected credential pair) and it returns the ambient secret there too, so it is a gap ten audits did not find rather than a regression. **WHAT THIS ROUND DID IS DESCRIBE IT WRONGLY.** `cred.rs:420-424` introduces it as *"a BOUNDED residue rather than a reason to decline the control, and the bound is stated rather than assumed: that spelling is ARGV-VISIBLE and is already GOVERNED by `scan_leading`'s leading-option region"*. **Argv-VISIBLE it is; GOVERNED it is not.** `scan_leading` parses the word and no rule acts on it — the by-name deny covers `core.hooksPath`, round 8's confinement clause covers `include.path`, and **nothing covers `credential.helper`**, which is measured. A residue whose stated bound is that another layer governs it, where that layer does not, is `T-19-84`/`T-19-107`/`T-19-109`/`T-19-115`'s shape a SIXTH time. `T-19-23` is left as this file records it and audit 11 **does not un-close it** — that is a human decision — but its declared mitigation (*"the generated file naming no helper"*) is now the weaker half of a two-part control and **this route defeats both halves.** | **OPEN — BLOCKING** |
+| T-19-120 | Denial of Service | `ledger::MAX_LEDGER_BYTES` (`ledger.rs:114`, checked at `:291-311`) — the bound is over the file's SIZE and not over its KIND | medium | mitigate | **`T-19-117`'s bound closes unbounded WORK and leaves unbounded WAIT, which is strictly worse than the case it was written for.** The check is `std::fs::metadata(&path).map(|meta| meta.len())`, and **a FIFO stats at length 0**, so it passes the bound; `std::fs::read` three lines below then blocks until a writer that never comes. Measured against the built binary: with `<ENV>/alpha/pr-ledger.ndjson` created by `mkfifo`, `gh pr create --title x` **timed out at 20 s (exit 124)** and never returned — against the **7.90 s** `19-28` recorded for a 202 MB regular file and the **18 ms** the same file now answers in. **REACHABILITY, measured with the absolute-literal twin beside it**: `mkfifo <ENV>/alpha/pr-ledger.ndjson` is **exit 2**, while `mkfifo <ENV>/alph?/…` (glob), `mkfifo <ENV>/alpha/{pr-ledger.ndjson,x}` (brace), `mkfifo $R/alpha/…` (expansion-borne) and `mkfifo ~/.local/share/gsd-meta-manager/envelope/alpha/…` against the REAL root (tilde) are **all exit 0** — four of the seven declared fail-open directions, plus `T-19-119`. **The comment beside the check states the fail-open and gives its reason** — *"A file that cannot be stat'd is not a file this check can refuse on"* — and that reasoning is sound for a stat that FAILS; the FIFO case is a stat that SUCCEEDS and answers 0. **The BEHAVIOURAL half is UNMEASURED and claimed in NEITHER direction**, on the same discipline `C-08`'s and `T-19-117`'s behavioural halves are held to: what the agent CLI does with a `PreToolUse` hook that never returns is a property of a closed-source binary. Rated `medium` on the mechanical half alone, exactly as `T-19-117` was. | open — below `high` (non-blocking) |
+
+*Status: open · closed · open — below `high` threshold (non-blocking)*
+*Severity: critical > high > medium > low — only open threats at or above `workflow.security_block_on` count toward `threats_open`*
+
+`T-19-120` is open below the `high` threshold and does **not** count toward
+`threats_open`. `T-19-119` and `T-19-121` do.
+
+### `T-19-117` and `T-19-118` — CLOSED AS SCOPED, each with its successor named
+
+**This audit closes two rows and says plainly why each closes, because a phase
+that has been blocked for eleven rounds needs its true closures as much as its
+true findings.**
+
+**`T-19-118` — CLOSED AS SCOPED, successor `T-19-121`.** Its declared harm is the
+run reaching the ambient credential through `C-05`, the generated `gitconfig`.
+Audit 11 re-drove the whole thing against real git 2.43.0 in a fake HOME holding
+`~/.git-credentials`:
+
+```text
+CONTROL   generated file as written, no injected pair
+          --get-all credential.helper -> exit 1, no helper
+          git credential fill         -> exit 128, ambient secret ABSENT
+HARM      `[credential] helper = store` appended (T-19-118's own row)
+          --get-all credential.helper -> `store`, `store`, exit 0
+          git credential fill         -> exit 0, ambient username and password PRESENT
+CONTROL   the same file, with 19-29's injected empty-helper pair
+          --get-all credential.helper -> `store`, `store`, then an EMPTY line, exit 0
+          git credential fill         -> exit 128, ambient secret ABSENT
+```
+
+**The `--get-all` false negative is real and the criterion choice was right.** The
+query still LISTS the helper at exit 0 while the fill fails closed; a gate built
+on the query would have reported this working control as broken, and `19-29`'s
+own deviation 3 records it catching exactly that in `envelope_credential.rs`.
+
+**The control is wider than the rule, and audit 11 probed the cell beside it
+rather than accepting the claim.** A **URL-SCOPED** helper —
+`[credential "https://github.com"] helper = store`, a different config key that an
+empty `credential.helper` might not have reset — was appended to the generated
+file and measured: **exit 128, secret ABSENT with the pair injected, and the
+ambient username and password PRESENT without it.** So the reset covers the
+URL-scoped spelling too. Combined with the redirection rule, **every one of the
+six write spellings `19-28` enumerated now fails closed**, and so do the tilde,
+glob and brace spellings that have no rule and never will — because the control
+reads no command line.
+
+**And the mechanism adds no new state.** Eight environment spellings that would
+strip or override the new pair were driven: `GIT_CONFIG_COUNT=1`,
+`GIT_CONFIG_KEY_1=credential.helper`, `GIT_CONFIG_KEY_2=credential.helper`,
+`env GIT_CONFIG_VALUE_1=store`, `env -u GIT_CONFIG_KEY_1`,
+`GIT_CONFIG_GLOBAL=/tmp/evil`, `GIT_ASKPASS=/tmp/evil` and
+`SSH_AUTH_SOCK=/tmp/evil` — **all exit 2**. `ENVELOPE_ENV_KEYS` carries
+`GIT_CONFIG_KEY_` and `GIT_CONFIG_VALUE_` as PREFIX entries and `envelope_env_key`
+matches them with `starts_with`, so the second pair was covered **by construction
+rather than by an edit** — which is why no drift pin had to move.
+
+**The cost is measured and is nil where it matters.** `GIT_ASKPASS` still answers
+— a responder stub returns its value through `git credential fill` with the pair
+injected — so D-17's only token channel is intact, and `gh` is closed from the
+other side by `GH_CONFIG_DIR`.
+
+**What is NOT closed is the argv route, and it is registered as `T-19-121` rather
+than folded into this closure.** `T-19-23` is **not** marked closed or re-closed
+by this audit, and `AR-19-04` and `AR-19-05` are **untouched, not un-accepted and
+not renumbered.**
+
+**`T-19-117` — CLOSED AS SCOPED, successor `T-19-120`.** Its declared harm is
+`tally` over a whole-file read crossing `GUARD_TIMEOUT_SECS = 5`. Re-measured at
+`1e56389` against the built binary, one root per level:
+
+```text
+ledger bytes    gh pr create        ledger lines after
+1,000,000        exit 0, 13 ms      counted   <- under the bound, still permits AND still counts
+8,388,608        exit 0, 61 ms      counted   <- exactly MAX_LEDGER_BYTES
+8,388,609        exit 2, 28 ms      0         <- one byte past it
+25,000,000       exit 2, 18 ms      0
+202,000,000      exit 2, 18 ms      0         <- 19-28 measured 7,900 ms here
+```
+
+**The discrimination is exact at the constant**, the refusal is 18 ms rather than
+7.9 s, and the just-under control **still permits and still counts** — which is
+what keeps this a size bound rather than a disarmed cap. **The over-refusal is
+bounded exactly as disclosed, measured from both sides** against a 20 MB ledger:
+`ls` exit 0, `git status` exit 0, `git push --force origin main` exit 2 at its own
+`force_push_blocked`, and only `gh pr create`, `gh api …/pulls` and
+`glab mr create` refused. **It is deadline-derived and not cap-derived**, which
+matters because `C-15` leaves `pr_cap_*` unclamped and agent-writable, and it
+**fails closed** — an `Err`, so the guard parks at `EnvelopeAssertionFailed` and
+never at `PrCapExceeded`, which would name a cap that fired (D-24). **The bound
+cannot be turned into a bypass**: the `stat` precedes both the read and the
+append, so there is no window in which a large ledger is appended to but not
+counted. **What it cannot do is bound a file whose length is not its size** —
+that is `T-19-120`.
+
+### The `Segment`-borne redirection channel — round 5 and round 6 are INTACT, verified three ways
+
+**The mandate's sharpest question, and the answer is that the round got this
+right.** The obvious implementation — pushing the target into the token stream —
+would have split `git >/dev/null push --force origin main` into `[git]` and
+`[push, --force, origin, main]`, and the leading `git` resolves `Governed` with an
+empty argv, which `classify_git` answers `Allow` for. **Round 6's headline refusal
+would have become a permit.** It did not.
+
+| what | audit 11's measurement |
+|---|---|
+| `SEPARATORS` | **byte-identical** at `policy.rs:2297`; `git log -L 2297,2297` over the whole phase returns **exactly one** commit, `84a9b05` (plan 19-05) |
+| `is_separator(">")` | `false` **by construction** — `is_separator` is a bare `SEPARATORS.contains` at `policy.rs:3811` and `>` is not in the list |
+| `segment.tokens` | **byte-identical** — `git >/dev/null push --force origin main` is ONE segment carrying exactly `[git, push, --force, origin, main]` |
+| round 6's headline | `git >/dev/null push --force origin main` → **exit 2 `force_push_blocked`** |
+| round 6's over-deletion control | `git x2>/tmp/o push --force origin main` → **exit 0**, unmoved |
+
+**The SEGMENT-COUNT pins are green AND they would catch both variants — audit 11
+read the assertion rather than the name.**
+`a_redirected_simple_command_is_exactly_one_segment_with_exactly_the_surviving_argv`
+asserts `segments.len() == 1` **and** asserts the exact token vector. The first
+catches the **SPLIT** variant (a target arriving as an operator token flushes the
+segment, count becomes two); the second catches the **DISPLACED** variant
+(`T-19-98`'s registered shape — a target admitted as an ordinary word leaves the
+count at one and shifts every decision index, and the observed vector would carry
+`/dev/null` where `push` belongs). **Neither variant can pass, and the failure
+message names both.** The pin is falsifiable in both directions rather than
+green-by-construction.
+
+**The channel is COMPLETE over the operator grammar and correct on the
+pathname/non-pathname split**, which audit 11 swept rather than accepted. All
+seven pathname operators reach the carrier and are refused — `>`, `>>`, `>|`,
+`<`, `<>`, `&>`, `&>>`, plus the IO_NUMBER form `1>`, the attached form
+`>/path` with no space, and both the double- and single-QUOTED target. The
+target is found in segment 1, in segment 2, and through the `NestedPayload`
+recursion (`bash -lc '… > <ENV>/…'` → exit 2). **And the five non-pathname
+operators are correctly NOT recorded as carriers**, so the round bought its rule
+without an over-refusal: `cat <<X`, `cat <<<X`, `ls >&2`, `ls 2>&1` and `cat <&0`
+are all **exit 0**. The outside-the-root control `echo x > /tmp/outside && ls`
+stays **exit 0**.
+
+**`Token.literal` is now read in a THIRD place and was neither cleared nor
+repurposed.** Round 5's whole pin family is green, re-measured below.
+
+### The four execution-time judgements, assessed independently
+
+1. **The authorised cross-fence exception — CORRECT, and the rewritten reasoning
+   is now TRUE.** Audit 11 re-drove every row rather than reading the record.
+   **All three rows flip and no fourth does**: `: > <ENV>/alpha/pr-ledger.ndjson`,
+   `printf 'exit 0' > <ENV>/alpha/hooks/pre-push` and
+   `echo evil > <ENV>/alpha/askpass` are **exit 2**; the in-test control
+   `: > /tmp/l` is **exit 0**; directions (ii) (`D=$(git config --get
+   core.hooksPath); rm -f $D/../pr-ledger.ndjson`), (iii) (`rm -f /tmp/l`) and
+   (iv) (`rm -f pr-ledger.ndjson`) are all **exit 0, unmoved**; and
+   `envelope_control_carrier` is **37 passed / 0 failed** in audit 11's own gate
+   run, so no fourth row in that file moved. **Both rewritten reasons are true.**
+   *"These rows will not flip"* was false by measurement, and the record names the
+   inference error precisely — *the rule cannot see it as a WORD* does not entail
+   *the guard cannot establish it at all*. *"A rule that read redirection targets
+   would re-open a model five rounds have pinned shut"* was false because it
+   assumed the only channel is the token stream; the `Segment`-borne channel is a
+   third option and the table above is the proof, not the argument. **Rewriting a
+   stale reason in place with why it was right when written is the right handling
+   and this is the phase's best instance of it.**
+
+2. **Two unnamed rows reported as findings rather than absorbed — CORRECT, and
+   the mutual exclusivity is real.** `t_19_117_the_ledgers_size_is_unbounded_work…`
+   asserts in the present tense that a 202,000,000-byte ledger pushes a forge
+   command past the deadline; `after_19_29_a_ledger_past_the_size_bound_…` in the
+   **same file** requires the bound to sit inside `(1 MiB, 24 MiB)`. Audit 11
+   confirms **no constant satisfies both**: any bound under 24 MiB refuses a 202 MB
+   ledger, and audit 11 measured that refusal at **18 ms**, so the first row's
+   assertion is necessarily false the moment the second row's is true. Correcting
+   it was not optional. **Reporting both rows as findings rather than folding them
+   into the human authorisation is the right call** — the authorisation named one
+   row, and an executor that quietly extended it to three would have converted a
+   bounded permission into an open one. `19-28`'s blocking finding was one file
+   too narrow and the record says so in its own words.
+
+3. **`current_exe()` resolved in `guard_in` rather than `guard` — SOUND, and it
+   does not change what `C-10` means in production.** Verified mechanically:
+   `guard_in` has **exactly one production caller**, `guard` at `hooks.rs:837`
+   (the only other reference is inside `#[cfg(test)]` at `:2038`), so "once per
+   invocation" holds either way and in production `current_exe()` returns the same
+   path from either site. **The mandated form was genuinely unsatisfiable and also
+   wrong on the merits**: `guard_in` is the explicit-roots entry point the suite
+   drives directly, so a path resolved in `guard` would be `None` for every corpus
+   row and the clause would be **silently untested** — the exact failure this
+   phase has been blocked over. The claim is about *the process answering this
+   call*, which for a test process is the test binary, so the substitute makes the
+   subject right rather than convenient. **What it changes is only what `C-10`
+   means in TEST**, and it changes it in the correct direction. The fail-open when
+   the path is unresolvable is real, is stated on the predicate's signature, and
+   is pinned with a positive control beside it —
+   `each_half_of_the_path_set_is_silent_when_it_was_not_given_a_path`
+   (`policy.rs:10287`) asserts both halves silent when unfed and both firing when
+   fed, plus that a `file` normalising to `/` answers `false` rather than matching
+   every absolute word.
+
+4. **The unmet success criterion, reported rather than claimed — the
+   characterisation is EXACT.** Audit 11 re-derived the numbers and then went
+   past them. `git diff --numstat` over `tests/` across `19-29`'s five commits is
+   **`384/35`, `99/26`, `37/4`** — the criterion *"ZERO deletions"* is indeed not
+   met. **Every deletion is accounted for and NO assertion weakened**, which
+   audit 11 established mechanically rather than by reading the table: deleted
+   lines matching `assert_`, `assert!`, `refuses(` or `permits(` number
+   **ZERO**; removed `#[test]` attributes number **ZERO** against **12** added;
+   and the only deleted `fn` lines in `tests/` are the **three** renamed
+   functions the record names, with the fourth (`envelope_credential.rs`) keeping
+   its name and the fifth being `cred.rs`'s own `mod tests` rename
+   `the_triplet_names_the_count_the_key_and_the_directory` →
+   `the_injected_pairs_name_the_count_the_keys_and_their_values`. **Reporting a
+   missed criterion plainly, with the reason and the accounting, is better
+   behaviour than meeting it would have been** — three rows pinned a pre-fix
+   verdict the fix necessarily changes, and the alternative to renaming them was
+   leaving the suite red.
+
+### The known-open set, as audit 11 verified it
+
+Every row re-measured at `1e56389`, fresh root each, walk after.
+
+* **`T-19-86` (high, OPEN, unaccepted, deferred by explicit user scoping
+  decision).** `git -c alias.p='!git push --force origin HEAD:refs/heads/main' p`
+  → **exit 0**, and the persisted-alias arm
+  `git config alias.p '!git push --force …'` → **exit 0**. Unweakened.
+  Counts toward `threats_open`.
+* **`T-19-91` (high, OPEN, three arms).** `S=x; git reflog $S`,
+  `git reflog show $S` and `git symbolic-ref $S` all **exit 0**, while
+  `git symbolic-ref HEAD $R` and `git push origin $REF` still fail closed at
+  **exit 2**. Unweakened. Counts toward `threats_open`.
+* **`T-19-111` (high, OPEN, NO rule).** The `printf`-written `.git/config` alias
+  is **exit 0** with an EMPTY walk. Its corpus rows stay `record_only`,
+  `19-27`'s five-site attribution correction stands, and **attribution did NOT
+  move back into `T-19-86`** — both plans state it is kept OUT and audit 11
+  confirms neither record folds it back. Counts toward `threats_open`.
+* **`T-19-112` (high) and `T-19-113` (medium) — NARROWED FURTHER, and nothing
+  anywhere calls either closed.** Direction (i) over the envelope root is now
+  refused, which is real. **`T-19-112` stays OPEN**: `C-15` is a route these
+  rules do not reach, the deferred ledger option (b) is another, and audit 11
+  drove a **fourth** — `T-19-119` reset the cap end to end. A sweep of `src/`,
+  `tests/` and the phase `.md` files for these ids beside the word *closed*
+  returns only rows saying NARROWED, NOT CLOSED, or deferring the judgement.
+* **`T-19-115` (medium, OPEN, no rule, no acceptance).** All three spellings
+  re-measured permitted with their absolute-literal twins refused. **Its
+  corrected arithmetic is itself now incomplete** — four became seven and the
+  true count is at least eight (`T-19-119`). Recorded there rather than as a
+  second row.
+* **`T-19-116` (high) — NARROWED, NOT CLOSED, and audit 11 does not close it.**
+  Its five registered spellings (`cp`, `mv`, `install -m 0755`, `ln -f`,
+  `printf 'x' >`) are all **exit 2** now, and both EXACT-PATH-not-PREFIX controls
+  (`cp /bin/true <PARENT>/some-other-file`, `ls <PARENT>`) are still **exit 0**,
+  so the rule is real and its boundary kind is right. **But the threat's declared
+  harm — one permitted command removing layer 2 AND layer 3 — is still reachable
+  and audit 11 moved a bare remote's `main` with it** (`T-19-119`). A threat is
+  closed when its harm is unreachable, not when its listed spellings are. Its
+  three disclosed residues are also re-measured at **exit 0**:
+  `cp /bin/true $(command -v gsd-meta-manager)`, the tilde spelling, and
+  `cd <parent> && cp /bin/true gsd-meta-manager`. Counts toward `threats_open`.
+* **`T-19-96` (medium, OPEN).** `git push --forc? origin
+  refs/heads/gsd-auto/alpha/w` → **exit 0**. **`T-19-110` (medium, OPEN).**
+  `git config core.hooksPath -c` and `--` → **exit 0**; the by-name deny
+  `git config core.hooksPath /dev/null` → **exit 2**. Audit 9's re-rating carried
+  forward unchanged.
+* **`T-19-74` (medium, closed/accepted — AR-19-10).** `env $X push --force` →
+  **exit 0**, core rows frozen. **`T-19-61` … `T-19-73`, `T-19-84`, `T-19-85`** —
+  open, unaccepted, untouched; `scan.rs` and `config.rs` were not opened by
+  either plan.
+* **`C-11` … `C-15` remain entirely control (e)**, no rule, unaccepted. **`C-15`
+  keeps no `pr_cap_*` clamp**, deliberately — clamping a configured cap is a
+  product decision and making it inside a security round would decide it
+  silently. Audit 11 endorses that reasoning.
+* **`C-08`'s behavioural half and `T-19-117`'s behavioural half are UNMEASURED
+  and claimed in NEITHER direction**, and audit 11 claims neither either. The
+  `settings_json` second-carrier row was **not** repaired and the record says so.
+* **`FORGE_VALUE_OPTS` keeps `--hostname`**; **`glab` is confirmed NOT installed**
+  (`command -v glab` finds nothing), so its cell stays unmeasurable against its
+  callee and **no pin that would skip was written**.
+* **`AR-19-04` and `AR-19-05` are untouched**, not un-accepted, not re-rated and
+  not renumbered. **`T-19-23` is NOT marked closed or re-closed** by either plan
+  or by this audit. Twelve `AR-` rows, unchanged.
+* **`T-19-17r` — OUTSTANDING for the SEVENTH audit running.**
+  `grep -cE '^\| AR-19-13 \|'` over this file is **0**. Plans `19-28` and `19-29`
+  both declined, correctly. **This audit is the thirteenth agent to leave the
+  acceptance unmade, and it is a human decision.**
+* **`T-19-SC` — still holds.** `Cargo.toml` and `Cargo.lock` appear in no commit
+  between `0092009` and `1e56389`.
+
+### `C-10`'s registration, and `SECTION_ENVELOPE`'s first `Guaranteed` clause
+
+**`C-10` now has all four things audit 10 asked for**, verified rather than
+accepted: a **threat id** (`T-19-116`), a **severity** (`high`), a
+**`deferred-items.md` row** (`deferred-items.md:2229`, under a heading that says
+the absence of that row is itself the finding) and a **control letter**
+(`(a), EXACT PATH, PARTIAL`). The fifteen-carrier table has a letter for every
+one of the fifteen.
+
+**`SECTION_ENVELOPE`'s FIRST `Guaranteed` clause is TRUE as repaired**, and audit
+11 counted rather than read:
+
+> `As started, this run cannot reach your ambient git credentials or` /
+> `SSH agent: the socket is removed and the git config it is given` /
+> `runs no credential helper.`
+
+**211 whitespace tokens of an UNRAISED 215 cap**, widest line **74** of an 80 cap
+— both re-derived independently from the constant with the `\x20` escapes
+expanded. Both halves hold by measurement: the socket is removed, and *"the git
+config it is given runs no credential helper"* is true against every file-write
+spelling including tilde and URL-scoped, because of the injected empty pair.
+*"As started"* states what the envelope ESTABLISHES and stops; **it makes no
+completeness claim and enumerates nothing**, which is the same repair `19-27`
+made one clause over. `cannot reach your ambient git credentials` survives
+verbatim, first and unwrapped. **`runs` rather than `names` is load-bearing and
+measured** — `--get-all` still lists the helper while `credential fill` fails
+closed, so *"names no helper"* would now be false where *"runs"* is true.
+**Decision endorsed.** The `Not guaranteed` half's generalisation to *"the files
+and the binary this envelope runs on"* covers `T-19-116`'s route, which the old
+wording did not.
+
+**`mod.rs:165-168` — CORRECTED, and it is D-09's last uncorrected home.** The old
+ground (*"that party can equally unset `GIT_CONFIG_COUNT`"*) is gone; the
+conclusion is kept and re-grounded on the variable's measured inertness, and the
+paragraph now names **both** the FILE route and the BINARY route as ceilings the
+environment route does not bound, with `env -u GIT_CONFIG_COUNT git push --force`
+recorded as REFUSED beside them. Audit 11 re-measured that refusal at
+`hook_bypass_blocked`. **Zero non-doc lines changed**, and
+`GSD_MM_ENVELOPE_ROOT`'s value and behaviour are unaltered.
+
+### The mechanism pins, verified non-dead
+
+Rounds 4 through 10 are all still load-bearing and all still right about the
+lines round 11 refuses:
+
+```
+exit=2 [envelope_assertion_failed]  git pus? --force origin main                     <- round 5
+exit=2 [force_push_blocked]         git >/dev/null push --force origin main          <- round 6
+exit=0                              git x2>/tmp/o push --force origin main           <- round 6 control
+exit=2 [force_push_blocked]         git 2>/dev/null push --force origin main
+exit=2 [envelope_assertion_failed]  git >                                            <- unresolvable
+exit=2 [force_push_blocked]         git <<EOF push --force origin main               <- heredoc
+exit=2 [force_push_blocked]         git --attr-source HEAD push --force origin main  <- round 7
+exit=2 [envelope_assertion_failed]  git --bogus-opt status                           <- round 7 inversion
+exit=0                              git - push --force origin main                   <- round 7 control
+exit=2 [force_push_blocked]         git -- push --force origin main
+exit=2 [envelope_assertion_failed]  git -c include.path=/tmp/evil.cfg status         <- round 8
+exit=2 [hook_bypass_blocked]        env -u GIT_CONFIG_COUNT git push --force origin main
+exit=2 [envelope_assertion_failed]  V=push; git $V --force origin main               <- round 4 Rule A
+exit=2 [envelope_assertion_failed]  git {push,--force} origin main                   <- round 5 brace
+exit=0                              git -c alias.p='!git push …' p                   <- T-19-86, unmoved
+exit=2 [envelope_assertion_failed]  : > <ENV>/alpha/pr-ledger.ndjson                 <- round 11
+exit=0                              : > /tmp/l                                       <- round 11 control
+```
+
+`SEPARATORS` byte-identical at `policy.rs:2297` with ONE commit in the whole phase
+(`84a9b05`); `is_separator(">") == false` by construction. **`envelope_config_resolution`
+is 30/0 — not one config-resolution verdict moved.**
+
+### Gates observed
+
+`rtk proxy cargo test --no-fail-fast` redirected to a file and counted with
+**`rtk proxy grep`** (D-34): **1820 passed, 0 failed, 13 ignored** over **46**
+result lines, `passed + failed = 1820`, matching `19-29-SUMMARY.md` exactly. **All
+SEVENTEEN `envelope_*` binaries ran**, so round 11's evidence file executed.
+**No documented flake fired in audit 11's run** — neither `driver_reattach` row,
+not the `envelope_tracer` `ExecutableFileBusy`, and not the ETXTBSY write-over-the-binary
+race. `19-29` recorded two firings (both `driver_reattach`, green in isolation);
+audit 11 records none. **Absence is not evidence any of them is fixed**, and the
+ETXTBSY race is `C-10`'s own seam, which this round changed what the guard does
+about — audit 11 claims its relation to this round's change in **neither
+direction**, on the same discipline `19-29` used. `cargo clippy --tests -D
+warnings` was already failing at the base on four pre-existing lints in
+`src/browser.rs` and `src/project_creator.rs` and is out of scope.
+
+**Provenance discipline.** Plans 19-13 … 19-29's appended subsections, the
+plan-19-21 blocker-row resolution record and every earlier audit's own tables are
+left **byte-identical**; audit 11 checksummed the whole body below the frontmatter
+before writing (`sha256 8f65ad89f70afb72d2…`, 821,703 bytes) and this write is
+append-only apart from the frontmatter, one trail row and one method subsection.
+Audit 11's corrections to statements made in those subsections — that SEVEN is
+not the count of the rule's silences, and that the `-c credential.helper=` residue
+is argv-VISIBLE but not GOVERNED — are recorded as audit-11 findings BESIDE them
+rather than as edits to them.
+
+### Audit 11's bookkeeping, re-derived from audit 10's group rows
+
+| Group | Count | Closed | Open |
+|---|---|---|---|
+| Everything through audit 10 | 130 | 103 | 27 (6 at `high`) |
+| Closed by plans 19-28 / 19-29, re-measured by audit 11 (`T-19-117`, `T-19-118`, each as scoped) | — | +2 | −2 (1 at `high`) |
+| Found by audit 11 (`T-19-119` … `T-19-121`) | 3 | 0 | 3 (2 at `high`) |
+| **Total after audit 11** | **133** | **105** | **28 (7 at `high`)** |
+
+The seven that count toward `threats_open`: `T-19-86`, `T-19-91`, `T-19-111`,
+`T-19-112`, `T-19-116`, `T-19-119`, `T-19-121`. The twenty-one that do not:
+`T-19-61` … `T-19-73` (13), `T-19-84`, `T-19-85`, `T-19-96`, `T-19-105`,
+`T-19-110`, `T-19-113`, `T-19-115`, `T-19-120`.
+
+---
+
+## Audit 11 — what the round-11 control can and cannot fail on
+
+### The principle rounds 3 through 10 established still holds
+
+A decision region must come from the same scan the classifier runs, and there is
+one walk. The redirection targets are accumulated **in the operator arm of the ONE
+walk**, carried on the `Segment` exactly as `Segment::redirection_unresolvable`
+already travels, and the clause is still raised **once**, at the top of
+`classify_segments`' existing per-segment loop, reading two fields of the segment
+that loop already holds. **No second scan, no second reading site, no new
+`ParkReason`, and `segment.tokens` byte-for-byte unchanged.** `resolve_program`,
+`resolve_program_with_head`, `first_unreadable_decision_word`,
+`config_key_operand_index`, `subcommand_word_indices`, `scan_gh_api`,
+`scan_leading`, `forbidden_repo_path`, `SEPARATORS` and `is_separator` show zero
+diff lines. The plan projected two additive fields and one was enough, which is
+strictly less surface and was recorded rather than glossed.
+
+### Where the boundary now is, in one paragraph
+
+**The rule decides on one lexical fact in two word classes over two paths: a word
+that is ABSOLUTE, LITERAL and either under `envelope_dir_in(root, alias)` (a
+PREFIX) or exactly `current_exe()` (an EQUALITY).** The two boundary kinds differ
+for a measured reason and both near-miss controls prove it. Each of those
+conditions is also a place the rule is silent, and its silence is a permit. **Round
+11 names seven silences and states them as a CONDITION rather than a list, which
+is the right form.** But the condition it states — *a word the shell may rewrite,
+a word that is not absolute, a word that reaches a protected path only through a
+link* — **omits the case where the word is none of those three and the path inside
+it is absolute anyway.** `lexical_absolute_components` asks whether the WORD begins
+with `/`, and an option-attached value never does. That is `T-19-119`, it reaches
+all ten ruled carriers, and it is where the plane is still unfinished:
+
+* **ten carriers now have a rule** — `C-01` … `C-10`, verified refused at their
+  bare absolute spellings;
+* **five have control (e)**, no rule, registered, unaccepted — `C-11` … `C-15`;
+* **all ten of the ruled ones are reachable by an option-attached spelling**, and
+  two of them were driven to harm — a bare remote's `main` moved, and a fired PR
+  cap reset;
+* **one control's own bound is over the wrong property** — the ledger's SIZE
+  rather than its KIND (`T-19-120`);
+* **one route to the ambient credential never needed a carrier at all** — a `-c`
+  on the command line (`T-19-121`).
+
+**The one-sentence version for whoever picks this up.** Eleven rounds have
+modelled how a command line becomes behaviour and how a file becomes a control,
+and audit 10 was right that there is no further plane — **what is left is that
+every path rule this phase has written asks whether a WORD is a path, and a word
+can carry a path without being one.**
+
+### Suggested closure, in order — (d) FIRST, for the eleventh round running
+
+1. **(d) — widen the corpus BEFORE certifying anything, and this time widen the
+   WORD SHAPE rather than the spelling.** Add option-attached carrier paths
+   (`of=<path>`, `--target-directory=<path>`, `--directory=<path>`) to
+   `ENVELOPE_ROOT_OPERAND_CARRIERS`, to the binary class and to the redirection
+   alphabets, with a floor beside `MIN_CONTROL_CARRIER_CLASSES` asserting the axis
+   can draw one. **Listed first for the eleventh round running**, and this time
+   the missing draw is one character wide.
+2. **(a) — `T-19-119` FIRST among the fixes, and it is the cheapest real fix this
+   phase has had in five rounds.** The whole gap is `lexical_absolute_components`
+   requiring the WORD to start with `/`. Splitting an operand at its first `=` and
+   testing the tail — a purely lexical operation needing no environment, no
+   filesystem and no program-name list — reaches every one of the measured rows.
+   The over-refusal cost must be measured from both sides before it lands
+   (`FOO=/tmp/x cmd` is an assignment prefix, not an operand, and must stay
+   permitted).
+3. **(b) — `T-19-121`.** `credential.helper` belongs beside `core.hooksPath` in the
+   by-name deny and beside `include.path` in round 8's confinement clause; it is a
+   config key, on argv, in a region the guard already parses. Either that, or the
+   residue's own sentence must stop saying *governed*.
+4. **(c) — `T-19-120`.** Bound the ledger by KIND as well as size: a
+   `metadata.file_type().is_file()` beside the length check, failing closed on
+   anything else, in the same `stat` that is already there.
+5. **(e)** — then `T-19-86`, `T-19-91`, `T-19-96`, `T-19-110`, `T-19-111`,
+   `T-19-112` and `T-19-116`, which remain arms of two shapes: a classifier arm
+   answering `Allow` on an operand outside the decision region, and a carrier that
+   is not a command line.
+
+Then, and separately: add the `AR-19-13` row for `T-19-17r` or stop calling it
+accepted; measure `C-08`'s behavioural half and `T-19-117`'s behavioural half in a
+live agent session; and correct the residue's arithmetic from seven to eight —
+**or, better, stop counting and state the condition the code actually tests.**
+
+---
+
+## Audit 11 Sign-Off
+
+- [x] All threats have a disposition (mitigate / accept / transfer)
+- [x] Accepted risks documented in Accepted Risks Log — twelve, unchanged by
+      round 11; **audit 11 accepts nothing and un-accepts nothing**
+- [x] Every closure re-measured against the built binary at `1e56389` with a
+      fresh envelope root per row and the root walked afterwards, the walk proved
+      non-blind on every pass by `gh pr create --title x` leaving exactly one
+      `alpha/pr-ledger.ndjson` line
+- [x] **The plane IS finished and audit 11 says so plainly** — no twelfth plane
+      exists; every remaining finding is on round 10's own plane
+- [x] **Round 5 and round 6 are INTACT** — `SEPARATORS` byte-identical
+      (`policy.rs:2297`, ONE commit in the phase, `84a9b05`), `is_separator(">")`
+      `false` by construction, `segment.tokens` byte-identical, the SEGMENT-COUNT
+      pins green **and verified falsifiable in BOTH the SPLIT and the DISPLACED
+      variant**, and the over-deletion control still permitting
+- [x] The redirection channel swept over all seven pathname operators, both quote
+      forms, both segment positions and the `NestedPayload` recursion; the five
+      non-pathname operators correctly NOT recorded, so no over-refusal was bought
+- [x] `T-19-118` **CLOSED AS SCOPED** — the empty-`credential.helper` control
+      re-driven against real git with `git credential fill` as the criterion, the
+      `--get-all` false negative reproduced, the **URL-SCOPED** cell probed and
+      held, `GIT_ASKPASS` and `gh` unaffected, and **eight env spellings that would
+      strip the pair all exit 2**. Successor `T-19-121` registered
+- [x] `T-19-117` **CLOSED AS SCOPED** — the bound discriminates exactly at
+      `MAX_LEDGER_BYTES` (8,388,608 permits and counts; 8,388,609 refuses), 202 MB
+      answers in **18 ms** against `19-28`'s 7,900 ms, the over-refusal is bounded
+      to the forge commands measured from both sides, and it **cannot be turned
+      into a bypass**. Successor `T-19-120` registered
+- [x] The four execution-time judgements assessed independently; **all four are
+      correct**, and judgement 4's characterisation verified mechanically — **ZERO
+      deleted assertions, ZERO removed `#[test]`, 12 added**
+- [x] `C-10` verified to have a threat id, a severity, a `deferred-items.md` row
+      and a control letter; `SECTION_ENVELOPE`'s first `Guaranteed` clause
+      verified TRUE at **211 tokens of an UNRAISED 215 cap**, widest line 74 of 80;
+      `mod.rs:165-168` verified CORRECTED with zero non-doc lines changed
+- [x] Every new finding confirmed against the **REAL `git` binary** with a CONTROL
+      beside every leg — including an option-attached write that replaced the
+      guard's own binary and let a force push the hook had refused **MOVE a bare
+      remote's `main` (`835b6be` → `40ad7f7`)**, restored to a refusal by putting
+      the binary back; a fired PR cap reset by the same spelling against its
+      space-separated twin at exit 2; and a `-c credential.helper=store` that
+      returned the ambient `~/.git-credentials` secret on a permitted line
+- [x] Gate observed: `rtk proxy cargo test --no-fail-fast` → **1820 passed, 0
+      failed, 13 ignored** over 46 result lines; **all SEVENTEEN** `envelope_*`
+      binaries ran; **no documented flake fired**
+- [x] Plans 19-13 … 19-29's appended subsections left byte-identical, verified by
+      checksum before writing
+- [ ] `threats_open: 0` confirmed — **7 open at `high`: `T-19-86`, `T-19-91`,
+      `T-19-111`, `T-19-112`, `T-19-116`, `T-19-119`, `T-19-121`**
+- [ ] `status: verified` set in frontmatter
+
+**Approval: blocked, 2026-09-04 (audit 11).**
+
+**Not accepted here.** `T-19-119` moved a bare remote's `main` and reset a fired
+PR cap with one permitted command, and it reaches every carrier this phase has
+written a rule for. `T-19-121` puts the user's own git credential back inside a
+driven run with no file write at all. `T-19-86` and `T-19-91` remain open at
+`high` by scoping decision and by round discipline. `T-19-111` remains open with
+no rule, `T-19-112` with a partial one, and `T-19-116` is narrowed rather than
+closed because its declared harm is still reachable. Accepting any of the seven is
+a human decision and this audit does not make it. **`T-19-17r` is left unmade for
+the thirteenth time, and `AR-19-04`, `AR-19-05` and `T-19-23` are untouched.**
+
+**Round 11 did good work and audit 11 says so plainly, because that is what the
+measurement supports.** `19-28` widened the axis from seven classes to eleven,
+refined three predicates rather than two, moved an alphabet into a fail-closed arm
+because its verdict the fix would change, found `19-29`'s blocking scope conflict
+by reading, and left six rows RED with **zero `src/` hunks**. `19-29` confirmed
+every one still red before a production line moved, answered the direction-(i)
+question with a channel that reads redirection targets **without** making `>` a
+separator or pushing a token into the stream — the thing five rounds of pins
+existed to prevent, and the pins are still green — reported two unauthorised row
+corrections as findings rather than absorbing them into a human's permission,
+reported a success criterion it did not meet rather than claiming it, and shipped
+a mechanism control that is genuinely wider than any path rule because it reads no
+command line at all. **Two threats close on this audit's measurement, and both
+closures are real.**
+
+**And the answer to the eleventh question is the plain one: the plane IS
+finished.** Audit 10 was right — there is no twelfth layer, and audit 11 swept for
+one and found nothing. **What audit 11 found is the same shape this phase has
+produced eleven times running, one cell over from the one the round just filled.**
+Round 10 wrote a rule that asks whether a word is a path under a directory. Round
+11 widened it to a second word class and a second path and corrected its residue
+from four silences to seven. **Neither round asked what happens when the path is
+not the word but is inside it.** The corpus that certifies both draws sixty-one
+carrier paths across eleven classes and not one of them carries a path after an
+`=` — so the axis was, for the eleventh consecutive round, structurally incapable
+of failing on the class the round certified. **The residues are not true as
+stated. They are one character short.**
