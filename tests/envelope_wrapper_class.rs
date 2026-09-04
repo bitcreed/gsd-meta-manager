@@ -5818,6 +5818,37 @@ fn an_option_the_installed_git_rejects_fails_closed_on_every_base() {
 // Every per-row verdict, every derivation and every real-git probe behind this
 // section lives in `tests/envelope_config_resolution.rs`, the round's own
 // evidence file.
+//
+// ---------------------------------------------------------------------------
+// **ROUND 9 EXTENDS THIS AXIS AND DOES NOT CREATE A FIFTH — THE AXIS DID NOT
+// MOVE, THE REGION DID.**
+//
+// Rounds 1-5 were about how a word is WRITTEN; round 6 about which words ARRIVE;
+// round 7 about which arriving word is the VERB; round 8 about what the verb RUNS
+// UNDER. **Round 9 is on the SAME axis as round 8, one REGION over**, and that is
+// audit 8's own framing, adopted.
+//
+// The confinement clause is the right SHAPE of rule: it asks whether an assignment
+// can be BOUNDED, not whether it spells a name, and audit 8 verified every one of
+// its rows. **But the guard reads config assignments in TWO regions — the
+// leading-option region `scan_leading` walks, and the environment — while git
+// resolves configuration from a THIRD: a value the guard itself CONFINED and
+// handed on.** `alias.q` names the section `alias`, which is not an indirection,
+// so `config_key_names_an_indirection_section` correctly answers `false`, the
+// assignment is CONFINED, and the carrier rides inside its VALUE into a position
+// `scan_leading` never reads.
+//
+// **Standing that up as a FIFTH AXIS would model a REGION as if it were a STAGE
+// and lose exactly the distinction audit 8 drew.** The axis is still *what the verb
+// runs under*; the class is the region the round-8 rule does not reach. So
+// `CONFIG_RESOLUTION_CLASSES` gains a SIXTH class and
+// `MIN_CONFIG_RESOLUTION_CLASSES` rises from 5 to 6, while `UNREADABLE_CLASSES`,
+// `DELETION_CLASSES`, `CALLEE_GRAMMAR_CLASSES`, all of their predicates, all of
+// their degenerate-proofing and all of their floors stay BYTE-IDENTICAL.
+//
+// Every per-row verdict, every derivation, every real-git probe and the rebuilt
+// bare-remote fixture behind round 9's half live in
+// `tests/envelope_reparsed_value.rs`, the EIGHTH evidence file.
 // ---------------------------------------------------------------------------
 
 /// One config assignment a `-c` / `--config-env` carrier delivers in the LEADING
@@ -6029,12 +6060,196 @@ fn draws_an_option_carrier_indirection(command: &str) -> bool {
         .any(|a| a.carrier == "--config-env" && config_key_is_an_indirection(&a.key))
 }
 
+// ---------------------------------------------------------------------------
+// Round 9's additions — the SIXTH class on this SAME axis
+// ---------------------------------------------------------------------------
+
+/// Split a command into words with SHELL QUOTING applied, so a quoted config VALUE
+/// arrives as the bytes the program would receive rather than as three
+/// whitespace-separated fragments.
+///
+/// **Why this exists beside `config_prefix_split`'s `split_whitespace`, rather than
+/// replacing it.** The five existing classes decide on the KEY half, which never
+/// contains a space, so whitespace splitting is exact for them and
+/// `config_assignments` is left BYTE-IDENTICAL. Round 9's class decides on the
+/// VALUE half, which is a whole command line — and the distinction between
+/// `-c alias.q="-c include.path=<f> status"` (value `-c include.path=<f> status`,
+/// no quote byte) and `-c alias.q='"!git …"'` (value `"!git …"`, first byte a
+/// literal `"`) is *exactly* the distinction the one-byte fence turns on. A
+/// whitespace splitter conflates the two and the fence stops meaning anything.
+fn shell_words(command: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut started = false;
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some('"') if c == '\\' => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            Some(_) => current.push(c),
+            None if c == '\'' || c == '"' => {
+                started = true;
+                quote = Some(c);
+            }
+            None if c.is_whitespace() => {
+                if started {
+                    words.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            None => {
+                started = true;
+                current.push(c);
+            }
+        }
+    }
+    if started {
+        words.push(current);
+    }
+    words
+}
+
+/// Every config assignment in the leading region, read with SHELL QUOTING applied
+/// so the VALUE half is the bytes git would receive.
+///
+/// Walked exactly as `config_assignments` walks it — and for the same reason the
+/// guard reads both: arm (a) of `leading_git_option` returns the NEXT token for a
+/// bare `-c` / `--config-env` and arm (b) the attached one.
+fn quoted_config_assignments(command: &str) -> Vec<ConfigAssignment> {
+    let words = shell_words(command);
+    let mut out = Vec::new();
+    let mut index = 1;
+    let mut push = |out: &mut Vec<ConfigAssignment>, carrier: &str, text: &str| {
+        let (key, value) = text.split_once('=').unwrap_or((text, ""));
+        out.push(ConfigAssignment {
+            carrier: carrier.to_string(),
+            key: key.to_string(),
+            value: value.to_string(),
+        });
+    };
+    while index < words.len() {
+        let token = words[index].as_str();
+        if !token.starts_with('-') || token == "-" || token == "--" {
+            break;
+        }
+        if token == "-c" || token == "--config-env" {
+            if let Some(next) = words.get(index + 1) {
+                push(&mut out, token, next);
+            }
+            index += 2;
+        } else if let Some(rest) = token.strip_prefix("--config-env=") {
+            push(&mut out, "--config-env", rest);
+            index += 1;
+        } else if token.len() > 2 && token.starts_with("-c") {
+            push(&mut out, "-c", &token[2..]);
+            index += 1;
+        } else {
+            index += 1;
+        }
+    }
+    out
+}
+
+/// The `(key, value)` a `git config <key> <value>` WRITE names, if the command is
+/// one — the PERSISTED delivery's decision region.
+///
+/// **This is the region `classify_config` already reads with `is_hooks_path_key`**,
+/// which is why asking the alias question there is the SAME reading site and not a
+/// second one. Level options are skipped, and the three that take a value of their
+/// own consume it.
+fn persisted_config_write(command: &str) -> Option<(String, String)> {
+    let words = shell_words(command);
+    if words.len() < 4 || words[1] != "config" {
+        return None;
+    }
+    let mut index = 2;
+    while index < words.len() && words[index].starts_with('-') {
+        if matches!(words[index].as_str(), "--file" | "-f" | "--blob") {
+            index += 1;
+        }
+        index += 1;
+    }
+    let key = words.get(index)?.clone();
+    let value = words.get(index + 1)?.clone();
+    Some((key, value))
+}
+
+/// Whether a config VALUE is a SHELL alias body — git's rule, which is the FIRST
+/// BYTE and nothing else.
+///
+/// **THE FENCE THIS WHOLE ROUND TURNS ON, and it is a MEASUREMENT.** Against
+/// `git version 2.43.0` with the envelope's own injection as the control
+/// (`/ENV_WINS`): `-c alias.b='!git config --get core.hooksPath' b` prints
+/// `/ENV_WINS` — a `!` body is handed to a SHELL and run as a CHILD that INHERITS
+/// the triplet, so layer 3 is intact — while
+/// `-c alias.a='-c include.path=<f> config --get core.hooksPath' a` prints
+/// `/INCLUDE_WINS` — a non-`!` body is re-parsed by git IN-PROCESS at command-line
+/// precedence.
+///
+/// The boundary is the FIRST BYTE and nothing else, measured in nine spellings in
+/// `tests/envelope_reparsed_value.rs`: a `!` that is not first is not a shell body;
+/// a SPACE or a TAB before `!` makes git refuse to expand at all; and a QUOTED body
+/// whose first byte is `"` is re-parsed IN-PROCESS, so refusing it is CORRECT.
+/// **No spelling was found in which the first byte IS `!` and git nonetheless
+/// re-parses in-process**, and a counterexample would be a FINDING rather than a
+/// row.
+fn config_value_is_a_shell_alias_body(value: &str) -> bool {
+    value.starts_with('!')
+}
+
+/// Whether a config key names the ALIAS section — ASCII-case-folded, because git
+/// folds the SECTION.
+///
+/// **Only the SECTION is read.** A rule written as `key.starts_with("alias")` turns
+/// `-c aliasx.q=…` red and a rule written as `key.contains("alias")` turns
+/// `-c notalias.q=…` red; both are pinned PERMITTED before and after in
+/// `tests/envelope_reparsed_value.rs` as this round's `--signed no`.
+fn config_key_names_the_alias_section(key: &str) -> bool {
+    config_section(key).to_ascii_lowercase() == "alias"
+}
+
+/// **Class 6** — a carrier delivered inside a config VALUE THE GUARD CONFINES.
+///
+/// A `-c` / `--config-env` assignment, or a persisted `git config` write, whose KEY
+/// names an ordinary BOUNDED section (`alias` is not an indirection, so round 8's
+/// clause correctly CONFINES it) and whose VALUE git RE-PARSES as a git command
+/// line **including its own leading options**.
+///
+/// **This is the class `T-19-108` lives in, and it is a REGION rather than an
+/// axis.** Both deliveries are live: measured against real git, a `-c alias.<n>=`
+/// carrier and a persisted `git config alias.<n>` both resolve `/INCLUDE_WINS`
+/// against the control's `/ENV_WINS`.
+///
+/// **A `!`-bodied value must NOT satisfy this**, or the class would name
+/// `T-19-86`'s subject too and a rule written to satisfy it would turn
+/// `tests/envelope_command_position.rs:550` and
+/// `tests/envelope_config_resolution.rs:1539-1543` permanently red.
+fn draws_a_reparsed_value_carrier(command: &str) -> bool {
+    quoted_config_assignments(command).iter().any(|a| {
+        config_key_names_the_alias_section(&a.key)
+            && !a.value.is_empty()
+            && !config_value_is_a_shell_alias_body(&a.value)
+    }) || persisted_config_write(command).is_some_and(|(key, value)| {
+        config_key_names_the_alias_section(&key)
+            && !value.is_empty()
+            && !config_value_is_a_shell_alias_body(&value)
+    })
+}
+
 /// One named class and the predicate that decides whether a spliced command draws
 /// it.
 type ConfigResolutionClass = (&'static str, fn(&str) -> bool);
 
-/// The FIVE classes of the CONFIG-RESOLUTION axis, named once so the per-alphabet
+/// The SIX classes of the CONFIG-RESOLUTION axis, named once so the per-alphabet
 /// floor, the per-class floor and the counted floor all count the same thing.
+///
+/// **The sixth joined this axis rather than founding a fifth**, because audit 8's
+/// finding is that the region moved and not the axis — see this section's header.
 const CONFIG_RESOLUTION_CLASSES: &[ConfigResolutionClass] = &[
     (
         "a command-line carrier of a config indirection",
@@ -6056,9 +6271,13 @@ const CONFIG_RESOLUTION_CLASSES: &[ConfigResolutionClass] = &[
         "an option-carrier delivery of an indirection",
         draws_an_option_carrier_indirection,
     ),
+    (
+        "a carrier delivered inside a config value the guard confines",
+        draws_a_reparsed_value_carrier,
+    ),
 ];
 
-/// Whether a spliced command draws ANY of the five.
+/// Whether a spliced command draws ANY of the six.
 fn carries_a_config_resolution_class(command: &str) -> bool {
     CONFIG_RESOLUTION_CLASSES
         .iter()
@@ -6155,6 +6374,124 @@ fn the_corpus_can_draw_every_one_of_the_five_config_resolution_classes() {
         "a `-c` delivery must NOT satisfy class 5, or class 5 is a second name for class 1"
     );
 
+    // -- **class 6, and the REGION-NOT-AXIS finding asserted rather than
+    //    described.** Both deliveries satisfy it.
+    for delivery in [
+        "git -c alias.q=\"-c include.path=/tmp/e status\" q",
+        "git config alias.q \"-c include.path=/tmp/e status\"",
+    ] {
+        assert!(
+            draws_a_reparsed_value_carrier(delivery),
+            "`{delivery}` IS a carrier delivered inside a config VALUE the guard confines. \
+             Measured against real git with the envelope's own injection as the control, it \
+             makes `git config --get core.hooksPath` print `/INCLUDE_WINS` where the injection \
+             alone prints `/ENV_WINS` — through a key that names the ordinary bounded section \
+             `alias`."
+        );
+
+        // It must satisfy NONE of the four INDIRECTION-shaped classes, or class 6
+        // would be a second name for one of them and its floor would be satisfiable
+        // without a single re-parsed value being drawn.
+        for (class, predicate) in [
+            ("class 1 (indirection)", draws_a_config_indirection_carrier as fn(&str) -> bool),
+            ("class 3 (environment)", draws_an_environment_config_carrier),
+            ("class 4 (case-varied)", draws_a_case_varied_indirection),
+            ("class 5 (option-carrier)", draws_an_option_carrier_indirection),
+        ] {
+            assert!(
+                !predicate(delivery),
+                "`{delivery}` must NOT satisfy {class}. Its key names `alias`, not `include` or \
+                 `includeIf`, and there is no `GIT_CONFIG*` assignment prefix on the line. If it \
+                 did, class 6 would be a second name for an existing class."
+            );
+        }
+    }
+
+    // -- **THE FINDING ITSELF, ASSERTED POSITIVELY — AND THE TWO DELIVERIES FALL
+    //    DIFFERENTLY, WHICH IS SHARPER THAN THE OVERLAP ALONE.**
+    //
+    //    In the `-c` DELIVERY the assignment IS read by round 8's region and IS
+    //    confined: `alias.q` correctly answers `false` to
+    //    `config_key_names_an_indirection_section`, so class 2 draws it. **That
+    //    overlap IS `T-19-108`** — the guard read the assignment, bounded it
+    //    correctly, and handed the value on.
+    assert!(
+        draws_a_confined_config_carrier("git -c alias.q=\"-c include.path=/tmp/e status\" q"),
+        "\n\n**THE REGION-NOT-AXIS FINDING HAS BEEN ERASED.**\n\n\
+         The `-c` delivery of a re-parsed-value carrier MUST satisfy the CONFINED class. \
+         `alias.q` names the section `alias`, which is not an indirection, so round 8's clause \
+         correctly CONFINES the assignment and lets it through — and the carrier rides inside \
+         the VALUE into a position `scan_leading` never reads. **That overlap IS `T-19-108`**, \
+         and a corpus in which class 2 stopped drawing it would have quietly re-modelled the \
+         region as an axis and lost the distinction audit 8 drew."
+    );
+
+    //    In the PERSISTED delivery the assignment is not read by that region AT ALL
+    //    — `scan_leading` walks leading OPTIONS and stops at the verb, and `config`
+    //    is the verb. So class 2 correctly does NOT draw it. **The two deliveries
+    //    are therefore open for two different reasons**: one was confined and let
+    //    through, the other was never in the confining region. `19-25` must reach
+    //    BOTH, and a rule written only inside `scan_leading` closes only the first.
+    assert!(
+        !draws_a_confined_config_carrier("git config alias.q \"-c include.path=/tmp/e status\""),
+        "\n\n**THE TWO DELIVERIES HAVE BEEN CONFLATED.**\n\n\
+         The PERSISTED delivery must NOT satisfy the confined class: `scan_leading` walks \
+         leading OPTIONS and stops at the verb, and here `config` IS the verb — so round 8's \
+         region never sees this assignment at all, not even to confine it.\n\n\
+         **That is why the two deliveries are open for two DIFFERENT reasons**, and why \
+         `19-25` needs the question asked at the `git config` KEY OPERAND (where \
+         `classify_config` already reads with `is_hooks_path_key`) as well as at the `-c` \
+         carrier. A rule written only inside `scan_leading` closes only the first delivery and \
+         leaves every row of the persisted arm at exit 0."
+    );
+
+    // -- and NO existing class's representative may satisfy class 6.
+    for representative in [
+        "git -c include.path=/tmp/e status",
+        "git -c user.name=x status",
+        "GIT_CONFIG_PARAMETERS=\"'core.hooksPath=/x'\" git status",
+        "git -c INCLUDE.PATH=/tmp/e status",
+        "git --config-env=include.path=V status",
+    ] {
+        assert!(
+            !draws_a_reparsed_value_carrier(representative),
+            "`{representative}` must NOT satisfy class 6. None of these keys names the `alias` \
+             section, and git re-parses nothing from their values. If one did, class 6's floor \
+             would be satisfiable without a single re-parsed value being generated — which is \
+             `T-19-105`'s failure mode reproduced inside the repair for it."
+        );
+    }
+
+    // -- **THE `!` NEGATIVE CONTROL, and it is the most load-bearing line in this
+    //    block.** A `!`-bodied alias is a whole command line handed to a governed
+    //    program as DATA and run in a CHILD that inherits the envelope's injection
+    //    (measured `/ENV_WINS`). That is `T-19-86`'s class, OPEN at `high` and out
+    //    of scope. **If class 6 ever drew it, a rule written to satisfy class 6
+    //    would turn `tests/envelope_command_position.rs:550` and
+    //    `tests/envelope_config_resolution.rs:1539-1543` PERMANENTLY RED in files
+    //    `19-25` may not edit.**
+    for shell_bodied in [
+        "git -c alias.q='!git push' q",
+        "git -c alias.p='!git push --force origin main' p",
+        "git config alias.p \"!git push --force origin HEAD:refs/heads/main\"",
+    ] {
+        assert!(
+            !draws_a_reparsed_value_carrier(shell_bodied),
+            "\n\n**A `!`-BODIED ALIAS SATISFIES CLASS 6.**\n\n`{shell_bodied}`\n\n\
+             Git's rule is the FIRST BYTE and nothing else, measured in nine spellings in \
+             `tests/envelope_reparsed_value.rs` against `git version 2.43.0`: a `!` body is \
+             handed to a SHELL and run in a CHILD that INHERITS the envelope's \
+             `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` triplet (`/ENV_WINS`), while a non-`!` body is \
+             re-parsed by git IN-PROCESS at command-line precedence (`/INCLUDE_WINS`).\n\n\
+             A `!` body is `T-19-86` — OPEN at `high` by explicit user scoping decision — and a \
+             rule written to satisfy this class would turn \
+             `tests/envelope_command_position.rs:550` and \
+             `tests/envelope_config_resolution.rs:1539-1543` PERMANENTLY RED in files `19-25` \
+             may not edit. **This is `19-18`'s `{{v}}>` blocker and `19-22`'s `-c a=b` seam one \
+             REGION over.**"
+        );
+    }
+
     // -- THE QUOTING-AND-POSITION CONTROL. A config-shaped word that is neither a
     //    carrier nor in the scan's view must satisfy NO class, or the floors
     //    become satisfiable by a row the rules must NEVER touch.
@@ -6206,12 +6543,24 @@ fn the_corpus_can_draw_every_one_of_the_five_config_resolution_classes() {
 /// CONTROLS** — this round's `--signed no`. A rule written as
 /// `key.contains("include")` turns both red; only a rule that compares the
 /// SECTION keeps them green.
+/// **Round 9's two additions are `!`-BODIED ALIASES, and they belong HERE because
+/// their verdict does NOT move.** Measured at round 9's base commit over all 28
+/// generated cases: verdict-preserving on every base, in both splices, with ZERO
+/// mismatches. A `!` body is handed to a SHELL and run as a CHILD that INHERITS the
+/// envelope's `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` triplet — measured `/ENV_WINS`
+/// against the control — so layer 3 is intact for it and `19-25` must not refuse
+/// it. **This is the alphabet the invariance arm draws, so putting them here is
+/// what makes the corpus able to FAIL on a rule that refuses them**, which is
+/// exactly the rule that would turn `tests/envelope_command_position.rs:550` and
+/// `tests/envelope_config_resolution.rs:1539-1543` permanently red.
 const CONFIG_CONFINED_CARRIERS: &[&str] = &[
     "-c user.name=x",
     "-c core.pager=cat",
     "-c a=b",
     "-c notinclude.path=/tmp/e",
     "-c includepath=/tmp/e",
+    "-c alias.p='!git push --force origin main'",
+    "-c alias.b='!git status'",
 ];
 
 /// A SEPARATE alphabet with its OWN fail-closed property, spliced at the same
@@ -6256,6 +6605,59 @@ const CONFIG_ENV_CARRIERS: &[&str] = &[
     "GIT_CONFIG_PARAMETERS=\"'core.hooksPath=/tmp/nohooks'\"",
     "env GIT_CONFIG_PARAMETERS=\"'core.hooksPath=/tmp/nohooks'\"",
     "export GIT_CONFIG_PARAMETERS=\"'core.hooksPath=/tmp/nohooks'\";",
+];
+
+/// A FOURTH alphabet with its OWN fail-closed property, spliced at the same
+/// position as the first two — **round 9's, and the one `T-19-108` lives in.**
+///
+/// Every entry names an ordinary BOUNDED section (`alias`) whose VALUE git
+/// RE-PARSES as a git command line **including its own leading options**. Round 8's
+/// clause correctly answers `false` to `config_key_names_an_indirection_section`
+/// for every one of these keys, CONFINES the assignment, and lets the carrier
+/// through into a region `scan_leading` never reads.
+///
+/// **Kept OUT of `CONFIG_CONFINED_CARRIERS` and out of the invariance arm** for the
+/// reason this section's doc already gives for the other two fail-closed alphabets:
+/// a re-parsed-value carrier is REFUSED after `19-25` even on a PERMITTED base —
+/// measured exit 0 today on all 40 permitted-base cases — so it would be STRICTER
+/// than its base and would turn the invariance property permanently red in a file
+/// `19-25` may not edit. **This is `19-18`'s `{v}>` blocker, `19-20`'s
+/// `GIT_GLOBAL_UNKNOWN_OPTIONS` split and `19-22`'s indirection/confined split, one
+/// REGION over.**
+///
+/// **NO ENTRY MAY HAVE A `!` FIRST BYTE**, asserted mechanically by the SHELL-ALIAS
+/// FENCE below. Every entry was measured against the REAL git binary and outranks
+/// the envelope's injection: control `/ENV_WINS`, each of these `/INCLUDE_WINS` or
+/// `/ALIAS_WINS`.
+const CONFIG_REPARSED_VALUE_CARRIERS: &[&str] = &[
+    "-c alias.q=\"-c include.path=/tmp/evil.cfg status\"",
+    "-c alias.z=\"-c core.hooksPath=/dev/null status\"",
+    "-c ALIAS.q=\"-c include.path=/tmp/evil.cfg status\"",
+    "--config-env=alias.q=EVILBODY",
+    "-c alias.st=status",
+];
+
+/// The PERSISTED delivery of the same class, as WHOLE COMMANDS rather than splice
+/// fragments — because `git config alias.<n> "<body>"` has no base to be spliced
+/// into.
+///
+/// **This is a SECOND REGION of the SAME class, not a second class.**
+/// `classify_config` already reads this exact operand with `is_hooks_path_key` and
+/// refuses `git config core.hooksPath /dev/null` at `hook_bypass_blocked` today, so
+/// asking the alias question there is the SAME decision region.
+///
+/// **The persistence asymmetry is why this arm must exist at all.** A persisted
+/// `git config include.path <evil>` is INERT — measured at repo-local and at
+/// GLOBAL under the envelope's own config posture, it resolves `/ENV_WINS` because
+/// the injection OUTRANKS every repository-side level. **An alias is different in
+/// kind: it does not have to WIN a precedence contest, it only has to EXIST**, and
+/// both persistence levels were measured live at `/INCLUDE_WINS`.
+const CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS: &[&str] = &[
+    "git config alias.q \"-c include.path=/tmp/evil.cfg status\"",
+    "git config alias.z \"-c core.hooksPath=/dev/null status\"",
+    "git config ALIAS.q \"-c include.path=/tmp/evil.cfg status\"",
+    "git config --global alias.q \"-c include.path=/tmp/evil.cfg status\"",
+    "git config alias.st status",
 ];
 
 /// Where a command-line alphabet entry is spliced.
@@ -6372,59 +6774,75 @@ fn config_env_cases(bases: &[&'static str]) -> Vec<(&'static str, String, String
 // 16b. The floors — per ALPHABET, per CLASS, and COUNTED over generated cases
 // ---------------------------------------------------------------------------
 
-/// The arithmetic, STATED rather than guessed, because audit 5 found `19-16` set a
-/// floor of 50 against a maximum of 40 by construction.
+/// The arithmetic, STATED rather than guessed and RE-DERIVED for round 9, because
+/// audit 5 found `19-16` set a floor of 50 against a maximum of 40 by construction.
 ///
-/// There are 3 refused bases and 4 permitted bases = **7 bases**.
+/// There are 3 refused bases and 4 permitted bases = **7 bases**, and 2 splices.
 ///
-/// * confined      — 5 entries x 2 splices x 7 bases = **70** cases
-/// * indirection   — 5 entries x 2 splices x 7 bases = **70** cases
-/// * environment   — 3 entries x 1 prefix position x 7 bases = **21** cases
-/// * total = **161** cases
+/// * confined       — 7 entries x 2 splices x 7 bases = **98** cases
+/// * indirection    — 5 entries x 2 splices x 7 bases = **70** cases
+/// * reparsed value — 5 entries x 2 splices x 7 bases = **70** cases
+/// * environment    — 3 entries x 1 prefix position x 7 bases = **21** cases
+/// * persisted      — 5 WHOLE COMMANDS, which have no base and no splice = **5**
+/// * total = 98 + 70 + 70 + 21 + 5 = **264** cases
 ///
-/// Split by the arm the base is in:
+/// Split by the arm the base is in (the persisted arm is in NEITHER, because its
+/// entries are whole commands rather than splices):
 ///
-/// * refused bases  — (5 x 2 + 5 x 2) x 3 + 3 x 3 = 60 + 9 = **69**
-/// * permitted bases — (5 x 2 + 5 x 2) x 4 + 3 x 4 = 80 + 12 = **92**
+/// * refused bases   — (7 x 2 + 5 x 2 + 5 x 2) x 3 + 3 x 3 = 102 + 9 = **111**
+/// * permitted bases — (7 x 2 + 5 x 2 + 5 x 2) x 4 + 3 x 4 = 136 + 12 = **148**
+/// * 111 + 148 + 5 persisted = **264**
 ///
 /// Slots are `(base, splice position)` pairs: 7 x 2 command-line slots plus 7
-/// assignment-prefix slots = **21**.
+/// assignment-prefix slots = **21**. The persisted arm contributes NO slot, and
+/// that is deliberate rather than an omission — it is not spliced anywhere.
 ///
 /// The floors are EXACT equalities, so losing one case turns them red. Nothing in
 /// `src/` can move them: they are a pure function of the alphabets in this file.
-const CONFIG_RESOLUTION_CASES: usize = 161;
-const CONFIG_RESOLUTION_REFUSED_CASES: usize = 69;
-const CONFIG_RESOLUTION_PERMITTED_CASES: usize = 92;
+const CONFIG_RESOLUTION_CASES: usize = 264;
+const CONFIG_RESOLUTION_REFUSED_CASES: usize = 111;
+const CONFIG_RESOLUTION_PERMITTED_CASES: usize = 148;
+const CONFIG_RESOLUTION_PERSISTED_CASES: usize = 5;
 const CONFIG_RESOLUTION_SLOTS: usize = 21;
-const MIN_CONFIG_RESOLUTION_CLASSES: usize = 5;
-const MIN_CONFIG_CONFINED_CARRIERS: usize = 5;
+const MIN_CONFIG_RESOLUTION_CLASSES: usize = 6;
+const MIN_CONFIG_CONFINED_CARRIERS: usize = 7;
 const MIN_CONFIG_INDIRECTION_CARRIERS: usize = 5;
 const MIN_CONFIG_ENV_CARRIERS: usize = 3;
+const MIN_CONFIG_REPARSED_VALUE_CARRIERS: usize = 5;
+const MIN_CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS: usize = 5;
 
-/// The per-class counts over all 161 generated commands, derived from the
+/// The per-class counts over all 264 generated commands, derived from the
 /// alphabets and the splice sets:
 ///
 /// * class 1 (indirection) — the 5 indirection entries at each of 14 command-line
-///   slots = **70**
-/// * class 2 (confined) — the 5 confined entries at each of 14 slots = 70; PLUS
+///   slots = **70**. No confined, reparsed, environment or persisted case names an
+///   `include`/`includeIf` section.
+/// * class 2 (confined) — the 7 confined entries at each of 14 slots = 98; PLUS
 ///   the `-c a=b` of `CALLEE_KNOWN_LEADING_PREFIX`, which is itself a confined
 ///   assignment, in every `AfterAKnownLeadingOption` case of the INDIRECTION
-///   alphabet: 5 entries x 7 bases = 35. (The confined alphabet's own
-///   `AfterAKnownLeadingOption` cases already satisfy the class through their own
-///   entry and are not double-counted.) 70 + 35 = **105**
+///   alphabet: 5 entries x 7 bases = 35; PLUS all 70 REPARSED-value cases, whose
+///   `alias.*` keys are precisely keys round 8's clause CONFINES — **which is the
+///   whole of `T-19-108` and is asserted positively in the degenerate-proofing
+///   block above.** 98 + 35 + 70 = **203**
 /// * class 3 (environment) — the 3 environment entries at each of 7 prefix slots
 ///   = **21**
-/// * class 4 (case-varied) — the 2 case-varied indirection entries
+/// * class 4 (case-varied) — the 2 case-varied INDIRECTION entries
 ///   (`-c INCLUDE.PATH=…` and `-c includeIf.gitdir:…`, whose SECTION is not
-///   already lower case) at each of 14 slots = **28**
-/// * class 5 (option-carrier) — the 2 `--config-env` entries at each of 14 slots
-///   = **28**
+///   already lower case) at each of 14 slots = **28**. `-c ALIAS.q=…` is
+///   case-varied but is not an INDIRECTION, so it correctly does not count here.
+/// * class 5 (option-carrier) — the 2 `--config-env` INDIRECTION entries at each of
+///   14 slots = **28**. `--config-env=alias.q=EVILBODY` is an option-carrier
+///   delivery but not of an indirection, so it correctly does not count here.
+/// * class 6 (re-parsed value) — the 5 reparsed entries at each of 14 slots = 70,
+///   PLUS the 5 persisted whole commands = **75**. The two `!`-bodied confined
+///   entries do NOT count, by the one-byte fence.
 const CONFIG_RESOLUTION_CLASS_COUNTS: &[(&str, usize)] = &[
     ("a command-line carrier of a config indirection", 70),
-    ("a command-line carrier of a confined assignment", 105),
+    ("a command-line carrier of a confined assignment", 203),
     ("an environment carrier of configuration", 21),
     ("a case-varied spelling of an indirection", 28),
     ("an option-carrier delivery of an indirection", 28),
+    ("a carrier delivered inside a config value the guard confines", 75),
 ];
 
 #[test]
@@ -6461,11 +6879,28 @@ fn every_alphabet_this_round_widens_can_draw_a_fact_about_what_the_verb_runs_und
         "`CONFIG_ENV_CARRIERS` must carry at least {MIN_CONFIG_ENV_CARRIERS} entries — one \
          per environment spelling the paired `GIT_CONFIG_COUNT` discriminator is measured in"
     );
+    assert!(
+        CONFIG_REPARSED_VALUE_CARRIERS.len() >= MIN_CONFIG_REPARSED_VALUE_CARRIERS,
+        "`CONFIG_REPARSED_VALUE_CARRIERS` must carry at least \
+         {MIN_CONFIG_REPARSED_VALUE_CARRIERS} entries. **The correct response to a red here is \
+         to RESTORE entries, never to lower this floor.** `T-19-105` is `T-19-76`'s failure \
+         mode for the NINTH consecutive round, and for the SECOND round running the gap was one \
+         REGION over on the SAME axis rather than one axis further out."
+    );
+    assert!(
+        CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS.len()
+            >= MIN_CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS,
+        "`CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS` must carry at least \
+         {MIN_CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS} entries — the SECOND REGION of the same \
+         class. A persisted alias does not have to WIN a precedence contest, it only has to \
+         EXIST, and both persistence levels were measured live at `/INCLUDE_WINS`."
+    );
 
     // -- every entry of every alphabet must DRAW a class when spliced.
     for entry in CONFIG_CONFINED_CARRIERS
         .iter()
         .chain(CONFIG_INDIRECTION_CARRIERS.iter())
+        .chain(CONFIG_REPARSED_VALUE_CARRIERS.iter())
     {
         let spliced = config_case(
             "git push --force origin main",
@@ -6492,6 +6927,83 @@ fn every_alphabet_this_round_widens_can_draw_a_fact_about_what_the_verb_runs_und
              an assignment prefix (`{spliced}`)"
         );
     }
+    for entry in CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS {
+        assert!(
+            draws_a_reparsed_value_carrier(entry),
+            "`CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS` entry `{entry}` draws NO \
+             re-parsed-value class. It is a WHOLE COMMAND rather than a splice fragment, and \
+             `persisted_config_write` must be able to read its key operand — the same operand \
+             `classify_config` reads with `is_hooks_path_key`. An entry that draws no class is \
+             an entry whose property cannot FAIL on one."
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // **THE SHELL-ALIAS FENCE** — the mechanical assertion round 9 exists to
+    // add, written in the shape the DOTLESS fence below already uses.
+    // ---------------------------------------------------------------------
+    for entry in CONFIG_REPARSED_VALUE_CARRIERS {
+        for assignment in quoted_config_assignments(&config_case(
+            "git status",
+            entry,
+            ConfigSplice::ImmediatelyAfterTheProgram,
+        )) {
+            assert!(
+                !config_value_is_a_shell_alias_body(&assignment.value),
+                "\n\nA `!`-BODIED ALIAS IS IN `CONFIG_REPARSED_VALUE_CARRIERS`: `{entry}` \
+                 delivers the value `{}`.\n\n\
+                 **GIT'S RULE IS THE FIRST BYTE AND NOTHING ELSE**, measured in nine spellings \
+                 in `tests/envelope_reparsed_value.rs` against `git version 2.43.0` with the \
+                 envelope's own injection as the control: a body whose first byte is `!` is \
+                 handed to a SHELL and run as a CHILD that INHERITS the \
+                 `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` triplet (`/ENV_WINS`, so layer 3 is \
+                 INTACT), while a non-`!` body is re-parsed by git IN-PROCESS at command-line \
+                 precedence (`/INCLUDE_WINS`).\n\n\
+                 **`tests/envelope_command_position.rs:550` and \
+                 `tests/envelope_config_resolution.rs:1539-1543` BOTH pin a `!`-bodied alias \
+                 PERMITTED as a registered `T-19-86` row, and `19-25` may edit NEITHER FILE.** \
+                 A rule written to refuse this entry would turn both PERMANENTLY RED, and \
+                 `T-19-86` is OPEN at `high` by explicit user scoping decision.\n\n\
+                 The correct response is to keep `!`-bodied aliases in \
+                 `CONFIG_CONFINED_CARRIERS`, where their verdict-preserving behaviour is \
+                 measured, never to edit either pinning file. **This is `19-18`'s `{{v}}>` \
+                 blocker and `19-22`'s `-c a=b` seam one REGION over.**",
+                assignment.value
+            );
+        }
+    }
+    for entry in CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS {
+        let (_, value) = persisted_config_write(entry)
+            .unwrap_or_else(|| panic!("`{entry}` must parse as a `git config <key> <value>` write"));
+        assert!(
+            !config_value_is_a_shell_alias_body(&value),
+            "a `!`-bodied alias is in `CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS`: `{entry}`. \
+             The same one-byte fence applies to the persisted region, and \
+             `tests/envelope_config_resolution.rs:1539-1543` pins exactly this shape PERMITTED."
+        );
+    }
+    assert!(
+        CONFIG_CONFINED_CARRIERS.iter().any(|entry| {
+            quoted_config_assignments(&config_case(
+                "git status",
+                entry,
+                ConfigSplice::ImmediatelyAfterTheProgram,
+            ))
+            .iter()
+            .any(|a| config_value_is_a_shell_alias_body(&a.value))
+        }),
+        "\n\n**AT LEAST ONE `!`-BODIED ALIAS MUST BE AN ENTRY OF \
+         `CONFIG_CONFINED_CARRIERS`**, and must therefore be asserted VERDICT-PRESERVING by the \
+         invariance arm below.\n\n\
+         A `!` body runs in a CHILD that inherits the envelope's injection, so its verdict does \
+         NOT move — measured at round 9's base commit over all 28 generated cases with ZERO \
+         mismatches. **Asserting its presence here BY MECHANISM is what makes the corpus able \
+         to FAIL on a rule that refuses it**, which is exactly the rule that would turn \
+         `tests/envelope_command_position.rs:550` and \
+         `tests/envelope_config_resolution.rs:1539-1543` permanently red in files `19-25` may \
+         not edit. Without this assertion the fence above could be satisfied by removing every \
+         `!`-bodied entry from the file entirely — a corpus that cannot say what it means."
+    );
 
     // ---------------------------------------------------------------------
     // **THE DOTLESS FENCE** — the mechanical assertion that would otherwise
@@ -6524,6 +7036,37 @@ fn every_alphabet_this_round_widens_can_draw_a_fact_about_what_the_verb_runs_und
             );
         }
     }
+    // The same dotless reasoning, restated for the FOURTH alphabet: a key with no
+    // `.` names NO SECTION, so it can never name `alias` either.
+    for entry in CONFIG_REPARSED_VALUE_CARRIERS {
+        for assignment in quoted_config_assignments(&config_case(
+            "git status",
+            entry,
+            ConfigSplice::ImmediatelyAfterTheProgram,
+        )) {
+            assert!(
+                assignment.key.contains('.'),
+                "\n\nA DOTLESS KEY IS IN `CONFIG_REPARSED_VALUE_CARRIERS`: `{entry}` delivers \
+                 the key `{}`.\n\n\
+                 A `-c` key with no `.` at all names NO CONFIG SECTION and therefore cannot name \
+                 `alias`. **`CALLEE_KNOWN_LEADING_PREFIX` at \
+                 tests/envelope_wrapper_class.rs:5197 is `\"-c a=b\"`, and round 7's ENTIRE \
+                 callee-grammar generative property is spliced behind it.** A rule that refused \
+                 a key it cannot decompose into a section would refuse `-c a=b` and turn that \
+                 whole property PERMANENTLY RED in a file `19-25` may not edit.",
+                assignment.key
+            );
+        }
+    }
+    for entry in CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS {
+        let (key, _) = persisted_config_write(entry).expect("a `git config <key> <value>` write");
+        assert!(
+            key.contains('.'),
+            "a DOTLESS key is in `CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS`: `{entry}` names \
+             `{key}`. The same reasoning holds at the persisted operand."
+        );
+    }
+
     assert!(
         CONFIG_CONFINED_CARRIERS.contains(&CALLEE_KNOWN_LEADING_PREFIX),
         "\n\n`{CALLEE_KNOWN_LEADING_PREFIX}` — `CALLEE_KNOWN_LEADING_PREFIX` at \
@@ -6540,7 +7083,11 @@ fn every_alphabet_this_round_widens_can_draw_a_fact_about_what_the_verb_runs_und
     // **THE DISJOINTNESS ASSERTION.** The three alphabets must not overlap, or
     // the invariance arm would draw an entry whose verdict the fix CHANGES.
     // ---------------------------------------------------------------------
-    for entry in CONFIG_INDIRECTION_CARRIERS.iter().chain(CONFIG_ENV_CARRIERS) {
+    for entry in CONFIG_INDIRECTION_CARRIERS
+        .iter()
+        .chain(CONFIG_ENV_CARRIERS)
+        .chain(CONFIG_REPARSED_VALUE_CARRIERS)
+    {
         assert!(
             !CONFIG_CONFINED_CARRIERS.contains(entry),
             "`{entry}` appears in BOTH `CONFIG_CONFINED_CARRIERS` and one of the fail-closed \
@@ -6564,15 +7111,36 @@ fn every_alphabet_this_round_widens_can_draw_a_fact_about_what_the_verb_runs_und
         );
     }
     for entry in CONFIG_CONFINED_CARRIERS {
+        let spliced = config_case(
+            "git status",
+            entry,
+            ConfigSplice::ImmediatelyAfterTheProgram,
+        );
         assert!(
-            !draws_a_config_indirection_carrier(&config_case(
-                "git status",
-                entry,
-                ConfigSplice::ImmediatelyAfterTheProgram
-            )),
+            !draws_a_config_indirection_carrier(&spliced),
             "`{entry}` is in the CONFINED alphabet but DRAWS the indirection class. \
              Membership of the confined alphabet is an assertion that the entry is \
              verdict-preserving, and an indirection is not."
+        );
+        assert!(
+            !draws_a_reparsed_value_carrier(&spliced),
+            "\n\n`{entry}` is in the CONFINED alphabet but DRAWS the RE-PARSED-VALUE class.\n\n\
+             Membership of the confined alphabet is an assertion that the entry is \
+             VERDICT-PRESERVING, and a re-parsed-value carrier is REFUSED after `19-25` even on \
+             a PERMITTED base — so it would be STRICTER than its base and would turn the \
+             invariance arm permanently red in a file `19-25` may not edit.\n\n\
+             **The two `!`-bodied entries are the exception the fence exists to protect**: git \
+             hands a `!` body to a SHELL child that inherits the injection, so class 6 \
+             correctly does not draw them and their verdict does not move."
+        );
+    }
+    for entry in CONFIG_REPARSED_VALUE_CARRIERS {
+        assert!(
+            !CONFIG_INDIRECTION_CARRIERS.contains(entry)
+                && !CONFIG_ENV_CARRIERS.contains(entry),
+            "`{entry}` appears in `CONFIG_REPARSED_VALUE_CARRIERS` AND in another fail-closed \
+             alphabet. The counting floors would double-count it, and the three alphabets model \
+             three different REGIONS."
         );
     }
 
@@ -6608,6 +7176,42 @@ fn every_alphabet_this_round_widens_can_draw_a_fact_about_what_the_verb_runs_und
         "no `CONFIG_PERMITTED_BASES` entry may carry `--force`: every `--force` base is \
          already refused for its VERB and certifies nothing about config resolution"
     );
+
+    // -- **THE PERMITTED-BASE FENCE, EXTENDED TO ROUND 9'S PROPERTY.** The
+    //    re-parsed-value arm draws from the SAME base set, so the fence above
+    //    already covers it — but a later round could give it a base set of its own,
+    //    and this asserts BY NAME that at least one base it draws is PERMITTED.
+    assert!(
+        CONFIG_PERMITTED_BASES.iter().any(|base| {
+            let envelope = TempDir::new().expect("a temporary envelope root");
+            verdict(envelope.path(), base).code == 0
+        }),
+        "\n\n**THE RE-PARSED-VALUE PROPERTY MUST DRAW AT LEAST ONE LAYER-2-PERMITTED BASE.**\n\n\
+         The whole content of `T-19-108` is that a carrier inside a confined VALUE disarms \
+         layer 3 on a line layer 2 LETS THROUGH. Measured at round 9's base commit, fresh root \
+         per row, walk EMPTY: `git -c include.path=/tmp/evil.cfg push --force origin main` is \
+         ALREADY exit 2 `envelope_assertion_failed` for its CARRIER, and every `--force` \
+         composition is refused for its VERB — **CONTROLS, not reproducers**.\n\n\
+         A property drawing only refused bases is GREEN before the fix and certifies nothing: \
+         **the NINTH consecutive instance of `T-19-76`'s failure mode**, produced by the corpus \
+         rather than found by the next audit. Measured: all 40 permitted-base re-parsed-value \
+         cases are at exit 0 today, and those 40 are what makes the property RED."
+    );
+
+    // -- and the PERSISTED arm's own permitted-base fence: its entries are whole
+    //    commands, so the constraint is that each is PERMITTED today. `git config`
+    //    writes are layer-2-permitted, which is exactly why the class is live.
+    for entry in CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS {
+        let (_, value) = persisted_config_write(entry).expect("a `git config <key> <value>` write");
+        assert!(
+            !value.contains("--force"),
+            "\n\n`{entry}` carries `--force` in its alias BODY.\n\n\
+             That would make the row's refusal derivable from the VERB rather than from the \
+             carrier — the persisted equivalent of building a reproducer on a refused base. \
+             Measured: `git config alias.p '<non-shell body>'` is exit 0 today in every \
+             spelling, and that is what makes this arm RED."
+        );
+    }
 }
 
 #[test]
@@ -6630,7 +7234,11 @@ fn the_generated_corpus_really_produces_each_config_resolution_class_in_quantity
         (CONFIG_REFUSED_BASES, &mut refused_count),
         (CONFIG_PERMITTED_BASES, &mut permitted_count),
     ] {
-        for alphabet in [CONFIG_CONFINED_CARRIERS, CONFIG_INDIRECTION_CARRIERS] {
+        for alphabet in [
+            CONFIG_CONFINED_CARRIERS,
+            CONFIG_INDIRECTION_CARRIERS,
+            CONFIG_REPARSED_VALUE_CARRIERS,
+        ] {
             for (base, splice, _, command) in config_cases(bases, alphabet) {
                 slots.insert((
                     base,
@@ -6649,6 +7257,17 @@ fn the_generated_corpus_really_produces_each_config_resolution_class_in_quantity
             *counter += 1;
         }
     }
+
+    // The PERSISTED arm: whole commands, no base and no splice, so they belong to
+    // neither the refused nor the permitted counter and contribute no slot.
+    for entry in CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS {
+        all.push((*entry).to_string());
+    }
+    assert_eq!(
+        CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS.len(),
+        CONFIG_RESOLUTION_PERSISTED_CASES,
+        "the persisted arm's generation count must equal the stated arithmetic exactly"
+    );
 
     assert_eq!(
         refused_count, CONFIG_RESOLUTION_REFUSED_CASES,
@@ -6691,13 +7310,157 @@ fn the_generated_corpus_really_produces_each_config_resolution_class_in_quantity
     // Recorded so the SUMMARY carries measured counts rather than described ones.
     println!(
         "config-resolution axis: {} cases ({refused_count} on refused bases, \
-         {permitted_count} on permitted bases) over {} slots from {} confined, {} indirection \
-         and {} environment entries.\nper class: {per_class:?}",
+         {permitted_count} on permitted bases, {} persisted) over {} slots from {} confined, \
+         {} indirection, {} reparsed-value and {} environment entries.\nper class: {per_class:?}",
         all.len(),
+        CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS.len(),
         slots.len(),
         CONFIG_CONFINED_CARRIERS.len(),
         CONFIG_INDIRECTION_CARRIERS.len(),
+        CONFIG_REPARSED_VALUE_CARRIERS.len(),
         CONFIG_ENV_CARRIERS.len(),
+    );
+}
+
+#[test]
+fn a_carrier_inside_a_confined_config_value_fails_closed_in_both_deliveries() {
+    // **ROUND 9'S OWN FAIL-CLOSED PROPERTY, in BOTH deliveries, and RED against the
+    // pre-fix tree.**
+    //
+    // Kept out of the invariance arm because its entries are NOT verdict-preserving:
+    // a re-parsed-value carrier is REFUSED after `19-25` even on a PERMITTED base —
+    // measured at round 9's base commit, **all 40 permitted-base cases at exit 0
+    // and all 30 refused-base cases already refused for their VERB, walks EMPTY
+    // throughout**. Those 40, plus the 5 persisted whole commands, are what makes
+    // this property RED.
+    //
+    // **The assertion is the exit code and an EMPTY WALK, never the reason
+    // identifier.** A re-parsed-value carrier on a refused base is refused TODAY for
+    // its verb and after the fix for its carrier — a reason-identifier change on a
+    // row whose verdict never moves. Identifiers belong in the NAMED per-row pins of
+    // `tests/envelope_reparsed_value.rs`, where each carries its own written
+    // derivation, and in the two ordering pins there that fix the scan order.
+    let control = TempDir::new().expect("a temporary envelope root");
+    permits(control.path(), "gh pr create --title x");
+    assert_eq!(
+        ledger_lines_under(control.path()).len(),
+        1,
+        "the walk's POSITIVE control must find a line, or every empty-walk assertion below is \
+         vacuous. Files: {:?}",
+        files_under(control.path())
+    );
+
+    let failure = "\n\nA CARRIER INSIDE A CONFINED CONFIG VALUE WAS PERMITTED.\n\
+         \n`scan_leading` reads config assignments in the LEADING-OPTION region and \
+         `resolve_program`'s step-1 check reads them in the ENVIRONMENT. **Git resolves \
+         configuration from a THIRD place: a value the guard itself CONFINED and handed on.** \
+         Git re-parses a non-`!` `alias.<name>` body as a git command line IN-PROCESS \
+         INCLUDING ITS LEADING OPTIONS, so a `-c include.path=<f>` inside the VALUE is applied \
+         by git at command-line precedence — measured `/INCLUDE_WINS` against the control's \
+         `/ENV_WINS` — while `alias.q` correctly answers `false` to \
+         `config_key_names_an_indirection_section` and is CONFINED.\n\
+         \n**Round 8's clause is the RIGHT SHAPE of rule and this is not a reason to replace \
+         it** — it asks whether an assignment can be BOUNDED rather than whether it spells a \
+         name, and audit 8 verified every one of its rows. The gap is in REACH, one REGION \
+         over.\n\
+         \n**The correct response is NOT a blanket `alias.*` refusal.** A `!`-bodied body is \
+         handed to a SHELL child that INHERITS the envelope's injection (measured `/ENV_WINS`), \
+         and `tests/envelope_command_position.rs:550` and \
+         `tests/envelope_config_resolution.rs:1539-1543` both pin one PERMITTED as a registered \
+         `T-19-86` row in files `19-25` may not edit. It is NOT a prefix match on `alias` — \
+         `-c aliasx.q=…` and `-c notalias.q=…` are pinned PERMITTED before and after. And it is \
+         NOT a refusal of a key that cannot be decomposed into a section — `-c a=b` is \
+         `CALLEE_KNOWN_LEADING_PREFIX` and round 7's entire property is spliced behind it.";
+
+    // --- ARM 1: the `-c` / `--config-env` DELIVERY, spliced --------------
+    let mut cases = 0usize;
+    let mut classes_seen: BTreeSet<&str> = BTreeSet::new();
+    for bases in [CONFIG_REFUSED_BASES, CONFIG_PERMITTED_BASES] {
+        for (base, splice, label, command) in config_cases(bases, CONFIG_REPARSED_VALUE_CARRIERS) {
+            for (class, predicate) in CONFIG_RESOLUTION_CLASSES {
+                if predicate(&command) {
+                    classes_seen.insert(class);
+                }
+            }
+            let envelope = TempDir::new().expect("a temporary envelope root");
+            let got = verdict(envelope.path(), &command);
+            assert_eq!(
+                got.code,
+                2,
+                "{failure}\
+                 \n\n  command : {command:?}\
+                 \n  base    : {base}\
+                 \n  splice  : {splice:?} / {label}\
+                 \n  got     : exit {} reason {}\
+                 \n  seed    : {SEED:#x}",
+                got.code,
+                got.reason_id,
+            );
+            let written = ledger_lines_under(envelope.path());
+            assert!(
+                written.is_empty(),
+                "`{command:?}` was refused, but a pull-request ledger line was written \
+                 somewhere under the envelope root. Found: {written:?} Files: {:?}",
+                files_under(envelope.path())
+            );
+            cases += 1;
+        }
+    }
+    assert_eq!(
+        cases,
+        CONFIG_REPARSED_VALUE_CARRIERS.len() * CONFIG_SPLICES.len() * 7,
+        "the `-c` arm must run every generated re-parsed-value case"
+    );
+
+    // --- ARM 2: the PERSISTED delivery, as whole commands ----------------
+    //
+    // **This is a SECOND REGION of the same class, and it must be able to fail
+    // separately.** `classify_config` already reads this exact operand with
+    // `is_hooks_path_key`, so asking the alias question there is the same decision
+    // region — but a rule written only inside `scan_leading` would leave every row
+    // below at exit 0.
+    let mut persisted_cases = 0usize;
+    for command in CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS {
+        let envelope = TempDir::new().expect("a temporary envelope root");
+        let got = verdict(envelope.path(), command);
+        assert_eq!(
+            got.code,
+            2,
+            "{failure}\
+             \n\n  command : {command:?}\
+             \n  region  : the PERSISTED `git config <key> <value>` write site\
+             \n  got     : exit {} reason {}\n\
+             \n**AND THE PERSISTENCE ASYMMETRY, which `19-25` must not get backwards.** A \
+             persisted `git config include.path <evil>` is INERT — measured at repo-local and \
+             at GLOBAL under the envelope's own config posture, it resolves `/ENV_WINS` because \
+             the injection OUTRANKS every repository-side level — so a clause for the INCLUDE \
+             family at this write site would be INERT and must NOT be added. **An alias is \
+             different in kind: it does not have to WIN a precedence contest, it only has to \
+             EXIST**, and both persistence levels were measured live at `/INCLUDE_WINS`.",
+            got.code,
+            got.reason_id,
+        );
+        let written = ledger_lines_under(envelope.path());
+        assert!(
+            written.is_empty(),
+            "`{command:?}` was refused, but a ledger line was written. Found: {written:?}"
+        );
+        persisted_cases += 1;
+    }
+    assert_eq!(
+        persisted_cases,
+        CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS.len(),
+        "the persisted arm must run every entry"
+    );
+
+    assert!(
+        classes_seen.contains("a carrier delivered inside a config value the guard confines"),
+        "the re-parsed-value arm must DRAW its own class. Seen: {classes_seen:?}"
+    );
+    assert!(
+        classes_seen.len() >= 2,
+        "and it must also draw the CONFINED class, because that overlap IS `T-19-108`: round \
+         8's clause confines an `alias.*` key and lets the carrier through. Seen: {classes_seen:?}"
     );
 }
 
