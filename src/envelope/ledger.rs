@@ -111,6 +111,21 @@ const WINDOW_SECS: i64 = 24 * 60 * 60;
 /// archived, so it is one a human or an agent can act on (AR-19-11). A ledger
 /// just UNDER the bound still permits **and still counts**, which is the half
 /// that keeps this a size bound rather than a disarmed cap.
+///
+/// # WHAT THIS BOUND IS OVER, AND WHAT IT IS NOT OVER (`T-19-120`)
+///
+/// **It bounds SIZE. It does not bound KIND, and the difference was reachable.**
+/// This value closed unbounded WORK — a real ledger too large to count inside the
+/// deadline — and left unbounded WAIT, which is strictly worse than the case it
+/// was written for: a FIFO at the ledger path stats at length **0**, passes this
+/// comparison, and the `std::fs::read` below then never returns. Measured at exit
+/// **124** after **20.02 s**, against the **18 ms** a 202 MB regular ledger now
+/// answers in and the **7.90 s** it answered in before this bound existed.
+///
+/// **The remedy is beside the size comparison rather than in this value**, in the
+/// same `stat` — see [`record_and_check_in`]'s `Ok` arm. This constant's value,
+/// its derivation and its just-under/just-over discrimination are unchanged by it:
+/// a bound over the wrong property is not corrected by moving the number.
 const MAX_LEDGER_BYTES: u64 = 8 * 1024 * 1024;
 
 /// One recorded pull-request attempt.
@@ -256,6 +271,39 @@ pub fn record_and_check(
     record_and_check_in(&root, alias, entry, policy)
 }
 
+/// Name the kind of thing found at the ledger path, so the KIND refusal above is
+/// ACTIONABLE rather than merely correct (AR-19-11).
+///
+/// **A refusal a user cannot act on is a control that gets switched off**, and
+/// *"not a regular file"* alone leaves them guessing at which of several things it
+/// is. The `#[cfg(unix)]` arm names the exact kind; the portable arm names the
+/// class it belongs to and stops, rather than claiming a precision that platform
+/// cannot give. **Neither arm reads the file, follows a link or shells out** — the
+/// `Metadata` it is handed is the one the `stat` above already performed.
+fn describe_file_kind(metadata: &std::fs::Metadata) -> &'static str {
+    if metadata.is_dir() {
+        return "directory";
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt as _;
+        let kind = metadata.file_type();
+        if kind.is_fifo() {
+            return "named pipe (FIFO), which a reader can wait on forever";
+        }
+        if kind.is_socket() {
+            return "socket";
+        }
+        if kind.is_block_device() {
+            return "block device";
+        }
+        if kind.is_char_device() {
+            return "character device";
+        }
+    }
+    "special file rather than a regular one"
+}
+
 /// [`record_and_check`] against an explicit envelope root.
 pub fn record_and_check_in(
     root: &Path,
@@ -288,7 +336,56 @@ pub fn record_and_check_in(
     // reasoning `ends_mid_line` below is built on. A file that cannot be stat'd
     // is not a file this check can refuse on — the append that follows reports
     // the real error with the real context rather than this probe guessing.
-    if let Ok(size) = std::fs::metadata(&path).map(|meta| meta.len()) {
+    //
+    // **AND THE KIND BOUND, IN THE SAME `stat`** (`T-19-120`). `T-19-117`'s bound
+    // above closed unbounded WORK and left unbounded WAIT, which is strictly worse
+    // than the case it was written for: a FIFO at the ledger path STATS AT LENGTH
+    // 0, passes the size comparison, and `std::fs::read` below then blocks
+    // FOREVER. Measured — **exit 124 after 20.02 s under a hard 20-second
+    // timeout**, against `GUARD_TIMEOUT_SECS = 5`, and against the **18 ms** a
+    // 202 MB regular ledger now answers in and the **7.90 s** it answered in
+    // before the size bound existed. A bound over SIZE cannot see it, because the
+    // failure is over KIND.
+    //
+    // **It belongs in the SAME `stat`, and that is mechanical rather than tidy**:
+    // the syscall is already on this path, so bounding the kind here adds no
+    // second probe and widens no TOCTOU window.
+    //
+    // **`std::fs::metadata` FOLLOWS symlinks, and the link-NON-following variant
+    // beside it in `std::fs` must NOT be substituted for it here.** A ledger that
+    // is a symlink to a regular file is a ledger this guard can count; the
+    // non-following variant would answer about the LINK — never a regular file —
+    // and this check would stop counting it. **The API name is deliberately not
+    // spelled out**: a verify step greps this file for that literal and asserts it
+    // appears zero times, so writing it here to forbid it would make the gate pass
+    // vacuously on the very mistake it exists to catch.
+    //
+    // **The `Err` arm keeps its behaviour exactly**, in the comment above's own
+    // terms: a fresh envelope root has NO ledger file until the first append, so
+    // every first forge call in every fresh root falls through this `Err`. A kind
+    // check placed OUTSIDE the `Ok` arm would refuse all of them.
+    //
+    // **The over-refusal, disclosed from both sides, exactly as the size bound's
+    // own section discloses its:** a ledger that is not a regular file refuses the
+    // forge commands the cap governs and NOTHING ELSE — no other command consults
+    // this file — and the recovery step names the file and the kind found.
+    if let Ok(metadata) = std::fs::metadata(&path) {
+        if !metadata.file_type().is_file() {
+            // An `Err` rather than a `CapVerdict::Refuse`, for the same D-24
+            // reason the size bound gives below: `PrCapExceeded` names a cap that
+            // FIRED, and this ledger was never tallied — it could not be.
+            return Err(anyhow!(
+                "the pull-request ledger at {} is not a regular file — it is a {}, whose \
+                 contents this guard cannot count and may not even be able to finish reading, \
+                 so how many pull requests this run has already opened cannot be established \
+                 and the attempt is refused rather than guessed at. To proceed: remove that \
+                 path or replace it with a regular file — it is the envelope's own record and \
+                 no other command is affected by this refusal",
+                path.display(),
+                describe_file_kind(&metadata)
+            ));
+        }
+        let size = metadata.len();
         if size > MAX_LEDGER_BYTES {
             // An `Err` rather than a `CapVerdict::Refuse`, and the distinction is
             // D-24: `CapVerdict::Refuse` carries `ParkReason::PrCapExceeded`,

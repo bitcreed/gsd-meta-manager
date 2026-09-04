@@ -418,11 +418,42 @@ fn config_env(pairs: &[(&str, &OsStr)]) -> Vec<(OsString, OsString)> {
 /// * an agent that unsets `GIT_CONFIG_COUNT`, which is D-09's stated ceiling and
 ///   is already disclosed above and in `SECTION_ENVELOPE`;
 /// * **a later `-c credential.helper=<something>` on the same command line,
-///   which OVERRIDES the reset and brings the secret back.** That is a BOUNDED
-///   residue rather than a reason to decline the control, and the bound is
-///   stated rather than assumed: **that spelling is ARGV-VISIBLE and is already
-///   governed** by [`super::policy::scan_leading`]'s leading-option region and
-///   layer 2's whole grammar — unlike every write spelling, which is not.
+///   which OVERRIDES the reset and brings the secret back** (`T-19-121`). That
+///   spelling is **ARGV-VISIBLE** — it stands on the command line the guard
+///   reads, in the leading-option region [`super::policy::scan_leading`] already
+///   parses. **The rule that acts on it is
+///   [`super::policy::config_key_names_the_credential_helper`]**, a by-name deny
+///   over SECTION `credential` and FINAL COMPONENT `helper`, raised in that region
+///   at `ParkReason::EnvelopeAssertionFailed`. It reaches the URL-scoped
+///   `credential.<url>.helper` and the `--config-env` carrier, and it reaches
+///   `GIT_CONFIG_PARAMETERS` not at all — that is an environment variable rather
+///   than argv, refused today by the envelope's own env-key deny at
+///   `HookBypassBlocked`, and registered separately as `T-19-104`. **The `git
+///   config` WRITING form is a file write and is not reached by that rule
+///   either**; it is the family THIS pair covers, which is why both controls
+///   exist and neither is a substitute for the other.
+///
+///   **WHY THIS BULLET IS WORDED THIS WAY, RECORDED RATHER THAN SMOOTHED.** It
+///   used to bound the residue by saying the spelling *"is ARGV-VISIBLE and is
+///   already GOVERNED by `scan_leading`'s leading-option region and layer 2's
+///   whole grammar."* **Argv-visible it was; governed it was not.** `scan_leading`
+///   parsed the word and no rule acted on it — the by-name deny covered
+///   `core.hooksPath` and round 8's confinement clause covered `include.path`,
+///   and nothing covered this key, which was measured returning the ambient secret
+///   on ONE permitted line. **That was the SIXTH instance in this phase of a
+///   residue whose stated bound was a layer that did not enforce it**
+///   (`T-19-84`, `T-19-107`, `T-19-109`, `T-19-115` are the others), and this
+///   phase had already shipped a counted completeness claim — *"FIVE forms"* —
+///   that was wrong the day it was written.
+///
+///   **So this bullet names the rule rather than claiming a layer.** A sentence
+///   asserting that another layer governs something is a sentence a future editor
+///   must keep true as that layer changes; a sentence naming the rule that acts —
+///   or plainly naming its absence — is checkable at a glance and fails loudly
+///   when the rule is deleted. **Prefer a claim that stays true to one that must
+///   be maintained.** If the named rule is ever removed, the honest edit here is
+///   to say that no rule refuses the spelling and that the residue is UNBOUNDED —
+///   not to reach for another layer.
 ///
 /// **THE MEASURED COST.** `GIT_ASKPASS` is UNTOUCHED, so the envelope's own
 /// token channel still answers; `gh` is unaffected, because this is a git key
