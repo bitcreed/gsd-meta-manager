@@ -645,8 +645,50 @@ fn the_force_push_compositions_are_already_refused_and_are_controls_not_reproduc
     // and it would have been produced by this corpus rather than found by the next
     // audit.
     //
-    // They are asserted here as CONTROLS. Their verdict does not move; only their
-    // IDENTIFIER may, and section 9 records that separately without asserting it.
+    // They are asserted here as CONTROLS. Their VERDICT does not move — exit 2,
+    // walk empty, before and after. Their IDENTIFIER does.
+    //
+    // # THE CORPUS DEFECT THIS BLOCK CARRIED, CORRECTED BY PLAN `19-23`
+    //
+    // **This block asserted `force_push_blocked` while four independent sources
+    // said its identifier was deliberately NOT being asserted.** The comment two
+    // paragraphs above read *"Their verdict does not move; only their IDENTIFIER
+    // may, and section 9 records that separately without asserting it"*;
+    // `19-22-SUMMARY.md` §"The two rows RECORDED rather than asserted" lists
+    // `git -c include.path=$F push --force origin main` as exactly such a row;
+    // `19-22-PLAN-CHECK.md` Check 4 signed the five compositions off as
+    // *"correctly demoted to controls"* and Check 5 as *"No replacement exception
+    // needed or granted"*; and `19-23-PLAN.md:668` independently predicted the
+    // identifier moving to `envelope_assertion_failed`. **The demotion was stated
+    // in all four places and implemented in none of them**, and `refuses()`
+    // asserts the identifier.
+    //
+    // The two assertions were unsatisfiable together. This row and the ORDERING
+    // pin in section 7 —
+    // `git -c include.path=$F -c core.hooksPath=/dev/null push --force origin
+    // main` at `envelope_assertion_failed` — differ ONLY in tokens AFTER the
+    // first unbounded assignment, which `scan_leading` never reads because it
+    // returns at the first assignment it cannot bound. No rule raised inside the
+    // one left-to-right scan can produce different identifiers for them, and a
+    // rule that could would have to read past the first unbounded assignment,
+    // which is what the ordering pin exists to forbid.
+    //
+    // # CARRIER BEFORE VERB, DECIDED EXPLICITLY RATHER THAN BY AN EDIT
+    //
+    // `envelope_assertion_failed` is the correct identifier and the reason is a
+    // decision, not a convenience. **An unbounded config assignment means the
+    // guard cannot establish what configuration the command will run under**, so
+    // every downstream classification — `force_push_blocked` included — is a
+    // statement about a command whose behaviour the guard cannot bound. Refusing
+    // at the CARRIER and saying so is the honest verdict; reporting
+    // `force_push_blocked` would name a specific hazard while the guard is in
+    // fact unable to see the command at all. That is D-24's requirement that a
+    // refusal name the mechanism that produced it.
+    //
+    // The correction is scoped to the identifier constant on these five rows.
+    // Nothing else in this file moved, `tests/envelope_wrapper_class.rs` was not
+    // touched, and no other assertion was weakened.
+    //
     // The reproducers in sections 1 and 2 use the three layer-2-PERMITTED bases
     // audit 7 used: `commit -m x`, `status` and the in-namespace push.
     for command in [
@@ -658,10 +700,15 @@ fn the_force_push_compositions_are_already_refused_and_are_controls_not_reproduc
     ] {
         refuses(
             command,
-            policy::REASON_FORCE_PUSH_BLOCKED,
-            "**CONTROL, NOT REPRODUCER.** This line is refused for its VERB — layer 2 never \
-             reaches the carrier at all. If this is red, the base has stopped being refused \
-             and every claim about `--force` compositions being controls is wrong.",
+            policy::REASON_ENVELOPE_ASSERTION_FAILED,
+            "**CONTROL, NOT REPRODUCER.** This line's VERDICT does not move — it was exit 2 \
+             before `19-23` and is exit 2 after — so it certifies nothing about config \
+             resolution and a reproducer must not be built on it. Its IDENTIFIER moves, \
+             because the carrier is read before the verb: an assignment the guard cannot \
+             BOUND makes the whole command unresolvable, and naming `force_push_blocked` \
+             would name a specific hazard while the guard cannot see the command at all. If \
+             this is red, either the base has stopped being refused or the clause is no \
+             longer raised at the first unbounded assignment.",
         );
     }
 }
