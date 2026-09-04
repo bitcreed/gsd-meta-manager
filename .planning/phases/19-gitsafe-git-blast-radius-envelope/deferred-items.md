@@ -911,3 +911,140 @@ exceed a QUARTER of `policy.rs`. `19-19`'s documentation pushed the ratio to
 redundant prose was tightened until production code was back above the floor.
 **The margin is now thin.** The next round that documents `policy.rs` heavily
 should expect to meet this and budget prose accordingly.
+
+---
+
+## Round 7 (plan 19-20) — the corpus for the CALLEE's grammar exists and is RED
+
+Written by plan `19-20` at base `c21c13f`. **This plan closes nothing.** It writes
+the corpus and the reproducers and stops; `19-21` writes the rule.
+
+### `T-19-100` — `scan_leading` / `leading_git_option` / `GIT_GLOBAL_VALUE_OPTS` — OPEN, `high`
+
+An incomplete, unpinned enumeration of **git's own global-option grammar** which
+**fails OPEN** at `policy.rs:488` (`(None, 1)`). The guard advances one word,
+lands on the option's VALUE, and reads that value as the verb.
+
+**Corpus written and RED**: `tests/envelope_callee_grammar.rs`, section 1 — the
+nine audit-6 rows asserted at exit 2 with a DERIVED reason identifier each. Every
+row measured at exit 0 against the built binary with a fresh envelope root and an
+empty walk before it was written as an assertion; every grammar claim confirmed by
+a two-sided probe of real git 2.43.0. Four rows have **no second carrier at all**
+(`stash`, `update-ref -d`, `reflog delete`, `config core.hooksPath`).
+
+**Twelve cells found while PLANNING are folded into this class as spellings of it,
+not registered as new threat IDs** — same provenance caveat `19-14` established
+(found while planning, not by an audit). They are the stale over-consuming entry
+(`--super-prefix`), the unknown option after a known one (the scan is a loop),
+both orders of deletion-and-callee-grammar, a continuation inside the option name,
+the nested payload, the sequence, the short bundle, the bare dash, the attached
+short `-C`, `--`, and the hooks key ahead of the gap. The full table with exit
+codes and walks is in `19-SECURITY.md`'s plan-19-20 record.
+
+**Two of them are LABELLED mis-indexes of commands real git does not run, never
+live bypasses**: `git -pc user.name=x status` (`unknown option: -pc`) and
+`git - push --force origin main` (`unknown option: -`). `git --super-prefix push …`
+is the same — it is not live only because git rejects the option; a stale entry
+for an option git ACCEPTS would be one.
+
+Closed only when `19-21`'s rule is certified by this corpus.
+
+### `T-19-101` — every generative alphabet, and the named class axes — OPEN, `medium`
+
+`T-19-76`'s failure mode for the **SIXTH** consecutive round, and this time the
+gap moved AXIS rather than one cell over: `UNREADABLE_CLASSES` names seven
+word-ASSEMBLY classes and `DELETION_CLASSES` names five word-REMOVAL classes, and
+**both are axes of the SHELL's grammar**. Audit 6 verified mechanically that
+nothing anywhere in `tests/` modelled the CALLEE's —
+`grep -rn "attr-source\|shallow-file\|GIT_GLOBAL_VALUE_OPTS" tests/` returned
+nothing at all.
+
+**Corpus written and RED**: `tests/envelope_wrapper_class.rs` section 15 —
+`CALLEE_GRAMMAR_CLASSES`, a THIRD named axis standing beside a byte-identical
+`UNREADABLE_CLASSES` and a byte-identical `DELETION_CLASSES`, with five
+degenerate-proof predicates, a class-tagged `GIT_GLOBAL_OPTIONS` alphabet spliced
+where `scan_leading` actually reads, a SEPARATE `GIT_GLOBAL_UNKNOWN_OPTIONS`
+alphabet kept out of the invariance arm because its entries are not
+verdict-preserving, and floors whose arithmetic is stated (210 cases / 120 refused
+/ 90 permitted / 14 slots; per-class 147/70/42/0/14; 56 unknown-alphabet cases).
+
+Of the 120 refused-arm cases, **16 are at exit 0 today** — the 8 `--attr-source
+HEAD` and 8 `--shallow-file /tmp/s` cases. That is what makes the property red
+pre-fix by construction.
+
+Closed only by `19-21`, because a corpus is evidence about a control and there is
+no control yet.
+
+### `T-19-102` — `push_operands` / `PUSH_VALUE_OPTS` — OPEN, `low`
+
+The same enumeration defect in the **over-refusal** direction.
+`git push --recurse-submodules on-demand origin refs/heads/gsd-auto/alpha/w` →
+exit 2 `push_outside_namespace`, while real git runs the line to completion
+(`Everything up-to-date`). `recurse-submodules` is absent from `PUSH_VALUE_OPTS`,
+so `on-demand` is read as the repository and `origin` as a refspec resolving to
+`refs/heads/origin`.
+
+**Corpus written and RED**: the false refusal is asserted at its **POST-fix exit
+0**, beside its permitted twin — red now, green after, and no body for `19-21` to
+replace. `git push --signed no origin refs/heads/gsd-auto/alpha/w` is pinned
+**REFUSED** as the discrimination control, because real git reads `no` as the
+repository (`error: src refspec origin does not match any`) and a fix copied from
+`git push -h` would add `signed` and introduce a real mis-parse.
+
+### The `glab --host` forge cell — RECORDED, callee UNCONFIRMED, deliberately NOT fixed
+
+`glab --host gitlab.com mr create --title x` → exit 0 with **ZERO** ledger lines;
+`glab --hostname …` → exit 0 with **one**. `FORGE_VALUE_OPTS` is
+`["-R", "--repo", "--hostname"]` — the same hand-maintained enumeration of a
+callee's option grammar, in a third component, failing in the UNDER-COUNTING
+direction (SAFE-06).
+
+**`glab` is NOT installed on this machine**, so whether glab accepts `--host` as a
+separate-value global flag is not confirmed against the callee. **This is not
+claimed as a live bypass.** `gh` was swept and is clean — `gh --repo o/r`,
+`gh -R o/r`, `gh --hostname h.example`, `gh api --hostname h.example` and
+`gh --version` all leave exactly one ledger line.
+
+**Out of round 7's three-item scope. Do not fix `FORGE_VALUE_OPTS`,
+`GH_API_VALUE_OPTS` or `subcommand_word_indices` as part of it.** A candidate for
+the round after `19-21`, and it needs a machine with `glab` installed to confirm
+the callee's grammar first.
+
+### `T-19-17r` — still OUTSTANDING, and plan 19-20 did NOT accept it
+
+Unchanged by this round. `19-17-SUMMARY.md` calls it "accepted"; there is still
+**no `AR-19-13` row in the Accepted Risks Log and no register row**. Audits 5 and
+6 both confirmed the measurement and both pins and both explicitly declined to
+make the acceptance, because accepting a risk is a human decision. **Plan 19-20
+recorded the gap and made no acceptance.** The next round either adds the log row
+or drops the word.
+
+### The anti-vacuity ratio note above is now SUPERSEDED
+
+The entry warning that the `policy.rs` production-code ratio floor was thin is
+resolved rather than merely tightened. Plan `19-20` re-measured it **in BYTES**
+(Rust's `len()` is a byte length; a `str`-character reading of `policy.rs` is 612
+bytes light): raw 263,360 / stripped 65,947 = **25.0406%**, headroom **107
+stripped bytes ≈ 428 comment bytes** — less than `19-21`'s own doc additions. The
+ratio assertion was **deleted and replaced** by absolute per-file floors,
+`POLICY_MIN_PRODUCTION_BYTES = 40_000` and `HOOKS_MIN_PRODUCTION_BYTES = 20_000`,
+which are independent of comment volume. **No prose needs to be budgeted for it
+any more.**
+
+### Unchanged and still open
+
+`T-19-86` (OPEN, `high`, four rows still at exit 0, by explicit user scoping
+decision), `T-19-91` (OPEN, `high`, arms unweakened — `reflog $S`, `reflog show
+$S`, `symbolic-ref $S` at exit 0 with no second carrier, bare `git push $REF` at
+exit 0 in-namespace), `T-19-96` (registered, not fixed), `T-19-74` (core rows
+frozen and re-measured permitted), and `T-19-61`…`T-19-73`, `T-19-84`, `T-19-85`
+(open and unaccepted by explicit user decision). **Because `T-19-86` and `T-19-91`
+remain open at `high`, neither `19-20` nor `19-21` clears `/gsd-secure-phase 19`.**
+
+### The `envelope_tracer` ETXTBSY entry above is CONFIRMED, not superseded
+
+`19-19-SUMMARY.md` presents this flake as newly observed. It has been carried here
+since **19-07** with the same symptom string, diagnosis and frequency. Recorded in
+`19-SECURITY.md`'s plan-19-20 record as a provenance slip rather than a defect;
+audit 6 ran the test 8/8 green in isolation, and it fails closed by ERRORING, so
+it cannot mask a regression. Out of scope — do not "fix" it.
