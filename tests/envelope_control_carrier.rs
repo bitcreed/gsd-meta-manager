@@ -631,34 +631,107 @@ fn after_19_27_the_carrier_rule_reads_a_path_and_not_a_program_name() {
 // ===========================================================================
 
 #[test]
-fn direction_i_a_redirection_target_is_not_an_operand_and_stays_permitted() {
-    // **DIRECTION (i) IS REAL BY MECHANISM, NOT BY CHOICE.** `tokenize`
-    // (`policy.rs:2264-2279`, `T-19-97`) consumes bash's redirection production
-    // `[IO_NUMBER] OPERATOR WORD` and emits NO TOKEN for the operator OR ITS
-    // TARGET — because bash deletes both from argv before `execve`. So the
-    // ledger path after a `>` is **not a word at all**, and rule (a), which
-    // reads the segment's literal WORDS, cannot see it. These rows will not flip.
+fn after_19_29_direction_i_a_redirection_target_is_read_and_the_control_outside_the_root_is_not() {
+    // **THE ONE NAMED, HUMAN-AUTHORISED EXCEPTION `19-29` TAKES TO THE NO-EDIT
+    // RULE ON THIS FILE. TWO STATED REASONS ARE CORRECTED HERE, AND NEITHER IS
+    // DELETED — because a verdict edited without its reasoning is how a control
+    // comes to be trusted for something it never did.**
     //
-    // **A rule that read redirection targets would re-open a model five rounds
-    // have pinned shut.** `SEPARATORS` (`policy.rs:2281`) deliberately excludes
-    // `>` and `<`; `policy::is_separator(">") == false` by construction (pinned
-    // in section 9); that line has ONE commit in the whole phase (`84a9b05`,
-    // plan 19-05); and round 6's over-deletion control pins
-    // `git x2>/tmp/o push --force origin main` PERMITTED.
-    permits_carrier(
-        |root| format!(": > {}/alpha/pr-ledger.ndjson", root.display()),
-        "direction (i): `: >` puts the ledger path after a redirection operator, so it is not \
-         an operand. Section 8 drives this spelling END TO END and confirms it resets the cap.",
+    // ## What this test used to say, and why it was right when it was written
+    //
+    // It read: *"the ledger path after a `>` is **not a word at all**, and rule
+    // (a), which reads the segment's literal WORDS, cannot see it. **These rows
+    // will not flip.**"* Every clause of the mechanism there is still TRUE:
+    // `tokenize` (`T-19-97`) consumes bash's redirection production
+    // `[IO_NUMBER] OPERATOR WORD` and emits NO TOKEN for the operator or its
+    // target, because bash deletes both from argv before `execve`. The target is
+    // still not a word, `Segment::tokens` still does not contain it, and rule (a)
+    // still cannot see it *as an operand*.
+    //
+    // **CORRECTION 1 — "These rows will not flip" is FALSE BY MEASUREMENT.**
+    // `T-19-118` is a live `high`-severity credential reach through this exact
+    // direction: `printf '[credential]\n\thelper = store\n' >> <ENV>/alpha/gitconfig`
+    // is exit 0 through the guard, after which `git credential fill` returns the
+    // ambient secret. It also re-opens `T-19-23`, which had been closed. The
+    // inference was from a mechanism that is real to a conclusion the mechanism
+    // does not support: *the rule cannot see it as a WORD* does not entail *the
+    // guard cannot establish it at all*.
+    //
+    // **CORRECTION 2 — "A rule that read redirection targets would re-open a
+    // model five rounds have pinned shut" is FALSE IN A MORE INTERESTING WAY,
+    // and the interesting part is that it was falsifiable and was falsified.**
+    // The claim assumed the only way to read a target is to make `>` a
+    // separator or to push the target into the token stream. It is not.
+    // `19-29` carries the target on the SEGMENT — the channel
+    // `Segment::redirection_unresolvable` already uses — produced by the walk
+    // that ALREADY skips the target, so:
+    //
+    // ```text
+    //   SEPARATORS                        byte-identical (still ONE commit, 84a9b05)
+    //   policy::is_separator(">")         still false            (section 9, GREEN)
+    //   segment.tokens                    byte-identical         (SEGMENT-COUNT pins, GREEN)
+    //   git x2>/tmp/o push --force …      still exit 0           (round 6's over-deletion control)
+    //   git >/dev/null push --force …     still exit 2, ONE segment
+    // ```
+    //
+    // **Those pins are what make this correction a measurement rather than an
+    // opinion**, and they are the reason the model five rounds pinned shut is
+    // observably still shut.
+    //
+    // ## What the rows assert now, and the control that makes the pair discriminate
+    //
+    // All three rows are the same three carriers, at the verdict `19-29`'s
+    // widened SIGHT gives them — measured exit 2 at `envelope_assertion_failed`,
+    // each against a fresh envelope root. **The discriminating control is the
+    // SAME operator and the SAME program to a target OUTSIDE the envelope root**:
+    // it differs in exactly the property the clause reads and in nothing else, so
+    // a rule that read redirection targets INDISCRIMINATELY turns it red while a
+    // rule that resolves them against the carrier path set leaves it at exit 0.
+    for (make, why) in [
+        (
+            ": > {}/alpha/pr-ledger.ndjson",
+            "direction (i) over the LEDGER. Section 8 drives this spelling END TO END and \
+             confirms it resets the cap, which is the harm this verdict now answers.",
+        ),
+        (
+            "printf 'exit 0' > {}/alpha/hooks/pre-push",
+            "direction (i) over the HOOK STUB. `T-19-113` is NARROWED FURTHER by this and is \
+             still NOT CLOSED — the tilde, glob, brace, expansion-borne, symlinked and relative \
+             spellings of the same target remain permitted.",
+        ),
+        (
+            "echo evil > {}/alpha/askpass",
+            "direction (i) over the ASKPASS responder — beside its OPERAND twin in section 1, \
+             which was already refused. That twin is what makes this a DIRECTION gap rather \
+             than a file gap.",
+        ),
+    ] {
+        let make = make.to_string();
+        refuses_carrier(
+            |root| make.replace("{}", &root.display().to_string()),
+            policy::REASON_ENVELOPE_ASSERTION_FAILED,
+            why,
+        );
+    }
+
+    // **THE DISCRIMINATING CONTROL, DRIVEN BESIDE THEM.** Measured exit 0 before
+    // `19-29` and exit 0 after it.
+    permits(
+        ": > /tmp/l",
+        "the SAME operator and the SAME program, to a target that is not under the envelope \
+         root. **A rule that read redirection targets without resolving them against the \
+         carrier path set turns this red**, and it must stay exit 0.",
     );
-    permits_carrier(
-        |root| format!("printf 'exit 0' > {}/alpha/hooks/pre-push", root.display()),
-        "direction (i): the same, for the hook stub. This is why `T-19-113` is NARROWED and \
-         not CLOSED by rule (a).",
-    );
-    permits_carrier(
-        |root| format!("echo evil > {}/alpha/askpass", root.display()),
-        "direction (i): the same, for the askpass responder — beside its OPERAND twin in \
-         section 1, which IS refused.",
+
+    // **AND THE WORD SET GROWING DID NOT SHRINK THE SILENCES.** Direction (i) is
+    // NARROWED to the absolute-literal spelling and is NOT closed: it becomes a
+    // second WORD CLASS the other six directions apply over, so the same target
+    // spelled with a tilde is still permitted.
+    permits(
+        ": > ~/.local/share/gsd-meta-manager/envelope/alpha/pr-ledger.ndjson",
+        "direction (v) IN REDIRECTION-TARGET POSITION. Resolving a tilde needs the environment, \
+         which the guard may not read at guard time, so no rule is written for it. **This row \
+         is what makes `NARROWED` the honest word rather than `closed`.**",
     );
 }
 

@@ -1946,25 +1946,67 @@ fn t_19_117_the_ledgers_size_is_unbounded_work_on_the_guards_critical_path() {
 }
 
 #[test]
-fn the_ledger_inflation_spellings_are_all_permitted_today() {
-    // **THE DELIVERY, PINNED.** Every spelling that inflates the ledger arrives
-    // through fail-open direction (i), so it is invisible to rule (a). These
-    // rows are asserted at exit 0 BEFORE, and they are the ones `19-29`'s
-    // widened SIGHT turns to exit 2 — they are the same direction-(i) rows
-    // section 3 asserts post-fix, drawn here for the ledger rather than for the
-    // gitconfig.
+fn after_19_29_the_ledger_inflation_spellings_are_reached_and_the_outside_controls_are_not() {
+    // **THE DELIVERY, PINNED — AND THIS ROW'S ASSERTION DISAGREED WITH ITS OWN
+    // STATED DERIVATION, WHICH IS WHY `19-29` MOVED IT.**
+    //
+    // `19-28` wrote this test named `..._today` and commented, verbatim: *"These
+    // rows are asserted at exit 0 BEFORE, and **they are the ones `19-29`'s
+    // widened SIGHT turns to exit 2** — they are the same direction-(i) rows
+    // section 3 asserts post-fix."* **The comment was right and the assertion was
+    // written at the pre-fix verdict anyway.** That is the same defect `19-28`
+    // itself caught twice in its own first draft — its deviations 2 and 3, where
+    // a green half hid inside a red name and a tilde twin was asserted at a
+    // verdict it does not have — and missed once, here. It is corrected in the
+    // direction the comment already stated, not in the direction that would have
+    // made the rule smaller.
+    //
+    // **`19-28`'s blocking scope finding checked for exactly this and scoped the
+    // check one file too narrowly**: it reported *"no OTHER test file names an
+    // envelope-root redirection target as a pinned-permitted row"* — which was
+    // true of every file except the one it was written in.
+    //
+    // **THE CONTROL AND WHAT MAKES THE PAIR DISCRIMINATING.** Each row is driven
+    // beside the SAME spelling to a target OUTSIDE the envelope root, measured
+    // exit 0 before and asserted exit 0 after: same program, same operator, same
+    // bytes, differing in exactly the property the clause reads.
     for template in [
         "yes '{\"at\":\"2020-01-01T00:00:00Z\"}' | head -2000000 >> {}/alpha/pr-ledger.ndjson",
         "head -c 200000000 /dev/zero >> {}/alpha/pr-ledger.ndjson",
     ] {
         let template = template.to_string();
-        permits_carrier(
+        refuses_carrier(
             |root| template.replace("{}", &root.display().to_string()),
-            "an inflation spelling. It is PERMITTED today because the ledger path arrives as a \
-             REDIRECTION TARGET — direction (i) — which is why `T-19-117`'s delivery and \
-             `T-19-118`'s delivery are the same gap seen from two sides.",
+            policy::REASON_ENVELOPE_ASSERTION_FAILED,
+            &format!(
+                "an inflation spelling. It was PERMITTED before `19-29` because the ledger path \
+                 arrives as a REDIRECTION TARGET — direction (i) — which is why `T-19-117`'s \
+                 delivery and `T-19-118`'s delivery are the same gap seen from two \
+                 sides.\n\n{REDIRECTION_TARGET_DERIVATION}"
+            ),
         );
     }
+    permits(
+        "yes '{\"at\":\"2020-01-01T00:00:00Z\"}' | head -2000000 >> /tmp/outside/pr-ledger.ndjson",
+        "the DISCRIMINATING CONTROL for the first spelling: the same pipeline and the same \
+         operator, to a path outside the envelope root. Measured exit 0 before and after.",
+    );
+    permits(
+        "head -c 200000000 /dev/zero >> /tmp/outside/pr-ledger.ndjson",
+        "the same control for the second spelling.",
+    );
+
+    // **AND THE DELIVERY IS NARROWED RATHER THAN CLOSED, WHICH IS WHY
+    // `T-19-117`'s OWN BOUND IS STILL REQUIRED.** The absolute-literal spelling
+    // of the inflation is refused; the tilde spelling of the same target is not,
+    // and no rule is written for it. A remedy for `T-19-117` that leaned on this
+    // clause alone would be a remedy with a permitted spelling beside it.
+    permits(
+        "head -c 200000000 /dev/zero >> ~/.local/share/gsd-meta-manager/envelope/alpha/pr-ledger.ndjson",
+        "direction (v) over the LEDGER, in redirection-target position. Resolving a tilde needs \
+         the environment, which the guard may not read — so the ledger's own SIZE BOUND is the \
+         control that answers this spelling, and the path rule is not.",
+    );
 }
 
 #[test]
