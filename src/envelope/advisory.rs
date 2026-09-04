@@ -247,11 +247,13 @@ pub const SECTION_ENVELOPE: &str = "== What this envelope guarantees, and what i
     \x20\x20\x20\x20generated file naming no credential helper.\n\
     \x20\x20\x20\x20A push through the driven process tree passes the pre-push hook,\n\
     \x20\x20\x20\x20judging the refs git hands it, not the command line asked about.\n\
-    \x20\x20\x20\x20Pull-request cap: an append-only ledger this repository does not contain.\n\
+    \x20\x20\x20\x20The pull-request count lives in\n\
+    \x20\x20\x20\x20an append-only ledger this repository does not contain.\n\
     \n\
     Not guaranteed: client-side hooks, tool denies and env-injected git config\n\
     are all defeatable by an agent that can spawn an unsupervised shell.\n\
-    \x20\x20\x20\x20An agent that unsets GIT_CONFIG_COUNT in a subshell is past the last layer.\n\
+    \x20\x20\x20\x20An agent that unsets GIT_CONFIG_COUNT in a subshell, or rewrites the\n\
+    \x20\x20\x20\x20hook stubs and ledger the envelope installed, is past the last layer.\n\
     \x20\x20\x20\x20An agent that runs the askpass responder itself reads the token.\n\
     \x20\x20\x20\x20A settings file the agent's own CLI silently ignores leaves that cap\n\
     \x20\x20\x20\x20unenforced: no git hook observes a pull request.\n\

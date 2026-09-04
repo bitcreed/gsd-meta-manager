@@ -243,6 +243,33 @@ fn config_env(pairs: &[(&str, &OsStr)]) -> Vec<(OsString, OsString)> {
 /// An agent that unsets `GIT_CONFIG_COUNT` in a subshell **escapes this layer**.
 /// That is not a hole this project can close client-side.
 ///
+/// **AND THAT IS NOT THE WHOLE CEILING — D-09's NARRATIVE NAMED THE ROUTE THE
+/// GUARD REFUSES WHILE THE ROUTE THAT WORKS WAS REFUSED BY NOTHING.** The
+/// environment route above IS refused, re-measured green at
+/// `envelope_hook_refusals`' `hook_bypass_blocked` row. Meanwhile
+/// `cp /bin/true <hooks_dir>/pre-push` removed this layer **at exit 0 and without
+/// touching `GIT_CONFIG_COUNT` at all**, and a force push then MOVED a bare
+/// remote's `main`; restoring the stub restored the refusal. A reader of point 3
+/// above concluded the guard stands underneath this layer, and it did not: point
+/// 3 says the agent cannot uninstall it *by editing a file in the repository*,
+/// which is true and is not the same as saying it cannot uninstall it.
+///
+/// **Since plan 19-27 that route is NARROWED and it is NOT closed**, and the word
+/// is NARROWED: `policy::envelope_carrier_operand` refuses a command whose
+/// ABSOLUTE LITERAL word operand resolves lexically under this run's envelope
+/// directory, so `cp /bin/true <hooks_dir>/pre-push` and `rm -f <ledger>` are
+/// refused. **It fails OPEN in four named directions and none has an automated
+/// control** — a redirection target (`printf 'exit 0' > <hooks_dir>/pre-push`; the
+/// tokenizer deletes an operator AND its target, so the path is not a word at
+/// all), an expansion-borne operand, a symlink, and a relative path. The last two
+/// are narrowed by a measured partial mitigation — `ln -s` and `cd` each name an
+/// envelope path as their OWN operand — and narrowed is all they are.
+///
+/// **`T-19-01`'s `current_exe()` + `assert_provenance_in` mitigation is correct
+/// and is not weakened by any of this.** It certifies a RELOCATED COPY of the
+/// binary; it is simply not a defence of the sanctioned path's CONTENTS, because
+/// a replaced stub never re-enters the binary that would assert provenance.
+///
 /// **This paragraph states the REGIONS each closure covers, and it COUNTS
 /// NOTHING** (`T-19-109`). It has been corrected twice. It first claimed ONE
 /// form outranked this injection; plan 19-23 replaced that with a table of
@@ -286,7 +313,32 @@ fn config_env(pairs: &[(&str, &OsStr)]) -> Vec<(OsString, OsString)> {
 ///   inside that child reaches `core.hooksPath` anyway. That is `T-19-86`;
 /// * an alias already persisted in a config file the guard never saw a write to —
 ///   the guard is stateless and argv-only, so a repo-local `.git/config` alias
-///   predating the run is live;
+///   predating the run, **or one written by a means that is not `git config`**,
+///   is live. **That is `T-19-111`, not `T-19-86`**: all four of `T-19-86`'s
+///   registered rows require a governed program to be handed a governed COMMAND
+///   AS DATA on the line the guard reads, and a non-`!` alias body sitting in a
+///   config VALUE is a plain git command line in a file —
+///   `policy::REPARSED_COMMAND_SECTIONS`' own K1 class, reached through a carrier
+///   outside argv. It is measured and live: a `printf`-written `.git/config`
+///   alias carrying `-c include.path=<f> push --force` rewrote a bare remote's
+///   `main`, with a no-carrier control beside it that left it unmoved. **No rule
+///   is written for it and no acceptance is made** — the carrier is a repo-side
+///   file no envelope-path rule reaches, and accepting a risk is a human
+///   decision. The half restored to this bullet is the half
+///   `policy::REPARSED_COMMAND_SECTIONS`' own residue paragraph already carried;
+///   a narrowing to *"predating the run"* dropped it, and a reassurance that
+///   reasons about the case which is not the threat is the shape this phase has
+///   now registered three times;
+/// * **the FILE CARRIERS this envelope's own controls live in** — the PR-cap
+///   ledger, both hook stubs, this generated `gitconfig` and `askpass`, the `gh`
+///   directory and the settings file. Since plan 19-27 a command naming one of
+///   them by an ABSOLUTE LITERAL operand is refused, and **the four directions
+///   above stay open**: a redirection target, an expansion-borne operand, a
+///   symlink and a relative path, the last two narrowed rather than closed. Every
+///   one of these files must be readable, writable or executable by the same uid
+///   the driven process runs as — git must exec the hooks, the agent CLI must
+///   read the settings and the guard must append the ledger — so moving them out
+///   of reach is not available on a single-uid model;
 /// * a future git that adds a THIRD indirection section;
 /// * a future git that re-parses a SECOND config value as a git command line.
 ///

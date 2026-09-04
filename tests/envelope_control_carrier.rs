@@ -1964,24 +1964,49 @@ fn d09s_ceiling_route_is_still_refused_while_the_route_that_works_is_refused_by_
 
 #[test]
 fn the_guaranteed_cap_clause_is_pinned_at_its_current_text_and_19_27_must_change_it() {
-    const CURRENT_CLAUSE: &str =
-        "Pull-request cap: an append-only ledger this repository does not contain.";
+    // **UPDATED BY `19-27` — the ONE pre-authorised edit `19-26` named in advance,
+    // and the whole of this plan's reach into this file's existing rows.**
+    //
+    // The clause `19-26` pinned was
+    // `"Pull-request cap: an append-only ledger this repository does not contain."`,
+    // sitting under **Guaranteed**, and it was falsified by measurement —
+    // `the_t_19_112_cap_reset_is_driven_end_to_end_in_one_persistent_root` drives
+    // the reset over four calls and gets a fresh one-line ledger on call 4.
+    //
+    // **What the repair changed is the KIND of statement, not its wording.** The
+    // old text named a CONTROL ("Pull-request cap:") and then described the
+    // ledger, so a reader took the cap itself as guaranteed. The new text states a
+    // LOCATION FACT and stops: the count lives in a ledger this repository does
+    // not contain. That is mechanically true — no checkout, reset or clean reaches
+    // it — and it claims nothing about whether the cap can be reset.
+    //
+    // **AND IT MAKES NO COMPLETENESS CLAIM ABOUT SAFE-06's RESIDUE, DELIBERATELY.**
+    // Rule (a)'s four fail-open directions are NOT the whole of it: `C-15` resets
+    // the cap by RAISING A NUMBER in a file outside the envelope root, with no
+    // ledger write and no envelope path named, and the deferred option (b) leaves
+    // the guard as the cap's only observation point (`T-19-35`, `AR-19-05`). **A
+    // clause that enumerated four directions and stopped would imply a
+    // completeness the measurement denies — `T-19-107`'s shape in a shorter
+    // sentence** — so the repaired text enumerates nothing at all.
+    const CURRENT_CLAUSE: &str = "The pull-request count lives in\n\
+                                  \x20\x20\x20\x20an append-only ledger this repository does \
+                                  not contain.";
 
     assert!(
         advisory::SECTION_ENVELOPE.contains(CURRENT_CLAUSE),
-        "\n\n**THE `Guaranteed` CAP CLAUSE HAS MOVED, AND THIS TEST IS THE ONE PLACE `19-27` \
-         MAY EDIT IN THIS FILE.**\n\n\
-         The clause pinned here is FALSIFIED BY MEASUREMENT — \
-         `the_t_19_112_cap_reset_is_driven_end_to_end_in_one_persistent_root` drives the reset \
-         over four calls and gets a fresh one-line ledger on call 4. **Rule (a) NARROWS \
-         `T-19-112` without CLOSING it**: `rm -f <ledger>` is refused after `19-27` and \
-         `: > <ledger>` is not, so an unqualified `Guaranteed` stays false either way.\n\n\
-         **Shipping the rule and leaving this claim unqualified would be `T-19-107`'s defect — \
-         a control's own text claiming a reach it does not have — committed by the round that \
-         inherited the lesson.**\n\n\
-         And `C-15` means rule (a)'s four directions are NOT the complete residue for SAFE-06: \
-         the cap is also resettable by RAISING A NUMBER in a file outside the envelope root, \
-         with no ledger write at all."
+        "\n\n**THE `Guaranteed` CAP CLAUSE HAS MOVED AGAIN.**\n\n\
+         `19-27` repaired it once, from a claim about the CAP to a fact about the ledger's \
+         LOCATION. **Rule (a) NARROWS `T-19-112` without CLOSING it**: `rm -f <ledger>` is \
+         refused and `: > <ledger>` is not, so any unqualified affirmative `Guaranteed` claim \
+         about the cap is false — and a text claiming a reach it does not have is `T-19-107`'s \
+         registered shape.\n\n\
+         **The phrase `append-only ledger this repository does not contain` is ALSO pinned by \
+         `tests/envelope_advisory.rs::the_honesty_statement_carries_each_of_its_three_required_parts`**, \
+         which passed UNMODIFIED across `19-27` because the repair kept it verbatim. A rewording \
+         that drops it turns two files red at once.\n\n\
+         If this text must move again: state what the clause COVERS, make NO completeness claim \
+         about SAFE-06's residue, do not enumerate, do not raise the token cap (215, currently \
+         213), and shorten by dropping a CLAIM rather than a LIMITATION."
     );
 
     // **THE PINNED-PHRASE ORDERING CONSTRAINT, CARRIED FORWARD SO `19-27`
