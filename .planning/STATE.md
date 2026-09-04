@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
-stopped_at: Completed 19-26-PLAN.md (corpus RED, 10 failures, handoff to 19-27)
-last_updated: "2026-09-04T17:23:26.709Z"
+stopped_at: Completed 19-27-PLAN.md — T-19-112 and T-19-113 NARROWED not closed; /gsd-secure-phase 19 NOT cleared
+last_updated: "2026-09-04T17:55:26.762Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: df2243b4765b6ce451f86d6352f587e551079dc3
+state_head: 60f11e85b21e7fae4befede8e3d3d96ef4622c53
 progress:
   total_phases: 10
   completed_phases: 6
   total_plans: 106
-  completed_plans: 105
+  completed_plans: 106
   percent: 60
 ---
 
@@ -228,6 +228,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 19 P24 | 2h | 3 tasks | 4 files |
 | Phase 19 P25 | ~3h | 4 tasks | 6 files |
 | Phase 19 P26 | one session | 3 tasks | 5 files |
+| Phase 19 P27 | one session | 4 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -301,6 +302,9 @@ Recent decisions affecting current work:
 - [Phase 19]: 19-26: CONTROL_CARRIER_CLASSES is a genuine FIFTH axis — no existing axis property can be satisfied by a command reaching no governed program
 - [Phase 19]: 19-26: C-15 (~/.config/gsd-meta-manager/config.json) is a DISTINCT route to SAFE-06 and gets control (e) — no rule; pr_cap_* deliberately NOT clamped
 - [Phase 19]: 19-26: T-19-111 is registered SEPARATELY from T-19-86 and must be moved OUT of it — five mis-attribution sites enumerated
+- [Phase 19]: 19-27: the carrier-operand rule — a segment naming an ABSOLUTE LITERAL path under envelope_dir_in(root, alias) is refused, raised ONCE before the resolution match; it fails OPEN in four named directions handed to no control
+- [Phase 19]: 19-27: T-19-111 moved OUT of T-19-86 at all five sites, with no rule and no acceptance written for it
+- [Phase 19]: 19-27: SECTION_ENVELOPE's Guaranteed cap clause repaired to a location fact making no completeness claim — C-15 is a fifth route to SAFE-06 and the deferred option (b) a sixth
 
 ### Pending Todos
 
@@ -362,8 +366,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-04T17:23:26.012Z
-Stopped at: Completed 19-26-PLAN.md (corpus RED, 10 failures, handoff to 19-27)
+Last session: 2026-09-04T17:55:26.049Z
+Stopped at: Completed 19-27-PLAN.md — T-19-112 and T-19-113 NARROWED not closed; /gsd-secure-phase 19 NOT cleared
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
 Resume file: None
