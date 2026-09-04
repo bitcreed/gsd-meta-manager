@@ -4477,3 +4477,154 @@ new `#[test]` fns counted from `git show` — the identity holds. All thirteen
 deletions**. `cargo clippy -- -D warnings` exits 0. Two failures: the documented
 `driver_reattach` flake, and the blocker row recorded at the top of this
 subsection.
+
+---
+
+## Execution record — the plan-19-21 blocker row, RESOLVED. NOT an audit finding.
+
+**Attribution.** Written by a scoped follow-up executor on 2026-09-04, at the
+user's direction, to resolve the ONE blocker row plan `19-21` left open. It is
+**not** an audit, and it does **not** amend audit 6, the Security Audit Trail,
+the Accepted Risks Log, the threat register tables or any Sign-Off block — none
+of those were touched. It records one corpus-labelling correction and the
+measurements that justify it. Commit: `989f21a`.
+
+### The blocker, restated
+
+`19-21` reported that `tests/envelope_callee_grammar.rs` carried two pins it
+judged mutually incompatible:
+
+| | Row | Pinned identifier | Test |
+|---|---|---|---|
+| **A** | `git --super-prefix x status` | `envelope_assertion_failed` | `after_19_21_the_unknown_option_cost_rows_are_refused_beside_their_permitted_twins` |
+| **B** | `git --super-prefix x push --force origin main` | `force_push_blocked` | `the_already_correct_planning_cells_keep_their_verdicts_as_controls` |
+
+It left row B RED and reported rather than working around it. That was the
+correct call, and the reasoning was checked rather than taken on trust.
+
+### The analysis HELD, and here is how it was verified
+
+**Structurally.** `--super-prefix` is absent from `GIT_GLOBAL_VALUE_OPTS` and
+from `GIT_GLOBAL_SELF_CONTAINED_OPTS` in `src/envelope/policy.rs` after `19-21`
+(read directly), and PRESENT in `GIT_GLOBAL_VALUE_OPTS` at the pre-fix base
+`097dba2` (`git show 097dba2:src/envelope/policy.rs`). `scan_leading` returns
+`(index, Some(unestablished_verb_refusal(token)))` on `NotEstablished`, and
+`classify_git`'s FIRST statement returns that refusal. Two different identifiers
+from identical leading tokens is therefore impossible without a filter in
+`classify_git` after `scan_leading` returned — **the prohibited second reading
+site. It was not built.**
+
+**By measurement, against the BUILT BINARY** (`target/debug/gsd-meta-manager
+envelope guard alpha`), one fresh `GSD_MM_ENVELOPE_ROOT` per row and the
+envelope root WALKED afterwards, so the empty walk is OBSERVED rather than
+inferred:
+
+| Command | exit | identifier | walk |
+|---|---|---|---|
+| `git --super-prefix x status` | 2 | `envelope_assertion_failed` | EMPTY |
+| `git --super-prefix x push --force origin main` | 2 | `envelope_assertion_failed` | EMPTY |
+| `git -C/tmp push --force origin main` (control) | 2 | `force_push_blocked` | EMPTY |
+| `git -- push --force origin main` (control) | 2 | `force_push_blocked` | EMPTY |
+| `git -c core.hooksPath=/dev/null --attr-source HEAD push` (control) | 2 | `hook_bypass_blocked` | EMPTY |
+| `git - push --force origin main` (control) | 0 | — | EMPTY |
+
+**Against the CALLEE.** git 2.43.0 rejects `--super-prefix` in every form the
+grammar distinguishes — bare (`git --super-prefix version`), separate-value
+(`git --super-prefix x version`) and attached (`git --super-prefix=x version`)
+each print `unknown option:`. So the removal of the entry was required and the
+row is a mis-index of a command that does not run, never a live bypass.
+
+**The conclusion.** `force_push_blocked` was a **PRE-fix observation
+mis-labelled as post-fix**. It held at `097dba2` only because the stale entry
+consumed `x` and moved `push` into the verb slot — which is exactly what the
+row's own comment says it proves. Removing `--super-prefix` was a deliberate,
+audit-confirmed part of `19-21`'s fix (audit 6 measured
+`git --super-prefix push --force origin main` at exit 0 with a stale entry
+swallowing the real verb). **Both spellings refuse at exit 2 with an empty walk
+under either rule; only the identifier differs, and `envelope_assertion_failed`
+is the more accurate of the two** — naming `force_push_blocked` for a command
+whose verb the guard admits it cannot establish attributes the refusal to a
+mechanism that did not produce it (D-24).
+
+### What was changed
+
+**One test file. Zero `src/` bytes.** Row B's post-fix expectation was corrected
+to `policy::REASON_ENVELOPE_ASSERTION_FAILED`, with a comment stating plainly
+that the previous identifier was a pre-fix observation mis-labelled as post-fix,
+that it moved because `--super-prefix` left the constant as part of the fix, and
+that both spellings refuse with an empty walk either way. The test's section
+header was corrected to say the label covers the first three cells only, and the
+sibling pre-fix comment in `after_19_21_the_stale_and_bundled_planning_cells_are_refused`
+gained the same caveat so the confusion is not repeated.
+
+**Nothing was weakened.** `refuses()` still asserts exit 2, the D-24 identifier,
+and an empty ledger walk over a freshly walked root. `SEPARATORS` is untouched
+and `policy::is_separator(">")` is still `false`. Round 4's literalness bit,
+round 5's inversion and round 6's deletion model are unmodified and their
+mechanism pins are green. `POLICY_MIN_PRODUCTION_BYTES = 40_000` and
+`HOOKS_MIN_PRODUCTION_BYTES = 20_000` are unchanged. `git diff --numstat` over
+`tests/` for this commit is `58 3` on one file; the three deleted lines are the
+two-line section header and the single identifier constant, all replaced in
+place.
+
+### The sweep for the same defect
+
+Every identifier-asserting row in `tests/envelope_callee_grammar.rs` and
+`tests/envelope_wrapper_class.rs` was checked against the constants `19-21`
+changed — `--super-prefix` removed from `GIT_GLOBAL_VALUE_OPTS`;
+`-c`, `--config-env`, `--attr-source`, `--shallow-file` added;
+`GIT_GLOBAL_SELF_CONTAINED_OPTS` entirely new; `recurse-submodules` added to
+`PUSH_VALUE_OPTS`.
+
+**Row B was the ONLY row of the class.** Findings, reported even where nothing
+needed changing:
+
+| Row | Depends on | Verdict |
+|---|---|---|
+| `git -C/tmp push --force origin main` → `force_push_blocked` | `-C` in `GIT_GLOBAL_VALUE_OPTS` — **unchanged** by `19-21` (and preserved by that plan's deviation-1 short-attached arm) | correctly labelled, measured green |
+| `git -- push --force origin main` → `force_push_blocked` | the `--` end-of-options termination rule, no constant | correctly labelled, measured green |
+| `git -c core.hooksPath=/dev/null --attr-source HEAD push` → `hook_bypass_blocked` | the `-c` key check firing before any verb, no constant lookup | correctly labelled, measured green |
+| `git --attr-source=HEAD push --force origin main` → `force_push_blocked` | the STRUCTURAL attached-`=` rule, which needs no constant entry at all | correctly labelled, green both sides |
+| `git push --signed no …` → `push_outside_namespace` | `signed` staying OUT of `PUSH_VALUE_OPTS` — `19-21` added `recurse-submodules` and nothing else | correctly labelled; this is the discrimination control and it held |
+| the four `PUSH_VALUE_OPTS` rows at exit 0 in `after_19_21_the_in_namespace_push_…` | `-o` / `--push-option` already present; the attached form structural | permits, no identifier to mislabel |
+| `envelope_wrapper_class.rs` callee section | `an_option_the_installed_git_rejects_fails_closed_on_every_base` and the generative refused arm assert **exit 2 and an empty walk only**; the base floors assert taxonomy MEMBERSHIP (`REASON_IDENTIFIERS.contains`), never a specific identifier | no row of the class exists in that file |
+| every `refuses_under(...)` call in `envelope_wrapper_class.rs` | wrapper-axis lines; none carries a leading git global option whose bit changed | no row of the class |
+
+`grep -rln` over `tests/` for `attr-source`, `shallow-file`,
+`recurse-submodules`, `config-env` and `super-prefix` returns **only those two
+files**, so the sweep is complete across the suite.
+
+### The gate
+
+`rtk proxy cargo test --no-fail-fast`, counts read with `rtk proxy grep` over a
+redirected log (a plain `grep` reads a log the RTK hook has already stripped the
+`test result:` lines from, which is D-34):
+
+| passed | failed | ignored | `passed + failed` |
+|---|---|---|---|
+| **1639** | **0** | 13 | **1639** |
+
+`passed + failed` is unchanged at 1639 because turning a red test green moves no
+total and no `#[test]` fn was added. **All THIRTEEN `envelope_*` binaries ran and
+all thirteen are GREEN**: `advisory` 10, `argv_deletion` 20, **`callee_grammar`
+19 (was 18 passed / 1 failed)**, `command_position` 18, `credential` 6,
+`expansion_slots` 32, `hook_refusals` 7, `literal_decision` 43, `pr_cap` 11,
+`tracer` 6, `wiring` 14, `wrapper_bypass` 13, `wrapper_class` 34 — all with 0
+failures. `cargo clippy -- -D warnings` exits 0. The three documented flakes
+(the two `driver_reattach` names and the `envelope_tracer` `ExecutableFileBusy`
+stub-write race) did not fire and were not touched.
+
+### What this resolution does NOT do
+
+- **`/gsd-secure-phase 19` is NOT cleared.** `T-19-86` and `T-19-91` remain
+  **OPEN at `high`**, arms unweakened and no remedy added.
+- **Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.** `T-19-86` and
+  `T-19-91` are both sub-classes of it and both remain open.
+- **`T-19-17r` stays OUTSTANDING.** No `AR-19-13` row and no Accepted-Risks-Log
+  row was added; it is **not** accepted.
+- `T-19-96`, `T-19-74`, `T-19-84`, `T-19-85` and `T-19-61` … `T-19-73` are
+  untouched and open.
+- The `glab --host` forge cell keeps its **unconfirmed-callee** caveat: `glab`
+  is not installed on this machine, so it is not claimed as a live bypass.
+  `FORGE_VALUE_OPTS`, `GH_API_VALUE_OPTS` and `subcommand_word_indices` were not
+  touched.

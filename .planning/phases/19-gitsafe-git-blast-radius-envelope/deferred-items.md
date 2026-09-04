@@ -971,6 +971,58 @@ exit 2 with an empty walk under either rule — only the reason identifier
 differs. See `19-SECURITY.md`'s plan-19-21 record for the proof. **Resolving it
 is a decision about `19-20`'s assertion and is left open.**
 
+**RESOLVED 2026-09-04 by a scoped follow-up (`989f21a`) — the row was CORRECTED,
+not weakened, and no `src/` byte moved.** The `19-21` executor's analysis was
+re-verified by MEASUREMENT before anything was edited, against the built binary
+with one fresh `GSD_MM_ENVELOPE_ROOT` per row and the envelope root WALKED
+afterwards, so the empty walk was observed rather than inferred:
+
+| Command | exit | identifier | walk |
+|---|---|---|---|
+| `git --super-prefix x status` | 2 | `envelope_assertion_failed` | EMPTY |
+| `git --super-prefix x push --force origin main` | 2 | `envelope_assertion_failed` | EMPTY |
+| `git -C/tmp push --force origin main` (control) | 2 | `force_push_blocked` | EMPTY |
+| `git -- push --force origin main` (control) | 2 | `force_push_blocked` | EMPTY |
+| `git -c core.hooksPath=/dev/null --attr-source HEAD push` (control) | 2 | `hook_bypass_blocked` | EMPTY |
+| `git - push --force origin main` (control) | 0 | — | EMPTY |
+
+`--super-prefix` is confirmed ABSENT from `GIT_GLOBAL_VALUE_OPTS` and from
+`GIT_GLOBAL_SELF_CONTAINED_OPTS` after `19-21` (read from `policy.rs`, and
+present in `GIT_GLOBAL_VALUE_OPTS` at the pre-fix base `097dba2`), and git
+2.43.0 rejects it in ALL THREE forms — `git --super-prefix version`,
+`git --super-prefix x version` and `git --super-prefix=x version` each print
+`unknown option:`.
+
+**So `force_push_blocked` was a PRE-FIX OBSERVATION MIS-LABELLED AS POST-FIX.**
+It held at `097dba2` only because the stale entry consumed `x` and put `push` in
+the verb slot; removing that entry was a deliberate, audit-confirmed part of the
+fix. The identifier moved because the constant changed, and
+`envelope_assertion_failed` is the accurate one — the guard genuinely cannot
+establish the grammar. **The exit code and the empty walk stay asserted; only
+the identifier changed.** No filter was added in `classify_git` after
+`scan_leading` returns, `SEPARATORS` is untouched, and rounds 4/5/6's mechanism
+pins are unmodified and green.
+
+**Sweep for the same defect.** Every identifier-asserting row in
+`tests/envelope_callee_grammar.rs` and `tests/envelope_wrapper_class.rs` was
+checked against the constants this round changed (`--super-prefix` removed from
+`GIT_GLOBAL_VALUE_OPTS`; `-c`/`--config-env`/`--attr-source`/`--shallow-file`
+added; `GIT_GLOBAL_SELF_CONTAINED_OPTS` new; `recurse-submodules` added to
+`PUSH_VALUE_OPTS`). **This was the ONLY row of the class.** Nothing else needed
+changing: `-C/tmp` depends on `-C`, which did not change; the `--` and
+`core.hooksPath` cells are structural; `git push --signed no …` depends on
+`signed` staying OUT of `PUSH_VALUE_OPTS`, which `19-21` respected; the
+`--attr-source=HEAD` attached-form pin is produced by the structural rule and
+needs no constant entry; and `envelope_wrapper_class.rs` asserts only exit codes
+and taxonomy membership on this axis, never a specific identifier. No other test
+file references any of the changed spellings.
+
+**This resolution does NOT clear `/gsd-secure-phase 19`.** `T-19-86` and
+`T-19-91` remain OPEN at `high`; only the WRAPPER-OPERAND sub-class of `T-19-60`
+is closed; `T-19-17r` stays OUTSTANDING with no `AR-19-13` and is NOT accepted;
+`T-19-96`, `T-19-74`, `T-19-84`, `T-19-85` and `T-19-61` … `T-19-73` are
+untouched; and the `glab --host` cell keeps its unconfirmed-callee caveat.
+
 ### `T-19-101` — every generative alphabet, and the named class axes — OPEN, `medium`
 
 `T-19-76`'s failure mode for the **SIXTH** consecutive round, and this time the
