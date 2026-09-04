@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
-stopped_at: Completed 19-21-PLAN.md; its blocker row resolved (989f21a) — 0 blocker rows open
-last_updated: "2026-09-04T03:00:00.000Z"
+stopped_at: Completed 19-22-PLAN.md (corpus RED; 19-23 writes the rules)
+last_updated: "2026-09-04T04:34:14.540Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: 989f21a
+state_head: 483f6e020c8f1bf0269fa6ae769d90a0243decf9
 progress:
   total_phases: 10
   completed_phases: 6
-  total_plans: 100
-  completed_plans: 100
+  total_plans: 102
+  completed_plans: 101
   percent: 60
 ---
 
@@ -224,6 +224,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 19 P18 | 75m | 3 tasks | 4 files |
 | Phase 19 P20 | 1 session | 3 tasks | 4 files |
 | Phase 19 P21 | 1 session | 3 tasks | 5 files |
+| Phase 19 P22 | 1h | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -282,6 +283,11 @@ Recent decisions affecting current work:
 - [Phase 19]: 19-20: the anti-vacuity ratio floor is REPLACED by absolute per-file byte floors (40k/20k), not lowered — 428 bytes of comment headroom made it a documentation budget
 - [Phase 19]: 19-21: an unestablished git verb slot is a refusal, not the next non-`-` word — the fail-closed treatment resolve_program's wrapper axis already had
 - [Phase 19]: 19-21: git's option grammar is pinned against the installed git binary in a TEST, never consulted from the guard's path
+- [Phase 19]: 19-22: the corpus for git's CONFIG RESOLUTION is written and RED before either rule exists — 9 failing names are 19-23's handoff contract
+- [Phase 19]: 19-22: T-19-103 reproducers must sit on LAYER-2-PERMITTED bases; the five --force compositions are controls, fenced mechanically
+- [Phase 19]: 19-22: a dotless -c key stays CONFINED — refusing it would turn round 7's whole generative property red behind CALLEE_KNOWN_LEADING_PREFIX
+- [Phase 19]: 19-22: CONFIG_RESOLUTION_CLASSES is a FOURTH axis beside three byte-identical command-line axes — what the verb runs under, not the command line
+- [Phase 19]: 19-22: GIT_CONFIG_NOSYSTEM recorded as a measured DEFEAT with an INERT harm — never a new threat ID, never a bypass
 
 ### Pending Todos
 
@@ -342,8 +348,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-04T02:50:23.491Z
-Stopped at: Completed 19-21-PLAN.md; its blocker row resolved (989f21a) — 0 blocker rows open
+Last session: 2026-09-04T04:34:00.987Z
+Stopped at: Completed 19-22-PLAN.md (corpus RED; 19-23 writes the rules)
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
 Resume file: None
