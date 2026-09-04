@@ -569,6 +569,33 @@ fn scan_leading(argv: &[&str]) -> (usize, Option<GitVerdict>) {
                 let section = config_key_section(key).unwrap_or(key);
                 return (index, Some(unbounded_reparsed_value_refusal(key, section)));
             }
+            // **The CREDENTIAL-HELPER clause — a BY-NAME deny beside
+            // [`is_hooks_path_key`]'s, on a config key on a leading option, in the
+            // region this loop already parses.**
+            //
+            // [`super::cred::hooks_path_env`] injects an EMPTY `credential.helper`
+            // pair so that git's helper list is RESET and `git credential fill`
+            // fails closed against the ambient secret. That pair reads no command
+            // line, so it defends every WRITE spelling — but a later
+            // `-c credential.helper=<something>` on argv appends to the list git
+            // resolves and brings the secret back, measured PRESENT on one
+            // permitted line. **This clause is the argv half of that defence and
+            // nothing more**; the injected pair is a different control covering a
+            // different family, and neither is a substitute for the other.
+            //
+            // Ordered HERE, with the other by-name deny, and the ordering is not
+            // load-bearing between the two: no key can be `core.hooksPath` and
+            // `credential.helper` at once, so the two cannot race for one
+            // assignment. The refusal is [`ParkReason::EnvelopeAssertionFailed`],
+            // the general unresolvable identifier the sibling refusals carry, and
+            // deliberately NOT `HookBypassBlocked`, which names the hooks-path
+            // mechanism this refusal does not use (D-24).
+            //
+            // No new park reason, no second reading site, no change to this
+            // function's walk.
+            if config_key_names_the_credential_helper(key) {
+                return (index, Some(credential_helper_assignment_refusal(key)));
+            }
             if is_hooks_path_key(key) {
                 return (
                     index,
@@ -1413,6 +1440,104 @@ fn unbounded_reparsed_value_refusal(key: &str, section: &str) -> GitVerdict {
 /// recorded because it was previously implicit.
 fn is_hooks_path_key(key: &str) -> bool {
     key.eq_ignore_ascii_case("core.hookspath")
+}
+
+/// Whether a config key names `credential.helper`, **including its URL-SCOPED
+/// spelling**, at any casing git accepts.
+///
+/// # THE SHAPE IS DERIVED FROM GIT'S KEY GRAMMAR, NOT CHOSEN
+///
+/// Git folds a config key's SECTION and its FINAL NAME case-insensitively and
+/// leaves any SUBSECTION between them case-SENSITIVE. So the property that
+/// identifies this setting is *section `credential`, final component `helper`* —
+/// **and reading exactly those two halves is what reaches the URL-scoped form**,
+/// `credential.<url>.helper`, whose subsection is an OPEN family (any URL) that no
+/// enumeration could close. Measured against `git version 2.43.0` with the
+/// envelope's full posture including the injected empty pair:
+///
+/// ```text
+/// CONTROL  no `-c` at all                                secret ABSENT
+///          -c credential.helper=store                    secret PRESENT
+///          -c CREDENTIAL.HELPER=store                    secret PRESENT
+///          -c Credential.Helper=store                    secret PRESENT
+///          -c credential.https://github.com.helper=store secret PRESENT   <- URL-SCOPED
+///          -c credentialx.helper=store                   secret ABSENT
+///          -c notcredential.helper=store                 secret ABSENT
+///          -c credential.helperx=store                   secret ABSENT
+/// ```
+///
+/// **It is NOT a substring or `contains` test, and that is the point rather than
+/// an economy.** `contains("credential.helper")` refuses `credential.helperx`,
+/// which real git IGNORES — a key that resolves no helper at all — and it is not a
+/// property of the key grammar in the first place. The three near misses above are
+/// the discriminating controls, pinned PERMITTED.
+///
+/// # WHAT THIS CLAUSE DOES NOT REACH, STATED AT THE SAME WEIGHT
+///
+/// * **`GIT_CONFIG_PARAMETERS`.** It carries the same key and real git DOES
+///   resolve the helper from it, so the reach is real — but it is an ENVIRONMENT
+///   variable and not argv, so it is not in the region this function reads and
+///   this clause is silent about it. **It is refused today by a DIFFERENT
+///   mechanism**: the variable name is in the envelope's own env-key deny and the
+///   carrier answers `HookBypassBlocked`. `T-19-104` stays registered, because a
+///   refusal by another mechanism is not a statement about this one.
+/// * **`--config-env` IS reached**, because [`leading_git_option`] yields an
+///   assignment for it and this clause reads the KEY half, which `--config-env`
+///   spells on argv exactly as `-c` does. Its VALUE names an environment variable
+///   and is not read, for the reason the sibling clauses give.
+/// * **The `git config` WRITING form** — `git config credential.helper store` —
+///   is an OPERAND of the `config` verb, not a leading option, and this clause
+///   does not read it. It writes a FILE, which is the family the injected empty
+///   pair does not cover either.
+/// * **Any spelling that reaches the helper without naming this key on a leading
+///   option.** The clause is a by-name deny in one region; it is not a statement
+///   about the credential layer as a whole.
+///
+/// **No revisit condition and no version witness is created for any of this**, for
+/// the reason [`protected_carrier_named`]'s own doc gives: these residues are
+/// reachable by the driven agent TODAY, and a schedule over a future git version
+/// string would observe the wrong thing entirely.
+fn config_key_names_the_credential_helper(key: &str) -> bool {
+    let Some(section) = config_key_section(key) else {
+        // No `.`, so no section, so provably not this key. CONFINED, for the same
+        // reason `config_key_names_an_indirection_section` gives: refusing a
+        // section-less key would turn round 7's callee-grammar property red.
+        return false;
+    };
+    let Some((_, variable)) = key.rsplit_once('.') else {
+        return false;
+    };
+    section.eq_ignore_ascii_case("credential") && variable.eq_ignore_ascii_case("helper")
+}
+
+/// The refusal a `credential.helper` assignment earns, naming the KEY and never
+/// quoting the command back (SAFE-04).
+///
+/// **The recovery step must be one the user can act on** (AR-19-11), and here it
+/// is: the envelope resets the helper list deliberately, so the step is to drop
+/// the option rather than to spell it differently.
+///
+/// **The over-refusal is disclosed rather than left to be met.** This clause reads
+/// the KEY half only, so `-c credential.helper=` with an EMPTY value — a RESET
+/// rather than a set — is refused too. That is over-refusal in the safe direction
+/// and it costs nothing reachable: [`super::cred::hooks_path_env`] already injects
+/// exactly that empty pair, so no argv spelling of the reset is needed. Reading
+/// the VALUE half to tell a reset from a set is not available for the reason
+/// [`scan_leading`]'s own cost containment gives — a value the shell may rewrite
+/// is bound after the guard has answered.
+fn credential_helper_assignment_refusal(key: &str) -> GitVerdict {
+    refuse(
+        ParkReason::EnvelopeAssertionFailed,
+        format!(
+            "this command sets the git configuration key `{key}` at command-line \
+             precedence, which appends a credential helper to the list git resolves — \
+             and the envelope RESET that list deliberately, so that this run reaches no \
+             ambient credential it was not given. What credentials this command would \
+             present therefore cannot be established from this command line, and it is \
+             refused rather than guessed at. To proceed: drop the option. The envelope \
+             supplies the credentials this run is meant to have"
+        ),
+    )
 }
 
 /// Long push options that take a value, so their value is never read as a

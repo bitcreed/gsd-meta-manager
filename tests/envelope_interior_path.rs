@@ -3052,3 +3052,167 @@ fn section_envelope_is_re_measured_and_this_round_spends_none_of_its_headroom() 
          layer. **No new disclosure is owed here and none is written.**"
     );
 }
+
+
+// ===========================================================================
+// SECTION 13 — `T-19-121`: THE `credential.helper` CLAUSE, MEASURED BEFORE IT
+// WAS WRITTEN
+//
+// **These rows were driven as `record_only` prints against the built clause and
+// converted to assertions only after every verdict was read.** `19-30` measured
+// the key-shape space against REAL GIT with the no-`-c` control driven FIRST
+// under the envelope's full posture, including `19-29`'s injected empty-helper
+// pair:
+//
+// ```text
+//                                                    real git             guard (19-30)
+// CONTROL  no `-c` at all                            exit 128, ABSENT     —
+// -c credential.helper=store                         secret PRESENT       exit 0
+// -c CREDENTIAL.HELPER=store                         secret PRESENT       exit 0
+// -c Credential.Helper=store                         secret PRESENT       exit 0
+// -c credential.https://github.com.helper=store      secret PRESENT       exit 0   <- URL-SCOPED
+// --config-env=credential.helper=<VAR>               secret PRESENT       exit 0
+// -c credentialx.helper=store                        secret ABSENT        exit 0
+// -c notcredential.helper=store                      secret ABSENT        exit 0
+// -c credential.helperx=store                        secret ABSENT        exit 0
+// GIT_CONFIG_PARAMETERS="'credential.helper=store'"  secret PRESENT       exit 2 hook_bypass_blocked
+// ```
+//
+// **THE CLAUSE'S SHAPE IS DERIVED FROM THAT TABLE RATHER THAN CHOSEN.** Git
+// folds a config key's SECTION and its FINAL NAME case-insensitively and leaves
+// any SUBSECTION between them case-SENSITIVE, so a predicate over section
+// `credential` and final component `helper` reaches every row real git resolved
+// the helper for — including the URL-SCOPED spelling, whose subsection is an
+// OPEN family no enumeration could close — and reaches none of the three near
+// misses. **It is NOT a substring or `contains` test**: `contains` refuses
+// `credential.helperx`, a key real git IGNORES, and is not a property of the key
+// grammar at all.
+// ===========================================================================
+
+#[test]
+fn t_19_121_the_credential_helper_key_is_refused_by_name_on_a_leading_option() {
+    for command in [
+        "git -c credential.helper=store status",
+        "git -c CREDENTIAL.HELPER=store status",
+        "git -c Credential.Helper=store status",
+        "git -c credential.helper=!gh auth git-credential status",
+        "git -c credential.helper= status",
+    ] {
+        refuses(
+            command,
+            policy::REASON_ENVELOPE_ASSERTION_FAILED,
+            "**`T-19-121` — the ARGV half of the credential defence.** `cred.rs`'s injected \
+             EMPTY `credential.helper` pair resets git's helper list and reads no command line, \
+             so it defends every WRITE spelling; a later `-c credential.helper=<something>` on \
+             argv APPENDS to the list git resolves and brings the secret back, measured PRESENT \
+             on one permitted line. **THE CONTROLS are the three near misses below, each \
+             PERMITTED**, which is what makes this a BY-NAME clause rather than a substring \
+             test. The identifier is `envelope_assertion_failed` — the general unresolvable one \
+             the sibling refusals carry — and never `HookBypassBlocked`, which names the \
+             hooks-path mechanism this refusal does not use (D-24).\n\n\
+             **The `-c credential.helper=` EMPTY-VALUE row is an OVER-REFUSAL, disclosed rather \
+             than discovered.** The clause reads the KEY half only, so it cannot tell a RESET \
+             from a set — and it costs nothing reachable, because the envelope already injects \
+             exactly that empty pair.",
+        );
+    }
+}
+
+#[test]
+fn t_19_121_the_url_scoped_spelling_is_reached_because_the_subsection_is_never_read() {
+    refuses(
+        "git -c credential.https://github.com.helper=store status",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+        "**THE URL-SCOPED SPELLING, which audit 11 probed and real git resolves the helper \
+         for.** Reading SECTION and FINAL COMPONENT and never the subsection is what reaches it: \
+         the subsection is any URL, an OPEN family no enumeration could close, and it is also \
+         the one half of a git config key git does NOT fold — so reading it would import a case \
+         rule as well. **THE CONTROL:** `git -c credential.helper.x=store status` is PERMITTED \
+         below, and it is the discriminating one — same section, a subsection, and a FINAL \
+         component that is not `helper`, which real git resolves no helper from either.",
+    );
+}
+
+#[test]
+fn t_19_121_the_config_env_carrier_is_reached_too_and_that_was_not_predicted() {
+    // **A GAIN BEYOND WHAT THE PLAN PREDICTED, MEASURED RATHER THAN CLAIMED.**
+    // `19-30` measured `--config-env=credential.helper=<VAR>` at exit 0 and
+    // recorded it as a shape a by-name clause would NOT reach. It IS reached:
+    // `leading_git_option` yields an assignment for `--config-env` in both its
+    // grammars, and this clause reads the KEY half, which `--config-env` spells
+    // on argv exactly as `-c` does. **Recorded here as a correction to a
+    // planning-time expectation, not as a row that was aimed at.**
+    for command in [
+        "git --config-env=credential.helper=EVILVAR status",
+        "git --config-env credential.helper=EVILVAR status",
+    ] {
+        refuses(
+            command,
+            policy::REASON_ENVELOPE_ASSERTION_FAILED,
+            "the `--config-env` carrier delivers an environment variable NAME where `-c` \
+             delivers a body — its VALUE half is not read, for the reason the sibling clauses \
+             give — but its KEY half is spelled identically and is read identically. Real git \
+             was measured resolving the helper from it (`19-30`), so this is a REACH the clause \
+             closes rather than an over-refusal. **THE CONTROL:** \
+             `git --config-env=credentialx.helper=EVILVAR status` is PERMITTED below.",
+        );
+    }
+}
+
+#[test]
+fn t_19_121_the_near_miss_keys_are_permitted_and_that_is_what_makes_the_clause_by_name() {
+    // **THE DISCRIMINATING CONTROLS.** Every one of these is a key real git
+    // resolves NO helper from, measured secret ABSENT at `19-30`. A `contains`
+    // or substring rule turns the third red; a `starts_with("credential.")` rule
+    // turns the fifth red; a rule that read only the section turns the third and
+    // fifth red. **A control refused the same way at the same identifier would
+    // prove nothing — that is `19-27`'s measured failure mode.**
+    for command in [
+        "git -c credentialx.helper=store status",
+        "git -c notcredential.helper=store status",
+        "git -c credential.helperx=store status",
+        "git -c credential=store status",
+        "git -c credential.helper.x=store status",
+        "git --config-env=credentialx.helper=EVILVAR status",
+        "git -c user.name=x commit -m y",
+    ] {
+        permits(
+            command,
+            "a key real git resolves NO credential helper from must stay PERMITTED. \
+             `credential.helperx` is the row that proves the clause is not a substring test; \
+             `credential.helper.x` is the row that proves the FINAL COMPONENT is read rather \
+             than the section alone — git reads `helper` there as a SUBSECTION and `x` as the \
+             variable, and resolves no helper; `credential` alone has no section at all and is \
+             CONFINED for the reason `config_key_names_an_indirection_section` gives, which is \
+             also what keeps round 7's `-c a=b` callee-grammar property green.",
+        );
+    }
+}
+
+#[test]
+fn t_19_121_what_the_clause_does_not_reach_is_recorded_in_neither_direction() {
+    // **RECORDED, NEVER ASSERTED, AND THE REASON IS THAT AN ASSERTION EITHER WAY
+    // WOULD BE A CLAIM ABOUT THE WRONG MECHANISM.**
+    //
+    // `GIT_CONFIG_PARAMETERS` carries the same key and real git DOES resolve the
+    // helper from it, so the reach is real — but it is an ENVIRONMENT variable
+    // and not argv, so it is not in the region `scan_leading` reads and this
+    // clause is silent about it. The guard refuses the carrier today at
+    // `hook_bypass_blocked`, because the variable NAME is in the envelope's own
+    // env-key deny. **A row asserted `refused` here would credit this clause
+    // with a refusal another mechanism produced (D-24); a row asserted
+    // `permitted` would be false. `T-19-104` stays registered.**
+    //
+    // **`19-30` recorded `T-19-104`'s carrier as `open at exit 0`; it is exit 2
+    // `hook_bypass_blocked`, and `19-30`'s own summary corrected the plan on
+    // exactly this point.** Re-confirmed here.
+    record_only("T-19-104 / GIT_CONFIG_PARAMETERS — a DIFFERENT mechanism", |_| {
+        "GIT_CONFIG_PARAMETERS='credential.helper=store' git status".to_string()
+    });
+    // The `git config` WRITING form is an OPERAND of the `config` verb, not a
+    // leading option. It writes a FILE — the family the injected empty pair does
+    // not cover either — and no rule is written for it here.
+    record_only("T-19-121 / the `git config` WRITING form — unreached", |_| {
+        "git config credential.helper store".to_string()
+    });
+}
