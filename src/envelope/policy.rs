@@ -1180,7 +1180,23 @@ fn unbounded_config_assignment_refusal(key: &str, section: &str) -> GitVerdict {
 ///    out of reach, because `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` both point
 ///    at the generated helper-free file — but a repo-local `.git/config` alias
 ///    predating the run, or one written by a means that is not `git config`, is
-///    LIVE. That is `T-19-86`'s shape and it stays OPEN.
+///    LIVE. **That is `T-19-111`'s shape and it stays OPEN.**
+///
+///    **It is NOT `T-19-86`'s, and the correction matters rather than being
+///    bookkeeping.** All four of `T-19-86`'s registered rows require a GOVERNED
+///    program to be handed a GOVERNED COMMAND AS DATA on the command line the
+///    guard reads. A non-`!` alias body sitting in a config VALUE is not that: it
+///    is a plain git command line in a config file, **this constant's own K1
+///    class, reached through a CARRIER OUTSIDE ARGV**. `T-19-86` is out of scope
+///    by an explicit user decision about a different threat, so filing this one
+///    under it is how a live bypass stops being counted — and the bypass IS live
+///    and measured: a `printf`-written `.git/config` alias carrying
+///    `-c include.path=<f> push --force` rewrote a bare remote's `main`, with a
+///    no-carrier control beside it that left the same remote unmoved.
+///
+///    **This round writes NO rule for it and makes NO acceptance for it** — the
+///    carrier is a repo-side file no envelope-path rule reaches, and accepting a
+///    risk is a human decision. It is registered separately, open at `high`.
 /// 2. **A `!`-bodied body carrying its own carrier.** The `!` arm below is a
 ///    carve-out, so audit 7's destructive pair —
 ///    `git config alias.q '!git -c include.path=<evil> push --force origin
@@ -5160,6 +5176,242 @@ pub fn forbidden_repo_path(rel: &Path, contains_nested_git: bool) -> Option<Park
     None
 }
 
+/// The LEXICAL normalisation both halves of [`envelope_carrier_operand`] share:
+/// an absolute path's components with `.` dropped, `..` collapsed TEXTUALLY,
+/// repeated separators collapsed, and **no link followed and no filesystem
+/// consulted**.
+///
+/// `None` for a word that is not ABSOLUTE, which is fail-open direction (iv) and
+/// is stated as such on the predicate below.
+///
+/// `..` at the root collapses to the root, exactly as a kernel path walk would:
+/// `/..` is `/`. That is textual too — the collapse never asks what `/` contains.
+fn lexical_absolute_components(word: &str) -> Option<Vec<&str>> {
+    // The leading `./` strip is written for symmetry with `forbidden_repo_path`
+    // and is unreachable for an absolute word; the `is_empty` and `.` filters
+    // below are what collapse `//`, `/./` and a trailing `/`.
+    let word = word.trim_start_matches("./");
+    if !word.starts_with('/') {
+        return None;
+    }
+    let mut components: Vec<&str> = Vec::new();
+    for part in word.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                components.pop();
+            }
+            other => components.push(other),
+        }
+    }
+    Some(components)
+}
+
+/// Whether one WORD names a path that is, or sits under, `envelope_dir` — the
+/// pure path half of [`envelope_carrier_operand`], split out so the unit pins can
+/// drive the four path conditions without building a [`Token`] for each.
+///
+/// The comparison is **COMPONENT-WISE against the directory the guard was
+/// GIVEN**, never a basename, an `ends_with`, a substring or a raw `starts_with`.
+/// A raw string prefix over `<root>/alpha` also matches `<root>/alpha2/x`, and a
+/// basename test refuses `/tmp/pr-ledger.ndjson`; both are pinned PERMITTED.
+fn word_is_within(word: &str, envelope_dir: &Path) -> bool {
+    let Some(word) = lexical_absolute_components(word) else {
+        return false;
+    };
+    let envelope_text = envelope_dir.to_string_lossy();
+    let Some(dir) = lexical_absolute_components(&envelope_text) else {
+        // A relative envelope directory names nothing this predicate can bound.
+        // It cannot arise from [`super::envelope_dir_in`], whose root the caller
+        // resolved, and answering `false` keeps the predicate total rather than
+        // panicking on a shape the caller must already have refused.
+        return false;
+    };
+    if dir.is_empty() || word.len() < dir.len() {
+        return false;
+    }
+    word[..dir.len()] == dir[..]
+}
+
+/// Whether any word of this segment names a path under **this run's own envelope
+/// directory** — the files the controls that judge the command live in.
+///
+/// # WHAT IT IS FOR, IN ONE SENTENCE
+///
+/// This envelope's own controls live in FILES — the PR-cap ledger, both hook
+/// stubs, the generated `gitconfig` and `askpass`, the `gh` configuration
+/// directory and the generated settings file — and [`super::hooks`]'s
+/// `NoProgram | Ungoverned` arm permits every command that reaches no governed
+/// program. **That arm is right about the PROGRAM, and this predicate narrows it
+/// in the PATHS.** A command whose operand is one of those files changes what the
+/// controls will be while it runs, so what those controls will judge cannot be
+/// established from the line — the same unresolvability
+/// [`config_key_names_an_indirection_section`] answers one region over, reached
+/// through a carrier that is not argv at all.
+///
+/// # FOUR CONDITIONS, AND EACH IS A BOUNDARY RATHER THAN A CONVENIENCE
+///
+/// * **ABSOLUTE**, because the guard has no cwd. `guard_in` takes a
+///   `project_root: Option<&Path>` from [`super::cred::PROJECT_ROOT_ENV`], which is the
+///   JOURNAL locator and not the shell's working directory, and there is no other
+///   source. A rule that guessed would be wrong for exactly the commands it
+///   matters for.
+/// * **LITERAL** ([`Token::literal`]), because a word the shell may rewrite is a
+///   word the guard cannot resolve — and refusing every non-literal operand of an
+///   UNGOVERNED command would deny `rm $TMPDIR/x` and `cp "$SRC" "$DST"`, which is
+///   how a safety control gets switched off (AR-19-11). **This is the first place
+///   that bit is read outside a governed program's own decision words**, so a
+///   change that cleared or repurposed it would silently widen this rule too.
+/// * **LEXICALLY NORMALISED, WITH NO LINK FOLLOWED.** `.` dropped, repeated
+///   separators collapsed and `..` collapsed TEXTUALLY — which is what catches
+///   `<env>/<alias>/hooks/../pr-ledger.ndjson`, the shape audit 9's own composite
+///   uses. **Nothing is canonicalized and nothing is read**, because
+///   `canonicalize` and `read_link` are I/O and TOCTOU on the guard's critical
+///   path: `super::hooks`' three latency rules forbid the first (a reproduced
+///   180-240 second hang is why `push_needs_resolved_dests` exists), and
+///   [`super::envelope_dir_in`]'s own doc forbids the second — the validation
+///   happens before the `join` precisely so no traversal check has to ask the
+///   filesystem what a path means, and a link the agent made one instruction ago
+///   is exactly the answer such a question gets.
+/// * **COMPONENT-WISE**, never a basename, an `ends_with`, a substring or a raw
+///   `starts_with`. `rm -f /tmp/pr-ledger.ndjson` carries a carrier BASENAME
+///   outside the envelope and an envelope-root spelling with ONE CHARACTER
+///   CHANGED is not the envelope root; both are pinned PERMITTED, and a raw
+///   string prefix over `<root>/alpha` would also refuse a sibling `alpha2`.
+///
+/// # WHY THE BOUNDARY IS THE DIRECTORY AND NOT A LIST OF FILENAMES
+///
+/// `rm -rf <root>/<alias>` takes NINE carriers in ONE call. A rule naming eight
+/// filenames would miss it, and would need a ninth entry the day a tenth carrier
+/// is added — an enumeration keyed to what the envelope happens to contain today.
+/// **The predicate names no program and no filename at all**: it resolves an
+/// operand PATH against the directory the guard was already handed, which is what
+/// `wrapper_names_the_fix_must_not_know_are_absent_from_the_production_logic`
+/// requires one level over, and what D-08's *"never asks what the wrapper is
+/// CALLED"* argument requires here.
+///
+/// # THE RESIDUE, STATED PLAINLY AND HANDED TO NO CONTROL — FOUR DIRECTIONS
+///
+/// **This predicate is a recognition of the paths this run OWNS, NOT a
+/// fail-closed default. Its SILENCE IS A PERMIT**, exactly as
+/// [`INDIRECTION_SECTIONS`]'s is. **It fails OPEN in FOUR named directions and
+/// NOT ONE of them has an automated control:**
+///
+/// 1. **A REDIRECTION TARGET is not an operand.** `: > <ledger>` and
+///    `printf 'exit 0' > <hooks>/pre-push` reset the cap and replace the stub, and
+///    this predicate cannot see either path, because [`tokenize`] consumes bash's
+///    redirection production and emits no token for the operator OR ITS TARGET —
+///    bash deletes both before `execve`. **This one is real by MECHANISM rather
+///    than by choice**, and reading `>` would re-open a model five rounds have
+///    pinned shut: [`SEPARATORS`] deliberately excludes it, `is_separator(">")` is
+///    `false` by construction, that line has ONE commit in the whole phase, and
+///    round 6's over-deletion control pins `git x2>/tmp/o push --force origin main`
+///    PERMITTED.
+/// 2. **An EXPANSION-BORNE operand cannot be resolved.**
+///    `D=$(git config --get core.hooksPath); rm -f $D/../pr-ledger.ndjson` — audit
+///    9's own composite. Note what it actually is: the carrier's location is
+///    fetched by a **PERMITTED GOVERNED READ** (`git config --get` resolves
+///    `Governed` and is allowed) and then acted on by an ungoverned command.
+/// 3. **A SYMLINK is not followed.** `..` is collapsed lexically; a link is not.
+///    **NARROWED, and the word is NARROWED rather than closed**: `ln -s <env>/…
+///    /tmp/l` names an envelope path as the link command's OWN operand and IS
+///    refused, so a link must PREDATE the run or be made by a means that names no
+///    envelope path.
+/// 4. **A RELATIVE path is not resolved**, because the guard has no cwd.
+///    **NARROWED the same way and no further**: `cd <env>/<alias>` names an
+///    envelope path as its own operand and is refused, and the two-segment
+///    composite `cd <env>/<alias> && rm -f pr-ledger.ndjson` is refused BY SEGMENT
+///    ONE — segment two's relative operand stays unresolvable, so a spelling that
+///    reaches the directory by any other means leaves it permitted.
+///
+/// # NO REVISIT CONDITION AND NO VERSION WITNESS IS CREATED FOR THESE FOUR
+///
+/// **And that is a decision with a reason, not an omission.**
+/// [`CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION`] schedules a human
+/// re-audit against a FUTURE GIT, which is the right shape for a residue that
+/// arrives when someone else ships something. **These four are reachable by the
+/// driven agent TODAY.** A schedule over them would observe the wrong thing
+/// entirely — a version string that never moves while the residue is exercised —
+/// and attaching one would be `T-19-107`'s shape arriving in the round that
+/// inherited the lesson. They are stated here, in the refusal's doc, in
+/// `SECTION_ENVELOPE` and in the phase record, and handed to nothing.
+///
+/// # THE DISCLOSED COST: READS ARE REFUSED TOO, AND THAT IS A DECISION
+///
+/// `cat <ledger>`, `wc -l <ledger>` and `ls <env>/<alias>/hooks` are refused
+/// alongside the writes, so **a run cannot inspect its own envelope directory**.
+/// The guard cannot tell a read from a write without knowing every program's
+/// grammar — is `dd if=X of=Y` a read of `X` or a write of `Y`? is `tee F` a
+/// read? — and an enumeration that tried would be a program-name list again.
+/// **The permitted twin is that the path can still be NAMED**:
+/// `git config --get core.hooksPath` stays at exit 0 and reports the directory,
+/// and the refusal below names it too, so a human debugging a run loses nothing
+/// the refusal does not already tell them (AR-19-11: a refusal a user cannot act
+/// on is a control that gets switched off).
+///
+/// # THE REJECTED OPTIONS, COSTED
+///
+/// * **Tamper-evidence for the LEDGER — available in principle, COSTED AND
+///   DEFERRED, and no schedule is attached to it.** The ledger is append-only by
+///   design and its entries carry `run_id` and `at`, so a deletion or truncation
+///   IS detectable at the next append; the material exists. What it costs is a
+///   SECOND CARRIER for SAFE-06, which `T-19-35`, `AR-19-05` and
+///   `super::hooks`' own second-carrier table all say in terms it does not have —
+///   *"One control genuinely has no git-hook counterpart … the pull-request cap"*
+///   — and it breaks a stated latency rule, *"the ledger read is a single pass
+///   over one append-only file"*, because the cross-check would read the run
+///   journal too. **That is a round of its own. Recording it as costed is
+///   different from scheduling it, and nothing here schedules it.**
+/// * **Tamper-evidence for the HOOK STUBS — structurally UNAVAILABLE**, and the
+///   asymmetry is worth stating rather than leaving to be noticed: the thing that
+///   would detect a replaced `pre-push` is the binary the replacement removed from
+///   the path. `super::hooks::assert_provenance_in` certifies a RELOCATED COPY —
+///   which is `T-19-01`'s mitigation and is not weakened here — but a replaced
+///   stub never re-enters the binary that would assert it. **Prevention is the
+///   only control that can fire there.**
+/// * **Moving a carrier out of reach — DEAD for every envelope carrier**, said
+///   once rather than nine times: each must be readable, writable or executable by
+///   the same uid the driven process runs as, because git must exec the hooks, the
+///   agent CLI must read the settings and the guard must append the ledger. A
+///   different uid, a container, or a remote-side control are the only real forms,
+///   the first two are outside this phase, and the third is what
+///   `SECTION_ENVELOPE`'s own conclusion already says.
+pub fn envelope_carrier_operand(segment: &[Token], envelope_dir: &Path) -> bool {
+    segment
+        .iter()
+        .any(|token| !token.operator && token.literal && word_is_within(&token.text, envelope_dir))
+}
+
+/// The refusal [`envelope_carrier_operand`] earns, naming **this** mechanism.
+///
+/// **It names the envelope DIRECTORY and never quotes the command back** (SAFE-04),
+/// on the same footing as [`scan_leading`]'s refusals naming a config key and a
+/// section: that directory is a path this binary generated for this run, and it
+/// carries no secret. Naming it is what makes the refusal actionable (AR-19-11) —
+/// and `git config --get core.hooksPath` still reports it, so nothing is being
+/// disclosed that the run could not already ask for.
+///
+/// **It deliberately reuses neither [`unbounded_config_assignment_refusal`]'s
+/// wording nor the hooks-path deny's.** Those name a spliced file and a config
+/// KEY; this line does neither, and attributing a file-operand refusal to a
+/// config-key mechanism would name a mechanism that did not produce it (D-24).
+/// For the same reason the reason identifier is
+/// [`ParkReason::EnvelopeAssertionFailed`] — the general unresolvable one the
+/// sibling refusals already carry — and **not** `HookBypassBlocked`, which names
+/// the config-key deny this refusal does not use.
+pub fn envelope_carrier_refusal(envelope_dir: &Path) -> String {
+    format!(
+        "this command names a path under `{}`, the directory this run's own controls live in — \
+         the pull-request ledger, the hook stubs and the generated git configuration — so what \
+         those controls will be while the command runs cannot be established from this command \
+         line, and it is refused rather than guessed at. To proceed: name a path outside that \
+         directory. The envelope's own files are not this run's to read or write, and \
+         `git config --get core.hooksPath` still reports the directory for a human debugging the \
+         run",
+        envelope_dir.display()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7167,13 +7419,13 @@ mod tests {
 
         // **THE TRUNCATION GUARD, AND IT USED TO BE THIN AT EXACTLY THE SEAM
         // THAT FAILED ONCE THIS ROUND.** It was a bare `>= 40_000` with one
-        // SHALLOW anchor. Measured: `fn scan_leading` sits at line 374 (before
-        // this round's additions) and 40,000 raw bytes is reached at line ~778 —
-        // of a production half that runs to line 4,613 and 228,785 bytes. **So a
-        // stray `#[cfg(test)]` anywhere after line ~778 truncated this control's
-        // view with BOTH positive controls still green.** This round's own
-        // incident put such a line at ~607, BELOW 778, which is the only reason
-        // a floor caught it at all. Three repairs, not one:
+        // SHALLOW anchor. Measured at plan 19-27: `fn scan_leading` sits at line
+        // 416 and 40,000 raw bytes is reached at line ~752 — of a production half
+        // that runs to line 5,414 and 277,570 bytes. **So a stray `#[cfg(test)]`
+        // anywhere after line ~752 truncated this control's view with BOTH
+        // positive controls still green.** Plan 19-06's own incident put such a
+        // line at ~607, BELOW that mark, which is the only reason a floor caught
+        // it at all. Three repairs, not one:
         //
         // 1. a floor PROPORTIONAL to the file it guards;
         // 2. a DEEP positive anchor from near the END of the production half;
@@ -7182,18 +7434,30 @@ mod tests {
         //    item — stops being an assumption and becomes a fact under test.
         //
         // The floor is 180,000 bytes against a production half measured at
-        // **228,785** — **78.7%, with the margin BELOW the measurement** so
-        // ordinary edits never touch it. 180,000 bytes is reached at line ~3,622,
-        // so a truncating sentinel now has to land in the last fifth of the file
-        // to go unnoticed, and assertion 2 covers that fifth by name. **A
-        // deliberate refactor that removes 21% of this guard's production logic
+        // **277,570** — **64.8%, with the margin BELOW the measurement** so
+        // ordinary edits never touch it. 180,000 bytes is reached at line ~3,613,
+        // so a truncating sentinel now has to land in the last third of the file
+        // to go unnoticed, and assertion 2 covers that third by name. **A
+        // deliberate refactor that removes 35% of this guard's production logic
         // is a fact worth stating in a commit message BEFORE this number moves.**
+        //
+        // **THE ARITHMETIC HERE HAD DRIFTED, AND `String::len()` IS WHY THE TWO
+        // RECORDED NUMBERS DISAGREE.** These three comments cited *228,785 bytes,
+        // 78.7%* — a measurement several rounds stale, which plans 19-24 and 19-26
+        // both recorded as drift they were forbidden to touch. Audit 9 re-derived
+        // the half as 261,387 and the round-10 mandate cited 261,386; **neither is
+        // a byte count.** `production.len()` is `String::len()`, which is BYTES,
+        // and this file's prose carries 842 multi-byte characters — em dashes,
+        // arrows and curly quotes. Counted as CHARACTERS the half is 261,387;
+        // counted as BYTES, which is what the assertion below actually compares,
+        // it was 262,229 at this plan's base and is 277,570 after its own
+        // additions. **The FLOOR itself was never wrong and does not move.**
         assert!(
             production.len() >= 180_000,
             "the production half must be substantially the whole guard: the floor is \
-             PROPORTIONAL to it (180,000 against a measured 228,785 bytes, 78.7%, margin \
+             PROPORTIONAL to it (180,000 against a measured 277,570 bytes, 64.8%, margin \
              below). A red here means either the `#[cfg(test)]` sentinel matched early and \
-             truncated this control's view, or a fifth of the guard's production logic was \
+             truncated this control's view, or a third of the guard's production logic was \
              deleted. Do NOT lower the floor to make it pass; state the removal in a commit \
              message first. Got {} bytes.",
             production.len()
@@ -7201,10 +7465,10 @@ mod tests {
         assert!(
             production.contains("fn forbidden_repo_path"),
             "the production half must contain `fn forbidden_repo_path`, which sits near its \
-             END (line ~4,592 of 4,613). **This is the DEEP anchor, and it is the one \
-             `fn scan_leading` at line 374 could not be**: a shallow anchor is satisfied by a \
+             END (line ~5,157 of 5,414). **This is the DEEP anchor, and it is the one \
+             `fn scan_leading` at line 416 could not be**: a shallow anchor is satisfied by a \
              view truncated at any point after it, which is what left this control blind to a \
-             stray `#[cfg(test)]` anywhere past line ~778."
+             stray `#[cfg(test)]` anywhere past line ~752."
         );
         assert_eq!(
             SELF.lines()
@@ -8891,6 +9155,268 @@ mod tests {
                  path was read as a REFSPEC, which means `XVALUE` became the repository. \
                  `PUSH_VALUE_OPTS` claiming otherwise makes `push_operands` skip a word git \
                  reads as an operand. Probe answered: {answered}"
+            );
+        }
+    }
+    // -----------------------------------------------------------------------
+    // Plan 19-27 — the CARRIER-OPERAND predicate, pinned in BOTH directions
+    //
+    // NEW `#[test]` fns rather than additions to existing ones, and that is
+    // load-bearing arithmetic rather than style: turning a failing test green
+    // leaves `passed + failed` unchanged, so new fns are the only thing that
+    // moves the suite total this plan gates on.
+    // -----------------------------------------------------------------------
+
+    /// The envelope directory every carrier pin below resolves against.
+    ///
+    /// A literal rather than a `TempDir`, because the predicate is PURE: it never
+    /// asks whether any of these paths exists, and a fixture that created them
+    /// would suggest it does.
+    fn pin_envelope_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from("/tmp/envroot/alpha")
+    }
+
+    #[test]
+    fn the_carrier_predicate_answers_true_for_every_file_this_envelope_owns() {
+        // **The nine carriers of `C-01` … `C-09`, by path.** The boundary is the
+        // DIRECTORY, so the ninth — the directory itself — is what makes
+        // `rm -rf <env>/<alias>` a single answer for the other eight rather than
+        // a filename list that needs a tenth entry the day a tenth carrier lands.
+        let dir = pin_envelope_dir();
+        for owned in [
+            "/tmp/envroot/alpha/pr-ledger.ndjson",
+            "/tmp/envroot/alpha/hooks/pre-push",
+            "/tmp/envroot/alpha/hooks/pre-commit",
+            "/tmp/envroot/alpha/hooks",
+            "/tmp/envroot/alpha/gitconfig",
+            "/tmp/envroot/alpha/askpass",
+            "/tmp/envroot/alpha/gh",
+            "/tmp/envroot/alpha/gh/hosts.yml",
+            "/tmp/envroot/alpha/settings.json",
+            "/tmp/envroot/alpha",
+            // The normalisation, in the directions it has to cover: a trailing
+            // separator, a doubled one, and an interior `/./`.
+            "/tmp/envroot/alpha/",
+            "/tmp/envroot//alpha//pr-ledger.ndjson",
+            "/tmp/envroot/./alpha/pr-ledger.ndjson",
+        ] {
+            assert!(
+                word_is_within(owned, &dir),
+                "`{owned}` is a path this run's envelope OWNS and must answer `true`. The \
+                 comparison is COMPONENT-WISE against the directory the guard was GIVEN, and \
+                 the directory itself answers `true` because `rm -rf <env>/<alias>` takes nine \
+                 carriers in one call."
+            );
+        }
+    }
+
+    #[test]
+    fn the_carrier_predicate_answers_false_for_a_path_outside_the_envelope_directory() {
+        // **THIS ROUND'S `--signed no`, in five spellings.** A rule written as
+        // `ends_with("pr-ledger.ndjson")`, as a substring test for a carrier
+        // filename, or as a raw `starts_with` over the directory STRING turns at
+        // least one of these red — and every one is pinned PERMITTED against the
+        // built binary in `tests/envelope_control_carrier.rs`.
+        let dir = pin_envelope_dir();
+        for (outside, why) in [
+            ("/tmp/x", "an ordinary absolute operand"),
+            (
+                "/tmp/pr-ledger.ndjson",
+                "the carrier BASENAME with a directory that is not the envelope's: a basename \
+                 or substring rule refuses this and a path-prefix rule does not",
+            ),
+            (
+                "/tmp/envrooz/alpha/pr-ledger.ndjson",
+                "an envelope-root spelling with ONE CHARACTER CHANGED — it resembles the root \
+                 and is not it",
+            ),
+            (
+                "/tmp/envroot/alpha2/x",
+                "a SIBLING whose name merely EXTENDS the alias. A raw `starts_with` over the \
+                 string `/tmp/envroot/alpha` refuses this; a COMPONENT-WISE comparison does not",
+            ),
+            (
+                "/tmp/envroot/alphax",
+                "the same from one component up, with no separator to hide behind",
+            ),
+            (
+                "/tmp/envroot",
+                "the PARENT of the envelope directory is not under it. The boundary is the \
+                 directory this run owns, not everything beside it",
+            ),
+            (
+                "pr-ledger.ndjson",
+                "a RELATIVE operand — fail-open direction (iv). The guard has no cwd, so this \
+                 word names no path it can resolve",
+            ),
+            (
+                "./alpha/pr-ledger.ndjson",
+                "relative again, with the leading `./` the normaliser strips: stripping it must \
+                 not turn a relative word into an absolute one",
+            ),
+        ] {
+            assert!(
+                !word_is_within(outside, &dir),
+                "`{outside}` must answer `false`: {why}."
+            );
+        }
+    }
+
+    #[test]
+    fn the_carrier_predicate_collapses_dot_dot_textually_in_both_directions() {
+        // **BOTH directions, because only the second proves the collapse is real
+        // rather than a substring test that got lucky.** The first is the shape
+        // audit 9's own composite uses; the second walks OUT of the envelope
+        // directory and must be permitted, which a `contains("/alpha/")` test
+        // would get wrong.
+        let dir = pin_envelope_dir();
+        assert!(
+            word_is_within("/tmp/envroot/alpha/hooks/../pr-ledger.ndjson", &dir),
+            "`..` is collapsed TEXTUALLY, so a literal `hooks/..` resolves back to the \
+             envelope directory and the ledger beneath it is reached. No link is followed and \
+             nothing is canonicalized — the collapse never asks the filesystem what the path \
+             means."
+        );
+        assert!(
+            !word_is_within("/tmp/envroot/alpha/../other/x", &dir),
+            "`..` walking OUT of the envelope directory must answer `false`. **This is the row \
+             that proves the collapse is real**: a substring or prefix test over the string \
+             `/tmp/envroot/alpha` answers `true` here and would refuse an unrelated sibling."
+        );
+        assert!(
+            !word_is_within("/tmp/envroot/alpha/../../envroot/alphax", &dir),
+            "a longer `..` walk that lands beside the envelope directory is still outside it."
+        );
+        assert!(
+            word_is_within("/tmp/envroot/alpha/../alpha/hooks/pre-push", &dir),
+            "and a `..` walk that lands back INSIDE is inside: the answer is about where the \
+             path resolves, never about how many components it took to get there."
+        );
+    }
+
+    #[test]
+    fn the_carrier_predicate_reads_the_literal_bit_so_an_expansion_borne_operand_is_not_a_carrier()
+    {
+        // **FAIL-OPEN DIRECTION (ii), pinned at the predicate rather than only at
+        // the guard.** A word the shell may rewrite is a word the guard cannot
+        // resolve, and refusing every non-literal operand of an ungoverned command
+        // would deny `rm $TMPDIR/x`. The segments are built by the REAL tokenizer,
+        // so this pin reads the real [`Token::literal`] bit rather than one a
+        // fixture asserted.
+        let dir = pin_envelope_dir();
+
+        let literal = split_segments_with_heads("rm -f /tmp/envroot/alpha/pr-ledger.ndjson")
+            .expect("the tokenizer recovers this command's words");
+        assert!(
+            literal
+                .iter()
+                .any(|segment| envelope_carrier_operand(&segment.tokens, &dir)),
+            "an ABSOLUTE LITERAL operand under the envelope directory IS a carrier operand."
+        );
+
+        // The same path, assembled by the shell. `text` still reads as the
+        // envelope path once the tokenizer is done with it, and the predicate must
+        // still answer `false` — which is what makes this a pin on the BIT rather
+        // than on the text.
+        let expanded = split_segments_with_heads("rm -f ${ROOT}/alpha/pr-ledger.ndjson")
+            .expect("the tokenizer recovers this command's words");
+        assert!(
+            !expanded
+                .iter()
+                .any(|segment| envelope_carrier_operand(&segment.tokens, &dir)),
+            "an EXPANSION-BORNE operand is fail-open direction (ii) and must answer `false`. \
+             The guard cannot evaluate the word, and refusing every non-literal operand of an \
+             ungoverned command would deny `rm $TMPDIR/x` — which is how a safety control gets \
+             switched off (AR-19-11)."
+        );
+
+        // And a command that names no envelope path at all, so the pin above
+        // cannot pass because the predicate answers `false` to everything.
+        let ordinary = split_segments_with_heads("rm -f /tmp/x")
+            .expect("the tokenizer recovers this command's words");
+        assert!(
+            !ordinary
+                .iter()
+                .any(|segment| envelope_carrier_operand(&segment.tokens, &dir)),
+            "an ordinary operand is not a carrier operand."
+        );
+    }
+
+    #[test]
+    fn the_carrier_predicate_asks_the_filesystem_nothing_and_its_own_source_says_so() {
+        // **THE MECHANICAL NO-FILESYSTEM ASSERTION, over the predicate's own
+        // production text.** The guard runs synchronously on the agent's
+        // `PreToolUse` critical path, where a reproduced 180-240 second hang is
+        // why `push_needs_resolved_dests` exists; and the filesystem may change
+        // between the guard's answer and the command's exec, so a path check that
+        // asked the filesystem could be answered by a link the agent made one
+        // instruction ago (TOCTOU). **The correct response to a red here is to
+        // REMOVE THE CALL, never to relax this assertion.**
+        const SELF: &str = include_str!("policy.rs");
+
+        let start = SELF
+            .find("fn lexical_absolute_components(word: &str)")
+            .expect(
+                "the predicate's own source must be findable. If it is not, every absence \
+                 assertion below is being made about the wrong region of the file.",
+            );
+        let end = start
+            + SELF[start..]
+                .find("#[cfg(test)]")
+                .expect("the test sentinel must follow the predicate");
+        let region = &SELF[start..end];
+
+        // The DOC lines are stripped, because the doc NAMES these APIs in order to
+        // state why the predicate does not call them — and an assertion that could
+        // not tell an explanation from a call would have to be written by deleting
+        // the explanation.
+        let code: String = region
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .map(|line| format!("{line}\n"))
+            .collect();
+
+        // POSITIVE CONTROLS first: an absence assertion cannot tell "the call is
+        // not here" from "this is not the region I think it is".
+        assert!(
+            code.contains("pub fn envelope_carrier_operand"),
+            "the sliced region must contain `pub fn envelope_carrier_operand`. If it does not, \
+             the slice missed the predicate and the absences below certify nothing."
+        );
+        assert!(
+            code.contains("pub fn envelope_carrier_refusal"),
+            "the sliced region must contain `pub fn envelope_carrier_refusal`, which is its \
+             last item — so the slice covers the whole of the new logic rather than its head."
+        );
+        assert!(
+            !code.contains("///"),
+            "the doc-stripping filter must have removed every `///` line. If it did not, the \
+             absences below are being asserted over prose that deliberately NAMES these APIs."
+        );
+
+        for api in [
+            "canonicalize",
+            "read_link",
+            "symlink_metadata",
+            "metadata",
+            "current_dir",
+            "exists",
+            "Command::new",
+        ] {
+            assert!(
+                !code.contains(api),
+                "\n\n**`{api}` MUST NOT APPEAR IN THE CARRIER-OPERAND PREDICATE'S PRODUCTION \
+                 TEXT.**\n\n\
+                 The predicate normalises LEXICALLY and follows no link. Two reasons, both \
+                 measured rather than argued:\n\
+                 \x20 * LATENCY — the guard answers on the agent's `PreToolUse` critical path, \
+                 and a reproduced 180-240 second hang is why `push_needs_resolved_dests` exists \
+                 at all;\n\
+                 \x20 * TOCTOU — the filesystem may change between this answer and the \
+                 command's exec, and a guard that asks the filesystem to resolve a path can be \
+                 answered by a link the agent made one instruction ago.\n\n\
+                 **The correct response is to REMOVE THE CALL, never to relax this assertion.** \
+                 Every probe of the real filesystem belongs in a test."
             );
         }
     }
