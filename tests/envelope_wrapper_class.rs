@@ -8037,6 +8037,14 @@ fn draws_a_symlinked_carrier(command: &str) -> bool {
 /// completely different reasons: class 5 because the guard has no cwd, class 8
 /// because expanding a `~` means reading the ENVIRONMENT the command will run
 /// in.
+/// **REFINED AGAIN BY ROUND 12: a word carrying a carrier path at a NON-ZERO
+/// index is excluded and handed to class 12.** `of=<ENV>/alpha/pr-ledger.ndjson`
+/// does not begin with `/`, carries a carrier BASENAME, and satisfied this
+/// predicate before the refinement — **but it is not a relative path at all, it
+/// is an ABSOLUTE path carried INSIDE a token**, and the two fail open for
+/// completely different reasons: class 5 because the guard has no cwd, class 12
+/// because the normaliser requires the WORD itself to start with `/`. This is
+/// the same kind of refinement round 11 made for the tilde, one silence over.
 fn draws_a_relative_carrier(command: &str) -> bool {
     carrier_words(command).iter().any(|word| {
         !word.is_redirection_target
@@ -8044,6 +8052,7 @@ fn draws_a_relative_carrier(command: &str) -> bool {
             && !word.text.starts_with('/')
             && !word.text.starts_with('~')
             && !word.text.contains('$')
+            && !word_carries_an_interior_carrier_path(&word.text)
             && !REPO_SIDE_CARRIER_PATHS
                 .iter()
                 .any(|path| word.text.contains(path))
@@ -8071,6 +8080,23 @@ fn draws_a_repo_side_carrier(command: &str) -> bool {
 /// **EXTENDED BY ROUND 11 to exclude classes 8 … 11 as well.** Without that, a
 /// tilde, glob, brace or BINARY entry would satisfy class 7 too and the counts
 /// would call a live carrier "an ordinary path operand", which is untrue.
+///
+/// **EXTENDED AGAIN BY ROUND 12 TO EXCLUDE CLASS 12, AND THE REASON IS THE
+/// STRUCTURAL COLLISION THIS SPLIT HAS BEEN FORCED BY SIX TIMES.** An
+/// option-attached carrier word such as `dd of=<ENV>/alpha/pr-ledger.ndjson`
+/// satisfies class 1 NOT (it does not `starts_with` the root), class 2 NOT (it
+/// is not a redirection target) and class 11 NOT (that is an EQUALITY over the
+/// whole word) — **and therefore satisfies class 7, the COMPLEMENT, which is in
+/// the INVARIANCE arm.** That would assert PERMITTED a row `19-31` REFUSES,
+/// landing permanently red in a file `19-31` may only ADD to. This is `19-18`'s
+/// `{v}>` blocker, `19-20`'s `GIT_GLOBAL_UNKNOWN_OPTIONS` split, `19-22`'s
+/// indirection/confined split, `19-24`'s re-parsed/confined split and `19-28`'s
+/// own class-2 collision, **a SIXTH time — and the SECOND time through the
+/// COMPLEMENT specifically.**
+///
+/// **The arithmetic proof that the extension took effect is class 7's own
+/// COUNT**: it is 24 over the 84 generated commands, where the naive count
+/// without this clause would be 36. See [`CONTROL_CARRIER_CLASS_COUNTS`].
 fn draws_an_ordinary_operand(command: &str) -> bool {
     !draws_an_envelope_root_operand(command)
         && !draws_a_redirection_target_carrier(command)
@@ -8082,6 +8108,7 @@ fn draws_an_ordinary_operand(command: &str) -> bool {
         && !draws_a_glob_borne_carrier(command)
         && !draws_a_brace_borne_carrier(command)
         && !draws_the_guards_own_binary(command)
+        && !draws_an_interior_carrier_path(command)
 }
 
 /// **CLASS 8** — a carrier word spelled with a TILDE, in EITHER word position.
@@ -8142,6 +8169,67 @@ fn draws_the_guards_own_binary(command: &str) -> bool {
         .any(|word| word.text == REPRESENTATIVE_BINARY_PATH)
 }
 
+/// Whether a word carries a carrier path as a `/`-ANCHORED SUBSTRING at a
+/// **NON-ZERO** index — the text fact **CLASS 12** is about.
+///
+/// **IT ASKS NOTHING ABOUT WHAT PRECEDES THE `/`, AND THAT IS THE WHOLE POINT.**
+/// `19-31`'s mandated boundary is `/`-anchored substrings of a LITERAL word, not
+/// a list of attachment characters and not a list of option spellings. An
+/// `=`-split would miss `--opt=a=/p` (a second `=`), `tar -C/p` and `cp -t/p`
+/// (attached SHORT options with no `=` at all) and `host:/p` (a `:`); **and a
+/// character list would be a PROGRAM-GRAMMAR ENUMERATION — `dd`'s `of=` is an
+/// operand grammar, not an option syntax — which is D-08's defect one level
+/// over**, the same shape
+/// `wrapper_names_the_fix_must_not_know_are_absent_from_the_production_logic`
+/// exists to forbid. So this predicate walks every `/` and asks only whether the
+/// substring from it is a carrier path.
+///
+/// **THE FOUR EXCLUSIONS ARE WHAT KEEP CLASS 12 DISJOINT FROM CLASSES 3, 8, 9
+/// AND 10.** A word carrying `$`, a leading `~`, a pathname-expansion
+/// metacharacter or a brace list is NOT `Token.literal`, rule (a) requires that
+/// bit, and `19-31` applies the LITERAL FILTER BEFORE ANY CANDIDATE IS PRODUCED.
+/// Those spellings stay verdict-PRESERVING and belong to the classes that
+/// already draw them.
+fn word_carries_an_interior_carrier_path(text: &str) -> bool {
+    if text.contains('$')
+        || text.starts_with('~')
+        || word_has_pathname_metacharacter(text)
+        || word_has_brace_list(text)
+    {
+        return false;
+    }
+    text.char_indices()
+        .filter(|(index, character)| *index > 0 && *character == '/')
+        .any(|(index, _)| {
+            let candidate = &text[index..];
+            candidate.starts_with(REPRESENTATIVE_ENVELOPE_ROOT)
+                || candidate == REPRESENTATIVE_BINARY_PATH
+        })
+}
+
+/// **CLASS 12** — a non-governed command carrying a carrier path INSIDE a
+/// literal word, at a NON-ZERO index. **`T-19-119`, `high` — and the class
+/// `19-31`'s widened READING closes.**
+///
+/// **DISJOINT FROM CLASS 1 BY CONSTRUCTION:** class 1 is
+/// `starts_with(REPRESENTATIVE_ENVELOPE_ROOT)`, which is index ZERO, and this
+/// predicate only looks at indices ABOVE zero. **DISJOINT FROM CLASS 11 BY
+/// CONSTRUCTION:** class 11 is an EQUALITY over the WHOLE word, and a word whose
+/// carrier path starts above index zero is longer than the path it carries.
+///
+/// **DISJOINT FROM CLASS 2 BY EXCLUSION, AND THE EXCLUSION IS STATED RATHER THAN
+/// LEFT AS SYMMETRY.** A redirection target is a WHOLE WORD by construction —
+/// bash parses `> WORD` and the word IS the pathname — so an interior path in a
+/// redirection target is not a shape bash produces. `19-30`'s attachment sweep
+/// is the evidence, and this is the same kind of deliberate absence
+/// [`CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING`] already records for a
+/// relative target.
+fn draws_an_interior_carrier_path(command: &str) -> bool {
+    carrier_words(command).iter().any(|word| {
+        !word.is_redirection_target && word_carries_an_interior_carrier_path(&word.text)
+    })
+}
+
 /// One named class and the predicate that decides whether a command draws it.
 type ControlCarrierClass = (&'static str, fn(&str) -> bool);
 
@@ -8182,6 +8270,10 @@ const CONTROL_CARRIER_CLASSES: &[ControlCarrierClass] = &[
     ("a glob-borne carrier word", draws_a_glob_borne_carrier),
     ("a brace-list-borne carrier word", draws_a_brace_borne_carrier),
     ("the guard's own binary", draws_the_guards_own_binary),
+    (
+        "a carrier path INSIDE a literal word, at a non-zero index",
+        draws_an_interior_carrier_path,
+    ),
 ];
 
 /// Whether a command draws ANY of the eleven.
@@ -8204,6 +8296,7 @@ const CONTROL_CARRIER_REPRESENTATIVES: &[&str] = &[
     "rm -rf <ENV>/alph?",
     "rm -f <ENV>/alpha/{pr-ledger.ndjson,x}",
     "cp /bin/true <BIN>",
+    "dd if=/dev/null of=<ENV>/alpha/pr-ledger.ndjson",
 ];
 
 /// **THE FAIL-CLOSED ALPHABET, WITH ITS OWN PROPERTY.**
@@ -8302,6 +8395,70 @@ const CONTROL_CARRIER_BINARY: &[&str] = &[
 /// The binary's EXACT-PATH-not-PREFIX near-miss controls, asserted BY NAME.
 const CONTROL_CARRIER_BINARY_NEAR_MISSES: &[&str] =
     &["cp /bin/true <BINPAR>/some-other-file", "ls <BINPAR>"];
+
+/// **`T-19-119` — THE CARRIER PATH INSIDE THE WORD. A FAIL-CLOSED ALPHABET, NEW
+/// IN ROUND 12.**
+///
+/// **WHY IT NEEDS ITS OWN ALPHABET AND CLASS.** Every entry here satisfies class
+/// 1 NOT (no word `starts_with` the root), class 2 NOT (no redirection target)
+/// and class 11 NOT (that is an EQUALITY over the whole word) — **so without
+/// class 12 every one of them would land in class 7, the COMPLEMENT, which is in
+/// the INVARIANCE arm.** That would assert PERMITTED a row `19-31` REFUSES,
+/// landing permanently red in a file `19-31` may only ADD to. Same shape as
+/// `19-18`'s `{v}>` blocker, `19-20`'s split, `19-22`'s, `19-24`'s and `19-28`'s
+/// — the SIXTH time, and the SECOND through the complement.
+///
+/// **THE ENTRIES ARE DRAWN FROM `19-30`'s MEASURED SWEEP AND FROM NOTHING
+/// ELSE.** Every one was driven against the built binary at exit 0 with an empty
+/// walk, and its outside-the-path-set twin was driven at exit 0 too, so this arm
+/// is not merely drawing commands that were already refused.
+///
+/// **THE ALPHABET IS DELIBERATELY NOT AN `=` ALPHABET, and the NO-INTERIOR-PATH
+/// fence counts that rather than trusting this sentence.** Entries 7, 8 and 9
+/// attach the path by something OTHER than `=` — two attached SHORT options with
+/// no `=` anywhere, and a `:` inside an assignment prefix — because **an
+/// alphabet that only ever drew `=` is an alphabet that certifies an `=`-keyed
+/// rule**, and an `=`-keyed rule would be one character short in exactly the way
+/// the current one is.
+///
+/// **Entry 11 carries TWO `=` before the path and is drawn under a program name
+/// absent from BOTH production halves.** `19-30` recorded that no real program
+/// grammar was found which consumes a two-`=` word as a path — the two reaching
+/// two-`=` spellings it did find (`GIT_CONFIG_PARAMETERS=…` and a `-c alias.q=`
+/// body) are ALREADY refused today by other clauses, so neither discriminates on
+/// this axis — **so this entry fences the rule SHAPE rather than a measured
+/// bypass: a first-`=`-split rule misses it and the mandated `/`-anchored scan
+/// does not.**
+///
+/// **CLASS 12 IS NOT DRAWN IN REDIRECTION-TARGET POSITION, and that is stated
+/// rather than forced for symmetry.** A redirection target is a WHOLE WORD by
+/// construction — bash parses `> WORD` and the word IS the pathname — so an
+/// interior path in one is not a shape bash produces. This is the same kind of
+/// deliberate absence [`CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING`] already
+/// records for a relative target.
+const CONTROL_CARRIER_INTERIOR_PATH: &[&str] = &[
+    // 1-2 — the `=`-attached spellings over BOTH protected paths.
+    "dd if=/bin/true of=<BIN>",
+    "dd if=/dev/null of=<ENV>/alpha/pr-ledger.ndjson",
+    // 3-6 — the remaining `=`-attached spellings whose reach real `bash`
+    //       confirmed, including a READ (`--reference=`).
+    "tar --directory=<ENV>/alpha --create --file /tmp/t .",
+    "cp --target-directory=<ENV>/alpha /bin/true",
+    "chmod --reference=<ENV>/alpha/pr-ledger.ndjson /tmp/x",
+    "rsync --temp-dir=<ENV>/alpha /bin/true /tmp/x",
+    // 7-8 — ATTACHED SHORT OPTIONS WITH NO `=` AT ALL.
+    "tar --create --file /tmp/t -C<ENV>/alpha",
+    "cp /bin/true -t<ENV>/alpha",
+    // 9 — a `:` attachment INSIDE an assignment prefix; bash execs out of it.
+    "PATH=/usr/bin:<ENV>/alpha mytool",
+    // 10 — a BARE assignment prefix, which closes `R=<ENV>/alpha; rm -rf $R`.
+    "R=<ENV>/alpha",
+    // 11 — TWO `=` before the path, under an unknown program name.
+    "mytool --opt=a=<ENV>/alpha/pr-ledger.ndjson",
+    // 12 — the BINARY behind a DIFFERENT `=` spelling, so the EXACT-PATH half is
+    //      reached by more than one option.
+    "tar --directory=<BIN> --create --file /tmp/t .",
+];
 
 /// **THE VERDICT-PRESERVING REDIRECTION TARGETS — NEW IN ROUND 11, in the
 /// INVARIANCE arm.**
@@ -8457,6 +8614,36 @@ const CONTROL_CARRIER_ORDINARY_OPERANDS: &[&str] = &[
     // red — and would refuse `ls ~/.cargo/bin` and every `cargo install`.
     "cp /bin/true <BINPAR>/some-other-file",
     "ls <BINPAR>",
+    // **ROUND 12's COST CONTROLS — THE OTHER SIDE OF `T-19-119`, AND WHAT STOPS
+    // THE RULE BEING WRITTEN WRONG.** Every one carries an `=`, a `:`, an
+    // attached short option or a `/` — and NONE of them can reach the path set,
+    // because a candidate is refused only if it PREFIXES a directory of at least
+    // three components rooted at `<root>/<alias>` or EQUALS a full binary path.
+    // `word_is_within` returns early on `word.len() < dir.len()` over COMPONENT
+    // VECTORS, so a short suffix can never match a deep directory at all.
+    //
+    // **Each of the first four is the OUTSIDE-THE-PATH-SET TWIN of a
+    // `CONTROL_CARRIER_INTERIOR_PATH` entry in the SAME attachment**, which is
+    // what makes the fail-closed arm a measurement of the PATH SET rather than
+    // of the attachment character.
+    "dd if=/tmp/g/x of=/tmp/stolen",
+    "tar --create --file /tmp/t -C/tmp/g",
+    "cp /bin/true -t/tmp/g",
+    "chmod --reference=/tmp/g/x /tmp/y",
+    "PATH=/usr/bin:/tmp/g mytool",
+    "R=/tmp/g mytool",
+    // A word carrying TWO `=` before an UNPROTECTED absolute path.
+    "mytool --opt=a=/tmp/g/x",
+    // A `%`-formatted value, which carries no `/` at all.
+    "printf %H /tmp/x",
+    // A substitution whose candidates are `[x, y]`, `[y]` and the EMPTY
+    // component list — the degenerate case, handled by the same early return.
+    "sed s/x/y/ /tmp/f",
+    // A URL operand: `[github.com, o, r]`, `[o, r]`, `[r]` — every one rooted at
+    // a component no envelope directory carries.
+    "curl https://github.com/o/r",
+    // A `:`-attached path in its rsync spelling.
+    "rsync host:/tmp/g /tmp/x",
 ];
 
 /// The near-miss entries the PATH-PREFIX-NOT-BASENAME fence asserts BY NAME.
@@ -8476,8 +8663,10 @@ const CONTROL_CARRIER_GOVERNED_TWIN: &str = "git config --get core.hooksPath";
 
 /// Every alphabet on this axis, for the disjointness and class fences.
 ///
-/// **TWELVE after round 11**, and the SLOT count below counts these.
+/// **TWELVE after round 11, THIRTEEN after round 12**, and the SLOT count below
+/// counts these.
 const CONTROL_CARRIER_ALPHABETS: &[(&str, &[&str])] = &[
+    ("CONTROL_CARRIER_INTERIOR_PATH", CONTROL_CARRIER_INTERIOR_PATH),
     ("ENVELOPE_ROOT_OPERAND_CARRIERS", ENVELOPE_ROOT_OPERAND_CARRIERS),
     ("CONTROL_CARRIER_REDIRECTION_TARGETS", CONTROL_CARRIER_REDIRECTION_TARGETS),
     ("CONTROL_CARRIER_BINARY", CONTROL_CARRIER_BINARY),
@@ -8495,7 +8684,8 @@ const CONTROL_CARRIER_ALPHABETS: &[(&str, &[&str])] = &[
     ("CONTROL_CARRIER_BRACE_BORNE", CONTROL_CARRIER_BRACE_BORNE),
 ];
 
-/// **THE FAIL-CLOSED ARM — THREE alphabets after round 11.**
+/// **THE FAIL-CLOSED ARM — THREE alphabets after round 11, FOUR after round
+/// 12.**
 ///
 /// Every entry here is REFUSED after `19-29` and PERMITTED today, which is what
 /// makes the fail-closed property RED before the fix and green after.
@@ -8506,6 +8696,7 @@ const CONTROL_CARRIER_FAIL_CLOSED_ALPHABETS: &[(&str, &[&str])] = &[
     ("ENVELOPE_ROOT_OPERAND_CARRIERS", ENVELOPE_ROOT_OPERAND_CARRIERS),
     ("CONTROL_CARRIER_REDIRECTION_TARGETS", CONTROL_CARRIER_REDIRECTION_TARGETS),
     ("CONTROL_CARRIER_BINARY", CONTROL_CARRIER_BINARY),
+    ("CONTROL_CARRIER_INTERIOR_PATH", CONTROL_CARRIER_INTERIOR_PATH),
 ];
 
 /// The EIGHT verdict-PRESERVING alphabets the invariance arm DRIVES.
@@ -8630,17 +8821,29 @@ fn control_carrier_ordinary_twin(entry: &str) -> String {
 /// * tilde-borne                  — **4**  (NEW)
 /// * glob-borne                   — **4**  (NEW)
 /// * brace-list-borne             — **4**  (NEW)
-/// * total = 11 + 4 + 5 + 2 + 2 + 2 + 6 + 13 + 4 + 4 + 4 + 4 = **61** cases
-/// * slots = one per alphabet = **12**
+/// * total after round 11 = 11 + 4 + 5 + 2 + 2 + 2 + 6 + 13 + 4 + 4 + 4 + 4 =
+///   **61** cases over **12** slots
+///
+/// **RE-DERIVED IN ROUND 12 FROM THE NEW CLASS, THE NEW ALPHABET, THE GROWN
+/// ORDINARY ALPHABET *AND* THE COMPLEMENT EXTENSION.** Two predicates changed —
+/// class 7 to exclude class 12, class 5 to exclude an interior carrier path —
+/// so re-deriving from the alphabets alone would miss half of it.
+///
+/// * interior-path              — **12** entries (NEW, fail-closed)
+/// * ordinary operands          — **24** (13 + 11 measured cost controls)
+/// * every other alphabet       — unchanged
+/// * total = 61 + 12 + 11 = **84** cases
+/// * slots = one per alphabet = **13**
 ///
 /// The floors are EXACT equalities, so losing one case turns them red. Nothing in
 /// `src/` can move them: they are a pure function of the alphabets in this file.
 /// **Audit 5 found `19-16` set a floor of 50 against a maximum of 40 BY
 /// CONSTRUCTION, so the arithmetic is stated and CHECKED against the alphabets
 /// rather than against the prose.**
-const CONTROL_CARRIER_CASES: usize = 61;
-const CONTROL_CARRIER_SLOTS: usize = 12;
-const MIN_CONTROL_CARRIER_CLASSES: usize = 11;
+const CONTROL_CARRIER_CASES: usize = 84;
+const CONTROL_CARRIER_SLOTS: usize = 13;
+const MIN_CONTROL_CARRIER_CLASSES: usize = 12;
+const MIN_CONTROL_CARRIER_INTERIOR_PATH: usize = 12;
 const MIN_ENVELOPE_ROOT_OPERAND_CARRIERS: usize = 11;
 const MIN_CONTROL_CARRIER_REDIRECTION_TARGETS: usize = 4;
 const MIN_CONTROL_CARRIER_BINARY: usize = 5;
@@ -8648,7 +8851,7 @@ const MIN_CONTROL_CARRIER_EXPANSION_BORNE: usize = 2;
 const MIN_CONTROL_CARRIER_SYMLINKED: usize = 2;
 const MIN_CONTROL_CARRIER_RELATIVE: usize = 2;
 const MIN_CONTROL_CARRIER_REPO_SIDE: usize = 6;
-const MIN_CONTROL_CARRIER_ORDINARY_OPERANDS: usize = 13;
+const MIN_CONTROL_CARRIER_ORDINARY_OPERANDS: usize = 24;
 const MIN_CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING: usize = 4;
 const MIN_CONTROL_CARRIER_TILDE_BORNE: usize = 4;
 const MIN_CONTROL_CARRIER_GLOB_BORNE: usize = 4;
@@ -8691,6 +8894,29 @@ const MIN_CONTROL_CARRIER_BRACE_BORNE: usize = 4;
 ///   redirection TARGET in the preserving alphabet = **5**.
 /// * class 11 (the guard's own binary) — the **5** binary entries, and NOT the
 ///   two near-miss controls.
+///
+/// **ROUND 12 RE-DERIVES ALL OF THEM OVER THE 84 GENERATED COMMANDS, AND TWO
+/// COUNTS MOVE:**
+///
+/// * **class 7 (ordinary) — 13 → 24, and the number is what proves the
+///   COMPLEMENT EXTENSION took effect.** The 24 are the grown ordinary
+///   alphabet's own entries and ONLY those. **The NAIVE count — class 7 without
+///   the `!draws_an_interior_carrier_path` clause — would be 24 + 12 = 36**,
+///   because every interior-path entry satisfies classes 1, 2 and 11 NOT and
+///   would fall into the complement. **That fall of TWELVE is the arithmetic
+///   proof**, and it is the reason the count is stated here rather than left to
+///   be inferred from the alphabet's length.
+/// * **class 12 (interior path) — the 12 new entries, and NOTHING else.** No
+///   existing entry draws it: the eleven envelope-root operands carry the root
+///   at index ZERO; the redirection entries carry it in TARGET position, which
+///   class 12 excludes; the expansion, tilde, glob and brace entries are
+///   excluded by the four literalness guards; `cat <ENVX>/…` is the
+///   one-character-changed root; and `cp /bin/true <BINPAR>/some-other-file`
+///   carries the binary's PARENT, which is not an EQUALITY match.
+///
+/// **Class 5 stays at 2 despite its refinement**, because both relative entries
+/// carry no `/` at all and cannot have an interior path; the refinement exists
+/// to keep the twelve NEW entries out, not to move an old one.
 const CONTROL_CARRIER_CLASS_COUNTS: &[(&str, usize)] = &[
     ("an absolute literal operand under the envelope root", 11),
     ("a redirection target under the envelope root", 4),
@@ -8698,11 +8924,15 @@ const CONTROL_CARRIER_CLASS_COUNTS: &[(&str, usize)] = &[
     ("a symlinked carrier operand", 3),
     ("a relative carrier operand", 2),
     ("a repo-side control carrier", 6),
-    ("an ordinary path operand", 13),
+    ("an ordinary path operand", 24),
     ("a tilde-borne carrier word", 5),
     ("a glob-borne carrier word", 5),
     ("a brace-list-borne carrier word", 5),
     ("the guard's own binary", 5),
+    (
+        "a carrier path INSIDE a literal word, at a non-zero index",
+        12,
+    ),
 ];
 
 #[test]
@@ -9002,6 +9232,11 @@ fn every_alphabet_this_round_widens_can_draw_a_fact_about_the_file_a_control_liv
             CONTROL_CARRIER_BRACE_BORNE,
             MIN_CONTROL_CARRIER_BRACE_BORNE,
         ),
+        (
+            "CONTROL_CARRIER_INTERIOR_PATH",
+            CONTROL_CARRIER_INTERIOR_PATH,
+            MIN_CONTROL_CARRIER_INTERIOR_PATH,
+        ),
     ] {
         assert!(
             entries.len() >= floor,
@@ -9216,6 +9451,12 @@ fn the_carrier_rule_may_not_be_a_denylist_of_program_names() {
         ("CONTROL_CARRIER_TILDE_BORNE", CONTROL_CARRIER_TILDE_BORNE),
         ("CONTROL_CARRIER_GLOB_BORNE", CONTROL_CARRIER_GLOB_BORNE),
         ("CONTROL_CARRIER_BRACE_BORNE", CONTROL_CARRIER_BRACE_BORNE),
+        // **EXTENDED BY ROUND 12.** `19-31` widens what a LITERAL word is READ
+        // FOR, and that widening may not teach the guard a program name either.
+        // `dd`, `tar`, `cp`, `chmod`, `rsync` and `mytool` are all absent from
+        // both production halves, and the fence counts that rather than
+        // trusting this comment.
+        ("CONTROL_CARRIER_INTERIOR_PATH", CONTROL_CARRIER_INTERIOR_PATH),
     ] {
         let unknown: Vec<&str> = entries
             .iter()
@@ -9301,6 +9542,43 @@ fn the_carrier_rule_must_resolve_a_path_prefix_and_not_a_basename() {
             "`{command}` must draw class 7, the ordinary complement."
         );
     }
+
+    // -- **EXTENDED BY ROUND 12: THE MECHANICAL REASON THE INTERIOR SCAN COSTS
+    //    NOTHING, ASSERTED RATHER THAN ARGUED.** Splitting a word produces more
+    //    CANDIDATES; a candidate is refused only if it PREFIXES a directory of
+    //    at least three components or EQUALS a full binary path. **A candidate
+    //    SHORTER than the envelope directory can never match it**, and
+    //    `word_is_within`'s `word.len() < dir.len()` early return over COMPONENT
+    //    VECTORS is what makes that structural rather than lucky.
+    for (word, why) in [
+        ("s/x/y/", "a `sed` substitution: `[x, y]`, `[y]`, `[]`"),
+        ("src/", "a trailing slash: the single candidate `/` is the EMPTY list"),
+        (
+            "https://github.com/o/r",
+            "a URL: `[github.com, o, r]`, `[o, r]`, `[r]` — wrong FIRST component",
+        ),
+        (
+            "HEAD:refs/heads/gsd-auto/alpha/w",
+            "a `:`-attached ref carrying the word `alpha`, which fails on its FIRST component \
+             rather than on its length",
+        ),
+        ("--git-dir=/tmp/g", "an `=`-attached absolute path OUTSIDE the set"),
+        ("--format=%H", "a `%`-formatted value with no `/` at all"),
+    ] {
+        assert!(
+            !word_carries_an_interior_carrier_path(word),
+            "\n\n**`{word}` MUST NOT BE READ AS AN INTERIOR CARRIER PATH: {why}.**\n\n\
+             The cost of reading every `/`-anchored substring is bounded by the PATH SET rather \
+             than by the split. If this fires, the rule widened past the boundary it declares \
+             — and `--git-dir=/tmp/g` alone is pinned PERMITTED in FOUR files and named in FIVE \
+             `policy.rs` doc sites, so five files would turn red at once."
+        );
+    }
+    assert!(
+        word_carries_an_interior_carrier_path(&format!("of={REPRESENTATIVE_ENVELOPE_ROOT}/alpha")),
+        "the POSITIVE control: without it the six absences above pass because the predicate \
+         answers `false` for everything."
+    );
 }
 
 #[test]
@@ -9360,6 +9638,94 @@ fn the_control_carrier_axis_can_draw_a_tilde_a_glob_and_a_brace_list_inside_a_ca
     println!(
         "the NO-EXPANSION-SPELLING fence counts {tilde} tilde, {glob} glob and {brace} \
          brace-list carrier words across the twelve alphabets."
+    );
+}
+
+#[test]
+fn the_control_carrier_axis_can_draw_a_carrier_path_inside_a_word_and_not_only_after_an_equals_sign(
+) {
+    // **THE NO-INTERIOR-PATH FENCE — ROUND 12's NEW MECHANICAL ASSERTION, AND
+    // THE ONE THAT WOULD HAVE CAUGHT `T-19-119` FOUR ROUNDS EARLIER.**
+    //
+    // Rule (a) decides on `lexical_absolute_components`, which opens with
+    // `if !word.starts_with('/') { return None; }` — so **a word can CARRY an
+    // absolute path without BEING one, and the whole rule is blind to it.**
+    // Round 11's corpus drew not one such word: every entry of the eleven
+    // alphabets carries its carrier path at index ZERO of some word, or not at
+    // all. **The axis was STRUCTURALLY INCAPABLE of failing on this cell**, and
+    // `19-28` observed the cell and classified it "not a defect" — which is how
+    // it survived a round that had already found it.
+    //
+    // **THIS COUNTS ENTRIES RATHER THAN READING PROSE, AND IT COUNTS TWO THINGS
+    // RATHER THAN ONE.** The second count is the important one: an alphabet that
+    // only ever drew `=` would certify an `=`-KEYED RULE, and an `=`-keyed rule
+    // is one character short in exactly the way the current one is —
+    // `--opt=a=/p` carries a second `=`, `tar -C/p` and `cp -t/p` carry none at
+    // all, and `host:/p` attaches with a `:`. **A list of attachment characters
+    // is a PROGRAM-GRAMMAR ENUMERATION and is D-08's defect one level over.**
+    //
+    // **GREEN today and after.**
+    let mut interior = 0usize;
+    let mut non_equals_attached: Vec<String> = Vec::new();
+    for (_, entries) in CONTROL_CARRIER_ALPHABETS {
+        for entry in *entries {
+            let command = control_carrier_representative(entry);
+            for word in carrier_words(&command) {
+                if word.is_redirection_target || !word_carries_an_interior_carrier_path(&word.text)
+                {
+                    continue;
+                }
+                interior += 1;
+                // The character IMMEDIATELY BEFORE the matching `/`. If it is
+                // anything other than `=`, this entry is one an `=`-keyed rule
+                // would miss.
+                let attached_by_something_else =
+                    word.text
+                        .char_indices()
+                        .any(|(index, character)| {
+                            index > 0
+                                && character == '/'
+                                && (word.text[index..].starts_with(REPRESENTATIVE_ENVELOPE_ROOT)
+                                    || &word.text[index..] == REPRESENTATIVE_BINARY_PATH)
+                                && word.text[..index].chars().next_back() != Some('=')
+                        });
+                if attached_by_something_else {
+                    non_equals_attached.push(word.text.clone());
+                }
+            }
+        }
+    }
+
+    assert!(
+        interior > 0,
+        "\n\n**THE AXIS MUST BE ABLE TO DRAW A CARRIER PATH AT A NON-ZERO INDEX INSIDE A WORD, \
+         AND IT DRAWS {interior}.**\n\n\
+         `lexical_absolute_components` requires the WORD to start with `/`, so a path carried \
+         inside a token is invisible to BOTH halves of the path set while `Token.literal` is \
+         TRUE. An axis that cannot DRAW that shape cannot FAIL on it, and every floor it \
+         satisfies certifies a claim about a class it could never have exercised.\n\n\
+         **THE CORRECT RESPONSE IS TO ADD THE SPELLING, NEVER TO RELAX THIS FENCE.**"
+    );
+    assert!(
+        !non_equals_attached.is_empty(),
+        "\n\n**THE AXIS DRAWS {interior} INTERIOR CARRIER PATHS AND EVERY ONE OF THEM IS \
+         ATTACHED BY AN `=`.**\n\n\
+         **THAT IS THE `=`-ONLY TRAP, AND IT IS THE EXACT SHAPE OF THE DEFECT THIS ROUND \
+         EXISTS TO CLOSE.** An alphabet that only ever draws `=` certifies an `=`-KEYED RULE — \
+         and an `=`-keyed rule would be one character short in exactly the way \
+         `lexical_absolute_components` is today: it would miss `--opt=a=/p` (a second `=`), \
+         `tar -C/p` and `cp -t/p` (ATTACHED SHORT OPTIONS with no `=` anywhere) and `host:/p` \
+         (a `:`). **A list of attachment characters is a PROGRAM-GRAMMAR ENUMERATION — `dd`'s \
+         `of=` is an operand grammar, not an option syntax — and that is D-08's defect one \
+         level over.**\n\n\
+         **THE CORRECT RESPONSE IS TO ADD A NON-`=` SPELLING TO \
+         `CONTROL_CARRIER_INTERIOR_PATH`, NEVER TO RELAX THIS FENCE.**"
+    );
+    println!(
+        "the NO-INTERIOR-PATH fence counts {interior} interior carrier words across the \
+         thirteen alphabets, of which {} are attached by something OTHER than `=`: {:?}",
+        non_equals_attached.len(),
+        non_equals_attached
     );
 }
 
@@ -9538,6 +9904,136 @@ fn a_command_that_names_a_carrier_rule_a_cannot_see_is_refused_after_19_29() {
             .map(|(_, entries)| entries.len())
             .sum::<usize>(),
         "round 11's fail-closed arm must run every generated case"
+    );
+}
+
+#[test]
+fn a_command_carrying_a_carrier_path_inside_a_word_is_refused_after_19_31() {
+    // **ROUND 12's FAIL-CLOSED ARM. RED at this plan's end BY DESIGN.**
+    //
+    // **A SEPARATE PROPERTY FROM ROUNDS 10's AND 11's, AND THE SPLIT IS HONEST
+    // RATHER THAN COSMETIC.** `ENVELOPE_ROOT_OPERAND_CARRIERS` is GREEN today
+    // (`19-27` landed its rule); round 11's two alphabets are green once `19-29`
+    // landed; this one is RED until `19-31`. Folding them into one property
+    // would make three rounds' rules indistinguishable and a later reader could
+    // not tell which half a red belonged to.
+    //
+    // **THE DERIVATION.** `19-31` widens what rule (a) READS from THE WORD to
+    // EVERY `/`-ANCHORED SUBSTRING of a LITERAL word, each fed through the
+    // EXISTING `lexical_absolute_components` normaliser and the EXISTING two
+    // comparisons. **It is raised at the SAME ONE SITE, on the segment the walk
+    // already holds, BEFORE the resolution match**, so the reason identifier is
+    // the GENERAL unresolvable one and not one a classifier would have earned
+    // (D-24). **CONTAINMENT is of the NORMALISED STRING rather than of the
+    // index**: `lexical_absolute_components` strips leading `./`s BEFORE testing
+    // `starts_with('/')`, so the exact claim is that the string today's rule
+    // normalises is itself one of the candidates and re-normalises to the same
+    // component list — the `./` strip can only ADD answers, never remove one.
+    //
+    // **MEASURED AT THIS PLAN'S BASE: every entry here is exit 0 with an EMPTY
+    // walk, and every ORDINARY TWIN is exit 0 too** (asserted by the
+    // permitted-base fence above), so this arm is not merely drawing commands
+    // that were already refused.
+    let mut cases = 0usize;
+    for (alphabet, entries) in [("CONTROL_CARRIER_INTERIOR_PATH", CONTROL_CARRIER_INTERIOR_PATH)] {
+        for entry in entries {
+            let envelope = TempDir::new().expect("a temporary envelope root");
+            let command = control_carrier_command(entry, envelope.path());
+            let got = verdict(envelope.path(), &command);
+            assert_eq!(
+                got.code, 2,
+                "\n\nA COMMAND CARRYING A CARRIER PATH INSIDE A LITERAL WORD WAS PERMITTED.\n\
+                 \n  alphabet: {alphabet}\
+                 \n  entry   : {entry}\
+                 \n  command : {command}\
+                 \n  got     : exit {} reason {}\n\
+                 \n**`T-19-119`, `high`.** `lexical_absolute_components` (`policy.rs:5457`) \
+                 opens with `if !word.starts_with('/') {{ return None; }}`, and BOTH halves of \
+                 `protected_carrier_named`'s path set are built on it — so a path carried \
+                 INSIDE a token is invisible to the whole rule while `Token.literal` is TRUE. \
+                 Driven end to end in `tests/envelope_interior_path.rs`: \
+                 `dd if=/bin/true of=<BINARY>` is exit 0 against its twin \
+                 `cp /bin/true <BINARY>` at exit 2, and the hook-refused force push then MOVED \
+                 a bare remote's `main`; the same spelling RESET A FIRED PR CAP.\n\
+                 \n**THE BOUNDARY IS `/`-ANCHORED SUBSTRINGS OF A LITERAL WORD AND NOT A LIST \
+                 OF ATTACHMENT CHARACTERS.** Entries 7, 8 and 9 attach the path by something \
+                 other than `=`, and the NO-INTERIOR-PATH fence counts that — because an \
+                 `=`-keyed rule would be one character short in exactly the way the current \
+                 one is.",
+                got.code, got.reason_id,
+            );
+            assert_eq!(
+                got.reason_id,
+                policy::REASON_ENVELOPE_ASSERTION_FAILED,
+                "`{command}` must be refused UNDER `{}`, the GENERAL unresolvable identifier. \
+                 Got: {}",
+                policy::REASON_ENVELOPE_ASSERTION_FAILED,
+                got.reason_id,
+            );
+            let written = ledger_lines_under(envelope.path());
+            assert!(
+                written.is_empty(),
+                "`{command}` was refused, but a pull-request ledger line was written. Found: \
+                 {written:?} Files: {:?}",
+                files_under(envelope.path())
+            );
+            cases += 1;
+        }
+    }
+    assert_eq!(
+        cases,
+        CONTROL_CARRIER_INTERIOR_PATH.len(),
+        "round 12's fail-closed arm must run every generated case"
+    );
+}
+
+#[test]
+fn the_two_git_dir_spellings_are_pinned_by_name_on_opposite_sides_of_the_boundary() {
+    // **THE ONE-CHARACTER PAIR, ASSERTED BY NAME — because the pair differing in
+    // exactly one character is what proves the rule reads the PATH SET rather
+    // than the `=`.**
+    //
+    // **GREEN today and after.**
+    assert!(
+        CONTROL_CARRIER_ORDINARY_OPERANDS
+            .iter()
+            .any(|entry| entry.contains("--reference=/tmp/g/x")),
+        "**`chmod --reference=/tmp/g/x /tmp/y` MUST BE IN \
+         `CONTROL_CARRIER_ORDINARY_OPERANDS`.** It is the outside-the-path-set twin of \
+         `chmod --reference=<ENV>/alpha/pr-ledger.ndjson /tmp/x`, in the SAME attachment, and \
+         a rule keyed to `=` rather than to the path set turns it RED."
+    );
+    assert!(
+        CONTROL_CARRIER_INTERIOR_PATH
+            .iter()
+            .any(|entry| entry.contains("-C<ENV>/alpha")),
+        "**AN ATTACHED SHORT OPTION WITH NO `=` MUST BE IN \
+         `CONTROL_CARRIER_INTERIOR_PATH`.** Without it the alphabet certifies an `=`-keyed \
+         rule, which is D-08's defect one level over."
+    );
+    assert!(
+        CONTROL_CARRIER_ORDINARY_OPERANDS
+            .iter()
+            .any(|entry| *entry == "tar --create --file /tmp/t -C/tmp/g"),
+        "**AND ITS OUTSIDE-THE-PATH-SET TWIN MUST BE IN THE ORDINARY ALPHABET.** A fail-closed \
+         entry whose twin is not pinned permitted certifies nothing about WHY it is refused."
+    );
+
+    // -- And the pair itself, at the predicate level.
+    let inside = control_carrier_representative("tar --create --file /tmp/t -C<ENV>/alpha");
+    let outside = "tar --create --file /tmp/t -C/tmp/g";
+    assert!(
+        draws_an_interior_carrier_path(&inside),
+        "`{inside}` must draw class 12"
+    );
+    assert!(
+        !draws_an_interior_carrier_path(outside),
+        "`{outside}` must NOT draw class 12: the attachment is IDENTICAL and only the path \
+         differs. **That is what makes the pair discriminating.**"
+    );
+    assert!(
+        draws_an_ordinary_operand(outside),
+        "`{outside}` must draw class 7, the ordinary complement."
     );
 }
 
