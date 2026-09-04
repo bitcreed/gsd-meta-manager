@@ -655,6 +655,15 @@ const GIT_GLOBAL_SELF_CONTAINED_OPTS: &[&str] = &[
     "--man-path",
     "--info-path",
     "--version",
+    // `T-19-107`. **The one measured over-refusal the "ZERO cost" claim missed.**
+    // This git accepts it — `git -v` prints `git version 2.43.0`, and
+    // `git -v XVALUE version` prints it too, so it terminates exactly as
+    // `--version` does and satisfies the TERMINATING arm of the probe. It was in
+    // neither constant and not in the disclosed unprobed set, so it fell to
+    // `LeadingOptionGrammar::NotEstablished` and `git -v status` was refused at
+    // exit 2 `envelope_assertion_failed` while `git --version` exited 0. The
+    // probe classified it before it was written here.
+    "-v",
 ];
 
 /// The three answers to the ONE question [`scan_leading`] asks about a leading
@@ -733,7 +742,20 @@ fn leading_git_option<'a>(argv: &[&'a str], index: usize) -> LeadingOptionGramma
             assignment: Some(rest),
         };
     }
-    // git's short-option parser accepts `-ckey=value` with no space.
+    // **The stated premise here used to be *"git's short-option parser accepts
+    // `-ckey=value` with no space"*, and the installed git CONTRADICTS it**
+    // (`T-19-106`): `git -cuser.name=x version` answers
+    // `unknown option: -cuser.name=x` at rc 129. git 2.43.0 accepts no
+    // short-option attachment at all.
+    //
+    // **The arm is KEPT and its behaviour is NOT changed.** It decides the shape
+    // of a command git will not run, so it is inert in the SAFE direction: the
+    // guard must still produce a verdict for such a line, and treating the
+    // remainder as an assignment sends it through the key checks rather than
+    // past them. The defect was the unmeasured grammar CLAIM, in a round whose
+    // whole thesis is that a claim about the callee must be measured; it is now
+    // pinned by
+    // [`the_four_structural_arms_of_leading_git_option_are_pinned_against_the_installed_git`].
     if let Some(rest) = token.strip_prefix("-c") {
         if !rest.is_empty() && !token.starts_with("--") {
             return LeadingOptionGrammar::SelfContained {
@@ -749,6 +771,22 @@ fn leading_git_option<'a>(argv: &[&'a str], index: usize) -> LeadingOptionGramma
     // 4: only an option that TAKES a value can carry one attached, so the
     // remainder of `-C/tmp` is `-C`'s value while the remainder of `-pc` is a
     // BUNDLE and stays unestablished.
+    //
+    // **This arm's premise is contradicted by the installed git too**
+    // (`T-19-106`): `git -C/tmp version` answers `unknown option: -C/tmp`, so
+    // git 2.43.0 does not accept the attached spelling this arm models. Inert in
+    // the SAFE direction for the same reason as the `-c<rest>` arm above, and
+    // **kept because removing it regressed a pinned row**:
+    // `git -C/tmp push --force origin main` moved from `force_push_blocked` to
+    // `envelope_assertion_failed` and broke
+    // `the_already_correct_planning_cells_keep_their_verdicts_as_controls` in a
+    // file that round could not edit.
+    //
+    // **`GIT_GLOBAL_VALUE_OPTS.contains(&head)` is a ONE-ELEMENT test today**,
+    // recorded so the restriction is not read as more general than it is: the
+    // constant holds exactly two entries of length two, `-c` and `-C`, and `-c`
+    // is taken by the earlier arm. It generalises only if the constant gains
+    // another two-character value-taking spelling.
     if !token.starts_with("--") && token.len() > 2 {
         let (head, rest) = token.split_at(2);
         if !rest.is_empty() && GIT_GLOBAL_VALUE_OPTS.contains(&head) {
@@ -1225,9 +1263,24 @@ fn qualify_destination(dst: &str) -> String {
 
 /// `git config` flags that take a **separate** value, whose value must not be
 /// mistaken for the key.
-const CONFIG_VALUE_OPTS: &[&str] = &[
-    "--file", "-f", "--blob", "--type", "-t", "--default", "--comment",
-];
+///
+/// **`--comment` was REMOVED and removing it is part of the fix rather than
+/// tidying (`T-19-106`).** It is the same over-consuming mis-index `19-21`
+/// removed `--super-prefix` over, in a second constant: git 2.43.0 answers
+/// ``error: unknown option `comment'`` at rc 129, so the option does not exist,
+/// yet [`config_key_operand_index`] skipped a word for it. Measured against the
+/// built binary, `git config --comment core.hooksPath /dev/null` exited **0**
+/// with the key operand read as `/dev/null`, while its twin
+/// `git config core.hooksPath /dev/null` was refused at exit 2
+/// `hook_bypass_blocked`. That row was inert only because git itself rejects
+/// the option — **a stale entry for an option git ACCEPTS would be a live
+/// bypass**, which is the direction the pin below exists for.
+///
+/// Membership is now a MEASUREMENT of the installed git, not a reading of its
+/// documentation:
+/// [`every_config_value_opt_really_takes_a_separate_value_on_the_installed_git`]
+/// re-runs a two-sided probe over every entry on each test run.
+const CONFIG_VALUE_OPTS: &[&str] = &["--file", "-f", "--blob", "--type", "-t", "--default"];
 
 /// Flags whose presence makes the invocation a read.
 const CONFIG_READ_OPTS: &[&str] = &[
@@ -3431,16 +3484,32 @@ pub enum ProgramResolution {
 ///   decision region is not widened here, and widening it to
 ///   [`classify_push`]'s flags is the same move as closing `T-19-91`.
 /// * **`T-19-100r` — over-refusal from the leading-option grammar rule, and its
-///   cost is ZERO on the installed git and BOUNDED on a future one.** Since this
-///   round a leading `git` option whose grammar [`leading_git_option`] cannot
-///   establish makes the VERB SLOT unestablished, and [`scan_leading`] refuses on
-///   it rather than reading the option's value as the verb.
+///   cost was ONE MEASURED ROW on the installed git, not zero.** Since `19-21` a
+///   leading `git` option whose grammar [`leading_git_option`] cannot establish
+///   makes the VERB SLOT unestablished, and [`scan_leading`] refuses on it rather
+///   than reading the option's value as the verb.
 ///
-///   **Zero on git 2.43.0**: every option this git accepts is classified by the
-///   two-sided probe and enumerated in the two constants, so the only commands
-///   moving permitted → refused are ones git ITSELF rejects —
-///   `git --bogus-opt status`, `git --super-prefix x status`,
-///   `git -pc user.name=x status` — refusals of commands that already do nothing.
+///   **`T-19-107` — the "ZERO over-refusal cost on git 2.43.0" claim was FALSE,
+///   and it is corrected here rather than repeated.** `git -v` is accepted by
+///   this git (`git -v` prints `git version 2.43.0`, and `git -v XVALUE version`
+///   prints it too, so it terminates exactly as `--version` does); it was in
+///   NEITHER grammar constant and NOT in the disclosed unprobed set; and it was
+///   measured at exit 2 `envelope_assertion_failed` beside `git --version` at
+///   exit 0. One accepted spelling, silently refused, while three places
+///   asserted the cost was zero. **A false reassurance in a control's own doc is
+///   how the next round's gap gets built**, which is why the correction is
+///   recorded rather than the number quietly changed.
+///
+///   `-v` now sits in [`GIT_GLOBAL_SELF_CONTAINED_OPTS`], where the `>= 8` floor
+///   and the two-sided probe cover it.
+///
+///   **What is true instead**: the cost was one measured row before this round
+///   and that row is removed; the remaining commands moving permitted → refused
+///   are ones git ITSELF rejects — `git --bogus-opt status`,
+///   `git --super-prefix x status`, `git -pc user.name=x status` — refusals of
+///   commands that already do nothing. The claim is a MEASUREMENT over the
+///   installed git and it is only as good as the probe's reach, which is what
+///   the two constants' pins hold.
 ///
 ///   **One refusal per newly added global option on a FUTURE git**, until the
 ///   constant learns it. `--no-advice` and `--no-lazy-fetch` are the measured
@@ -6492,7 +6561,36 @@ mod tests {
         // the same surface this phase's own argv-printing shims demonstrate. The
         // probe therefore lives in a TEST and nowhere else.
         const SELF: &str = include_str!("policy.rs");
-        const SPAWN_MARKERS: &[&str] = &["Command::new(", "process_group("];
+        // **The local marker set must NOT fall behind the global control's**,
+        // and it had (`19-23`). `tests/spawn_seam_guard.rs` carries THREE
+        // markers; this set carried two, and the missing one —
+        // `CommandWrap::with_new(` — is a spelling this repository actually
+        // uses, at `src/executor/claude.rs:480`. A production spawn written that
+        // way in this file would have been invisible to BOTH controls: to the
+        // global one because this file is on its `SPAWN_ALLOWLIST`, and to this
+        // one because the marker was absent.
+        //
+        // **SELF-INVALIDATION HAZARD, named so it is not discovered.** Adding
+        // this marker puts the literal `CommandWrap::with_new(` into
+        // `policy.rs`, and the loop below asserts the markers do NOT appear in
+        // the file's PRODUCTION half. This constant is inside `#[cfg(test)] mod
+        // tests`, well below the sentinel, so the production half never contains
+        // it — **but it must NOT be hoisted above the sentinel**, and the
+        // sentinel-count assertion below is what makes that premise a fact under
+        // test rather than an assumption.
+        //
+        // A bare `contains` is kept rather than the global control's
+        // left-word-boundary matcher, and the reason is stated rather than
+        // assumed: `calls_marker` exists there because `kill_process_group(`
+        // contains `process_group(`, i.e. to avoid FALSE POSITIVES. This control
+        // asserts an ABSENCE, so a false positive here fails CLOSED — it would
+        // demand a spawn be moved or deleted, never permit one — and the
+        // stricter matcher is therefore not needed to keep the control sound.
+        const SPAWN_MARKERS: &[&str] = &[
+            "Command::new(",
+            "process_group(",
+            "CommandWrap::with_new(",
+        ];
 
         // Everything above the FIRST `#[cfg(test)]` line is the production half.
         // This is the same sentinel `tests/envelope_wrapper_class.rs`'s
@@ -6517,10 +6615,60 @@ mod tests {
              `#[cfg(test)]` sentinel matched too early and every assertion below is being \
              made about a truncated string."
         );
+
+        // **THE TRUNCATION GUARD, AND IT USED TO BE THIN AT EXACTLY THE SEAM
+        // THAT FAILED ONCE THIS ROUND.** It was a bare `>= 40_000` with one
+        // SHALLOW anchor. Measured: `fn scan_leading` sits at line 374 (before
+        // this round's additions) and 40,000 raw bytes is reached at line ~778 —
+        // of a production half that runs to line 4,613 and 228,785 bytes. **So a
+        // stray `#[cfg(test)]` anywhere after line ~778 truncated this control's
+        // view with BOTH positive controls still green.** This round's own
+        // incident put such a line at ~607, BELOW 778, which is the only reason
+        // a floor caught it at all. Three repairs, not one:
+        //
+        // 1. a floor PROPORTIONAL to the file it guards;
+        // 2. a DEEP positive anchor from near the END of the production half;
+        // 3. a SENTINEL-COUNT assertion, so the stripper's premise — that there
+        //    is exactly one `#[cfg(test)]` line and the test module is the last
+        //    item — stops being an assumption and becomes a fact under test.
+        //
+        // The floor is 180,000 bytes against a production half measured at
+        // **228,785** — **78.7%, with the margin BELOW the measurement** so
+        // ordinary edits never touch it. 180,000 bytes is reached at line ~3,622,
+        // so a truncating sentinel now has to land in the last fifth of the file
+        // to go unnoticed, and assertion 2 covers that fifth by name. **A
+        // deliberate refactor that removes 21% of this guard's production logic
+        // is a fact worth stating in a commit message BEFORE this number moves.**
         assert!(
-            production.len() >= 40_000,
-            "the production half must be substantially the whole guard. Got {} bytes.",
+            production.len() >= 180_000,
+            "the production half must be substantially the whole guard: the floor is \
+             PROPORTIONAL to it (180,000 against a measured 228,785 bytes, 78.7%, margin \
+             below). A red here means either the `#[cfg(test)]` sentinel matched early and \
+             truncated this control's view, or a fifth of the guard's production logic was \
+             deleted. Do NOT lower the floor to make it pass; state the removal in a commit \
+             message first. Got {} bytes.",
             production.len()
+        );
+        assert!(
+            production.contains("fn forbidden_repo_path"),
+            "the production half must contain `fn forbidden_repo_path`, which sits near its \
+             END (line ~4,592 of 4,613). **This is the DEEP anchor, and it is the one \
+             `fn scan_leading` at line 374 could not be**: a shallow anchor is satisfied by a \
+             view truncated at any point after it, which is what left this control blind to a \
+             stray `#[cfg(test)]` anywhere past line ~778."
+        );
+        assert_eq!(
+            SELF.lines()
+                .filter(|line| line.trim_start() == "#[cfg(test)]")
+                .count(),
+            1,
+            "`policy.rs` must contain EXACTLY ONE `#[cfg(test)]` sentinel line. The stripper \
+             above — and the identical one in `tests/envelope_wrapper_class.rs` — takes \
+             everything above the FIRST such line as the production half, so a SECOND one \
+             anywhere earlier silently truncates both views while every positive control \
+             stays green. **The correct response is to move the test-only item INSIDE the \
+             existing `mod tests` rather than to attribute it in place** — the reason \
+             `GIT_GLOBAL_UNPROBED_OPTS` and `ENVELOPE_ENV_DEFEATING_KEYS` both live there."
         );
 
         for marker in SPAWN_MARKERS {
@@ -6740,6 +6888,202 @@ mod tests {
                  is not a cosmetic disagreement. 1W: {one_word} 2W: {two_word}"
             );
         }
+    }
+
+    #[test]
+    fn every_config_value_opt_really_takes_a_separate_value_on_the_installed_git() {
+        // **`CONFIG_VALUE_OPTS` had the same shape of defect
+        // `GIT_GLOBAL_VALUE_OPTS` had, in a second constant** (`T-19-106`).
+        // `config_key_operand_index` skips a word for every entry here, so a
+        // stale entry makes the guard read the WRONG operand as the config key.
+        // Measured against the built binary before the fix:
+        // `git config --comment core.hooksPath /dev/null` exited **0** with
+        // `/dev/null` read as the key, against its twin
+        // `git config core.hooksPath /dev/null` at exit 2 `hook_bypass_blocked`.
+        // Inert only because git rejects the option — a stale entry for an
+        // option git ACCEPTS is a live bypass.
+        let scratch = tempfile::TempDir::new().unwrap();
+        config_resolution_scratch_repo(scratch.path());
+
+        // --- floor 1: `--comment` is absent BY NAME, and the six measured
+        //     entries are present. The arithmetic: git 2.43.0 classifies exactly
+        //     these six as separate-value flags among the spellings this guard
+        //     models, so six is the measured count and not a round number.
+        assert!(
+            !CONFIG_VALUE_OPTS.contains(&"--comment"),
+            "`--comment` must NOT be in `CONFIG_VALUE_OPTS`. git 2.43.0 answers \
+             ``error: unknown option `comment\'`` — the option does not exist — and the entry \
+             made the guard skip a word and read `/dev/null` as the config key, which was \
+             measured at exit 0 against a twin refused at exit 2 `hook_bypass_blocked`."
+        );
+        assert!(
+            CONFIG_VALUE_OPTS.len() >= 6,
+            "`CONFIG_VALUE_OPTS` must carry at least the six spellings measured as \
+             separate-value flags on this git. RESTORE the entry; do not lower the floor. \
+             Got: {CONFIG_VALUE_OPTS:?}"
+        );
+
+        // --- THE PROBE, AND IT READS GIT\'S OWN CLASSIFICATION RATHER THAN
+        //     INFERRING ONE. Invoked with NO value, `git config <opt>` answers in
+        //     one of exactly three ways, measured:
+        //
+        //       `--file`  -> error: option `file\' requires a value      VALUE-TAKING
+        //       `-f`      -> error: switch `f\' requires a value         VALUE-TAKING
+        //       `--comment` -> error: unknown option `comment\'          DOES NOT EXIST
+        //       `--list`  -> (prints the config)                        TAKES NO VALUE
+        //
+        //     So the two sides of the question are answered by git in its own
+        //     words, and **no per-entry variant value is needed at all** — the
+        //     round-7 pins need variants because their probe has to REACH a verb;
+        //     this one does not. That is stated rather than left implicit.
+        let requires_a_value = |option: &str| -> (bool, bool, String) {
+            let text = git_grammar_probe(scratch.path(), &["config", option]);
+            let trimmed = option.trim_start_matches('-');
+            let unknown = text.contains(&format!("unknown option `{trimmed}\'"));
+            let requires = text.contains(&format!("option `{trimmed}\' requires a value"))
+                || text.contains(&format!("switch `{trimmed}\' requires a value"));
+            (requires, unknown, text)
+        };
+
+        // --- floor 2: the NEGATIVE controls, so a probe that answered the same
+        //     for everything turns this red rather than passing vacuously. One
+        //     control for each of the two ways an entry can be wrong.
+        let (bogus_requires, bogus_unknown, bogus_text) = requires_a_value("--bogus-config-opt");
+        assert!(
+            bogus_unknown && !bogus_requires,
+            "the probe must classify `--bogus-config-opt` as NOT EXISTING. If it does not, it \
+             is not reading git\'s answer and every classification below is vacuous. \
+             Got: {bogus_text}"
+        );
+        let (list_requires, list_unknown, list_text) = requires_a_value("--list");
+        assert!(
+            !list_requires && !list_unknown,
+            "the probe must classify `--list` as an existing flag that takes NO value. Without \
+             this control the pin would pass on a probe that reported `requires a value` for \
+             everything. Got: {list_text}"
+        );
+
+        // --- the pin itself, TWO-SIDED, over EVERY entry.
+        for option in CONFIG_VALUE_OPTS {
+            let (requires, unknown, text) = requires_a_value(option);
+            assert!(
+                !unknown,
+                "the installed git does not have `git config {option}`, which \
+                 `CONFIG_VALUE_OPTS` claims takes a separate value. A stale entry here makes \
+                 `config_key_operand_index` skip a word git does not skip, so the guard reads \
+                 the WRONG operand as the config key — the `--comment` mis-index, measured at \
+                 exit 0 with `/dev/null` read as the key. **Remove the entry.** Probe \
+                 answered: {text}"
+            );
+            assert!(
+                requires,
+                "`git config {option}` must answer `requires a value`, which is git\'s own \
+                 statement that `{option}` consumes a SEPARATE following word. It did not, so \
+                 this entry claims a grammar the installed git does not have and the guard \
+                 skips a word git reads as the config key. Probe answered: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_four_structural_arms_of_leading_git_option_are_pinned_against_the_installed_git() {
+        // **`T-19-106`'s second half: four arms of `leading_git_option` decide a
+        // grammar from STRUCTURE rather than from a constant, and their stated
+        // premises were unpinned in a round whose whole thesis is that a claim
+        // about the callee must be measured.** Two of the four are contradicted
+        // by the installed git. Both are inert in the SAFE direction — they
+        // decide the shape of commands git will not run — and neither arm's
+        // BEHAVIOUR is changed here; this pin records what is, and the docs were
+        // corrected to match it.
+        let scratch = tempfile::TempDir::new().unwrap();
+        config_resolution_scratch_repo(scratch.path());
+
+        // --- arm 2: `--config-env=…` — an ATTACHED long value is self-contained.
+        //     TRUE on this git, and it is what keeps every attached spelling of
+        //     an option the constants have never heard of working.
+        let attached_long = git_grammar_probe(
+            scratch.path(),
+            &["--config-env=probe.key=GSD_MM_GRAMMAR_PROBE", "version"],
+        );
+        assert!(
+            probe_first_line(&attached_long).starts_with("git version"),
+            "an ATTACHED long value must be self-contained: `git --config-env=<k>=<v> version` \
+             must reach the verb. This is arm 2/3's premise and it holds. Got: {attached_long}"
+        );
+
+        // --- arm 3: `-c<rest>` — the doc CLAIMED git's short-option parser
+        //     accepts `-ckey=value` with no space. **It does not.**
+        let attached_short = git_grammar_probe(scratch.path(), &["-cuser.name=x", "version"]);
+        assert!(
+            attached_short.contains("unknown option: -cuser.name=x"),
+            "git 2.43.0 must REJECT `-cuser.name=x`. Arm 3's doc used to claim the opposite. \
+             If this git has started accepting short-option attachment, the arm has become a \
+             LIVE grammar claim rather than an inert one and its doc must be re-measured — \
+             but do NOT change the arm on this pin alone. Got: {attached_short}"
+        );
+
+        // --- deviation-1's arm 4: `-C/tmp` treated as `-C` with an attached
+        //     value. **git rejects that spelling too.**
+        let attached_short_value = git_grammar_probe(scratch.path(), &["-C/tmp", "version"]);
+        assert!(
+            attached_short_value.contains("unknown option: -C/tmp"),
+            "git 2.43.0 must REJECT `-C/tmp`. Arm 4 models it as `-C` with an attached value, \
+             which this git does not accept. The arm is KEPT — without it \
+             `git -C/tmp push --force origin main` regressed from `force_push_blocked` to \
+             `envelope_assertion_failed` and broke a `19-20` pin — and it is inert in the safe \
+             direction. Got: {attached_short_value}"
+        );
+
+        // --- and the BUNDLE half of arm 4's restriction, which is what makes it
+        //     a grammar claim rather than a convenience: a self-contained head
+        //     followed by more characters is a bundle, and git accepts no
+        //     bundling at all.
+        let bundle = git_grammar_probe(scratch.path(), &["-pc", "user.name=x", "version"]);
+        assert!(
+            bundle.contains("unknown option: -pc"),
+            "git 2.43.0 must reject the BUNDLE `-pc`. Arm 4 restricts itself to value-taking \
+             heads precisely so `-pc` does not match it and stays unestablished, which is the \
+             pinned verdict for that line. Got: {bundle}"
+        );
+
+        // --- arm 4's restriction is a ONE-ELEMENT test today, recorded so it is
+        //     not read as more general than it is.
+        let two_char_value_opts: Vec<&&str> = GIT_GLOBAL_VALUE_OPTS
+            .iter()
+            .filter(|option| option.len() == 2)
+            .collect();
+        assert_eq!(
+            two_char_value_opts.len(),
+            2,
+            "`GIT_GLOBAL_VALUE_OPTS` holds exactly TWO entries of length two — `-c` and `-C` — \
+             and `-c` is taken by the earlier arm, so arm 4's \
+             `GIT_GLOBAL_VALUE_OPTS.contains(&head)` check can only ever match `-C`. If this \
+             count changes, arm 4 has silently generalised and its doc must be re-read. \
+             Got: {two_char_value_opts:?}"
+        );
+
+        // --- `-v`, the row `T-19-107` is about: this git ACCEPTS it, and it
+        //     terminates exactly as `--version` does.
+        let dash_v_one = git_grammar_probe(scratch.path(), &["-v"]);
+        let dash_v_two = git_grammar_probe(scratch.path(), &["-v", "XVALUE", "version"]);
+        assert!(
+            probe_first_line(&dash_v_one).starts_with("git version"),
+            "this git ACCEPTS `git -v`. It was refused at `envelope_assertion_failed` while \
+             three places claimed the leading-option rule had ZERO over-refusal cost — that \
+             claim was false by this one row. Got: {dash_v_one}"
+        );
+        assert_eq!(
+            probe_first_line(&dash_v_one),
+            probe_first_line(&dash_v_two),
+            "`-v` must satisfy the TERMINATING arm — a following word changes nothing — which \
+             is why it belongs beside `--version` in `GIT_GLOBAL_SELF_CONTAINED_OPTS` rather \
+             than in the value-taking constant. 1W: {dash_v_one} 2W: {dash_v_two}"
+        );
+        assert!(
+            GIT_GLOBAL_SELF_CONTAINED_OPTS.contains(&"-v"),
+            "`-v` must be in `GIT_GLOBAL_SELF_CONTAINED_OPTS`. Its absence was `T-19-107`: an \
+             accepted spelling silently refused, beside a doc claiming zero cost."
+        );
     }
 
     #[test]

@@ -1423,6 +1423,94 @@ fn the_two_undeliverable_rows_are_recorded_here_and_left_for_19_23_to_pin() {
 }
 
 // ===========================================================================
+// 9b. The two rows above, now MEASURED AGAINST THE RULES and PINNED — appended
+//     by plan 19-23 as two SEPARATE new `#[test]` fns.
+//
+// Each carries the CLAUSE that produced its verdict beside the row, which is
+// what makes it a derivation rather than a transcription. Neither became
+// PERMITTED; had either done so, that would have been a finding about the rules
+// — a carrier that stops being read is the direction `T-19-103` is about — and
+// not a row to pin.
+//
+// They are separate fns rather than folded into the recorder above, and that is
+// load-bearing arithmetic rather than style: turning a failing test green leaves
+// `passed + failed` unchanged, so NEW `#[test]` fns are the only thing that
+// makes this round's gate satisfiable.
+// ===========================================================================
+
+#[test]
+fn after_19_23_the_environment_carrier_the_envelope_did_not_set_is_refused_by_the_new_list_entry() {
+    let repo = in_namespace_repo();
+    let work = repo.path().join("work");
+
+    // ROW 1, MEASURED against the built binary after `19-23`'s rules:
+    // **exit 2 `hook_bypass_blocked`**, walk EMPTY. Exit 0 before.
+    //
+    // **THE CLAUSE THAT PRODUCED IT**: `ENVELOPE_ENV_KEYS` gained
+    // `GIT_CONFIG_NOSYSTEM`, so `tampers_with_envelope_env` now covers the
+    // assignment prefix and the refusal is the one every envelope-key tamper
+    // earns. Nothing about `T-19-103`'s confinement clause is involved — this row
+    // is `T-19-104`'s class, and its identifier says so.
+    //
+    // **The DEFEAT is real and the HARM is INERT**, and this pin does not claim
+    // otherwise: `cred::write_gitconfig` points BOTH `GIT_CONFIG_GLOBAL` and
+    // `GIT_CONFIG_SYSTEM` at the same helper-free file, so suppressing the system
+    // read removes a deny the global pointer duplicates. That duplication is now
+    // itself under test in `policy.rs`'s
+    // `every_key_that_defeats_the_envelope_is_covered_and_its_defeat_is_measured`,
+    // so a later change cannot spend the inertness silently. **It is not called a
+    // bypass here or anywhere.**
+    refuses_in(
+        Some(&work),
+        &format!("GIT_CONFIG_NOSYSTEM=1 git {IN_NAMESPACE_PUSH}"),
+        policy::REASON_HOOK_BYPASS_BLOCKED,
+        "`19-22` recorded this row at exit 0 and left its post-fix verdict to `19-23` as a \
+         DESIGN decision, because the defeat is measured and the harm is inert. `19-23` \
+         decided it: the entry goes on the list, the list should be complete, and the cost is \
+         one more bare word a driven run must quote. Measured after the rules at exit 2 \
+         `hook_bypass_blocked` and pinned at what was measured.",
+    );
+}
+
+#[test]
+fn after_19_23_the_indirection_carrier_on_a_force_base_keeps_its_verdict_and_moves_its_identifier() {
+    // ROW 2, MEASURED against the built binary after `19-23`'s rules:
+    // **exit 2 `envelope_assertion_failed`**, walk EMPTY. It was exit 2
+    // `force_push_blocked` before — **the VERDICT did not move and the IDENTIFIER
+    // did**, which is exactly the outcome `19-22` recorded as underivable and
+    // `19-23-PLAN.md:668` predicted.
+    //
+    // **THE CLAUSE THAT PRODUCED IT**: `scan_leading`'s confinement clause is
+    // raised at the FIRST assignment the loop cannot bound, before any verb is
+    // classified, so the carrier is read before the verb. The refusal therefore
+    // names the mechanism that produced it (D-24) rather than the one the verb
+    // would have earned.
+    //
+    // **CARRIER BEFORE VERB is a decision, recorded here rather than inferred
+    // from an edit.** An unbounded config assignment means the guard cannot
+    // establish what configuration the command will run under, so every
+    // downstream classification — `force_push_blocked` included — describes a
+    // command whose behaviour the guard cannot bound. Naming `force_push_blocked`
+    // would name a specific hazard while the guard is in fact unable to see the
+    // command at all.
+    //
+    // This is the same measurement that corrected the five-row control in section
+    // 0, whose assertion of `force_push_blocked` `19-22` had demoted in prose and
+    // implemented nowhere.
+    refuses(
+        "git -c include.path=/tmp/evil.cfg push --force origin main",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+        "`19-22` recorded this row at `force_push_blocked` and left its identifier to `19-23` \
+         to measure, because which clause a line earns is a clause-ORDERING outcome and not \
+         something a pre-fix corpus can derive. Measured after the rules at \
+         `envelope_assertion_failed` and pinned at what was measured. A red here means either \
+         the clause stopped being raised at the first unbounded assignment, or it moved into a \
+         second pass over the leading tokens — which would also turn section 7's two ordering \
+         pins into the same identifier.",
+    );
+}
+
+// ===========================================================================
 // 10. The `T-19-86` PERSISTED-ALIAS ARM — RECORDED, and explicitly NOT closing
 //     anything
 // ===========================================================================
