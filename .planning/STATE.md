@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
-stopped_at: Completed 19-29-PLAN.md — round 11's rules; /gsd-secure-phase 19 NOT cleared
-last_updated: "2026-09-04T20:40:24.908Z"
+stopped_at: Completed 19-30-PLAN.md — round 12's CORPUS, RED handoff for 19-31 (1859 = 1820 + 39); /gsd-secure-phase 19 NOT cleared
+last_updated: "2026-09-04T22:39:00.949Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: 4e03c6d8f8c0da6f3fc2ec817b05be6d03922267
+state_head: 0607fde57e288a3964c95a6f73839278af45c897
 progress:
   total_phases: 10
   completed_phases: 6
-  total_plans: 108
-  completed_plans: 108
+  total_plans: 110
+  completed_plans: 109
   percent: 60
 ---
 
@@ -231,6 +231,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 19 P27 | one session | 4 tasks | 7 files |
 | Phase 19 P28 | 1 session | 3 tasks | 4 files |
 | Phase 19 P29 | one session | 4 tasks | 11 files |
+| Phase 19 P30 | 1 session | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -315,6 +316,8 @@ Recent decisions affecting current work:
 - [Phase 19]: 19-29: two protected paths, two boundary KINDS — the envelope directory as a PREFIX, the guard's own binary as an EXACT PATH
 - [Phase 19]: 19-29: the credential control's criterion is 'git credential fill' failing closed, never 'git config --get-all', which still lists the helper
 - [Phase 19]: 19-29: the ledger size bound is DEADLINE-derived and fails CLOSED; a cap-derived bound would be one the agent steers
+- [Phase 19]: 19-30: the option-attachment boundary is /-anchored substrings of a LITERAL word, never a list of attachment characters (D-08 one level over)
+- [Phase 19]: 19-30: containment is of the NORMALISED STRING, not the index — lexical_absolute_components strips leading ./ before testing for /
 
 ### Pending Todos
 
@@ -377,8 +380,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-04T20:40:24.567Z
-Stopped at: Completed 19-29-PLAN.md — round 11's rules; /gsd-secure-phase 19 NOT cleared
+Last session: 2026-09-04T22:38:53.571Z
+Stopped at: Completed 19-30-PLAN.md — round 12's CORPUS, RED handoff for 19-31 (1859 = 1820 + 39); /gsd-secure-phase 19 NOT cleared
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
 Resume file: None
