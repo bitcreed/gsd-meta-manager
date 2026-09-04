@@ -163,9 +163,43 @@ const ENVELOPE_SUBDIR: &str = "envelope";
 /// turns a refusal into an allow.
 ///
 /// The residual limit, named honestly: a party who already controls the
-/// environment the TUI starts in can relocate the envelope. That party can
-/// equally unset `GIT_CONFIG_COUNT`, which is D-09's stated ceiling, so this
-/// override does not lower a boundary that was standing.
+/// environment the TUI starts in can relocate the envelope. **That party can
+/// equally unset `GIT_CONFIG_COUNT`, and this override reaches no further than
+/// that** — audits 9 and 10 both measured this variable INERT as a guard lever
+/// from inside a Bash command (`env -u GSD_MM_ENVELOPE_ROOT ls` is exit 0 and is
+/// not a `hook_bypass_blocked` key), and policy is compiled in rather than read
+/// from here, so there is no value of it that turns a refusal into an allow.
+///
+/// **THE ARGUMENT THIS PARAGRAPH USED TO MAKE IS CORRECTED (plan 19-29), AND
+/// THE CORRECTION IS ABOUT D-09'S CEILING RATHER THAN ABOUT THIS VARIABLE.** It
+/// concluded that the override *"does not lower a boundary that was standing"*
+/// **on the ground that** the same party could equally unset `GIT_CONFIG_COUNT`,
+/// *"which is D-09's stated ceiling"*. The conclusion still holds for the reason
+/// given above; **the ground it rested on does not, because the environment
+/// route is not the ceiling.** Two routes lower a standing boundary without
+/// controlling the environment the TUI starts in at all:
+///
+/// * **the FILE route** — the hook stubs, the ledger and the generated git
+///   config are ordinary files under this root, and `cp /bin/true
+///   <hooks>/pre-push` removed layer 3 at exit 0 without touching
+///   `GIT_CONFIG_COUNT`, after which a force push MOVED a bare remote's `main`;
+/// * **the BINARY route** (`T-19-116`) — the file the hook stubs and the guard
+///   registration both exec sits OUTSIDE this root, and replacing it removes
+///   layer 3 AND layer 2 in one call the guard permitted. Meanwhile
+///   `env -u GIT_CONFIG_COUNT git push --force origin main`, the route the old
+///   argument named, is REFUSED at `hook_bypass_blocked`. **The narrative named
+///   the route that is caught while the routes that work were caught by
+///   nothing** — the same shape `super::cred::hooks_path_env`'s own ceiling
+///   paragraph already records, and this was its last uncorrected home. Since
+///   plan 19-29 both routes are NARROWED by
+///   `super::policy::protected_carrier_named` at their absolute literal
+///   spellings, and **narrowed is all they are.**
+///
+/// Plan 19-27 read this paragraph, reached the same conclusion and correctly
+/// DECLINED to edit it because `mod.rs` was outside that plan's stated file set;
+/// audit 10 endorsed the decline and named the paragraph for whoever picked it
+/// up. **Nothing about `GSD_MM_ENVELOPE_ROOT`'s own value or behaviour changes
+/// here** — this correction is doc-only.
 pub const ENVELOPE_ROOT_ENV: &str = "GSD_MM_ENVELOPE_ROOT";
 
 /// The root every alias's envelope directory hangs from, or `None`.

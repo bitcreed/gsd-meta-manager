@@ -50,6 +50,69 @@ const LEDGER_FILE: &str = "pr-ledger.ndjson";
 /// module doc.
 const WINDOW_SECS: i64 = 24 * 60 * 60;
 
+/// The largest ledger [`record_and_check_in`] will read before refusing
+/// (`T-19-117`).
+///
+/// # WHY A BOUND AT ALL, AND WHY IT REFUSES RATHER THAN READS LESS
+///
+/// [`record_and_check_in`] reads this file WHOLE and [`tally`] walks every line,
+/// on the guard's registered critical path against
+/// [`super::hooks::GUARD_TIMEOUT_SECS`]. **The file is append-only and a command
+/// the guard PERMITS can inflate it** — an append whose target arrives after a
+/// redirection operator was exit 0 before plan 19-29, and is exit 0 still at
+/// every spelling that rule gets no rule for. Measured on this machine:
+///
+/// ```text
+///   ledger bytes     `gh pr create`     `git push --force`
+///   0                        49 ms                  44 ms
+///   1,010,000                96 ms                  47 ms
+///   20,200,000            1,008 ms                  46 ms
+///   202,000,000           7,900 ms                  46 ms      <- past a 5 s deadline
+/// ```
+///
+/// **The forge/non-forge split is the shape of the finding**: the cost falls only
+/// on commands that reach this function, so the remedy belongs here and not in
+/// the guard at large.
+///
+/// **IT MUST FAIL CLOSED, AND A TAIL READ IS THE WRONG SHAPE.** [`tally`]'s own
+/// doc states the invariant — *"a line this function cannot parse is COUNTED,
+/// not skipped … under-counting is the one failure this file exists to
+/// prevent"*. A tail read, a line cap and sampling all UNDER-COUNT by
+/// construction, which violates that invariant **in the direction that
+/// permits**. Refusing preserves it: the guard says it cannot establish the
+/// count rather than establishing a smaller one.
+///
+/// **The contrast is three functions below.** [`ends_mid_line`] already refuses a
+/// whole-file read for a one-byte question, on exactly this reasoning — *"a
+/// whole-file read to answer a one-byte question is the sort of thing that turns
+/// a guard into a hang"* — and the read beneath it was unbounded until now.
+///
+/// # THE DERIVATION: FROM THE DEADLINE, NEVER FROM THE CAPS
+///
+/// From the curve above, [`tally`] costs roughly **41 ms per megabyte**. At
+/// **8 MiB** that is about **340 ms**, under **7%** of a five-second deadline,
+/// which leaves the rest of the budget for the rest of the guard.
+///
+/// **A CAP-DERIVED BOUND WOULD BE A BOUND THE AGENT STEERS.** `pr_cap_per_24h`
+/// and `pr_cap_per_run` are UNCLAMPED and are read from a file the driven agent
+/// can write (`C-15`), so deriving from them would hand the value to the party
+/// the value bounds. They are not clamped here and this constant is not
+/// computed from them. For SCALE rather than for derivation: at the default cap
+/// of three per 24 hours and about 101 bytes per entry, 8 MiB is roughly
+/// seventy-five years of maximal legitimate appending — which is why a
+/// long-lived envelope does not reach it and a deliberately inflated one does.
+///
+/// # THE OVER-REFUSAL, DISCLOSED FROM BOTH SIDES
+///
+/// A ledger past this bound refuses **the forge commands the cap governs** —
+/// `gh pr create` and its siblings — and **nothing else**: every command that
+/// does not reach this function is unaffected, including every `git` command and
+/// every ordinary shell call. The refusal names the file and says it can be
+/// archived, so it is one a human or an agent can act on (AR-19-11). A ledger
+/// just UNDER the bound still permits **and still counts**, which is the half
+/// that keeps this a size bound rather than a disarmed cap.
+const MAX_LEDGER_BYTES: u64 = 8 * 1024 * 1024;
+
 /// One recorded pull-request attempt.
 ///
 /// Serialised as one JSON object per line. The field names are the on-disk
@@ -214,6 +277,38 @@ pub fn record_and_check_in(
              computed for it and the attempt is refused rather than guessed at"
         )
     })?;
+
+    // **THE SIZE BOUND, BEFORE THE APPEND AND BEFORE THE READ** (`T-19-117`).
+    // A ledger this large is one whose count cannot be established inside the
+    // guard's registered deadline, so the guard says so rather than establishing
+    // a smaller count from a partial read — see `MAX_LEDGER_BYTES` for the
+    // derivation, why it refuses rather than reads less, and the over-refusal
+    // disclosed from both sides. The check is a `stat`, not a read: one syscall
+    // against a file that may be hundreds of megabytes, which is the same
+    // reasoning `ends_mid_line` below is built on. A file that cannot be stat'd
+    // is not a file this check can refuse on — the append that follows reports
+    // the real error with the real context rather than this probe guessing.
+    if let Ok(size) = std::fs::metadata(&path).map(|meta| meta.len()) {
+        if size > MAX_LEDGER_BYTES {
+            // An `Err` rather than a `CapVerdict::Refuse`, and the distinction is
+            // D-24: `CapVerdict::Refuse` carries `ParkReason::PrCapExceeded`,
+            // which names a cap that FIRED — and this ledger was never tallied.
+            // The guard's `Err` arm parks at
+            // `ParkReason::EnvelopeAssertionFailed`, the general unresolvable
+            // identifier the sibling refusals already carry, which is the honest
+            // attribution: an error reaching a verdict is not a verdict.
+            return Err(anyhow!(
+                "the pull-request ledger at {} is {size} bytes, past the {MAX_LEDGER_BYTES}-byte \
+                 bound this guard can count inside its registered {}-second deadline, so how \
+                 many pull requests this run has already opened cannot be established and the \
+                 attempt is refused rather than counted from a partial read. To proceed: \
+                 archive or remove that file — it is the envelope's own record and no other \
+                 command is affected by this refusal",
+                path.display(),
+                super::hooks::GUARD_TIMEOUT_SECS
+            ));
+        }
+    }
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)

@@ -236,15 +236,67 @@ pub fn not_probed() -> ProtectionState {
 /// now holds the result at a token cap, so legibility here is a control rather
 /// than an intention — otherwise the text regrows one well-meaning
 /// clarification at a time.
+///
+/// ## Plan 19-29 — the FIRST `Guaranteed` clause, repaired the way the cap
+/// clause one clause over was
+///
+/// **It read** *"This run cannot reach your ambient git credentials or SSH
+/// agent: the socket is removed, not emptied, and global and system git config
+/// is a generated file naming no credential helper."* **Both halves were
+/// falsified by measurement** (`T-19-118`): appending `[credential] helper =
+/// store` to the generated `gitconfig` through a REDIRECTION was exit 0 through
+/// the guard, after which `git credential fill` returned the ambient secret. A
+/// generated file that names no helper is a fact about the file **as generated**,
+/// and the clause stated it as a fact about the run.
+///
+/// **What changed is the KIND of statement, exactly as `19-27`'s repair one
+/// clause over did.** The new text states the STARTING STATE — what the run is
+/// given — and stops. *"As started"* is the whole of the repair: it is
+/// mechanically true, it covers what the envelope establishes, and **it claims
+/// nothing about what a command issued during the run can change**, which is
+/// layer 2's business and is disclosed in part 3 rather than promised here.
+///
+/// **It enumerates NOTHING, deliberately.** The residue behind this clause is
+/// seven directions over two word classes and two protected paths, plus D-09's
+/// stated ceiling, plus a later argv-visible `-c credential.helper=…` on the
+/// same line. **A clause that listed directions and stopped would imply a
+/// completeness the measurement denies** — `T-19-107`'s registered shape in a
+/// shorter sentence.
+///
+/// **`runs no credential helper` is a measured phrase, not a stylistic one.**
+/// Since `19-29` the envelope injects a `credential.helper` pair with an EMPTY
+/// value through the same `GIT_CONFIG_COUNT` triplet that carries
+/// `core.hooksPath`. With it injected, `git config --get-all credential.helper`
+/// **still prints the user's helper** and then an empty line, at exit 0, while
+/// `git credential fill` fails closed — git's empty value resets the helper list
+/// that RUNS, not the list the config query ENUMERATES. So *"names no helper"*
+/// would now be false where *"runs no credential helper"* is true, and the
+/// criterion behind the wording is the call that names the harm.
+///
+/// **The arithmetic, so a future editor can audit it rather than guess.** The
+/// constant measured **213** whitespace tokens of a **215** cap before this
+/// repair, so it had TWO tokens of headroom and **the cap was not raised.** The
+/// `Guaranteed` clause went 31 tokens → 28 by dropping a CLAIM (*"not emptied"*,
+/// and the naming of both config scopes), and the `Not guaranteed` clause went
+/// 23 → 24 by GENERALISING a LIMITATION rather than removing one: *"the hook
+/// stubs and ledger the envelope installed"* became *"the files and the binary
+/// this envelope runs on"*, which is one token longer and covers a route the old
+/// wording did not — `T-19-116`, the binary the stubs and the guard registration
+/// both exec. **Result: 211 tokens.** No residual disclosure was dropped, and
+/// nothing was shortened by softening.
+///
+/// **The three pinned phrases keep their order and none is wrapped through.**
+/// `cannot reach your ambient git credentials` sits INSIDE the repaired clause
+/// and survives verbatim, first and on one line.
 pub const SECTION_ENVELOPE: &str = "== What this envelope guarantees, and what it does not ==\n\
     \n\
     Mechanism bounds this run's reach and pushes; a determined agent defeats\n\
     everything below the remote.\n\
     \n\
     Guaranteed:\n\
-    \x20\x20\x20\x20This run cannot reach your ambient git credentials or SSH agent: the\n\
-    \x20\x20\x20\x20socket is removed, not emptied, and global and system git config is a\n\
-    \x20\x20\x20\x20generated file naming no credential helper.\n\
+    \x20\x20\x20\x20As started, this run cannot reach your ambient git credentials or\n\
+    \x20\x20\x20\x20SSH agent: the socket is removed and the git config it is given\n\
+    \x20\x20\x20\x20runs no credential helper.\n\
     \x20\x20\x20\x20A push through the driven process tree passes the pre-push hook,\n\
     \x20\x20\x20\x20judging the refs git hands it, not the command line asked about.\n\
     \x20\x20\x20\x20The pull-request count lives in\n\
@@ -252,8 +304,9 @@ pub const SECTION_ENVELOPE: &str = "== What this envelope guarantees, and what i
     \n\
     Not guaranteed: client-side hooks, tool denies and env-injected git config\n\
     are all defeatable by an agent that can spawn an unsupervised shell.\n\
-    \x20\x20\x20\x20An agent that unsets GIT_CONFIG_COUNT in a subshell, or rewrites the\n\
-    \x20\x20\x20\x20hook stubs and ledger the envelope installed, is past the last layer.\n\
+    \x20\x20\x20\x20An agent that unsets GIT_CONFIG_COUNT in a subshell, or rewrites\n\
+    \x20\x20\x20\x20the files and the binary this envelope runs on, is past the last\n\
+    \x20\x20\x20\x20layer.\n\
     \x20\x20\x20\x20An agent that runs the askpass responder itself reads the token.\n\
     \x20\x20\x20\x20A settings file the agent's own CLI silently ignores leaves that cap\n\
     \x20\x20\x20\x20unenforced: no git hook observes a pull request.\n\

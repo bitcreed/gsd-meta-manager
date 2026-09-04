@@ -174,11 +174,44 @@ fn a_credential_helper_the_user_really_has_stops_being_resolvable_under_the_enve
         &fx.work,
         &["config", "--get", "credential.helper"],
     );
+
+    // **THE CRITERION IS THE VALUE THAT WOULD RUN, NOT WHETHER THE QUERY
+    // SUCCEEDS — CORRECTED BY PLAN 19-29, AND THE CORRECTION IS MEASURED.**
+    //
+    // This row used to assert `!under.status.success()`, which held while the
+    // envelope named no `credential.helper` anywhere. Since `19-29` the envelope
+    // injects a `credential.helper` pair with an EMPTY value through the same
+    // `GIT_CONFIG_COUNT` triplet that carries `core.hooksPath` — **an empty value
+    // RESETS the helper list that RUNS**, and env-injected pairs are applied
+    // after every config file, so it defends the generated `gitconfig` against
+    // every write spelling because it reads no command line at all.
+    //
+    // **The query therefore now SUCCEEDS and prints an empty line**, and a gate
+    // built on its exit status would report a control that got STRONGER as a
+    // control that broke. Measured, with the user's `store` helper in place:
+    //
+    // ```text
+    //   without the pair   git config --get credential.helper -> exit 1
+    //                      git credential fill                -> the user's secret
+    //   with the pair      git config --get credential.helper -> exit 0, empty line
+    //                      git credential fill                -> nothing
+    // ```
+    //
+    // So the assertion is on the EFFECTIVE VALUE: whatever the query answers,
+    // what git would run must be empty, and in particular must not be the
+    // `store` helper the control above proved the "user" really has.
+    let resolved = String::from_utf8_lossy(&under.stdout);
     assert!(
-        !under.status.success(),
-        "the envelope still resolves a credential helper ({:?}); the user's \
-         keychain, credential store and gh helper are all one helper key away (D-16)",
-        String::from_utf8_lossy(&under.stdout)
+        resolved.trim().is_empty(),
+        "the envelope still resolves a credential helper that would RUN ({resolved:?}); the \
+         user's keychain, credential store and gh helper are all one helper key away (D-16). \
+         An EMPTY value is the reset and is correct here; a NAMED helper is the failure."
+    );
+    assert!(
+        !resolved.contains("store"),
+        "the envelope must not resolve the user's own `store` helper ({resolved:?}). The \
+         control above proved that helper is genuinely reachable without the envelope, which \
+         is what makes this assertion load-bearing rather than vacuous."
     );
 }
 

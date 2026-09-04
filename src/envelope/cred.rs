@@ -331,14 +331,39 @@ fn config_env(pairs: &[(&str, &OsStr)]) -> Vec<(OsString, OsString)> {
 ///   now registered three times;
 /// * **the FILE CARRIERS this envelope's own controls live in** — the PR-cap
 ///   ledger, both hook stubs, this generated `gitconfig` and `askpass`, the `gh`
-///   directory and the settings file. Since plan 19-27 a command naming one of
-///   them by an ABSOLUTE LITERAL operand is refused, and **the four directions
-///   above stay open**: a redirection target, an expansion-borne operand, a
-///   symlink and a relative path, the last two narrowed rather than closed. Every
-///   one of these files must be readable, writable or executable by the same uid
+///   directory and the settings file — **and, since plan 19-29, THE BINARY the
+///   hook stubs and the guard registration both exec** (`T-19-116`), which sits
+///   OUTSIDE the envelope root and whose replacement removes layer 3 AND layer 2
+///   in one call. A command naming any of them by an ABSOLUTE LITERAL word is
+///   refused, **in an OPERAND since plan 19-27 and in a pathname REDIRECTION
+///   TARGET since plan 19-29** — the directory as a PREFIX and the binary as an
+///   EXACT PATH, because that directory is shared with everything else the user
+///   installed.
+///
+///   **What stays open is stated as a CONDITION rather than as a list, because a
+///   list that stops implies a completeness the measurement denies.** The rule is
+///   silent about a word the SHELL MAY REWRITE, about a word that IS NOT
+///   ABSOLUTE, and about a word that reaches a protected path ONLY THROUGH A
+///   LINK — **and it is silent about all three in EITHER word class and over BOTH
+///   paths.** Seven spellings are measured as instances: a redirection target
+///   that is any of the six below, an expansion-borne word, a symlink, a relative
+///   word, a tilde, a glob and a brace list. **Direction (i) is NARROWED to those
+///   seven and is NOT closed** — it stops being a direction of its own and
+///   becomes a second WORD CLASS the other six apply over; the symlink and
+///   relative directions keep their measured partial mitigations over the
+///   DIRECTORY and have none over the binary; and the tilde, glob and brace
+///   spellings get NO rule, because a tilde needs the environment and a glob
+///   needs the filesystem, both of which the guard is forbidden at guard time.
+///   **NOT ONE of the seven has an automated control, and none is handed to a
+///   pin, a schedule or a version witness.** Every one of these files must be
+///   readable, writable or executable by the same uid
 ///   the driven process runs as — git must exec the hooks, the agent CLI must
-///   read the settings and the guard must append the ledger — so moving them out
-///   of reach is not available on a single-uid model;
+///   read the settings and the guard must append the ledger, and the binary must
+///   be executable or nothing runs at all — so moving them out
+///   of reach is not available on a single-uid model. **The credential half of
+///   the generated `gitconfig` is answered from a different direction entirely,
+///   by the empty `credential.helper` pair this triplet injects, which reads no
+///   command line and therefore covers all seven spellings; see below.**;
 /// * a future git that adds a THIRD indirection section;
 /// * a future git that re-parses a SECOND config value as a git command line.
 ///
@@ -353,8 +378,67 @@ fn config_env(pairs: &[(&str, &OsStr)]) -> Vec<(OsString, OsString)> {
 /// **The closures above are client-side and are not guarantees either.** Neither
 /// the denials nor this injection is a guarantee; server-side branch protection
 /// is the only boundary that does not depend on the agent's cooperation.
+///
+/// # THE SECOND PAIR: AN EMPTY `credential.helper`, AND WHY IT IS HERE
+///
+/// This triplet carries a second pair naming `credential.helper` with an **EMPTY
+/// VALUE**, added through the same [`config_env`] builder so the count stays
+/// derived from the pairs rather than written by hand. **An empty value RESETS
+/// the helper list**, and env-injected pairs are applied after every config
+/// file, so nothing a file names survives it.
+///
+/// **WHY IT IS A MECHANISM CONTROL RATHER THAN A PATH RULE, WHICH IS THE WHOLE
+/// POINT OF IT.** [`super::policy::protected_carrier_named`] refuses a command
+/// that NAMES a protected path, and it is silent in seven directions. **This pair
+/// reads no command line at all**, so it defends the credential half of the
+/// generated `gitconfig` against EVERY write spelling — redirection, tilde,
+/// glob, brace, expansion-borne, relative and symlinked alike. **That reason does
+/// not depend on any path rule landing**, which is what makes it strictly wider
+/// than one rather than a duplicate of one.
+///
+/// **THE CRITERION IS `git credential fill` FAILING CLOSED, AND NEVER
+/// `git config --get-all credential.helper`. The distinction is MEASURED rather
+/// than stylistic:**
+///
+/// ```text
+///                             --get-all credential.helper        credential fill
+/// no injected pair            `store`               exit 0       exit 0, secret PRESENT
+/// EMPTY-helper pair injected  `store`, then an      exit 0       exit 128, secret ABSENT
+///                             EMPTY line
+/// ```
+///
+/// **The config query still LISTS the helper while the fill fails closed** —
+/// git's empty value resets the helper list that RUNS, not the list the query
+/// ENUMERATES. A gate built on `--get-all` would report this working control as
+/// broken, which is the false negative the check that found it exists to
+/// prevent. The criterion is the call that names the harm.
+///
+/// **WHAT IT DOES NOT COVER, at the same weight:**
+///
+/// * an agent that unsets `GIT_CONFIG_COUNT`, which is D-09's stated ceiling and
+///   is already disclosed above and in `SECTION_ENVELOPE`;
+/// * **a later `-c credential.helper=<something>` on the same command line,
+///   which OVERRIDES the reset and brings the secret back.** That is a BOUNDED
+///   residue rather than a reason to decline the control, and the bound is
+///   stated rather than assumed: **that spelling is ARGV-VISIBLE and is already
+///   governed** by [`super::policy::scan_leading`]'s leading-option region and
+///   layer 2's whole grammar — unlike every write spelling, which is not.
+///
+/// **THE MEASURED COST.** `GIT_ASKPASS` is UNTOUCHED, so the envelope's own
+/// token channel still answers; `gh` is unaffected, because this is a git key
+/// and `GH_CONFIG_DIR` closes gh's helper from the other side.
+///
+/// `T-19-118` is recorded beside [`write_gitconfig`]'s own claim, which this
+/// pair repairs the RUNNING half of. **`AR-19-04` is NOT un-accepted** — its
+/// rationale (*"the envelope regenerates it at each run start"*) covers tampering
+/// between runs and says nothing about a write DURING one, and that gap is
+/// recorded rather than resolved here. **Whether this closes `T-19-23` is a
+/// judgement for the next audit and is not claimed here.**
 pub fn hooks_path_env(hooks_dir: &Path) -> Vec<(OsString, OsString)> {
-    config_env(&[("core.hooksPath", hooks_dir.as_os_str())])
+    config_env(&[
+        ("core.hooksPath", hooks_dir.as_os_str()),
+        ("credential.helper", OsStr::new("")),
+    ])
 }
 
 /// Write `<envelope_dir>/gitconfig` for `alias`, returning its path.
@@ -375,6 +459,32 @@ pub fn hooks_path_env(hooks_dir: &Path) -> Vec<(OsString, OsString)> {
 ///
 /// — because git resolves `credential.helper` from system and global config,
 /// and there is now no system or global config that mentions one.
+///
+/// # `T-19-118` — THAT CLAIM IS ABOUT THE FILE AS GENERATED, NOT ABOUT THE RUN
+///
+/// **Measured, and it is the reason [`hooks_path_env`] carries a second pair.**
+/// The three routes above are out of reach *as this function leaves the file*.
+/// They are not out of reach for the duration of the run: appending
+/// `[credential]\n\thelper = store\n` to this file was exit 0 through the guard —
+/// the path arrived as a REDIRECTION TARGET, which rule (a) could not then see —
+/// after which `git credential fill` returned the ambient secret. `T-19-118`,
+/// `high`.
+///
+/// Since plan 19-29 that write is answered from **two** directions, and neither
+/// alone is enough: the redirection spelling naming this path is now refused by
+/// [`super::policy::protected_carrier_named`], which is NARROWING and leaves six
+/// spellings open; and **[`hooks_path_env`] injects an empty
+/// `credential.helper`, which reads no command line and so resets the helper list
+/// that RUNS whatever any spelling manages to write into this file.** The
+/// criterion for the second is `git credential fill` failing closed, never
+/// `git config --get-all credential.helper`, which still lists the helper — the
+/// full measurement is on [`hooks_path_env`].
+///
+/// **`AR-19-04` is NOT un-accepted by any of this**: it accepts TAMPERING with
+/// this file at `medium` on the ground that the envelope regenerates it at each
+/// run start, which says nothing about credential REACHABILITY during one. That
+/// reasoning gap is recorded rather than resolved. **Whether `T-19-23` is closed
+/// by the repair is the next audit's judgement and is not claimed here.**
 pub fn write_gitconfig(alias: &str, name: &str, email: &str) -> anyhow::Result<PathBuf> {
     let root = super::envelope_root().ok_or_else(|| {
         anyhow!(
@@ -940,13 +1050,23 @@ mod tests {
         (tmp, envelope, project)
     }
 
+    /// **UPDATED BY PLAN 19-29, and it is that plan's one edit to an existing
+    /// assertion in this file.** It was
+    /// `the_triplet_names_the_count_the_key_and_the_directory` and pinned
+    /// `hooks_path_env`'s output as EXACTLY three entries at count `1`. Since
+    /// `19-29` the injection carries a SECOND pair — `credential.helper` with an
+    /// EMPTY value — added through the same `config_env` builder rather than at a
+    /// second construction site, so the count is `2` and there are five entries.
+    /// The pin is widened rather than relaxed: it still asserts the WHOLE vector
+    /// exactly, so a third pair added without updating this row is still a build
+    /// failure, and the count is still asserted against the pairs.
     #[test]
-    fn the_triplet_names_the_count_the_key_and_the_directory() {
+    fn the_injected_pairs_name_the_count_the_keys_and_their_values() {
         let env = hooks_path_env(Path::new("/data/envelope/demo/hooks"));
         assert_eq!(
             env,
             vec![
-                (OsString::from("GIT_CONFIG_COUNT"), OsString::from("1")),
+                (OsString::from("GIT_CONFIG_COUNT"), OsString::from("2")),
                 (
                     OsString::from("GIT_CONFIG_KEY_0"),
                     OsString::from("core.hooksPath")
@@ -955,6 +1075,16 @@ mod tests {
                     OsString::from("GIT_CONFIG_VALUE_0"),
                     OsString::from("/data/envelope/demo/hooks")
                 ),
+                (
+                    OsString::from("GIT_CONFIG_KEY_1"),
+                    OsString::from("credential.helper")
+                ),
+                // **EMPTY, and the emptiness is the mechanism rather than a
+                // placeholder.** An empty value RESETS git's helper list, and
+                // env-injected pairs are applied after every config file — so
+                // nothing a file names survives it. A non-empty value here would
+                // NAME a helper to run, which is the opposite of the control.
+                (OsString::from("GIT_CONFIG_VALUE_1"), OsString::from("")),
             ]
         );
     }

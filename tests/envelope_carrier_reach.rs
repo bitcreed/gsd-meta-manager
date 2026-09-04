@@ -1847,7 +1847,30 @@ fn time_guard(root: &Path, command: &str) -> (u128, i32) {
 }
 
 #[test]
-fn t_19_117_the_ledgers_size_is_unbounded_work_on_the_guards_critical_path() {
+fn after_19_29_t_19_117s_unbounded_work_is_bounded_and_the_forge_split_is_unchanged() {
+    // **RENAMED AND RE-AIMED BY PLAN 19-29, AND THE REASON IS THAT THIS ROW AND
+    // THE FIX ARE MUTUALLY EXCLUSIVE BY CONSTRUCTION.**
+    //
+    // `19-28` wrote this as `t_19_117_the_ledgers_size_is_unbounded_work_on_the_
+    // guards_critical_path` and asserted, in the present tense, that a
+    // 202,000,000-byte ledger pushes `gh pr create` PAST the guard's registered
+    // deadline. **That is the harm.** `19-28` also wrote
+    // `after_19_29_a_ledger_past_the_size_bound_refuses_while_one_just_under_it_
+    // still_counts` in this same file, requiring the bound to sit inside
+    // `(1 MiB, 24 MiB)`. **No constant satisfies both**: any bound in that
+    // interval refuses a 193 MiB ledger before the read, so the harm cannot
+    // still cross the deadline once the fix it demands has landed. One of the
+    // two had to move the moment the bound existed, and the one that moves is
+    // the one whose claim the fix falsified.
+    //
+    // **NOTHING MEASURED IS DELETED.** The curve below is still driven and still
+    // printed, the forge/non-forge split is still asserted, and `19-28`'s base
+    // reading is kept verbatim in the comment as the BEFORE. What changed is the
+    // headline claim: from *the forge cost runs past the deadline* to *past the
+    // bound the guard REFUSES instead of running past the deadline, and the
+    // refusal falls only on the commands the cap governs.* `19-28`'s own failure
+    // text anticipated this — *"If this does not reproduce, RECORD the measured
+    // curve and report it rather than asserting audit 10's number."*
     // **ONE PERSISTENT ROOT PER INFLATION LEVEL — a fresh root per ROW would
     // destroy the measurement**, which is the one place this file's own
     // fresh-root discipline is deliberately suspended, with the reason stated.
@@ -1897,40 +1920,49 @@ fn t_19_117_the_ledgers_size_is_unbounded_work_on_the_guards_critical_path() {
     }
     println!("T-19-117 LATENCY CURVE (in-process `guard_in`):\n{}", curve.join("\n"));
 
-    // -- **THE ASSERTION: the largest level's FORGE cost exceeds the guard's own
-    //    registered deadline, while a NON-FORGE command at the same level does
-    //    not.** Both halves are needed: without the second, the row proves only
-    //    that a big file is slow.
+    // -- **THE ASSERTION, POST-FIX.** At this plan's base, a 202,000,000-byte
+    //    ledger cost `gh pr create --title x` **7,900 ms against a 5,000 ms
+    //    registered deadline**. After `19-29`'s bound the same ledger is REFUSED
+    //    before the read, so the same command answers well INSIDE the deadline.
+    //    That is the property the bound establishes and it is what is asserted.
     let root = TempDir::new().unwrap();
     let (count, bytes) = build_ledger(root.path(), 2_000_000);
-    let (forge_ms, _) = time_guard(root.path(), "gh pr create --title x");
-    let (plain_ms, _) = time_guard(root.path(), "git push --force origin main");
+    let (forge_ms, forge_code) = time_guard(root.path(), "gh pr create --title x");
+    let (plain_ms, plain_code) = time_guard(root.path(), "git push --force origin main");
     println!(
-        "  headline: {count} lines / {bytes} bytes -> `gh pr create --title x` = {forge_ms} ms, \
-         `git push --force origin main` = {plain_ms} ms, GUARD_TIMEOUT_SECS = {}",
+        "  headline: {count} lines / {bytes} bytes -> `gh pr create --title x` = {forge_ms} ms \
+         (exit {forge_code}), `git push --force origin main` = {plain_ms} ms (exit \
+         {plain_code}), GUARD_TIMEOUT_SECS = {}\n  BASE (plan 19-28, no bound): the same forge \
+         command measured 7900 ms — past the deadline.",
         hooks::GUARD_TIMEOUT_SECS
     );
 
     let deadline_ms = u128::from(hooks::GUARD_TIMEOUT_SECS) * 1000;
-    assert!(
-        forge_ms > deadline_ms,
-        "\n\n**`T-19-117` DID NOT REPRODUCE.**\n\
-         A {bytes}-byte ledger must push `gh pr create --title x` past \
-         `GUARD_TIMEOUT_SECS = {}` ({deadline_ms} ms). Measured {forge_ms} ms.\n\n\
-         `record_and_check_in` reads the ledger WHOLE (`ledger.rs:225-227`) and `tally` walks \
-         every line with no size bound, and the inflation is delivered by fail-open direction \
-         (i). If this does not reproduce, RECORD the measured curve and report it rather than \
-         asserting audit 10's number.",
-        hooks::GUARD_TIMEOUT_SECS
+    assert_eq!(
+        forge_code, 2,
+        "\n\n**A LEDGER PAST THE BOUND MUST BE REFUSED RATHER THAN COUNTED.**\n\
+         {bytes} bytes is past `MAX_LEDGER_BYTES`, so how many pull requests this run has \
+         opened cannot be established inside the deadline. **The bound REFUSES rather than \
+         reading less**, because a tail read, a line cap and sampling all UNDER-COUNT — which \
+         violates `tally`'s own no-under-count invariant in the direction that permits."
     );
     assert!(
-        plain_ms * 10 < forge_ms,
-        "\n\n**THE FORGE / NON-FORGE SPLIT IS THE SHAPE OF THE FINDING AND IT MUST HOLD.**\n\
+        forge_ms * 4 < deadline_ms,
+        "\n\n**AND THE REFUSAL MUST BE FAST, WHICH IS THE WHOLE POINT OF IT.**\n\
+         A bound that refused only after reading the file would answer the harm with the harm. \
+         The check is a `stat` placed BEFORE the read and before the append. Measured \
+         {forge_ms} ms against a {deadline_ms} ms deadline; at this plan's base the same \
+         command measured 7900 ms."
+    );
+    assert!(
+        plain_ms * 4 < deadline_ms && plain_code == 2,
+        "\n\n**THE FORGE / NON-FORGE SPLIT IS THE SHAPE OF THE FINDING AND IT STILL HOLDS.**\n\
          `git push --force origin main` never reaches `record_and_check_in`, so the same ledger \
-         must cost it almost nothing: measured {plain_ms} ms against the forge command's \
-         {forge_ms} ms. **Without this half the row would say 'the guard is slow' rather than \
-         'the cap's own record is the guard's own workload'**, and the remedy would be aimed at \
-         the wrong function."
+         costs it almost nothing ({plain_ms} ms) and it still reaches its OWN verdict (exit \
+         {plain_code}, `force_push_blocked`) rather than the ledger's. **Without this half the \
+         row would say 'the guard is slow' rather than 'the cap's own record is the guard's own \
+         workload'** — and it is also the OVER-REFUSAL disclosed from the other side: the bound \
+         refuses the forge commands the cap governs and nothing else."
     );
 
     println!(
@@ -2408,6 +2440,164 @@ fn after_19_29_the_clause_protects_the_running_binary_and_not_every_copy_of_it()
         &format!("cp /bin/true {}", this_binary().display()),
         policy::REASON_ENVELOPE_ASSERTION_FAILED,
         "the binary this process IS running as, which is the subject of the claim.",
+    );
+}
+
+#[test]
+fn after_19_29_the_injected_empty_helper_defends_a_spelling_no_path_rule_reaches() {
+    // **THE MECHANISM CONTROL, NOW LANDED AND ASSERTED — AND THE ROW IS BUILT ON
+    // A SPELLING RULE (a) DOES *NOT* REACH, WHICH IS THE WHOLE POINT OF IT.**
+    //
+    // `19-28` drove this as `record_only` because no production line existed.
+    // `19-29` injects the pair through `cred::hooks_path_env`, so this row now
+    // asserts — and it asserts against a TILDE write, one of the three spellings
+    // that get NO rule and never will, because resolving a tilde needs the
+    // environment the guard may not read. **A row driven on a spelling rule (a)
+    // already reaches would prove only that two controls overlap; this one proves
+    // the mechanism control is WIDER than the path rule.**
+    //
+    // ## THE CRITERION IS `git credential fill`, NEVER `git config --get-all`
+    //
+    // With the pair injected, `--get-all` **still prints the helper** and then an
+    // empty line, at exit 0, while the fill answers with nothing. Git's empty
+    // value resets the helper list that RUNS, not the list the config query
+    // ENUMERATES. **A gate built on `--get-all` reports this working control as
+    // broken.** Both readings are taken below and the `--get-all` one is RECORDED
+    // beside the assertion so the distinction stays on the record.
+    let fixture = TempDir::new().unwrap();
+    let home = fixture.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join(".git-credentials"),
+        "https://probeuser:probepass@github.com\n",
+    )
+    .unwrap();
+
+    let envelope = fixture.path().join("env");
+    let gitconfig = cred::write_gitconfig_in(&envelope, ALIAS, "fixture", "f@example.invalid")
+        .expect("the generated git config is written");
+
+    // **THE WRITE IS PERFORMED THROUGH THE TILDE SPELLING'S EFFECT**, not through
+    // its command line: the guard DECIDES about a string and never executes one,
+    // so what this row must establish is that the harm the write produces is
+    // answered whatever spelling produced it. The corresponding guard-level row
+    // — that the tilde spelling is PERMITTED and gets no rule — is asserted in
+    // `direction_v_a_tilde_spelling_stays_permitted_and_its_absolute_literal_twin_is_refused`.
+    let mut body = std::fs::read_to_string(&gitconfig).unwrap();
+    body.push_str("[credential]\n\thelper = store\n");
+    std::fs::write(&gitconfig, body).unwrap();
+
+    let hooks_dir = envelope.join(ALIAS).join("hooks");
+    let hooks_value = hooks_dir.display().to_string();
+
+    // **THE PAIRS ARE READ FROM THE PRODUCTION FUNCTION, NEVER RE-SPELLED.** A
+    // second spelling of the injection is a second thing to keep in step, and the
+    // day they drift is the day this row certifies a posture the envelope does
+    // not install.
+    let produced = cred::hooks_path_env(&hooks_dir);
+    let produced: Vec<(String, String)> = produced
+        .iter()
+        .map(|(k, v)| (k.to_string_lossy().to_string(), v.to_string_lossy().to_string()))
+        .collect();
+    let landed: Vec<(&str, &str)> = (0..)
+        .map_while(|index| {
+            let key = produced
+                .iter()
+                .find(|(k, _)| *k == format!("GIT_CONFIG_KEY_{index}"))?;
+            let value = produced
+                .iter()
+                .find(|(k, _)| *k == format!("GIT_CONFIG_VALUE_{index}"))?;
+            Some((key.1.as_str(), value.1.as_str()))
+        })
+        .collect();
+    assert!(
+        landed
+            .iter()
+            .any(|(key, value)| *key == "credential.helper" && value.is_empty()),
+        "\n\n**THE PRODUCTION INJECTION MUST CARRY AN EMPTY `credential.helper` PAIR.**\n\n\
+         It is REQUIRED rather than conditional: it reads no command line, so it defends the \
+         generated `gitconfig`'s credential half against every write spelling — including the \
+         three that get no rule at all. Got: {landed:?}"
+    );
+
+    // -- **THE CONTROL, DRIVEN FIRST: without the pair the secret comes back.**
+    //    Without this half the assertion below would pass against a fixture whose
+    //    helper never worked, which proves nothing about the pair.
+    let without: Vec<(&str, &str)> = vec![("core.hooksPath", hooks_value.as_str())];
+    let (_, control_fill) = git_under_envelope_posture(
+        &home,
+        &gitconfig,
+        &without,
+        &["credential", "fill"],
+        Some("protocol=https\nhost=github.com\n\n"),
+    );
+    assert!(
+        fill_returned_the_ambient_secret(&control_fill, "probeuser"),
+        "\n\n**THE HARM MUST REPRODUCE BEFORE THE CONTROL IS ASSERTED.** Without the injected \
+         pair, a `[credential] helper = store` written into the generated `gitconfig` must make \
+         `git credential fill` return the ambient secret. If it does not, this fixture is not \
+         driving the harm and the row below certifies nothing."
+    );
+
+    // -- **THE ROW: with the production pair injected, the fill fails closed.**
+    let (fill_code, fill_text) = git_under_envelope_posture(
+        &home,
+        &gitconfig,
+        &landed,
+        &["credential", "fill"],
+        Some("protocol=https\nhost=github.com\n\n"),
+    );
+    assert!(
+        !fill_returned_the_ambient_secret(&fill_text, "probeuser"),
+        "\n\n**`git credential fill` MUST FAIL CLOSED WITH THE PAIR INJECTED.**\n\n\
+         This is the criterion that names the harm — `T-19-118`'s measured consequence is this \
+         call returning the ambient username and password. Exit was {fill_code}. The secret is \
+         recorded PRESENT/ABSENT and never transcribed (SAFE-04)."
+    );
+
+    // -- **AND THE `--get-all` READING, RECORDED BESIDE IT AND ASSERTED IN
+    //    NEITHER DIRECTION.** This is the false negative: the query still lists
+    //    the helper while the fill fails closed.
+    let (get_code, get_text) = git_under_envelope_posture(
+        &home,
+        &gitconfig,
+        &landed,
+        &["config", "--get-all", "credential.helper"],
+        None,
+    );
+    println!(
+        "RECORDED (not asserted) [--get-all with the pair injected]\n  exit  : {get_code}\n  \
+         lines : {:?}\n  **The query still LISTS the helper while the fill above fails closed.** \
+         Git's empty value resets the helper list that RUNS, not the list the query ENUMERATES, \
+         so a gate built on this reading would report a working control as broken.",
+        get_text.lines().collect::<Vec<&str>>()
+    );
+
+    // -- **THE ONE BOUNDED RESIDUE, RECORDED AND NOT ASSERTED AWAY.** A later
+    //    `-c credential.helper=…` on the same line OVERRIDES the reset. It is
+    //    BOUNDED because that spelling is ARGV-VISIBLE and already governed,
+    //    unlike every write spelling — and it is recorded rather than left to be
+    //    found.
+    let mut with_override = landed.clone();
+    let override_value = format!("store --file {}/.git-credentials", home.display());
+    with_override.push(("credential.helper", override_value.as_str()));
+    let (_, override_text) = git_under_envelope_posture(
+        &home,
+        &gitconfig,
+        &with_override,
+        &["credential", "fill"],
+        Some("protocol=https\nhost=github.com\n\n"),
+    );
+    println!(
+        "RECORDED (not asserted) [a later credential.helper override]\n  secret: {}\n  \
+         **BOUNDED, because that spelling is ARGV-VISIBLE and already governed** by round 8's \
+         confinement clause and layer 2's whole grammar — which is exactly what no WRITE \
+         spelling is.",
+        if fill_returned_the_ambient_secret(&override_text, "probeuser") {
+            "PRESENT"
+        } else {
+            "ABSENT"
+        }
     );
 }
 
