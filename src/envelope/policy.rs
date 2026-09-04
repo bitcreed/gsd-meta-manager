@@ -2333,6 +2333,7 @@ const SEPARATORS: &[&str] = &[";", "&&", "||", "|", "&", "\n", "(", ")", "{", "}
 pub fn split_command(cmd: &str) -> Option<Vec<String>> {
     Some(
         tokenize(cmd)?
+            .tokens
             .into_iter()
             .map(|token| token.text)
             .collect(),
@@ -2415,6 +2416,46 @@ pub struct Segment {
     /// containment [`Segment::brace_spliced`] already establishes: `ls >` stays
     /// permitted, `git >` does not.
     pub redirection_unresolvable: bool,
+    /// Every **LITERAL PATHNAME** this simple command names after a redirection
+    /// operator, as written.
+    ///
+    /// **This is the channel round 11 adds, and the reason it is a `Segment`
+    /// field rather than a [`Token`] is MECHANICAL rather than stylistic.**
+    /// [`split_segments_with_heads`] excludes every operator token from
+    /// [`Segment::tokens`] and FLUSHES `current` into a `Segment` the instant one
+    /// arrives, so a redirection-target token pushed into [`tokenize`]'s stream
+    /// would split `git >/dev/null push --force origin main` into `[git]` and
+    /// `[push, --force, origin, main]` — and the leading `git` resolves
+    /// `Governed` with an EMPTY argv, which [`classify_git`] answers `Allow` for.
+    /// **The obvious implementation silently converts round 6's headline refusal
+    /// into a permit.** `tests/envelope_carrier_reach.rs`'s SEGMENT-COUNT pins
+    /// are what make that falsifiable rather than merely stated.
+    ///
+    /// So the fact travels the way [`Segment::redirection_unresolvable`] and
+    /// [`Segment::brace_spliced`] already travel: **a property of the COMMAND
+    /// rather than of a word**, accumulated in the operator arm of the ONE walk,
+    /// applied RETROACTIVELY over every segment of the simple command including
+    /// one already pushed when the operator arrived, and reset at each REAL
+    /// command operator — because a redirection belongs to the whole simple
+    /// command and stands anywhere in it.
+    ///
+    /// **[`Segment::tokens`] is byte-for-byte what it was before this field
+    /// existed, and that is the load-bearing property.** Every argv consumer
+    /// reads that vector — [`resolve_program`], [`resolve_program_with_head`],
+    /// [`first_unreadable_decision_word`], [`config_key_operand_index`],
+    /// [`subcommand_word_indices`], [`scan_gh_api`] and [`scan_leading`] — so a
+    /// new element in it would move rules four rounds settled. None of them reads
+    /// this field, and none of them can.
+    ///
+    /// **What is in it, and what is deliberately not.** Only targets of the SEVEN
+    /// operators whose target is a PATHNAME (see [`redirection_operator`]) and
+    /// only targets that are LITERAL by the same classification
+    /// [`Token::literal`] uses. A heredoc DELIMITER, a here-STRING and an fd
+    /// NUMBER name no file and are never recorded; a target the shell may rewrite
+    /// is not a path the guard can resolve, and recording it would be recording a
+    /// guess. **The words are kept as written and nothing is normalised here** —
+    /// the reader normalises, exactly as it does for an operand.
+    pub redirection_targets: Vec<String>,
 }
 
 /// [`split_segments`], plus a per-segment report of whether its head is at a
@@ -2442,7 +2483,10 @@ pub struct Segment {
 /// is untouched. A rule that looked further back than one operator would refuse
 /// an ordinary sequence.
 pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
-    let tokens = tokenize(cmd)?;
+    let Tokenized {
+        tokens,
+        redirections,
+    } = tokenize(cmd)?;
     let mut segments: Vec<Segment> = Vec::new();
     let mut current: Vec<Token> = Vec::new();
     // The state of the operator most recently passed. Before any operator there
@@ -2462,8 +2506,40 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
     // same way and for the same reason: an unresolvable `>` that arrives after
     // `git` was already pushed — `git >` — must still mark that segment.
     let mut redirection_unresolvable = false;
+    // The PATHNAMES this simple command names after a redirection operator,
+    // accumulated by the SAME machinery one field over. `tokenize` reported each
+    // with the number of tokens it had emitted when the redirection was consumed,
+    // which is what attributes a target to the right simple command without a
+    // second walk of anything. See `Segment::redirection_targets`.
+    let mut redirection_targets: Vec<String> = Vec::new();
+    let mut pending = redirections.into_iter().peekable();
 
-    for token in tokens {
+    // Absorb every redirection consumed before the token about to be handled.
+    // Written as a closure-free macro because it borrows four locals mutably and
+    // runs at exactly two points: before each token, and once after the last.
+    macro_rules! absorb_redirections_before {
+        ($limit:expr) => {
+            while pending
+                .peek()
+                .is_some_and(|redirection| redirection.token_index <= $limit)
+            {
+                let target = pending.next().expect("peeked").target;
+                redirection_targets.push(target);
+                // Retroactive for the same reason the brace mark and the
+                // unresolvable mark are: a redirection belongs to the whole
+                // simple command, so everything since the last REAL command
+                // operator carries the path it names.
+                for segment in &mut segments[command_start..] {
+                    segment
+                        .redirection_targets
+                        .push(redirection_targets.last().expect("just pushed").clone());
+                }
+            }
+        };
+    }
+
+    for (token_index, token) in tokens.into_iter().enumerate() {
+        absorb_redirections_before!(token_index);
         if token.operator {
             if !current.is_empty() {
                 segments.push(Segment {
@@ -2472,6 +2548,7 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
                     brace_spliced,
                     splice_can_produce_governed,
                     redirection_unresolvable,
+                    redirection_targets: redirection_targets.clone(),
                 });
             }
             if token.redirection_unresolvable {
@@ -2502,6 +2579,7 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
                 brace_spliced = false;
                 splice_can_produce_governed = false;
                 redirection_unresolvable = false;
+                redirection_targets.clear();
             }
             last_operator_severed =
                 token.word_splitting_flush && matches!(token.text.as_str(), "}" | ")");
@@ -2512,6 +2590,10 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
         }
         current.push(token);
     }
+    // A redirection standing at the END of the line — `git push --force origin
+    // main > /x` — was consumed after the last token was emitted, so nothing in
+    // the loop above reaches it.
+    absorb_redirections_before!(usize::MAX);
     if !current.is_empty() {
         segments.push(Segment {
             tokens: current,
@@ -2519,6 +2601,7 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
             brace_spliced,
             splice_can_produce_governed,
             redirection_unresolvable,
+            redirection_targets,
         });
     }
 
@@ -2951,8 +3034,24 @@ fn top_level_split(chars: &[char], separator: char) -> Vec<String> {
     parts
 }
 
-/// The length of the redirection operator beginning at `index`, longest match
-/// first, or `None` if no operator begins there.
+/// One redirection operator: how long it is, and whether the word after it
+/// names a FILE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RedirectionOperator {
+    /// The operator's length in `char`s.
+    len: usize,
+    /// Whether this operator's target word is a PATHNAME.
+    ///
+    /// **A property of the OPERATOR and of nothing else**, which is why it is
+    /// answered here rather than by looking at the target: `<<` and `<<-` take a
+    /// heredoc DELIMITER, `<<<` a here-STRING and `>&` and `<&` an fd NUMBER.
+    /// None of those five names a file, and recording one as a path would
+    /// over-refuse on a shape that reaches no file at all.
+    pathname_target: bool,
+}
+
+/// The redirection operator beginning at `index`, longest match first, or `None`
+/// if no operator begins there.
 ///
 /// **Bash's production is a FINITE grammar rule, which is why modelling it is
 /// not a sixth enumeration.** Rounds 1–3 enumerated open-ended, value-dependent
@@ -2965,46 +3064,95 @@ fn top_level_split(chars: &[char], separator: char) -> Vec<String> {
 /// `git &>/tmp/o push --force origin main`, which is ONE simple command to bash
 /// (`ARGV[git]: [push] [--force] [origin] [main]`, measured), is split into TWO
 /// segments and a redirection parser running afterwards never sees it.
-fn redirection_operator_len(chars: &[char], index: usize) -> Option<usize> {
+///
+/// **The PATHNAME/NON-PATHNAME split is derived HERE, in the same match that
+/// already computes the length, and it is a property of bash's grammar rather
+/// than a list somebody chose.** Seven of the twelve take a WORD the shell
+/// resolves as a filename — `<`, `>`, `>>`, `>|`, `<>`, `&>`, `&>>` — and five
+/// take something that is not a file at all: `<<` and `<<-` a heredoc
+/// DELIMITER, `<<<` a here-STRING, and `>&` and `<&` an fd NUMBER. Deriving it
+/// anywhere else would be a second reading of a grammar this function already
+/// reads, and the two could then disagree.
+fn redirection_operator(chars: &[char], index: usize) -> Option<RedirectionOperator> {
     let at = |offset: usize| chars.get(index + offset).copied();
-    match at(0)? {
+    let (len, pathname_target) = match at(0)? {
         '<' => match (at(1), at(2)) {
-            (Some('<'), Some('<')) => Some(3), // <<<  here-string
-            (Some('<'), Some('-')) => Some(3), // <<-  heredoc, leading tabs stripped
-            (Some('<'), _) => Some(2),         // <<   heredoc
-            (Some('>'), _) => Some(2),         // <>   open read-write
-            (Some('&'), _) => Some(2),         // <&   duplicate input fd
-            _ => Some(1),                      // <
+            (Some('<'), Some('<')) => (3, false), // <<<  here-string
+            (Some('<'), Some('-')) => (3, false), // <<-  heredoc delimiter, tabs stripped
+            (Some('<'), _) => (2, false),         // <<   heredoc delimiter
+            (Some('>'), _) => (2, true),          // <>   open read-write
+            (Some('&'), _) => (2, false),         // <&   duplicate input fd
+            _ => (1, true),                       // <
         },
         '>' => match at(1) {
-            Some('>') => Some(2), // >>  append
-            Some('|') => Some(2), // >|  clobber past `noclobber`
-            Some('&') => Some(2), // >&  duplicate output fd
-            _ => Some(1),         // >
+            Some('>') => (2, true),  // >>  append
+            Some('|') => (2, true),  // >|  clobber past `noclobber`
+            Some('&') => (2, false), // >&  duplicate output fd
+            _ => (1, true),          // >
         },
         '&' => match (at(1), at(2)) {
-            (Some('>'), Some('>')) => Some(3), // &>>
-            (Some('>'), _) => Some(2),         // &>
-            _ => None,
+            (Some('>'), Some('>')) => (3, true), // &>>
+            (Some('>'), _) => (2, true),         // &>
+            _ => return None,
         },
-        _ => None,
-    }
+        _ => return None,
+    };
+    Some(RedirectionOperator {
+        len,
+        pathname_target,
+    })
 }
 
-/// Advance past a redirection's TARGET word, returning the index after it, or
-/// `None` when the production has no target to complete it.
+/// One redirection TARGET word, as the walk that skips it already sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RedirectionTarget {
+    /// The index just past the target — the extent, which is what
+    /// [`tokenize`] needs in order to delete it.
+    end: usize,
+    /// The word with its quoting removed, exactly as [`Token::text`] carries an
+    /// ordinary word.
+    text: String,
+    /// Whether the shell hands this word to `open(2)` byte-identically to how it
+    /// is written — the same POSITIVE evidence [`Token::literal`] carries, by the
+    /// same [`REWRITING_CHARACTERS`] classification.
+    literal: bool,
+}
+
+/// Advance past a redirection's TARGET word, returning the index after it **and
+/// what was skipped**, or `None` when the production has no target to complete
+/// it.
 ///
 /// The target gets **the same quoting rules any word gets**, because it is an
 /// ordinary shell word — bash simply removes it from argv rather than passing
-/// it. Its text is never needed, only its extent, because the whole point is
-/// that it produces no [`Token`] at all.
+/// it.
+///
+/// **A CORRECTED REASON (WR-02).** This doc used to say *"Its text is never
+/// needed, only its extent, because the whole point is that it produces no
+/// [`Token`] at all"*. **The second half is still true and the first half is
+/// not, and the distinction between them is the whole of round 11.** The target
+/// still produces no `Token`, the deletion model's behaviour is unchanged, and
+/// [`Segment::tokens`] is byte-for-byte what it was. What changed is that a
+/// SECOND question is now asked about the same walk: round 6 asks *which words
+/// ARRIVE at the program*, and a redirection target does not arrive; rule (a)
+/// asks *does this line NAME a path this run's own controls live in*, and a
+/// redirection target does name one. The sentence was right when it was written
+/// because only the first question existed. Outgrowing a stated reason quietly
+/// is how a control comes to be trusted for something it never did, so the
+/// reason is corrected here rather than left standing.
+///
+/// **The text is a BY-PRODUCT, not a second scan.** Every character of the
+/// target is already visited to find its end, and the quoting rules that decide
+/// where it ends are the same ones that decide what it says. Accumulating the
+/// characters costs one `String` on a path that was already walking them.
 ///
 /// For `<<` and `<<-` the target is the heredoc DELIMITER. The body is not argv
 /// and this function does not model it: bash runs a single-line heredoc anyway
 /// (warning `here-document at line 1 delimited by end-of-file`) and
 /// `git <<EOF push --force origin main` gives `[push] [--force] [origin]
-/// [main]`, measured.
-fn skip_redirection_target(chars: &[char], mut index: usize) -> Option<usize> {
+/// [main]`, measured. **A delimiter is not a pathname**, which is why
+/// [`RedirectionOperator::pathname_target`] answers that question at the
+/// operator and this function answers no part of it.
+fn skip_redirection_target(chars: &[char], mut index: usize) -> Option<RedirectionTarget> {
     // Bash allows whitespace between the operator and its target:
     // `git > /tmp/o push --force origin main` gives `[push] [--force] [origin]
     // [main]`, measured.
@@ -3012,6 +3160,10 @@ fn skip_redirection_target(chars: &[char], mut index: usize) -> Option<usize> {
         index += 1;
     }
     let start = index;
+    let mut text = String::new();
+    // Positive evidence, exactly as `tokenize` collects it for a word: cleared
+    // the moment something the shell rewrites is consumed OUTSIDE quotes.
+    let mut literal = true;
     while let Some(&ch) = chars.get(index) {
         match ch {
             // A metacharacter ends the target. A target that never began means
@@ -3025,7 +3177,12 @@ fn skip_redirection_target(chars: &[char], mut index: usize) -> Option<usize> {
                             index += 1;
                             break;
                         }
-                        Some(_) => index += 1,
+                        // Single quotes are literal all the way through,
+                        // including `$` — the same carve-out `tokenize` makes.
+                        Some(inner) => {
+                            text.push(*inner);
+                            index += 1;
+                        }
                         // An unterminated quote has no knowable boundary.
                         None => return None,
                     }
@@ -3039,20 +3196,77 @@ fn skip_redirection_target(chars: &[char], mut index: usize) -> Option<usize> {
                             index += 1;
                             break;
                         }
-                        Some('\\') if chars.get(index + 1).is_some() => index += 2,
-                        Some(_) => index += 1,
+                        Some('\\') if chars.get(index + 1).is_some() => {
+                            // Only the four bash escapes are escapes inside
+                            // double quotes; every other backslash is a literal
+                            // backslash, and dropping it would change the word.
+                            let escaped = chars[index + 1];
+                            if !matches!(escaped, '"' | '\\' | '$' | '`') {
+                                text.push('\\');
+                            }
+                            if escaped != '\n' {
+                                text.push(escaped);
+                            }
+                            index += 2;
+                        }
+                        Some(inner) => {
+                            // Expansion still happens inside double quotes — and
+                            // ONLY expansion does. A glob, a tilde or a brace
+                            // inside double quotes is passed through byte for
+                            // byte.
+                            if *inner == '$' || *inner == '`' {
+                                literal = false;
+                            }
+                            text.push(*inner);
+                            index += 1;
+                        }
                         None => return None,
                     }
                 }
             }
             '\\' => {
-                chars.get(index + 1)?;
+                let escaped = *chars.get(index + 1)?;
+                // Escaping is exactly what makes a character literal, so the bit
+                // is deliberately not cleared here — and a `\`+newline is a LINE
+                // CONTINUATION, which produces no character at all.
+                if escaped != '\n' {
+                    text.push(escaped);
+                }
                 index += 2;
             }
-            _ => index += 1,
+            _ => {
+                if REWRITING_CHARACTERS.contains(&ch) {
+                    literal = false;
+                }
+                // **An unquoted `{` clears the bit here where it does not in
+                // `tokenize`, and the asymmetry is deliberate rather than an
+                // oversight.** In a WORD the tokenizer answers the brace question
+                // by classifying the whole pair, because `gh api
+                // "repos/{owner}/{repo}/pulls"` is literal and is counted today.
+                // A redirection target has no such case to protect: bash expands
+                // `: > <dir>/{a,b}` into TWO words and answers `ambiguous
+                // redirect`, so a braced target reaches no file at all — measured
+                // — and a `{` that turns out to be literal costs only a permit.
+                // Re-running the whole-word brace scan here would be a second
+                // classification of the same question, and two answers to one
+                // question is the shape this file spends four rounds avoiding.
+                if ch == '{' {
+                    literal = false;
+                }
+                text.push(ch);
+                index += 1;
+            }
         }
     }
-    if index == start { None } else { Some(index) }
+    if index == start {
+        None
+    } else {
+        Some(RedirectionTarget {
+            end: index,
+            text,
+            literal,
+        })
+    }
 }
 
 /// Whether the word in progress before a redirection operator is a bash 4.1
@@ -3074,10 +3288,41 @@ fn is_fd_allocation_prefix(word: &str) -> bool {
         && inner.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// One LITERAL PATHNAME a redirection operator named, and where on the token
+/// stream it stood.
+///
+/// **`token_index` is the number of tokens [`tokenize`] had emitted when the
+/// redirection was consumed**, which is what lets
+/// [`split_segments_with_heads`] attribute the path to the right simple command
+/// without walking anything a second time. It is NOT a position in
+/// [`Segment::tokens`] and nothing indexes that vector with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Redirection {
+    token_index: usize,
+    target: String,
+}
+
+/// Everything the ONE walk of a command line produces.
+///
+/// **Two lists rather than one, because the second is a fact the first
+/// structurally cannot carry.** A redirection target is not a word the program
+/// receives, so it must not be a [`Token`]: [`split_segments_with_heads`]
+/// flushes a [`Segment`] at every operator token, so a target in `tokens` would
+/// split `git >/dev/null push --force origin main` into `[git]` and
+/// `[push, --force, origin, main]` and the leading `git` would carry an EMPTY
+/// argv, which [`classify_git`] answers `Allow` for. Keeping it beside the
+/// stream rather than in it is what makes `tokens` byte-for-byte what it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Tokenized {
+    tokens: Vec<Token>,
+    redirections: Vec<Redirection>,
+}
+
 /// The quoting state machine behind [`split_command`] and [`split_segments`].
-fn tokenize(cmd: &str) -> Option<Vec<Token>> {
+fn tokenize(cmd: &str) -> Option<Tokenized> {
     let chars: Vec<char> = cmd.chars().collect();
     let mut tokens: Vec<Token> = Vec::new();
+    let mut redirections: Vec<Redirection> = Vec::new();
     let mut text = String::new();
     let mut started = false;
     let mut expansion = false;
@@ -3187,14 +3432,34 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
                 }
             }
 
-            // 2. The operator, longest match first.
-            let op_len = redirection_operator_len(&chars, op_start).unwrap_or(1);
+            // 2. The operator, longest match first — and, from the same match,
+            //    whether its target is a PATHNAME at all.
+            let operator = redirection_operator(&chars, op_start);
+            let op_len = operator.map_or(1, |operator| operator.len);
+            let pathname_target = operator.is_some_and(|operator| operator.pathname_target);
 
             // 3. The target word — **and neither it nor the operator emits a
             //    token.** A production that does not complete fails closed
             //    rather than falling through as an ordinary word.
+            //
+            //    **What the target says is kept BESIDE the stream, never in
+            //    it.** The deletion model's behaviour does not change by one
+            //    character: the target still produces no `Token`, the scan index
+            //    still advances exactly as far, and `Segment::tokens` is
+            //    byte-for-byte what it was. Only the by-product is kept, and
+            //    only when the operator takes a FILENAME and the word is one the
+            //    shell hands to `open(2)` as written. See
+            //    `Segment::redirection_targets`.
             match skip_redirection_target(&chars, op_start + op_len) {
-                Some(after) => index = after,
+                Some(target) => {
+                    index = target.end;
+                    if pathname_target && target.literal {
+                        redirections.push(Redirection {
+                            token_index: tokens.len(),
+                            target: target.text,
+                        });
+                    }
+                }
                 None => {
                     unresolvable = true;
                     index = op_start + op_len;
@@ -3532,7 +3797,10 @@ fn tokenize(cmd: &str) -> Option<Vec<Token>> {
         });
     }
 
-    Some(tokens)
+    Some(Tokenized {
+        tokens,
+        redirections,
+    })
 }
 
 /// Whether a token is one of the control operators, by text.
@@ -5208,13 +5476,18 @@ fn lexical_absolute_components(word: &str) -> Option<Vec<&str>> {
 }
 
 /// Whether one WORD names a path that is, or sits under, `envelope_dir` — the
-/// pure path half of [`envelope_carrier_operand`], split out so the unit pins can
-/// drive the four path conditions without building a [`Token`] for each.
+/// **PREFIX** half of [`protected_carrier_named`]'s path set, split out so the
+/// unit pins can drive the path conditions without building a [`Token`] for each.
 ///
 /// The comparison is **COMPONENT-WISE against the directory the guard was
 /// GIVEN**, never a basename, an `ends_with`, a substring or a raw `starts_with`.
 /// A raw string prefix over `<root>/alpha` also matches `<root>/alpha2/x`, and a
 /// basename test refuses `/tmp/pr-ledger.ndjson`; both are pinned PERMITTED.
+///
+/// **A PREFIX is right HERE and wrong one path over**, and the reason is
+/// measured rather than aesthetic: this envelope owns every byte under this
+/// directory, and `rm -rf <root>/<alias>` takes nine carriers in one call. See
+/// [`word_is_exactly`] for the boundary that must NOT be written this way.
 fn word_is_within(word: &str, envelope_dir: &Path) -> bool {
     let Some(word) = lexical_absolute_components(word) else {
         return false;
@@ -5233,21 +5506,109 @@ fn word_is_within(word: &str, envelope_dir: &Path) -> bool {
     word[..dir.len()] == dir[..]
 }
 
-/// Whether any word of this segment names a path under **this run's own envelope
-/// directory** — the files the controls that judge the command live in.
+/// Whether one WORD names **exactly** `file` — the **EXACT-PATH** half of
+/// [`protected_carrier_named`]'s path set.
+///
+/// # WHY THE TWO HALVES ARE DIFFERENT KINDS OF BOUNDARY
+///
+/// **This one is an equality and it must never be written as a prefix, and the
+/// reason is that the directory it lives in is not this envelope's.** The
+/// guard's own binary sits wherever the user installed it — `~/.cargo/bin`, a
+/// package manager's `bin`, `target/debug/deps` under `cargo test` — beside
+/// everything else that user installed. A prefix over that parent would refuse
+/// `ls ~/.cargo/bin` and every `cargo install`, which is how a safety control
+/// gets switched off (AR-19-11). `cp /bin/true <parent>/some-other-file` and
+/// `ls <parent>` are pinned PERMITTED for exactly this reason, and a clause
+/// written as a directory prefix turns both of them red.
+///
+/// The normalisation is [`lexical_absolute_components`]', the same one the
+/// prefix half uses, so `<parent>/./gsd-meta-manager` and
+/// `<parent>/x/../gsd-meta-manager` are the same path here — and **no link is
+/// followed and nothing is read**, so a symlink on `PATH` whose target this is
+/// remains a third string neither half covers.
+///
+/// A `file` that normalises to the root itself answers `false` rather than
+/// matching `/`: a protected path of `/` would refuse every absolute word on the
+/// line, which is not a boundary, it is an outage.
+fn word_is_exactly(word: &str, file: &Path) -> bool {
+    let Some(word) = lexical_absolute_components(word) else {
+        return false;
+    };
+    let file_text = file.to_string_lossy();
+    let Some(file) = lexical_absolute_components(&file_text) else {
+        // A relative binary path names nothing this predicate can compare
+        // against. `guard` hands down whatever `current_exe()` reported and does
+        // not second-guess it, so answering `false` keeps the predicate total
+        // and leaves this half SILENT — which is fail-open and is stated on
+        // `protected_carrier_named`'s own signature.
+        return false;
+    };
+    !file.is_empty() && word == file
+}
+
+/// Which protected path a command named, if it named one.
+///
+/// The two members are two different KINDS of boundary, and the refusal names
+/// whichever one matched rather than a single generic location.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtectedPath {
+    /// A path that is, or sits under, **this run's own envelope directory** — a
+    /// PREFIX boundary over a directory this envelope owns entirely.
+    EnvelopeDirectory,
+    /// **The binary this guard is running as** — an EXACT-PATH boundary, because
+    /// the directory it lives in is shared with everything else the user
+    /// installed.
+    GuardBinary,
+}
+
+/// Whether any word of this segment — **in either of two word classes** — names
+/// a path in **this run's own protected set**: the files the controls that judge
+/// the command live in, and the binary that runs them.
 ///
 /// # WHAT IT IS FOR, IN ONE SENTENCE
 ///
 /// This envelope's own controls live in FILES — the PR-cap ledger, both hook
 /// stubs, the generated `gitconfig` and `askpass`, the `gh` configuration
-/// directory and the generated settings file — and [`super::hooks`]'s
+/// directory and the generated settings file — **and in the BINARY the hook
+/// stubs and the guard registration both exec** — while [`super::hooks`]'s
 /// `NoProgram | Ungoverned` arm permits every command that reaches no governed
 /// program. **That arm is right about the PROGRAM, and this predicate narrows it
-/// in the PATHS.** A command whose operand is one of those files changes what the
+/// in the PATHS a line NAMES — whether the path stands in an OPERAND or after a
+/// REDIRECTION OPERATOR.** A command naming one of those paths changes what the
 /// controls will be while it runs, so what those controls will judge cannot be
 /// established from the line — the same unresolvability
 /// [`config_key_names_an_indirection_section`] answers one region over, reached
 /// through a carrier that is not argv at all.
+///
+/// # TWO WORD CLASSES, ONE READING SITE
+///
+/// The segment's own words are one class. Its **pathname redirection targets**
+/// ([`Segment::redirection_targets`]) are the other: found by the walk that
+/// already skips them, carried on the `Segment` the way
+/// [`Segment::redirection_unresolvable`] already travels, with
+/// [`Segment::tokens`] byte-for-byte unchanged. **Round 3's one-reading-site
+/// principle is discharged rather than weakened** — this predicate is still
+/// raised once, on one segment, at one call site; reading two fields of that
+/// segment there is one reading site, not two.
+///
+/// # TWO PATHS, AND THE TWO BOUNDARY KINDS DIFFER FOR A MEASURED REASON
+///
+/// * **The envelope directory is a PREFIX boundary** ([`word_is_within`]),
+///   because this envelope owns every byte under it and `rm -rf <root>/<alias>`
+///   takes NINE carriers in one call.
+/// * **The binary is an EXACT PATH** ([`word_is_exactly`]), because its
+///   directory is shared with everything else the user installed. A prefix over
+///   that parent would refuse `ls ~/.cargo/bin` and every `cargo install`;
+///   `cp /bin/true <parent>/some-other-file` and `ls <parent>` are pinned
+///   PERMITTED so that a clause written the wrong way turns red rather than
+///   turning a driven run unusable.
+///
+/// **An ABSENT binary path makes that half SILENT.** `guard` resolves
+/// `std::env::current_exe()` once and hands the answer down; when the process
+/// cannot name itself, `binary` is `None` and this predicate answers only about
+/// the directory. **That is FAIL-OPEN and it is stated here rather than left to
+/// be discovered**: a guard that refused because it could not name itself would
+/// be a denial-of-service surface of its own.
 ///
 /// # FOUR CONDITIONS, AND EACH IS A BOUNDARY RATHER THAN A CONVENIENCE
 ///
@@ -5259,9 +5620,13 @@ fn word_is_within(word: &str, envelope_dir: &Path) -> bool {
 /// * **LITERAL** ([`Token::literal`]), because a word the shell may rewrite is a
 ///   word the guard cannot resolve — and refusing every non-literal operand of an
 ///   UNGOVERNED command would deny `rm $TMPDIR/x` and `cp "$SRC" "$DST"`, which is
-///   how a safety control gets switched off (AR-19-11). **This is the first place
-///   that bit is read outside a governed program's own decision words**, so a
-///   change that cleared or repurposed it would silently widen this rule too.
+///   how a safety control gets switched off (AR-19-11). **That bit is now read in
+///   a THIRD place**: round 5 computes it while a word is consumed, round 10 read
+///   it for the first time outside a governed program's decision words, and this
+///   round reads it for a REDIRECTION TARGET, computed by the same quote-walk
+///   that already parses the target ([`skip_redirection_target`]). **So a change
+///   that cleared, repurposed or widened it would silently move THREE rules at
+///   once**, as well as turning rounds 5 and 6's verdict pins vacuous.
 /// * **LEXICALLY NORMALISED, WITH NO LINK FOLLOWED.** `.` dropped, repeated
 ///   separators collapsed and `..` collapsed TEXTUALLY — which is what catches
 ///   `<env>/<alias>/hooks/../pr-ledger.ndjson`, the shape audit 9's own composite
@@ -5290,51 +5655,85 @@ fn word_is_within(word: &str, envelope_dir: &Path) -> bool {
 /// requires one level over, and what D-08's *"never asks what the wrapper is
 /// CALLED"* argument requires here.
 ///
-/// # THE RESIDUE, STATED PLAINLY AND HANDED TO NO CONTROL — FOUR DIRECTIONS
+/// # THE RESIDUE, STATED AS A CONDITION AND HANDED TO NO CONTROL
 ///
 /// **This predicate is a recognition of the paths this run OWNS, NOT a
 /// fail-closed default. Its SILENCE IS A PERMIT**, exactly as
-/// [`INDIRECTION_SECTIONS`]'s is. **It fails OPEN in FOUR named directions and
-/// NOT ONE of them has an automated control:**
+/// [`INDIRECTION_SECTIONS`]'s is.
 ///
-/// 1. **A REDIRECTION TARGET is not an operand.** `: > <ledger>` and
-///    `printf 'exit 0' > <hooks>/pre-push` reset the cap and replace the stub, and
-///    this predicate cannot see either path, because [`tokenize`] consumes bash's
-///    redirection production and emits no token for the operator OR ITS TARGET —
-///    bash deletes both before `execve`. **This one is real by MECHANISM rather
-///    than by choice**, and reading `>` would re-open a model five rounds have
-///    pinned shut: [`SEPARATORS`] deliberately excludes it, `is_separator(">")` is
-///    `false` by construction, that line has ONE commit in the whole phase, and
-///    round 6's over-deletion control pins `git x2>/tmp/o push --force origin main`
-///    PERMITTED.
-/// 2. **An EXPANSION-BORNE operand cannot be resolved.**
+/// **THE CONDITION, WHICH IS THE HONEST FORM OF IT.** This predicate is silent
+/// about a word the SHELL MAY REWRITE, about a word that IS NOT ABSOLUTE, and
+/// about a word that reaches a protected path ONLY THROUGH A LINK — **and it is
+/// silent about all three in EITHER word class and over BOTH paths.** The
+/// spellings below are INSTANCES of that condition and are not a complete list;
+/// a list that stopped would imply a completeness the measurement denies, which
+/// is `T-19-107`'s registered shape in a shorter sentence. **Round 5's own
+/// literalness table names EXPANSION, PATHNAME, TILDE and BRACE as the classes
+/// that clear [`Token::literal`], so this rule inherits that whole class list by
+/// construction rather than by enumeration.**
+///
+/// **SEVEN spellings are MEASURED, and not one of them has an automated
+/// control:**
+///
+/// 1. **A REDIRECTION whose target is any of the six below.** **NARROWED by this
+///    round and explicitly NOT CLOSED.** An ABSOLUTE LITERAL pathname target
+///    under either protected path is now refused — the path travels on
+///    [`Segment::redirection_targets`], produced by the walk that already skips
+///    it. So direction (i) stops being a direction of its own and becomes a
+///    **second WORD CLASS the other six apply over**. `SEPARATORS` did not move,
+///    `is_separator(">")` is still `false`, no token entered the stream, and
+///    round 6's over-deletion control still pins
+///    `git x2>/tmp/o push --force origin main` PERMITTED.
+/// 2. **An EXPANSION-BORNE word cannot be resolved.**
 ///    `D=$(git config --get core.hooksPath); rm -f $D/../pr-ledger.ndjson` — audit
-///    9's own composite. Note what it actually is: the carrier's location is
+///    9's own composite — and `cp /bin/true $(command -v gsd-meta-manager)` one
+///    path over. Note what it actually is: the carrier's location is
 ///    fetched by a **PERMITTED GOVERNED READ** (`git config --get` resolves
 ///    `Governed` and is allowed) and then acted on by an ungoverned command.
 /// 3. **A SYMLINK is not followed.** `..` is collapsed lexically; a link is not.
 ///    **NARROWED, and the word is NARROWED rather than closed**: `ln -s <env>/…
 ///    /tmp/l` names an envelope path as the link command's OWN operand and IS
 ///    refused, so a link must PREDATE the run or be made by a means that names no
-///    envelope path.
-/// 4. **A RELATIVE path is not resolved**, because the guard has no cwd.
-///    **NARROWED the same way and no further**: `cd <env>/<alias>` names an
-///    envelope path as its own operand and is refused, and the two-segment
-///    composite `cd <env>/<alias> && rm -f pr-ledger.ndjson` is refused BY SEGMENT
-///    ONE — segment two's relative operand stays unresolvable, so a spelling that
-///    reaches the directory by any other means leaves it permitted.
+///    envelope path. **Over the BINARY there is no such partial mitigation**: a
+///    link on `PATH` whose target `current_exe()` reports is a third string
+///    neither half of the path set covers.
+/// 4. **A RELATIVE word is not resolved**, because the guard has no cwd.
+///    **NARROWED over the DIRECTORY and not over the binary**: `cd <env>/<alias>`
+///    names an envelope path as its own operand and is refused, and the
+///    two-segment composite `cd <env>/<alias> && rm -f pr-ledger.ndjson` is
+///    refused BY SEGMENT ONE — while `cd <binary-parent>` names a directory the
+///    exact-path clause deliberately does not cover, so segment one is not a
+///    mitigation there at all.
+/// 5. **A TILDE.** `rm -rf ~/.local/share/gsd-meta-manager/envelope/<alias>` is
+///    permitted while its absolute twin is refused, measured. **No rule is
+///    written for this and none can be**: resolving a tilde needs the
+///    ENVIRONMENT, which this guard may not read at guard time.
+/// 6. **A GLOB.** `rm -rf <env>/alph?` takes nine carriers in one call.
+///    **No rule is written for this and none can be**: resolving a glob needs the
+///    FILESYSTEM, which the latency and TOCTOU rules below forbid.
+/// 7. **A BRACE LIST.** `rm -f <env>/<alias>/{pr-ledger.ndjson,x}`. No rule, for
+///    the same reason as 5 and 6 — and in redirection-target position bash
+///    answers `ambiguous redirect` and reaches no file at all, measured, so that
+///    one is a permit that costs nothing.
 ///
-/// # NO REVISIT CONDITION AND NO VERSION WITNESS IS CREATED FOR THESE FOUR
+/// **Each silence now applies over TWO word classes and TWO paths. The path set
+/// grew, the word set grew, and the silences did NOT shrink.** Saying *"direction
+/// (i) is closed"* would be false and saying *"it is unreachable"* would be the
+/// sentence measurement disproved. **NARROWED is the word.**
+///
+/// # NO REVISIT CONDITION AND NO VERSION WITNESS IS CREATED FOR ANY OF THESE
 ///
 /// **And that is a decision with a reason, not an omission.**
 /// [`CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION`] schedules a human
 /// re-audit against a FUTURE GIT, which is the right shape for a residue that
-/// arrives when someone else ships something. **These four are reachable by the
+/// arrives when someone else ships something. **All seven are reachable by the
 /// driven agent TODAY.** A schedule over them would observe the wrong thing
 /// entirely — a version string that never moves while the residue is exercised —
 /// and attaching one would be `T-19-107`'s shape arriving in the round that
 /// inherited the lesson. They are stated here, in the refusal's doc, in
-/// `SECTION_ENVELOPE` and in the phase record, and handed to nothing.
+/// [`super::cred::hooks_path_env`]'s WHAT IS NOT COVERED, in `SECTION_ENVELOPE`
+/// and in the phase record, and handed to nothing — **no pin, no schedule and no
+/// version witness.**
 ///
 /// # THE DISCLOSED COST: READS ARE REFUSED TOO, AND THAT IS A DECISION
 ///
@@ -5348,6 +5747,16 @@ fn word_is_within(word: &str, envelope_dir: &Path) -> bool {
 /// and the refusal below names it too, so a human debugging a run loses nothing
 /// the refusal does not already tell them (AR-19-11: a refusal a user cannot act
 /// on is a control that gets switched off).
+///
+/// **The BINARY half's own over-refusal, stated beside it rather than left to be
+/// met.** A run cannot NAME the binary it is driven by: `cat <binary>`,
+/// `ls -l <binary>` and `md5sum <binary>` are refused with the writes, for the
+/// same reason and with the same permitted twin — `command -v gsd-meta-manager`
+/// stays at exit 0 and reports the path, and so does the refusal. **The cost is
+/// bounded by the boundary KIND**: because the binary half is an EXACT PATH
+/// rather than a prefix, `ls <binary-parent>`, `cargo install` into that
+/// directory and every sibling file in it stay permitted, which is the whole
+/// reason that half is written as an equality.
 ///
 /// # THE REJECTED OPTIONS, COSTED
 ///
@@ -5369,27 +5778,63 @@ fn word_is_within(word: &str, envelope_dir: &Path) -> bool {
 ///   which is `T-19-01`'s mitigation and is not weakened here — but a replaced
 ///   stub never re-enters the binary that would assert it. **Prevention is the
 ///   only control that can fire there.**
+/// * **Tamper-evidence for the BINARY — a digest carried in the stub — COSTED
+///   AND NOT TAKEN, with BOTH reasons stated.** The stub could carry a hash of
+///   the binary it execs and refuse when it no longer matches. It is declined
+///   twice over: it would hash a whole binary **on every push**, against
+///   [`super::hooks::guard`]'s three latency rules and the reproduced 180-240
+///   second hang they exist to prevent; **and the digest would be carried by
+///   `C-02` — the stub — which is the very file a replacement can also rewrite**,
+///   so it defends layer 3 only and defends nothing at layer 2, which is exactly
+///   the half that makes this carrier the widest of the fifteen.
 /// * **Moving a carrier out of reach — DEAD for every envelope carrier**, said
 ///   once rather than nine times: each must be readable, writable or executable by
 ///   the same uid the driven process runs as, because git must exec the hooks, the
-///   agent CLI must read the settings and the guard must append the ledger. A
-///   different uid, a container, or a remote-side control are the only real forms,
-///   the first two are outside this phase, and the third is what
-///   `SECTION_ENVELOPE`'s own conclusion already says.
-pub fn envelope_carrier_operand(segment: &[Token], envelope_dir: &Path) -> bool {
-    segment
+///   agent CLI must read the settings and the guard must append the ledger. **The
+///   binary is the same argument one path over** — it must be executable by that
+///   uid or nothing runs at all. A different uid, a container, or a remote-side
+///   control are the only real forms, the first two are outside this phase, and
+///   the third is what `SECTION_ENVELOPE`'s own conclusion already says.
+pub fn protected_carrier_named<'a>(
+    segment: &Segment,
+    envelope_dir: Option<&'a Path>,
+    binary: Option<&'a Path>,
+) -> Option<(ProtectedPath, &'a Path)> {
+    // The two word classes, read from the two fields of the ONE segment this
+    // caller already holds. `redirection_targets` carries only LITERAL pathname
+    // targets by construction (see its doc), so the literalness condition is
+    // already discharged for that class and is applied here for the other.
+    let operands = segment
+        .tokens
         .iter()
-        .any(|token| !token.operator && token.literal && word_is_within(&token.text, envelope_dir))
+        .filter(|token| !token.operator && token.literal)
+        .map(|token| token.text.as_str());
+    let targets = segment
+        .redirection_targets
+        .iter()
+        .map(|target| target.as_str());
+
+    for word in operands.chain(targets) {
+        if let Some(dir) = envelope_dir.filter(|dir| word_is_within(word, dir)) {
+            return Some((ProtectedPath::EnvelopeDirectory, dir));
+        }
+        if let Some(file) = binary.filter(|file| word_is_exactly(word, file)) {
+            return Some((ProtectedPath::GuardBinary, file));
+        }
+    }
+    None
 }
 
-/// The refusal [`envelope_carrier_operand`] earns, naming **this** mechanism.
+/// The refusal [`protected_carrier_named`] earns, naming **this** mechanism and
+/// **whichever protected path matched**.
 ///
-/// **It names the envelope DIRECTORY and never quotes the command back** (SAFE-04),
-/// on the same footing as [`scan_leading`]'s refusals naming a config key and a
-/// section: that directory is a path this binary generated for this run, and it
-/// carries no secret. Naming it is what makes the refusal actionable (AR-19-11) —
-/// and `git config --get core.hooksPath` still reports it, so nothing is being
-/// disclosed that the run could not already ask for.
+/// **It names the envelope DIRECTORY or the BINARY's own path and never quotes
+/// the command back** (SAFE-04), on the same footing as [`scan_leading`]'s
+/// refusals naming a config key and a section: both are paths this binary
+/// generated or resolved for itself, and neither carries a secret. Naming the one
+/// that matched is what makes the refusal actionable (AR-19-11) — and
+/// `git config --get core.hooksPath` and `command -v` still report them, so
+/// nothing is disclosed that the run could not already ask for.
 ///
 /// **It deliberately reuses neither [`unbounded_config_assignment_refusal`]'s
 /// wording nor the hooks-path deny's.** Those name a spliced file and a config
@@ -5398,18 +5843,32 @@ pub fn envelope_carrier_operand(segment: &[Token], envelope_dir: &Path) -> bool 
 /// For the same reason the reason identifier is
 /// [`ParkReason::EnvelopeAssertionFailed`] — the general unresolvable one the
 /// sibling refusals already carry — and **not** `HookBypassBlocked`, which names
-/// the config-key deny this refusal does not use.
-pub fn envelope_carrier_refusal(envelope_dir: &Path) -> String {
-    format!(
-        "this command names a path under `{}`, the directory this run's own controls live in — \
-         the pull-request ledger, the hook stubs and the generated git configuration — so what \
-         those controls will be while the command runs cannot be established from this command \
-         line, and it is refused rather than guessed at. To proceed: name a path outside that \
-         directory. The envelope's own files are not this run's to read or write, and \
-         `git config --get core.hooksPath` still reports the directory for a human debugging the \
-         run",
-        envelope_dir.display()
-    )
+/// the config-key deny this refusal does not use, and **not** `PrCapExceeded`,
+/// which names a cap that fired.
+pub fn envelope_carrier_refusal(matched: ProtectedPath, path: &Path) -> String {
+    match matched {
+        ProtectedPath::EnvelopeDirectory => format!(
+            "this command names a path under `{}`, the directory this run's own controls live \
+             in — the pull-request ledger, the hook stubs and the generated git configuration — \
+             so what those controls will be while the command runs cannot be established from \
+             this command line, and it is refused rather than guessed at. The path is read \
+             whether it stands as an operand or after a redirection operator. To proceed: name \
+             a path outside that directory. The envelope's own files are not this run's to read \
+             or write, and `git config --get core.hooksPath` still reports the directory for a \
+             human debugging the run",
+            path.display()
+        ),
+        ProtectedPath::GuardBinary => format!(
+            "this command names `{}`, the binary this run's own guard and hook stubs are \
+             executed from — so what will judge the commands after it cannot be established \
+             from this command line, and it is refused rather than guessed at. The path is read \
+             whether it stands as an operand or after a redirection operator. To proceed: name \
+             a path other than that one file; the directory it sits in is not protected and \
+             every other file in it is untouched by this refusal. `command -v` still reports \
+             the path for a human debugging the run",
+            path.display()
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -6066,7 +6525,9 @@ mod tests {
     }
 
     fn brace_case(cmd: &str) -> BraceCase {
-        let tokens = tokenize(cmd).unwrap_or_else(|| panic!("`{cmd}` tokenizes"));
+        let tokens = tokenize(cmd)
+            .unwrap_or_else(|| panic!("`{cmd}` tokenizes"))
+            .tokens;
         match tokens
             .iter()
             .find(|token| token.operator && token.text == "{")
@@ -6569,6 +7030,7 @@ mod tests {
             assert!(
                 tokenize(cmd)
                     .unwrap()
+                    .tokens
                     .iter()
                     .all(|token| token.literal),
                 "every word of `{cmd:?}` is handed to the program byte for byte"
@@ -7447,8 +7909,11 @@ mod tests {
         // both recorded as drift they were forbidden to touch. Audit 9 re-derived
         // the half as 261,387 and the round-10 mandate cited 261,386; **neither is
         // a byte count.** `production.len()` is `String::len()`, which is BYTES,
-        // and this file's prose carries 842 multi-byte characters — em dashes,
-        // arrows and curly quotes. Counted as CHARACTERS the half is 261,387;
+        // and this file's prose carries 421 multi-byte characters — em dashes,
+        // arrows and curly quotes. **842 was the byte-minus-character
+        // DIFFERENCE rather than the count**: each of these is a THREE-byte
+        // character, so each contributes TWO extra bytes and 421 × 2 = 842.
+        // Counted as CHARACTERS the half is 261,387;
         // counted as BYTES, which is what the assertion below actually compares,
         // it was 262,229 at this plan's base and is 277,570 after its own
         // additions. **The FLOOR itself was never wrong and does not move.**
@@ -9310,7 +9775,9 @@ mod tests {
         assert!(
             literal
                 .iter()
-                .any(|segment| envelope_carrier_operand(&segment.tokens, &dir)),
+                .any(|segment| {
+                    protected_carrier_named(segment, Some(&dir), None).is_some()
+                }),
             "an ABSOLUTE LITERAL operand under the envelope directory IS a carrier operand."
         );
 
@@ -9323,7 +9790,9 @@ mod tests {
         assert!(
             !expanded
                 .iter()
-                .any(|segment| envelope_carrier_operand(&segment.tokens, &dir)),
+                .any(|segment| {
+                    protected_carrier_named(segment, Some(&dir), None).is_some()
+                }),
             "an EXPANSION-BORNE operand is fail-open direction (ii) and must answer `false`. \
              The guard cannot evaluate the word, and refusing every non-literal operand of an \
              ungoverned command would deny `rm $TMPDIR/x` — which is how a safety control gets \
@@ -9337,7 +9806,9 @@ mod tests {
         assert!(
             !ordinary
                 .iter()
-                .any(|segment| envelope_carrier_operand(&segment.tokens, &dir)),
+                .any(|segment| {
+                    protected_carrier_named(segment, Some(&dir), None).is_some()
+                }),
             "an ordinary operand is not a carrier operand."
         );
     }
@@ -9379,9 +9850,15 @@ mod tests {
         // POSITIVE CONTROLS first: an absence assertion cannot tell "the call is
         // not here" from "this is not the region I think it is".
         assert!(
-            code.contains("pub fn envelope_carrier_operand"),
-            "the sliced region must contain `pub fn envelope_carrier_operand`. If it does not, \
+            code.contains("pub fn protected_carrier_named"),
+            "the sliced region must contain `pub fn protected_carrier_named`. If it does not, \
              the slice missed the predicate and the absences below certify nothing."
+        );
+        assert!(
+            code.contains("fn word_is_exactly"),
+            "the sliced region must contain `fn word_is_exactly`, round 11's EXACT-PATH half. \
+             A slice that missed it would certify the prefix half alone while the half that \
+             compares against the guard's own binary went unchecked."
         );
         assert!(
             code.contains("pub fn envelope_carrier_refusal"),
@@ -9400,12 +9877,13 @@ mod tests {
             "symlink_metadata",
             "metadata",
             "current_dir",
+            "current_exe",
             "exists",
             "Command::new",
         ] {
             assert!(
                 !code.contains(api),
-                "\n\n**`{api}` MUST NOT APPEAR IN THE CARRIER-OPERAND PREDICATE'S PRODUCTION \
+                "\n\n**`{api}` MUST NOT APPEAR IN THE CARRIER PREDICATE'S PRODUCTION \
                  TEXT.**\n\n\
                  The predicate normalises LEXICALLY and follows no link. Two reasons, both \
                  measured rather than argued:\n\
@@ -9419,5 +9897,524 @@ mod tests {
                  Every probe of the real filesystem belongs in a test."
             );
         }
+    }
+
+    // =======================================================================
+    // ROUND 11 — the redirection-target channel and the two-path predicate
+    // =======================================================================
+
+    /// The redirection a command carries, if the tokenizer recorded one.
+    fn targets_of(cmd: &str) -> Vec<String> {
+        split_segments_with_heads(cmd)
+            .unwrap_or_else(|| panic!("`{cmd}` tokenizes"))
+            .into_iter()
+            .flat_map(|segment| segment.redirection_targets)
+            .collect()
+    }
+
+    /// The target word `skip_redirection_target` reads after the operator at
+    /// `index`, as `(text, literal)`.
+    fn target_word(cmd: &str, index: usize) -> Option<(String, bool)> {
+        let chars: Vec<char> = cmd.chars().collect();
+        let operator = redirection_operator(&chars, index)?;
+        let target = skip_redirection_target(&chars, index + operator.len)?;
+        Some((target.text, target.literal))
+    }
+
+    #[test]
+    fn the_operator_grammar_says_which_targets_are_pathnames_and_which_are_not() {
+        // **BOTH DIRECTIONS, AND THE SECOND HALF IS WHAT MAKES THE SPLIT REAL.**
+        // A filter that happened to match the seven pathname operators would pass
+        // the first loop and fail the second; only a split derived from the
+        // grammar answers both.
+        let takes_a_path = ["<", ">", ">>", ">|", "<>", "&>", "&>>"];
+        let takes_no_path = ["<<", "<<-", "<<<", ">&", "<&"];
+        assert_eq!(
+            takes_a_path.len() + takes_no_path.len(),
+            12,
+            "bash's redirection production has TWELVE operators. If this arithmetic is wrong \
+             the grammar was re-enumerated rather than read, which is the sixth enumeration \
+             `redirection_operator`'s doc exists to refuse."
+        );
+
+        for spelling in takes_a_path {
+            let chars: Vec<char> = spelling.chars().collect();
+            let operator = redirection_operator(&chars, 0)
+                .unwrap_or_else(|| panic!("`{spelling}` is a redirection operator"));
+            assert_eq!(
+                operator.len,
+                spelling.chars().count(),
+                "`{spelling}` must be matched at its FULL length, longest match first. A short \
+                 match leaves the remainder to be read as the target's first character."
+            );
+            assert!(
+                operator.pathname_target,
+                "`{spelling}` takes a WORD the shell resolves as a FILENAME, so its target is a \
+                 path the carrier rule may read."
+            );
+        }
+
+        for spelling in takes_no_path {
+            let chars: Vec<char> = spelling.chars().collect();
+            let operator = redirection_operator(&chars, 0)
+                .unwrap_or_else(|| panic!("`{spelling}` is a redirection operator"));
+            assert_eq!(
+                operator.len,
+                spelling.chars().count(),
+                "`{spelling}` must be matched at its FULL length, longest match first."
+            );
+            assert!(
+                !operator.pathname_target,
+                "\n\n**`{spelling}` NAMES NO FILE AND MUST NEVER BE RECORDED AS A CARRIER \
+                 CANDIDATE.**\n\n\
+                 `<<` and `<<-` take a heredoc DELIMITER, `<<<` a here-STRING and `>&` and `<&` \
+                 an fd NUMBER. Recording one as a pathname would over-refuse on a shape that \
+                 reaches no file at all — and `git <<EOF push --force origin main` is pinned at \
+                 the verdict it has rather than one a widened rule invented for it."
+            );
+        }
+
+        // The negative control: a character that begins no operator at all.
+        assert!(
+            redirection_operator(&['x'], 0).is_none(),
+            "`x` begins no redirection operator. Without this row the two loops above would \
+             pass against a function that answered `Some` for everything."
+        );
+    }
+
+    #[test]
+    fn a_redirection_target_carries_its_text_and_its_literalness_from_the_walk_that_skips_it() {
+        // **FIVE SPELLINGS, AND THE BIT IS ASSERTED EACH WAY.** Round 5's
+        // `Token::literal` classification is the one applied, so the residue's
+        // arithmetic over redirection targets is the same arithmetic as over
+        // operands by construction rather than by a second list.
+        for (cmd, text, literal, why) in [
+            (
+                "ls >/tmp/plain",
+                "/tmp/plain",
+                true,
+                "an unquoted absolute target is handed to `open(2)` as written",
+            ),
+            (
+                "ls >'/tmp/quoted path'",
+                "/tmp/quoted path",
+                true,
+                "single quotes are literal all the way through, and the quoting is REMOVED from \
+                 the text exactly as `Token::text` carries a word",
+            ),
+            (
+                "ls >\"/tmp/$HOME\"",
+                "/tmp/$HOME",
+                false,
+                "expansion still happens inside double quotes, and ONLY expansion does",
+            ),
+            (
+                "ls >~/x",
+                "~/x",
+                false,
+                "a TILDE needs the passwd database of the machine the command will run on, \
+                 which the guard may not read — direction (v)",
+            ),
+            (
+                "ls >/tmp/alph?",
+                "/tmp/alph?",
+                false,
+                "a GLOB needs the filesystem, which the latency and TOCTOU rules forbid — \
+                 direction (vi)",
+            ),
+        ] {
+            let index = cmd.find('>').expect("the row carries an operator");
+            let (measured, measured_literal) =
+                target_word(cmd, index).unwrap_or_else(|| panic!("`{cmd}` has a target"));
+            assert_eq!(measured, text, "`{cmd}`: the target's TEXT. {why}");
+            assert_eq!(
+                measured_literal, literal,
+                "`{cmd}`: the target's LITERALNESS. {why}"
+            );
+        }
+
+        // **AND THE BRACE CASE, WHICH IS THE ONE ASYMMETRY WITH `tokenize`.**
+        // Measured: bash expands `: > <dir>/{a,b}` into two words and answers
+        // `ambiguous redirect`, so a braced target reaches no file. It is
+        // therefore NOT literal here, where the same pair inside a WORD may be.
+        let (_, braced_is_literal) =
+            target_word("ls >/tmp/{a,b}", 3).expect("the braced row has a target");
+        assert!(
+            !braced_is_literal,
+            "a BRACE LIST target is not a path the guard can resolve — direction (vii)."
+        );
+
+        // The production that does not COMPLETE has no target at all.
+        assert!(
+            target_word("ls >", 3).is_none(),
+            "`ls >` completes no production, which is what `Token::redirection_unresolvable` \
+             is for. Without this row the rows above would pass against a reader that invented \
+             an empty target."
+        );
+    }
+
+    #[test]
+    fn only_a_literal_pathname_target_reaches_the_segment_and_the_tokens_do_not_move() {
+        // **THE CHANNEL, END TO END — and the second half is the load-bearing
+        // one.** Recording a target must not add, remove or reorder ONE token.
+        assert_eq!(
+            targets_of("ls >/tmp/plain"),
+            vec!["/tmp/plain".to_string()],
+            "a literal pathname target reaches the segment"
+        );
+        assert_eq!(
+            targets_of("ls >>/tmp/appended"),
+            vec!["/tmp/appended".to_string()],
+            "`>>` is a pathname operator too"
+        );
+        for silent in [
+            "ls <<EOF",
+            "ls <<-EOF",
+            "ls <<<here",
+            "ls >&2",
+            "ls <&0",
+            "ls >~/x",
+            "ls >/tmp/alph?",
+            "ls >/tmp/{a,b}",
+            "ls >$HOME/x",
+            "ls -l /tmp/plain",
+        ] {
+            assert!(
+                targets_of(silent).is_empty(),
+                "\n\n**`{silent}` MUST RECORD NO PATHNAME TARGET.**\n\n\
+                 Either the operator names no file — a heredoc DELIMITER, a here-STRING or an \
+                 fd NUMBER — or the word is one the shell may rewrite, which is a path the \
+                 guard cannot resolve rather than one it may refuse. Recording it would be \
+                 recording a guess. Got: {:?}",
+                targets_of(silent)
+            );
+        }
+
+        // **`segment.tokens` IS BYTE-FOR-BYTE WHAT IT WAS.** Every argv consumer
+        // reads that vector, so a new element in it would move rules four rounds
+        // settled — and the leading `git` of a split command carries an EMPTY
+        // argv, which `classify_git` answers `Allow` for.
+        for (cmd, expected) in [
+            (
+                "git >/dev/null push --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+            ),
+            (
+                "git x2>/tmp/o push --force origin main",
+                vec!["git", "x2", "push", "--force", "origin", "main"],
+            ),
+            (
+                "git 2>/dev/null push --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+            ),
+        ] {
+            let segments = split_segments_with_heads(cmd).expect("tokenizes");
+            assert_eq!(
+                segments.len(),
+                1,
+                "\n\n**`{cmd}` MUST BE EXACTLY ONE SEGMENT.** More than one means a \
+                 redirection-target token entered `tokenize`'s stream: \
+                 `split_segments_with_heads` flushes at every operator token, so the leading \
+                 `git` would carry an empty argv and `classify_git` answers `Allow` for a bare \
+                 `git`. Got: {segments:?}"
+            );
+            let words: Vec<&str> = segments[0]
+                .tokens
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect();
+            assert_eq!(words, expected, "`{cmd}`: the SURVIVING argv, unchanged.");
+        }
+    }
+
+    #[test]
+    fn a_redirection_target_is_attributed_to_its_own_simple_command_and_no_other() {
+        // **THE RETROACTIVE ATTRIBUTION, AND ITS RESET.** A redirection belongs to
+        // the whole simple command and stands anywhere in it, so a target that
+        // arrives after a segment was already pushed must still mark that segment
+        // — and must NOT mark the command after the next real operator.
+        let segments = split_segments_with_heads("ls >/tmp/first && cat /tmp/second")
+            .expect("tokenizes");
+        assert_eq!(segments.len(), 2, "two simple commands");
+        assert_eq!(
+            segments[0].redirection_targets,
+            vec!["/tmp/first".to_string()],
+            "the target belongs to the command it redirects"
+        );
+        assert!(
+            segments[1].redirection_targets.is_empty(),
+            "\n\n**AND IT IS RESET AT THE REAL COMMAND OPERATOR.** A target that leaked across \
+             `&&` would refuse a second command that names nothing at all, which is a rule \
+             wider than the boundary it declares."
+        );
+
+        // A target standing at the END of the line is consumed after the last
+        // token was emitted, so nothing in the token walk reaches it.
+        let trailing =
+            split_segments_with_heads("git push --force origin main >/tmp/out").expect("tokenizes");
+        assert_eq!(trailing.len(), 1);
+        assert_eq!(
+            trailing[0].redirection_targets,
+            vec!["/tmp/out".to_string()],
+            "a trailing redirection is absorbed after the walk, not dropped"
+        );
+    }
+
+    #[test]
+    fn the_predicate_reads_two_word_classes_over_two_paths_with_two_boundary_kinds() {
+        let dir = pin_envelope_dir();
+        let binary = std::path::PathBuf::from("/home/someone/.cargo/bin/gsd-meta-manager");
+
+        let matched = |cmd: &str| -> Option<ProtectedPath> {
+            split_segments_with_heads(cmd)
+                .unwrap_or_else(|| panic!("`{cmd}` tokenizes"))
+                .iter()
+                .find_map(|segment| {
+                    protected_carrier_named(segment, Some(&dir), Some(&binary))
+                        .map(|(kind, _)| kind)
+                })
+        };
+
+        // -- THE ENVELOPE DIRECTORY, as a PREFIX, in BOTH word classes.
+        for cmd in [
+            "rm -f /tmp/envroot/alpha/pr-ledger.ndjson",
+            "rm -rf /tmp/envroot/alpha",
+            ": > /tmp/envroot/alpha/pr-ledger.ndjson",
+            "printf 'exit 0' > /tmp/envroot/alpha/hooks/pre-push",
+            "cat /tmp/evil >> /tmp/envroot/alpha/gitconfig",
+            "rm -f /tmp/envroot/alpha/hooks/../pr-ledger.ndjson",
+            ": > /tmp/envroot/alpha/hooks/../pr-ledger.ndjson",
+        ] {
+            assert_eq!(
+                matched(cmd),
+                Some(ProtectedPath::EnvelopeDirectory),
+                "`{cmd}` names a path under the envelope directory, in one of the two word \
+                 classes. The `..` rows are the LEXICAL collapse, asserted over BOTH classes."
+            );
+        }
+
+        // -- THE BINARY, as an EXACT PATH, in BOTH word classes.
+        for cmd in [
+            "cp /bin/true /home/someone/.cargo/bin/gsd-meta-manager",
+            "printf 'x' > /home/someone/.cargo/bin/gsd-meta-manager",
+            "cp /bin/true /home/someone/.cargo/bin/./gsd-meta-manager",
+            "cp /bin/true /home/someone/.cargo/bin/x/../gsd-meta-manager",
+        ] {
+            assert_eq!(
+                matched(cmd),
+                Some(ProtectedPath::GuardBinary),
+                "`{cmd}` names the binary this guard is running as, at its absolute literal \
+                 spelling after lexical normalisation."
+            );
+        }
+
+        // -- **THE OTHER DIRECTION, WHICH IS WHAT MAKES THE TWO BOUNDARY KINDS
+        //    DIFFERENT RATHER THAN THE SAME CLAUSE TWICE.** A prefix over the
+        //    binary's PARENT turns the first two of these red; a basename or
+        //    substring test turns the rest red.
+        for (cmd, why) in [
+            (
+                "ls /home/someone/.cargo/bin",
+                "a READ of the binary's own directory — shared with everything else the user \
+                 installed. A prefix boundary here refuses every `cargo install`.",
+            ),
+            (
+                "cp /bin/true /home/someone/.cargo/bin/some-other-file",
+                "a SIBLING of the binary. Same directory, different file: the clause reads the \
+                 path's IDENTITY, not its neighbourhood.",
+            ),
+            (
+                "printf 'x' > /home/someone/.cargo/bin/some-other-file",
+                "the same near miss in redirection-target position — the widened SIGHT must \
+                 not widen the PATH SET with it.",
+            ),
+            (
+                "rm -f /tmp/pr-ledger.ndjson",
+                "a carrier BASENAME outside the envelope: not a basename test.",
+            ),
+            (
+                "rm -rf /tmp/envroot/alphax",
+                "an envelope-root spelling with ONE CHARACTER ADDED: not a raw string prefix.",
+            ),
+            (
+                "rm -f /tmp/envroot/alpha/../other/x",
+                "a `..` walk OUT of the envelope directory: the answer is about where the path \
+                 resolves.",
+            ),
+            (
+                "rm -f pr-ledger.ndjson",
+                "a RELATIVE word — direction (iv), and the guard has no cwd.",
+            ),
+            (
+                "rm -rf ~/.local/share/gsd-meta-manager/envelope/alpha",
+                "a TILDE word — direction (v). Resolving it needs the environment.",
+            ),
+            (
+                "rm -rf /tmp/envroot/alph?",
+                "a GLOB word — direction (vi). Resolving it needs the filesystem.",
+            ),
+            (
+                "rm -f /tmp/envroot/alpha/{pr-ledger.ndjson,x}",
+                "a BRACE LIST — direction (vii).",
+            ),
+            (
+                "rm -f ${ROOT}/alpha/pr-ledger.ndjson",
+                "an EXPANSION-BORNE word — direction (ii). Refusing every non-literal operand \
+                 of an ungoverned command would deny `rm $TMPDIR/x` (AR-19-11).",
+            ),
+            (
+                ": > ~/.local/share/gsd-meta-manager/envelope/alpha/pr-ledger.ndjson",
+                "the tilde spelling in REDIRECTION-TARGET position: each silence applies over \
+                 BOTH word classes, and the word set growing must not shrink them.",
+            ),
+            (
+                "cp /bin/true $(command -v gsd-meta-manager)",
+                "direction (ii) over the BINARY.",
+            ),
+            ("rm -f /tmp/x", "a command that names no protected path at all."),
+        ] {
+            assert_eq!(
+                matched(cmd),
+                None,
+                "\n\n**`{cmd}` MUST STAY PERMITTED.**\n\n{why}\n\n\
+                 A row that turns red here is a rule that quietly widened past the boundary it \
+                 declares — a finding about the RULE, never an assertion to edit."
+            );
+        }
+    }
+
+    #[test]
+    fn each_half_of_the_path_set_is_silent_when_it_was_not_given_a_path() {
+        // **AN ABSENT PATH MAKES ITS HALF SILENT, AND THAT IS FAIL-OPEN.** It is
+        // asserted rather than left to be discovered: a guard that refused
+        // because it could not name itself would be a denial-of-service surface
+        // of its own.
+        let dir = pin_envelope_dir();
+        let binary = std::path::PathBuf::from("/home/someone/.cargo/bin/gsd-meta-manager");
+        let segment_of = |cmd: &str| {
+            split_segments_with_heads(cmd)
+                .unwrap_or_else(|| panic!("`{cmd}` tokenizes"))
+                .remove(0)
+        };
+
+        let names_binary = segment_of("cp /bin/true /home/someone/.cargo/bin/gsd-meta-manager");
+        assert!(
+            protected_carrier_named(&names_binary, Some(&dir), None).is_none(),
+            "with no binary path, the exact-path half answers nothing"
+        );
+        assert!(
+            protected_carrier_named(&names_binary, Some(&dir), Some(&binary)).is_some(),
+            "the POSITIVE CONTROL: the same segment with the path present DOES match, so the \
+             row above cannot pass because the predicate answers `None` to everything"
+        );
+
+        let names_envelope = segment_of("rm -f /tmp/envroot/alpha/pr-ledger.ndjson");
+        assert!(
+            protected_carrier_named(&names_envelope, None, Some(&binary)).is_none(),
+            "with no envelope directory, the prefix half answers nothing — an alias this \
+             envelope could never have built a directory for has no directory to protect"
+        );
+
+        // And a binary path that normalises to the root itself protects nothing,
+        // rather than protecting every absolute word on the line.
+        let root = std::path::PathBuf::from("/");
+        assert!(
+            protected_carrier_named(&names_envelope, None, Some(&root)).is_none(),
+            "a protected path of `/` would refuse every absolute word on the line, which is \
+             not a boundary — it is an outage."
+        );
+    }
+
+    #[test]
+    fn the_tokenizers_redirection_machinery_touches_no_filesystem_and_no_process() {
+        // **THE NO-FILESYSTEM SOURCE PIN, EXTENDED TO THIS ROUND'S NEW CODE.**
+        // The predicate has carried one since round 10; the channel that feeds it
+        // now needs its own, because a probe added to the tokenizer would be on
+        // the same critical path and invisible to the predicate's pin.
+        const SELF: &str = include_str!("policy.rs");
+
+        let start = SELF
+            .find("struct RedirectionOperator {")
+            .expect("the redirection machinery's own source must be findable");
+        let end = start
+            + SELF[start..]
+                .find("pub fn is_separator")
+                .expect("`is_separator` follows the tokenizer");
+        let region = &SELF[start..end];
+        let code: String = region
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .map(|line| format!("{line}\n"))
+            .collect();
+
+        // POSITIVE CONTROLS first: an absence assertion cannot tell "the call is
+        // not here" from "this is not the region I think it is".
+        for anchor in [
+            "fn redirection_operator(",
+            "fn skip_redirection_target(",
+            "fn tokenize(",
+        ] {
+            assert!(
+                code.contains(anchor),
+                "the sliced region must contain `{anchor}`. If it does not, the slice missed \
+                 the redirection machinery and the absences below certify nothing."
+            );
+        }
+        assert!(
+            !code.contains("///"),
+            "the doc-stripping filter must have removed every `///` line."
+        );
+
+        for api in [
+            "canonicalize",
+            "read_link",
+            "symlink_metadata",
+            "metadata",
+            "current_dir",
+            "current_exe",
+            "exists",
+            "Command::new",
+        ] {
+            assert!(
+                !code.contains(api),
+                "\n\n**`{api}` MUST NOT APPEAR IN THE TOKENIZER'S PRODUCTION TEXT.**\n\n\
+                 The redirection target is read LEXICALLY and no link is followed. Two reasons, \
+                 both measured rather than argued:\n\
+                 \x20 * LATENCY — the guard answers on the agent's `PreToolUse` critical path, \
+                 and a reproduced 180-240 second hang is why `push_needs_resolved_dests` \
+                 exists at all;\n\
+                 \x20 * TOCTOU — the filesystem may change between this answer and the \
+                 command's exec, and a reader that resolved a target against the filesystem \
+                 could be answered by a link the agent made one instruction ago.\n\n\
+                 **`std::env::current_exe()` is resolved ONCE, in `super::hooks::guard_in`, and \
+                 handed down.** The correct response to a red here is to REMOVE THE CALL, never \
+                 to relax this assertion."
+            );
+        }
+    }
+
+    #[test]
+    fn the_separator_list_is_unchanged_and_a_redirection_still_starts_no_command() {
+        // **ROUND 6's MODEL, RE-ASSERTED WHERE ROUND 11 PUTS IT UNDER THE MOST
+        // PRESSURE.** Reading a redirection target is a different question from
+        // deleting one, and this row is what keeps the two from being confused:
+        // the answer to "does `>` start a new command" is still `false`.
+        assert!(
+            !is_separator(">") && !is_separator("<"),
+            "`>` and `<` are word-terminating METACHARACTERS whose operator and target are \
+             DELETED — neither a separator nor an ordinary word. Round 11 reads what the \
+             target says; it does not change what the target IS."
+        );
+        assert!(
+            is_separator("&&") && is_separator(";"),
+            "the POSITIVE CONTROL: without it the row above passes against a predicate that \
+             answers `false` for everything."
+        );
+        assert_eq!(
+            SEPARATORS,
+            &[";", "&&", "||", "|", "&", "\n", "(", ")", "{", "}"],
+            "`SEPARATORS` is byte-identical. It has ONE commit in the whole phase, and adding \
+             `>` to it would split a redirected simple command in two."
+        );
     }
 }

@@ -1015,17 +1015,18 @@ fn classify_segments(
         // and a relative path, the last two NARROWED by a measured partial
         // mitigation rather than closed. They are stated in full on
         // `policy::envelope_carrier_operand`.
-        if let Some(envelope_dir) = super::envelope_dir_in(root, alias) {
-            if policy::envelope_carrier_operand(segment, &envelope_dir) {
-                return Ok(Some((
-                    ParkReason::EnvelopeAssertionFailed,
-                    format!(
-                        "gsd-meta-manager envelope: REFUSED (reason: {}) — {}",
-                        policy::REASON_ENVELOPE_ASSERTION_FAILED,
-                        policy::envelope_carrier_refusal(&envelope_dir)
-                    ),
-                )));
-            }
+        let envelope_dir = super::envelope_dir_in(root, alias);
+        if let Some((matched, named)) =
+            policy::protected_carrier_named(entry, envelope_dir.as_deref(), None)
+        {
+            return Ok(Some((
+                ParkReason::EnvelopeAssertionFailed,
+                format!(
+                    "gsd-meta-manager envelope: REFUSED (reason: {}) — {}",
+                    policy::REASON_ENVELOPE_ASSERTION_FAILED,
+                    policy::envelope_carrier_refusal(matched, named)
+                ),
+            )));
         }
 
         // **The segment's CONTEXT travels with it rather than being re-derived
