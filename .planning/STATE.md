@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
-stopped_at: Completed 19-25-PLAN.md
-last_updated: "2026-09-04T15:35:27.683Z"
+stopped_at: Completed 19-26-PLAN.md (corpus RED, 10 failures, handoff to 19-27)
+last_updated: "2026-09-04T17:23:26.709Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: 089fb18335c280345c8a346b257db1ce2c253466
+state_head: df2243b4765b6ce451f86d6352f587e551079dc3
 progress:
   total_phases: 10
   completed_phases: 6
-  total_plans: 104
-  completed_plans: 104
+  total_plans: 106
+  completed_plans: 105
   percent: 60
 ---
 
@@ -227,6 +227,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 19 P22 | 1h | 3 tasks | 4 files |
 | Phase 19 P24 | 2h | 3 tasks | 4 files |
 | Phase 19 P25 | ~3h | 4 tasks | 6 files |
+| Phase 19 P26 | one session | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -297,6 +298,9 @@ Recent decisions affecting current work:
 - [Phase 19]: The re-parse value test reads the CARRIER as well as the first byte — measured, --config-env=alias.q='!EVIL' resolves /INCLUDE_WINS
 - [Phase 19]: Region 2 gates on !is_read plus a VALUE WORD because is_write is blind to a dash-leading value
 - [Phase 19]: T-19-110 registered OPEN and NOT fixed: widening is_write moves verdicts with no corpus able to fail on them
+- [Phase 19]: 19-26: CONTROL_CARRIER_CLASSES is a genuine FIFTH axis — no existing axis property can be satisfied by a command reaching no governed program
+- [Phase 19]: 19-26: C-15 (~/.config/gsd-meta-manager/config.json) is a DISTINCT route to SAFE-06 and gets control (e) — no rule; pr_cap_* deliberately NOT clamped
+- [Phase 19]: 19-26: T-19-111 is registered SEPARATELY from T-19-86 and must be moved OUT of it — five mis-attribution sites enumerated
 
 ### Pending Todos
 
@@ -358,8 +362,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-04T15:35:13.249Z
-Stopped at: Completed 19-25-PLAN.md
+Last session: 2026-09-04T17:23:26.012Z
+Stopped at: Completed 19-26-PLAN.md (corpus RED, 10 failures, handoff to 19-27)
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
 Resume file: None
