@@ -2781,3 +2781,102 @@ observation.
   not renumbered, and **`T-19-23` is NOT marked closed.**
 
 **Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.**
+
+---
+
+## Plan 19-31 — the rules and the honesty repairs
+
+**`/gsd-secure-phase 19` is NOT cleared by this plan, and nothing below is
+described as a closure.**
+
+### NARROWED-or-CORRECTED, and NOT CLOSED
+
+- **`T-19-119`** — **NARROWED, not closed.** Every `/`-anchored substring of a
+  LITERAL word is now read through the existing normaliser and the existing two
+  comparisons, at the one existing reading site. **What remains:** the predicate
+  is still silent about a word the shell may rewrite, about a word whose text
+  carries no absolute path anywhere, and about a word that reaches a protected
+  path only through a link — stated as a CONDITION over what the predicate READS,
+  with **no count**, handed to no pin, schedule or version witness. Whether this
+  closes anything is audit 12's judgement.
+- **`T-19-120`** — **NARROWED, not closed.** `metadata.file_type().is_file()`
+  inside `record_and_check_in`'s existing `Ok` arm refuses a ledger that is not a
+  regular file, before the size comparison and inside the same `stat`. FIFO: exit
+  124 after 20.02 s → exit 2 after 21 ms. **What remains: the BEHAVIOURAL half —
+  what the agent CLI does with a hook that never returns — is UNMEASURED and
+  claimed in NEITHER direction.**
+- **`T-19-121`** — **the CLAIM is CORRECTED and the RULE landed; neither is called
+  a closure.** `cred.rs:420-425` no longer says the spelling is *"already
+  governed"*; it names the rule that acts on it. `config_key_names_the_credential_helper`
+  — SECTION `credential`, FINAL COMPONENT `helper`, folded the way git folds them
+  — is raised in `scan_leading`'s leading-option region at
+  `EnvelopeAssertionFailed`. **What remains:** it does not reach
+  `GIT_CONFIG_PARAMETERS` (env, not argv — `T-19-104`, refused today by a
+  DIFFERENT mechanism at `hook_bypass_blocked`), the `git config` writing form, or
+  any spelling that names no leading option. `--config-env` IS reached, which
+  `19-30` had recorded as unreachable by a by-name clause — a planning-time
+  expectation corrected by measurement.
+
+### NARROWED FURTHER and still OPEN at `high`
+
+- **`T-19-116`** — closing `T-19-119` refuses every option-attached spelling of
+  the binary, **including the one that moved a bare remote's `main`
+  `835b6be` → `40ad7f7`**. **The declared harm — one permitted command removing
+  layer 2 AND layer 3 — stays reachable through four spellings, named here at the
+  same weight as the narrowing and all four measured at exit 0:**
+  `cp /bin/true $(command -v gsd-meta-manager)` (expansion-borne);
+  `cp /bin/true ~/.cargo/bin/gsd-meta-manager` (tilde);
+  `cd <binary-parent> && cp /bin/true gsd-meta-manager` (relative);
+  and a `PATH` symlink whose target `current_exe()` reports (link).
+  **None of the four is an option attachment. `T-19-116` remains OPEN at `high`.**
+
+### OPEN with NO rule, condition RESTATED rather than closed
+
+- **`T-19-115`** — no rule is written and none can be: resolving a tilde needs the
+  ENVIRONMENT, which the guard may not read at guard time, and resolving a glob
+  needs the FILESYSTEM, which the latency and TOCTOU rules forbid. Its condition
+  is RESTATED as part of the predicate's new condition. **Restated is not closed,
+  and no acceptance is made for it.**
+
+### The residue, wherever this plan states it
+
+Stated as a **CONDITION with no count**, over what the predicate READS: silent
+about a word the shell may rewrite, about a word whose text carries no absolute
+path anywhere in it, and about a word that reaches a protected path only through a
+link. The doc previously counted *"SEVEN"* and before that *"four"*; **a count is a
+completeness claim the measurement cannot support**, so none is written. Handed to
+no pin, no schedule and no version witness — every clause is reachable by the
+driven agent TODAY.
+
+### Unchanged and OPEN
+
+- **`T-19-86`** — OPEN at `high` by explicit user scoping decision. Not fixed, not
+  narrowed, not re-scoped, not re-classified; registered rows at exit 0, pins green
+  and UNMODIFIED, and **`T-19-111` is kept OUT of it** as `19-27` moved it.
+- **`T-19-91`** — OPEN at `high`, three arms unweakened; no decision-operand rule
+  for `reflog`, `symbolic-ref` or `push` and no denylist extension.
+- **`T-19-111`** — OPEN at `high` with NO rule; `19-27`'s five-site attribution
+  correction stays as performed.
+- **`T-19-112`** — narrowed further (`T-19-119` was a fourth route to its cap
+  reset) and **not closed**.
+- **`T-19-113`** — unchanged.
+- **`T-19-96`**, **`T-19-110`**, **`T-19-74`** (core rows frozen) — unchanged.
+- **`T-19-84`**, **`T-19-85`**, **`T-19-61` … `T-19-73`** — open and unaccepted by
+  explicit user decision; `scan.rs` and `config.rs` were not opened.
+- **`C-08`** — the claimed-but-unwired second carrier; its behavioural half stays
+  **UNMEASURED** and is claimed in neither direction. `hooks.rs` was not opened, so
+  the `settings_json` second-carrier row is not repaired.
+- **`C-11` … `C-15`** — control (e), no rule and **no `pr_cap_*` clamp**. Clamping
+  a configured cap is a product decision.
+- **The `glab --host` forge cell** — unfixed, `FORGE_VALUE_OPTS` keeps
+  `--hostname`, and **`glab` is confirmed NOT INSTALLED**, so no pin that would
+  skip was written.
+- **`T-19-104`'s `GIT_CONFIG_PARAMETERS` carrier** — re-confirmed at exit 2
+  `hook_bypass_blocked`, a DIFFERENT mechanism from this round's clause. Recorded
+  in neither direction; the row stays registered.
+- **`T-19-17r`** — OUTSTANDING for the **FIFTEENTH** time. No `AR-19-13`, no
+  Accepted-Risks-Log row, and the word "accepted" is applied to it nowhere.
+  `AR-19-04` and `AR-19-05` are carried forward not un-accepted, not re-rated and
+  not renumbered, and **`T-19-23` is NOT marked closed.**
+
+**Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.**
