@@ -379,15 +379,29 @@ fn refuse(reason: ParkReason, detail: String) -> GitVerdict {
 /// [`config_key_names_an_indirection_section`] for the rule, the three rejected
 /// options and **the residue it fails OPEN on, which no control covers**.
 ///
-/// **The three clauses of the assignment block are ordered, and the order is
+/// # AND SO IS AN ASSIGNMENT WHOSE VALUE GIT RE-PARSES AS A COMMAND LINE
+///
+/// **The same question, one REGION further out.** The clause above bounds an
+/// assignment whose value names a FILE. Git also resolves configuration from a
+/// third place: **a value this scan itself CONFINED and handed on.** It re-parses
+/// a non-`!` `alias.<name>` body as a git command line, in-process, **including
+/// its own leading options** — so `-c alias.q="-c include.path=<f> status" q`
+/// sets `core.hooksPath` at command-line precedence while `alias.q` correctly
+/// answers `false` to [`config_key_names_an_indirection_section`] and is confined.
+/// Measured `/INCLUDE_WINS` against the control's `/ENV_WINS`. See
+/// [`REPARSED_COMMAND_SECTIONS`] for the rule, the three-kind enumeration and
+/// **the three directions it fails OPEN on, none of which any control covers**.
+///
+/// **The four clauses of the assignment block are ordered, and the order is
 /// what a reader must not have to infer**: (1) the key half carries a character
 /// the shell may rewrite → unreadable; (2) the key's section names an
-/// indirection → unbounded; (3) the key IS `core.hooksPath` →
-/// [`ParkReason::HookBypassBlocked`]. The refusal is raised at the FIRST
-/// assignment the loop cannot bound, so a line carrying both an indirection and
-/// a hooks-path key earns whichever the scan reaches first — the two spellings
-/// are pinned at deliberately different identifiers, and a clause raised in a
-/// second pass over the leading tokens turns one of them red.
+/// indirection → unbounded; (3) the key's section names a value git RE-PARSES as
+/// a command line, and the value is not a `!` shell body → unbounded; (4) the key
+/// IS `core.hooksPath` → [`ParkReason::HookBypassBlocked`]. The refusal is raised
+/// at the FIRST assignment the loop cannot bound, so a line carrying both an
+/// unbounded assignment and a hooks-path key earns whichever the scan reaches
+/// first — the spellings are pinned at deliberately different identifiers, and a
+/// clause raised in a second pass over the leading tokens turns one of them red.
 ///
 /// **What it deliberately does NOT do.** It does not widen into tokens this scan
 /// does not treat as options: the break on a non-`-` token, the break on a bare
@@ -511,6 +525,49 @@ fn scan_leading(argv: &[&str]) -> (usize, Option<GitVerdict>) {
                     index,
                     Some(unbounded_config_assignment_refusal(key, section)),
                 );
+            }
+            // **The RE-PARSE clause — the SAME question, one REGION further
+            // out.** The clause above bounds an assignment whose value names a
+            // FILE. This one bounds an assignment whose value git re-parses as a
+            // git COMMAND LINE, in-process, INCLUDING its own leading options, so
+            // a `-c include.path=<f>` or `-c core.hooksPath=<p>` sitting inside
+            // the VALUE is applied by git itself at command-line precedence —
+            // measured `/INCLUDE_WINS` against the control's `/ENV_WINS` — in a
+            // position this scan never re-reads.
+            //
+            // **The value test is git's OWN rule and it reads exactly one byte**:
+            // a `!` body is handed to a SHELL child that INHERITS the envelope's
+            // injection (measured `/ENV_WINS`), so layer 3 is intact for it and it
+            // stays CONFINED. That arm is a carve-out for `T-19-86`'s registered
+            // rows, pinned PERMITTED in two files this rule's round may not edit,
+            // and it leaves audit 7's `!`-bodied destructive pair WORKING. See
+            // [`reparsed_command_value_is_a_shell_body`].
+            //
+            // **`token` is the CARRIER, read from the word this iteration already
+            // holds** — not a second pass, not a second scan, and no new arm in
+            // [`leading_git_option`]. It is needed because `--config-env` delivers
+            // an environment variable NAME where `-c` delivers a body, and a
+            // uniform first-byte test over both was MEASURED to fail open:
+            // `--config-env=alias.q='!EVIL'` with a non-`!` body in `!EVIL`
+            // resolves `/INCLUDE_WINS`.
+            //
+            // **Ordered HERE, after the confinement clause and BEFORE
+            // `is_hooks_path_key`, and the ordering is load-bearing rather than
+            // stylistic** — same reason as the clause above. The refusal is raised
+            // at the FIRST assignment this loop cannot bound and no assignment
+            // after it is read, so `-c alias.q=<body> -c core.hooksPath=/dev/null
+            // push --force origin main` earns the unresolvable identifier while
+            // the reverse spelling earns `HookBypassBlocked`. **The two are pinned
+            // at deliberately different identifiers, and a clause raised in a
+            // SECOND PASS turns one of them red.**
+            //
+            // No new park reason, no second reading site, and both callers inherit
+            // it through the channel that already carries three refusals.
+            if config_key_names_a_reparsed_command_section(key)
+                && !reparsed_command_value_is_a_shell_body(token, assignment)
+            {
+                let section = config_key_section(key).unwrap_or(key);
+                return (index, Some(unbounded_reparsed_value_refusal(key, section)));
             }
             if is_hooks_path_key(key) {
                 return (
@@ -886,7 +943,55 @@ fn config_key_of(assignment: &str) -> &str {
 /// pin covers this direction would be honest about the residual and then hand
 /// it to a control that cannot cover it, which is `T-19-107`'s own failure mode
 /// — false reassurance in a control's own doc.
+///
+/// # THE REVISIT CONDITION, AND THE WITNESS IS A SCHEDULE RATHER THAN A CONTROL
+///
+/// **The trigger, named and concrete**, in the shape [`classify_git`]'s own
+/// deferred revisit condition uses: this constant and
+/// [`REPARSED_COMMAND_SECTIONS`] are both claims about ONE git version, recorded
+/// at [`CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION`]. **When the
+/// installed `git --version` differs from that string, BOTH constants are
+/// re-derived against the new git — by reading its release notes for a new
+/// configuration-splicing section and a new value it re-parses as a command
+/// line — and the recorded version is updated.**
+/// [`the_config_section_constants_record_the_git_version_they_were_derived_against`]
+/// fails when the two disagree, and its message says to re-derive, never to
+/// delete the assertion.
+///
+/// **That assertion is a SCHEDULE, NOT A CONTROL, and the two claims must not be
+/// read as contradicting each other.** It observes exactly one bit — that the
+/// installed version string moved off the recorded one — so it can tell a human
+/// **WHEN to look**. **It cannot tell them WHAT changed**: it does not observe a
+/// third indirection section or a second re-parsed config value appearing, and it
+/// stays GREEN on a git that added one without changing its version string.
+/// **The no-control claim above is therefore UNCHANGED — there is NO automated
+/// control over that direction** — and the witness merely schedules the human
+/// re-audit that is the only control there is. Its cost is stated rather than
+/// hidden: it fires on every git upgrade, including harmless ones, and **that IS
+/// the schedule**.
+///
+/// **The provenance is recorded rather than smoothed into a clean sentence.** An
+/// earlier draft of plan `19-25` stated the no-control claim and then added the
+/// witness in the same breath, in a way that read as the witness BEING the
+/// control — `T-19-107`'s own shape arriving in the round that inherited it — and
+/// a plan-check caught it, exactly as a plan-check caught round 7's residue
+/// hidden behind a pin that could not observe it. The residue paragraph above
+/// carries that earlier correction; this paragraph carries this one.
 const INDIRECTION_SECTIONS: &[&str] = &["include", "includeIf"];
+
+/// The `git --version` [`INDIRECTION_SECTIONS`] and [`REPARSED_COMMAND_SECTIONS`]
+/// were both derived against.
+///
+/// Both constants are enumerations of ONE git's configuration grammar, measured
+/// rather than read from documentation. This records which git, so the claim has
+/// a subject — and so
+/// [`the_config_section_constants_record_the_git_version_they_were_derived_against`]
+/// can fire when the installed git moves off it.
+///
+/// **What it is NOT: it is not a control over either constant's fail-open
+/// residue.** See [`INDIRECTION_SECTIONS`]'s revisit condition for the
+/// schedule-versus-control distinction, which holds here in the same terms.
+pub const CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION: &str = "git version 2.43.0";
 
 /// The SECTION half of a git config key: the text before the **first** `.`.
 ///
@@ -1003,6 +1108,265 @@ fn unbounded_config_assignment_refusal(key: &str, section: &str) -> GitVerdict {
              be established; the command is refused rather than guessed at. To proceed: \
              set the key the included file would have set, directly, so the guard can \
              see it; or drop the directive"
+        ),
+    )
+}
+
+/// The config SECTIONS whose VALUE git re-parses as a **git command line,
+/// in-process, INCLUDING its own leading options**.
+///
+/// **A SECOND constant beside [`INDIRECTION_SECTIONS`], never an entry in it.**
+/// That constant is a closed grammatical fact about FILE SPLICING — a value that
+/// names a file read at the directive's precedence. This one is a closed
+/// grammatical fact about COMMAND RE-PARSING — a value that is itself a command
+/// line. Conflating them would make that constant's own doc false, would make the
+/// refusal message name a mechanism that did not produce it (D-24), and would
+/// merge two residues that need two different revisit conditions.
+///
+/// # WHAT GIT RE-PARSES FROM A CONFIG VALUE — THREE KINDS, ONE REACHES LAYER 3
+///
+/// Measured against `git version 2.43.0` with the exact
+/// `GIT_CONFIG_COUNT`/`KEY_0`/`VALUE_0` triplet [`super::cred::hooks_path_env`]
+/// emits as the control (it alone resolves `core.hooksPath` to `/ENV_WINS`):
+///
+/// ```text
+/// control, no carrier                                            -> /ENV_WINS
+/// -c alias.a='-c include.path=<f> config --get core.hooksPath' a -> /INCLUDE_WINS   K1
+/// -c alias.b='!git config --get core.hooksPath' b                -> /ENV_WINS       K2
+/// ```
+///
+/// * **K1 — re-parsed as a GIT command line, IN-PROCESS, including its leading
+///   options.** `alias.<name>` with a non-`!` body. **Measurement says it is the
+///   ONLY member**, probed across all 29 enumerated K2 keys, and it is the whole
+///   of `T-19-108`. Git applies the `-c` inside the VALUE at command-line
+///   precedence, so `core.hooksPath` becomes unknowable from this line without
+///   the string `core.hooksPath` appearing anywhere on it — one REGION over from
+///   the gap [`config_key_names_an_indirection_section`] closes.
+/// * **K2 — re-parsed as a SHELL command line, run as a CHILD that INHERITS the
+///   injection.** `alias.<name>` with a `!` body, `core.pager`, `pager.<cmd>`,
+///   `core.editor`, `sequence.editor`, `core.askPass`, `credential.helper`,
+///   `core.sshCommand`, `core.gitProxy`, `core.fsmonitor`,
+///   `core.alternateRefsCommand`, `diff.external`, `diff.<d>.command`,
+///   `diff.<d>.textconv`, `merge.<d>.driver`, `mergetool.<t>.cmd`,
+///   `difftool.<t>.cmd`, `filter.<n>.clean`/`.smudge`/`.process`, `gpg.program`,
+///   `uploadpack.packObjectsHook`, `protocol.<n>.command`,
+///   `remote.<n>.uploadpack`/`.receivepack`, `trailer.<t>.command`,
+///   `submodule.<n>.update`, `web.browser`/`browser.<t>.cmd`. **NONE of them
+///   needs an entry here, and the reason is a MEASUREMENT rather than a category
+///   argument**: the child's own environment still carries the envelope's
+///   triplet, so layer 3 is intact for the whole family. Four representatives
+///   were driven with the child's environment DUMPED — a `!` alias body,
+///   `diff.external`, `credential.helper` (via `git credential fill`, which needs
+///   piped stdin to invoke the child at all) and `filter.<n>.clean` — every one
+///   printing `CHILD_ENV COUNT=1 KEY_0=core.hooksPath VALUE_0=/ENV_WINS`.
+///   **`core.pager` and `core.editor` were NOT exercised in that harness and are
+///   NOT claimed.** A K2 member that does NOT inherit would be a FINDING.
+/// * **K3 — re-parsed as a FILE PATH spliced at the directive's precedence.**
+///   [`INDIRECTION_SECTIONS`]. Closed by plan `19-23`.
+///
+/// So this constant names **ONE section**, and it names it because that section
+/// is where K1 lives.
+///
+/// # THE RESIDUE, STATED PLAINLY AND HANDED TO NO CONTROL — THREE DIRECTIONS
+///
+/// **This constant is a recognition of a closed grammatical fact, NOT a
+/// fail-closed default. Its SILENCE IS A PERMIT**, exactly as
+/// [`INDIRECTION_SECTIONS`]'s is. **This rule fails OPEN in THREE named
+/// directions and NOT ONE of them has an automated control:**
+///
+/// 1. **An `alias.*` already present in a config file the guard never saw a write
+///    to.** The guard is stateless and argv-only: `git co` is an unknown verb at
+///    exit 0 and stays there. Under the envelope a user's own global aliases are
+///    out of reach, because `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` both point
+///    at the generated helper-free file — but a repo-local `.git/config` alias
+///    predating the run, or one written by a means that is not `git config`, is
+///    LIVE. That is `T-19-86`'s shape and it stays OPEN.
+/// 2. **A `!`-bodied body carrying its own carrier.** The `!` arm below is a
+///    carve-out, so audit 7's destructive pair —
+///    `git config alias.q '!git -c include.path=<evil> push --force origin
+///    HEAD:refs/heads/main'` then `git q`, which rewrote a bare remote's `main` —
+///    **STILL WORKS after this rule.** Closing it means taking on `T-19-86`,
+///    which is out of scope by explicit user decision and whose rows are pinned
+///    PERMITTED in files this rule's round may not edit.
+/// 3. **A future git that re-parses a SECOND config value as a git command line
+///    with its own leading options.** Same shape as [`INDIRECTION_SECTIONS`]'s
+///    residue, same absence of control. The pin below holds the REVERSE direction
+///    only — it turns red if this git stops re-parsing a section this constant
+///    already NAMES — and **it cannot observe a section it does not name, because
+///    it iterates these entries and an entry that does not exist is never
+///    probed.**
+///
+/// # THE REVISIT CONDITION, AND THE WITNESS IS A SCHEDULE RATHER THAN A CONTROL
+///
+/// **The trigger, named and concrete**: this constant and
+/// [`INDIRECTION_SECTIONS`] are both claims about ONE git version, recorded at
+/// [`CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION`]. **When the installed
+/// `git --version` differs from that string, BOTH are re-derived against the new
+/// git and the recorded version is updated.**
+///
+/// **The assertion that fires on that is a SCHEDULE, NOT A CONTROL.** It observes
+/// exactly one bit — the version string moved — so it says **WHEN to look**. **It
+/// cannot say WHAT changed**: it does not observe a second re-parsed config value
+/// or a third indirection section appearing, and it stays GREEN on a git that
+/// added one without changing its version string. **So the no-control claim above
+/// stands unchanged beside it: there is NO automated control over any of the
+/// three directions**, and the witness schedules the human re-audit that is the
+/// only control there is. It fires on every git upgrade, including harmless ones,
+/// and that IS the schedule.
+///
+/// **The provenance, recorded rather than presented as a clean sentence**: an
+/// earlier draft of plan `19-25` put the no-control claim and the witness in the
+/// same breath in a way that read as the witness being the control —
+/// `T-19-107`'s own shape arriving in the round that inherited it — and a
+/// plan-check caught it, the same catch round 7's residue needed.
+const REPARSED_COMMAND_SECTIONS: &[&str] = &["alias"];
+
+/// Whether a config key's SECTION names a value git RE-PARSES as a command line.
+///
+/// **Mirrors [`config_key_names_an_indirection_section`] exactly**, and
+/// deliberately: [`config_key_section`]'s answer only, compared with
+/// `eq_ignore_ascii_case` because git folds section names — measured,
+/// `-c ALIAS.q=<body> q` resolves the body's own carrier exactly as
+/// `-c alias.q=<body> q` does.
+///
+/// # THE SUBSECTION AND THE VARIABLE ARE NEVER READ, AND THAT IS THE RULE
+///
+/// * **The SUBSECTION is not read** because `alias` has none: git's alias grammar
+///   is `alias.<name>`, two halves and no condition between them. Reading a half
+///   that does not exist could only introduce a case rule for nothing.
+/// * **The VARIABLE is not read** because every variable in the `alias` section
+///   IS an alias name — an open family by construction, since the name is chosen
+///   by whoever writes the config. Enumerating it would be enumerating the
+///   attacker's choices.
+///
+/// # A KEY WITH NO SECTION IS CONFINED, AND THAT IS LOAD-BEARING
+///
+/// `None` answers `false`. A key with no `.` names no section, so it provably is
+/// not an alias; real git RUNS `git -c a=b version` at rc 0 and errors only when
+/// something READS the key. It therefore falls through to [`is_hooks_path_key`]
+/// exactly as it did before this rule existed.
+///
+/// **Refusing it would turn round 7's entire callee-grammar generative property
+/// permanently red in a file this module's rules may not edit**:
+/// `tests/envelope_wrapper_class.rs`'s `CALLEE_KNOWN_LEADING_PREFIX` is
+/// `"-c a=b"` and every case of that property is spliced behind it.
+///
+/// # AND IT IS A SECTION COMPARISON, NEVER A PREFIX OR SUBSTRING TEST
+///
+/// `aliasx.q` and `notalias.q` are sections of their own — git re-parses nothing
+/// from either — and both are pinned PERMITTED. `key.starts_with("alias")` turns
+/// the first red and `key.contains("alias")` turns the second red. Only the text
+/// before the FIRST `.` keeps both green.
+fn config_key_names_a_reparsed_command_section(key: &str) -> bool {
+    match config_key_section(key) {
+        Some(section) => REPARSED_COMMAND_SECTIONS
+            .iter()
+            .any(|known| section.eq_ignore_ascii_case(known)),
+        // No `.`, so no section, so provably not an alias. CONFINED.
+        None => false,
+    }
+}
+
+/// Whether a re-parsed-command assignment's VALUE is a SHELL body — git's own
+/// rule, which is **the first byte and nothing else**.
+///
+/// Measured against `git version 2.43.0` in the spellings that draw the boundary,
+/// with the envelope's own injection as the control (`/ENV_WINS` alone):
+///
+/// ```text
+/// alias.a='-c include.path=<f> config --get core.hooksPath'  -> /INCLUDE_WINS  IN-PROCESS
+/// alias.b='!git config --get core.hooksPath'                 -> /ENV_WINS      SHELL CHILD
+/// alias.g='config --get core.hooksPath !x'  (`!` not first)  -> /ENV_WINS      IN-PROCESS
+/// alias.q='"!git config --get core.hooksPath"'    (QUOTED)   -> expansion of alias 'q' failed;
+///                                                               '!git …' is not a git command
+/// alias.t='<TAB>!git config --get core.hooksPath'            -> expansion of alias 't' failed
+/// ```
+///
+/// * **first byte `!` → a shell command line run in a CHILD that INHERITS the
+///   envelope's `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` triplet → CONFINED.**
+/// * **anything else → re-parsed IN-PROCESS at command-line precedence →
+///   UNBOUNDED.**
+///
+/// **The QUOTED-BODY row is what shows reading ONE byte is not a loophole.** Its
+/// first byte is `"`, so this returns `false` and the assignment is refused — and
+/// that refusal is CORRECT: git's error names the whole *dequoted* string as not
+/// a **git** command, i.e. its own `split_cmdline` handled it in-process and it
+/// never reached a shell. The quoting that would smuggle a `!` past a naive check
+/// also takes the body out of the shell path entirely. **No spelling was found in
+/// which the first byte IS `!` and git nonetheless re-parses in-process; a
+/// counterexample is a FINDING, not a row.**
+///
+/// # THE `!` ARM IS A CARVE-OUT FOR `T-19-86`'s REGISTERED ROWS, AND IT LEAVES A
+/// # DESTRUCTIVE PAIR WORKING
+///
+/// `tests/envelope_command_position.rs:550` pins
+/// `git -c alias.p='!git push --force origin main' p` PERMITTED, and
+/// `tests/envelope_config_resolution.rs:1539-1543` pins
+/// `git config alias.p "!git push --force origin HEAD:refs/heads/main"` PERMITTED.
+/// Both are registered `T-19-86` rows, OPEN at `high` by explicit user scoping
+/// decision. **So audit 7's `!`-bodied destructive pair still works after this
+/// rule**, and that is stated here rather than left to be discovered.
+///
+/// # A VALUE THE GUARD CANNOT READ IS UNBOUNDED, AND THAT COMPLETES THE CLAUSE
+/// # OVER BOTH CARRIERS
+///
+/// Two shapes deliver no readable body, and both answer `false` — the fail-closed
+/// direction:
+///
+/// * **no `=` in the assignment.** [`config_key_of`] returns the whole token, so
+///   there is no value half at all. `git -c alias.q status` sets the key to
+///   boolean true; real git resolves the control value (`/ENV_WINS`), so there is
+///   no harm on git's side — but the guard cannot establish that from argv and
+///   refuses rather than guesses.
+/// * **a `--config-env` carrier.** Its value half is an **environment variable
+///   NAME**, not a body, and the body lives in the environment, which this pure
+///   argv function does not read. **This is a MEASURED requirement rather than a
+///   conservatism**: `git --config-env=alias.q='!EVIL'` with a NON-`!` body in the
+///   variable `!EVIL` resolves `/INCLUDE_WINS`, so a first-byte test applied
+///   uniformly across both carriers would read the `!` of a variable NAME as
+///   git's shell rule and fail OPEN on exactly that row. The carrier is read from
+///   `argv[index]`, the token [`scan_leading`]'s loop already holds — **no new
+///   reading site, no second pass, and no arm added to
+///   [`leading_git_option`]**, whose two carriers already reach the same key
+///   check.
+fn reparsed_command_value_is_a_shell_body(carrier: &str, assignment: &str) -> bool {
+    // `--config-env` delivers an environment variable NAME where `-c` delivers a
+    // body. Its first byte is the NAME's, never the body's, so it is unreadable.
+    if carrier == "--config-env" || carrier.starts_with("--config-env=") {
+        return false;
+    }
+    match assignment.split_once('=') {
+        Some((_, value)) => value.starts_with('!'),
+        // No value half to read a first byte from.
+        None => false,
+    }
+}
+
+/// The refusal an assignment whose value git RE-PARSES AS A COMMAND LINE earns,
+/// naming the KEY and the SECTION and never quoting the command back (SAFE-04).
+///
+/// **A refusal of its own rather than a reuse of
+/// [`unbounded_config_assignment_refusal`], and the separation is required rather
+/// than tidy.** That message says a file is spliced in; this line splices no
+/// file. A refusal that named file splicing here would attribute itself to a
+/// mechanism that did not produce it (D-24) — the defect plan `19-21`'s executor
+/// reported as a blocker.
+///
+/// **The recovery step is one git ACCEPTS**: run the command the alias would have
+/// run. That is the correction plan `19-21`'s attached-spelling wording needed —
+/// a message must not promise a step git may reject — and it is what keeps this a
+/// control a user can act on rather than one that gets switched off (AR-19-11).
+fn unbounded_reparsed_value_refusal(key: &str, section: &str) -> GitVerdict {
+    refuse(
+        ParkReason::EnvelopeAssertionFailed,
+        format!(
+            "this command sets the git configuration key `{key}`, whose `{section}` \
+             section names a value git RE-PARSES as a git command line — in-process and \
+             INCLUDING its own leading options — so what core.hooksPath will be while that \
+             re-parsed line executes, the setting the envelope's hook layer IS, cannot be \
+             established from this command; it is refused rather than guessed at. To \
+             proceed: run the command the alias would have run, directly, so the guard can \
+             read its options"
         ),
     )
 }
@@ -7613,6 +7977,447 @@ mod tests {
             None,
             "a key with no `.` names NO section. That is a positive fact about the key — real \
              git answers `error: key does not contain a section: a` — and not a parse failure."
+        );
+    }
+
+    /// Run `git` with arbitrary leading arguments **under the envelope's own
+    /// injection**, and report stdout+stderr.
+    ///
+    /// [`resolves_hooks_path_under_injection`] appends `config --get
+    /// core.hooksPath` itself, which is exactly wrong for an ALIAS probe: the
+    /// alias name IS the verb, so the reading command has to live inside the alias
+    /// BODY. This runs the argv the caller gives it and nothing else.
+    ///
+    /// The control is [`crate::envelope::cred::hooks_path_env`] itself rather than
+    /// a hand-written triplet, for the same reason its sibling gives: the pin
+    /// measures the mechanism the envelope actually emits, including its DERIVED
+    /// `GIT_CONFIG_COUNT`.
+    fn git_says_under_injection(
+        scratch: &std::path::Path,
+        args: &[&str],
+        extra_env: &[(&str, &str)],
+    ) -> String {
+        let mut command = std::process::Command::new("git");
+        command.args(args).current_dir(scratch);
+        for (key, value) in
+            crate::envelope::cred::hooks_path_env(std::path::Path::new("/ENV_WINS"))
+        {
+            command.env(key, value);
+        }
+        for (key, value) in extra_env {
+            command.env(key, value);
+        }
+        let output = command.output().expect(
+            "the re-parsed-value pin requires a real `git` on PATH. It is deliberately NOT \
+             written to skip when git is absent: a skipped pin is a fail-open pin, and git is \
+             already a hard runtime dependency of this guard.",
+        );
+        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&output.stderr));
+        text.trim().to_string()
+    }
+
+    #[test]
+    fn every_reparsed_command_section_the_guard_names_really_reparses_in_process() {
+        // =======================================================================
+        // **THE DIRECTION THIS PIN HOLDS, STATED BEFORE ANYTHING ELSE.**
+        //
+        // It holds the REVERSE direction only: it turns red if the installed git
+        // stops re-parsing the value of a section `REPARSED_COMMAND_SECTIONS`
+        // already NAMES. **It cannot observe a section it does not name, because
+        // it iterates that constant's entries and an entry that does not exist is
+        // never probed.**
+        //
+        // **It is therefore NOT a control over any of the three fail-open
+        // directions** `REPARSED_COMMAND_SECTIONS`'s doc states — an alias already
+        // persisted in a config file the guard never saw a write to; a `!`-bodied
+        // body carrying its own carrier, which leaves audit 7's destructive pair
+        // WORKING; and a future git that re-parses a SECOND config value as a git
+        // command line. There is NO automated control over any of them. Saying
+        // otherwise here would be false reassurance in a control's own doc —
+        // `T-19-107`'s failure mode, committed inside the phase that registers it.
+        // =======================================================================
+        let scratch = tempfile::TempDir::new().unwrap();
+        config_resolution_scratch_repo(scratch.path());
+
+        let include_file = scratch.path().join("inc.cfg");
+        std::fs::write(&include_file, "[core]\n\thooksPath = /INCLUDE_WINS\n").unwrap();
+        let include_path = include_file.display().to_string();
+        let read_back = format!("-c include.path={include_path} config --get core.hooksPath");
+
+        // --- the NON-VACUITY CONTROL. Without it every "the body's own carrier
+        //     wins" assertion below could be passing on a probe that never
+        //     observed the envelope's injection at all.
+        let control = git_says_under_injection(
+            scratch.path(),
+            &["config", "--get", "core.hooksPath"],
+            &[],
+        );
+        assert_eq!(
+            control, "/ENV_WINS",
+            "the envelope's own `hooks_path_env` triplet must resolve `core.hooksPath` to its \
+             injected value with no carrier present. If it does not, this probe is not \
+             observing the injection and EVERY assertion in this pin is vacuous. Got: {control}"
+        );
+
+        // --- floor: at least ONE re-parsed-command section is named. The
+        //     arithmetic: measurement says `alias` is K1's ONLY member on git
+        //     2.43.0, probed across all 29 enumerated K2 keys, so one is the
+        //     measured count and not a round number. The correct response to this
+        //     failing is to RESTORE the measured section, never to lower the floor.
+        assert!(
+            !REPARSED_COMMAND_SECTIONS.is_empty(),
+            "`REPARSED_COMMAND_SECTIONS` must name at least the ONE section whose value git \
+             re-parses as a git command line including its leading options — `alias`. A \
+             constant short of that is a rule that fails OPEN on a carrier this git honours. \
+             RESTORE the entry; do not lower the floor. Got: {REPARSED_COMMAND_SECTIONS:?}"
+        );
+
+        // --- the pin itself, TWO-SIDED, over EVERY entry.
+        for section in REPARSED_COMMAND_SECTIONS {
+            // K1: a NON-`!` body is re-parsed IN-PROCESS, including its leading
+            // options, so the body's own `-c include.path=<f>` OUTRANKS the
+            // injection.
+            let in_process = git_says_under_injection(
+                scratch.path(),
+                &["-c", &format!("{section}.probe={read_back}"), "probe"],
+                &[],
+            );
+            assert_eq!(
+                in_process, "/INCLUDE_WINS",
+                "a NON-`!` `{section}.<name>` body must be re-parsed by git IN-PROCESS \
+                 INCLUDING its leading options, so the `-c include.path=<f>` inside the VALUE \
+                 OUTRANKS the envelope's injected `core.hooksPath`. `scan_leading` and \
+                 `classify_config` both refuse an assignment in this section on exactly that \
+                 basis. If this git no longer re-parses it, the refusal has become an \
+                 over-refusal with no hazard behind it and the entry must be RE-MEASURED — \
+                 this is the one direction this pin holds. Got: {in_process}"
+            );
+
+            // K2: a `!` body with NO CARRIER OF ITS OWN runs in a SHELL CHILD that
+            // INHERITS the injection, so layer 3 is intact for it. **This is what
+            // makes the `!` carve-out a measurement rather than a concession**, and
+            // a red here means the carve-out has lost its basis while two files
+            // this phase may not edit still pin a `!` body PERMITTED.
+            //
+            // **The body carries NO carrier deliberately, and a probe error is
+            // recorded rather than hidden**: an earlier draft of this pin used
+            // `!git -c include.path=<f> config --get core.hooksPath` and measured
+            // `/INCLUDE_WINS`. That was NOT a contradiction of the carve-out — it
+            // is fail-open direction (ii), a `!`-bodied body carrying its OWN
+            // carrier, which is `T-19-86` and is pinned separately below. The
+            // INHERITANCE fact needs a body whose own command line carries nothing.
+            let shell_child = git_says_under_injection(
+                scratch.path(),
+                &[
+                    "-c",
+                    &format!("{section}.shellprobe=!git config --get core.hooksPath"),
+                    "shellprobe",
+                ],
+                &[],
+            );
+            assert_eq!(
+                shell_child, "/ENV_WINS",
+                "a `!`-bodied `{section}.<name>` body carrying NO carrier of its own must run \
+                 in a SHELL CHILD that INHERITS the envelope's \
+                 `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` triplet, leaving layer 3 intact. That \
+                 measurement is the whole basis of the `!` carve-out in \
+                 `reparsed_command_value_is_a_shell_body`, and \
+                 `tests/envelope_command_position.rs:550` and \
+                 `tests/envelope_config_resolution.rs:1539-1543` both pin a `!` body PERMITTED \
+                 as a registered `T-19-86` row. Got: {shell_child}"
+            );
+
+            // **FAIL-OPEN DIRECTION (ii), PINNED AS A MEASUREMENT RATHER THAN
+            // ASSERTED IN PROSE.** A `!` body whose OWN command line carries a
+            // carrier reaches `core.hooksPath` anyway — the child inherits the
+            // injection, and then OUTRANKS it from its own argv. **That is audit
+            // 7's destructive pair and it STILL WORKS after this rule**, because
+            // closing it means taking on `T-19-86`, which is OPEN at `high` and out
+            // of scope by explicit user decision. A red here would mean the
+            // direction closed by accident, which would ALSO mean the two `T-19-86`
+            // rows pinned PERMITTED in files this phase may not edit had turned red.
+            let shell_child_with_its_own_carrier = git_says_under_injection(
+                scratch.path(),
+                &[
+                    "-c",
+                    &format!("{section}.carrierprobe=!git {read_back}"),
+                    "carrierprobe",
+                ],
+                &[],
+            );
+            assert_eq!(
+                shell_child_with_its_own_carrier, "/INCLUDE_WINS",
+                "**THIS RULE FAILS OPEN HERE AND THE PIN SAYS SO RATHER THAN HIDING IT.** A \
+                 `!`-bodied `{section}.<name>` body carrying a carrier in its OWN command line \
+                 reaches `core.hooksPath` after this rule, because the `!` arm is a carve-out \
+                 for `T-19-86`'s registered rows. Audit 7's destructive pair rewrote a bare \
+                 remote's `main` this way and STILL WORKS. This pin records that direction as \
+                 MEASURED; it does not close it and this rule does not claim to. Got: \
+                 {shell_child_with_its_own_carrier}"
+            );
+
+            // And the guard's own helper agrees about the same spelling, so the
+            // constant and the rule cannot drift apart.
+            assert!(
+                config_key_names_a_reparsed_command_section(&format!("{section}.probe")),
+                "`{section}.probe` re-parses in-process against real git but the guard's own \
+                 helper answers CONFINED for it. The measurement and the rule have drifted \
+                 apart."
+            );
+        }
+
+        // --- the DISCRIMINATION half, so this pin cannot pass on a probe that
+        //     reported `/INCLUDE_WINS` for everything. A near-miss SECTION
+        //     re-parses NOTHING, and both spellings are pinned PERMITTED in the
+        //     corpus.
+        for near_miss in ["aliasx", "notalias"] {
+            let resolved = git_says_under_injection(
+                scratch.path(),
+                &[
+                    "-c",
+                    &format!("{near_miss}.probe={read_back}"),
+                    "config",
+                    "--get",
+                    "core.hooksPath",
+                ],
+                &[],
+            );
+            assert_eq!(
+                resolved, "/ENV_WINS",
+                "`{near_miss}.probe` is a section of its own and git re-parses NOTHING from \
+                 it, so the injection must survive. If this reported `/INCLUDE_WINS` the pin \
+                 would be reporting `re-parses` for everything and the discrimination the rule \
+                 rests on would not exist. Got: {resolved}"
+            );
+            assert!(
+                !config_key_names_a_reparsed_command_section(&format!("{near_miss}.probe")),
+                "`{near_miss}.probe` must answer CONFINED. A rule written as \
+                 `key.starts_with(\"alias\")` lands red on `aliasx` and one written as \
+                 `key.contains(\"alias\")` lands red on `notalias`; both are pinned PERMITTED \
+                 in `tests/envelope_reparsed_value.rs`."
+            );
+        }
+
+        // --- **THE `--config-env` ROW, AND IT IS THE MEASUREMENT THAT FORCED THE
+        //     CARRIER TO BE READ.** The value half of a `--config-env` assignment
+        //     is an environment variable NAME, and a variable name may itself
+        //     begin with `!`. A first-byte test applied uniformly across both
+        //     carriers would read that `!` as git's shell rule and CONFINE a body
+        //     that git re-parses in-process — a fail-open the pin holds shut.
+        let via_env_bang = git_says_under_injection(
+            scratch.path(),
+            &["--config-env=alias.probe=!GSD_MM_REPARSE_PROBE", "probe"],
+            &[("!GSD_MM_REPARSE_PROBE", read_back.as_str())],
+        );
+        assert_eq!(
+            via_env_bang, "/INCLUDE_WINS",
+            "`--config-env=alias.<n>=!VAR` delivers a variable NAME whose first byte is `!` \
+             while the BODY in that variable has no `!` at all, and git re-parses the body \
+             IN-PROCESS. **A uniform first-byte test over both carriers fails OPEN here**, \
+             which is why `reparsed_command_value_is_a_shell_body` reads the CARRIER from the \
+             token `scan_leading` already holds and treats every `--config-env` value as \
+             unreadable. Got: {via_env_bang}"
+        );
+        assert!(
+            !reparsed_command_value_is_a_shell_body(
+                "--config-env=alias.probe=!GSD_MM_REPARSE_PROBE",
+                "alias.probe=!GSD_MM_REPARSE_PROBE"
+            ),
+            "the guard must answer UNBOUNDED for the row measured immediately above. If it \
+             answers CONFINED, the rule and the measurement have drifted apart in the \
+             fail-OPEN direction."
+        );
+    }
+
+    #[test]
+    fn the_reparse_helper_reads_the_section_and_git_s_own_one_byte_shell_rule() {
+        // The rule's own behaviour, over both halves of its answer. It needs no
+        // git: it is a statement about the guard, and the git-side facts it rests
+        // on are measured by the pin above.
+        for key in ["alias.q", "ALIAS.q", "alias.st", "Alias.LG"] {
+            assert!(
+                config_key_names_a_reparsed_command_section(key),
+                "`{key}` names a RE-PARSED-COMMAND section and must answer true. The rule \
+                 compares the text before the FIRST `.` against `REPARSED_COMMAND_SECTIONS` \
+                 with `eq_ignore_ascii_case` and reads nothing else."
+            );
+        }
+
+        for key in [
+            // A PREFIX rule lands red on the first and a SUBSTRING rule on the
+            // second; both are pinned PERMITTED in the corpus.
+            "aliasx.q",
+            "notalias.q",
+            // DOTLESS: no `.`, so no section, so provably not an alias. Refusing it
+            // would turn round 7's entire callee-grammar generative property
+            // permanently red behind `CALLEE_KNOWN_LEADING_PREFIX = "-c a=b"`.
+            "a",
+            // The other two families must fall through to their OWN clauses rather
+            // than being absorbed by this one, or the refusal would name a
+            // mechanism that did not produce it (D-24).
+            "include.path",
+            "core.hooksPath",
+            "user.name",
+        ] {
+            assert!(
+                !config_key_names_a_reparsed_command_section(key),
+                "`{key}` is CONFINED for this clause and must answer false. A prefix test on \
+                 `alias` lands red on `aliasx.q`; a substring test lands red on `notalias.q`; \
+                 a rule that refused a key it cannot decompose into a section lands red on \
+                 `a`; and one that absorbed `include.path` or `core.hooksPath` would attribute \
+                 its refusal to a mechanism that did not produce it (D-24)."
+            );
+        }
+
+        // --- **GIT'S OWN RULE IS THE FIRST BYTE**, and the carrier decides whether
+        //     there is a first byte to read at all. Every row below is measured in
+        //     `every_reparsed_command_section_the_guard_names_really_reparses_in_process`
+        //     or in `tests/envelope_reparsed_value.rs`'s real-git section.
+        for (carrier, assignment, is_shell, why) in [
+            (
+                "-c",
+                "alias.p=!git push --force origin main",
+                true,
+                "a `!` FIRST byte is a shell body run in a CHILD that inherits the injection \
+                 — measured `/ENV_WINS`. `tests/envelope_command_position.rs:550` pins this \
+                 PERMITTED as a registered `T-19-86` row.",
+            ),
+            (
+                "-c",
+                "alias.q=-c include.path=/tmp/evil.cfg status",
+                false,
+                "a NON-`!` body is re-parsed IN-PROCESS including its leading options — \
+                 measured `/INCLUDE_WINS`.",
+            ),
+            (
+                "-c",
+                "alias.g=config --get core.hooksPath !x",
+                false,
+                "a `!` that is NOT first is not a shell body — measured `/ENV_WINS`, because \
+                 git re-parses this in-process and the trailing `!x` is just an argument.",
+            ),
+            (
+                "-c",
+                "alias.q=\"!git -c include.path=/tmp/evil.cfg status\"",
+                false,
+                "**THE QUOTED-BODY ROW — the one that shows reading ONE byte is not a \
+                 loophole.** Its first byte is `\"`. Git's own `split_cmdline` DEQUOTES it \
+                 in-process and looks for a GIT command of that name; it never reaches a \
+                 shell. The quoting that would smuggle a `!` past a naive check also takes \
+                 the body out of the shell path entirely.",
+            ),
+            (
+                "-c",
+                "alias.t=\t!git -c include.path=/tmp/evil.cfg status",
+                false,
+                "a TAB before `!` makes git refuse to EXPAND the alias at all — measured \
+                 `expansion of alias 't' failed; '' is not a git command`. The cost of \
+                 refusing it is refusing a body git would itself have refused to run.",
+            ),
+            (
+                "-c",
+                "alias.q",
+                false,
+                "no `=` at all, so `config_key_of` returns the whole token and there is NO \
+                 value half to read a first byte from. UNBOUNDED is the fail-closed answer.",
+            ),
+            (
+                "--config-env",
+                "alias.q=BODYVAR",
+                false,
+                "the separate-word second carrier: the value half is an environment variable \
+                 NAME and the body lives in the environment, which this pure argv function \
+                 does not read.",
+            ),
+            (
+                "--config-env=alias.q=BODYVAR",
+                "alias.q=BODYVAR",
+                false,
+                "the attached second carrier, same reason.",
+            ),
+            (
+                "--config-env=alias.q=!EVIL",
+                "alias.q=!EVIL",
+                false,
+                "**THE ROW A UNIFORM FIRST-BYTE TEST FAILS OPEN ON.** The `!` belongs to the \
+                 variable NAME, not to the body — measured `/INCLUDE_WINS` with a non-`!` \
+                 body in `!EVIL`.",
+            ),
+        ] {
+            assert_eq!(
+                reparsed_command_value_is_a_shell_body(carrier, assignment),
+                is_shell,
+                "`{carrier}` / `{assignment}` must answer {is_shell}. {why}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_config_section_constants_record_the_git_version_they_were_derived_against() {
+        // =======================================================================
+        // **WHAT THIS ASSERTION IS NOT, STATED BEFORE ANYTHING ELSE: IT IS A
+        // SCHEDULE, NOT A CONTROL.**
+        //
+        // It observes exactly ONE bit — that the installed `git --version` differs
+        // from the string both constants were derived against — so it can tell a
+        // human **WHEN to look**. **It cannot tell them WHAT changed.** It does
+        // NOT observe a third indirection section appearing, it does NOT observe a
+        // second re-parsed config value appearing, and it stays GREEN on a git
+        // that added one without changing its version string.
+        //
+        // **So it does not weaken, qualify or discharge the no-control claim in
+        // either `INDIRECTION_SECTIONS`'s or `REPARSED_COMMAND_SECTIONS`'s residue
+        // paragraph: there is NO automated control over any of those fail-open
+        // directions.** What this assertion adds is the SCHEDULE for the human
+        // re-audit that is the only control there is — it turns *a human
+        // remembers to read the release notes* into *a test fires*.
+        //
+        // **Its cost is stated rather than hidden: it fires on EVERY git upgrade,
+        // including harmless ones. That IS the schedule.** The correct response is
+        // to RE-DERIVE both constants against the new git and update the recorded
+        // version — never to delete this assertion.
+        //
+        // **Provenance, recorded rather than smoothed over**: an earlier draft of
+        // plan `19-25` stated the no-control claim and added this witness in the
+        // same breath, in a way that read as the witness BEING the control —
+        // `T-19-107`'s own shape arriving in the round that inherited it — and a
+        // plan-check caught it, exactly as a plan-check caught round 7's residue
+        // hidden behind a pin that could not observe it.
+        // =======================================================================
+        //
+        // **It MUST NOT skip, warn-without-failing, or pass when `git` is absent.**
+        // A skipped pin is a fail-open pin and this phase has been punished for
+        // that shape six times; git is already a hard runtime dependency of this
+        // guard.
+        let output = std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .expect(
+                "the version witness requires a real `git` on PATH. It is deliberately NOT \
+                 written to skip when git is absent: a skipped pin is a fail-open pin.",
+            );
+        let installed = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        assert_eq!(
+            installed, CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION,
+            "\n\nTHE INSTALLED GIT HAS MOVED OFF THE VERSION BOTH CONFIG-SECTION CONSTANTS \
+             WERE DERIVED AGAINST.\n\n\
+             `INDIRECTION_SECTIONS` names the sections through which this git splices \
+             configuration in from a FILE. `REPARSED_COMMAND_SECTIONS` names the sections \
+             whose VALUE this git re-parses as a COMMAND LINE. **Both are enumerations of ONE \
+             git's grammar, and both fail OPEN on a section they do not name.**\n\n\
+             **THE CORRECT RESPONSE IS TO RE-DERIVE BOTH CONSTANTS AGAINST THE NEW GIT AND \
+             UPDATE `CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION` — NEVER TO DELETE \
+             THIS ASSERTION.** Read the new git's release notes for (a) a new \
+             configuration-splicing section and (b) a new config value re-parsed as a git \
+             command line, then update the constants and this string.\n\n\
+             **This assertion is a SCHEDULE, not a CONTROL.** It has observed only that the \
+             version string moved. It has NOT observed that anything changed, and it would \
+             have stayed green on a git that added a section without changing its version \
+             string. The no-control claim in both constants' residue paragraphs is \
+             unchanged.\n\n\
+             derived against : {CONFIG_SECTION_CONSTANTS_DERIVED_AGAINST_GIT_VERSION:?}\n\
+             installed       : {installed:?}"
         );
     }
 
