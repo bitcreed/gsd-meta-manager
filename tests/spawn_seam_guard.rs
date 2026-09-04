@@ -56,6 +56,20 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     // probe can be pointed at a REAL live pid whose cmdline lacks the run id.
     // No agent, and nothing in the module's production surface spawns anything.
     "src/driver/liveness.rs",
+    // The real-git DRIFT PIN inside this module's own in-source tests: the
+    // two-sided probe that classifies every entry of the leading-option grammar
+    // constants against the installed `git`. No agent.
+    //
+    // **The guard's own path shells out to NOTHING and must not**, because it
+    // runs synchronously on the agent's `PreToolUse` critical path — a reproduced
+    // 180-240 second hang is why `push_needs_resolved_dests` exists — and because
+    // a guard that asks the program it guards to describe its own grammar can be
+    // lied to by a `git` earlier on `PATH`. This file-level entry gives that
+    // property up, so it is replaced by a STRICTER one local to the module:
+    // `the_guards_own_path_shells_out_to_nothing` in `policy.rs`'s own test
+    // module asserts no spawn marker appears in the file's text ABOVE its
+    // `#[cfg(test)]`, which is the production half this entry stops covering.
+    "src/envelope/policy.rs",
     // The detached driver spawn; it re-invokes this same binary, so the
     // capability gate runs in the child.
     "src/driver/spawn.rs",

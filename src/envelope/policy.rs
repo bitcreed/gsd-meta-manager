@@ -6144,6 +6144,77 @@ mod tests {
     /// was first written there.
     const GIT_GLOBAL_UNPROBED_OPTS: &[&str] = &["--help", "-h"];
 
+    #[test]
+    fn the_guards_own_path_shells_out_to_nothing() {
+        // **The compensating control for this file's `SPAWN_ALLOWLIST` entry, and
+        // it is STRICTER than the entry it replaces.**
+        //
+        // `tests/spawn_seam_guard.rs` asserts that no file under `src/` outside a
+        // declared allowlist contains a process-spawn site. The drift pin below
+        // needs one — it asks the installed `git` to classify its own option
+        // grammar — so this file was added to that allowlist, which makes the
+        // control stop looking at this file ENTIRELY. That is a file-level
+        // permission for a test-only need, so the property it gives up is
+        // re-asserted here at the granularity that actually matters.
+        //
+        // **The property: the GUARD's path shells out to nothing.** It runs
+        // synchronously on the agent's `PreToolUse` critical path, where a
+        // reproduced 180-240 second hang is the reason `push_needs_resolved_dests`
+        // exists at all; and a guard that asks the program it is guarding to
+        // describe its own grammar can be lied to by a `git` earlier on `PATH` —
+        // the same surface this phase's own argv-printing shims demonstrate. The
+        // probe therefore lives in a TEST and nowhere else.
+        const SELF: &str = include_str!("policy.rs");
+        const SPAWN_MARKERS: &[&str] = &["Command::new(", "process_group("];
+
+        // Everything above the FIRST `#[cfg(test)]` line is the production half.
+        // This is the same sentinel `tests/envelope_wrapper_class.rs`'s
+        // anti-vacuity stripper uses, and the test module is the last item here.
+        let production: String = SELF
+            .lines()
+            .take_while(|line| line.trim_start() != "#[cfg(test)]")
+            .map(|line| format!("{line}\n"))
+            .collect();
+
+        // POSITIVE CONTROLS, so an absence assertion cannot pass because the
+        // stripper ate the file or the marker was never findable.
+        assert!(
+            SELF.contains("Command::new("),
+            "the raw source of this file must contain `Command::new(` — the drift pin's own \
+             probe uses it. If it does not, this control is asserting the absence of a \
+             string that was never there and certifies nothing."
+        );
+        assert!(
+            production.contains("fn scan_leading"),
+            "the production half must contain `fn scan_leading`. If it does not, the \
+             `#[cfg(test)]` sentinel matched too early and every assertion below is being \
+             made about a truncated string."
+        );
+        assert!(
+            production.len() >= 40_000,
+            "the production half must be substantially the whole guard. Got {} bytes.",
+            production.len()
+        );
+
+        for marker in SPAWN_MARKERS {
+            let offenders: Vec<&str> = production
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .filter(|line| line.contains(marker))
+                .collect();
+            assert!(
+                offenders.is_empty(),
+                "`{marker}` appears in the PRODUCTION half of `policy.rs`. The guard must \
+                 never spawn a process: it runs synchronously on `PreToolUse`, and a guard \
+                 that asks the program it guards to describe its own grammar can be lied to \
+                 by a binary earlier on `PATH`. Move it into the `#[cfg(test)]` module or \
+                 delete it; do NOT relax this control, and in particular do not rely on \
+                 this file's `SPAWN_ALLOWLIST` entry, which exists only for the drift pin. \
+                 Offending lines: {offenders:?}"
+            );
+        }
+    }
+
     /// Run one probe against the installed `git` and return stdout+stderr.
     ///
     /// Panics rather than skipping when `git` is missing — see the section
