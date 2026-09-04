@@ -1442,3 +1442,170 @@ either.
 
 **`T-19-86` and `T-19-91` remain OPEN at `high`, so `/gsd-secure-phase 19` is NOT
 cleared by this plan.** Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.
+
+---
+
+## Plan 19-24 — round 9's CORPUS (the rules are `19-25`'s)
+
+**This plan closes NOTHING.** It writes the corpus and the reproducers for the
+REGION round 8's rule does not reach and stops, RED, with zero `src/` hunks.
+`T-19-105`, `T-19-106`, `T-19-108` and `T-19-109` are all OPEN at this plan's end.
+**`T-19-86` and `T-19-91` remain OPEN at `high`, so `/gsd-secure-phase 19` is NOT
+cleared by this plan, by `19-25`, or by the two together.** Only the
+WRAPPER-OPERAND sub-class of `T-19-60` is closed.
+
+### `T-19-108` — a carrier inside a value the guard CONFINED — OPEN, `high`
+
+**Corpus RED, rules are `19-25`'s.** Round 8's confinement clause is the right
+SHAPE of rule — it asks whether an assignment can be BOUNDED, not whether it spells
+a name — but it reads config in TWO regions (the leading-option region
+`scan_leading` walks, and the environment) while git resolves from a THIRD: a value
+the guard itself confined and let through. Git re-parses a non-`!` `alias.<name>`
+body as a git command line IN-PROCESS **including its leading options**, so
+`alias.q` correctly answers `false` to `config_key_names_an_indirection_section`,
+is CONFINED, and carries the indirection into a position the scan never reads.
+
+Measured against the built binary, fresh envelope root per row, walk EMPTY on every
+one; confirmed against real git 2.43.0 with the envelope's own
+`GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` injection as the control (`/ENV_WINS`):
+
+- `-c alias.q="-c include.path=<f> push --force origin HEAD:refs/heads/main" q` →
+  exit 0 on a SINGLE line; `-c alias.a='-c include.path=<f> config --get
+  core.hooksPath' a` → `/INCLUDE_WINS`.
+- The PERSISTED arm is live in every spelling (`--global`, `--worktree`, `--file`,
+  `--add`, `--replace-all`) and at both persistence levels.
+- The bare-remote fixture was REBUILT with a CONTROL beside every leg: the plain
+  in-namespace push refused with the ref unmoved; **the carrier-free alias control
+  also refused with the ref unmoved** (which is what isolates the CARRIER from the
+  ALIAS); the persisted non-shell alias carrying the include moved the ref
+  `0084939` → `4a77396`; the `-c` delivery moved it `4a77396` → `d833ba0`; the
+  `pre-commit` point fell the same way.
+
+**`T-19-108` will close only AS SCOPED.** The non-shell alias body closes; audit
+7's `!`-bodied destructive pair does NOT — that is `T-19-86`.
+
+### `T-19-109` — the counted-completeness claim — OPEN, `low`
+
+Registered here; the correction is `19-25`'s. `cred.rs:246-260`'s "FIVE forms"
+table and the "RESTORATION of layer 3's catch" claim in the plan-19-22 record, the
+plan-19-23 record and `19-23-SUMMARY.md` are incomplete: a sixth form exists — a
+non-`!` `alias.<name>` body carrying `-c include.path=<f>`, measured
+`/INCLUDE_WINS` against the control's `/ENV_WINS` and measured moving a bare
+remote's ref. **This plan carries zero `src/` hunks and does not correct
+`cred.rs`.**
+
+### `T-19-105` — the corpus could not draw the class — OPEN for the NINTH round
+
+`T-19-76`'s failure mode for the ninth consecutive round, and **for the SECOND
+round running the gap was one REGION over on the SAME axis rather than one axis
+further out.** Audit 8 verified mechanically that `CONFIG_RESOLUTION_CLASSES`'s
+five classes were all argv or environment carriers and that
+`grep -rn "alias\.[a-z]*=\"-c\|alias.*include\.path" src/ tests/` returned nothing
+at all; re-verified at this plan's base commit, it still returned nothing.
+
+Repaired here in the only sense available to a corpus plan: a **SIXTH class on the
+EXISTING axis** — *a carrier delivered inside a config VALUE the guard confines* —
+with `MIN_CONFIG_RESOLUTION_CLASSES` raised 5 → 6, a `CONFIG_REPARSED_VALUE_CARRIERS`
+alphabet plus a `CONFIG_PERSISTED_REPARSED_VALUE_CARRIERS` arm, and floors
+re-derived and stated as exact equalities (264 cases / 111 refused / 148 permitted
+/ 5 persisted / 21 slots; per class 70 / 203 / 21 / 28 / 28 / 75, all confirmed by
+the counting test on the first run). **Standing it up as a FIFTH AXIS would have
+modelled a REGION as if it were a STAGE and lost the distinction audit 8 drew.**
+
+**Two deliveries, open for two DIFFERENT reasons**, asserted mechanically: the `-c`
+delivery IS read by round 8's region and IS confined (that overlap *is*
+`T-19-108`); the PERSISTED delivery is not read by that region at all, because
+`config` is the verb and `scan_leading` stops there. A rule written only inside
+`scan_leading` closes only the first.
+
+### `T-19-106` — the drift pins' REACH — **CORRECTED from CLOSED to OPEN, `medium`**
+
+**The entry at "Plan 19-23 … `T-19-106` — **CLOSED**" above is a MIS-CLOSURE and is
+corrected here rather than edited there.** Audit 8 re-opened it at `medium`:
+`GH_API_VALUE_OPTS` is a pure `gh api` constant, **`gh` 2.45.0 IS installed**, and
+the stated reason for leaving it unpinned ("`glab` is confirmed not installed") is
+a fact about a DIFFERENT callee.
+
+Re-measured at this plan's base commit with an **ENDPOINT-LESS** probe form
+(`gh api <opt>`), so no row touches the network. All seventeen entries answer
+`flag needs an argument`; `gh api --bogus-opt` answers `unknown flag:
+--bogus-opt`; and **`gh api --paginate` answers `accepts 1 arg(s), received 0`** —
+a POSITIONAL error, not a flag-level one, which is exactly what makes it the second
+negative control: the flag was ACCEPTED and consumed NO value. The endpoint-bearing
+form `gh api repos/o/r --paginate` makes a REAL HTTP REQUEST, so a pin written that
+way would be non-hermetic and would fail open on a machine without network or auth.
+
+**And a correction to audit 8's own suggestion, measured.** Removing `--hostname`
+from `FORGE_VALUE_OPTS` would be a **REGRESSION in the under-counting direction**:
+`glab --hostname gitlab.com mr create --title x` leaves exactly ONE ledger line
+today, while `glab --host …` — an option NOT in that constant — leaves ZERO. The
+disposition is **"record why", not "remove"**, and the work is `19-25`'s.
+
+### `T-19-86` — RECORDED MEASURABLY WIDER, and NOT closed
+
+**OPEN at `high` by explicit user scoping decision. This plan does not fix, close,
+narrow or re-scope it, and adds no remedy.** Its four registered rows plus the
+persisted-alias arm were re-measured at exit 0 and their pins are green and
+UNMODIFIED.
+
+**Audit 8 found it measurably WIDER than the register credits, and this plan
+records that with a measurement.** Three documents attribute a layer-3 catch to the
+closure of `T-19-103`: the `pre-push` hook fires when the alias body runs, so the
+inner push is caught. **That catch is ABSENT when the alias body carries a carrier
+of its own** — a `!` body runs in a child that inherits the injection and then
+applies its own command-line carrier on top of it *inside that child*. Re-measured
+at this plan's base commit, after `19-23` landed: audit 7's `!`-bodied destructive
+pair still moved the bare remote's ref, `d833ba0` → `9687d94`.
+
+**Audit 7's destructive demonstration therefore still works after this round**, and
+closing it would mean taking on `T-19-86`, whose two rows are pinned PERMITTED in
+`tests/envelope_command_position.rs:550` and
+`tests/envelope_config_resolution.rs:1539-1543` — files this round may not edit.
+**Git's rule is the FIRST BYTE**, measured in nine spellings, and the corpus fences
+it mechanically so `19-25` cannot be handed an undischargeable seam.
+
+### The fail-open residue's missing REVISIT CONDITION — recorded, no acceptance invented
+
+Recorded exactly as audit 8 recorded it: the admission is complete and correctly
+unclaimed in five places, the residual is acceptable and properly bounded, and the
+single gap is that its only control is a human reading a future git's release notes
+and **nothing schedules that**. `19-25` adds the revisit condition and a version
+witness. **That witness is a SCHEDULE and not a CONTROL** — it says WHEN to look and
+cannot say WHAT changed; it does not observe a new indirection or re-parsed section
+appearing, so the residues stay uncovered by any automated control and audit 8's
+judgement of them is unchanged. **This plan invents no acceptance and adds no `AR-`
+row.**
+
+### `policy.rs:6644`'s stale proportional-floor comment — DOCUMENTATION DRIFT, not fixed
+
+The comment cites "228,785 / 78.7%"; re-measured at this plan's base commit by
+splitting the file at its `#[cfg(test)]` sentinel, `policy.rs` is raw 372,920 /
+production **228,101**, i.e. 180,000 is **78.9%**. **The floor itself is correct and
+load-bearing**; only the arithmetic in its own comment has drifted. **This plan
+carries zero `src/` hunks and may not edit `policy.rs` at all**, so it is recorded
+here and left for a later round.
+
+### Still OPEN and unchanged by this plan
+
+- **`T-19-86`** — see above: OPEN at `high`, recorded WIDER, NOT closed.
+- **`T-19-91`** — OPEN at `high`, arms unweakened (`git reflog $S`,
+  `git reflog show $S`, `git symbolic-ref $S` at exit 0 with no second carrier), no
+  decision-operand rule added, no denylist extended.
+- **`T-19-96`** — left exactly as pinned by `19-16`.
+- **`T-19-74`** — core rows frozen.
+- **`T-19-84`, `T-19-85`, `T-19-61` … `T-19-73`** — open and unaccepted by explicit
+  user decision. `cred.rs`, `advisory.rs`, `scan.rs`, `config.rs`, `mod.rs` and
+  `hooks.rs` were not touched.
+- **the `glab --host` forge cell** — carried forward UNFIXED with its
+  unconfirmed-callee caveat. `command -v glab` was re-run at this plan's base
+  commit and found nothing, so the callee's grammar is still unconfirmed and it is
+  NOT claimed as a live bypass.
+- **the `T-19-17r` bookkeeping gap** — still **OUTSTANDING**. `19-17-SUMMARY.md`
+  calls it "accepted"; audits 5, 6, 7 and 8 all confirmed the measurement and both
+  pins and **all four deliberately declined to make the acceptance**. There is no
+  Accepted-Risks-Log row, no `AR-19-13` and no register row, and the word
+  "accepted" is not applied to it anywhere in this plan's artifacts. **This plan
+  does not make the acceptance, because accepting a risk is a human decision.**
+- **the three documented flakes** — the two `tests/driver_reattach.rs` failures and
+  the `tests/envelope_tracer.rs` ETXTBSY stub-write race, all pre-existing,
+  environmental and out of scope.
