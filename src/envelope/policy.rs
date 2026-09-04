@@ -333,6 +333,44 @@ fn refuse(reason: ParkReason, detail: String) -> GitVerdict {
 /// grammar, and the day they drift is the day the guard resolves a context for
 /// the wrong argv — or fails to resolve one for the right argv, which reads as
 /// an unresolvable destination and refuses a push that was inside the namespace.
+///
+/// # An UNESTABLISHED verb slot is a refusal, not the next non-`-` word
+///
+/// **This scan used to guess.** [`leading_git_option`] answered a word count, and
+/// for a spelling it did not recognise the answer was one — so the loop advanced a
+/// single word, landed on the option's VALUE, saw it did not begin with `-`, and
+/// broke with that value as the verb. [`classify_git`] then found that value in no
+/// denylist arm and answered `Allow`. `git --attr-source HEAD push --force origin
+/// main` exited 0 that way, and against a bare upstream it rewrote `main`.
+///
+/// **The fix inverts the failure direction rather than lengthening the list**, and
+/// it is the same fail-closed treatment [`resolve_program`]'s wrapper axis already
+/// has: a governed candidate whose command position cannot be established
+/// STRUCTURALLY is a refusal there, not a mis-index (`T-19-60`, audit 3). This
+/// scan was the one arm of the same question that was never given that treatment.
+/// A verb the guard cannot establish is now
+/// [`ParkReason::EnvelopeAssertionFailed`] — the identifier this module already
+/// uses for *the argv that runs is not the argv the classifier reads*.
+///
+/// **It is produced HERE, inside the one scan, and returned through the
+/// `(usize, Option<GitVerdict>)` channel that already carries the unreadable-key
+/// refusal below.** That is the one-scan-two-callers property being RELIED ON
+/// rather than worked around: [`push_needs_resolved_dests`] inherits the new
+/// refusal exactly as it inherits the existing one, because a command that will be
+/// refused needs no destination resolved. No new park reason, no second reading
+/// site, no change to [`classify_git`], and no arm added to
+/// [`resolve_program_with_head`].
+///
+/// **What it deliberately does NOT do.** It does not widen into tokens this scan
+/// does not treat as options: the break on a non-`-` token, the break on a bare
+/// `-` and the `--` end-of-options marker are the scan's termination conditions
+/// and they run BEFORE any option check, so `git - push --force origin main` stays
+/// permitted — real git answers `unknown option: -` — and `git -- push --force
+/// origin main` stays at `force_push_blocked`. And it is not a blanket refusal of
+/// anything beginning with `-`: `git --no-pager status`, `git -c user.name="$NAME"
+/// commit`, `git --git-dir=/tmp/g status` and `git -C /tmp status` all still run,
+/// which is the half that keeps this a grammar MODEL rather than a control that
+/// fails into unusability (AR-19-11).
 fn scan_leading(argv: &[&str]) -> (usize, Option<GitVerdict>) {
     let mut index = 0;
 
@@ -345,7 +383,17 @@ fn scan_leading(argv: &[&str]) -> (usize, Option<GitVerdict>) {
             index += 1;
             break;
         }
-        let (assignment, consumed) = leading_git_option(argv, index);
+        let (assignment, consumed) = match leading_git_option(argv, index) {
+            LeadingOptionGrammar::SelfContained { assignment } => (assignment, 1),
+            LeadingOptionGrammar::ConsumesASeparateWord { assignment } => (assignment, 2),
+            // **The verb slot is unestablished, so there is no verb to classify.**
+            // Returning the current index alongside the refusal keeps this
+            // function's contract intact for the caller that ignores the refusal
+            // in favour of the index; the refusal is what both callers act on.
+            LeadingOptionGrammar::NotEstablished => {
+                return (index, Some(unestablished_verb_refusal(token)));
+            }
+        };
         if let Some(assignment) = assignment {
             // **A key this scan cannot read is a decision it cannot make.**
             // This function's ONE job is to decide whether `core.hooksPath` is
@@ -454,38 +502,237 @@ pub fn push_needs_resolved_dests(argv: &[&str]) -> bool {
 
 /// Leading `git` options that consume a **separate** following token.
 ///
-/// `--exec-path` is deliberately absent: without `=` it prints a path and runs
+/// **Membership here is a MEASUREMENT of the installed `git`, not a reading of
+/// its documentation.** Every entry was classified by the two-sided probe
+/// `git <opt> version` versus `git <opt> XVALUE version`, and
+/// [`every_leading_git_option_the_guard_calls_value_taking_really_consumes_the_next_word`]
+/// re-runs that probe over this constant on every test run. It exists because
+/// this list had **no pin and no test reference of any kind** — audit 6 measured
+/// exactly two mentions of it in the whole repository, its definition and its one
+/// use — and drifted in both directions while nothing went red.
+///
+/// **`--super-prefix` was REMOVED here and removing it is part of the fix rather
+/// than tidying.** The installed git answers `unknown option: --super-prefix` in
+/// both probe forms, and a stale entry is fail-open in the OVER-consuming
+/// direction, which is a **bypass** and not an over-refusal: measured against the
+/// built binary, `git --super-prefix push --force origin main` exited **0**,
+/// because the scan swallowed the real verb `push` as the option's value and read
+/// `origin` as the verb instead. That row is inert only because git itself rejects
+/// the option — **a stale entry for an option git ACCEPTS would be a live
+/// bypass**, and that is the direction the drift pin exists for.
+///
+/// `--attr-source` and `--shallow-file` were ADDED: the probe reaches the verb
+/// through both, and their absence was `T-19-100` — `git --attr-source HEAD push
+/// --force origin main` exited 0 while its attached twin
+/// `--attr-source=HEAD` was correctly refused.
+///
+/// `--exec-path` is deliberately absent and belongs to
+/// [`GIT_GLOBAL_SELF_CONTAINED_OPTS`]: without `=` it prints a path and runs
 /// nothing, so treating the next token as its value would swallow the verb and
 /// hand the classifier an argv with no command in it.
 const GIT_GLOBAL_VALUE_OPTS: &[&str] = &[
+    "-c",
     "-C",
+    "--config-env",
     "--git-dir",
     "--work-tree",
     "--namespace",
-    "--super-prefix",
+    "--attr-source",
+    "--shallow-file",
 ];
 
-/// One leading option: its config assignment if it carries one, and how many
-/// tokens it occupies.
-fn leading_git_option<'a>(argv: &[&'a str], index: usize) -> (Option<&'a str>, usize) {
+/// Leading `git` options that occupy **exactly one** word: the token after them
+/// is the verb.
+///
+/// **This constant is knowledge the guard never had.** Before the inversion,
+/// silence meant "one word", so there was nothing to enumerate — and that silence
+/// is exactly what made an option the guard had never heard of swallow the verb.
+/// Now silence means *grammar not established*, so the self-contained spellings
+/// have to be stated, and every one of them was classified by the same two-sided
+/// probe: `git <opt> version` prints `git version …` while
+/// `git <opt> XVALUE version` answers `'XVALUE' is not a git command`.
+///
+/// **The TERMINATING family is folded in here deliberately** rather than given a
+/// third category. `--exec-path`, `--html-path`, `--man-path`, `--info-path` and
+/// `--version` print a path or a version and run no verb at all; for them the
+/// probe is that the one-word and two-word forms produce IDENTICAL first lines,
+/// which is the proof that no following word can reach a verb slot. They differ
+/// from the booleans in what git does NEXT, not in the one bit this scan asks
+/// about.
+///
+/// **The rejected third category, recorded rather than silently not taken.** A
+/// `Terminates` answer would let `scan_leading` report "this command runs no verb
+/// at all", and `git --exec-path push --force origin main` would become a permit,
+/// because real git prints `/usr/lib/git-core` and does not push. It is rejected
+/// because a control that ADDS a permit needs stronger evidence than one that
+/// preserves a refusal, and the refusals it would remove are refusals of commands
+/// that do nothing. That row stays at `force_push_blocked`.
+///
+/// **The `--no-*` convention was considered and rejected too.** Git's `--no-X`
+/// global options are all boolean, so a rule "a leading `--no-` option is
+/// self-contained" would remove the future-git cost for that whole family for
+/// free. It is not taken: it is precisely the shape of assumption about a callee's
+/// grammar that this phase has now been punished for six times, and the two
+/// measured stand-ins for a future git — `--no-advice` and `--no-lazy-fetch` —
+/// would be silently absorbed by it rather than surfacing as the one refusal each
+/// that tells a maintainer the constant needs a row. Enumerate instead.
+const GIT_GLOBAL_SELF_CONTAINED_OPTS: &[&str] = &[
+    "--no-pager",
+    "-p",
+    "--paginate",
+    "-P",
+    "--bare",
+    "--no-replace-objects",
+    "--literal-pathspecs",
+    "--glob-pathspecs",
+    "--noglob-pathspecs",
+    "--icase-pathspecs",
+    "--no-optional-locks",
+    "--exec-path",
+    "--html-path",
+    "--man-path",
+    "--info-path",
+    "--version",
+];
+
+/// The three answers to the ONE question [`scan_leading`] asks about a leading
+/// `git` option: **does it consume the next word.**
+///
+/// The third variant is the whole of `T-19-100`. There used to be two answers
+/// spelled as a word count, and an option the guard did not recognise was
+/// ASSUMED to occupy one word — so the scan advanced onto the option's VALUE, saw
+/// it did not start with `-`, and broke with that value as the verb. Making the
+/// ABSENCE of the bit an answer in its own right is what lets the scan refuse
+/// instead of guess.
+enum LeadingOptionGrammar<'a> {
+    /// The option occupies exactly one word; the next token is the verb.
+    SelfContained { assignment: Option<&'a str> },
+    /// The option occupies two words; the next token is its VALUE.
+    ConsumesASeparateWord { assignment: Option<&'a str> },
+    /// **The guard has no bit for this spelling, so the verb slot is
+    /// unestablished.** [`scan_leading`] refuses on this.
+    NotEstablished,
+}
+
+/// One leading option, answered as a three-valued grammar question.
+///
+/// **The arms are ordered so the rules that need NO KNOWLEDGE OF GIT run first,
+/// and that ordering is the reduction that makes the constants smaller.** The
+/// scan needs one bit per option; three structural facts supply it for free, and
+/// only the spellings those facts do not cover need a constant at all.
+///
+/// 1. `-c` / `--config-env` bare — consumes a separate word, carrying the next
+///    token as the config assignment. Unchanged.
+/// 2. `--config-env=…` and `-c<non-empty>` — self-contained with the attached
+///    assignment. Unchanged. **Ordered before rule 3** so the assignment is not
+///    lost to the structural rule that would otherwise also match.
+/// 3. **Any `--`-prefixed token containing `=` — SELF-CONTAINED, whatever the
+///    option is.** This needs no knowledge of git: git's own grammar attaches the
+///    value, so no following word can ever be consumed. It is why
+///    `git --attr-source=HEAD push --force origin main` was ALREADY refused
+///    correctly while its separate-value twin exited 0, and it is what keeps every
+///    attached spelling of an option the constants have never heard of working —
+///    `git --git-dir=/tmp/g status`, `git --namespace=n log`.
+/// 4. **The SHORT half of the same structural rule, and it is a DEVIATION this
+///    executor added because the plan's arm list regressed a row `19-20` had
+///    pinned green.** A single-dash token longer than two characters whose first
+///    two characters name a member of [`GIT_GLOBAL_VALUE_OPTS`] carries that
+///    option's value ATTACHED, so it too is self-contained: `-C/tmp` is `-C` with
+///    `/tmp` attached. Without this arm `git -C/tmp push --force origin main`
+///    moved from `force_push_blocked` to `envelope_assertion_failed`, breaking
+///    `the_already_correct_planning_cells_keep_their_verdicts_as_controls` in a
+///    file this round may not edit.
+///    **The restriction to VALUE-TAKING heads is what makes it a grammar claim
+///    rather than a convenience.** Only an option that takes a value can have one
+///    attached; a self-contained option followed by more characters is a BUNDLE,
+///    and git 2.43.0 accepts no short-option bundling at all (`-pc`, `-pP` and a
+///    bare `-` each answer `unknown option:`). So `-pc user.name=x` — whose head
+///    `-p` is self-contained — does NOT match here and stays unestablished, which
+///    is the pinned verdict for it. This mirrors the existing `-c<key>=<value>`
+///    arm above rather than inventing a second convention.
+/// 5. Membership in [`GIT_GLOBAL_VALUE_OPTS`] — consumes a separate word.
+/// 6. Membership in [`GIT_GLOBAL_SELF_CONTAINED_OPTS`] — self-contained.
+/// 7. **Otherwise the grammar is not established.**
+///
+/// The two termination rules [`scan_leading`] applies before calling this — a
+/// token that does not begin with `-` or is exactly `-`, and the `--`
+/// end-of-options marker — are the other two knowledge-free facts, and they are
+/// deliberately left where they are rather than folded in here.
+fn leading_git_option<'a>(argv: &[&'a str], index: usize) -> LeadingOptionGrammar<'a> {
     let token = argv[index];
 
     if token == "-c" || token == "--config-env" {
-        return (argv.get(index + 1).copied(), 2);
+        return LeadingOptionGrammar::ConsumesASeparateWord {
+            assignment: argv.get(index + 1).copied(),
+        };
     }
     if let Some(rest) = token.strip_prefix("--config-env=") {
-        return (Some(rest), 1);
+        return LeadingOptionGrammar::SelfContained {
+            assignment: Some(rest),
+        };
     }
     // git's short-option parser accepts `-ckey=value` with no space.
     if let Some(rest) = token.strip_prefix("-c") {
         if !rest.is_empty() && !token.starts_with("--") {
-            return (Some(rest), 1);
+            return LeadingOptionGrammar::SelfContained {
+                assignment: Some(rest),
+            };
+        }
+    }
+    // The structural rule: an attached value cannot consume a following word.
+    if token.starts_with("--") && token.contains('=') {
+        return LeadingOptionGrammar::SelfContained { assignment: None };
+    }
+    // The SHORT half of the same structural rule. See this function's doc, rule
+    // 4: only an option that TAKES a value can carry one attached, so the
+    // remainder of `-C/tmp` is `-C`'s value while the remainder of `-pc` is a
+    // BUNDLE and stays unestablished.
+    if !token.starts_with("--") && token.len() > 2 {
+        let (head, rest) = token.split_at(2);
+        if !rest.is_empty() && GIT_GLOBAL_VALUE_OPTS.contains(&head) {
+            return LeadingOptionGrammar::SelfContained { assignment: None };
         }
     }
     if GIT_GLOBAL_VALUE_OPTS.contains(&token) {
-        return (None, 2);
+        return LeadingOptionGrammar::ConsumesASeparateWord { assignment: None };
     }
-    (None, 1)
+    if GIT_GLOBAL_SELF_CONTAINED_OPTS.contains(&token) {
+        return LeadingOptionGrammar::SelfContained { assignment: None };
+    }
+    LeadingOptionGrammar::NotEstablished
+}
+
+/// The refusal an unestablished verb slot earns, naming the OPTION TOKEN and the
+/// recovery path.
+///
+/// **The option token is named and the command is never quoted back** (SAFE-04),
+/// on exactly the same footing as [`scan_leading`]'s existing
+/// `git -c {assignment}` refusals: a refusal a user cannot act on is a control
+/// that gets switched off (AR-19-11).
+///
+/// **The attached spelling is offered FIRST and never ALONE**, and that is a
+/// measured constraint rather than a stylistic one. An attached value is always
+/// *self-contained* by git's grammar, but it is not always *accepted*:
+/// `git --shallow-file=/tmp/s version` answers `unknown option:
+/// --shallow-file=/tmp/s` on git 2.43.0, while `--attr-source=`, `--git-dir=`,
+/// `--namespace=` and `--work-tree=` all reach the verb. A message that promised
+/// the attached form as universally available would send a user in a circle.
+fn unestablished_verb_refusal(token: &str) -> GitVerdict {
+    refuse(
+        ParkReason::EnvelopeAssertionFailed,
+        format!(
+            "this command carries the leading git option `{token}`, whose grammar the \
+             guard cannot establish: whether the word after it is that option's value or \
+             git's own subcommand is not knowable before the command runs, so the verb \
+             this command would actually run is unestablished and the command is refused \
+             rather than guessed at. To proceed: spell the option with its value attached \
+             (`--option=value`) where git accepts that form, since an attached value can \
+             never consume a following word — git does not accept the attached spelling \
+             for every option, so this step is the first to try and not the only one; or \
+             drop the option; or add the spelling to the guard's leading-option grammar, \
+             which the drift pin over those constants will name"
+        ),
+    )
 }
 
 /// The key half of a `KEY=VALUE` assignment.
@@ -2857,6 +3104,37 @@ pub enum ProgramResolution {
 ///   Registered by `19-16`, pinned at its measured verdict, and NOT fixed: the
 ///   decision region is not widened here, and widening it to
 ///   [`classify_push`]'s flags is the same move as closing `T-19-91`.
+/// * **`T-19-100r` — over-refusal from the leading-option grammar rule, and its
+///   cost is ZERO on the installed git and BOUNDED on a future one.** Since this
+///   round a leading `git` option whose grammar [`leading_git_option`] cannot
+///   establish makes the VERB SLOT unestablished, and [`scan_leading`] refuses on
+///   it rather than reading the option's value as the verb.
+///
+///   **Zero on git 2.43.0**: every option this git accepts is classified by the
+///   two-sided probe and enumerated in the two constants, so the only commands
+///   moving permitted → refused are ones git ITSELF rejects —
+///   `git --bogus-opt status`, `git --super-prefix x status`,
+///   `git -pc user.name=x status` — refusals of commands that already do nothing.
+///
+///   **One refusal per newly added global option on a FUTURE git**, until the
+///   constant learns it. `--no-advice` and `--no-lazy-fetch` are the measured
+///   stand-ins — real global options in later releases, rejected by this one — and
+///   both are in the corpus, so the future cost is checkable rather than argued.
+///
+///   **The recovery path, in the order the refusal message offers it**: spell the
+///   option with its value attached (`--option=value`), which needs no constant
+///   change because git's own grammar makes an attached value self-contained —
+///   **offered first and never alone, because an attached spelling is always
+///   self-contained but is NOT always accepted**
+///   (`git --shallow-file=/tmp/s version` answers `unknown option:` on this git,
+///   while `--attr-source=`, `--git-dir=`, `--namespace=` and `--work-tree=` all
+///   reach the verb); or drop the option; or add the spelling to the constant,
+///   which the drift pin will name. Twelve ordinary invocations —
+///   `git --no-pager status`, `git -c user.name="$NAME" commit -m x`,
+///   `git --git-dir=/tmp/g status`, `git -C /tmp status` among them — are pinned
+///   at exit 0 in `tests/envelope_callee_grammar.rs` beside the refused rows,
+///   because `git --no-pager status` is this axis's `ls {git,svn}-repo` and a rule
+///   that refused it would be a blanket refusal of anything beginning with `-`.
 /// * **`T-19-19r` — over-refusal from the redirection rule, and it is NET
 ///   NEGATIVE.** Two shapes are newly refused, each pinned in
 ///   `tests/envelope_argv_deletion.rs` beside its PERMITTED twin so a later
@@ -5759,6 +6037,381 @@ mod tests {
                  this pin used to carry — a `value.is_some()` filter hides every removal, \
                  and a `GIT_`/`GH_` name filter hides every key the envelope grows that is \
                  not called after git. Covered set: {ENVELOPE_ENV_KEYS:?}"
+            );
+        }
+    }
+
+    // =======================================================================
+    // The REAL-GIT DRIFT PIN over the leading-option grammar constants
+    //
+    // **`GIT_GLOBAL_VALUE_OPTS` had no pin and no test reference of any kind
+    // until this round** — audit 6 measured exactly two mentions of it in the
+    // whole repository, its definition and its one use — and that is how it came
+    // to be wrong in BOTH directions against the installed git: `--attr-source`
+    // and `--shallow-file` missing, `--super-prefix` present and rejected.
+    //
+    // `ENVELOPE_ENV_KEYS` was given a pin sourced from the place that changes
+    // when the fact changes, after being wrong twice (`T-19-82`, `T-19-90`).
+    // There is no in-codebase source for git's option grammar, so the source
+    // here is git ITSELF — consulted in a TEST and never in the guard, because
+    // the guard runs synchronously on the agent's `PreToolUse` critical path and
+    // because a guard that asks the program it guards to describe its own
+    // grammar can be lied to by a `git` earlier on `PATH`.
+    //
+    // # THE PIN'S OWN LIMIT, STATED CORRECTLY RATHER THAN COMFORTABLY
+    //
+    // **It pins the constants against the DEVELOPER's git, not the runtime git,
+    // and the fail-closed default covers only the SILENT case.**
+    //
+    // A MISSING bit costs a refusal: a spelling in neither constant falls to
+    // `LeadingOptionGrammar::NotEstablished` and the command is refused. That
+    // direction is safe by construction.
+    //
+    // **A WRONG bit costs a SHIFTED VERB, and nothing in the guard covers it.**
+    // A self-contained entry that a runtime git treats as value-taking, or a
+    // value-taking entry that it rejects, makes `scan_leading` land short of or
+    // step over the real verb — which is exactly the `--super-prefix` mechanism
+    // measured at exit 0 this round. **So this pin is the ONLY control over the
+    // wrong-bit direction**, and a constant that outruns the runtime git is a
+    // BYPASS rather than an over-refusal.
+    //
+    // It must therefore NOT be written to skip when `git` is absent: a skipped
+    // pin is a fail-open pin, and git is already a hard runtime dependency of
+    // this guard.
+    // =======================================================================
+
+    /// The leading options no probe of the two-sided shape can classify, named so
+    /// the unprobed set is BOUNDED rather than open.
+    ///
+    /// `git --help XVALUE version` answers `No manual entry for gitXVALUE`, which
+    /// neither reaches a verb nor names the following word as a value, so neither
+    /// arm of the probe fires. They are carried in NEITHER grammar constant and
+    /// therefore fall to `LeadingOptionGrammar::NotEstablished` like anything else
+    /// the guard cannot establish — the fail-closed answer rather than a guess.
+    ///
+    /// **It lives INSIDE this test module rather than beside the two constants,
+    /// and that placement is load-bearing rather than tidy.** It is the pin's
+    /// bound on the unprobed set and the guard never consults it; and
+    /// `tests/envelope_wrapper_class.rs`'s anti-vacuity stripper treats the FIRST
+    /// line reading `#[cfg(test)]` as the end of this file's production logic, so
+    /// a `#[cfg(test)]` constant declared up beside `GIT_GLOBAL_VALUE_OPTS` would
+    /// truncate that control's view of the file at line 600 and make every
+    /// absence assertion in it vacuous. It caught exactly that when this constant
+    /// was first written there.
+    const GIT_GLOBAL_UNPROBED_OPTS: &[&str] = &["--help", "-h"];
+
+    /// Run one probe against the installed `git` and return stdout+stderr.
+    ///
+    /// Panics rather than skipping when `git` is missing — see the section
+    /// comment above for why a skip here would be a fail-open pin.
+    fn git_grammar_probe(dir: &std::path::Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GSD_MM_GRAMMAR_PROBE", "probe-value")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .expect(
+                "the leading-option grammar drift pin requires a real `git` on PATH. It is \
+                 deliberately NOT written to skip when git is absent: a skipped pin is a \
+                 fail-open pin, and git is already a hard runtime dependency of this guard.",
+            );
+        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&output.stderr));
+        text
+    }
+
+    fn probe_first_line(text: &str) -> &str {
+        text.lines().next().unwrap_or("")
+    }
+
+    /// The value the TWO-WORD arm of the probe hands one option.
+    ///
+    /// Three options need a well-formed value rather than an arbitrary word, and
+    /// each variant is named with the reason it is a variant rather than an
+    /// exception: `-c` needs a config assignment, `-C` needs an existing
+    /// directory, and `--config-env` needs a `KEY=ENVVAR` pair naming a variable
+    /// this probe sets. Their ONE-WORD arms still discriminate — `git -C version`
+    /// answering `cannot change to 'version'` IS the proof that `-C` swallowed
+    /// the word.
+    fn grammar_probe_value(option: &str, scratch: &std::path::Path) -> String {
+        match option {
+            "-c" => "probe.key=probe-value".to_string(),
+            "-C" => scratch.display().to_string(),
+            "--config-env" => "probe.key=GSD_MM_GRAMMAR_PROBE".to_string(),
+            _ => "XVALUE".to_string(),
+        }
+    }
+
+    #[test]
+    fn every_leading_git_option_the_guard_calls_value_taking_really_consumes_the_next_word() {
+        let scratch = tempfile::TempDir::new().unwrap();
+
+        // --- floor 1: the constant carries the six spellings the corpus's
+        //     class-1 alphabet splices BY NAME (`-C`, `--git-dir`,
+        //     `--work-tree`, `--namespace`, `--attr-source`, `--shallow-file`),
+        //     so six is the arithmetic and not a round number. `-c` and
+        //     `--config-env` are two more, handled by their own arms in
+        //     `leading_git_option` before the constant is consulted.
+        assert!(
+            GIT_GLOBAL_VALUE_OPTS.len() >= 6,
+            "`GIT_GLOBAL_VALUE_OPTS` must carry at least six spellings — the six \
+             `tests/envelope_wrapper_class.rs`'s class-1 alphabet splices by name. The \
+             correct response to this failing is to RESTORE the entries, never to lower \
+             the floor. Got: {GIT_GLOBAL_VALUE_OPTS:?}"
+        );
+
+        // --- floor 2: the two entries `T-19-100` is about are present BY NAME,
+        //     and the stale entry that was a bypass is absent BY NAME.
+        for required in ["--attr-source", "--shallow-file"] {
+            assert!(
+                GIT_GLOBAL_VALUE_OPTS.contains(&required),
+                "`{required}` must be in `GIT_GLOBAL_VALUE_OPTS`. Its absence is `T-19-100`: \
+                 `git {required} <value> push --force origin main` exited 0 because the scan \
+                 read the option's VALUE as the verb."
+            );
+        }
+        assert!(
+            !GIT_GLOBAL_VALUE_OPTS.contains(&"--super-prefix"),
+            "`--super-prefix` must NOT be in `GIT_GLOBAL_VALUE_OPTS`. The installed git \
+             answers `unknown option: --super-prefix` in both probe forms, and a stale \
+             entry here is fail-open in the OVER-consuming direction — measured, \
+             `git --super-prefix push --force origin main` exited 0 because the scan \
+             swallowed the real verb `push` as the option's value."
+        );
+
+        // --- floor 3: the NEGATIVE control, so a probe that answered the same
+        //     for everything turns this red rather than passing vacuously.
+        let bogus_one = git_grammar_probe(scratch.path(), &["--bogus-opt", "version"]);
+        let bogus_two = git_grammar_probe(scratch.path(), &["--bogus-opt", "XVALUE", "version"]);
+        assert!(
+            bogus_one.contains("unknown option") && bogus_two.contains("unknown option"),
+            "the probe must classify `--bogus-opt` as NOT ACCEPTED by this git. If it does \
+             not, the probe is not reading git's answer and every classification below is \
+             vacuous. 1W: {bogus_one} 2W: {bogus_two}"
+        );
+        assert!(
+            !probe_first_line(&bogus_two).starts_with("git version"),
+            "the probe must not report a rejected option as reaching the verb. 2W: {bogus_two}"
+        );
+
+        // --- the pin itself, two-sided, over EVERY entry.
+        for option in GIT_GLOBAL_VALUE_OPTS {
+            let value = grammar_probe_value(option, scratch.path());
+            let one_word = git_grammar_probe(scratch.path(), &[option, "version"]);
+            let two_word = git_grammar_probe(scratch.path(), &[option, &value, "version"]);
+
+            assert!(
+                !one_word.contains(&format!("unknown option: {option}")),
+                "the installed git REJECTS `{option}`, which `GIT_GLOBAL_VALUE_OPTS` claims \
+                 consumes a following word. A stale entry here is fail-open in the \
+                 OVER-consuming direction and is a BYPASS rather than an over-refusal: the \
+                 scan skips a word git itself reads as the verb. **Remove the entry.** \
+                 Probe answered: {one_word}"
+            );
+            assert!(
+                probe_first_line(&two_word).starts_with("git version"),
+                "`git {option} <value> version` must reach the `version` verb, which is the \
+                 proof that `{option}` consumed its value. It did not, so this entry claims \
+                 a grammar the installed git does not have. Probe answered: {two_word}"
+            );
+            assert!(
+                !probe_first_line(&one_word).starts_with("git version"),
+                "`git {option} version` must NOT reach the `version` verb: if it does, \
+                 `{option}` did not consume the following word and it belongs in \
+                 `GIT_GLOBAL_SELF_CONTAINED_OPTS` instead. Probe answered: {one_word}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_leading_git_option_the_guard_calls_self_contained_really_consumes_nothing() {
+        let scratch = tempfile::TempDir::new().unwrap();
+
+        // --- floor 1: the seven spellings other files pin BY NAME must be
+        //     present — five from `tests/envelope_wrapper_class.rs`'s class-2
+        //     alphabet and two more from `tests/envelope_callee_grammar.rs`'s
+        //     permitted half — and the floor is set one above that count, so a
+        //     constant shrunk to exactly the pinned set is still visible.
+        for required in [
+            "--no-pager",
+            "--bare",
+            "--literal-pathspecs",
+            "--no-optional-locks",
+            "-p",
+            "--exec-path",
+            "--version",
+        ] {
+            assert!(
+                GIT_GLOBAL_SELF_CONTAINED_OPTS.contains(&required),
+                "`{required}` must be in `GIT_GLOBAL_SELF_CONTAINED_OPTS`. It is pinned by \
+                 name in the corpus, and without it `git {required} status` falls to \
+                 *grammar not established* and is refused — an over-refusal of an ordinary \
+                 invocation, which is how a safety control gets switched off (AR-19-11)."
+            );
+        }
+        assert!(
+            GIT_GLOBAL_SELF_CONTAINED_OPTS.len() >= 8,
+            "`GIT_GLOBAL_SELF_CONTAINED_OPTS` must carry at least eight spellings: the \
+             SEVEN asserted by name above plus at least one more, because a constant shrunk \
+             to exactly the pinned set has silently lost the rest of the probed family and \
+             every loss is a new over-refusal. RESTORE the entries; do not lower the floor. \
+             Got: {GIT_GLOBAL_SELF_CONTAINED_OPTS:?}"
+        );
+
+        // --- floor 2: the NEGATIVE control — a value-taking spelling must NOT
+        //     satisfy the self-contained probe, or the two arms are the same
+        //     question asked twice.
+        let taking_one = git_grammar_probe(scratch.path(), &["--attr-source", "version"]);
+        assert!(
+            !probe_first_line(&taking_one).starts_with("git version"),
+            "`--attr-source` must FAIL the self-contained probe. If a value-taking option \
+             satisfied it, the two constants would be describing the same thing and the \
+             grammar question would not be being asked. Probe answered: {taking_one}"
+        );
+
+        for option in GIT_GLOBAL_SELF_CONTAINED_OPTS {
+            let one_word = git_grammar_probe(scratch.path(), &[option, "version"]);
+            let two_word = git_grammar_probe(scratch.path(), &[option, "XVALUE", "version"]);
+
+            assert!(
+                !one_word.contains(&format!("unknown option: {option}")),
+                "the installed git REJECTS `{option}`, which `GIT_GLOBAL_SELF_CONTAINED_OPTS` \
+                 claims it accepts. A stale entry here is an over-refusal in one direction \
+                 and a shifted verb in the other. **Remove the entry.** Probe: {one_word}"
+            );
+
+            // The BOOLEAN arm: git reaches `version`, and the extra word is then
+            // read as a verb git does not have.
+            let boolean = probe_first_line(&one_word).starts_with("git version")
+                && two_word.contains("is not a git command");
+            // The TERMINATING arm: `--exec-path` and friends run no verb at all,
+            // so the proof is that a following word changes NOTHING.
+            let terminating = !probe_first_line(&one_word).is_empty()
+                && probe_first_line(&one_word) == probe_first_line(&two_word);
+
+            assert!(
+                boolean || terminating,
+                "`{option}` satisfies NEITHER arm of the self-contained probe, so the guard's \
+                 claim that it occupies exactly one word is not backed by the installed git. \
+                 A wrong bit here SHIFTS THE VERB — the `--super-prefix` mechanism — so this \
+                 is not a cosmetic disagreement. 1W: {one_word} 2W: {two_word}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_leading_option_constants_are_disjoint_and_the_unprobed_set_is_bounded_and_named() {
+        for option in GIT_GLOBAL_VALUE_OPTS {
+            assert!(
+                !GIT_GLOBAL_SELF_CONTAINED_OPTS.contains(option),
+                "`{option}` is in BOTH grammar constants. The two answer opposite halves of \
+                 the one question this scan asks — does the option consume the next word — \
+                 so a spelling in both means the arms of `leading_git_option` decide by \
+                 their ORDER rather than by the measurement."
+            );
+        }
+
+        // The UNPROBED set is BOUNDED and both members are NAMED, so "no probe of
+        // this shape classifies it" cannot quietly grow into a third list.
+        assert!(
+            GIT_GLOBAL_UNPROBED_OPTS.len() <= 2,
+            "at most TWO leading options may be carried as UNPROBED. `--help` and `-h` are \
+             the two: `git --help XVALUE version` answers `No manual entry for gitXVALUE`, \
+             which neither reaches a verb nor names the following word as a value, so \
+             neither arm of the two-sided probe fires. A third entry means a spelling was \
+             put beyond the probe's reach rather than measured. Got: \
+             {GIT_GLOBAL_UNPROBED_OPTS:?}"
+        );
+        assert_eq!(
+            GIT_GLOBAL_UNPROBED_OPTS,
+            &["--help", "-h"],
+            "the UNPROBED set must be exactly the two spellings named in its own doc"
+        );
+        for option in GIT_GLOBAL_UNPROBED_OPTS {
+            assert!(
+                !GIT_GLOBAL_VALUE_OPTS.contains(option)
+                    && !GIT_GLOBAL_SELF_CONTAINED_OPTS.contains(option),
+                "`{option}` is recorded UNPROBED but is carried by a grammar constant, which \
+                 means a bit nothing measured was written down anyway. An unprobed spelling \
+                 takes the fail-closed path instead."
+            );
+        }
+    }
+
+    #[test]
+    fn every_push_value_opt_really_consumes_its_value_and_signed_is_the_control_that_proves_it() {
+        // **The over-consuming direction of `PUSH_VALUE_OPTS`, which
+        // `push_operands` deliberately does NOT fail closed on.** An entry git
+        // does not treat as value-taking makes the guard skip a word git reads as
+        // a refspec — the same fail-open shape `GIT_GLOBAL_VALUE_OPTS` had — and
+        // this pin is what covers it instead of a fail-closed default.
+        //
+        // The probe is two-sided by CONSTRUCTION: each option is spliced ahead of
+        // a real repository operand and a refspec. If the option consumed
+        // `XVALUE`, the repository is the upstream path and the refspec is
+        // `refs/heads/probe`. If it did NOT, `XVALUE` becomes the repository and
+        // the upstream PATH is read as a refspec — which git reports as
+        // `invalid refspec '<upstream>'`. That string is the discriminator.
+        let root = tempfile::TempDir::new().unwrap();
+        let upstream = root.path().join("upstream.git");
+        let work = root.path().join("work");
+        std::fs::create_dir_all(&upstream).unwrap();
+        std::fs::create_dir_all(&work).unwrap();
+        git_grammar_probe(&upstream, &["init", "--bare", "-q", "."]);
+        git_grammar_probe(&work, &["init", "-q", "."]);
+        let upstream_arg = upstream.display().to_string();
+        let not_consumed = format!("invalid refspec '{upstream_arg}'");
+
+        let probe_push = |flag: &str| -> String {
+            git_grammar_probe(
+                &work,
+                &[
+                    "push",
+                    "--dry-run",
+                    flag,
+                    "XVALUE",
+                    &upstream_arg,
+                    "refs/heads/probe",
+                ],
+            )
+        };
+
+        // --- the NEGATIVE controls, which make the assertion below non-vacuous.
+        //
+        // `--signed` is the control `T-19-102` turns on. `git push -h` spells
+        // `--recurse-submodules (check|on-demand|no)` and
+        // `--signed[=(yes|no|if-asked)]` — a REQUIRED value and an ATTACHED-ONLY
+        // optional one — and the help text makes them look alike while git
+        // treats them differently. Adding `signed` to the constant would
+        // introduce a real MIS-PARSE, so it is pinned absent here and its push
+        // is pinned REFUSED in `tests/envelope_callee_grammar.rs`.
+        for control in ["--signed", "--dry-run"] {
+            let answered = probe_push(control);
+            assert!(
+                answered.contains(&not_consumed),
+                "`{control}` must NOT consume a following word on the installed git — if \
+                 this probe cannot tell a value-taking push flag from a boolean one, every \
+                 assertion below passes vacuously. Probe answered: {answered}"
+            );
+        }
+        assert!(
+            !PUSH_VALUE_OPTS.contains(&"signed"),
+            "`signed` must NOT be in `PUSH_VALUE_OPTS`. `--signed[=(yes|no|if-asked)]` takes \
+             an ATTACHED-ONLY optional value and real git reads the following word as the \
+             REPOSITORY, so adding it would make the guard skip a word git reads as an \
+             operand. Completing this list from `git push -h` is exactly the move this \
+             control exists to catch."
+        );
+        for name in PUSH_VALUE_OPTS {
+            let flag = format!("--{name}");
+            let answered = probe_push(&flag);
+            assert!(
+                !answered.contains(&not_consumed),
+                "`{flag}` does NOT consume its value on the installed git — the upstream \
+                 path was read as a REFSPEC, which means `XVALUE` became the repository. \
+                 `PUSH_VALUE_OPTS` claiming otherwise makes `push_operands` skip a word git \
+                 reads as an operand. Probe answered: {answered}"
             );
         }
     }
