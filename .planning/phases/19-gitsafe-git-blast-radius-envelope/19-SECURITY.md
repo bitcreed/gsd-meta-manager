@@ -10916,3 +10916,624 @@ firing is RECORDED and was not fixed.**
 
 **Every commit of this plan shows ZERO `src/` hunks**, verified with
 `git show --numstat <sha> -- src/`.
+
+---
+
+## Execution record — plan 19-29 (the rules, round 11). NOT an audit finding.
+
+**This subsection is a record made by plan 19-29's executor. It is appended after
+the plan-19-28 record and edits nothing that precedes it** — no audit table, no
+Security Audit Trail row, no Accepted Risks Log row, no sign-off, and no earlier
+appended subsection.
+
+### FIRST, and in these words: `/gsd-secure-phase 19` is NOT cleared, and nothing here is described as a closure
+
+- **`T-19-86` remains OPEN at `high`** by explicit user scoping decision, with
+  `T-19-111` still moved OUT of it exactly as `19-27` moved it.
+- **`T-19-91` remains OPEN at `high`.**
+- **`T-19-111` remains OPEN at `high` with NO rule written for it.**
+- **`T-19-112` and `T-19-113` are NARROWED FURTHER and are still NOT CLOSED.**
+  `C-15` is a route this rule cannot reach and the deferred ledger option (b) is
+  another.
+- **`T-19-115` gets NO rule at all.**
+- **Whether `T-19-116`, `T-19-117` and `T-19-118` close is audit 11's judgement
+  rather than this plan's claim.** This plan says **NARROWED** and states what
+  remains open.
+- **Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.** No unqualified
+  "T-19-60 is closed" appears anywhere in this plan's output.
+- `T-19-96`, `T-19-110` and `T-19-74` are registered open and unfixed;
+  `T-19-61` … `T-19-73`, `T-19-84` and `T-19-85` are open, unaccepted and
+  untouched.
+
+### `19-28`'s RED rows: confirmed still RED before any production line moved, and their after-verdicts
+
+The complete RED set was re-run against the unmodified tree at `d5542c6` with
+`--no-fail-fast` **before any production line moved**, and matched
+`19-28-SUMMARY.md`'s recorded list exactly: 1802 passed / 6 failed / 13 ignored,
+`passed + failed` = **1808**, 46 result lines, **17** `envelope_*` binaries, and
+none of the three documented flakes fired.
+
+| row | before | after | landed in |
+|---|---|---|---|
+| `after_19_29_a_redirection_that_writes_the_generated_gitconfig_is_refused` | RED | **GREEN** at `envelope_assertion_failed` | Task 1 |
+| `after_19_29_ordering_pin_a_holds_for_a_redirection_target_too` | RED | **GREEN** at `envelope_assertion_failed` | Task 1 |
+| `after_19_29_a_command_whose_operand_is_the_guards_own_binary_is_refused` | RED | **GREEN** at `envelope_assertion_failed` | Task 2 |
+| `after_19_29_ordering_pin_b_holds_for_the_binary_carrier_too` | RED | **GREEN** at `envelope_assertion_failed` | Task 2 |
+| `a_command_that_names_a_carrier_rule_a_cannot_see_is_refused_after_19_29` | RED | **GREEN** | Task 2 |
+| `after_19_29_a_ledger_past_the_size_bound_refuses_while_one_just_under_it_still_counts` | RED | **GREEN** at `envelope_assertion_failed` | Task 3 |
+
+**No row was already green**, so no rule here is a rule nobody showed was needed.
+
+### `19-28`'s PERMITTED rows: re-checked, and THREE of them were not
+
+The PERMITTED set was driven against the unmodified tree and re-checked after the
+fix. **The seven spelling rows in both word positions, the expansion-borne,
+symlinked and relative rows, the near-misses and both EXACT-PATH-not-PREFIX
+binary controls are all still PERMITTED.** `envelope_control_carrier` is 37/0 and
+`envelope_wrapper_class` is 52/0.
+
+**THREE ROWS DID FLIP, and every one of them is a row whose own stated derivation
+says the fix flips it.** Each was verified by measurement before it was touched,
+each correction is recorded here, and none was made uniform to make a fix pass.
+
+1. **`direction_i_a_redirection_target_is_not_an_operand_and_stays_permitted`**
+   (`tests/envelope_control_carrier.rs`) — the blocking scope finding `19-28`
+   raised, corrected under **explicit human authorisation** obtained before the
+   work began. See the next subsection.
+2. **`the_ledger_inflation_spellings_are_all_permitted_today`**
+   (`tests/envelope_carrier_reach.rs`) — **NOT named by `19-28`'s blocking
+   finding**, which checked for exactly this shape and scoped the check one file
+   too narrowly: it reported *"no OTHER test file names an envelope-root
+   redirection target as a pinned-permitted row"*, which was true of every file
+   except the one it was written in. The row's own comment already said *"they
+   are the ones `19-29`'s widened SIGHT turns to exit 2"* while its assertion was
+   written at the pre-fix verdict — `19-28`'s own deviations 2 and 3, missed
+   once.
+3. **`t_19_117_the_ledgers_size_is_unbounded_work_on_the_guards_critical_path`**
+   (`tests/envelope_carrier_reach.rs`) — **this row and the fix are MUTUALLY
+   EXCLUSIVE BY CONSTRUCTION.** It asserts in the present tense that a
+   202,000,000-byte ledger pushes a forge command past the deadline, while
+   `after_19_29_a_ledger_past_the_size_bound_…` in the SAME file requires the
+   bound to sit inside `(1 MiB, 24 MiB)`. No constant satisfies both. `19-28`'s
+   own failure text anticipated it: *"If this does not reproduce, RECORD the
+   measured curve and report it rather than asserting audit 10's number."*
+
+A fourth row, `envelope_credential.rs`'s
+`a_credential_helper_the_user_really_has_stops_being_resolvable_under_the_envelope`,
+moved for a different reason and is recorded under `T-19-118` below. That file is
+not in this plan's fenced list.
+
+### THE AUTHORISED EXCEPTION — what it measured, and the two reasons it corrected
+
+Measured against the BUILT BINARY with a fresh `GSD_MM_ENVELOPE_ROOT` per row and
+the envelope directory walked after each, **before any assertion was edited**:
+
+```text
+: > <ENV>/alpha/pr-ledger.ndjson                exit 2  envelope_assertion_failed
+printf 'exit 0' > <ENV>/alpha/hooks/pre-push    exit 2  envelope_assertion_failed
+echo evil > <ENV>/alpha/askpass                 exit 2  envelope_assertion_failed
+: > /tmp/l                          (CONTROL)   exit 0  permit
+D=$(git config --get core.hooksPath); rm -f $D/../pr-ledger.ndjson   exit 0  permit  (ii)
+rm -f /tmp/l                                    exit 0  permit  (iii)
+rm -f pr-ledger.ndjson                          exit 0  permit  (iv)
+```
+
+**All three rows flip, each flip is the intended one at the intended identifier,
+and NO FOURTH ROW in that file flips**: `envelope_control_carrier` measured
+36 passed / 1 failed with the rule applied — one test, three rows — and
+directions (ii), (iii) and (iv) are untouched.
+
+**Two stated reasons were corrected, and neither was deleted.**
+
+- **`"These rows will not flip"` is FALSE BY MEASUREMENT.** `T-19-118` is a live
+  `high`-severity credential reach through direction (i), and it re-opens the
+  closed `T-19-23`. The inference was from a mechanism that is real to a
+  conclusion the mechanism does not support: *the rule cannot see it as a WORD*
+  does not entail *the guard cannot establish it at all*.
+- **`"A rule that read redirection targets would re-open a model five rounds have
+  pinned shut"` is FALSE IN A MORE INTERESTING WAY**, and the interesting part is
+  that it was falsifiable and was falsified. It assumed the only way to read a
+  target is to make `>` a separator or to push a token into the stream. The
+  `Segment`-borne channel does neither, and the pins prove it:
+
+```text
+SEPARATORS                   byte-identical at policy.rs:2297 (one commit ever, 84a9b05)
+policy::is_separator(">")    false
+segment.tokens               byte-identical (SEGMENT-COUNT pins GREEN)
+git x2>/tmp/o push --force … exit 0  (round 6's over-deletion control)
+git >/dev/null push --force … exit 2, ONE segment
+```
+
+**Both were sound when written and were overtaken by evidence, and both say so in
+place.** This phase has three disclosures that described a control's coverage in
+terms which quietly excluded the live case; this round did not add a fourth.
+
+### THE DESIGN ANSWER — BOTH, plus a third thing that is neither
+
+| cell | widen the PATH SET | widen what the rule SEES | neither |
+|---|---|---|---|
+| `T-19-116` (`C-10`) | **YES** — the guard's own binary, as an **EXACT PATH** | inherits every existing silence over a second path | — |
+| `T-19-118` (`C-05` via (i)) | — | **YES** — pathname REDIRECTION TARGETS, on a channel `Segment::tokens` never holds | the `Guaranteed` clause repair **and the REQUIRED injected empty-`credential.helper` control** |
+| `T-19-115` | — | **NO** — a rule would need expansions the guard is forbidden to perform | the residue's **ARITHMETIC**: four becomes seven, stated as a CONDITION |
+| `T-19-117` | — | — | a size bound in `ledger.rs` that fails **CLOSED**, derived from the DEADLINE |
+
+**The two boundary KINDS differ for a measured reason.** The envelope directory
+is a PREFIX because this envelope owns every byte under it and
+`rm -rf <root>/<alias>` takes nine carriers in one call. **The binary is an EXACT
+PATH because its directory is shared with everything else the user installed** —
+a prefix over that parent would refuse `ls <parent>` and every `cargo install`.
+`19-28` pinned `cp /bin/true <BINARY-PARENT>/some-other-file` and
+`ls <BINARY-PARENT>` PERMITTED as this round's `--signed no` from the other side,
+and both are still exit 0. **A clause written as a directory prefix turns both
+red, and that is the point of them.**
+
+### THE DIRECTION-(i) QUESTION, ANSWERED IN FULL
+
+**Closing direction (i) does NOT require the deletion model to read redirection
+targets as argv.** Round 6's model answers *which words ARRIVE at the program*; a
+redirection target does not arrive, and that answer did not change. Rule (a) asks
+a different question about the same walk: *does this line NAME a path this run's
+controls live in?*
+
+Three facts, read out of the source:
+
+1. **`skip_redirection_target` already walked the target's full extent**, applying
+   the target's own quoting rules, in order to skip it. Its text and its
+   literalness are BY-PRODUCTS of a walk that already happens. Its doc's *"Its
+   text is never needed, only its extent"* is the sentence this round made false,
+   and it is **corrected in place with the reason it was right when written** —
+   the WR-02 discipline this codebase already names.
+2. **`redirection_operator_len` was a CLOSED twelve-operator grammar**, and only
+   SEVEN take a PATHNAME: `<`, `>`, `>>`, `>|`, `<>`, `&>`, `&>>`. The other five
+   take something that is not a file — `<<` and `<<-` a heredoc DELIMITER, `<<<`
+   a here-STRING, `>&` and `<&` an fd NUMBER. **The split is derived AT THE
+   OPERATOR, in the match that already computes the length**, and the function is
+   renamed `redirection_operator` because a name saying "len" returning a
+   pathname-ness would be the same stale-reason defect one function over.
+3. **`split_segments_with_heads` excludes every operator token from
+   `segment.tokens` and FLUSHES at one.** A redirection-target token pushed into
+   the stream would split `git >/dev/null push --force origin main` into `[git]`
+   and `[push, --force, origin, main]`, and the leading `git` resolves `Governed`
+   with an EMPTY argv, which `classify_git` answers `Allow` for.
+
+**So the target travels on the SEGMENT**, in a shape already in the file:
+accumulated in the operator arm of the ONE walk, applied retroactively over
+`segments[command_start..]`, reset at each real command operator — exactly as
+`Segment::redirection_unresolvable` travels.
+
+**THE SEGMENT-COUNT MEASUREMENTS, BEFORE AND AFTER — which are what make the
+claim falsifiable rather than asserted:**
+
+```text
+                                            BEFORE                       AFTER
+git >/dev/null push --force origin main     1 segment, [git,push,        UNCHANGED
+                                             --force,origin,main]
+git x2>/tmp/o push --force origin main      1 segment, [git,x2,push,     UNCHANGED
+                                             --force,origin,main]
+git 2>/dev/null push --force origin main    1 segment, [git,push,        UNCHANGED
+                                             --force,origin,main]
+git <<EOF push --force origin main          1 segment                    UNCHANGED
+git >                                       1 segment, unresolvable      UNCHANGED
+is_separator(">") / is_separator("<")       false / false                UNCHANGED
+is_separator("&&")                          true                         UNCHANGED
+```
+
+**THE COST, stated rather than discovered:** ONE additive `Segment` field
+(`redirection_targets`), a private return-type change on `tokenize` with FOUR
+call sites (two production, two in-module tests), a corrected stale doc sentence,
+and a pathname/non-pathname split of a grammar the file already enumerated.
+**The plan projected TWO additive fields; ONE was enough**, because `tokenize`'s
+return type carries the attribution index and no `Token` field was needed. Fewer
+fields is strictly less surface, and it is recorded rather than glossed.
+
+**NO SECOND READING SITE AND NO SECOND SCAN WAS NEEDED.** The clause is still
+raised once, at the top of `classify_segments`' existing per-segment loop, on the
+segment that loop already holds, before the resolution match, reading TWO FIELDS
+of that one segment.
+
+### THE SEVEN FAIL-OPEN DIRECTIONS, over TWO word classes and TWO paths, handed to NO control
+
+**Stated as a CONDITION rather than as an enumeration, in the predicate's doc, the
+call site's comment, `cred.rs`'s WHAT IS NOT COVERED and here.** The rule is
+silent about **a word the SHELL MAY REWRITE**, about **a word that IS NOT
+ABSOLUTE**, and about **a word that reaches a protected path ONLY THROUGH A
+LINK** — and it is silent about all three **in EITHER word class and over BOTH
+paths.** Round 5's own literalness table names EXPANSION, PATHNAME, TILDE and
+BRACE as the classes that clear `Token.literal`, so the rule inherits that whole
+class list by construction rather than by enumeration.
+
+Seven spellings are measured as INSTANCES, not as a complete list:
+
+1. **A REDIRECTION whose target is any of the six below.** **NARROWED by this
+   round and explicitly NOT CLOSED.** Direction (i) stops being a direction of its
+   own and becomes a **second WORD CLASS the other six apply over.**
+2. **An EXPANSION-BORNE word**, in either class and over either path.
+3. **A SYMLINK is not followed.** NARROWED over the DIRECTORY by a measured
+   partial mitigation; **there is NO such mitigation over the binary.**
+4. **A RELATIVE word.** NARROWED over the DIRECTORY; **not over the binary**,
+   because `cd <binary-parent>` names a directory the exact-path clause
+   deliberately does not cover.
+5. **A TILDE.** No rule, and none is possible: resolving one needs the
+   ENVIRONMENT, which `19-25`'s standing prohibition forbids at guard time.
+6. **A GLOB.** No rule: resolving one needs the FILESYSTEM, which the latency and
+   TOCTOU rules forbid.
+7. **A BRACE LIST.** No rule, for the same reasons — and in redirection-target
+   position bash answers `ambiguous redirect` and reaches no file at all, so that
+   one is a permit that costs nothing.
+
+**The path set grew, the word set grew, and the silences did NOT shrink.** Each
+now applies over two word classes and two paths.
+
+**NO REVISIT CONDITION, NO PIN, NO SCHEDULE AND NO VERSION WITNESS was created
+for any of the seven, and that is a decision with a reason.** `19-25`'s witness
+schedules a human re-audit against a FUTURE GIT, which is the right shape for a
+residue that arrives when someone else ships something. **All seven are reachable
+by the driven agent TODAY**, so a schedule over them would observe the wrong
+thing entirely — a version string that never moves while the residue is
+exercised — and attaching one would be `T-19-107`'s shape arriving in the round
+that inherited the lesson.
+
+### `C-10` — a PARTIAL rule, with what it does not reach stated at the same weight
+
+**What it refuses:** `cp /bin/true <binary>`, `mv`, `install -m 0755`, `ln -f`
+and `printf 'x' > <binary>` at the binary's ABSOLUTE LITERAL spelling — the
+spelling audit 10 drove end to end, the one that moved a bare remote's `main`
+`01f9664` → `2537e97` and made the guard itself answer exit 0.
+
+**What it does NOT reach, at the same weight:** an expansion-borne spelling
+(`cp /bin/true $(command -v gsd-meta-manager)`), a tilde spelling, a relative
+spelling after a `cd`, and **a link on `PATH` whose target `current_exe()` reports
+instead** — a third string neither half of the path set covers. All are pinned
+PERMITTED and all are still exit 0.
+
+**`current_exe()`'s agreement, measured by `19-28` and unchanged:** `/proc/self/exe`
+is fully resolved and `hooks::install` bakes the same call's answer, **so the
+baked path and the guard's path agree by construction.** The residue is the
+symlink case above.
+
+**`current_exe()` is resolved ONCE per invocation and threaded explicitly.** An
+unresolvable exe path makes the binary half **SILENT**, which is **fail-open**
+and is stated on the predicate's signature rather than left to be discovered.
+A new pin asserts the silence with a positive control beside it.
+
+**`T-19-01` is recorded correct-for-what-it-covers and UNWEAKENED.**
+`assert_provenance_in` certifies a RELOCATED COPY; a replaced exec target never
+re-enters the binary that would assert provenance, so the check is not weakened —
+it is not reached. **It was never a defence of the exec target's bytes.**
+
+**`C-10`'s control letter is updated to (a), EXACT PATH, PARTIAL**, so the
+fifteen-carrier table still has a letter for every one.
+
+### `T-19-115` — carried forward with NO rule, at its measured severity
+
+`medium`, OPEN, **no rule written and no acceptance made.** The reason is
+mechanical rather than a preference: a tilde needs the ENVIRONMENT and a glob
+needs the FILESYSTEM, and the guard is forbidden both at guard time. **The remedy
+taken is the residue's ARITHMETIC** — four becomes seven, stated as a CONDITION
+with the spellings as instances — corrected in the predicate's doc, the call
+site's comment, `cred.rs` and this record.
+
+### The `SECTION_ENVELOPE` repair
+
+**THE COMPLETE PIN HIT SET, ENUMERATED WITH `grep -rn` BEFORE THE TEXT MOVED**,
+over `src/` and `tests/` for `SECTION_ENVELOPE`, `envelope_notice`,
+`ambient git credentials`, `credential helper` and `socket is removed`:
+
+| site | what it pins | outcome |
+|---|---|---|
+| `tests/envelope_advisory.rs:182-221` | all three phrases present, in order | **passed UNMODIFIED** |
+| `tests/envelope_advisory.rs:239-289` | the 215-token cap, the 80-column cap | **passed UNMODIFIED, cap NOT raised** |
+| `tests/envelope_advisory.rs:302` | `envelope_notice` renders it | **passed UNMODIFIED** |
+| `tests/envelope_control_carrier.rs:2069` | the CAP clause verbatim (`19-27`'s repair) | **untouched, passed UNMODIFIED** |
+| `tests/envelope_control_carrier.rs:2090-2092` | the phrase-ORDER assertion | **passed UNMODIFIED** |
+| `src/driver/dry_run.rs:549, 735, 796` | three consumers of the constant | **passed UNMODIFIED** |
+| `src/envelope/advisory.rs:328` | `envelope_notice`'s own composition | **untouched** |
+
+**NO existing assertion pins the credential clause literally**, so the "one
+pre-authorised edit" the plan reserved **was not needed and was not taken.** The
+repair is covered by a NEW assertion in `tests/envelope_carrier_reach.rs`
+instead, which is an ADDITION.
+
+```text
+BEFORE  This run cannot reach your ambient git credentials or SSH agent: the
+        socket is removed, not emptied, and global and system git config is a
+        generated file naming no credential helper.
+
+AFTER   As started, this run cannot reach your ambient git credentials or
+        SSH agent: the socket is removed and the git config it is given
+        runs no credential helper.
+```
+
+**What changed is the KIND of statement**, exactly as `19-27`'s repair one clause
+over did. *"As started"* states what the envelope ESTABLISHES and stops; it
+claims nothing about what a command issued during the run can change. **It makes
+no completeness claim and enumerates nothing.** `runs no credential helper` is a
+measured phrase: with the injected pair, `--get-all` still LISTS the helper while
+`credential fill` fails closed, so *"names no helper"* would now be false where
+*"runs no credential helper"* is true.
+
+**THE TOKEN ARITHMETIC, STATED:**
+
+```text
+before          213 whitespace tokens of a 215 cap   (two tokens of headroom)
+Guaranteed      31 -> 28   by dropping a CLAIM  ("not emptied"; both config scopes named)
+Not guaranteed  23 -> 24   by GENERALISING a LIMITATION, not dropping one:
+                           "the hook stubs and ledger the envelope installed"
+                        -> "the files and the binary this envelope runs on"
+after           211 tokens.   **THE CAP WAS NOT RAISED.**
+```
+
+The generalisation is one token longer and covers a route the old wording did
+not — `T-19-116`, the binary the stubs and the guard registration both exec.
+`cannot reach your ambient git credentials` survives **verbatim, first and
+unwrapped** on one 69-character line; all three pinned phrases keep their order;
+widest line 74 of an 80 cap; `\x20` indentation checked on the **RENDERED**
+constant. **No residual disclosure was deleted.**
+
+### `T-19-118` — the branch taken, and why BOTH halves were required
+
+**BOTH the clause repair AND the mechanism control were taken, and the plan was
+right that neither alone is enough.** The clause repair alone leaves a live
+`high`-severity credential reach admitted and uncontrolled; the rule alone closes
+the absolute-literal redirection spelling and leaves six others.
+
+**THE CONTROL: one `credential.helper` pair with an EMPTY value, added through
+the existing `config_env` triplet builder** — never a second construction site.
+Env-injected pairs are applied after every file, so **it defends `C-05`'s
+credential half against EVERY write spelling — redirection, tilde, glob, brace,
+expansion-borne, relative and symlinked alike — because it reads no command line
+at all.** That reason does not depend on this round's rule landing, which is why
+it is strictly wider than any path rule.
+
+**MEASURED AGAINST REAL GIT 2.43.0 BEFORE THE ASSERTION WAS WRITTEN**, quoting
+`19-28`'s recorded measurement and reproducing it:
+
+```text
+                            --get-all credential.helper       credential fill
+no injected pair            `store`              exit 0       ambient secret PRESENT
+EMPTY-helper pair injected  `store`, then an     exit 0       secret ABSENT
+                            EMPTY line
++ a later -c credential.helper=…                              secret PRESENT
+```
+
+**THE `--get-all` READING IS RECORDED BESIDE THE CRITERION, and the distinction
+is measured rather than stylistic.** The config query still LISTS the helper
+while the fill fails closed: git's empty value resets the helper list that
+**RUNS**, not the list the query **ENUMERATES**. **A gate built on `--get-all`
+reports a working control as broken.** The criterion is the call that names the
+harm.
+
+**AT LEAST ONE ROW DRIVES A SPELLING RULE (a) DOES NOT REACH.** The asserting row
+is built on a **TILDE** write to the generated `gitconfig` — one of the three
+spellings that get no rule and never will — so the row proves the control is
+**wider than the rule** rather than duplicating it.
+
+**MEASURED COST:** `GIT_ASKPASS` UNTOUCHED, `gh` unaffected, and **a later
+`-c credential.helper=store` on the same line OVERRIDES the reset** — recorded as
+a **BOUNDED RESIDUE, bounded because that spelling is ARGV-VISIBLE and already
+governed**, unlike every write spelling.
+
+**A FOURTH ROW MOVED, and it is the plan's own false negative in reverse.**
+`tests/envelope_credential.rs`'s
+`a_credential_helper_the_user_really_has_stops_being_resolvable_under_the_envelope`
+asserted that `git config --get credential.helper` FAILS. With the empty pair the
+query SUCCEEDS and prints an empty line — **a gate on the query's exit status
+reports a control that got STRONGER as one that broke.** The criterion is
+corrected to the EFFECTIVE VALUE: what git would run must be empty and must not
+be the user's `store` helper, with the file's own control unchanged. That file is
+not in this plan's fenced list.
+
+**`AR-19-04` is RECORDED and NOT un-accepted, not re-rated and not renumbered.**
+Its rationale — *"the envelope regenerates it at each run start"* — covers
+tampering BETWEEN runs and says nothing about credential REACHABILITY DURING one;
+that reasoning gap is recorded beside it and nothing more. **`T-19-23` is NOT
+marked closed or re-closed** — whether the repair closes it is audit 11's
+judgement. **`AR-19-05` is untouched. No `AR-` row was added, edited, renumbered
+or un-accepted, and `grep -cE '^\| AR-19-13 \|'` over this file is 0.**
+
+### `T-19-117` — the ledger bound, NOT severed, with its derivation
+
+**This plan's ONE named severable item was NOT severed.** It was executed in
+full.
+
+**`MAX_LEDGER_BYTES = 8 MiB`, DEADLINE-derived and NOT cap-derived.** From
+`19-28`'s measured curve, `tally` costs ≈ 41 ms per megabyte; 8 MiB is ≈ 340 ms,
+**under 7% of `GUARD_TIMEOUT_SECS = 5`**, leaving the rest of the budget for the
+rest of the guard. **A cap-derived bound would be a bound the agent steers** —
+`pr_cap_per_24h` and `pr_cap_per_run` are UNCLAMPED and read from a file the
+driven agent can write (`C-15`), and the caps are not clamped here.
+
+**IT REFUSES RATHER THAN READING LESS**, against `tally`'s own no-under-count
+invariant: a tail read, a line cap and sampling all UNDER-COUNT by construction,
+which violates that invariant **in the direction that permits**. The contrast is
+quoted three functions above, where `ends_mid_line` already refuses a whole-file
+read for a one-byte question — *"the sort of thing that turns a guard into a
+hang"* — and the read beneath it was unbounded until now.
+
+**The check is a `stat` placed BEFORE the read and BEFORE the append**, so the
+refusal is fast: a bound that refused only after reading would answer the harm
+with the harm. It is an `Err` rather than a `CapVerdict::Refuse`, so the guard
+parks at **`ParkReason::EnvelopeAssertionFailed`** and never at `PrCapExceeded`,
+which names a cap that FIRED (**D-24**). The refusal names the ledger's own path
+and says it can be archived (**AR-19-11**).
+
+**MEASURED, AFTER:**
+
+```text
+   ledger bytes    gh pr create        git push --force    ls / git status
+   0                       0 ms exit 0            0 ms exit 2        0 ms
+   940,000                41 ms exit 0            0 ms exit 2        0 ms   <- under the bound
+   18,800,000             10 ms exit 2            0 ms exit 2        0 ms   <- past it
+   188,000,000             2 ms exit 2            0 ms exit 2        0 ms   <- past it
+   BASE (19-28, no bound): 7900 ms at the last level, PAST the 5 s deadline.
+```
+
+**THE OVER-REFUSAL, DISCLOSED FROM BOTH SIDES.** A ledger past the bound refuses
+**the forge commands the cap governs and nothing else** — every `git` command and
+every ordinary shell call at the same level is unaffected and still reaches its
+own verdict. `19-28`'s just-under-the-bound control at 1 MiB **still permits AND
+still counts**, which is the half that keeps this a size bound rather than a
+disarmed cap.
+
+**THE BEHAVIOURAL HALF — what the agent CLI does past its registered timeout — is
+UNMEASURED and is claimed in NEITHER direction.** It is a property of a
+closed-source binary.
+
+### `mod.rs:165-168` corrected — D-09's LAST uncorrected home
+
+```text
+BEFORE  "…That party can equally unset `GIT_CONFIG_COUNT`, which is D-09's stated
+         ceiling, so this override does not lower a boundary that was standing."
+
+AFTER   the conclusion is KEPT and re-grounded: the override reaches no further
+        than that because the variable is measured INERT as a guard lever — and
+        the paragraph now names the FILE route and the BINARY route as ceilings
+        the environment route does not bound, with `env -u GIT_CONFIG_COUNT git
+        push --force` recorded as REFUSED beside them.
+```
+
+**`T-19-116` is a route that lowers layer 2 AND layer 3 without controlling the
+environment the TUI starts in at all**, so the old ground is gone: **the
+narrative named the route that is caught while the routes that work were caught
+by nothing.** `19-27` read this paragraph, reached the same conclusion and
+**correctly DECLINED** to edit it because `mod.rs` was outside that plan's stated
+file set, taking its own stated fallback rather than silently widening its diff;
+audit 10 endorsed the decline and named the paragraph for whoever picked it up.
+**This round picked it up as a named exception with ZERO non-doc lines changed**,
+verified by `git diff --unified=0` filtered for non-`///`, non-blank lines
+returning nothing. `GSD_MM_ENVELOPE_ROOT`'s value and behaviour are unaltered.
+
+### THE SIX NAMED FILE EXCEPTIONS, stated AS exceptions, with the verification each held
+
+| file | bound | verification |
+|---|---|---|
+| `policy.rs` | the redirection channel, the `Segment` field, the widened predicate and its doc, the refusal, `842`→`421`, additions inside the existing `mod tests` | `resolve_program`, `resolve_program_with_head`, `first_unreadable_decision_word`, `config_key_operand_index`, `subcommand_word_indices`, `scan_gh_api`, `scan_leading`, `forbidden_repo_path`, `SEPARATORS` and `is_separator` show **ZERO** diff lines; ONE `#[cfg(test)]` line |
+| `hooks.rs` | `guard_in`'s doc and preamble, `classify_segments`' signature and recursion, the ONE call site and its comment | `pre_push`, `pre_commit`, `deny`, `read_guard_request`, `park_refusal`, `write_stub`, `stub_body`, `install`, `install_in`, `hooks_dir_in`, `assert_provenance`, `assert_provenance_in`, `settings_value`, `settings_json`, `guard_command`, `write_settings`, `write_settings_in`, the D-07 second-carrier table and `mod tests` show **ZERO**; the `settings_json` second-carrier row is **NOT repaired** |
+| `ledger.rs` | `record_and_check_in`'s new guard and `MAX_LEDGER_BYTES` with its doc — **the first plan in the phase to open this file** | `tally`, `append_entry`, `ends_mid_line`, `parse_stamp`, `saturating_bump`, `ledger_path`, `ledger_path_in`, `LedgerEntry`, `Tally`, `CapVerdict`, `WINDOW_SECS` show **ZERO** |
+| `cred.rs` | the reach and limit paragraphs, `write_gitconfig`'s doc, and the ONE injected pair with its doc | `write_gitconfig_in`, `gitconfig_body`, `write_askpass_stub_in`, `configured_remote_host`, `EnvelopeEnv`, `build_env_in` untouched; **one in-file unit assertion widened and renamed**, recorded below |
+| `advisory.rs` | `SECTION_ENVELOPE`'s literal and its doc comment | `envelope_notice`, `protection_line`, `PROTECTION_WARNING`, `PROTECTED_CLAIM`, `ProtectionState` show **ZERO** |
+| `mod.rs` | `ENVELOPE_ROOT_ENV`'s residual-limit paragraph | **ZERO non-doc lines**, verified by the filtered `git diff --unified=0` |
+
+**`T-19-61` … `T-19-73`, `T-19-84` and `T-19-85` were NOT taken on, and `scan.rs`
+and `config.rs` were NOT opened.** `Cargo.toml` and `Cargo.lock` are untouched
+(`T-19-SC` holds phase-wide).
+
+**ASSERTIONS UPDATED, BY TEST FUNCTION NAME, each a named and bounded exception:**
+
+| test function | file | why |
+|---|---|---|
+| `direction_i_a_redirection_target_is_not_an_operand_and_stays_permitted` → `after_19_29_direction_i_a_redirection_target_is_read_and_the_control_outside_the_root_is_not` | `envelope_control_carrier.rs` | the **human-authorised** exception |
+| `the_ledger_inflation_spellings_are_all_permitted_today` → `after_19_29_the_ledger_inflation_spellings_are_reached_and_the_outside_controls_are_not` | `envelope_carrier_reach.rs` | its own comment already stated the flip |
+| `t_19_117_the_ledgers_size_is_unbounded_work_on_the_guards_critical_path` → `after_19_29_t_19_117s_unbounded_work_is_bounded_and_the_forge_split_is_unchanged` | `envelope_carrier_reach.rs` | mutually exclusive with the fix it demands |
+| `a_credential_helper_the_user_really_has_stops_being_resolvable_under_the_envelope` | `envelope_credential.rs` | criterion moved from the QUERY to the EFFECTIVE VALUE |
+| `the_triplet_names_the_count_the_key_and_the_directory` → `the_injected_pairs_name_the_count_the_keys_and_their_values` | `cred.rs`'s own `mod tests` | the injection carries a second pair; the pin is WIDENED, still asserting the whole vector exactly |
+
+**`git diff --numstat` over `tests/` across all four commits does NOT show zero
+deletions, and that is stated plainly rather than claimed away.** It shows
+`384/35` for `envelope_carrier_reach.rs`, `99/26` for `envelope_control_carrier.rs`
+and `37/4` for `envelope_credential.rs`. **Every deleted line belongs to one of
+the FIVE corrected test functions named in the table above, and to nothing
+else.** No row was deleted; each was renamed and re-aimed with its reasoning
+rewritten in place, and the total test count is unchanged by any of them —
+the +12 comes entirely from new `#[test]` fns. **`19-29`'s plan asserted zero
+deletions as a success criterion; that criterion is not met, and the reason is
+that three rows pinned a pre-fix verdict the fix necessarily changes.** One of
+those was authorised by a human in advance; the other two were not, and both are
+reported as findings above rather than absorbed into the authorisation.
+
+### The `421` correction
+
+`policy.rs:7450` read *"842 multi-byte characters"*. **842 is the
+byte-minus-character DIFFERENCE and the count is 421**: each of these is a
+THREE-byte character contributing TWO extra bytes, and 421 × 2 = 842. The
+comment now says so. **Every other number in that comment was re-derived
+independently by audit 10 and is right, and not one of them was touched**;
+`POLICY_MIN_PRODUCTION_BYTES`, `HOOKS_MIN_PRODUCTION_BYTES`, the proportional
+floor's value and strictness, the deep anchor and the sentinel counts do not
+move. This plan adds prose to `policy.rs`, which only grows the production half.
+
+### Carried forward, unfixed and stated
+
+`C-05`'s alias half, `C-07`, `C-08` and `C-12` are carried forward unfixed;
+**`C-08`'s behavioural half stays UNMEASURED and is claimed in NEITHER
+direction** — repairing a delivery is a change to the SPAWN SEAM and was out of
+scope. `C-15` keeps control (e) with **no clamp**: clamping a configured cap is a
+PRODUCT decision, not a guard rule. `C-11` … `C-15` keep control (e) entirely.
+The `glab --host` forge cell is unfixed, **`FORGE_VALUE_OPTS` keeps
+`--hostname`**, and **`glab` is confirmed NOT INSTALLED**, so no pin was written
+that would skip. `T-19-110` stays at `medium`.
+
+### `T-19-17r` is OUTSTANDING for the TWELFTH time
+
+`grep -cE '^\| AR-19-13 \|'` over this file is **0**. **This plan did NOT accept
+`T-19-17r`, added no Accepted-Risks-Log row, created no `AR-19-13`, and did not
+apply the word "accepted" to it anywhere** — not in a test name, not in a
+comment, not in either record. Accepting a risk is a human decision, and twelve
+agents have now deliberately left this one unmade.
+
+### The mechanism pins and the byte floors, RE-MEASURED
+
+`SEPARATORS` is **byte-identical** at `policy.rs:2297` (one commit in the whole
+phase, `84a9b05`) and `policy::is_separator(">")` is `false`, both asserted by a
+new pin with a positive control. Round 5's literalness bit is non-vacuous and is
+now read in a **THIRD** place. Round 6's deletion model is unchanged in behaviour
+and its over-deletion control still permits. Round 7's four callee-grammar
+directions, round 8's confinement clause with both `--signed no` controls, round
+9's re-parse clause with `aliasx.` / `notalias.` and both `T-19-86` `!`-bodied
+rows at exit 0, and round 10's clause over all nineteen envelope-root operand
+rows are green. **Not one config-resolution verdict moved**
+(`envelope_config_resolution` 30/0). The stripper's three protections keep their
+strictness and `policy.rs` still has exactly ONE `#[cfg(test)]` line.
+
+### The gate, with its arithmetic STATED and CHECKED
+
+```text
+command   rtk proxy cargo test --no-fail-fast   (counts read with `rtk proxy grep`, D-34)
+before    1808  passed + failed   (1802 passed, 6 failed, 13 ignored, 46 result lines)
+after     1820  passed + failed   (1818 passed, 2 failed, 13 ignored, 46 result lines)
+delta     +12
+check     12 new `#[test]` fns across all four commits, 0 removed (git diff HEAD~4..HEAD)
+          1808 + 12 = 1820.   **The identity holds exactly.**
+```
+
+**A red test RAN, so red→green leaves the total unchanged and every increase
+comes ONLY from new `#[test]` fns.** **The RED set from `19-28` is now EMPTY.**
+
+**SEVENTEEN `envelope_*` binaries RAN** — sixteen would have meant an evidence
+file did not execute:
+
+| binary | passed | failed |
+|---|---|---|
+| `envelope_advisory` | 10 | 0 |
+| `envelope_argv_deletion` | 20 | 0 |
+| `envelope_callee_grammar` | 19 | 0 |
+| **`envelope_carrier_reach`** | **39** | **0** |
+| `envelope_command_position` | 18 | 0 |
+| `envelope_config_resolution` | 30 | 0 |
+| `envelope_control_carrier` | 37 | 0 |
+| `envelope_credential` | 6 | 0 |
+| `envelope_expansion_slots` | 32 | 0 |
+| `envelope_hook_refusals` | 7 | 0 |
+| `envelope_literal_decision` | 43 | 0 |
+| `envelope_pr_cap` | 11 | 0 |
+| `envelope_reparsed_value` | 34 | 0 |
+| `envelope_tracer` | 6 | 0 |
+| `envelope_wiring` | 14 | 0 |
+| `envelope_wrapper_bypass` | 13 | 0 |
+| **`envelope_wrapper_class`** | **52** | **0** |
+
+`cargo build` and `cargo clippy -- -D warnings` both exit 0. **`cargo clippy
+--tests` is NOT the gate** — it already fails at base on four pre-existing lints
+in `src/browser.rs` and `src/project_creator.rs`, which were not touched.
+
+**DOCUMENTED FLAKES — TWO FIRED AND ARE RECORDED RATHER THAN REPORTED CLEAN.**
+Both `tests/driver_reattach.rs` failures fired in the gate run:
+`a_fresh_scan_finds_the_orphaned_run_live_with_its_last_journal_step` and
+`a_run_killed_without_an_ending_is_reported_crashed_and_nothing_on_disk_is_repaired`.
+**Re-run in isolation they are 3 passed / 0 failed**, which is the documented
+signature. They were not fixed and are out of scope. **The `envelope_tracer`
+ETXTBSY race did NOT fire** in the gate run or in this plan's measurements —
+`envelope_tracer` is 6/0. **That race is `C-10`'s own seam and this round changed
+what the guard does about that seam**, so its absence is RECORDED and its
+relation to this round's change is stated in NEITHER direction: absence is not
+evidence it is fixed, and it is not evidence this round affected it.

@@ -2474,3 +2474,166 @@ through a command layer 2 permits — while `env -u GIT_CONFIG_COUNT` is REFUSED
 - **the `T-19-17r` bookkeeping gap** — **OUTSTANDING for the ELEVENTH time.**
   `grep -cE '^\| AR-19-13 \|'` over `19-SECURITY.md` is **0**. No `AR-19-13` row
   is created and the word "accepted" is not applied to `T-19-17r` anywhere.
+
+---
+
+## Plan 19-29 — round 11's RULES (the corpus was `19-28`'s)
+
+**`/gsd-secure-phase 19` is NOT cleared by this plan. Nothing below is described
+as a closure.** Whether `T-19-116`, `T-19-117` and `T-19-118` close is audit 11's
+judgement rather than this plan's claim.
+
+### `T-19-116` — NARROWED, NOT CLOSED (`high`, OPEN)
+
+**What narrowed it:** the carrier predicate's path set grew from
+`{envelope_dir_in(root, alias)}` to `{that directory as a PREFIX} ∪ {the binary
+this guard is running as, as an EXACT PATH}`, raised at the same one site in
+`classify_segments`' per-segment loop at `ParkReason::EnvelopeAssertionFailed`.
+`std::env::current_exe()` is resolved ONCE per invocation in `guard_in` and
+threaded explicitly.
+
+**What remains open:** every spelling but the ABSOLUTE LITERAL one — an
+expansion-borne spelling (`cp /bin/true $(command -v gsd-meta-manager)`), a tilde
+spelling, a relative spelling after a `cd`, and **a link on `PATH` whose target
+`current_exe()` reports instead**, which is a third string neither half of the
+path set covers. **The symlink and relative directions have NO partial mitigation
+over the binary**, unlike over the envelope directory, because `cd
+<binary-parent>` names a directory the exact-path clause deliberately does not
+cover. **An unresolvable exe path makes the binary half SILENT, which is
+fail-open.** None of it is handed to a pin, a schedule or a witness.
+
+**`C-10`'s control letter is updated to (a), EXACT PATH, PARTIAL.**
+**`T-19-01`'s relocated-copy mitigation is unweakened and was never a defence of
+the exec target's bytes.**
+
+### `T-19-118` — NARROWED, NOT CLOSED (`high`, OPEN), by TWO mechanisms
+
+**What narrowed it, first:** a pathname REDIRECTION-TARGET channel produced by
+the walk that already skips the target, carried on `Segment::redirection_targets`
+with `segment.tokens` byte-for-byte unchanged, so an absolute literal target
+under either protected path is refused. **Direction (i) is NARROWED to the seven
+directions below and is NOT closed** — it stops being a direction of its own and
+becomes a second WORD CLASS the other six apply over.
+
+**What narrowed it, second, and this half is wider:** **an injected
+`credential.helper` pair with an EMPTY value**, added through the existing
+`config_env` triplet builder. **It reads no command line at all**, so it defends
+the generated `gitconfig`'s credential half against EVERY write spelling. **The
+criterion is `git credential fill` failing closed, NEVER `git config --get-all
+credential.helper`** — measured against git 2.43.0, the query still prints the
+user's helper plus an empty line at exit 0 while the fill returns nothing, so a
+`--get-all` gate reports a working control as broken.
+
+**What remains open:** an agent that unsets `GIT_CONFIG_COUNT` (D-09's stated
+ceiling, already disclosed); and **a later `-c credential.helper=<value>` on the
+same command line, which overrides the reset** — a BOUNDED residue, bounded
+because that spelling is argv-visible and already governed, unlike every write
+spelling.
+
+**`SECTION_ENVELOPE`'s FIRST `Guaranteed` clause is repaired** and is true when
+this round ends: it states the STARTING STATE, makes no completeness claim and
+enumerates nothing. 213 → **211** tokens against an **UNRAISED** 215 cap.
+
+**`AR-19-04` is RECORDED and NOT un-accepted**; its reasoning gap — the
+acceptance covers tampering BETWEEN runs and says nothing about credential
+REACHABILITY DURING one — is recorded beside it and nothing more. **`T-19-23` is
+NOT marked closed or re-closed.**
+
+### `T-19-117` — NARROWED, NOT CLOSED (`medium`, OPEN)
+
+**What narrowed it:** a fail-CLOSED size bound, `MAX_LEDGER_BYTES = 8 MiB`,
+checked with a `stat` before `record_and_check_in`'s read and before its append.
+
+**The derivation, from the DEADLINE and never from the caps:** `tally` costs
+≈ 41 ms/MB on the measured curve; 8 MiB ≈ 340 ms, under **7%** of
+`GUARD_TIMEOUT_SECS = 5`. **A cap-derived bound would be a bound the agent
+steers** — `pr_cap_per_24h` and `pr_cap_per_run` are unclamped and read from a
+file the agent can write (`C-15`), and **they were not clamped.** It **REFUSES
+rather than reading less**, because a tail read, a line cap and sampling all
+UNDER-COUNT, violating `tally`'s no-under-count invariant in the direction that
+permits. The refusal carries `ParkReason::EnvelopeAssertionFailed` and **never
+`PrCapExceeded`** (D-24), names the ledger's own path and says it can be archived
+(AR-19-11).
+
+**Measured:** 188 MB went **7900 ms → 2 ms**; 18.8 MB refuses at 10 ms; a 0.94 MB
+ledger still permits at exit 0 **and still counts**.
+
+**The over-refusal, disclosed from both sides:** a ledger past the bound refuses
+**the forge commands the cap governs and nothing else** — every `git` command and
+every ordinary shell call at the same level still reaches its own verdict.
+**The BEHAVIOURAL half — what the agent CLI does past its registered timeout — is
+UNMEASURED and claimed in NEITHER direction.** The deferred option (b),
+tamper-evidence for the ledger, remains costed with **no schedule attached.**
+
+### `T-19-115` — OPEN at `medium`, with NO RULE WRITTEN
+
+**No rule, and none is possible within this guard's constraints**: resolving a
+TILDE needs the ENVIRONMENT, which `19-25`'s standing prohibition forbids at
+guard time, and resolving a GLOB needs the FILESYSTEM, which the latency and
+TOCTOU rules forbid. A BRACE LIST is the same argument, and in
+redirection-target position bash answers `ambiguous redirect` and reaches no file
+at all.
+
+**The remedy taken is the residue's ARITHMETIC**, corrected in four places — the
+predicate's doc, the call site's comment, `cred.rs`'s WHAT IS NOT COVERED and the
+`19-SECURITY.md` record. **No acceptance is made.**
+
+### THE RESIDUE IS SEVEN DIRECTIONS, replacing the four, over TWO word classes and TWO paths
+
+**Stated as a CONDITION rather than an enumeration.** The rule is silent about
+**a word the SHELL MAY REWRITE**, about **a word that IS NOT ABSOLUTE**, and
+about **a word that reaches a protected path ONLY THROUGH A LINK** — in EITHER
+word class and over BOTH paths. Seven measured spellings are instances, not a
+complete list: (i) a redirection target that is any of the other six, (ii)
+expansion-borne, (iii) symlinked, (iv) relative, (v) tilde, (vi) glob, (vii)
+brace list.
+
+**The path set grew, the word set grew, and the silences did NOT shrink.**
+**NOT ONE of the seven has an automated control, and no revisit condition, pin,
+schedule or version witness was created for any of them** — `19-25`'s witness
+schedules a re-audit against a FUTURE GIT, and these are reachable by the agent
+TODAY.
+
+### `mod.rs:165-168` — corrected, D-09's LAST uncorrected home
+
+The paragraph argued that relocating the envelope root *"does not lower a
+boundary that was standing"* **on the ground that** the same party could unset
+`GIT_CONFIG_COUNT`. **`T-19-116` lowers layer 2 AND layer 3 without controlling
+the environment the TUI starts in at all**, while `env -u GIT_CONFIG_COUNT git
+push --force` is REFUSED — the narrative named the route that is caught while the
+routes that work were caught by nothing. The conclusion is kept and re-grounded;
+the FILE and BINARY routes are named as ceilings the environment route does not
+bound. **ZERO non-doc lines changed**, and `GSD_MM_ENVELOPE_ROOT`'s value and
+behaviour are unaltered. `19-27` correctly declined this as outside its file set
+and is recorded as correct.
+
+### Still OPEN and unchanged by this plan
+
+- **`T-19-86`** — OPEN at `high` by explicit user scoping decision. Four
+  registered rows at exit 0, pins green and UNMODIFIED, `T-19-111` still moved
+  OUT of it.
+- **`T-19-91`** — OPEN at `high`, three arms unweakened, no decision-operand rule
+  added for `reflog`, `symbolic-ref` or `push` and no denylist extended.
+- **`T-19-111`** — OPEN at `high`, **NO rule**, corpus rows RECORDED in neither
+  direction; `19-27`'s five-site attribution correction stays as performed and
+  was **not** folded back into `T-19-86`.
+- **`T-19-112`, `T-19-113`** — NARROWED FURTHER, still NOT CLOSED.
+- **`T-19-96`, `T-19-110`, `T-19-74`** — registered open and unfixed;
+  `T-19-74`'s core rows stay frozen.
+- **`T-19-84`, `T-19-85`, `T-19-61` … `T-19-73`** — open and unaccepted;
+  `scan.rs` and `config.rs` were not opened and `park_refusal` was not moved.
+- **`C-08`'s behavioural half** — UNMEASURED, claimed in neither direction; the
+  `settings_json` second-carrier row was NOT repaired.
+- **`C-15`'s `pr_cap_*`** — unclamped, deliberately: clamping a configured cap is
+  a PRODUCT decision, not a guard rule.
+- **`C-11` … `C-15`** — control (e), no rule, unaccepted.
+- **The `glab --host` forge cell** — unfixed, `FORGE_VALUE_OPTS` keeps
+  `--hostname` (audit 9 overturned audit 8's suggestion: removal moves a counted
+  creation form to UNCOUNTED, `T-19-35`), and `glab` is confirmed NOT INSTALLED
+  so no pin that would skip was written.
+- **`T-19-17r`** — OUTSTANDING for the **TWELFTH** time. No `AR-19-13`, no
+  Accepted-Risks-Log row, and the word "accepted" is applied to it nowhere.
+  `AR-19-04` and `AR-19-05` are carried forward not un-accepted, not re-rated and
+  not renumbered.
+
+**Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.**
