@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
-stopped_at: Completed 19-27-PLAN.md — T-19-112 and T-19-113 NARROWED not closed; /gsd-secure-phase 19 NOT cleared
-last_updated: "2026-09-04T17:55:26.762Z"
+stopped_at: Completed 19-28-PLAN.md (corpus RED; 19-29 writes the rules)
+last_updated: "2026-09-04T19:50:58.329Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: 60f11e85b21e7fae4befede8e3d3d96ef4622c53
+state_head: e4efd055e8066547dbf4d807a16c7cfef3cea738
 progress:
   total_phases: 10
   completed_phases: 6
-  total_plans: 106
-  completed_plans: 106
+  total_plans: 108
+  completed_plans: 107
   percent: 60
 ---
 
@@ -229,6 +229,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 19 P25 | ~3h | 4 tasks | 6 files |
 | Phase 19 P26 | one session | 3 tasks | 5 files |
 | Phase 19 P27 | one session | 4 tasks | 7 files |
+| Phase 19 P28 | 1 session | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -305,6 +306,10 @@ Recent decisions affecting current work:
 - [Phase 19]: 19-27: the carrier-operand rule — a segment naming an ABSOLUTE LITERAL path under envelope_dir_in(root, alias) is refused, raised ONCE before the resolution match; it fails OPEN in four named directions handed to no control
 - [Phase 19]: 19-27: T-19-111 moved OUT of T-19-86 at all five sites, with no rule and no acceptance written for it
 - [Phase 19]: 19-27: SECTION_ENVELOPE's Guaranteed cap clause repaired to a location fact making no completeness claim — C-15 is a fifth route to SAFE-06 and the deferred option (b) a sixth
+- [Phase 19]: The redirection-target channel is a SEGMENT-borne fact, never a token in the stream — pinned falsifiable by segment-count assertions (19-28)
+- [Phase 19]: The binary carrier C-10 is an EXACT-PATH boundary, not a directory prefix, because its directory is shared (19-28)
+- [Phase 19]: The ledger size bound is DEADLINE-derived and must not be cap-derived, because the caps are unclamped (C-15) (19-28)
+- [Phase 19]: T-19-115's tilde/glob/brace spellings get NO rule; the residue's arithmetic is corrected from four directions to seven (19-28)
 
 ### Pending Todos
 
@@ -336,6 +341,7 @@ Recent decisions affecting current work:
 - T-19-97/T-19-98/T-19-99 open — corpus RED at 1605 (passed+failed); 19-19 writes the rule. /gsd-secure-phase 19 NOT cleared: T-19-86 and T-19-91 remain open at high
 - 19-21: tests/envelope_callee_grammar.rs pins `git --super-prefix x push --force origin main` at force_push_blocked while pinning `git --super-prefix x status` at envelope_assertion_failed — identical leading tokens, so no rule obeying 19-21's prohibitions satisfies both. Row left RED. Both refuse at exit 2; only the identifier differs. **RESOLVED 2026-09-04 (989f21a)** — the 19-21 executor's analysis was verified by measurement against the built binary (fresh envelope root per row, root walked after) and HELD: both spellings refuse at exit 2 with an empty walk, `--super-prefix` is absent from GIT_GLOBAL_VALUE_OPTS after 19-21, and git 2.43.0 rejects it bare, separate and attached. `force_push_blocked` was a PRE-fix observation mislabelled as post-fix. Row 937 corrected to envelope_assertion_failed; exit code and empty walk still asserted; no `src/` change and no second reading site. All thirteen envelope_* binaries green; passed+failed = 1639, 0 failures. **This does NOT clear `/gsd-secure-phase 19`** — T-19-86 and T-19-91 remain OPEN at high, T-19-17r stays OUTSTANDING (no AR-19-13, not accepted), and only the WRAPPER-OPERAND sub-class of T-19-60 is closed.
 - T-19-110 (NEW, high): scan_config under-reads a dash-leading config value, so git config core.hooksPath -c and -- exit 0 while /dev/null and - are refused. Found by 19-25, deliberately not fixed — needs a RED corpus first.
+- 19-29 must add tests/envelope_control_carrier.rs to its files_modified: its direction_i_a_redirection_target_is_not_an_operand_and_stays_permitted pins three rows PERMITTED that 19-29's redirection rule refuses (19-28 finding)
 
 ### Quick Tasks Completed
 
@@ -366,8 +372,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-04T17:55:26.049Z
-Stopped at: Completed 19-27-PLAN.md — T-19-112 and T-19-113 NARROWED not closed; /gsd-secure-phase 19 NOT cleared
+Last session: 2026-09-04T19:50:42.432Z
+Stopped at: Completed 19-28-PLAN.md (corpus RED; 19-29 writes the rules)
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
 Resume file: None
