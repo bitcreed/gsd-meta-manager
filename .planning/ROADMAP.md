@@ -364,12 +364,14 @@ Plans:
   - `git stash` must be forbidden in the driver's allowlist outright
 
 **Research**: skip — branch-protection and pre-push-hook patterns are well-established practice (GitHub Copilot's `copilot/`-prefix model is a direct precedent)
-**Plans**: 8/8 executed, plus 2 UAT gap-closure plans (19-09, 19-10) and 11 security gap-closure plans (19-11, 19-12, 19-13, 19-14, 19-15, 19-16, 19-17, 19-18, 19-19, and 19-20/19-21 pending) across six audit rounds
+**Plans**: 8/8 executed, plus 2 UAT gap-closure plans (19-09, 19-10) and 15 security gap-closure plans (19-11 … 19-23 executed, 19-24/19-25 pending) across eight audit rounds
 
 Plans:
 
 - [x] 19-22-PLAN.md
-- [ ] 19-23-PLAN.md
+- [x] 19-23-PLAN.md
+- [ ] 19-24-PLAN.md — Round 9 corpus, RED. T-19-105 for the ninth round: `CONFIG_RESOLUTION_CLASSES`'s five classes are all argv or environment carriers and nothing models a carrier riding inside a config VALUE the round-8 clause CONFINED, so the corpus cannot fail on T-19-108. Adds a SIXTH class on the SAME axis (audit 8's finding is that the region moved, not the axis), a `CONFIG_REPARSED_VALUE_CARRIERS` alphabet in both the `-c` and persisted deliveries, and an EIGHTH evidence file. Fences the seam found at plan time: git's shell-alias rule is a ONE-BYTE fact, and a blanket `alias.*` refusal turns two registered T-19-86 rows permanently red in files the round may not edit
+- [ ] 19-25-PLAN.md — Round 9 rules. **Option (b): an assignment whose key names a value git RE-PARSES as a command line is unbounded and refuses** — option (a) costed by measurement and rejected (a second tokenizer for git's own `split_cmdline`, attacker-reachable recursion at depth 2, and carriers that deliver no readable body). `REPARSED_COMMAND_SECTIONS` beside `INDIRECTION_SECTIONS`, reading the SECTION plus git's one-byte shell rule, asked at the TWO decision regions that already read that word. **T-19-108 closes only AS SCOPED — audit 7's `!`-bodied destructive pair still works, and that is T-19-86.** Three fail-open directions stated and handed to no control; both residues gain a revisit condition and a non-skipping version witness. **T-19-86 and T-19-91 stay open at `high` — `/gsd-secure-phase 19` is NOT cleared**
 
 - [x] 19-18-PLAN-CHECK.md
 
