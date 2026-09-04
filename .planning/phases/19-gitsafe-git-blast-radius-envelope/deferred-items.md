@@ -2034,3 +2034,185 @@ present at `policy.rs:5141`; exactly ONE `#[cfg(test)]` sentinel per file
 - **the three documented flakes** — the two `tests/driver_reattach.rs` failures and
   the `tests/envelope_tracer.rs` ETXTBSY stub-write race. **None fired in this
   plan's gate run**; absence is not evidence they are fixed.
+
+---
+
+## Plan 19-27 — the rules and the corrections (round 10's second half)
+
+**`/gsd-secure-phase 19` is NOT cleared by this plan.** `T-19-86`, `T-19-91` and
+`T-19-111` all remain OPEN at `high`. Only the WRAPPER-OPERAND sub-class of
+`T-19-60` is closed.
+
+### `T-19-112` — the SAFE-06 ledger as a FILE — **NARROWED, NOT CLOSED**, `high`
+
+**The clause that narrowed it:** `policy::envelope_carrier_operand`, raised once at
+the top of `hooks::classify_segments`' existing per-segment loop **before** the
+resolution match, refusing a segment any of whose words is ABSOLUTE, LITERAL and —
+after LEXICAL normalisation with `..` collapsed textually and no link followed —
+equal to or under `envelope_dir_in(root, alias)` compared COMPONENT-WISE. Reason
+`ParkReason::EnvelopeAssertionFailed`, no new variant. So `rm -f <ledger>`,
+`truncate -s 0 <ledger>`, `cp /dev/null <ledger>`, `shred -u <ledger>` and
+`rm -rf <env>/<alias>` are refused, and so are `cat <ledger>`, `wc -l <ledger>` and
+`ls <env>/<alias>/hooks` — the disclosed over-refusal, a decision with a stated
+reason.
+
+**Narrowed in ONE ROUTE OF SEVERAL, and the others are named:**
+
+- **the four fail-open directions**, none with an automated control: (i) a
+  REDIRECTION TARGET is not an operand — real by mechanism, `tokenize` deletes the
+  operator AND its target; (ii) an EXPANSION-BORNE operand cannot be resolved;
+  (iii) a SYMLINK is not followed — **NARROWED** by `ln -s <env>/…` naming an
+  envelope path as its own operand; (iv) a RELATIVE path is not resolved —
+  **NARROWED** by `cd <env>/<alias>`, with the composite refused BY SEGMENT ONE
+  and segment two still unresolvable. **No pin, no schedule and no version witness
+  was created for any of the four**, because they are reachable by the agent TODAY
+  and a schedule would observe the wrong thing.
+- **`C-15`** — `~/.config/gsd-meta-manager/config.json`'s unclamped `pr_cap_*`,
+  re-read on every Bash tool call. It disarms SAFE-06 **by raising a number, with
+  no ledger write and no envelope path named**, so rule (a) cannot reach it. A
+  DISTINCT ROUTE, control (e), no rule, no acceptance. **`pr_cap_*` is
+  deliberately NOT clamped** — a product decision this security round declines to
+  make silently.
+- **the DEFERRED option (b)**, below, which leaves the guard as the cap's only
+  observation point (`T-19-35`, `AR-19-05`).
+
+### `T-19-113` — the hook stubs as FILES — **NARROWED, NOT CLOSED**, `medium`
+
+Covered by the same clause, because the boundary is the envelope DIRECTORY rather
+than a filename list: `cp /bin/true <hooks>/pre-push`, the `pre-commit` twin and
+`rm -rf <hooks>` are all refused. **The same four directions remain open**, and
+`printf 'exit 0' > <hooks>/pre-push` — direction (i) — is pinned PERMITTED before
+and after.
+
+**Option (b) is recorded STRUCTURALLY UNAVAILABLE here**: the thing that would
+detect a replaced `pre-push` is the binary the replacement removed from the path.
+`T-19-01`'s `current_exe()` + `assert_provenance_in` mitigation certifies a
+RELOCATED COPY, is correct, and is **not weakened** — it is simply not a defence of
+the sanctioned path's CONTENTS.
+
+**D-09's narrative is corrected regardless**, in `advisory.rs:254` and
+`cred.rs:241-244`: the ceiling now names the FILE route as well as the
+`GIT_CONFIG_COUNT` route. `mod.rs:165-168` needs the same correction and was **NOT
+opened** — it is outside this plan's `files_modified`. **Recorded as a
+documentation gap for a later round.**
+
+### Option (b) for the ledger — **COSTED AND DEFERRED, with NO schedule attached**
+
+The ledger is append-only by design and its entries carry `run_id` and `at`, so a
+deletion or truncation IS detectable at the next append — the material exists.
+**What it costs**: a SECOND CARRIER for SAFE-06, which `hooks.rs:1421-1428`,
+`T-19-35` and `AR-19-05` all say in terms SAFE-06 does not have; and a stated
+latency rule, *"the ledger read is a single pass over one append-only file"*,
+because the cross-check would read the run journal too. **A round of its own. No
+pin, no revisit condition and no witness is created for it, and (a)'s residue
+stays uncovered.**
+
+### `T-19-114` — the corpus's carrier alphabet — **CLOSED for the control-carrier axis**, `low`
+
+`19-26`'s fifth named axis (`CONTROL_CARRIER_CLASSES`) drew a carrier that is a
+FILE, off the argv plane nine rounds had modelled. Its fail-closed property is
+green after this plan and its six verdict-preserving alphabets are still
+PERMITTED. **Successor: the axis this corpus does not draw is a carrier reached
+through a spelling the guard cannot see at all** — a redirection target, an
+expansion-borne word, a link made before the run — and no corpus can turn those
+red without a rule that could pass them, which is why they are recorded as
+residue rather than as an axis. **Ten consecutive rounds have found this failure
+mode**; the eleventh should assume it exists rather than hope it does not.
+
+### `T-19-111` — a `.git/config` written by any means — **OPEN at `high`, NO RULE**, attribution corrected at all five sites
+
+`T-19-86`'s four registered rows all require a GOVERNED program to be handed a
+GOVERNED COMMAND AS DATA on the line the guard reads. **A non-`!` alias body
+sitting in a config VALUE is not that** — it is a plain git command line in a file,
+`REPARSED_COMMAND_SECTIONS`' own K1 class reached through a carrier outside argv.
+Measured and live: a `printf`-written `.git/config` alias carrying
+`-c include.path=<f> push --force` rewrote a bare remote's `main`, with a
+no-carrier control beside it that left it unmoved.
+
+Five sites: `policy.rs:1177-1183` **edited**; `cred.rs:287-289` **edited**, with
+the *"or one written by a means that is not `git config`"* half **RESTORED**;
+`19-SECURITY.md:7430` and `19-25-SUMMARY.md:265` **corrected BESIDE** in this
+plan's appended `19-SECURITY.md` subsection, never by editing them; and the
+`T-19-108` entry below.
+
+**`T-19-111` is moved OUT of `T-19-86` and never into it. No rule is written for
+it, and no acceptance is made for either — that is a human decision.**
+
+### `T-19-108` — the closure entry corrected (site 5 of the attribution correction)
+
+The plan-19-25 entry above records `T-19-108` as **CLOSED AS SCOPED** and its
+"as scoped" names the excluded **BODY** — the `!` arm's carve-out. **It does not
+name the excluded CARRIER, and it should.** The closure covers the `-c`, the
+`--config-env` and the `git config` WRITE-OPERAND deliveries of a non-`!` alias
+body, all three of which the guard sees on the argv it reads. **It does NOT cover
+the same K1 body arriving through a FILE the guard never saw a write to** — a
+`.git/config` written by `printf`, `sed`, `cp` or a redirection, or one predating
+the run. That carrier is `T-19-111`, it is open at `high`, and this plan writes no
+rule for it. The correction is made here, beside the entry, rather than by editing
+it.
+
+### `SECTION_ENVELOPE`'s `Guaranteed` cap clause — **REPAIRED**
+
+From `Pull-request cap: an append-only ledger this repository does not contain.`
+to `The pull-request count lives in / an append-only ledger this repository does
+not contain.` — a LOCATION FACT that is mechanically true rather than a claim
+about a control that measurement falsified. **It makes no completeness claim and
+enumerates nothing**, because `C-15` is a fifth route and the deferred option (b)
+a sixth. 213 tokens against the unraised 215 cap; the three pinned phrases in
+order and unwrapped; `\x20` indentation; no residual disclosure dropped. **Exactly
+one assertion updated**, the one `19-26` named in advance;
+`tests/envelope_advisory.rs` shows a ZERO diff and all ten of its tests pass
+unmodified.
+
+### The proportional-floor comment — **corrected**
+
+Cited *228,785 bytes, 78.7%*; measured **262,229 bytes at base** and **277,570
+after this plan's additions**, ratio **64.8%**. Audit 9's 261,387 and the mandate's
+261,386 are **CHARACTER** counts — `production.len()` is `String::len()`, which is
+bytes, and the file carries 842 multi-byte characters. **The FLOOR stays at
+`180_000` and its strictness is unchanged.**
+
+### Carried forward UNFIXED, and stated rather than left as an omission
+
+- **`C-08` — `<env>/<alias>/settings.json`'s claimed-but-unwired second carrier.**
+  `19-26` measured and registered it; **repairing a delivery is a change to the
+  SPAWN SEAM and is out of this round's scope.** Its behavioural half remains
+  **UNMEASURED** and is claimed in neither direction.
+- **`C-05`, `C-07`, `C-12`, `C-15`** — the planner-derived carriers, carried
+  forward at their measured severity with control (e). No rule, no acceptance.
+- **`AR-19-04`'s reasoning gap** — *"regenerates it at each run start"* does not
+  cover a write DURING the run. **RECORDED beside it and nothing more; NOT
+  un-accepted.** `AR-19-05` likewise. No `AR-` row was added, edited, renumbered,
+  accepted or un-accepted.
+
+### Still OPEN and unchanged
+
+- **`T-19-86`** — OPEN at `high` by explicit user scoping decision. Its four
+  registered rows and its persisted-alias arm still exit 0, its pins green and
+  UNMODIFIED. **`T-19-111` is moved OUT of it, not into it.** Not fixed, not
+  narrowed, not re-scoped.
+- **`T-19-91`** — OPEN at `high`, arms unweakened, no decision-operand rule added
+  and no denylist extended.
+- **`T-19-96`**, **`T-19-110`** — open at `medium`, left exactly as pinned.
+- **`T-19-74`** — core rows frozen; `env $X push --force origin main` and
+  `X=git; env $X push --force origin main` still at exit 0.
+- **`T-19-84`, `T-19-85`, `T-19-61` … `T-19-73`** — open and unaccepted by explicit
+  user decision. Untouched apart from the three named file exceptions
+  (`hooks.rs`'s single call site, `cred.rs`'s doc-only paragraph, `advisory.rs`'s
+  single constant).
+- **the `glab --host` forge cell** — carried forward UNFIXED, **`--hostname` KEPT**
+  in `FORGE_VALUE_OPTS`. `glab` is confirmed NOT installed, so a pin over that cell
+  cannot run against its real callee and a pin that skips is fail-open.
+- **the `T-19-17r` bookkeeping gap** — still **OUTSTANDING**. `grep -cE '^\| AR-19-13 \|'`
+  is **0**, verified after writing. **This plan adds no Accepted-Risks-Log row,
+  creates no `AR-19-13`, and does not apply the word "accepted" to it.** Eight
+  agents have deliberately left the acceptance unmade; **this plan is the ninth.**
+- **`src/envelope/mod.rs:165-168`** — D-09's ceiling paragraph, needing the same
+  FILE-route correction `cred.rs` and `advisory.rs` received. **NOT opened; a
+  documentation gap for a later round.**
+- **the three documented flakes** — the two `tests/driver_reattach.rs` failures and
+  the `tests/envelope_tracer.rs` ETXTBSY stub-write race. **One FIRED during this
+  plan's verification** —
+  `a_run_killed_without_an_ending_is_reported_crashed_and_nothing_on_disk_is_repaired`
+  — and was neither fixed nor worked around. It did not fire on the final gate run;
+  absence is not evidence it is fixed.
