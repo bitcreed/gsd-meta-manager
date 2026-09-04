@@ -3094,6 +3094,46 @@ pub const ENVELOPE_ENV_KEYS: &[&str] = &[
     // this key. Its false-positive cost is the same as every other entry's: a
     // driven run cannot name it as a bare unquoted word, and must quote it.
     "GSD_MM_RUN_ID",
+    // `T-19-104`. **git's OWN internal carrier for `-c`, and it OUTRANKS the
+    // `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` triplet `cred::hooks_path_env`
+    // emits.** Measured against git 2.43.0 with that exact triplet as the
+    // control: the control alone resolves `core.hooksPath` to `/ENV_WINS`, and
+    // `GIT_CONFIG_PARAMETERS="'core.hooksPath=/PARAM_WINS'"` resolves it to
+    // `/PARAM_WINS`. Reproduced end to end against a bare remote: with the
+    // envelope's `pre-push` hook delivered exactly as the envelope delivers it,
+    // a plain in-namespace push is refused and leaves the remote ref UNMOVED,
+    // while the same push under this prefix completes at rc 0 and MOVES it.
+    //
+    // **git EXPORTS it, so one prefix disarms every git subprocess of the
+    // command** rather than just the one being typed — which is how it composes
+    // with `T-19-86`. Its false-positive cost is the one every entry in this
+    // list carries: a driven run cannot name it as a bare unquoted word and must
+    // quote it, so `echo GIT_CONFIG_PARAMETERS` is refused while
+    // `echo GIT_CONFIG_PARAM` stays permitted. That is the direction to be
+    // wrong in.
+    //
+    // The mechanism was never missing — the paired discriminator
+    // `GIT_CONFIG_COUNT=0` is refused today in all three environment spellings.
+    // Only the LIST was short.
+    "GIT_CONFIG_PARAMETERS",
+    // `T-19-104`'s second member. **A measured DEFEAT whose harm is INERT, and
+    // the word "bypass" is deliberately NOT used for it.**
+    //
+    // The defeat is real and measured: a system file carrying
+    // `credential.helper = evil` reads as `evil` under `GIT_CONFIG_SYSTEM`, and
+    // adding `GIT_CONFIG_NOSYSTEM=1` stops it being read at all (rc 1, nothing
+    // resolved).
+    //
+    // **The harm is INERT**, because `cred::write_gitconfig` points BOTH
+    // `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` at the SAME helper-free file:
+    // suppressing the system read removes a deny the global pointer duplicates.
+    // No demonstrated harm follows from it on today's code.
+    //
+    // It is listed anyway — the list should be complete, and the cost is one
+    // more bare word a run must quote — and the duplication its inertness
+    // depends on is now itself under test, so a later change that pointed the
+    // two variables at different files could not spend the inertness silently.
+    "GIT_CONFIG_NOSYSTEM",
 ];
 
 /// The [`ENVELOPE_ENV_KEYS`] entry covering `name`, if any.
@@ -6386,6 +6426,51 @@ mod tests {
     /// was first written there.
     const GIT_GLOBAL_UNPROBED_OPTS: &[&str] = &["--help", "-h"];
 
+    /// Environment keys the envelope **does NOT set** but which **DEFEAT one it
+    /// does** — the SECOND source of [`ENVELOPE_ENV_KEYS`]'s drift pin.
+    ///
+    /// # WHY A SECOND SOURCE RATHER THAN A WIDER FILTER
+    ///
+    /// `ENVELOPE_ENV_KEYS` has now been wrong FOUR times: `GIT_SSH_COMMAND`
+    /// (`19-11`), `SSH_AUTH_SOCK`/`SSH_AGENT_PID` (`T-19-82`), `GSD_MM_RUN_ID`
+    /// (`T-19-90`) and `GIT_CONFIG_PARAMETERS` (`T-19-104`). Its existing drift
+    /// pin caught the first three and **structurally cannot see the fourth**:
+    /// that pin is sourced from `cred::EnvelopeEnv::with_run_id(build_env_in(…))`
+    /// — the keys the envelope SETS or REMOVES — and every floor it carries is a
+    /// floor over the envelope's own entries. A key the envelope neither sets nor
+    /// removes is invisible to it whatever names are in the constant, so **the
+    /// fix is a second source and not a wider filter.**
+    ///
+    /// # THE DEFEAT IS A MEASUREMENT, NOT A LIST ENTRY
+    ///
+    /// Each entry carries — in the DATA rather than only in prose — the envelope
+    /// key it defeats, and
+    /// [`every_key_that_defeats_the_envelope_is_covered_and_its_defeat_is_measured`]
+    /// reproduces the defeat against real git with the envelope's own mechanism
+    /// as the control. **An entry whose defeat cannot be reproduced is a finding,
+    /// not an entry.** A list nobody probes is exactly how this constant's
+    /// neighbour came to be wrong four times.
+    ///
+    /// **It lives INSIDE this test module for the same load-bearing reason
+    /// [`GIT_GLOBAL_UNPROBED_OPTS`] does**: the guard never consults it — it is a
+    /// pin's source, not a rule — and a `#[cfg(test)]` attribute declared up
+    /// beside `ENVELOPE_ENV_KEYS` would put a SECOND sentinel line in the
+    /// production half, truncating `tests/envelope_wrapper_class.rs`'s
+    /// anti-vacuity stripper at line ~3140 and making every absence assertion in
+    /// it vacuous. The sentinel count is itself asserted by
+    /// [`the_guards_own_path_shells_out_to_nothing`].
+    const ENVELOPE_ENV_DEFEATING_KEYS: &[(&str, &str)] = &[
+        // git's own carrier for `-c`, which outranks the triplet
+        // `hooks_path_env` emits. Measured: control `/ENV_WINS`, under this key
+        // `/PARAM_WINS`.
+        ("GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"),
+        // Suppresses the system-config read entirely. Measured:
+        // `credential.helper` reads `evil` from a `GIT_CONFIG_SYSTEM` file and
+        // stops resolving at all with this set. **Harm INERT** — see the entry's
+        // comment beside `ENVELOPE_ENV_KEYS`.
+        ("GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_SYSTEM"),
+    ];
+
     #[test]
     fn the_guards_own_path_shells_out_to_nothing() {
         // **The compensating control for this file's `SPAWN_ALLOWLIST` entry, and
@@ -6748,6 +6833,209 @@ mod tests {
         let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
         text.push_str(&String::from_utf8_lossy(&output.stderr));
         text.trim().to_string()
+    }
+
+    #[test]
+    fn every_key_that_defeats_the_envelope_is_covered_and_its_defeat_is_measured() {
+        // =======================================================================
+        // **WHY THIS PIN STANDS BESIDE THE OLDER ONE RATHER THAN REPLACING IT:
+        // THE TWO HAVE DIFFERENT SOURCES AND NEITHER CAN SEE THE OTHER'S CLASS.**
+        //
+        // `every_envelope_key_the_child_environment_actually_carries_is_covered_by_the_constant`
+        // is sourced from the child environment itself — the keys the envelope
+        // SETS or REMOVES — and would catch a new entry of that kind going
+        // uncovered. It caught `T-19-82` and `T-19-90` that way.
+        //
+        // **It structurally cannot see a key the envelope neither sets nor
+        // removes but which DEFEATS one it sets**, because such a key is not in
+        // its source at all. That is `T-19-104`: `GIT_CONFIG_PARAMETERS` never
+        // appears in the child environment, and no floor over the envelope's own
+        // entries can notice its absence from the constant. The fix is a second
+        // SOURCE, not a wider filter.
+        // =======================================================================
+        let scratch = tempfile::TempDir::new().unwrap();
+        config_resolution_scratch_repo(scratch.path());
+
+        // --- floor 1: at least TWO defeating keys, each with a non-empty
+        //     defeated key. The arithmetic: both members were found by measuring
+        //     git's own configuration carriers against the envelope's injection,
+        //     and a constant shrunk below two has lost one of them. The correct
+        //     response to this failing is to ADD the measured key to
+        //     `ENVELOPE_ENV_KEYS` and restore the entry, or to REMOVE an entry
+        //     whose defeat no longer reproduces — NEVER to lower the floor.
+        assert!(
+            ENVELOPE_ENV_DEFEATING_KEYS.len() >= 2,
+            "`ENVELOPE_ENV_DEFEATING_KEYS` must carry at least the two measured members. \
+             RESTORE the entry; do not lower the floor. Got: {ENVELOPE_ENV_DEFEATING_KEYS:?}"
+        );
+        for (defeating, defeated) in ENVELOPE_ENV_DEFEATING_KEYS {
+            assert!(
+                !defeating.is_empty() && !defeated.is_empty(),
+                "every entry must name BOTH the defeating key and the envelope key it \
+                 defeats, in the DATA. An entry that names only one is a claim nothing can \
+                 check."
+            );
+
+            // --- floor 2: the defeating key is COVERED, in both spellings the
+            //     guard has to see — the assignment prefix and the bare word.
+            //     This is what makes the list complete by construction rather
+            //     than by inspection.
+            assert!(
+                tampers_with_envelope_env(&format!("{defeating}=x")).is_some(),
+                "`{defeating}=x` DEFEATS the envelope's `{defeated}` and must be covered by \
+                 `ENVELOPE_ENV_KEYS`. Add the entry — this floor exists because that list has \
+                 been wrong FOUR times and its other pin cannot see this class."
+            );
+            assert!(
+                tampers_with_envelope_env(defeating).is_some(),
+                "the BARE word `{defeating}` must be covered too: `export {defeating}=…` and \
+                 `env {defeating}=… git push` reach the same defeat through a word that is \
+                 not an assignment prefix."
+            );
+
+            // --- floor 3: the key each entry CLAIMS to defeat is itself covered,
+            //     so an entry cannot claim to defeat something the envelope does
+            //     not actually protect.
+            assert!(
+                tampers_with_envelope_env(&format!("{defeated}=x")).is_some(),
+                "`{defeating}` claims to defeat `{defeated}`, but `{defeated}` is not covered \
+                 by `ENVELOPE_ENV_KEYS` — so the entry describes a defeat of something the \
+                 envelope does not protect."
+            );
+        }
+
+        // --- THE DEFEAT, MEASURED against real git rather than asserted.
+        //     `GIT_CONFIG_PARAMETERS` is measured against `cred::hooks_path_env`'s
+        //     own triplet with `git config --get core.hooksPath`.
+        let control = resolves_hooks_path_under_injection(scratch.path(), &[], &[]);
+        assert_eq!(
+            control, "/ENV_WINS",
+            "the envelope's own injection must be observable before anything is claimed to \
+             defeat it. If it is not, this whole pin is vacuous. Got: {control}"
+        );
+        let defeated_by_parameters = resolves_hooks_path_under_injection(
+            scratch.path(),
+            &[],
+            &[(
+                "GIT_CONFIG_PARAMETERS",
+                "'core.hooksPath=/PARAM_WINS'",
+            )],
+        );
+        assert_eq!(
+            defeated_by_parameters, "/PARAM_WINS",
+            "`GIT_CONFIG_PARAMETERS` must OUTRANK the `GIT_CONFIG_COUNT` triplet \
+             `cred::hooks_path_env` emits. This entry exists because it does; if this git no \
+             longer honours it, the entry is a refusal with no hazard behind it and must be \
+             RE-MEASURED. Got: {defeated_by_parameters}"
+        );
+
+        // --- the NEGATIVE control, so a probe that reported "defeated" for
+        //     everything turns this red rather than passing.
+        let not_defeated = resolves_hooks_path_under_injection(
+            scratch.path(),
+            &[],
+            &[("GSD_MM_GRAMMAR_PROBE", "'core.hooksPath=/SHOULD_NOT_WIN'")],
+        );
+        assert_eq!(
+            not_defeated, "/ENV_WINS",
+            "a key that is NOT a defeating key must leave the envelope's setting in effect. \
+             Without this the assertions above would pass on a probe that could not tell the \
+             difference. Got: {not_defeated}"
+        );
+
+        // --- `GIT_CONFIG_NOSYSTEM`'s defeat, measured against a
+        //     `GIT_CONFIG_SYSTEM` file with `git config --get credential.helper`.
+        let system_file = scratch.path().join("sys.cfg");
+        std::fs::write(&system_file, "[credential]\n\thelper = evil\n").unwrap();
+        let read_system = |suppress: bool| -> (bool, String) {
+            let mut command = std::process::Command::new("git");
+            command
+                .args(["config", "--get", "credential.helper"])
+                .current_dir(scratch.path())
+                .env("GIT_CONFIG_SYSTEM", &system_file)
+                .env("GIT_CONFIG_GLOBAL", scratch.path().join("no-such-global"));
+            if suppress {
+                command.env("GIT_CONFIG_NOSYSTEM", "1");
+            }
+            let out = command.output().expect(
+                "the defeating-keys pin requires a real `git` on PATH. It is deliberately NOT \
+                 written to skip when git is absent: a skipped pin is a fail-open pin.",
+            );
+            (
+                out.status.success(),
+                String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            )
+        };
+        let (read_ok, helper) = read_system(false);
+        assert!(
+            read_ok && helper == "evil",
+            "a `credential.helper` in a `GIT_CONFIG_SYSTEM` file must be readable, or the \
+             suppression below is being measured against nothing. Got: ok={read_ok} \
+             value={helper:?}"
+        );
+        let (suppressed_ok, suppressed) = read_system(true);
+        assert!(
+            !suppressed_ok && suppressed.is_empty(),
+            "`GIT_CONFIG_NOSYSTEM=1` must stop the system file being read at all. That is the \
+             measured DEFEAT this entry records. Got: ok={suppressed_ok} value={suppressed:?}"
+        );
+
+        // --- THE DUPLICATION `GIT_CONFIG_NOSYSTEM`'s INERTNESS DEPENDS ON, now
+        //     under test rather than left as an accident.
+        //
+        // The defeat above is real; the HARM is INERT, because
+        // `cred::write_gitconfig` points BOTH `GIT_CONFIG_GLOBAL` and
+        // `GIT_CONFIG_SYSTEM` at the SAME helper-free file, so suppressing the
+        // system read removes a deny the global pointer duplicates. **Never call
+        // that a bypass.** A later change that pointed the two variables at
+        // different files would spend the inertness — silently, unless this
+        // assertion exists.
+        let envelope_root = tempfile::TempDir::new().unwrap();
+        let project_root = tempfile::TempDir::new().unwrap();
+        let env = crate::envelope::cred::build_env_in(
+            envelope_root.path(),
+            "alpha",
+            project_root.path(),
+            std::path::Path::new("/nonexistent/gsd-meta-manager"),
+        )
+        .expect("the envelope must be able to build a child environment");
+
+        let value_of = |wanted: &str| -> Option<std::ffi::OsString> {
+            env.entries()
+                .iter()
+                .find(|(key, _)| key == wanted)
+                .and_then(|(_, value)| value.clone())
+        };
+        let global = value_of("GIT_CONFIG_GLOBAL");
+        let system = value_of("GIT_CONFIG_SYSTEM");
+        assert!(
+            global.is_some() && global == system,
+            "`GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` must point at the SAME file. That \
+             duplication is the ONLY reason `GIT_CONFIG_NOSYSTEM`'s measured defeat has no \
+             demonstrated harm. If they diverge, the inertness has been spent and \
+             `GIT_CONFIG_NOSYSTEM` must be re-assessed rather than left described as inert. \
+             global={global:?} system={system:?}"
+        );
+
+        // And the file they both point at resolves NO credential helper, with the
+        // system read suppressed — the other half of the inertness.
+        let gitconfig = global.expect("checked above");
+        let out = std::process::Command::new("git")
+            .args(["config", "--get", "credential.helper"])
+            .current_dir(scratch.path())
+            .env("GIT_CONFIG_GLOBAL", &gitconfig)
+            .env("GIT_CONFIG_SYSTEM", &gitconfig)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("the defeating-keys pin requires a real `git` on PATH");
+        assert!(
+            !out.status.success()
+                && String::from_utf8_lossy(&out.stdout).trim().is_empty(),
+            "with the system read suppressed, the envelope's own generated config must still \
+             resolve NO credential helper — because the global pointer names the same \
+             helper-free file. Got: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
     }
 
     #[test]

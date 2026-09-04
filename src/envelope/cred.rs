@@ -241,11 +241,35 @@ fn config_env(pairs: &[(&str, &OsStr)]) -> Vec<(OsString, OsString)> {
 /// ## The limit, stated rather than implied
 ///
 /// An agent that unsets `GIT_CONFIG_COUNT` in a subshell **escapes this layer**.
-/// That is not a hole this project can close client-side, and the one form that
-/// outranks this injection is `git -c core.hooksPath=… push` — which plan 19-02
-/// denies **by name** at the tool boundary for exactly that reason. Neither the
-/// denial nor this injection is a guarantee; server-side branch protection is
-/// the only boundary that does not depend on the agent's cooperation.
+/// That is not a hole this project can close client-side.
+///
+/// **FIVE forms outrank this injection, and four of them were PERMITTED until
+/// plan 19-23.** This paragraph previously claimed there was one. That claim was
+/// false, and it is corrected here rather than left standing, because a claim in
+/// the code that the project's own evidence contradicts is a residual disclosure
+/// pinned to exist rather than to be true (`T-19-84`). Every row was measured
+/// against `git version 2.43.0` with the exact triplet [`hooks_path_env`] emits
+/// as the control — it alone resolves `core.hooksPath` to `/ENV_WINS`:
+///
+/// | Form | Resolves to | Closed by |
+/// |---|---|---|
+/// | `git -c core.hooksPath=… push` | command-line precedence | plan 19-02, by name at the tool boundary |
+/// | `git -c include.path=<file>` | `/INCLUDE_WINS` | 19-23's confinement clause (`policy::config_key_names_an_indirection_section`) |
+/// | `git -c includeIf.<cond>.path=<file>` | `/INCLUDE_WINS` | the same clause — it reads the SECTION, so the condition family is covered by construction |
+/// | `git --config-env=include.path=<VAR>` | `/INCLUDE_WINS` | the same clause, reached through the second carrier |
+/// | `GIT_CONFIG_PARAMETERS="'core.hooksPath=…'"` | `/PARAM_WINS` | 19-23's `ENVELOPE_ENV_KEYS` entry (`T-19-104`) |
+///
+/// All four legs were reproduced end to end against a bare remote with this
+/// hook layer delivered exactly as it is delivered in production: a plain
+/// in-namespace push is refused and leaves the remote ref UNMOVED, while the
+/// same push under an indirection carrier or under `GIT_CONFIG_PARAMETERS`
+/// completes at rc 0 and MOVES it.
+///
+/// **The closures above are client-side and are not guarantees either.** The
+/// confinement clause fails OPEN on a future git that adds a THIRD indirection
+/// section, and no automated control covers that direction. Neither the denials
+/// nor this injection is a guarantee; server-side branch protection is the only
+/// boundary that does not depend on the agent's cooperation.
 pub fn hooks_path_env(hooks_dir: &Path) -> Vec<(OsString, OsString)> {
     config_env(&[("core.hooksPath", hooks_dir.as_os_str())])
 }
