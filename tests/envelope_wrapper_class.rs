@@ -778,6 +778,65 @@ fn production_code(source: &str) -> String {
     kept
 }
 
+/// The absolute floor on `src/envelope/policy.rs`'s stripped production BYTES.
+///
+/// **This constant and its sibling REPLACE a ratio assertion — a 25% floor,
+/// asserting that four times the stripped length exceeded the raw length — and
+/// the replacement is a seam requirement rather than a tidy-up.** It is the one
+/// existing assertion plan `19-20` is permitted to delete, and it is deleted
+/// rather than supplemented: keeping both would reproduce the collision the
+/// change exists to remove. The expression itself is deliberately not reproduced
+/// here, so that a grep for it over this file answers zero.
+///
+/// **The measurement, re-derived with this file's own `production_code` at
+/// `ec4c700` and stated in BYTES.** Rust's `str::len()` is a BYTE length, and
+/// `policy.rs` carries multi-byte characters in its prose, so a `str`-CHARACTER
+/// reading of the same file reports 262,748 and overstates the headroom by more
+/// than a factor of two:
+///
+/// ```text
+/// src/envelope/policy.rs   raw 263,360   stripped 65,947   ratio 25.0406%
+///                          headroom: 107 stripped bytes / ~428 comment bytes
+/// src/envelope/hooks.rs    raw  99,909   stripped 33,460   ratio 33.4905%
+/// ```
+///
+/// **428 bytes of comment is less than plan `19-21`'s own doc additions**, which
+/// is the sharpest possible statement of why the ratio has stopped measuring what
+/// it names. Audit 6's judgement, quoted rather than paraphrased:
+///
+/// > the control has stopped measuring what it was written to measure … the floor
+/// > now functions as a documentation budget whose red says "the stripper broke"
+/// > while meaning "someone wrote comments" … keep the anti-vacuity property,
+/// > re-express it as an absolute floor on stripped production bytes rather than a
+/// > ratio against a file whose comment volume is itself a deliberate security
+/// > artifact.
+///
+/// **The direction of the margin, stated.** 40,000 is 61% of the 65,947 bytes
+/// measured at `ec4c700`. Ordinary refactoring that deletes a THIRD of this
+/// file's production logic still passes; a stripper that ATE the logic — kept
+/// only comments, broke on the `#[cfg(test)]` sentinel, or truncated the
+/// `include_str!` — drops to near zero and turns this red. That is precisely the
+/// failure the original ratio named and the only one it should have been able to
+/// signal.
+///
+/// **It is deliberately INDEPENDENT of comment volume**, because this file also
+/// carries `resolve_programs_own_doc_still_discloses_the_residual_it_does_not_cover`,
+/// which REQUIRES specific paragraphs of `policy.rs` to EXIST. A control that
+/// demands documentation cannot coexist with one that penalises writing it, and
+/// with 428 bytes of headroom the two were already in direct conflict.
+///
+/// A lower PERCENTAGE would not have fixed this: it is the same control with a
+/// bigger budget — still red for comment growth, and still green under a
+/// proportional truncation that removed most of the logic.
+const POLICY_MIN_PRODUCTION_BYTES: usize = 40_000;
+
+/// The absolute floor on `src/envelope/hooks.rs`'s stripped production BYTES.
+///
+/// 20,000 is 60% of the 33,460 bytes measured at `ec4c700`. See
+/// [`POLICY_MIN_PRODUCTION_BYTES`] for the derivation, the direction of the
+/// margin, and why this is an absolute floor rather than a ratio.
+const HOOKS_MIN_PRODUCTION_BYTES: usize = 20_000;
+
 #[test]
 fn wrapper_names_the_fix_must_not_know_are_absent_from_the_production_logic() {
     // -----------------------------------------------------------------------
@@ -795,13 +854,14 @@ fn wrapper_names_the_fix_must_not_know_are_absent_from_the_production_logic() {
     let policy = production_code(POLICY_SOURCE);
     let hooks = production_code(HOOKS_SOURCE);
 
-    for (label, raw, code, anchor, other_anchor) in [
+    for (label, raw, code, anchor, other_anchor, floor) in [
         (
             "src/envelope/policy.rs",
             POLICY_SOURCE,
             policy.as_str(),
             POLICY_ANCHOR,
             HOOKS_ANCHOR,
+            POLICY_MIN_PRODUCTION_BYTES,
         ),
         (
             "src/envelope/hooks.rs",
@@ -809,6 +869,7 @@ fn wrapper_names_the_fix_must_not_know_are_absent_from_the_production_logic() {
             hooks.as_str(),
             HOOKS_ANCHOR,
             POLICY_ANCHOR,
+            HOOKS_MIN_PRODUCTION_BYTES,
         ),
     ] {
         assert!(
@@ -835,13 +896,20 @@ fn wrapper_names_the_fix_must_not_know_are_absent_from_the_production_logic() {
              over an empty or truncated string."
         );
         assert!(
-            code.len() * 4 > raw.len(),
+            code.len() >= floor,
             "POSITIVE CONTROL FAILED for `{label}`: stripping comments and the \
-             `#[cfg(test)]` module left {} of {} bytes — under a quarter, which means the \
-             stripper has removed most of the file and an absence assertion over what \
-             remains proves almost nothing.",
-            code.len(),
-            raw.len()
+             `#[cfg(test)]` module left {} production BYTES, and the floor for this file is \
+             {floor}.\n\n\
+             This is an ABSOLUTE floor and not a ratio, for the reason \
+             `POLICY_MIN_PRODUCTION_BYTES` records. A red here means `production_code` has \
+             eaten the logic it was supposed to keep — it broke on the `#[cfg(test)]` \
+             sentinel, or the `include_str!` truncated — and the absence assertions below \
+             would pass over an empty or near-empty string.\n\n\
+             **The correct response is to fix `production_code` or to restore the deleted \
+             logic. NEVER to lower the floor.** If a deliberate refactor really did remove \
+             more than a third of this file's production bytes, that is a fact worth \
+             stating in a commit message before this number moves.",
+            code.len()
         );
     }
 
@@ -4617,5 +4685,1104 @@ fn a_word_the_shell_deletes_between_the_program_and_its_decision_words_is_not_a_
          over {} slots, drawing {} classes.",
         slots_seen.len(),
         classes_seen.len()
+    );
+}
+
+// ===========================================================================
+// 15. THE THIRD AXIS — the CALLEE's grammar, which is not the shell's
+//
+// **Why a THIRD named axis rather than more entries in an existing one.** Audit 6
+// enumerated bash's transformations between the command string and `execve` one
+// at a time — quote removal, every expansion, redirection, line continuation,
+// assignment-prefix removal, control-operator splitting, here-document
+// delimiters, pipeline and group nesting — and found every one modelled or
+// failing closed, with **no reordering step in a simple command** for a third
+// rule to miss. The command-line-to-argv boundary is CLOSED.
+//
+// So the gap moved AXIS rather than one cell over. `UNREADABLE_CLASSES` (section
+// 13) names seven ways bash ASSEMBLES a word the guard cannot read.
+// `DELETION_CLASSES` (section 14) names five ways bash DELETES something the
+// guard counted. **Both are axes of the SHELL's grammar.** This axis is about
+// something the shell has no opinion on at all:
+//
+//   HAVING RECONSTRUCTED ARGV CORRECTLY, WHOSE GRAMMAR DECIDES WHICH ARRIVING
+//   WORD IS THE VERB?
+//
+// `scan_leading` answers that by asking `GIT_GLOBAL_VALUE_OPTS` — a
+// hand-maintained, unpinned enumeration of GIT's own global-option grammar which
+// **fails OPEN** when it is silent (`policy.rs:488`, `(None, 1)`). Audit 6
+// verified mechanically that nothing anywhere in `tests/` modelled this:
+// `grep -rn "attr-source\|shallow-file\|GIT_GLOBAL_VALUE_OPTS" tests/` returned
+// nothing at all, and no alphabet carried a leading git option that consumes a
+// separate word. That is `T-19-101` — `T-19-76`'s failure mode for the SIXTH
+// consecutive round.
+//
+// **Smuggling a leading git option into either shell axis would model the
+// callee's grammar as if it were the shell's and lose exactly the distinction
+// this round is about.** `UNREADABLE_CLASSES` and `DELETION_CLASSES`, their
+// predicates, their degenerate-proofing blocks and every one of their floors are
+// BYTE-IDENTICAL across this change.
+//
+// The row-by-row evidence lives in `tests/envelope_callee_grammar.rs`, which is
+// this round's sixth evidence file. This section is the GENERATIVE half.
+// ---------------------------------------------------------------------------
+
+/// Options the two-sided real-git probe classified as CONSUMING A SEPARATE WORD.
+///
+/// **Measured, not copied.** For each option, `git <opt> version` versus
+/// `git <opt> XVALUE version` on `git version 2.43.0`: the 1-word form prints
+/// git's usage and the 2-word form prints `git version 2.43.0`, so the option
+/// swallowed the following word. `-C` and `--config-env` fail for their own
+/// reasons in both forms and are classified by the variant probe the plan names —
+/// `git -C version` answers `cannot change to 'version'` and
+/// `git --config-env version` answers `invalid config format: version`, each of
+/// which is ITSELF the proof that the word was consumed.
+///
+/// **This table is the test file's own model of git's grammar, and it is what
+/// makes the classes below descriptions of the GRAMMAR rather than of the
+/// alphabet.** `--attr-source` and `--shallow-file` are here and are ABSENT from
+/// `GIT_GLOBAL_VALUE_OPTS` in `policy.rs`, which is `T-19-100`.
+const PROBED_VALUE_TAKING: &[&str] = &[
+    "-c",
+    "-C",
+    "--config-env",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--attr-source",
+    "--shallow-file",
+];
+
+/// Options the same probe classified as NOT consuming a following word.
+///
+/// **The TERMINATING family is folded in here deliberately, and the doc says so
+/// rather than leaving it to be inferred.** `--exec-path`, `--html-path`,
+/// `--man-path`, `--info-path` and `--version` never print a version at all — for
+/// them the probe is that the 1-word and 2-word forms produce IDENTICAL first
+/// lines, which is the proof that no following word can reach a verb slot. They
+/// differ from the booleans in what git does NEXT, not in the one bit this axis
+/// is about: does the option consume the following word. It does not.
+///
+/// `--help` and `-h` satisfy no probe of this shape — `git --help XVALUE version`
+/// answers `No manual entry for gitXVALUE` — and are recorded UNPROBED rather
+/// than guessed into either list.
+const PROBED_SELF_CONTAINED: &[&str] = &[
+    "--no-pager",
+    "-p",
+    "--paginate",
+    "-P",
+    "--bare",
+    "--no-replace-objects",
+    "--literal-pathspecs",
+    "--glob-pathspecs",
+    "--noglob-pathspecs",
+    "--icase-pathspecs",
+    "--no-optional-locks",
+    "--exec-path",
+    "--html-path",
+    "--man-path",
+    "--info-path",
+    "--version",
+];
+
+/// Whether a token carries its value ATTACHED, which needs no knowledge of git.
+///
+/// A `--`-prefixed token containing `=`, or a `-c`-prefixed short token with a
+/// non-empty remainder. Git's own grammar makes an attached value self-contained
+/// whatever the option is, which is why `git --attr-source=HEAD push --force
+/// origin main` is ALREADY correctly refused at this file's base commit.
+fn carries_an_attached_value(token: &str) -> bool {
+    if token.starts_with("--") {
+        return token.contains('=');
+    }
+    token.starts_with("-c") && token.len() > 2
+}
+
+/// The leading option tokens of a governed simple command, walked exactly as
+/// `scan_leading` walks them.
+///
+/// Word 0 is the program and the scan begins at word 1. It stops at the first
+/// word that is not `-`-initial (that word is the VERB), and it stops at a bare
+/// `-` and at `--` before any option check runs. An option this file's probe
+/// classified as value-taking advances the index by TWO; everything else by one.
+///
+/// Each entry is `(token, a following word exists)`.
+fn callee_leading_tokens(command: &str) -> Vec<(&str, bool)> {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let mut out = Vec::new();
+    let mut index = 1;
+    while index < words.len() {
+        let token = words[index];
+        if !token.starts_with('-') {
+            break;
+        }
+        if token == "-" || token == "--" {
+            out.push((token, false));
+            break;
+        }
+        out.push((token, index + 1 < words.len()));
+        index += if PROBED_VALUE_TAKING.contains(&token) {
+            2
+        } else {
+            1
+        };
+    }
+    out
+}
+
+/// **Class 1** — a leading option that consumes a SEPARATE word: the word after
+/// it is the option's VALUE and not the verb.
+///
+/// `git --attr-source HEAD push …` and `git -C /tmp status` satisfy this. **This
+/// is the class `T-19-100` lives in**, and the whole of the grammar question.
+fn draws_a_leading_option_that_consumes_a_separate_word(command: &str) -> bool {
+    callee_leading_tokens(command)
+        .iter()
+        .any(|(token, has_next)| *has_next && PROBED_VALUE_TAKING.contains(token))
+}
+
+/// **Class 2** — a leading option that consumes NO word: the word after it IS the
+/// verb.
+///
+/// `git --no-pager status` satisfies this. **Class 1 cannot satisfy this and
+/// class 2 cannot satisfy class 1**, which is the split that makes the pair
+/// non-degenerate — and it is the entire grammar question, because a guard that
+/// could not tell the two apart would either miss `T-19-100` or refuse every
+/// leading option.
+fn draws_a_leading_option_that_consumes_no_word(command: &str) -> bool {
+    callee_leading_tokens(command)
+        .iter()
+        .any(|(token, _)| PROBED_SELF_CONTAINED.contains(token))
+}
+
+/// **Class 3** — a leading option carrying an ATTACHED value.
+///
+/// **This class needs no knowledge of git at all**, and that is why it is named
+/// separately: git's own grammar makes an attached value self-contained whatever
+/// the option is. `git --attr-source=HEAD push --force origin main` is already
+/// correctly refused today for exactly this reason, which is why an alphabet
+/// drawn in the attached position would be green before the fix and would certify
+/// nothing. The structural rule is applied FIRST by `19-21` so the constants have
+/// less to know.
+fn draws_a_leading_option_with_an_attached_value(command: &str) -> bool {
+    callee_leading_tokens(command)
+        .iter()
+        .any(|(token, _)| carries_an_attached_value(token))
+}
+
+/// **Class 4** — a leading option the installed git does NOT accept.
+///
+/// The unknown class: a `-`-prefixed token that is neither `-` nor `--`, carries
+/// no attached value, and appears in NEITHER probed list. Drawn from
+/// [`GIT_GLOBAL_UNKNOWN_OPTIONS`] and never from [`GIT_GLOBAL_OPTIONS`], for the
+/// verdict-preservation reason that alphabet's doc gives.
+fn draws_a_leading_option_the_installed_git_rejects(command: &str) -> bool {
+    callee_leading_tokens(command).iter().any(|(token, _)| {
+        *token != "-"
+            && *token != "--"
+            && !carries_an_attached_value(token)
+            && !PROBED_VALUE_TAKING.contains(token)
+            && !PROBED_SELF_CONTAINED.contains(token)
+    })
+}
+
+/// **Class 5** — the end-of-options marker `--`, or a bare `-`: the two tokens
+/// `scan_leading` breaks on before any option check runs.
+///
+/// **The CLASS covers both; the ALPHABET carries only `--`, and the distinction
+/// is load-bearing rather than tidy.** See [`GIT_GLOBAL_OPTIONS`] for why a bare
+/// `-` must not be an entry. This predicate deliberately still RECOGNISES a bare
+/// `-`: the class is about the tokens the scan breaks on, and narrowing the
+/// predicate to hide the alphabet's exclusion would make the class a description
+/// of the alphabet instead of a description of the grammar.
+fn draws_the_end_of_options_marker_or_a_bare_dash(command: &str) -> bool {
+    callee_leading_tokens(command)
+        .iter()
+        .any(|(token, _)| *token == "--" || *token == "-")
+}
+
+/// One named class and the predicate that decides whether a spliced command draws
+/// it.
+type CalleeGrammarClass = (&'static str, fn(&str) -> bool);
+
+/// The FIVE classes of the callee axis, named once so the per-alphabet floor, the
+/// per-class floor and the counted floor all count the same thing.
+///
+/// **A THIRD axis standing beside `UNREADABLE_CLASSES` and `DELETION_CLASSES`,
+/// not more entries in either.** The seven above are ways bash ASSEMBLES a word;
+/// the five above that are ways bash DELETES one; **the five below are ways GIT's
+/// own option grammar decides which arriving word is the verb.**
+const CALLEE_GRAMMAR_CLASSES: &[CalleeGrammarClass] = &[
+    (
+        "a leading option that consumes a separate word",
+        draws_a_leading_option_that_consumes_a_separate_word,
+    ),
+    (
+        "a leading option that consumes no word",
+        draws_a_leading_option_that_consumes_no_word,
+    ),
+    (
+        "a leading option carrying an attached value",
+        draws_a_leading_option_with_an_attached_value,
+    ),
+    (
+        "a leading option the installed git does not accept",
+        draws_a_leading_option_the_installed_git_rejects,
+    ),
+    (
+        "the end-of-options marker or a bare dash",
+        draws_the_end_of_options_marker_or_a_bare_dash,
+    ),
+];
+
+/// Whether a spliced command draws ANY of the five.
+fn carries_a_callee_grammar_class(command: &str) -> bool {
+    CALLEE_GRAMMAR_CLASSES
+        .iter()
+        .any(|(_, predicate)| predicate(command))
+}
+
+#[test]
+fn the_corpus_can_draw_every_one_of_the_five_callee_grammar_classes() {
+    // **The degenerate-proofing, asserted rather than described**, in the shape
+    // `the_corpus_can_draw_every_one_of_the_seven_unreadable_classes` and
+    // `the_corpus_can_draw_every_one_of_the_five_deletion_classes` already use.
+    // If any pair below collapsed, the floors would be satisfiable by an alphabet
+    // that cannot generate the cells this round is about — which is exactly how
+    // the last three plan-check rounds each found a live cell.
+    //
+    // **GREEN today and after.** It drives no guard call and no production change
+    // can move it.
+
+    // -- class 1 versus class 2. This pair IS the grammar question.
+    assert!(
+        draws_a_leading_option_that_consumes_a_separate_word("git --attr-source HEAD push"),
+        "`git --attr-source HEAD push` IS a leading option consuming a separate word — the \
+         real-git probe classified it so, two-sided, on git 2.43.0"
+    );
+    assert!(
+        !draws_a_leading_option_that_consumes_no_word("git --attr-source HEAD push"),
+        "`git --attr-source HEAD push` must NOT satisfy the CONSUMES-NO-WORD class: a corpus \
+         of self-contained options cannot fail on `T-19-100`, whose entire mechanism is the \
+         word the guard did not know was a VALUE"
+    );
+    assert!(
+        draws_a_leading_option_that_consumes_no_word("git --no-pager push"),
+        "`git --no-pager push` IS a self-contained leading option"
+    );
+    assert!(
+        !draws_a_leading_option_that_consumes_a_separate_word("git --no-pager push"),
+        "`git --no-pager push` must NOT satisfy the CONSUMES-A-WORD class. **This is the \
+         split that tells a grammar MODEL apart from a blanket refusal of anything beginning \
+         with `-`**, and a corpus that collapsed it could not fail on a rule that refused \
+         `git --no-pager status` — the row pinned PERMITTED in \
+         `tests/envelope_callee_grammar.rs` as this axis's `ls {{git,svn}}-repo`"
+    );
+
+    // -- class 3 satisfies NEITHER 1 nor 2, because it needs no git knowledge.
+    assert!(
+        draws_a_leading_option_with_an_attached_value("git --attr-source=HEAD push"),
+        "`--attr-source=HEAD` IS an attached value"
+    );
+    assert!(
+        !draws_a_leading_option_that_consumes_a_separate_word("git --attr-source=HEAD push"),
+        "the ATTACHED spelling must not satisfy class 1: it is already correctly refused at \
+         this file's base commit, so a corpus that conflated the two would be green before \
+         the fix and would certify nothing"
+    );
+    assert!(
+        !draws_a_leading_option_that_consumes_no_word("git --attr-source=HEAD push"),
+        "nor class 2 — an attached value is a THIRD structural shape, not a boolean"
+    );
+    assert!(
+        draws_a_leading_option_with_an_attached_value("git -cuser.name=x status"),
+        "git's short-option parser accepts `-ckey=value` with no space, and the guard's own \
+         `leading_git_option` already reads it — so the attached class must draw it too"
+    );
+
+    // -- class 4, the unknown class.
+    assert!(
+        draws_a_leading_option_the_installed_git_rejects("git --bogus-opt push"),
+        "`--bogus-opt` is in neither probed list and is therefore UNKNOWN"
+    );
+    for known in ["git --attr-source HEAD push", "git --no-pager push"] {
+        assert!(
+            !draws_a_leading_option_the_installed_git_rejects(known),
+            "`{known}` carries an option the real-git probe CLASSIFIED, so it must not draw \
+             the unknown class. If it does, the unknown alphabet and the known alphabet are \
+             not distinguishable and the invariance arm below would draw entries whose \
+             verdict the fix CHANGES."
+        );
+    }
+
+    // -- class 5, and the bare-dash distinction that is load-bearing.
+    assert!(
+        draws_the_end_of_options_marker_or_a_bare_dash("git -- push"),
+        "`--` IS the end-of-options marker"
+    );
+    assert!(
+        draws_the_end_of_options_marker_or_a_bare_dash("git - push --force origin main"),
+        "**a bare `-` IS in the CLASS, even though it is deliberately NOT in the alphabet.** \
+         The class describes the tokens `scan_leading` breaks on; narrowing this predicate to \
+         match the alphabet would make the class a description of the alphabet rather than of \
+         the grammar, which is the whole distinction this axis exists to hold."
+    );
+    assert!(
+        !draws_a_leading_option_the_installed_git_rejects("git -- push"),
+        "`--` must not ALSO draw the unknown class, or class 4's floor would be satisfiable \
+         by an end-of-options marker"
+    );
+    assert!(
+        !draws_a_leading_option_the_installed_git_rejects("git - push --force origin main"),
+        "nor must a bare `-`"
+    );
+
+    // -- THE QUOTING-AND-POSITION CONTROL. An option-shaped word that is neither
+    //    leading nor in the scan's view must satisfy NO class, or the floors
+    //    become satisfiable by a row the rule must never touch.
+    for (class, predicate) in CALLEE_GRAMMAR_CLASSES {
+        for control in [
+            "git commit -m \"--attr-source x\"",
+            "git push --attr-source HEAD --force origin main",
+            "git log --grep='--no-pager'",
+        ] {
+            assert!(
+                !predicate(control),
+                "`{control}` must satisfy NO callee-grammar class, and it satisfies \
+                 `{class}`.\n\n\
+                 The first is an option-shaped word inside a quoted OPERAND. The second sits \
+                 AFTER the verb, which `scan_leading` does not read at all. The third is \
+                 quoted. A predicate that counted any of them would make every floor below \
+                 satisfiable by a row the rule must never touch, and would put the fix's \
+                 blast radius outside the region it is allowed to decide in."
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 15a. The alphabets — spliced where `scan_leading` ACTUALLY reads
+// ---------------------------------------------------------------------------
+
+/// One leading-option alphabet entry: its spelling, its class, and how many words
+/// it occupies.
+///
+/// One alphabet feeds every floor, in the shape `CONTINUATION_SPLICES` uses, so
+/// the per-alphabet floor and the per-class floor cannot drift apart.
+#[derive(Debug, Clone, Copy)]
+struct GitGlobalOption {
+    spelling: &'static str,
+    class: &'static str,
+    words: usize,
+}
+
+/// The leading-option alphabet, tagged by class, spliced **between the governed
+/// program and its decision words**.
+///
+/// **That position is the only one `scan_leading` reads**, and both alternatives
+/// would certify nothing. An ATTACHED-value entry (`--attr-source=HEAD`) is
+/// already refused at this file's base commit — it is a CONTROL, which is why
+/// class 3 is present in the alphabet but is not what makes the property red. An
+/// option AFTER the verb (`git push --attr-source HEAD --force origin main`) is
+/// not read by this scan at all.
+///
+/// **Every entry here is one the two-sided real-git probe CLASSIFIED**, recorded
+/// in `tests/envelope_callee_grammar.rs`'s header, rather than one copied from a
+/// plan's text.
+///
+/// **`--attr-source HEAD` and `--shallow-file /tmp/s` are MINIMUM entries because
+/// they are the two spellings the rule's new knowledge uniquely adds** — exactly
+/// as `&>>` and `<<-` were for round 6 — and a corpus without them cannot fail on
+/// the two options `T-19-100` is about. Measured against the built binary at this
+/// file's base commit, they are also the ONLY two entries whose refused-arm cases
+/// are at exit 0 today: 8 cases each, 16 of the refused arm's 120. Their presence
+/// is asserted by name below.
+///
+/// **Every entry here must be VERDICT-PRESERVING**, because the property's
+/// permitted arm asserts that the spliced verdict EQUALS the unspliced one. An
+/// option the installed git does NOT accept is refused after `19-21` even on a
+/// PERMITTED base, so it would be STRICTER than its base — see
+/// [`GIT_GLOBAL_UNKNOWN_OPTIONS`], which is a separate alphabet for exactly that
+/// reason.
+///
+/// **A bare `-` is DELIBERATELY NOT AN ENTRY, and this is the last latent
+/// instance of the seam defect that blocked the previous three rounds.** Every
+/// entry here is spliced into REFUSED bases and asserted refused; but
+/// `git - push --force origin main` is pinned PERMITTED in
+/// `tests/envelope_callee_grammar.rs`, at exit 0 both before and after, because
+/// `scan_leading` breaks on `-` before any option check and `19-21` is FORBIDDEN
+/// to widen the rule into non-`-`-prefixed words. A `-` entry would therefore
+/// make the refused arm **permanently red in a file `19-21` may not edit**, which
+/// is exactly `19-18`'s `{v}>` blocker one axis over. The exclusion is asserted
+/// mechanically below.
+const GIT_GLOBAL_OPTIONS: &[GitGlobalOption] = &[
+    // class 1 — consumes a separate word
+    GitGlobalOption { spelling: "--attr-source HEAD", class: "a leading option that consumes a separate word", words: 2 },
+    GitGlobalOption { spelling: "--shallow-file /tmp/s", class: "a leading option that consumes a separate word", words: 2 },
+    GitGlobalOption { spelling: "-C /tmp", class: "a leading option that consumes a separate word", words: 2 },
+    GitGlobalOption { spelling: "--git-dir /tmp/g", class: "a leading option that consumes a separate word", words: 2 },
+    GitGlobalOption { spelling: "--work-tree /tmp/w", class: "a leading option that consumes a separate word", words: 2 },
+    GitGlobalOption { spelling: "--namespace n", class: "a leading option that consumes a separate word", words: 2 },
+    // class 2 — consumes no word
+    GitGlobalOption { spelling: "--no-pager", class: "a leading option that consumes no word", words: 1 },
+    GitGlobalOption { spelling: "--bare", class: "a leading option that consumes no word", words: 1 },
+    GitGlobalOption { spelling: "--literal-pathspecs", class: "a leading option that consumes no word", words: 1 },
+    GitGlobalOption { spelling: "--no-optional-locks", class: "a leading option that consumes no word", words: 1 },
+    GitGlobalOption { spelling: "-p", class: "a leading option that consumes no word", words: 1 },
+    // class 3 — attached value, which needs no knowledge of git
+    GitGlobalOption { spelling: "--git-dir=/tmp/g", class: "a leading option carrying an attached value", words: 1 },
+    GitGlobalOption { spelling: "--attr-source=HEAD", class: "a leading option carrying an attached value", words: 1 },
+    GitGlobalOption { spelling: "--namespace=n", class: "a leading option carrying an attached value", words: 1 },
+    // class 5 — EXACTLY `--`, and a bare `-` is deliberately absent
+    GitGlobalOption { spelling: "--", class: "the end-of-options marker or a bare dash", words: 1 },
+];
+
+/// The SEPARATE alphabet of leading options the installed git does NOT accept.
+///
+/// **Kept out of `GIT_GLOBAL_OPTIONS`, and out of the invariance arm, because its
+/// entries are NOT verdict-preserving — this is `19-18`'s `{v}>` blocker one axis
+/// over and it is the single most likely way this seam breaks.** The generative
+/// property's permitted arm asserts that a spliced verdict EQUALS the unspliced
+/// one. After `19-21`, an option in neither of the guard's two constants falls to
+/// *grammar not established* and is REFUSED — including on a PERMITTED base. So
+/// `git --bogus-opt status`, measured at exit 0 today, is refused after: STRICTER
+/// than its base, and it would turn the invariance arm permanently red in a file
+/// `19-21` may not edit.
+///
+/// The unknown class gets its OWN fail-closed property instead
+/// (`an_option_the_installed_git_rejects_fails_closed_on_every_base`), spliced
+/// into both refused and permitted bases and asserting refusal and an empty walk
+/// in BOTH.
+///
+/// **`--no-advice` and `--no-lazy-fetch` are the measured stand-ins for the
+/// future-git over-refusal cost this design accepts**: both are real git global
+/// options in releases after 2.43, and both print `unknown option:` on the
+/// installed git. A future cost argued only in prose is a cost nobody can check.
+/// `--super-prefix x` is here because the installed git rejects it while
+/// `GIT_GLOBAL_VALUE_OPTS` carries it — the measurement that names the LIST as
+/// the defect rather than a missing row.
+const GIT_GLOBAL_UNKNOWN_OPTIONS: &[&str] = &[
+    "--bogus-opt",
+    "--no-advice",
+    "--no-lazy-fetch",
+    "--super-prefix x",
+];
+
+/// Where an alphabet entry is spliced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CalleeSplice {
+    /// Immediately after the governed program — the first thing `scan_leading`
+    /// reads.
+    ImmediatelyAfterTheProgram,
+    /// After a leading option the guard ALREADY knows.
+    ///
+    /// **The scan is a LOOP, so the gap is not confined to the first slot.** This
+    /// is the position the cell `git -c a=b --attr-source HEAD push --force
+    /// origin main` reaches, measured at exit 0 at this file's base commit.
+    AfterAKnownLeadingOption,
+}
+
+const CALLEE_SPLICES: &[CalleeSplice] = &[
+    CalleeSplice::ImmediatelyAfterTheProgram,
+    CalleeSplice::AfterAKnownLeadingOption,
+];
+
+/// The known leading option the `AfterAKnownLeadingOption` splice puts ahead of
+/// the entry.
+///
+/// `-c a=b` and not `-c core.hooksPath=…`: the hooks-path KEY CHECK inside
+/// `scan_leading` fires as soon as the scan reaches it, before any verb is
+/// identified, and would refuse every case in the permitted arm for a reason that
+/// has nothing to do with this axis. `a=b` is an inert assignment.
+const CALLEE_KNOWN_LEADING_PREFIX: &str = "-c a=b";
+
+/// Bases whose UNWRAPPED form is REFUSED.
+///
+/// Three of the four have NO SECOND CARRIER at all — `stash`, `update-ref -d`
+/// and `config core.hooksPath`, where disarming the hook IS the loss of the
+/// carrier — so for them this guard is the only control.
+const CALLEE_REFUSED_BASES: &[&str] = &[
+    "git push --force origin main",
+    "git stash",
+    "git update-ref -d refs/heads/main",
+    "git config core.hooksPath /tmp/x",
+];
+
+/// Bases whose UNWRAPPED form is PERMITTED.
+///
+/// **Without this half the property cannot fail on an implementation that refuses
+/// every leading option**, which is the shape this fix is ONE WRONG STEP away
+/// from — and reading git state is the first thing a driven run does.
+const CALLEE_PERMITTED_BASES: &[&str] = &["git status", "git log --oneline", "git diff"];
+
+/// Splice one alphabet entry into `base`.
+fn callee_case(base: &str, entry: &str, splice: CalleeSplice) -> String {
+    let words: Vec<&str> = base.split_whitespace().collect();
+    let program = words[0];
+    let rest = words[1..].join(" ");
+    match splice {
+        CalleeSplice::ImmediatelyAfterTheProgram => format!("{program} {entry} {rest}"),
+        CalleeSplice::AfterAKnownLeadingOption => {
+            format!("{program} {CALLEE_KNOWN_LEADING_PREFIX} {entry} {rest}")
+        }
+    }
+}
+
+/// Every case this axis generates, as `(base, splice, label, command)`.
+///
+/// One function so the counting floor and the guard-driven property count exactly
+/// the same thing — a second enumeration would be a second thing to keep in step.
+fn callee_cases(
+    bases: &[&'static str],
+    alphabet: &[&str],
+) -> Vec<(&'static str, CalleeSplice, String, String)> {
+    let mut cases = Vec::new();
+    for base in bases.iter().copied() {
+        for splice in CALLEE_SPLICES {
+            for entry in alphabet {
+                cases.push((
+                    base,
+                    *splice,
+                    format!("{splice:?}({entry})"),
+                    callee_case(base, entry, *splice),
+                ));
+            }
+        }
+    }
+    cases
+}
+
+/// The known alphabet's spellings, so `callee_cases` can be shared by both arms.
+fn git_global_option_spellings() -> Vec<&'static str> {
+    GIT_GLOBAL_OPTIONS.iter().map(|o| o.spelling).collect()
+}
+
+// ---------------------------------------------------------------------------
+// 15b. The floors — per ALPHABET, per CLASS, and COUNTED over generated cases
+// ---------------------------------------------------------------------------
+
+/// The arithmetic, STATED rather than guessed, because audit 5 found `19-16` set
+/// a floor of 50 against a maximum of 40 by construction.
+///
+/// `GIT_GLOBAL_OPTIONS` has 15 entries and `CALLEE_SPLICES` has 2, so every base
+/// emits `15 x 2 = 30` cases over 2 slots:
+///
+/// * refused  — 4 bases -> 8 slots -> 4 x 30 = **120** cases
+/// * permitted — 3 bases -> 6 slots -> 3 x 30 = **90** cases
+/// * total = **210** cases over **14** slots
+///
+/// The floors are EXACT equalities, so losing one case turns them red. Nothing in
+/// `src/` can move them: they are a pure function of the alphabets in this file.
+const CALLEE_GRAMMAR_CASES: usize = 210;
+const CALLEE_GRAMMAR_REFUSED_CASES: usize = 120;
+const CALLEE_GRAMMAR_PERMITTED_CASES: usize = 90;
+const CALLEE_GRAMMAR_SLOTS: usize = 14;
+const MIN_CALLEE_GRAMMAR_CLASSES: usize = 5;
+const MIN_GIT_GLOBAL_OPTIONS: usize = 15;
+const MIN_GIT_GLOBAL_UNKNOWN_OPTIONS: usize = 4;
+
+/// The unknown alphabet's own arithmetic: 4 entries x 2 splices x 7 bases = **56**
+/// cases, of which 32 sit on refused bases and 24 on permitted ones. **All 24
+/// permitted-base cases are at exit 0 today and must be REFUSED after `19-21`**,
+/// which is what makes the fail-closed property red; the 32 refused-base cases
+/// are already refused, for their verb rather than for their option.
+const CALLEE_UNKNOWN_CASES: usize = 56;
+
+/// The per-class counts over all 210 generated commands of the KNOWN alphabet,
+/// derived from the alphabet and the splice set:
+///
+/// * class 1 (consumes a separate word) — the 6 class-1 entries at each of 14
+///   slots = 84; plus the `-c` of `CALLEE_KNOWN_LEADING_PREFIX`, which is itself
+///   value-taking, in every one of the 7 `AfterAKnownLeadingOption` slots x 15
+///   entries = 105, of which 6 x 7 = 42 are already counted. 84 + 63 = **147**
+/// * class 2 (consumes no word) — the 5 class-2 entries at each of 14 slots = **70**
+/// * class 3 (attached value) — the 3 class-3 entries at each of 14 slots = **42**
+/// * class 4 (unknown) — **0**, and that zero IS the disjointness assertion:
+///   `GIT_GLOBAL_OPTIONS` must never draw the class that is not verdict-preserving
+/// * class 5 (`--` or a bare `-`) — the 1 class-5 entry at each of 14 slots = **14**
+const CALLEE_GRAMMAR_CLASS_COUNTS: &[(&str, usize)] = &[
+    ("a leading option that consumes a separate word", 147),
+    ("a leading option that consumes no word", 70),
+    ("a leading option carrying an attached value", 42),
+    ("a leading option the installed git does not accept", 0),
+    ("the end-of-options marker or a bare dash", 14),
+];
+
+#[test]
+fn every_alphabet_this_round_widens_can_draw_a_word_whose_grammar_is_gits_and_not_the_shells() {
+    // **The direct mechanical inverse of audit 6's `T-19-101`.** The auditor
+    // established the defect by grepping `tests/` for `attr-source`,
+    // `shallow-file` and `GIT_GLOBAL_VALUE_OPTS` and finding NOTHING AT ALL; this
+    // asserts the repaired fact, so narrowing the alphabet back turns this red
+    // instead of quietly restoring a corpus that cannot fail on its own class.
+    //
+    // The predicate is evaluated on a REPRESENTATIVE SPLICED COMMAND rather than
+    // on the bare entry, the way section 14's is, because these entries are
+    // splice FRAGMENTS: `--attr-source HEAD` standing alone has no program before
+    // it and no verb after it.
+    //
+    // **GREEN today and after.**
+    assert!(
+        CALLEE_GRAMMAR_CLASSES.len() >= MIN_CALLEE_GRAMMAR_CLASSES,
+        "the callee-grammar axis must name at least {MIN_CALLEE_GRAMMAR_CLASSES} classes"
+    );
+    assert!(
+        GIT_GLOBAL_OPTIONS.len() >= MIN_GIT_GLOBAL_OPTIONS,
+        "`GIT_GLOBAL_OPTIONS` must carry at least {MIN_GIT_GLOBAL_OPTIONS} entries. The \
+         correct response to a red here is to RESTORE entries, never to lower this floor."
+    );
+    assert!(
+        GIT_GLOBAL_UNKNOWN_OPTIONS.len() >= MIN_GIT_GLOBAL_UNKNOWN_OPTIONS,
+        "`GIT_GLOBAL_UNKNOWN_OPTIONS` must carry at least \
+         {MIN_GIT_GLOBAL_UNKNOWN_OPTIONS} entries"
+    );
+
+    for option in GIT_GLOBAL_OPTIONS {
+        let spliced = callee_case(
+            "git push --force origin main",
+            option.spelling,
+            CalleeSplice::ImmediatelyAfterTheProgram,
+        );
+        assert!(
+            carries_a_callee_grammar_class(&spliced),
+            "`GIT_GLOBAL_OPTIONS` entry `{}` draws NO callee-grammar class when spliced \
+             between the program and its decision words (`{spliced}`).\n\n\
+             An alphabet entry that cannot DRAW a class is an entry whose property cannot \
+             FAIL on one, and every case generated from it certifies a claim about a class it \
+             could never have exercised. It is `T-19-76`'s failure mode for the SIXTH \
+             consecutive round, after `T-19-83`, `T-19-89`, `T-19-95` and `T-19-99` — and \
+             this time the gap moved AXIS rather than one cell over.\n\n\
+             The correct response is to RESTORE the entry, never to delete this floor.",
+            option.spelling
+        );
+
+        // The entry's TAG must agree with the predicate that actually fires, or
+        // the per-class counts below are counting something the alphabet does not
+        // claim.
+        let (_, predicate) = CALLEE_GRAMMAR_CLASSES
+            .iter()
+            .find(|(class, _)| *class == option.class)
+            .unwrap_or_else(|| panic!("entry `{}` names a class that exists", option.spelling));
+        assert!(
+            predicate(&spliced),
+            "`{}` is TAGGED `{}` but the predicate for that class does not fire on \
+             `{spliced}`. An alphabet whose tags and predicates disagree makes the per-class \
+             floors meaningless.",
+            option.spelling,
+            option.class
+        );
+
+        // And the word count in the tag must match the spelling, so a two-word
+        // entry cannot be silently rewritten to one.
+        assert_eq!(
+            option.spelling.split_whitespace().count(),
+            option.words,
+            "`{}` claims to occupy {} words",
+            option.spelling,
+            option.words
+        );
+    }
+
+    // **The two spellings the rule's new knowledge uniquely adds must be DRAWN,
+    // not merely named in a doc.** A class list naming a spelling no entry draws
+    // is a floor nothing satisfies, and these two are the only entries whose
+    // refused-arm cases are at exit 0 today.
+    for required in ["--attr-source HEAD", "--shallow-file /tmp/s"] {
+        assert!(
+            git_global_option_spellings().contains(&required),
+            "`{required}` must be an entry: it is one of the two spellings `19-21`'s \
+             production uniquely adds, it is measured at exit 0 today on every refused base, \
+             and a corpus without it cannot fail on the option `T-19-100` is about"
+        );
+    }
+
+    // **And a bare `-` must NOT be one**, for the reason the alphabet's doc gives.
+    assert!(
+        !GIT_GLOBAL_OPTIONS
+            .iter()
+            .any(|option| option.spelling == "-" || option.spelling.starts_with("- ")),
+        "a bare `-` must NOT be an entry of `GIT_GLOBAL_OPTIONS`. Every entry here is \
+         spliced into REFUSED bases and asserted REFUSED, but \
+         `git - push --force origin main` is pinned PERMITTED in \
+         `tests/envelope_callee_grammar.rs` at exit 0 both before and after — `scan_leading` \
+         breaks on `-` before any option check runs, and `19-21` is FORBIDDEN to widen the \
+         rule into non-`-`-prefixed words. A `-` entry would make the refused arm PERMANENTLY \
+         RED in a file `19-21` may not edit, which is `19-18`'s `{{v}}>` blocker one axis \
+         over.\n\n\
+         The class-5 PREDICATE still recognises a bare `-`, and must: the class describes the \
+         tokens the scan breaks on, and narrowing it to match the alphabet would make the \
+         class a description of the alphabet rather than of the grammar."
+    );
+
+    // **THE DISJOINTNESS ASSERTION.** The two alphabets must not overlap, or the
+    // invariance arm would draw an entry whose verdict the fix CHANGES.
+    for unknown in GIT_GLOBAL_UNKNOWN_OPTIONS {
+        assert!(
+            !git_global_option_spellings().contains(unknown),
+            "`{unknown}` appears in BOTH alphabets. `GIT_GLOBAL_OPTIONS` entries are asserted \
+             VERDICT-PRESERVING by the invariance arm; an option the installed git does not \
+             accept is REFUSED after `19-21` even on a PERMITTED base, so it is STRICTER than \
+             its base. Mixing the two would turn the invariance arm permanently red in a file \
+             `19-21` may not edit."
+        );
+        let spliced = callee_case("git status", unknown, CalleeSplice::ImmediatelyAfterTheProgram);
+        assert!(
+            draws_a_leading_option_the_installed_git_rejects(&spliced),
+            "`{unknown}` must draw the UNKNOWN class when spliced (`{spliced}`), or the \
+             fail-closed property below is asserting refusal about something else"
+        );
+    }
+}
+
+#[test]
+fn the_generated_corpus_really_produces_each_callee_grammar_class_in_quantity() {
+    // **An alphabet floor is not a generation floor.** An entry can sit in an
+    // alphabet and be drawn by nothing, or be drawn once out of hundreds of cases
+    // — which is a corpus that can technically fail on the class and practically
+    // never does. This counts what the generator ACTUALLY emits.
+    //
+    // **Green today and after**: it drives no guard call at all, and no production
+    // change can move it. The counts are a pure function of the alphabets above,
+    // which is exactly what makes the exact equalities safe.
+    let spellings = git_global_option_spellings();
+    let refused = callee_cases(CALLEE_REFUSED_BASES, &spellings);
+    let permitted = callee_cases(CALLEE_PERMITTED_BASES, &spellings);
+
+    assert_eq!(
+        refused.len(),
+        CALLEE_GRAMMAR_REFUSED_CASES,
+        "the refused arm's generation count must equal the stated arithmetic exactly, so \
+         losing one case turns this red. `19-16` set a floor of 50 against a maximum of 40 by \
+         construction and it was invisible until the rule landed."
+    );
+    assert_eq!(
+        permitted.len(),
+        CALLEE_GRAMMAR_PERMITTED_CASES,
+        "the permitted arm's generation count must equal the stated arithmetic exactly"
+    );
+
+    let all: Vec<&(&str, CalleeSplice, String, String)> =
+        refused.iter().chain(permitted.iter()).collect();
+    assert_eq!(all.len(), CALLEE_GRAMMAR_CASES);
+
+    let slots: BTreeSet<(&str, CalleeSplice)> =
+        all.iter().map(|(base, splice, _, _)| (*base, *splice)).collect();
+    assert_eq!(
+        slots.len(),
+        CALLEE_GRAMMAR_SLOTS,
+        "every splice slot must have been generated. Seen: {slots:?}"
+    );
+
+    let mut per_class: BTreeMap<&str, usize> = BTreeMap::new();
+    for (_, _, _, command) in &all {
+        for (class, predicate) in CALLEE_GRAMMAR_CLASSES {
+            if predicate(command) {
+                *per_class.entry(class).or_default() += 1;
+            }
+        }
+    }
+
+    for (class, expected) in CALLEE_GRAMMAR_CLASS_COUNTS {
+        let got = per_class.get(class).copied().unwrap_or(0);
+        assert_eq!(
+            got, *expected,
+            "the generator emitted {got} cases of the callee-grammar class `{class}`, and the \
+             stated arithmetic derives {expected}.\n\n\
+             This is `T-19-101` counted rather than read. The correct response to a shortfall \
+             is to RESTORE entries, never to lower the number. Full counts: {per_class:?}"
+        );
+    }
+
+    // The unknown alphabet's own count.
+    let unknown_all = callee_cases(CALLEE_REFUSED_BASES, GIT_GLOBAL_UNKNOWN_OPTIONS).len()
+        + callee_cases(CALLEE_PERMITTED_BASES, GIT_GLOBAL_UNKNOWN_OPTIONS).len();
+    assert_eq!(
+        unknown_all, CALLEE_UNKNOWN_CASES,
+        "the unknown alphabet must generate exactly {CALLEE_UNKNOWN_CASES} cases"
+    );
+
+    // Recorded so the SUMMARY carries measured counts rather than described ones.
+    println!(
+        "callee-grammar axis: {} cases ({} refused, {} permitted) over {} slots from {} \
+         known entries and {} splice positions, plus {} unknown-alphabet cases from {} \
+         entries.\nper class: {per_class:?}",
+        all.len(),
+        refused.len(),
+        permitted.len(),
+        slots.len(),
+        GIT_GLOBAL_OPTIONS.len(),
+        CALLEE_SPLICES.len(),
+        unknown_all,
+        GIT_GLOBAL_UNKNOWN_OPTIONS.len(),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 15c. The generative properties — RED against the pre-fix tree
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_leading_option_whose_grammar_the_guard_does_not_know_is_not_a_verb() {
+    // **Modelled directly on
+    // `a_word_the_shell_deletes_between_the_program_and_its_decision_words_is_not_a_decision_word`**,
+    // with the PERMITTED arm running FIRST so that today's failure output is
+    // itself evidence the permitted half passed. A property whose permitted arm
+    // is unobservable until the fix lands cannot be said to fail in both
+    // directions.
+    //
+    // Measured against the built binary while this plan was written: of the 120
+    // refused-arm cases, **16 are at exit 0 today** — the 8 `--attr-source HEAD`
+    // and 8 `--shallow-file /tmp/s` cases — and 104 are already refused for a
+    // grammar the guard happens to know. All 90 permitted-arm cases are at exit 0
+    // today, with no anomalies and no ledger lines.
+    //
+    // **The refusal arm asserts the exit code and an EMPTY WALK, not a reason
+    // identifier.** A class-3 or class-5 case on a refused base is refused TODAY
+    // for its verb and after the fix for the same verb, while a class-1 case moves
+    // from permitted to refused — so which D-24 identifier a case lands on
+    // legitimately differs by entry. Pinning it here would be pinning a verdict
+    // this plan cannot derive per case; the identifiers live in the NAMED per-row
+    // pins of `tests/envelope_callee_grammar.rs`, where each carries its own
+    // written derivation.
+
+    // --- floor 0: the POSITIVE control for the walk -----------------------
+    let control = TempDir::new().expect("a temporary envelope root");
+    permits(control.path(), "gh pr create --title x");
+    assert_eq!(
+        ledger_lines_under(control.path()).len(),
+        1,
+        "a PERMITTED `gh pr create` writes exactly one ledger line, and the walk must be able \
+         to find it. If this is 0 the walk is blind and every empty-walk assertion below is \
+         vacuous. Files: {:?}",
+        files_under(control.path())
+    );
+
+    // --- floor 1: every base answers what the arm it is in claims ---------
+    let mut base_verdicts: BTreeMap<&str, Verdict> = BTreeMap::new();
+    for base in CALLEE_PERMITTED_BASES {
+        let envelope = TempDir::new().expect("a temporary envelope root");
+        let got = verdict(envelope.path(), base);
+        assert_eq!(
+            got.code, 0,
+            "the UNWRAPPED base `{base}` must be PERMITTED, or every case built on it is \
+             green or red for the base's own reason. Got reason id: {}",
+            got.reason_id
+        );
+        base_verdicts.insert(base, got);
+    }
+    for base in CALLEE_REFUSED_BASES {
+        let envelope = TempDir::new().expect("a temporary envelope root");
+        let got = verdict(envelope.path(), base);
+        assert_eq!(
+            got.code, 2,
+            "the UNWRAPPED base `{base}` must be REFUSED, or the leading option cannot be \
+             what makes the difference. Got reason id: {}",
+            got.reason_id
+        );
+        assert!(
+            REASON_IDENTIFIERS.contains(&got.reason_id.as_str()),
+            "and refused under a D-24 identifier. Got: {}",
+            got.reason_id
+        );
+    }
+
+    let spellings = git_global_option_spellings();
+
+    // --- the PERMITTED arm: a KNOWN leading option is VERDICT-PRESERVING ---
+    //
+    // Runs first, and is GREEN today. Without it, an implementation that simply
+    // refused every governed command carrying a leading `-` would satisfy the
+    // whole refusal arm below — while refusing `git --no-pager status`,
+    // `git -C /tmp status` and `git --version`, whose measured cost
+    // `tests/envelope_callee_grammar.rs` pins row by row. **That is the shape
+    // this fix is ONE WRONG STEP away from.**
+    let mut permitted_cases = 0usize;
+    for (base, splice, label, command) in callee_cases(CALLEE_PERMITTED_BASES, &spellings) {
+        let envelope = TempDir::new().expect("a temporary envelope root");
+        let got = verdict(envelope.path(), &command);
+        let expected = base_verdicts.get(base).expect("the base was measured");
+        assert_eq!(
+            got,
+            *expected,
+            "\n\nA KNOWN LEADING GIT OPTION CHANGED A PERMITTED VERDICT.\n\
+             \n  command : {command:?}\
+             \n  base    : {base}\
+             \n  splice  : {splice:?} / {label}\
+             \n  got     : exit {} reason {}\n\
+             \nEvery entry of `GIT_GLOBAL_OPTIONS` was CLASSIFIED by a two-sided probe of the \
+             real git binary, so after the fix the guard knows exactly how many words each \
+             occupies and reaches the base's own verb. Confirmed by running real git: \
+             `git --attr-source HEAD status` prints `On branch gsd-auto/alpha/w` and \
+             `git --shallow-file /tmp/s log --oneline` prints `7347130 init` in a fixture.\n\
+             \n**A red here is the fix having become a blanket refusal of anything beginning \
+             with `-`**, which is a guard nobody can use and therefore a control that gets \
+             switched off (AR-19-11). It is NOT a reason to narrow this alphabet, and it is \
+             NOT a reason to move an entry into `GIT_GLOBAL_UNKNOWN_OPTIONS` — that alphabet \
+             is for options the installed git REJECTS, and its membership is a measurement.",
+            got.code,
+            got.reason_id,
+        );
+        permitted_cases += 1;
+    }
+
+    // --- the REFUSED arm: RED against the pre-fix tree --------------------
+    let mut refused_cases = 0usize;
+    let mut slots_seen: BTreeSet<(&str, CalleeSplice)> = BTreeSet::new();
+    let mut classes_seen: BTreeSet<&str> = BTreeSet::new();
+
+    for (base, splice, label, command) in callee_cases(CALLEE_REFUSED_BASES, &spellings) {
+        slots_seen.insert((base, splice));
+        for (class, predicate) in CALLEE_GRAMMAR_CLASSES {
+            if predicate(&command) {
+                classes_seen.insert(class);
+            }
+        }
+
+        // A fresh root per case, because a permitted forge command writes a
+        // ledger line and a shared root would exhaust the cap and turn later
+        // cases red for a reason that has nothing to do with the option.
+        let envelope = TempDir::new().expect("a temporary envelope root");
+        let got = verdict(envelope.path(), &command);
+
+        assert_eq!(
+            got.code,
+            2,
+            "\n\nA LEADING GIT OPTION CONSUMED THE VERB AND THE COMMAND WAS PERMITTED.\n\
+             \n  command : {command:?}\
+             \n  base    : {base}\
+             \n  splice  : {splice:?} / {label}\
+             \n  got     : exit {} reason {}\
+             \n  seed    : {SEED:#x}\n\
+             \n`scan_leading` walks leading `-`-initial tokens and asks `leading_git_option` \
+             how many words each occupies. Its answer for an option it does not recognise is \
+             `(None, 1)` at `policy.rs:488` — it ASSUMES one word. The loop then advances one \
+             word, lands on the option's VALUE, sees it does not start with `-`, and BREAKS \
+             with that value as the verb. `classify_git` finds that value in no denylist arm \
+             and answers `Allow`.\n\
+             \n**Every word here is literal and every word arrives, in order.** Round 5's bit \
+             is RIGHT about this line and round 6's model is RIGHT about it — both are pinned \
+             non-vacuous in `tests/envelope_callee_grammar.rs`. What is wrong is the verb \
+             INDEX, and it is wrong because of a fact about GIT rather than about bash.\n\
+             \n**The correct response is to make the ABSENCE of that one bit a REFUSAL \
+             instead of a guess**, the same fail-closed treatment `resolve_program`'s wrapper \
+             axis already has. It is NOT a blanket refusal of anything beginning with `-` — \
+             the permitted arm above and the twelve ordinary invocations in \
+             `tests/envelope_callee_grammar.rs` measure that option's cost. It is NOT a \
+             widening of the rule into non-`-`-prefixed words — `git - push --force origin \
+             main` is pinned PERMITTED. And it is NOT a narrowing of `GIT_GLOBAL_OPTIONS`, \
+             `GIT_GLOBAL_UNKNOWN_OPTIONS` or the five `CALLEE_GRAMMAR_CLASSES`.",
+            got.code,
+            got.reason_id,
+        );
+
+        let written = ledger_lines_under(envelope.path());
+        assert!(
+            written.is_empty(),
+            "`{command:?}` was refused, but a pull-request ledger line was written somewhere \
+             under the envelope root. Found: {written:?} Files: {:?}",
+            files_under(envelope.path())
+        );
+
+        refused_cases += 1;
+    }
+
+    // --- the floors, reachable only once the arm above is green -----------
+    assert_eq!(
+        permitted_cases, CALLEE_GRAMMAR_PERMITTED_CASES,
+        "the permitted arm must run every generated case"
+    );
+    assert_eq!(
+        refused_cases, CALLEE_GRAMMAR_REFUSED_CASES,
+        "the refused arm must run every generated case"
+    );
+    assert_eq!(
+        slots_seen.len(),
+        CALLEE_REFUSED_BASES.len() * CALLEE_SPLICES.len(),
+        "every splice slot of every refused base must have been generated. Seen: {slots_seen:?}"
+    );
+    assert!(
+        classes_seen.len() >= 4,
+        "the refused arm must draw at least FOUR callee-grammar classes — every class the \
+         KNOWN alphabet can express. It cannot draw the fifth (the unknown class), and that \
+         is deliberate: `GIT_GLOBAL_UNKNOWN_OPTIONS` is not verdict-preserving and has its \
+         own fail-closed property. Seen: {classes_seen:?}"
+    );
+
+    println!(
+        "callee-grammar axis drove {permitted_cases} permitted and {refused_cases} refused \
+         cases over {} slots, drawing {} classes.",
+        slots_seen.len(),
+        classes_seen.len()
+    );
+}
+
+#[test]
+fn an_option_the_installed_git_rejects_fails_closed_on_every_base() {
+    // **The unknown class's OWN property, separate because its entries are not
+    // verdict-preserving.** An option the installed git does not accept is
+    // REFUSED after `19-21` on BOTH kinds of base — that is the whole point of
+    // inverting the failure direction — so it cannot be drawn by the invariance
+    // arm above without turning that property permanently red in a file `19-21`
+    // may not edit. This is `19-18`'s `{v}>` blocker one axis over, prevented by
+    // construction rather than by care.
+    //
+    // Measured against the built binary at this file's base commit: of the 56
+    // cases, the 32 on refused bases are already refused (for their VERB, which
+    // the one-word assumption happens to reach), and **all 24 on permitted bases
+    // are at exit 0**. Those 24 are what makes this property RED.
+    //
+    // **This is the measured over-refusal cost of the round, and it is asserted
+    // rather than argued.** On the installed git 2.43.0 the cost is ZERO in
+    // practice: every option this git ACCEPTS is classified by the probe and
+    // enumerated, so the only commands moving permitted -> refused are ones git
+    // itself rejects — refusals of commands that already do nothing.
+    // `--no-advice` and `--no-lazy-fetch` are the measured stand-ins for the
+    // FUTURE-git cost: real global options in later releases, rejected by this
+    // git, one refusal each until the constant learns them.
+    let mut cases = 0usize;
+    for bases in [CALLEE_REFUSED_BASES, CALLEE_PERMITTED_BASES] {
+        for (base, splice, label, command) in callee_cases(bases, GIT_GLOBAL_UNKNOWN_OPTIONS) {
+            let envelope = TempDir::new().expect("a temporary envelope root");
+            let got = verdict(envelope.path(), &command);
+            assert_eq!(
+                got.code,
+                2,
+                "\n\nAN OPTION THE INSTALLED GIT DOES NOT ACCEPT WAS PERMITTED.\n\
+                 \n  command : {command:?}\
+                 \n  base    : {base}\
+                 \n  splice  : {splice:?} / {label}\
+                 \n  got     : exit {} reason {}\n\
+                 \nThe guard has NO BIT for this spelling: it is in neither of the two \
+                 constants, carries no attached `=`, and is not `-`, `--` or a non-option \
+                 word. **The absence of that bit must be a REFUSAL and not a guess**, which \
+                 is the inversion this round is about.\n\
+                 \nA refusal here is cheap and honest: on git 2.43.0 every one of these \
+                 spellings prints `unknown option:`, so the command does nothing anyway. On a \
+                 FUTURE git the cost is one refusal per newly added global option until the \
+                 constant learns it — `--no-advice` and `--no-lazy-fetch` are the measured \
+                 stand-ins, and the recovery is to spell the option's value ATTACHED where \
+                 git accepts that form, to drop the option, or to add it to the constant.\n\
+                 \n**The correct response is NOT to move this entry into \
+                 `GIT_GLOBAL_OPTIONS`.** That alphabet's membership is a MEASUREMENT — a \
+                 two-sided probe of the real git binary — and an entry there is asserted \
+                 verdict-preserving.",
+                got.code,
+                got.reason_id,
+            );
+
+            let written = ledger_lines_under(envelope.path());
+            assert!(
+                written.is_empty(),
+                "`{command:?}` was refused, but a pull-request ledger line was written \
+                 somewhere under the envelope root. Found: {written:?} Files: {:?}",
+                files_under(envelope.path())
+            );
+            cases += 1;
+        }
+    }
+
+    assert_eq!(
+        cases, CALLEE_UNKNOWN_CASES,
+        "the fail-closed arm must run every generated unknown-alphabet case"
     );
 }
