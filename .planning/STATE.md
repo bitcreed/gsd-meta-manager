@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
-stopped_at: Completed 19-20-PLAN.md — corpus RED at 1631, handoff contract is the seven after_19_21_* / callee-axis names
-last_updated: "2026-09-04T02:19:52.879Z"
+stopped_at: Completed 19-21-PLAN.md (1 blocker row open)
+last_updated: "2026-09-04T02:50:34.641Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: f5f53bc91f2c5e28092c7264d116fe6d489cec44
+state_head: 58cd95e6b1be54c0d494344e604008fd60801910
 progress:
   total_phases: 10
   completed_phases: 6
   total_plans: 100
-  completed_plans: 99
+  completed_plans: 100
   percent: 60
 ---
 
@@ -223,6 +223,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 19 P17 | ~1 session | 3 tasks | 6 files |
 | Phase 19 P18 | 75m | 3 tasks | 4 files |
 | Phase 19 P20 | 1 session | 3 tasks | 4 files |
+| Phase 19 P21 | 1 session | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -279,6 +280,8 @@ Recent decisions affecting current work:
 - [Phase 19]: 19-20: the callee's grammar is a THIRD corpus axis, not more entries in either shell axis — both existing axes are axes of bash and audit 6 verified that boundary closed
 - [Phase 19]: 19-20: assert the POST-fix verdict wherever derivable so the row is red now and green after — no pin for the next plan to move, and no replacement exception needed
 - [Phase 19]: 19-20: the anti-vacuity ratio floor is REPLACED by absolute per-file byte floors (40k/20k), not lowered — 428 bytes of comment headroom made it a documentation budget
+- [Phase 19]: 19-21: an unestablished git verb slot is a refusal, not the next non-`-` word — the fail-closed treatment resolve_program's wrapper axis already had
+- [Phase 19]: 19-21: git's option grammar is pinned against the installed git binary in a TEST, never consulted from the guard's path
 
 ### Pending Todos
 
@@ -308,6 +311,7 @@ Recent decisions affecting current work:
 
 - T-19-86 (governed program's own operand names a governed command) and T-19-87 (${VAR} fragments a command past the splitter) are open, pinned and deferred to a round-4 plan; /gsd-secure-phase 19 cannot clear until they are closed
 - T-19-97/T-19-98/T-19-99 open — corpus RED at 1605 (passed+failed); 19-19 writes the rule. /gsd-secure-phase 19 NOT cleared: T-19-86 and T-19-91 remain open at high
+- 19-21: tests/envelope_callee_grammar.rs pins `git --super-prefix x push --force origin main` at force_push_blocked while pinning `git --super-prefix x status` at envelope_assertion_failed — identical leading tokens, so no rule obeying 19-21's prohibitions satisfies both. Row left RED. Both refuse at exit 2; only the identifier differs.
 
 ### Quick Tasks Completed
 
@@ -338,11 +342,11 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-04T02:19:52.220Z
-Stopped at: Completed 19-20-PLAN.md — corpus RED at 1631, handoff contract is the seven after_19_21_* / callee-axis names
+Last session: 2026-09-04T02:50:23.491Z
+Stopped at: Completed 19-21-PLAN.md (1 blocker row open)
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
-Resume file: .planning/phases/19-gitsafe-git-blast-radius-envelope/19-21-PLAN.md
+Resume file: None
 (both retained deliberately — the plan-checker step runs as a separate agent and needs them;
 delete only after round 7 executes).
 Note: `.planning/phases/19-gitsafe-git-blast-radius-envelope/.continue-here.md` is a stale

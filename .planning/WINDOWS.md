@@ -1,10 +1,10 @@
 ---
 schema_version: 1
-open_count: 18
+open_count: 19
 waived_count: 0
 fixed_count: 0
-total_count: 18
-last_updated: 2026-08-30T00:22:46.812Z
+total_count: 19
+last_updated: 2026-09-04T02:50:39.202Z
 ---
 
 # Broken Windows Ledger
@@ -33,6 +33,7 @@ last_updated: 2026-08-30T00:22:46.812Z
 | 16 | 21 | stub | src/driver/router.rs |  | 21-04 STRUCTURAL FINDING affecting ROADMAP criterion 3: router::decide cannot return NoRule for ANY project state this tree's reader produces from disk. The rule table covers five statuses, gate_for intercepts partial and every executed verification status, and complete requires passed which is_goal_met answers first; the one uncovered state violates the reader's own invariant (src/state_reader/disk_status.rs:670). Consequences: (1) the ambiguity seam is wired, order-pinned and unit-tested but has NO reachable production path; (2) since goal decomposition is the only escalation that can occur, a run makes at most 1 escalation, so escalation_cap_reached is UNREACHABLE end-to-end and no run can park under it on disk. This is arguably a good property — it means the rule table is complete — but criterion 3's cap must be verified as 'mechanism correct and unit-proven, no production path reaches it', NOT as end-to-end proven. 21-06 cannot discharge 21-02's E7 deferral without deliberately widening the reader, removing a rule-table row, or accepting a fixture that writes an inference the reader would never produce. Do not let a fixture of that third kind be mistaken for end-to-end proof. | open |  | 2026-08-20T04:50:50.557Z |  |
 | 17 | 19 | deviation | tests/envelope_wrapper_class.rs |  | MIN_UNREADABLE_FORGE_SLOT_CASES was 50 against a stated arithmetic of 68 while the loop generates 40 — unreachable by construction; corrected to 40 by plan 19-17 | open |  | 2026-08-30T00:22:46.676Z |  |
 | 18 | 19 | deviation | tests/envelope_literal_decision.rs |  | 19-16's the_marked_payload_splice_... pinned exit 0 despite name/comment/SUMMARY saying it asserts nothing post-fix; guard discharged and re-pinned by 19-17 without weakening clause 2(a) | open |  | 2026-08-30T00:22:46.812Z |  |
+| 19 | 19 | unrun-verify | tests/envelope_callee_grammar.rs | 937 | 19-21 blocker: `git --super-prefix x push --force origin main` pinned at force_push_blocked is incompatible with `git --super-prefix x status` pinned at envelope_assertion_failed; row left RED | open |  | 2026-09-04T02:50:39.202Z |  |
 
 ````json
 [
@@ -250,6 +251,18 @@ last_updated: 2026-08-30T00:22:46.812Z
     "status": "open",
     "reason": "",
     "recorded_at": "2026-08-30T00:22:46.812Z",
+    "resolved_at": null
+  },
+  {
+    "id": 19,
+    "kind": "unrun-verify",
+    "phase": "19",
+    "file": "tests/envelope_callee_grammar.rs",
+    "line": 937,
+    "description": "19-21 blocker: `git --super-prefix x push --force origin main` pinned at force_push_blocked is incompatible with `git --super-prefix x status` pinned at envelope_assertion_failed; row left RED",
+    "status": "open",
+    "reason": "",
+    "recorded_at": "2026-09-04T02:50:39.202Z",
     "resolved_at": null
   }
 ]
