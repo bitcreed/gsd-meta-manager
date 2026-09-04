@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
-stopped_at: Completed 19-30-PLAN.md — round 12's CORPUS, RED handoff for 19-31 (1859 = 1820 + 39); /gsd-secure-phase 19 NOT cleared
-last_updated: "2026-09-04T22:39:00.949Z"
+stopped_at: Completed 19-31-PLAN.md
+last_updated: "2026-09-04T23:07:35.812Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: 0607fde57e288a3964c95a6f73839278af45c897
+state_head: 604ad2e4e06d4094474fb75faba91cfe269d46f2
 progress:
   total_phases: 10
   completed_phases: 6
   total_plans: 110
-  completed_plans: 109
+  completed_plans: 110
   percent: 60
 ---
 
@@ -232,6 +232,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 19 P28 | 1 session | 3 tasks | 4 files |
 | Phase 19 P29 | one session | 4 tasks | 11 files |
 | Phase 19 P30 | 1 session | 3 tasks | 4 files |
+| Phase 19 P31 | one session | 4 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -318,6 +319,11 @@ Recent decisions affecting current work:
 - [Phase 19]: 19-29: the ledger size bound is DEADLINE-derived and fails CLOSED; a cap-derived bound would be one the agent steers
 - [Phase 19]: 19-30: the option-attachment boundary is /-anchored substrings of a LITERAL word, never a list of attachment characters (D-08 one level over)
 - [Phase 19]: 19-30: containment is of the NORMALISED STRING, not the index — lexical_absolute_components strips leading ./ before testing for /
+- [Phase 19]: The interior-path boundary is /-anchored substrings of a LITERAL word — not =, not a character list; containment is of the NORMALISED STRING, not of the index
+- [Phase 19]: The residue is a CONDITION with NO count, handed to no pin, schedule or version witness
+- [Phase 19]: credential.helper is denied by SECTION + FINAL COMPONENT, never a substring test
+- [Phase 19]: The ledger KIND check goes inside the existing Ok arm; the link-following stat is kept
+- [Phase 19]: cred.rs names the rule that acts rather than claiming a layer governs — prefer a claim that stays true to one that must be maintained
 
 ### Pending Todos
 
@@ -380,8 +386,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-04T22:38:53.571Z
-Stopped at: Completed 19-30-PLAN.md — round 12's CORPUS, RED handoff for 19-31 (1859 = 1820 + 39); /gsd-secure-phase 19 NOT cleared
+Last session: 2026-09-04T23:07:25.178Z
+Stopped at: Completed 19-31-PLAN.md
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
 Resume file: None
