@@ -850,6 +850,32 @@ pub fn guard(alias: &crate::registry::Alias, stdin: impl std::io::Read) -> anyho
 /// Split out for the same reason [`install_in`] is: a test may not write into
 /// the developer's real `~/.local/share`, and a decision that can only be
 /// observed by spawning a process is a decision that gets tested once.
+///
+/// # `std::env::current_exe()` IS RESOLVED HERE, ONCE, AND HANDED DOWN
+///
+/// The carrier clause below protects **the binary this guard is running as**, so
+/// it needs that path — and every rule this module states about the guard's
+/// critical path applies to obtaining it. It is resolved **once per invocation,
+/// at the top, above the segment walk**, and threaded explicitly into
+/// [`classify_segments`], so nothing below it — not the per-segment loop, not
+/// the predicate, not [`policy::tokenize`] — makes a process or filesystem call
+/// of any kind. The no-filesystem source pins over both regions assert that
+/// mechanically rather than by intention.
+///
+/// **It is resolved HERE rather than in [`guard`], and the reason is that the
+/// answer must be the RUNNING process's own path.** [`install_in`] takes its
+/// `binary` explicitly because it BAKES the path into a stub, and a stub that
+/// baked the test binary would be wrong. This clause is the opposite case: its
+/// claim is about *the binary the process answering this guard call is running
+/// as, whatever that process is*, so the call belongs on the path every caller
+/// takes — including the fixture, which drives this function directly and whose
+/// own binary is the one its rows name. A path resolved in [`guard`] would be
+/// absent for every one of them, and the clause would be silently untested.
+///
+/// **An unresolvable path is passed through as ABSENT rather than made an
+/// error.** The guard's job is to answer; a guard that refused because it could
+/// not name itself would be a new denial-of-service surface. That is fail-open
+/// and it is stated on [`policy::protected_carrier_named`]'s own signature.
 #[allow(clippy::too_many_arguments)]
 pub fn guard_in(
     root: &Path,
@@ -904,12 +930,17 @@ pub fn guard_in(
     // Resolved at most once per invocation, and only if some segment turns out
     // to need it. `None` means "not asked for yet", not "unresolvable".
     let mut push_ctx: Option<policy::GitContext> = None;
+    // **ONCE, above the walk.** See this function's doc: the carrier clause
+    // protects this binary, nothing below here may make a process call, and an
+    // unresolvable path is ABSENT rather than an error.
+    let binary = std::env::current_exe().ok();
 
     match classify_segments(
         &segments,
         0,
         root,
         alias,
+        binary.as_deref(),
         project_root,
         &policy,
         &mut push_ctx,
@@ -956,6 +987,7 @@ fn classify_segments(
     depth: usize,
     root: &Path,
     alias: &str,
+    binary: Option<&Path>,
     project_root: Option<&Path>,
     envelope: &policy::EnvelopePolicy,
     push_ctx: &mut Option<policy::GitContext>,
@@ -964,8 +996,9 @@ fn classify_segments(
         let segment = entry.tokens.as_slice();
         let words: Vec<&str> = segment.iter().map(|token| token.text.as_str()).collect();
 
-        // **THIS ENVELOPE'S OWN CONTROLS ARE FILES, AND A COMMAND THAT NAMES ONE
-        // IS A COMMAND THIS FUNCTION CANNOT JUDGE.** The ledger SAFE-06 counts
+        // **THIS ENVELOPE'S OWN CONTROLS ARE FILES — AND ONE OF THEM IS THE
+        // BINARY — AND A COMMAND THAT NAMES ONE IS A COMMAND THIS FUNCTION
+        // CANNOT JUDGE.** The ledger SAFE-06 counts
         // in, both hook stubs layer 3 IS, the generated `gitconfig` and `askpass`
         // and the settings file are all ordinary files under
         // `envelope_dir_in(root, alias)`, writable by the same uid the driven
@@ -976,7 +1009,16 @@ fn classify_segments(
         // let a force push MOVE a bare remote's `main` without touching
         // `GIT_CONFIG_COUNT` at all.
         //
-        // **Placing it before the `match` is load-bearing in THREE ways**, in the
+        // **AND THE BINARY IS THE WIDEST OF THEM, WHICH IS WHY THE PATH SET IS
+        // TWO PATHS RATHER THAN ONE.** `cp /bin/true <binary>` is measured exit 0
+        // through this guard and removes LAYER 3 (the stubs exec it) AND LAYER 2
+        // (the guard registration execs it) in one permitted call — strictly
+        // wider than `cp /bin/true <hooks>/pre-push`, which removes layer 3 only,
+        // and wider than `env -u GIT_CONFIG_COUNT`, which removes layer 3 only
+        // AND is refused at `hook_bypass_blocked`. Driven end to end, the
+        // replaced binary let a force push move a bare remote's `main`.
+        //
+        // **Placing it before the `match` is load-bearing in FIVE ways**, in the
         // shape `first_unreadable_decision_word`'s own placement comment below
         // uses for two of them:
         //
@@ -991,33 +1033,65 @@ fn classify_segments(
         //    never consumes PR-cap budget — the same reason the unreadable
         //    decision word is tested where it is.
         // 3. **It re-raises at DEPTH through the `NestedPayload` arm**, which
-        //    re-enters this function on the re-split payload with the same `root`
-        //    and `alias`. So `bash -lc "rm -f <ledger>"` is reached by THIS clause
-        //    rather than by a second one — a consequence of the placement rather
-        //    than an extra mechanism.
+        //    re-enters this function on the re-split payload with the same `root`,
+        //    `alias` and `binary`. So `bash -lc "rm -f <ledger>"` is reached by
+        //    THIS clause rather than by a second one — a consequence of the
+        //    placement rather than an extra mechanism, and the same is now true of
+        //    `bash -lc "printf 'x' > <ledger>"`, whose target is re-read by the
+        //    re-split rather than by anything new.
+        // 4. **It reads the segment's REDIRECTION TARGETS from a field the ONE
+        //    walk filled**, not from a second scan of anything.
+        //    `policy::split_segments_with_heads` accumulates them in the operator
+        //    arm it already walks, exactly as it accumulates
+        //    `redirection_unresolvable`, and **`entry.tokens` is byte-for-byte
+        //    what it was before that field existed** — which is why no rule four
+        //    rounds settled can move. A target pushed into the token stream
+        //    instead would flush a `Segment` at the operator and leave the leading
+        //    `git` of `git >/dev/null push --force origin main` carrying an EMPTY
+        //    argv, which `classify_git` answers `Allow` for; the SEGMENT-COUNT
+        //    pins in `tests/envelope_carrier_reach.rs` are what make that
+        //    falsifiable rather than merely stated.
+        // 5. **The two paths carry two different boundary KINDS, and the
+        //    difference is measured rather than aesthetic.** The envelope
+        //    directory is a PREFIX, because this envelope owns every byte under it
+        //    and `rm -rf <root>/<alias>` takes nine carriers in one call. The
+        //    binary is an EXACT PATH, because its directory is shared with
+        //    everything else the user installed: a prefix over that parent would
+        //    refuse `ls <binary-parent>` and `cp /bin/true
+        //    <binary-parent>/some-other-file`, both pinned PERMITTED precisely so
+        //    that a clause written the wrong way turns red instead of turning a
+        //    driven run unusable (AR-19-11).
         //
         // **One reading site, from the walk this loop already does**, on the
         // segment it already holds: no second pass, no second scan of the argv, no
         // filter after `resolve_program_with_head` answered, and no new
         // `ParkReason` — this is the same general unresolvable identifier the
         // sibling refusals carry, and deliberately NOT `HookBypassBlocked`, which
-        // names a config-KEY mechanism this refusal does not use (D-24).
+        // names a config-KEY mechanism this refusal does not use (D-24). Reading
+        // TWO FIELDS of that one segment at that one site is one reading site.
         //
         // `envelope_dir_in` is a validate-then-`join` behind
-        // `is_plain_path_component` with NO filesystem probe, and the predicate it
-        // feeds normalises LEXICALLY and follows no link, so this clause obeys the
-        // three latency rules stated above and introduces no TOCTOU. `None` here
-        // is an alias this envelope could never have built a directory for, so
-        // there is no directory to protect.
+        // `is_plain_path_component` with NO filesystem probe, `binary` was
+        // resolved ONCE above the walk, and the predicate they feed normalises
+        // LEXICALLY and follows no link — so this clause obeys the three latency
+        // rules stated above and introduces no TOCTOU. `None` for the directory is
+        // an alias this envelope could never have built a directory for, so there
+        // is no directory to protect; `None` for the binary is a process that
+        // cannot name itself, which makes that half SILENT.
         //
-        // **It fails OPEN in four named directions and none has an automated
-        // control** — a redirection target, an expansion-borne operand, a symlink
-        // and a relative path, the last two NARROWED by a measured partial
-        // mitigation rather than closed. They are stated in full on
-        // `policy::envelope_carrier_operand`.
+        // **It fails OPEN in SEVEN named directions over TWO word classes and TWO
+        // paths, and NOT ONE of them has an automated control.** Stated as a
+        // condition: a word the shell may rewrite, a word that is not absolute, a
+        // word that reaches a protected path only through a link. Directions (iii)
+        // and (iv) keep their measured partial mitigations and the word is
+        // NARROWED; **direction (i) is NARROWED to those seven and is NOT closed**
+        // — it stops being a direction of its own and becomes a second WORD CLASS
+        // the other six apply over. They are stated in full on
+        // `policy::protected_carrier_named`, and handed to no pin, schedule or
+        // version witness.
         let envelope_dir = super::envelope_dir_in(root, alias);
         if let Some((matched, named)) =
-            policy::protected_carrier_named(entry, envelope_dir.as_deref(), None)
+            policy::protected_carrier_named(entry, envelope_dir.as_deref(), binary)
         {
             return Ok(Some((
                 ParkReason::EnvelopeAssertionFailed,
@@ -1101,6 +1175,7 @@ fn classify_segments(
                             depth + 1,
                             root,
                             alias,
+                            binary,
                             project_root,
                             envelope,
                             push_ctx,

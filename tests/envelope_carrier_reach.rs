@@ -2294,6 +2294,123 @@ fn after_19_29_ordering_pin_b_holds_for_the_binary_carrier_too() {
     );
 }
 
+#[test]
+fn after_19_29_the_ordering_controls_for_both_new_classes_stay_at_the_push_identifier() {
+    // **THE OUTSIDE-THE-PROTECTED-SET CONTROL FOR EACH ORDERING PIN, DRIVEN AS
+    // ITS OWN ROW.** `after_19_29_ordering_pin_a_holds_for_a_redirection_target_too`
+    // and `after_19_29_ordering_pin_b_holds_for_the_binary_carrier_too` assert
+    // that the two new word/path classes reach `envelope_assertion_failed`.
+    // **Neither is discriminating on its own**: a clause that refused every
+    // redirection, or every `cp`, would turn both green for the wrong reason.
+    // These rows are the same commands with the protected path replaced by an
+    // ordinary one, and they must answer the PUSH's identifier — which is what
+    // fixes the pins' identifiers as carrier-caused rather than incidental.
+    for (command, why) in [
+        (
+            "git push --force origin main > /tmp/out".to_string(),
+            "PIN A's control, trailing position: a redirection target that is not under a \
+             protected path. The clause must not read it as a carrier.",
+        ),
+        (
+            "git > /tmp/out push --force origin main".to_string(),
+            "PIN A's control, leading position — the same claim with the operator before the \
+             argv, so the pair covers both orders the pin covers.",
+        ),
+        (
+            format!(
+                "cp /bin/true {}/some-other-file && git push --force origin main",
+                this_binary_parent().display()
+            ),
+            "PIN B's control: a SIBLING of the binary in segment 1. **This is the row a \
+             directory-prefix clause turns into `envelope_assertion_failed`**, and it must \
+             stay at the push's identifier.",
+        ),
+        (
+            format!(
+                "printf 'x' > {}/some-other-file && git push --force origin main",
+                this_binary_parent().display()
+            ),
+            "both new classes at once, outside both protected paths: a redirection target \
+             beside the binary rather than at it.",
+        ),
+    ] {
+        refuses(&command, "force_push_blocked", why);
+    }
+}
+
+#[test]
+fn after_19_29_the_widened_clause_re_raises_at_depth_through_the_nested_payload_arm() {
+    // **THE FOURTH PLACEMENT CONSEQUENCE, DRAWN AS A LIVE ROW.** The clause sits
+    // at the top of `classify_segments`' per-segment loop, and the `NestedPayload`
+    // arm RE-ENTERS that function on the re-split payload with the same `root`,
+    // `alias` and `binary`. So a carrier inside a nested shell payload is reached
+    // by THIS clause rather than by a second mechanism — **a consequence of the
+    // placement, which is why there is no second reading site to test.**
+    //
+    // Round 10 already pinned this for an OPERAND. These rows extend it to the
+    // two classes `19-29` adds, which is the half that could have needed a
+    // second mechanism and does not.
+    refuses_carrier(
+        |root| {
+            format!(
+                "bash -lc \"printf 'exit 0' > {}/alpha/hooks/pre-push\"",
+                root.display()
+            )
+        },
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+        "a REDIRECTION TARGET under the envelope root, one shell deep. The payload's braces and \
+         operators are LITERAL until the payload is re-split, so the target is produced by the \
+         re-entered walk rather than by anything that ran on the outer line.",
+    );
+    refuses(
+        &format!("bash -lc \"cp /bin/true {}\"", this_binary().display()),
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+        "the BINARY as an operand, one shell deep. `binary` is threaded through the recursion, \
+         so the same clause answers at depth — and a `binary` that were resolved per-call \
+         instead of once at the top would still answer here, which is why the no-filesystem \
+         source pins over the predicate and the tokenizer are what hold that property rather \
+         than this row.",
+    );
+
+    // **THE DISCRIMINATING CONTROL: the same nesting, no protected path.** A
+    // clause that refused nested payloads as such would turn this red.
+    permits(
+        "bash -lc \"printf 'exit 0' > /tmp/outside/pre-push\"",
+        "the same nesting and the same operator, to a path outside both protected paths. The \
+         re-entry is not what refuses; the PATH is.",
+    );
+}
+
+#[test]
+fn after_19_29_the_clause_protects_the_running_binary_and_not_every_copy_of_it() {
+    // **WHAT AN EXACT-PATH CLAUSE MEANS, AND WHAT IT DOES NOT.** The clause reads
+    // the path `std::env::current_exe()` reported for THIS process. A byte-identical
+    // COPY of the same product binary at a different path is a different file, and
+    // writing over it removes no layer of this run's own envelope.
+    //
+    // **This is the row that tells the clause apart from a program-name rule.**
+    // `wrapper_names_the_fix_must_not_know_are_absent_from_the_production_logic`
+    // forbids a denylist mechanically; this row forbids it behaviourally, because
+    // a clause that matched on the basename `gsd-meta-manager` would turn it red.
+    let copy = TempDir::new().unwrap();
+    let elsewhere = copy.path().join("gsd-meta-manager");
+    std::fs::copy(PRODUCT_BIN, &elsewhere).expect("the product binary copies");
+
+    permits(
+        &format!("cp /bin/true {}", elsewhere.display()),
+        "a COPY of the product binary, at a path this run does not exec. Same bytes, same \
+         basename, different file — and the clause reads the path's IDENTITY.",
+    );
+
+    // The POSITIVE CONTROL, without which the row above passes against a clause
+    // that refuses nothing at all.
+    refuses(
+        &format!("cp /bin/true {}", this_binary().display()),
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+        "the binary this process IS running as, which is the subject of the claim.",
+    );
+}
+
 // ===========================================================================
 // SECTION 7 — THE SEGMENT-COUNT PINS
 //
