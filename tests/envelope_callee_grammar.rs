@@ -837,6 +837,14 @@ fn after_19_21_the_stale_and_bundled_planning_cells_are_refused() {
     //    twin `git --super-prefix x push --force origin main` -> exit 2, which is
     //    the two-sided proof that the entry is what moves the index.
     //
+    //    **Both halves of that PRE-fix measurement are pre-fix and neither
+    //    survives the fix as written.** The twin's pre-fix exit 2 was
+    //    `force_push_blocked` only because the entry consumed `x`; once the
+    //    entry is gone the twin refuses at `envelope_assertion_failed` like this
+    //    line. `the_already_correct_planning_cells_keep_their_verdicts_as_controls`
+    //    carried that pre-fix identifier as a post-fix expectation and has been
+    //    corrected.
+    //
     //    **REAL GIT REJECTS IT**: `git --super-prefix version` and
     //    `git --super-prefix XVALUE version` both print
     //    `unknown option: --super-prefix` on git 2.43.0. **This row is therefore
@@ -905,8 +913,17 @@ fn the_bare_dash_stays_permitted_because_the_rule_must_not_widen_into_non_option
 
 #[test]
 fn the_already_correct_planning_cells_keep_their_verdicts_as_controls() {
-    // **GREEN TODAY AND AFTER.** Three cells that are already right, pinned so
-    // `19-21` cannot pay for its rule by moving them.
+    // **GREEN TODAY AND AFTER — for the FIRST THREE cells only.** Three cells
+    // that are already right, pinned so `19-21` cannot pay for its rule by
+    // moving them. Each was re-measured against the built binary after the rule
+    // and each kept its identifier.
+    //
+    // **THE FOURTH CELL DID NOT BELONG UNDER THAT LABEL AND HAS BEEN
+    // CORRECTED** — see its own comment below. It was a PRE-fix observation
+    // written as a post-fix expectation, and it is the only row in this file of
+    // that class: a sweep of every identifier-asserting row in this file and in
+    // `tests/envelope_wrapper_class.rs` found no other pin whose reason
+    // identifier depends on an entry `19-21` changed.
 
     // -- THE ATTACHED SHORT `-C`. Already refused: `-C/tmp` does not match the
     //    bare `-C` entry, so the scan does not consume `push`. Real git rejects
@@ -934,9 +951,47 @@ fn the_already_correct_planning_cells_keep_their_verdicts_as_controls() {
 
     // -- THE TWO-SIDED TWIN of the stale-entry cell, which is what proves the
     //    entry is what moves the verb index.
+    //
+    //    **CORRECTED AFTER `19-21`. `force_push_blocked` was a PRE-FIX
+    //    OBSERVATION MIS-LABELLED AS POST-FIX**, and it is the one row in this
+    //    test whose "green today and after" label was wrong. It was
+    //    `force_push_blocked` at this file's base commit precisely BECAUSE
+    //    `--super-prefix` sat in `GIT_GLOBAL_VALUE_OPTS`: the scan consumed `x`
+    //    as its value, `push` landed in the verb slot, and `--force` was denied.
+    //    **Removing `--super-prefix` from that constant is part of `19-21`'s fix
+    //    and not tidying** — the installed git 2.43.0 answers `unknown option:
+    //    --super-prefix` in the bare, the separate-value and the attached forms
+    //    (`git --super-prefix version`, `git --super-prefix x version`,
+    //    `git --super-prefix=x version`), and a stale entry is fail-open in the
+    //    OVER-consuming direction, which audit 6 measured as a live bypass
+    //    shape: `git --super-prefix push --force origin main` exited 0. With the
+    //    entry gone and the option in neither constant, the grammar is *not
+    //    established* and `scan_leading` refuses at
+    //    `ParkReason::EnvelopeAssertionFailed`.
+    //
+    //    **The identifier MOVED; nothing about the refusal did.** Re-measured
+    //    against the BUILT BINARY with a fresh envelope root and the root walked
+    //    afterwards, BOTH spellings of these leading tokens refuse at exit 2
+    //    with an EMPTY walk under either rule —
+    //    `git --super-prefix x status` (section 5) and this line — and only the
+    //    reason identifier differs. `envelope_assertion_failed` is the more
+    //    accurate of the two: naming `force_push_blocked` for a command whose
+    //    verb the guard admits it cannot establish attributes the refusal to a
+    //    mechanism that did not produce it (D-24).
+    //
+    //    **Why this row could not simply be left at `force_push_blocked`.** The
+    //    two commands carry IDENTICAL leading tokens, `--super-prefix x`, and
+    //    `scan_leading` is a pure function of argv that sees them identically up
+    //    to the verb. `classify_git` returns the scan's refusal immediately
+    //    (`policy.rs`, `classify_git`'s first statement), so producing two
+    //    different identifiers from the same leading tokens would require the
+    //    classifier's verdict to outrank the scan's refusal — a filter in
+    //    `classify_git` AFTER `scan_leading` returned, which is a SECOND READING
+    //    SITE and is prohibited. The exit code and the empty walk stay asserted;
+    //    only the identifier is corrected.
     refuses(
         "git --super-prefix x push --force origin main",
-        policy::REASON_FORCE_PUSH_BLOCKED,
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
     );
 }
 
