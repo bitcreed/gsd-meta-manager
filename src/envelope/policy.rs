@@ -753,7 +753,51 @@ fn is_hooks_path_key(key: &str) -> bool {
 
 /// Long push options that take a value, so their value is never read as a
 /// refspec.
-const PUSH_VALUE_OPTS: &[&str] = &["repo", "push-option", "receive-pack", "exec"];
+///
+/// **`recurse-submodules` was added and NOTHING ELSE, and the one-entry size of
+/// the change is the point rather than an economy.** Without it
+/// `git push --recurse-submodules on-demand origin refs/heads/gsd-auto/alpha/w`
+/// was refused at `push_outside_namespace` — `on-demand` became the repository
+/// and `origin` became a refspec resolving to `refs/heads/origin` — while real
+/// git runs the line to completion (`Everything up-to-date`). That was
+/// `T-19-102`: an over-refusal of an ordinary in-namespace push.
+///
+/// **`signed` is NOT added, and it is the control that proves the list was not
+/// completed from `git push -h`.** The help text spells
+/// `--recurse-submodules (check|on-demand|no)` and
+/// `--signed[=(yes|no|if-asked)]` — a REQUIRED separate value and an
+/// ATTACHED-ONLY optional one — and the two look alike while git treats them
+/// differently. Measured: `git push --dry-run --recurse-submodules on-demand
+/// <repo> <ref>` runs, while `git push --dry-run --signed no <repo> <ref>`
+/// answers `error: src refspec ... does not match any`, because `no` becomes the
+/// repository. Adding `signed` would make the guard skip a word git reads as an
+/// operand — a real MIS-PARSE bought in exchange for removing a false refusal.
+/// `19-20` pinned `git push --signed no origin refs/heads/gsd-auto/alpha/w`
+/// REFUSED, so a list completed from the help text lands red.
+///
+/// **Why [`push_operands`] does NOT get [`scan_leading`]'s fail-closed default,
+/// asked and answered here because a reader will ask.** The two enumerations have
+/// the same shape and OPPOSITE failure directions. `scan_leading`'s unknown-option
+/// direction is a BYPASS: the option's value becomes the verb, and the verb is
+/// what the denylist reads. This one's is an OVER-REFUSAL: an unconsumed value
+/// becomes an extra refspec, which refuses. A fail-closed `push_operands` would
+/// refuse `git push --dry-run origin <ref>` and every other one-word push flag —
+/// a control that fails into unusability and gets switched off (AR-19-11).
+///
+/// **But it IS fail-open in the OVER-consuming direction, exactly as
+/// `GIT_GLOBAL_VALUE_OPTS` was**: an entry git does not treat as value-taking
+/// makes the guard skip a word git reads as a refspec. That direction is covered
+/// by the real-git drift pin
+/// [`every_push_value_opt_really_consumes_its_value_and_signed_is_the_control_that_proves_it`],
+/// which probes every entry against the installed binary and carries `--signed`
+/// and `--dry-run` as its negative controls — not by a fail-closed default.
+const PUSH_VALUE_OPTS: &[&str] = &[
+    "repo",
+    "push-option",
+    "receive-pack",
+    "exec",
+    "recurse-submodules",
+];
 
 /// D-08's denied push flags, and the reason each parks under.
 fn denied_push_flag(name: &str) -> Option<(ParkReason, &'static str)> {
@@ -6403,6 +6447,14 @@ mod tests {
              operand. Completing this list from `git push -h` is exactly the move this \
              control exists to catch."
         );
+        assert!(
+            PUSH_VALUE_OPTS.contains(&"recurse-submodules"),
+            "`recurse-submodules` must be in `PUSH_VALUE_OPTS`: `--recurse-submodules \
+             on-demand` takes a REQUIRED separate value, and without the entry the guard \
+             reads `on-demand` as the repository and FALSELY REFUSES an ordinary \
+             in-namespace push (`T-19-102`)."
+        );
+
         for name in PUSH_VALUE_OPTS {
             let flag = format!("--{name}");
             let answered = probe_push(&flag);

@@ -1329,3 +1329,89 @@ fn a_redirection_operator_is_not_a_separator_and_this_round_must_not_make_it_one
     );
     assert!(policy::is_separator("&&"), "`&&` IS a separator");
 }
+
+// ===========================================================================
+// 9. APPENDED BY PLAN 19-21 — the three rows section 6 recorded and could not
+//    DERIVE, now MEASURED against the rule and pinned with the clause that
+//    produced each
+//
+// `19-20` drove these through `record_only` and asserted nothing about them,
+// because it measured PRE-fix and its measure-first discipline could not catch a
+// wrong POST-fix expectation. Each is now measured against the BUILT BINARY with
+// the rule in place, and pinned **together with the clause that produced it** —
+// a verdict this round could not derive is measured and pinned, never asserted.
+//
+// **Nothing above this line was edited or deleted.** These are additions, each
+// its own `#[test]` fn: turning a failing test green leaves `passed + failed`
+// unchanged, so new fns are the only thing that moves the total.
+//
+// **The finding these rows were watched for did NOT occur.** All three stayed
+// REFUSED. Had any become PERMITTED, that would have been a finding about the
+// rule rather than a row to pin — a value slot that stops being guarded is
+// over-consumption in the direction `--super-prefix` demonstrated.
+// ===========================================================================
+
+#[test]
+fn the_derived_row_for_a_parameter_expansion_in_a_consumed_value_slot() {
+    // MEASURED after the rule: exit 2, `force_push_blocked`.
+    //
+    // **The clause that produced it.** Before the rule, `$T` was what
+    // `scan_leading` read as the VERB, so round 5's literalness rule refused it
+    // at `envelope_assertion_failed` with "`$T` is the git verb for this
+    // command". After it, `--attr-source` is in `GIT_GLOBAL_VALUE_OPTS` and
+    // `leading_git_option` answers `ConsumesASeparateWord`, so the scan advances
+    // TWO words: `$T` is now the option's OPERAND and is outside the decision
+    // region `first_unreadable_decision_word` covers, exactly as `$MSG` is in
+    // `git commit -m "$MSG"`. The verb is `push`, `--force` is present, and
+    // `classify_push`'s denied-flag arm answers.
+    //
+    // **So the identifier MOVED — `envelope_assertion_failed` to
+    // `force_push_blocked` — while the exit code did not.** The row is refused by
+    // the rule that should refuse it rather than by a rule that happened to reach
+    // it, which is what makes this a pin about a mechanism rather than about an
+    // exit code.
+    refuses(
+        "git --attr-source $T push --force origin main",
+        policy::REASON_FORCE_PUSH_BLOCKED,
+    );
+}
+
+#[test]
+fn the_derived_row_for_a_pathname_expansion_in_a_consumed_value_slot() {
+    // MEASURED after the rule: exit 2, `force_push_blocked`. The same clause as
+    // the row above, through the glob half of round 5's rule rather than the
+    // parameter-expansion half: `*.x` was the word the guard read as the verb and
+    // is now the consumed value of `--attr-source`.
+    //
+    // **Its permitted twin is already in this file and stays green** —
+    // `git --attr-source HEAD status` at exit 0 — so this row cannot be satisfied
+    // by a rule that refuses everything after `--attr-source`.
+    refuses(
+        "git --attr-source *.x push --force origin main",
+        policy::REASON_FORCE_PUSH_BLOCKED,
+    );
+}
+
+#[test]
+fn the_derived_row_for_a_brace_expansion_after_a_consumed_value() {
+    // MEASURED after the rule: exit 2, **`envelope_assertion_failed`** — and this
+    // row is the one of the three whose identifier did NOT move.
+    //
+    // **The clause that produced it is a DIFFERENT rule from the two above, and
+    // that is the whole information content of this pin.** The braces do sit
+    // after a consumed value now, so they are no longer in the verb slot and
+    // round 5's decision-word rule no longer reaches them. What refuses this line
+    // is `19-17`'s WHOLE-COMMAND brace rule in `resolve_program_with_head`: a
+    // brace expansion anywhere in a governed simple command splices words back in
+    // after the guard has answered, so the argv a classifier would read is not
+    // the argv that runs. That rule is not a word-level rule and does not care
+    // which slot the braces occupy, which is precisely why it still fires.
+    //
+    // **This is the row that shows `19-21` did not pay for its rule by narrowing
+    // an earlier round's.** Had the brace rule been a decision-word rule, moving
+    // `{push,--force}` out of the verb slot would have PERMITTED this line.
+    refuses(
+        "git --attr-source HEAD {push,--force} origin main",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+    );
+}
