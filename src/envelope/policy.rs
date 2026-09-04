@@ -361,6 +361,34 @@ fn refuse(reason: ParkReason, detail: String) -> GitVerdict {
 /// site, no change to [`classify_git`], and no arm added to
 /// [`resolve_program_with_head`].
 ///
+/// # An UNBOUNDED config assignment is a refusal too, and it is a CHANGE OF QUESTION
+///
+/// **This scan used to ask *does this assignment spell `core.hooksPath`*. It now
+/// asks *can I establish what `core.hooksPath` will be*.** The old question is a
+/// string comparison against one key; the new one is a property of the key, and
+/// the difference is the whole of `T-19-103`. Git's config graph is spliced in
+/// from elsewhere by exactly one mechanism, identified by the SECTION half of
+/// the key, so `-c include.path=<file>` sets `core.hooksPath` at command-line
+/// precedence **without the string `core.hooksPath` appearing anywhere on the
+/// command line** — measured against `git version 2.43.0` with the envelope's
+/// own injection as the control.
+///
+/// An assignment this scan can BOUND to the key it names leaves the injection
+/// alone; one that adds an indirection leaves it unknowable, and an unresolvable
+/// command is refused rather than guessed at. See
+/// [`config_key_names_an_indirection_section`] for the rule, the three rejected
+/// options and **the residue it fails OPEN on, which no control covers**.
+///
+/// **The three clauses of the assignment block are ordered, and the order is
+/// what a reader must not have to infer**: (1) the key half carries a character
+/// the shell may rewrite → unreadable; (2) the key's section names an
+/// indirection → unbounded; (3) the key IS `core.hooksPath` →
+/// [`ParkReason::HookBypassBlocked`]. The refusal is raised at the FIRST
+/// assignment the loop cannot bound, so a line carrying both an indirection and
+/// a hooks-path key earns whichever the scan reaches first — the two spellings
+/// are pinned at deliberately different identifiers, and a clause raised in a
+/// second pass over the leading tokens turns one of them red.
+///
 /// **What it deliberately does NOT do.** It does not widen into tokens this scan
 /// does not treat as options: the break on a non-`-` token, the break on a bare
 /// `-` and the `--` end-of-options marker are the scan's termination conditions
@@ -448,6 +476,40 @@ fn scan_leading(argv: &[&str]) -> (usize, Option<GitVerdict>) {
                              established before it runs; refused rather than guessed at"
                         ),
                     )),
+                );
+            }
+            // **The CONFINEMENT clause, and it is a change of question rather
+            // than a longer list.** The clause above asks whether the key can
+            // be READ; this one asks whether its effect can be BOUNDED to the
+            // key it names. A key whose SECTION names an indirection splices in
+            // a file at the precedence of the directive that named it, so
+            // `core.hooksPath` — the setting the envelope's whole hook layer IS
+            // — becomes unknowable from argv without the string
+            // `core.hooksPath` appearing anywhere on the line. Measured:
+            // `-c include.path=<f>` makes `git config --get core.hooksPath`
+            // print `/INCLUDE_WINS` where the envelope's own injection alone
+            // prints `/ENV_WINS`.
+            //
+            // **It is ordered HERE, after the unreadable-key refusal and BEFORE
+            // `is_hooks_path_key`, and the ordering is load-bearing rather than
+            // stylistic.** The refusal is raised at the FIRST assignment this
+            // loop cannot bound and no assignment after it is read, so
+            // `git -c include.path=<f> -c core.hooksPath=/dev/null push --force
+            // origin main` earns the unresolvable identifier while the reverse
+            // spelling earns `HookBypassBlocked` — the two are pinned at
+            // deliberately different identifiers. **A clause raised in a SECOND
+            // PASS over the leading tokens turns one of them red**, and naming
+            // `HookBypassBlocked` for a line whose hooks-path write the guard
+            // never established would attribute the refusal to a mechanism that
+            // did not produce it (D-24).
+            //
+            // No new park reason, no second reading site, and both callers
+            // inherit it through the channel that already carries two refusals.
+            if config_key_names_an_indirection_section(key) {
+                let section = config_key_section(key).unwrap_or(key);
+                return (
+                    index,
+                    Some(unbounded_config_assignment_refusal(key, section)),
                 );
             }
             if is_hooks_path_key(key) {
@@ -746,7 +808,176 @@ fn config_key_of(assignment: &str) -> &str {
         .unwrap_or(assignment)
 }
 
+/// The two config SECTIONS through which git splices configuration in from a
+/// file named by the directive itself.
+///
+/// **This is not a list of dangerous keys and it must not be allowed to become
+/// one.** It names the two sections of git's own configuration grammar that
+/// make a config key an INDIRECTION — a directive whose effect is the contents
+/// of some other file, read at the precedence of the directive that named it.
+/// Everything else about the key is deliberately unread: see
+/// [`config_key_names_an_indirection_section`].
+///
+/// Measured against `git version 2.43.0`, with the exact
+/// `GIT_CONFIG_COUNT`/`KEY_0`/`VALUE_0` triplet [`super::cred::hooks_path_env`]
+/// emits as the control (it alone resolves `core.hooksPath` to `/ENV_WINS`):
+///
+/// ```text
+/// -c include.path=<file>                 -> /INCLUDE_WINS
+/// -c INCLUDE.PATH=<file>                 -> /INCLUDE_WINS
+/// -c includeIf.gitdir:<p>.path=<file>    -> /INCLUDE_WINS
+/// -c INCLUDEIF.gitdir:<p>.PATH=<file>    -> /INCLUDE_WINS
+/// --config-env=include.path=<VAR>        -> /INCLUDE_WINS
+/// -c include.pathx=<file>                -> /ENV_WINS   (git IGNORES it)
+/// -c notinclude.path=<file>              -> /ENV_WINS
+/// ```
+///
+/// # THE RESIDUE, STATED PLAINLY AND NOT HANDED TO ANY CONTROL
+///
+/// **This constant is a recognition of a closed grammatical fact, NOT a
+/// fail-closed default. Its SILENCE IS A PERMIT.** A future git that adds a
+/// **THIRD** indirection section is **not covered, and this rule fails OPEN on
+/// it**, and **there is NO automated control over that direction.**
+///
+/// The drift pin below holds the **REVERSE** direction — it turns red if the
+/// installed git stops honouring a section this constant already names — and
+/// **it cannot observe a section it does not name, because it iterates these
+/// entries and an entry that does not exist is never probed.** A third
+/// indirection section therefore reaches `core.hooksPath` **silently** until a
+/// human reading a future git's release notes adds it here. Writing that the
+/// pin covers this direction would be honest about the residual and then hand
+/// it to a control that cannot cover it, which is `T-19-107`'s own failure mode
+/// — false reassurance in a control's own doc.
+const INDIRECTION_SECTIONS: &[&str] = &["include", "includeIf"];
+
+/// The SECTION half of a git config key: the text before the **first** `.`.
+///
+/// That is git's own rule, and a key with no `.` names no section at all —
+/// `git -c a=b config --get a` answers `error: key does not contain a section:
+/// a`. `None` is therefore a positive fact about the key rather than a parse
+/// failure, and [`config_key_names_an_indirection_section`] treats it as one.
+fn config_key_section(key: &str) -> Option<&str> {
+    key.split_once('.').map(|(section, _)| section)
+}
+
+/// Whether a config key's SECTION names an indirection — the one question
+/// [`scan_leading`] can answer about an assignment it cannot otherwise bound.
+///
+/// # THE CHANGE OF QUESTION
+///
+/// The guard used to ask *does this assignment spell `core.hooksPath`*. It now
+/// asks *can I establish what `core.hooksPath` will be*. An assignment whose
+/// key names an ordinary section leaves the envelope's injected `core.hooksPath`
+/// exactly as injected — measured, `-c user.name=x` and `-c core.pager=cat`
+/// both leave the control printing `/ENV_WINS`. An assignment in an
+/// **indirection** section replaces it with the contents of a file this
+/// function has not read, so the setting the envelope's whole hook layer IS
+/// becomes unknowable from argv. The second is **unresolvable**, and an
+/// unresolvable command is refused rather than guessed at.
+///
+/// # THE SUBSECTION AND THE VARIABLE ARE NEVER READ, AND THAT IS THE RULE
+///
+/// Only [`config_key_section`]'s answer is consulted, compared with
+/// `eq_ignore_ascii_case` because git folds section names (measured:
+/// `-c INCLUDE.PATH=<file>` resolves the include exactly as
+/// `-c include.path=<file>` does).
+///
+/// * **The SUBSECTION is not read** because it carries `includeIf`'s CONDITION
+///   — `gitdir:`, `gitdir/i:`, `onbranch:`, `hasconfig:remote.*.url:` — which
+///   is an OPEN family a future git extends. Not reading it covers the whole
+///   family by construction. It is also the one half of a git config key that
+///   git does NOT fold, so reading it would import a case rule as well.
+/// * **The VARIABLE is not read** because it is an open family too: `path` is
+///   the only spelling today, and a future variable in either section would
+///   defeat any enumeration of it.
+///
+/// **The measured cost of not reading the variable is one row, disclosed rather
+/// than discovered**: `git -c include.pathx=/tmp/evil.cfg status` is a key real
+/// git IGNORES (the control still prints `/ENV_WINS`) and this rule refuses it.
+/// That is over-refusal in the safe direction. The correct response to it is
+/// NOT to start reading the variable — that re-opens both families.
+///
+/// # A KEY WITH NO SECTION IS CONFINED, AND THAT IS LOAD-BEARING
+///
+/// `None` answers `false`. A key with no `.` names no section, so it provably
+/// is not an include directive; real git RUNS `git -c a=b version` at rc 0 and
+/// errors only when something READS the key. It therefore falls through to
+/// [`is_hooks_path_key`] exactly as it did before this rule existed.
+///
+/// **Refusing it would turn round 7's entire callee-grammar generative property
+/// permanently red in a file this module's rules may not edit**:
+/// `tests/envelope_wrapper_class.rs`'s `CALLEE_KNOWN_LEADING_PREFIX` is
+/// `"-c a=b"` and every case of that property is spliced behind it.
+///
+/// # WHY A FAIL-CLOSED DEFAULT WAS NOT AVAILABLE, AND THE THREE REJECTED OPTIONS
+///
+/// Rounds 3, 5, 6 and 7 each made the guard's SILENCE a refusal. **This rule
+/// cannot, because the complement is unbounded**: a fail-closed default over
+/// config sections would have to refuse every section the guard has not
+/// enumerated, and users legitimately set arbitrary ones —
+/// `git -c user.name="$NAME" commit -m x` is this axis's ordinary invocation, and
+/// a control that refuses ordinary configuration gets switched off (AR-19-11).
+/// What is available instead is the closed grammatical fact above. **See
+/// [`INDIRECTION_SECTIONS`] for the residue that leaves, which is stated there
+/// and is not covered by any control.**
+///
+/// Three options were rejected on measured grounds:
+///
+/// 1. **Add `include.path` to [`is_hooks_path_key`]** — `includeIf.<cond>.path`
+///    is an open family, so the list is wrong the moment a condition type is
+///    used; and it would attribute the refusal to
+///    [`ParkReason::HookBypassBlocked`] on a line where the guard established no
+///    hooks-path write, which is D-24's own prohibition.
+/// 2. **Read the included file and resolve the config at guard time** — the
+///    guard runs synchronously on the `PreToolUse` critical path where a
+///    reproduced 180-240 second hang is why [`push_needs_resolved_dests`]
+///    exists; the file may not exist at guard time or may change between guard
+///    and exec; and `includeIf`'s conditions depend on the repository the
+///    command will run in, which a pure argv function does not know.
+/// 3. **Refuse every `-c`** — pinned red by the permitted half above.
+fn config_key_names_an_indirection_section(key: &str) -> bool {
+    match config_key_section(key) {
+        Some(section) => INDIRECTION_SECTIONS
+            .iter()
+            .any(|known| section.eq_ignore_ascii_case(known)),
+        // No `.`, so no section, so provably not an indirection. CONFINED.
+        None => false,
+    }
+}
+
+/// The refusal an unbounded config assignment earns, naming the KEY and the
+/// SECTION and never quoting the command back (SAFE-04).
+///
+/// **It names what the guard could not establish and what the user can do**, on
+/// the same footing as [`scan_leading`]'s two existing refusals, because a
+/// refusal a user cannot act on is a control that gets switched off (AR-19-11).
+/// **Both recovery steps are ones git accepts** — setting the key directly and
+/// dropping the directive — which is the correction `19-21`'s attached-spelling
+/// wording needed: a message must not promise a step git may reject.
+fn unbounded_config_assignment_refusal(key: &str, section: &str) -> GitVerdict {
+    refuse(
+        ParkReason::EnvelopeAssertionFailed,
+        format!(
+            "this command sets the git configuration key `{key}`, whose `{section}` \
+             section splices in configuration from a file the guard has not read and \
+             cannot read before the command runs, so what core.hooksPath will be while \
+             this command executes — the setting the envelope's hook layer IS — cannot \
+             be established; the command is refused rather than guessed at. To proceed: \
+             set the key the included file would have set, directly, so the guard can \
+             see it; or drop the directive"
+        ),
+    )
+}
+
 /// Whether a config key names `core.hooksPath`, at any casing git accepts.
+///
+/// **The whole-key `eq_ignore_ascii_case` fold is MORE permissive than git for a
+/// key that carries a subsection, and that is the safe direction.** Git folds
+/// the section and the variable and leaves the subsection case-sensitive, so a
+/// guard that folds the whole key can only ever match keys git also matches
+/// plus some it does not — an over-refusal, never a miss. `core.hooksPath` has
+/// no subsection, so today the difference is not reachable; the sentence is
+/// recorded because it was previously implicit.
 fn is_hooks_path_key(key: &str) -> bool {
     key.eq_ignore_ascii_case("core.hookspath")
 }
@@ -3068,6 +3299,17 @@ pub enum ProgramResolution {
 ///   two-candidate segment and is refused, while the unwrapped spelling
 ///   answers at the head and runs. That is the same cost in a new spelling, not
 ///   a new kind of cost, and it is pinned beside the spelling that works.
+/// * **`T-19-103`'s over-refusal — a config key git IGNORES.**
+///   `git -c include.pathx=/tmp/evil.cfg status` is exit 0 against real git (the
+///   envelope's injection still wins, so git ignores the key) and is REFUSED
+///   here, because [`config_key_names_an_indirection_section`] reads the SECTION
+///   and deliberately not the variable. That is the whole measured cost of this
+///   round's rule and it falls in the safe direction; the correct response to
+///   it is not to start reading the variable, which would re-open `includeIf`'s
+///   condition family and any future variable in either section. The permitted
+///   half is pinned beside it: `git -c user.name="$NAME" commit -m x`,
+///   `git -c core.pager=cat log`, `git -c a=b status`,
+///   `git -c includepath=…` and `git -c notinclude.path=…` all still run.
 /// * **`T-19-86` — a GOVERNED program's own operand naming a governed
 ///   command.** `git submodule foreach git push --force origin main`,
 ///   `git rebase -x "git push --force origin main" HEAD~3`,
@@ -6452,6 +6694,294 @@ mod tests {
                  takes the fail-closed path instead."
             );
         }
+    }
+
+    /// A git repository in `scratch`, because `includeIf.gitdir:` matches against
+    /// a real `.git` directory and answers nothing without one.
+    fn config_resolution_scratch_repo(scratch: &std::path::Path) {
+        let out = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(scratch)
+            .output()
+            .expect(
+                "the config-resolution pin requires a real `git` on PATH. It is deliberately \
+                 NOT written to skip when git is absent: a skipped pin is a fail-open pin.",
+            );
+        assert!(
+            out.status.success(),
+            "`git init` failed in the pin's scratch directory, so no probe below can be \
+             trusted: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Resolve `core.hooksPath` under **the envelope's own injection**, plus
+    /// whatever leading arguments and environment the caller is measuring.
+    ///
+    /// The control is [`crate::envelope::cred::hooks_path_env`] itself rather than a
+    /// hand-written triplet, so the pin measures the mechanism the envelope
+    /// actually emits — including its DERIVED `GIT_CONFIG_COUNT` — and not a
+    /// stand-in that could drift away from it silently.
+    fn resolves_hooks_path_under_injection(
+        scratch: &std::path::Path,
+        leading: &[&str],
+        extra_env: &[(&str, &str)],
+    ) -> String {
+        let mut args: Vec<&str> = leading.to_vec();
+        args.extend_from_slice(&["config", "--get", "core.hooksPath"]);
+
+        let mut command = std::process::Command::new("git");
+        command.args(&args).current_dir(scratch);
+        for (key, value) in
+            crate::envelope::cred::hooks_path_env(std::path::Path::new("/ENV_WINS"))
+        {
+            command.env(key, value);
+        }
+        for (key, value) in extra_env {
+            command.env(key, value);
+        }
+        let output = command.output().expect(
+            "the config-resolution pin requires a real `git` on PATH. It is deliberately NOT \
+             written to skip when git is absent: a skipped pin is a fail-open pin, and git is \
+             already a hard runtime dependency of this guard.",
+        );
+        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&output.stderr));
+        text.trim().to_string()
+    }
+
+    #[test]
+    fn every_indirection_section_the_guard_names_really_outranks_the_envelopes_own_injection() {
+        // =======================================================================
+        // **THE DIRECTION THIS PIN HOLDS, STATED BEFORE ANYTHING ELSE.**
+        //
+        // It holds the REVERSE direction only: it turns red if the installed git
+        // stops honouring a section `INDIRECTION_SECTIONS` already NAMES. **It
+        // cannot observe a section it does not name, because it iterates that
+        // constant's entries and an entry that does not exist is never probed.**
+        //
+        // **It is therefore NOT a control over the fail-open residue.** A future
+        // git that adds a THIRD indirection section reaches `core.hooksPath`
+        // silently until a human adds it to the constant, and there is NO
+        // automated control over that direction. Saying otherwise here would be
+        // false reassurance in a control's own doc — `T-19-107`'s failure mode,
+        // committed inside the round that registers `T-19-107`.
+        // =======================================================================
+        let scratch = tempfile::TempDir::new().unwrap();
+        config_resolution_scratch_repo(scratch.path());
+
+        let include_file = scratch.path().join("inc.cfg");
+        std::fs::write(&include_file, "[core]\n\thooksPath = /INCLUDE_WINS\n").unwrap();
+        let include_path = include_file.display().to_string();
+        let repo_prefix = format!("{}/", scratch.path().display());
+
+        // --- the NON-VACUITY CONTROL. Without it, every "the include wins"
+        //     assertion below could be passing on a probe that never observed
+        //     the envelope's injection at all.
+        let control = resolves_hooks_path_under_injection(scratch.path(), &[], &[]);
+        assert_eq!(
+            control, "/ENV_WINS",
+            "the envelope's own `hooks_path_env` triplet must resolve `core.hooksPath` to its \
+             injected value with no carrier present. If it does not, this probe is not \
+             observing the injection and EVERY assertion in this pin is vacuous. Got: {control}"
+        );
+
+        // --- floor 1: at least TWO indirection sections are named. The
+        //     arithmetic: git 2.43.0 splices configuration in from elsewhere
+        //     through exactly `include` and `includeIf`, so two is the measured
+        //     count and not a round number. The correct response to this failing
+        //     is to RESTORE the measured section, never to lower the floor.
+        assert!(
+            INDIRECTION_SECTIONS.len() >= 2,
+            "`INDIRECTION_SECTIONS` must name at least the TWO sections through which git \
+             splices configuration in from a file — `include` and `includeIf`. A constant \
+             short of that is a rule that fails OPEN on a carrier this git honours. RESTORE \
+             the entry; do not lower the floor. Got: {INDIRECTION_SECTIONS:?}"
+        );
+
+        // --- the pin itself: every NAMED section really outranks the injection.
+        //     This is what makes the rule a MEASUREMENT rather than a claim.
+        for section in INDIRECTION_SECTIONS {
+            // Both sections are probed in the spelling git actually accepts:
+            // `include` takes no subsection, `includeIf` requires a condition.
+            let assignment = if section.eq_ignore_ascii_case("includeIf") {
+                format!("{section}.gitdir:{repo_prefix}.path={include_path}")
+            } else {
+                format!("{section}.path={include_path}")
+            };
+            let resolved =
+                resolves_hooks_path_under_injection(scratch.path(), &["-c", &assignment], &[]);
+            assert_eq!(
+                resolved, "/INCLUDE_WINS",
+                "`git -c {assignment}` must OUTRANK the envelope's own injected \
+                 `core.hooksPath`. `INDIRECTION_SECTIONS` names `{section}` as a section that \
+                 splices configuration in from a file, and `scan_leading` refuses a command \
+                 carrying one on exactly that basis. If this git no longer honours it, the \
+                 refusal has become an over-refusal with no hazard behind it and the entry \
+                 must be RE-MEASURED — this is the one direction this pin holds. Got: {resolved}"
+            );
+
+            // And the guard's own helper agrees about the same spelling, so the
+            // constant and the rule cannot drift apart.
+            let key = config_key_of(&assignment);
+            assert!(
+                config_key_names_an_indirection_section(key),
+                "`{key}` resolves the include against real git but the guard's own helper \
+                 answers CONFINED for it. The measurement and the rule have drifted apart."
+            );
+        }
+
+        // --- the CASE fact, measured in BOTH halves of the key. Git folds the
+        //     SECTION and the VARIABLE and leaves the SUBSECTION case-sensitive,
+        //     which is why the helper compares the section with
+        //     `eq_ignore_ascii_case` and reads the subsection not at all.
+        let upper_simple = resolves_hooks_path_under_injection(
+            scratch.path(),
+            &["-c", &format!("INCLUDE.PATH={include_path}")],
+            &[],
+        );
+        assert_eq!(
+            upper_simple, "/INCLUDE_WINS",
+            "`-c INCLUDE.PATH=<file>` must resolve the include: git folds the SECTION and the \
+             VARIABLE to lower case. A guard comparing the section case-SENSITIVELY would miss \
+             this carrier entirely. Got: {upper_simple}"
+        );
+        let upper_subsectioned = resolves_hooks_path_under_injection(
+            scratch.path(),
+            &[
+                "-c",
+                &format!("INCLUDEIF.gitdir:{repo_prefix}.PATH={include_path}"),
+            ],
+            &[],
+        );
+        assert_eq!(
+            upper_subsectioned, "/INCLUDE_WINS",
+            "`-c INCLUDEIF.gitdir:<p>.PATH=<file>` must resolve the include too — the fold \
+             covers the section and the variable while the SUBSECTION between them stays \
+             case-sensitive, which is the half the helper deliberately never reads. \
+             Got: {upper_subsectioned}"
+        );
+
+        // --- `--config-env` is the SAME key reached through a second carrier,
+        //     and `leading_git_option`'s arms hand both to the same key check.
+        let via_env = resolves_hooks_path_under_injection(
+            scratch.path(),
+            &["--config-env=include.path=GSD_MM_INCLUDE_PROBE"],
+            &[("GSD_MM_INCLUDE_PROBE", include_path.as_str())],
+        );
+        assert_eq!(
+            via_env, "/INCLUDE_WINS",
+            "`--config-env=include.path=<VAR>` must resolve the include as `-c` does. Both \
+             carriers reach the same key check in `scan_leading`, so a difference here would \
+             mean one of them is unmeasured. Got: {via_env}"
+        );
+
+        // --- floor 2: at least FOUR CONFINED negative cases, and they must NOT
+        //     outrank. Without these, an assertion that indirections outrank
+        //     would pass on a probe that reported "outranks" for everything.
+        //     `includepath` and `notinclude.path` are omitted from the RESOLUTION
+        //     half deliberately: real git refuses to PARSE a dotless key
+        //     (`error: key does not contain a section: includepath`), so they are
+        //     measured by the helper below instead of by resolution.
+        let confined: &[&str] = &[
+            "user.name=x",
+            "core.pager=cat",
+            "include.pathx=/tmp/evil.cfg",
+            "core.editor=true",
+        ];
+        assert!(
+            confined.len() >= 4,
+            "at least FOUR confined carriers must be probed, so this arm cannot be satisfied \
+             by a single lucky row. Got: {confined:?}"
+        );
+        for assignment in confined {
+            let resolved =
+                resolves_hooks_path_under_injection(scratch.path(), &["-c", assignment], &[]);
+            assert_eq!(
+                resolved, "/ENV_WINS",
+                "`git -c {assignment}` must LEAVE the envelope's injected `core.hooksPath` in \
+                 place. If a confined carrier outranked it, this pin would be reporting \
+                 `outranks` for everything and the discrimination the rule rests on would not \
+                 exist. Got: {resolved}"
+            );
+        }
+
+        // `include.pathx` is the DISCLOSED COST, and it is pinned from both
+        // sides in one place: real git IGNORES it (above), and the guard REFUSES
+        // it (below), because the rule reads the section and deliberately not the
+        // variable. The correct response to a red here is NOT to start reading
+        // the variable — that re-opens `includeIf`'s condition family.
+        assert!(
+            config_key_names_an_indirection_section("include.pathx"),
+            "`include.pathx` must be refused by the guard even though real git ignores it. \
+             That is this rule's whole measured over-refusal cost and it falls in the safe \
+             direction."
+        );
+    }
+
+    #[test]
+    fn the_section_helper_reads_the_section_and_neither_the_subsection_nor_the_variable() {
+        // The rule's own behaviour, over both halves of its answer. It needs no
+        // git: it is a statement about the guard, and the git-side facts it rests
+        // on are measured by the pin above.
+        for key in [
+            "include.path",
+            "includeIf.gitdir:/x/.path",
+            "INCLUDE.PATH",
+            // The VARIABLE is not read, so a variable git ignores is still an
+            // indirection SECTION. This is the disclosed cost.
+            "include.pathx",
+            // `config_key_of` returns a valueless assignment whole, and
+            // `git -c include.path` with no value is still a write of that key.
+            "include.path",
+            // The SUBSECTION is not read, so an `includeIf` condition family git
+            // has not invented yet is covered by construction.
+            "includeIf.hasconfig:remote.*.url:https://x/.path",
+        ] {
+            assert!(
+                config_key_names_an_indirection_section(key),
+                "`{key}` names an INDIRECTION section and must answer true. The rule compares \
+                 the text before the FIRST `.` against `INDIRECTION_SECTIONS` with \
+                 `eq_ignore_ascii_case` and reads nothing else."
+            );
+        }
+
+        for key in [
+            // A SUBSTRING rule lands red on these two, which is why they are here:
+            // `git -c includepath=…` and `git -c notinclude.path=…` are both
+            // measured PERMITTED and pinned at exit 0 in the corpus.
+            "includepath",
+            "notinclude.path",
+            // DOTLESS: no `.`, so no section, so provably not an indirection.
+            // Refusing it would turn round 7's entire callee-grammar generative
+            // property permanently red behind `CALLEE_KNOWN_LEADING_PREFIX`.
+            "a",
+            "user.name",
+            // And the hooks-path key answers FALSE, because it must fall through
+            // to `is_hooks_path_key` and earn `HookBypassBlocked` rather than
+            // being absorbed by this clause.
+            "core.hooksPath",
+        ] {
+            assert!(
+                !config_key_names_an_indirection_section(key),
+                "`{key}` is CONFINED and must answer false. A rule written as a substring test \
+                 on `include` lands red on `includepath` and `notinclude.path`; a rule that \
+                 refused a key it cannot decompose into a section lands red on `a`; and a rule \
+                 that absorbed `core.hooksPath` would attribute its refusal to a mechanism \
+                 that did not produce it (D-24)."
+            );
+        }
+
+        // The section split itself is git's own rule — the FIRST `.` — and a key
+        // with none names no section at all.
+        assert_eq!(config_key_section("includeIf.gitdir:/x/.path"), Some("includeIf"));
+        assert_eq!(config_key_section("include.path"), Some("include"));
+        assert_eq!(
+            config_key_section("a"),
+            None,
+            "a key with no `.` names NO section. That is a positive fact about the key — real \
+             git answers `error: key does not contain a section: a` — and not a parse failure."
+        );
     }
 
     #[test]
