@@ -564,7 +564,7 @@ fn scan_leading(argv: &[&str]) -> (usize, Option<GitVerdict>) {
             // No new park reason, no second reading site, and both callers inherit
             // it through the channel that already carries three refusals.
             if config_key_names_a_reparsed_command_section(key)
-                && !reparsed_command_value_is_a_shell_body(token, assignment)
+                && !reparsed_command_assignment_is_a_shell_body(token, assignment)
             {
                 let section = config_key_section(key).unwrap_or(key);
                 return (index, Some(unbounded_reparsed_value_refusal(key, section)));
@@ -1307,6 +1307,21 @@ fn config_key_names_a_reparsed_command_section(key: &str) -> bool {
 /// decision. **So audit 7's `!`-bodied destructive pair still works after this
 /// rule**, and that is stated here rather than left to be discovered.
 ///
+/// # ONE PLACE GIT'S ONE-BYTE RULE LIVES, READ FROM BOTH DECISION REGIONS
+///
+/// [`scan_leading`] reaches it through
+/// [`reparsed_command_assignment_is_a_shell_body`], which has to strip a CARRIER
+/// and an assignment's key half first. [`classify_config`] reads the body
+/// DIRECTLY off the `git config <key> <value>` value operand, so it calls this.
+/// Two callers, one statement of git's rule — a second copy would be a second
+/// thing to keep in step with git's own grammar.
+fn reparsed_command_value_is_a_shell_body(value: &str) -> bool {
+    value.starts_with('!')
+}
+
+/// The same question asked of a `-c` / `--config-env` ASSIGNMENT, which needs the
+/// CARRIER stripped before git's one-byte rule can be applied to what is left.
+///
 /// # A VALUE THE GUARD CANNOT READ IS UNBOUNDED, AND THAT COMPLETES THE CLAUSE
 /// # OVER BOTH CARRIERS
 ///
@@ -1329,14 +1344,14 @@ fn config_key_names_a_reparsed_command_section(key: &str) -> bool {
 ///   reading site, no second pass, and no arm added to
 ///   [`leading_git_option`]**, whose two carriers already reach the same key
 ///   check.
-fn reparsed_command_value_is_a_shell_body(carrier: &str, assignment: &str) -> bool {
+fn reparsed_command_assignment_is_a_shell_body(carrier: &str, assignment: &str) -> bool {
     // `--config-env` delivers an environment variable NAME where `-c` delivers a
     // body. Its first byte is the NAME's, never the body's, so it is unreadable.
     if carrier == "--config-env" || carrier.starts_with("--config-env=") {
         return false;
     }
     match assignment.split_once('=') {
-        Some((_, value)) => value.starts_with('!'),
+        Some((_, value)) => reparsed_command_value_is_a_shell_body(value),
         // No value half to read a first byte from.
         None => false,
     }
@@ -1686,6 +1701,12 @@ const CONFIG_READ_SUBCOMMANDS: &[&str] = &["get", "list"];
 /// One walk of a `git config` argv: its operands paired with their indices into
 /// `rest`, and the three facts the classifier decides on.
 struct ConfigScan<'a> {
+    /// The argv this scan walked, as [`classify_config`] receives it — the words
+    /// AFTER the `config` verb.
+    ///
+    /// Retained so [`ConfigScan::value_word`] can index off the key operand's own
+    /// index rather than opening a second walk. Nothing else reads it.
+    rest: &'a [&'a str],
     /// Every operand, with the index into `rest` it was found at.
     operands: Vec<(usize, &'a str)>,
     /// Where the KEY operands begin — after the subcommand form's verb, if the
@@ -1708,6 +1729,42 @@ impl<'a> ConfigScan<'a> {
     fn key_operand_count(&self) -> usize {
         self.operands.len().saturating_sub(self.key_start)
     }
+
+    /// The word immediately after the KEY — the VALUE a `git config <key>
+    /// <value>` line persists.
+    ///
+    /// **Indexed off [`ConfigScan::key_operand`]'s own index into the SAME walk,
+    /// which is what keeps region 2 from being a second reading site.** The
+    /// re-parse clause needs git's one-byte rule applied to the body being
+    /// persisted, and the body is the word after the word [`is_hooks_path_key`]
+    /// already reads.
+    ///
+    /// **It reads the WORD rather than the next collected OPERAND, and that is a
+    /// MEASUREMENT of git rather than a convenience.** `scan_config`'s walk treats
+    /// any word beginning with `-` as an option, but git 2.43.0 does not: once the
+    /// KEY has been seen, the next word is the VALUE whatever its first byte is.
+    /// Measured, with `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` pointed at an empty
+    /// file:
+    ///
+    /// ```text
+    /// git config alias.x -q          -> exit 0, alias.x=-q
+    /// git config alias.y --global    -> exit 0, alias.y=--global
+    /// git config alias.z -- -c foo   -> exit 0, alias.z=--
+    /// git config alias.p '-c include.path=<f> config --get core.hooksPath'
+    ///                                -> exit 0, and `git p` then resolves /INCLUDE_WINS
+    /// ```
+    ///
+    /// The last row is `T-19-108`'s HEADLINE persisted spelling, so reading the
+    /// collected operand list here would have left the clause blind to exactly the
+    /// row it exists for.
+    ///
+    /// `None` means the line persists no body — a read (`git config alias.p`), or
+    /// an `--unset` — and the re-parse clause correctly says nothing about it,
+    /// because a line that writes no body leaves nothing for git to re-parse later.
+    fn value_word(&self) -> Option<&'a str> {
+        let (key_index, _) = self.key_operand()?;
+        self.rest.get(key_index + 1).copied()
+    }
 }
 
 /// The single walk of a `git config` argv, over which both
@@ -1718,7 +1775,7 @@ impl<'a> ConfigScan<'a> {
 /// for its two callers**: a second copy of a loop is a second thing to keep in
 /// step with git's own option grammar, and the day they drift is the day the
 /// rule guards a different word than the one the classifier reads.
-fn scan_config<'a>(rest: &[&'a str]) -> ConfigScan<'a> {
+fn scan_config<'a>(rest: &'a [&'a str]) -> ConfigScan<'a> {
     let mut operands: Vec<(usize, &'a str)> = Vec::new();
     let mut is_read = false;
     let mut is_write = false;
@@ -1773,6 +1830,7 @@ fn scan_config<'a>(rest: &[&'a str]) -> ConfigScan<'a> {
     }
 
     ConfigScan {
+        rest,
         operands,
         key_start,
         is_read,
@@ -1814,9 +1872,82 @@ fn classify_config(rest: &[&str]) -> GitVerdict {
         );
     }
 
-    if is_write && !is_read {
+    if !is_read {
         if let Some((_, key)) = scan.key_operand() {
-            if is_hooks_path_key(key) {
+            // **REGION 2 OF THE RE-PARSE CLAUSE, AND IT IS REQUIRED RATHER THAN
+            // SYMMETRIC.** `T-19-108`'s second leg is two separately-permitted
+            // tool calls the stateless guard cannot correlate —
+            // `git config alias.p '<body>'` and then `git p` — and the ONLY one of
+            // them it can decide on is the WRITE. `config` is the verb here, so
+            // `scan_leading` stops before ever reaching this operand: **a rule
+            // written only inside `scan_leading` closes only the `-c` delivery.**
+            //
+            // **THE PERSISTENCE ASYMMETRY WITH `include.path`, WHICH IS WHY THERE
+            // IS NO INCLUDE CLAUSE HERE.** Audit 8 measured persisted
+            // `git config include.path <evil>` INERT at repo-local, `--worktree`
+            // AND global: the envelope's `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`
+            // triplet OUTRANKS every repository-side level, so the include loses
+            // the precedence contest it has to win. **An alias does not have to
+            // WIN a contest — it only has to EXIST**, and both a `--global` and a
+            // repo-local alias were measured LIVE at `/INCLUDE_WINS` under the
+            // envelope's own `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` redirect.
+            // Adding an `include.path` or `includeIf` clause here would be
+            // over-refusal with no measured harm behind it, and
+            // `tests/envelope_reparsed_value.rs` pins
+            // `git config include.path /tmp/evil.cfg` PERMITTED so that adding one
+            // lands red.
+            //
+            // **NOT A NEW READING SITE.** `is_hooks_path_key` below already reads
+            // this exact operand and already refuses
+            // `git config core.hooksPath /dev/null` at `HookBypassBlocked`; the
+            // value comes from the same `scan_config` walk through
+            // `ConfigScan::value_operand`; and `config_key_operand_index` — the
+            // index primitive `first_unreadable_decision_word` computes its
+            // `config` decision region from — is unchanged.
+            //
+            // The `!` arm is the same carve-out region 1 makes, for the same
+            // measured reason and the same registered rows: a `!` body is handed
+            // to a SHELL child that inherits the injection, and
+            // `tests/envelope_config_resolution.rs:1539-1543` pins the persisted
+            // spelling PERMITTED as a `T-19-86` row in a file this round may not
+            // edit.
+            //
+            // **THE GATE IS `!is_read` PLUS A VALUE WORD, NOT `is_write`, AND THE
+            // DIFFERENCE IS DERIVED FROM A MEASUREMENT RATHER THAN CHOSEN.**
+            // `is_write`'s classic-form test is `key_operand_count() >= 2`, and
+            // `scan_config`'s walk collects only words that do NOT begin with `-`.
+            // **Git 2.43.0 does not agree**: once the key has been seen the next
+            // word is the value whatever its first byte is, so
+            // `git config alias.p '-c include.path=<f> …'` — `T-19-108`'s HEADLINE
+            // persisted row — leaves `is_write` FALSE while real git writes the
+            // alias and `git p` then resolves `/INCLUDE_WINS`. Gating on `is_write`
+            // would have made this clause blind to the one row it exists for. A
+            // line with no value word persists no body, so it is left alone: that
+            // keeps the READ `git config alias.p` permitted alongside
+            // `git config --get alias.p`.
+            //
+            // **`is_write` ITSELF IS DELIBERATELY NOT WIDENED, AND THE REASON IS
+            // SCOPE RATHER THAN DOUBT.** The same under-count reaches
+            // `is_hooks_path_key` below: measured against the built binary,
+            // `git config core.hooksPath -c` and `git config core.hooksPath --`
+            // exit **0** while `git config core.hooksPath /dev/null` and
+            // `git config core.hooksPath -` are exit 2 `hook_bypass_blocked`, and
+            // real git writes `core.hooksPath = -c`. **That is a separate,
+            // newly-found fail-open in region 2's OPERAND GRAMMAR, not in the
+            // re-parse question**, it is RECORDED rather than fixed here, and
+            // correcting it belongs in a round that can first write the RED corpus
+            // for it — the discipline this phase exists to enforce. Widening
+            // `is_write` here would move verdicts for keys outside this clause's
+            // class with no corpus able to fail on them.
+            if config_key_names_a_reparsed_command_section(key) {
+                if let Some(value) = scan.value_word() {
+                    if !reparsed_command_value_is_a_shell_body(value) {
+                        let section = config_key_section(key).unwrap_or(key);
+                        return unbounded_reparsed_value_refusal(key, section);
+                    }
+                }
+            }
+            if is_write && is_hooks_path_key(key) {
                 return refuse(
                     ParkReason::HookBypassBlocked,
                     format!(
@@ -8220,7 +8351,7 @@ mod tests {
              unreadable. Got: {via_env_bang}"
         );
         assert!(
-            !reparsed_command_value_is_a_shell_body(
+            !reparsed_command_assignment_is_a_shell_body(
                 "--config-env=alias.probe=!GSD_MM_REPARSE_PROBE",
                 "alias.probe=!GSD_MM_REPARSE_PROBE"
             ),
@@ -8346,7 +8477,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                reparsed_command_value_is_a_shell_body(carrier, assignment),
+                reparsed_command_assignment_is_a_shell_body(carrier, assignment),
                 is_shell,
                 "`{carrier}` / `{assignment}` must answer {is_shell}. {why}"
             );

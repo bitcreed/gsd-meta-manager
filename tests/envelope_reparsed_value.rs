@@ -2077,3 +2077,297 @@ fn a_reparsed_alias_value_carries_a_refused_push_past_the_hook_and_moves_a_bare_
 
     println!("END-TO-END, reproduced independently of audit 8:\n  {}", trail.join("\n  "));
 }
+
+// ===========================================================================
+// 14. `19-25`'s OWN PINS — the two rows `19-24` RECORDED but could not DERIVE,
+//     and REGION 2's verdicts
+//
+// **ADDITIONS ONLY.** Not one row above was edited or deleted. Every fn here is
+// NEW, which is also what makes the round's gate arithmetically satisfiable: a
+// red test RAN, so red→green leaves `passed + failed` unchanged and every
+// increase comes only from new `#[test]` fns.
+//
+// Every verdict below was MEASURED against the built binary AFTER the clause
+// existed, with a fresh envelope root per row and the envelope directory walked
+// so "no ledger line" is an observation rather than an assumption. **What is
+// pinned is what was measured, not what was hoped** — the discipline `19-22`
+// broke and `19-23` halted on.
+// ===========================================================================
+
+#[test]
+fn after_19_25_the_separate_word_config_env_alias_delivery_is_refused_as_derived() {
+    // **`19-24` section 9, ROW 1, now DERIVED.** That plan measured this row exit
+    // 0 and RECORDED it rather than asserting it, because whether `19-25` could
+    // read a first byte at all when the value half is an environment variable
+    // NAME was a design decision it could not make. **The answer is that it
+    // cannot, and the clause says so explicitly.**
+    //
+    // **THE CLAUSE THAT PRODUCED IT.** `leading_git_option` arm (a) returns the
+    // NEXT token as the assignment for a bare `--config-env`, so `alias.q=BODYVAR`
+    // reaches the same key check the attached spelling does.
+    // `config_key_names_a_reparsed_command_section` answers true, and
+    // `reparsed_command_assignment_is_a_shell_body` answers FALSE for every
+    // `--config-env` carrier — the value half is a variable NAME, the body lives
+    // in the environment, and a pure argv function does not read the environment.
+    // So the assignment is UNBOUNDED and `scan_leading` refuses at
+    // `envelope_assertion_failed`, before any verb is classified.
+    //
+    // **AND THE CARRIER IS READ RATHER THAN THE FIRST BYTE ALONE, WHICH IS A
+    // MEASUREMENT.** `git --config-env=alias.q='!EVIL'`, where the variable
+    // `!EVIL` holds a NON-`!` body, resolves `/INCLUDE_WINS` against real git —
+    // measured in `policy.rs`'s own pin. A first-byte test applied uniformly
+    // across both carriers would have read the `!` of a variable NAME as git's
+    // shell rule and FAILED OPEN on exactly that row.
+    for command in [
+        "git --config-env alias.q=BODYVAR status",
+        "git --config-env alias.q=BODYVAR push origin refs/heads/gsd-auto/alpha/w",
+    ] {
+        refuses(
+            command,
+            policy::REASON_ENVELOPE_ASSERTION_FAILED,
+            "**DERIVED, NOT HOPED.** A `--config-env` carrier delivers an environment variable \
+             NAME where `-c` delivers a body, so the guard cannot read a first byte at all and \
+             the assignment is UNBOUNDED. Real git DOES resolve this spelling — `19-24` \
+             measured `/INCLUDE_WINS` through both `--config-env` spellings — so the harm is \
+             real and only the identifier was undeliverable before the clause existed.",
+        );
+    }
+
+    // The ATTACHED spelling was already asserted in section 1; it is repeated here
+    // beside its separate-word twin so the two carriers' agreement is legible in
+    // one place rather than across two sections.
+    refuses(
+        "git --config-env=alias.q=BODYVAR status",
+        policy::REASON_ENVELOPE_ASSERTION_FAILED,
+        "arm (b) returns the ATTACHED assignment, and both arms reach the same key check — so \
+         a difference between the two spellings would mean one of them is unmeasured.",
+    );
+}
+
+#[test]
+fn after_19_25_a_reparsed_section_key_with_no_value_half_is_refused_as_derived() {
+    // **`19-24` section 9, ROW 2, now DERIVED.** That plan measured this row exit
+    // 0 and RECORDED it, because `config_key_of` returns the WHOLE token when
+    // there is no `=`, so there is NO value half to read a first byte from, and
+    // **which clause raises the fail-closed answer — or whether one is raised at
+    // all — was a `19-25` measurement.**
+    //
+    // **THE CLAUSE THAT PRODUCED IT.** The re-parse clause in `scan_leading`.
+    // `config_key_of("alias.q")` returns `alias.q`, whose SECTION is `alias`, so
+    // `config_key_names_a_reparsed_command_section` answers true;
+    // `reparsed_command_assignment_is_a_shell_body` finds no `=` and answers
+    // FALSE, which is the UNBOUNDED direction. Refused at
+    // `envelope_assertion_failed`.
+    //
+    // **THE COST IS DISCLOSED RATHER THAN DISCOVERED, AND IT IS AN OVER-REFUSAL.**
+    // Real git accepts `-c alias.q` (it sets the key to boolean true) and resolves
+    // the control value — `19-24` measured `/ENV_WINS`, i.e. **NO harm on git's
+    // side**. This is refused anyway, because the guard cannot establish that from
+    // argv, and an unresolvable command is refused rather than guessed at. That is
+    // the same fail-closed direction round 7's grammar and round 8's clause both
+    // take, and it falls in the safe direction.
+    for command in [
+        "git -c alias.q status",
+        "git -c alias.q push origin refs/heads/gsd-auto/alpha/w",
+    ] {
+        refuses(
+            command,
+            policy::REASON_ENVELOPE_ASSERTION_FAILED,
+            "**DERIVED, NOT HOPED — and DISCLOSED as an over-refusal.** No `=`, so no value \
+             half, so no first byte to read: UNBOUNDED is the fail-closed answer. Real git \
+             resolves the CONTROL value for this spelling (`/ENV_WINS`, measured), so there is \
+             no harm behind this particular refusal and the corpus says so rather than \
+             implying one.",
+        );
+    }
+
+    // And the DOTLESS twin stays permitted, which is what proves the refusal above
+    // came from the SECTION comparison and not from "an assignment with no `=`".
+    permits(
+        "git -c a status",
+        "a dotless key names NO SECTION, so it can never name `alias` — and it must stay \
+         permitted even with no `=`, or `CALLEE_KNOWN_LEADING_PREFIX` would be one keystroke \
+         from red.",
+    );
+}
+
+#[test]
+fn after_19_25_region_2_refuses_the_persisted_definition_and_permits_the_read() {
+    // **REGION 2's OWN VERDICT PINS.** `classify_config` already reads this exact
+    // operand with `is_hooks_path_key` and already refuses
+    // `git config core.hooksPath /dev/null` at `hook_bypass_blocked`, so asking
+    // the alias question there is the SAME decision region and not a second
+    // reading site.
+    //
+    // **A rule written only inside `scan_leading` leaves every row below at exit
+    // 0** — `config` is the verb, so that scan stops before this operand.
+    for command in [
+        "git config alias.p '-c include.path=/tmp/evil.cfg push origin \
+         refs/heads/gsd-auto/alpha/w'",
+        "git config --global alias.p '-c include.path=/tmp/evil.cfg push'",
+        "git config --worktree alias.p '-c include.path=/tmp/evil.cfg status'",
+        "git config --file /tmp/c.cfg alias.p '-c include.path=/tmp/evil.cfg status'",
+        "git config --add alias.p '-c include.path=/tmp/evil.cfg status'",
+        "git config --replace-all alias.p '-c include.path=/tmp/evil.cfg status'",
+        "git config alias.z '-c core.hooksPath=/dev/null status'",
+        "git config ALIAS.q '-c include.path=/tmp/evil.cfg status'",
+        "git config alias.st status",
+    ] {
+        refuses(
+            command,
+            policy::REASON_ENVELOPE_ASSERTION_FAILED,
+            "**REGION 2, and the PERSISTENCE ASYMMETRY is why it is required rather than \
+             symmetric.** A persisted `include.path` must WIN a precedence contest against the \
+             envelope's injection and LOSES — audit 8 measured it INERT at repo-local, \
+             `--worktree` and GLOBAL. **An alias does not have to win anything; it only has to \
+             EXIST**, and both a `--global` and a repo-local alias were measured LIVE at \
+             `/INCLUDE_WINS` under the envelope's own `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` \
+             redirect. `T-19-108`'s second leg is two separately-permitted tool calls the \
+             stateless guard cannot correlate, and the WRITE is the only one it can decide on.",
+        );
+    }
+
+    // --- THE `!` WRITE STAYS PERMITTED. Same carve-out, same measured one-byte
+    //     rule, same registered `T-19-86` row — and this one mirrors a pin in a
+    //     file this round MAY NOT EDIT.
+    permits(
+        "git config alias.p \"!git push --force origin HEAD:refs/heads/main\"",
+        "**`T-19-86` ROW — mirrors `tests/envelope_config_resolution.rs:1539-1543`.** A red \
+         here is region 2 having been written as a blanket `alias.*` refusal, which would turn \
+         that file permanently red.",
+    );
+
+    // --- READS ARE UNTOUCHED. Reading an alias establishes nothing about what a
+    //     later command runs under, and a line that persists no body leaves
+    //     nothing for git to re-parse.
+    for (command, why) in [
+        (
+            "git config --get alias.p",
+            "an explicit read: the `is_read` gate excludes it before the clause is reached",
+        ),
+        (
+            "git config alias.p",
+            "the CLASSIC read — a key with no following word. The clause asks for a VALUE WORD \
+             and finds none, so it says nothing.",
+        ),
+        (
+            "git config --unset alias.p",
+            "a REMOVAL persists no body, so there is nothing for git to re-parse later",
+        ),
+        (
+            "git config --list",
+            "the whole-file read",
+        ),
+    ] {
+        permits(command, why);
+    }
+
+    // --- AND NO `include.path` CLAUSE WAS ADDED HERE. Asserted a second time,
+    //     from region 2's own test, because it is the likeliest way this round
+    //     spends a rule on nothing.
+    permits(
+        "git config include.path /tmp/evil.cfg",
+        "**INERT, MEASURED.** Audit 8 measured a persisted `include.path` losing to the \
+         envelope's injection at repo-local, `--worktree` and GLOBAL. A clause here would be \
+         over-refusal with no measured harm behind it — the thesis of this round broken by its \
+         own round. A red here means the inert clause was added.",
+    );
+}
+
+#[test]
+fn after_19_25_the_region_2_over_refusal_family_is_disclosed_beside_its_twins() {
+    // **THE COST AT REGION 2, DISCLOSED BY THE ROUND THAT PRODUCED IT.** Defining
+    // a non-shell alias by PERSISTING it is refused; the twin that does the same
+    // work is not; and INVOCATION is untouched in both directions.
+    for (refused, twin) in [
+        ("git config alias.co checkout", "git checkout"),
+        ("git config alias.st status", "git status"),
+        ("git config alias.lg 'log --oneline'", "git log --oneline"),
+    ] {
+        refuses(
+            refused,
+            policy::REASON_ENVELOPE_ASSERTION_FAILED,
+            "**THE DISCLOSED COST AT REGION 2.** An ORDINARY alias body is re-parsed by git \
+             in-process exactly as a carrier-bearing one is. Refusing the whole non-shell class \
+             is the safe direction, and the twin beside it does the same work.",
+        );
+        permits(twin, "the twin that does the same work");
+    }
+
+    for invocation in ["git p", "git co", "git st", "git lg", "git q"] {
+        permits(
+            invocation,
+            "**INVOCATION IS NOT DEFINITION**, at region 2 exactly as at region 1. The guard is \
+             stateless and argv-only and cannot correlate a definition in one tool call with a \
+             use in another. That is fail-open direction (i) and it stays open.",
+        );
+    }
+}
+
+#[test]
+fn the_region_2_operand_grammar_gap_is_recorded_by_19_25_and_is_not_closed_by_it() {
+    // ===================================================================
+    // **A FINDING `19-25` MADE AND DID NOT FIX, RECORDED RATHER THAN LEFT FOR
+    // AUDIT 9 — AND IT IS NOT `T-19-108`.**
+    //
+    // `scan_config`'s walk treats any word beginning with `-` as an OPTION, so
+    // `is_write`'s classic-form test (`key_operand_count() >= 2`) does not see a
+    // VALUE whose first byte is `-`. **Git 2.43.0 does not agree**: once the KEY
+    // has been seen, the next word is the VALUE whatever its first byte is.
+    // Measured against real git with both config pointers at an empty file:
+    //
+    //     git config alias.x -q        -> exit 0, alias.x=-q
+    //     git config alias.y --global  -> exit 0, alias.y=--global
+    //     git config core.hooksPath -c -> exit 0, core.hooksPath=-c
+    //
+    // The consequence for the guard, measured against the BUILT BINARY:
+    // **`git config core.hooksPath -c` and `git config core.hooksPath --` exit
+    // 0**, while `git config core.hooksPath /dev/null` and
+    // `git config core.hooksPath -` are exit 2 `hook_bypass_blocked`. So plan
+    // 19-02's by-name hooks deny at region 2 is reachable past, by any value
+    // whose first byte is `-` other than a bare `-`.
+    //
+    // **`19-25` DID NOT FIX IT, deliberately.** It is a gap in region 2's OPERAND
+    // GRAMMAR, not in the re-parse question this round was scoped to, and
+    // correcting it means widening `is_write` — which moves verdicts for keys
+    // outside this round's class with no corpus able to fail on them. **The
+    // discipline this phase exists to enforce is that a rule is written against a
+    // corpus observed RED first**, and that corpus does not exist yet.
+    //
+    // The re-parse clause reads `ConfigScan::value_word` — the WORD after the key
+    // rather than the next collected operand — so it is not blind to the same
+    // gap; the clause's own reach is complete. **This row records the REST of the
+    // gap, which is not.**
+    //
+    // **THESE ROWS ARE RECORDED, NEVER ASSERTED.** Asserting them PERMITTED would
+    // pin a bypass as correct, and asserting them REFUSED would be pinning a
+    // verdict this round did not produce — `19-22`'s failure mode exactly.
+    // ===================================================================
+    for command in [
+        "git config core.hooksPath -c",
+        "git config core.hooksPath --",
+        "git config alias.x -q",
+    ] {
+        record_only(
+            "REGION-2 OPERAND-GRAMMAR GAP (found by 19-25, NOT closed by it)",
+            None,
+            command,
+        );
+    }
+
+    // The two spellings the deny DOES reach, asserted as the discriminators that
+    // make the gap legible as a gap rather than as an absent rule.
+    refuses(
+        "git config core.hooksPath /dev/null",
+        policy::REASON_HOOK_BYPASS_BLOCKED,
+        "the by-name deny plan 19-02 built, at region 2. It is PRESENT — which is what makes \
+         the rows recorded above a gap in its REACH rather than a missing rule.",
+    );
+    refuses(
+        "git config core.hooksPath -",
+        policy::REASON_HOOK_BYPASS_BLOCKED,
+        "a BARE `-` is collected as an operand by `scan_config`'s walk (`token == \"-\"`), so \
+         this spelling is reached while `-c` and `--` are not. The boundary is exactly the \
+         walk's option test.",
+    );
+}
