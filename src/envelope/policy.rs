@@ -2581,6 +2581,75 @@ pub struct Segment {
     /// guess. **The words are kept as written and nothing is normalised here** —
     /// the reader normalises, exactly as it does for an operand.
     pub redirection_targets: Vec<String>,
+    /// Every **LITERAL** word this simple command names after a **NON-PATHNAME**
+    /// redirection operator, as written.
+    ///
+    /// # WHAT IT IS, AND WHY IT IS A SECOND FIELD RATHER THAN A WIDENED FLAG
+    ///
+    /// [`Segment::redirection_targets`] is the set of words **the shell will
+    /// hand to `open(2)`**, and [`RedirectionOperator::pathname_target`] answers
+    /// that question from bash's own grammar: seven operators take a filename
+    /// and five do not — `<<` and `<<-` take a heredoc DELIMITER, `<<<` a
+    /// here-STRING, and `>&` and `<&` an fd NUMBER. **Widening that flag to
+    /// cover the five would make it say something bash does not say**, and it
+    /// would turn two fenced pins red at once:
+    /// `only_a_literal_pathname_target_reaches_the_segment_and_the_tokens_do_not_move`,
+    /// which asserts the targets of `ls <<<here`, `ls <<EOF`, `ls <<-EOF`,
+    /// `ls >&2` and `ls <&0` are ALL EMPTY, and the twelve-operator grammar pin,
+    /// which asserts the flag TRUE for the seven and FALSE for the five.
+    ///
+    /// **So the split stays exactly where bash's grammar puts it and BOTH SIDES
+    /// ARE READ, for different reasons.** The pathname side because the shell
+    /// will open the word; this side because the predicate's subject is what a
+    /// line NAMES.
+    ///
+    /// # WHY THE GUARD READS IT AT ALL
+    ///
+    /// **A here-string is a DATA channel, and `xargs` is a program that turns
+    /// data into argv.** `xargs rm -rf <<< <env>/<alias>` deletes the envelope
+    /// directory — measured under real `bash` — while the word never becomes a
+    /// [`Token`] and never reaches [`Segment::redirection_targets`], so it sat
+    /// in NEITHER word class and no rule could see it. `>&` reaches a file for a
+    /// different reason and one bash's own grammar does not predict: when its
+    /// word is a PATH rather than digits, bash falls back to `&>word` and OPENS
+    /// it — measured, a ledger truncated to zero bytes.
+    ///
+    /// **The predicate's subject is what a line NAMES, not what the shell does
+    /// with a word.** The pathname/non-pathname distinction is a fact about the
+    /// SHELL's USE of the word; [`protected_carrier_named`] decides on the
+    /// word's TEXT. So the honest word set is every LITERAL word the line
+    /// contains, whether it survives into argv or is consumed by a redirection,
+    /// pathname or not.
+    ///
+    /// **The rejected alternative, costed rather than dismissed.** Treating
+    /// every deleted-and-unrecorded word as UNRESOLVABLE would deny
+    /// `cat <<< hello`, `sort <<< "$x"` and every fd duplication on the line —
+    /// an outage rather than a boundary (AR-19-11). `cat <<<x` and
+    /// `cat <<< /tmp/x` are pinned PERMITTED, which is what keeps this a PATH
+    /// class rather than a here-string BAN.
+    ///
+    /// # WHAT IS IN IT, AND WHAT IS DELIBERATELY NOT
+    ///
+    /// Only targets of the FIVE operators whose target is not a pathname, and
+    /// only targets that are LITERAL by the same classification
+    /// [`Token::literal`] uses — so the literalness condition is discharged by
+    /// construction here exactly as it is for the pathname list, and a word the
+    /// shell may rewrite never reaches the reader. **The words are kept as
+    /// written and nothing is normalised here**; the reader normalises.
+    ///
+    /// # `Segment::tokens` IS BYTE-FOR-BYTE UNCHANGED
+    ///
+    /// The target still produces no [`Token`], the scan index still advances
+    /// exactly as far, and this field travels the way
+    /// [`Segment::redirection_targets`] already travels — accumulated in the
+    /// operator arm of the ONE walk, applied RETROACTIVELY over every segment of
+    /// the simple command, and reset at each REAL command operator. **Round 6's
+    /// deletion model, the SEGMENT-COUNT pins and the over-deletion control
+    /// `git x2>/tmp/o push --force origin main` are untouched**, and
+    /// `git <<<x push --force origin main` stays exit 2 `force_push_blocked`
+    /// because the here-string word never enters the token stream to split the
+    /// segment.
+    pub non_pathname_redirection_targets: Vec<String>,
 }
 
 /// [`split_segments`], plus a per-segment report of whether its head is at a
@@ -2611,6 +2680,7 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
     let Tokenized {
         tokens,
         redirections,
+        data_redirections,
     } = tokenize(cmd)?;
     let mut segments: Vec<Segment> = Vec::new();
     let mut current: Vec<Token> = Vec::new();
@@ -2638,6 +2708,11 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
     // second walk of anything. See `Segment::redirection_targets`.
     let mut redirection_targets: Vec<String> = Vec::new();
     let mut pending = redirections.into_iter().peekable();
+    // The NON-PATHNAME half of the same walk's by-product, carried by the same
+    // machinery one field over and for the same reason. See
+    // `Segment::non_pathname_redirection_targets`.
+    let mut non_pathname_redirection_targets: Vec<String> = Vec::new();
+    let mut pending_data = data_redirections.into_iter().peekable();
 
     // Absorb every redirection consumed before the token about to be handled.
     // Written as a closure-free macro because it borrows four locals mutably and
@@ -2660,6 +2735,22 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
                         .push(redirection_targets.last().expect("just pushed").clone());
                 }
             }
+            while pending_data
+                .peek()
+                .is_some_and(|redirection| redirection.token_index <= $limit)
+            {
+                let target = pending_data.next().expect("peeked").target;
+                non_pathname_redirection_targets.push(target);
+                // Retroactive for exactly the same reason, one field over.
+                for segment in &mut segments[command_start..] {
+                    segment.non_pathname_redirection_targets.push(
+                        non_pathname_redirection_targets
+                            .last()
+                            .expect("just pushed")
+                            .clone(),
+                    );
+                }
+            }
         };
     }
 
@@ -2674,6 +2765,7 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
                     splice_can_produce_governed,
                     redirection_unresolvable,
                     redirection_targets: redirection_targets.clone(),
+                    non_pathname_redirection_targets: non_pathname_redirection_targets.clone(),
                 });
             }
             if token.redirection_unresolvable {
@@ -2705,6 +2797,7 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
                 splice_can_produce_governed = false;
                 redirection_unresolvable = false;
                 redirection_targets.clear();
+                non_pathname_redirection_targets.clear();
             }
             last_operator_severed =
                 token.word_splitting_flush && matches!(token.text.as_str(), "}" | ")");
@@ -2727,6 +2820,7 @@ pub fn split_segments_with_heads(cmd: &str) -> Option<Vec<Segment>> {
             splice_can_produce_governed,
             redirection_unresolvable,
             redirection_targets,
+            non_pathname_redirection_targets,
         });
     }
 
@@ -3413,14 +3507,20 @@ fn is_fd_allocation_prefix(word: &str) -> bool {
         && inner.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// One LITERAL PATHNAME a redirection operator named, and where on the token
-/// stream it stood.
+/// One LITERAL word a redirection operator named, and where on the token stream
+/// it stood.
 ///
 /// **`token_index` is the number of tokens [`tokenize`] had emitted when the
 /// redirection was consumed**, which is what lets
 /// [`split_segments_with_heads`] attribute the path to the right simple command
 /// without walking anything a second time. It is NOT a position in
 /// [`Segment::tokens`] and nothing indexes that vector with it.
+///
+/// **The type is shared by both target lists and carries no flag saying which
+/// list it is on**, because the pathname/non-pathname question is answered once,
+/// at [`redirection_operator`], and the answer is expressed by WHICH list the
+/// entry is pushed onto. A flag here would be a second place the same grammar
+/// fact lived, and the two could then disagree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Redirection {
     token_index: usize,
@@ -3429,18 +3529,26 @@ struct Redirection {
 
 /// Everything the ONE walk of a command line produces.
 ///
-/// **Two lists rather than one, because the second is a fact the first
-/// structurally cannot carry.** A redirection target is not a word the program
-/// receives, so it must not be a [`Token`]: [`split_segments_with_heads`]
-/// flushes a [`Segment`] at every operator token, so a target in `tokens` would
-/// split `git >/dev/null push --force origin main` into `[git]` and
-/// `[push, --force, origin, main]` and the leading `git` would carry an EMPTY
-/// argv, which [`classify_git`] answers `Allow` for. Keeping it beside the
-/// stream rather than in it is what makes `tokens` byte-for-byte what it was.
+/// **Three lists rather than one, because the second and third are facts the
+/// first structurally cannot carry.** A redirection target is not a word the
+/// program receives, so it must not be a [`Token`]:
+/// [`split_segments_with_heads`] flushes a [`Segment`] at every operator token,
+/// so a target in `tokens` would split `git >/dev/null push --force origin main`
+/// into `[git]` and `[push, --force, origin, main]` and the leading `git` would
+/// carry an EMPTY argv, which [`classify_git`] answers `Allow` for. Keeping it
+/// beside the stream rather than in it is what makes `tokens` byte-for-byte what
+/// it was.
+///
+/// **`redirections` and `data_redirections` are the two sides of bash's own
+/// pathname/non-pathname split** ([`redirection_operator`]), kept apart rather
+/// than merged so that [`RedirectionOperator::pathname_target`] keeps saying
+/// exactly what bash's grammar says. See [`Segment::redirection_targets`] and
+/// [`Segment::non_pathname_redirection_targets`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Tokenized {
     tokens: Vec<Token>,
     redirections: Vec<Redirection>,
+    data_redirections: Vec<Redirection>,
 }
 
 /// The quoting state machine behind [`split_command`] and [`split_segments`].
@@ -3448,6 +3556,9 @@ fn tokenize(cmd: &str) -> Option<Tokenized> {
     let chars: Vec<char> = cmd.chars().collect();
     let mut tokens: Vec<Token> = Vec::new();
     let mut redirections: Vec<Redirection> = Vec::new();
+    // The OTHER side of bash's own split, accumulated by the same arm of the same
+    // walk. See `Segment::non_pathname_redirection_targets`.
+    let mut data_redirections: Vec<Redirection> = Vec::new();
     let mut text = String::new();
     let mut started = false;
     let mut expansion = false;
@@ -3572,14 +3683,36 @@ fn tokenize(cmd: &str) -> Option<Tokenized> {
             //    character: the target still produces no `Token`, the scan index
             //    still advances exactly as far, and `Segment::tokens` is
             //    byte-for-byte what it was. Only the by-product is kept, and
-            //    only when the operator takes a FILENAME and the word is one the
-            //    shell hands to `open(2)` as written. See
-            //    `Segment::redirection_targets`.
+            //    only when the word is one the shell hands on as written —
+            //    onto the PATHNAME list when the operator takes a FILENAME and
+            //    onto the DATA list when it does not. See
+            //    `Segment::redirection_targets` and
+            //    `Segment::non_pathname_redirection_targets`.
+            //
+            //    **A CORRECTED REASON (WR-02).** This comment used to end
+            //    *"and only when the operator takes a FILENAME and the word is
+            //    one the shell hands to `open(2)` as written"*. It was TRUE of
+            //    this code when round 11 wrote it, and round 11's reason for it
+            //    was sound: `redirection_targets` is the set of words the shell
+            //    will `open(2)`, and a heredoc DELIMITER, a here-STRING and an
+            //    fd NUMBER are not that. **What changed is that a THIRD question
+            //    is now asked of the same walk.** Round 6 asks *which words
+            //    ARRIVE at the program*; round 11 asks *which words will the
+            //    shell OPEN*; round 13 asks *what does this line NAME* — and a
+            //    here-string word naming an absolute path names one whatever
+            //    `xargs` then does with it. **What is true now is that BOTH
+            //    sides of the operator split are kept, on two lists, and that
+            //    the split itself did not move by one character.**
             match skip_redirection_target(&chars, op_start + op_len) {
                 Some(target) => {
                     index = target.end;
                     if pathname_target && target.literal {
                         redirections.push(Redirection {
+                            token_index: tokens.len(),
+                            target: target.text,
+                        });
+                    } else if !pathname_target && target.literal {
+                        data_redirections.push(Redirection {
                             token_index: tokens.len(),
                             target: target.text,
                         });
@@ -3925,6 +4058,7 @@ fn tokenize(cmd: &str) -> Option<Tokenized> {
     Some(Tokenized {
         tokens,
         redirections,
+        data_redirections,
     })
 }
 
@@ -5776,7 +5910,7 @@ pub enum ProtectedPath {
     GuardBinary,
 }
 
-/// Whether any word of this segment — **in either of two word classes** — names
+/// Whether any word of this segment — **in any of three word classes** — names
 /// a path in **this run's own protected set**: the files the controls that judge
 /// the command live in, and the binary that runs them.
 ///
@@ -5795,16 +5929,32 @@ pub enum ProtectedPath {
 /// [`config_key_names_an_indirection_section`] answers one region over, reached
 /// through a carrier that is not argv at all.
 ///
-/// # TWO WORD CLASSES, ONE READING SITE
+/// # THREE WORD CLASSES, ONE READING SITE
 ///
 /// The segment's own words are one class. Its **pathname redirection targets**
-/// ([`Segment::redirection_targets`]) are the other: found by the walk that
-/// already skips them, carried on the `Segment` the way
-/// [`Segment::redirection_unresolvable`] already travels, with
+/// ([`Segment::redirection_targets`]) are the second and its **non-pathname
+/// redirection targets** ([`Segment::non_pathname_redirection_targets`]) the
+/// third: both found by the walk that already skips them, carried on the
+/// `Segment` the way [`Segment::redirection_unresolvable`] already travels, with
 /// [`Segment::tokens`] byte-for-byte unchanged. **Round 3's one-reading-site
 /// principle is discharged rather than weakened** — this predicate is still
-/// raised once, on one segment, at one call site; reading two fields of that
-/// segment there is one reading site, not two.
+/// raised once, on one segment, at one call site; reading three fields of the
+/// ONE segment the caller already holds there is one reading site, not three.
+///
+/// **THE THIRD CLASS IS A PATH CLASS AND NOT A CHANNEL BAN, and it exists
+/// because the predicate's subject is what a line NAMES rather than what the
+/// shell does with a word.** `xargs rm -rf <<< <env>/<alias>` deletes the
+/// envelope directory and `: >&<ledger>` truncates the ledger — both measured
+/// under real `bash` — while the word reaches neither of the first two classes.
+/// Bash's own pathname/non-pathname split ([`redirection_operator`]) is left
+/// byte-identical and **read from BOTH sides for different reasons**: the
+/// pathname side because the shell will `open(2)` the word, this side because a
+/// data channel feeding `xargs` still names a path. Both target classes carry
+/// only LITERAL words by construction, exactly as
+/// [`Segment::redirection_targets`] does, so the literalness condition below is
+/// already discharged for them and is applied here only for the token class.
+/// `cat <<<x` and `cat <<< /tmp/x` stay permitted, which is what makes this a
+/// PATH class rather than a here-string ban.
 ///
 /// # TWO PATHS, AND THE TWO BOUNDARY KINDS DIFFER FOR A MEASURED REASON
 ///
@@ -6111,10 +6261,12 @@ pub fn protected_carrier_named<'a>(
     envelope_dir: Option<&'a Path>,
     binary: Option<&'a Path>,
 ) -> Option<(ProtectedPath, &'a Path)> {
-    // The two word classes, read from the two fields of the ONE segment this
-    // caller already holds. `redirection_targets` carries only LITERAL pathname
-    // targets by construction (see its doc), so the literalness condition is
-    // already discharged for that class and is applied here for the other.
+    // The THREE word classes, read from the three fields of the ONE segment this
+    // caller already holds. Both target lists carry only LITERAL words by
+    // construction (see their docs), so the literalness condition is already
+    // discharged for them and is applied here for the token class — and THAT
+    // FILTER STILL RUNS FIRST, which is what keeps every tilde, glob, brace and
+    // expansion-borne spelling permitted in every word position.
     let operands = segment
         .tokens
         .iter()
@@ -6124,8 +6276,12 @@ pub fn protected_carrier_named<'a>(
         .redirection_targets
         .iter()
         .map(|target| target.as_str());
+    let data_targets = segment
+        .non_pathname_redirection_targets
+        .iter()
+        .map(|target| target.as_str());
 
-    for word in operands.chain(targets) {
+    for word in operands.chain(targets).chain(data_targets) {
         if let Some(dir) = envelope_dir.filter(|dir| word_is_within(word, dir)) {
             return Some((ProtectedPath::EnvelopeDirectory, dir));
         }
@@ -10761,6 +10917,217 @@ mod tests {
                 .collect();
             assert_eq!(words, expected, "`{cmd}`: the SURVIVING argv, unchanged.");
         }
+    }
+
+    // =======================================================================
+    // ROUND 13 — the THIRD word class: the words the tokenizer deletes and the
+    // pathname list deliberately does not carry
+    // =======================================================================
+
+    /// The NON-PATHNAME redirection targets a command carries — the third word
+    /// class, read the way [`targets_of`] reads the second.
+    fn data_targets_of(cmd: &str) -> Vec<String> {
+        split_segments_with_heads(cmd)
+            .unwrap_or_else(|| panic!("`{cmd}` tokenizes"))
+            .into_iter()
+            .flat_map(|segment| segment.non_pathname_redirection_targets)
+            .collect()
+    }
+
+    #[test]
+    fn the_third_word_class_carries_every_literal_non_pathname_target_and_splits_no_segment() {
+        // **THE OTHER SIDE OF BASH'S OWN SPLIT, and the pin that says the split
+        // itself did not move.** Each of the five non-pathname operators lands
+        // its literal word HERE and never on `redirection_targets`, which is
+        // exactly what
+        // `only_a_literal_pathname_target_reaches_the_segment_and_the_tokens_do_not_move`
+        // asserts from the other direction. **The two pins are a PAIR: one says
+        // the flag was not widened, the other says the words are not lost.**
+        for (cmd, expected) in [
+            ("ls <<<here", "here"),
+            ("ls <<EOF", "EOF"),
+            ("ls <<-EOF", "EOF"),
+            ("ls >&2", "2"),
+            ("ls <&0", "0"),
+        ] {
+            assert_eq!(
+                data_targets_of(cmd),
+                vec![expected.to_string()],
+                "\n\n**`{cmd}` MUST REACH THE THIRD WORD CLASS.** A word in neither class is a \
+                 word no rule can see — `T-19-122`, driven to a deleted envelope directory."
+            );
+            assert!(
+                targets_of(cmd).is_empty(),
+                "\n\n**AND IT MUST NOT REACH THE PATHNAME LIST.** `{cmd}`'s operator takes a \
+                 heredoc DELIMITER, a here-STRING or an fd NUMBER, and recording it as a word \
+                 the shell will `open(2)` would make \
+                 `RedirectionOperator::pathname_target` say something bash does not say."
+            );
+        }
+
+        // **A NON-LITERAL target reaches NEITHER list**, by construction, which
+        // is what discharges the literalness condition for this class the same
+        // way it is discharged for the pathname one.
+        for rewritten in ["ls <<<~/x", "ls <<<$HOME/x", "ls <<</tmp/alph?"] {
+            assert!(
+                data_targets_of(rewritten).is_empty() && targets_of(rewritten).is_empty(),
+                "\n\n**`{rewritten}` IS A WORD THE SHELL MAY REWRITE.** Recording it would be \
+                 recording a guess, and would turn the tilde, glob and expansion-borne rows red \
+                 in a THIRD word position. Got: {:?}",
+                data_targets_of(rewritten)
+            );
+        }
+
+        // **`Segment::tokens` IS BYTE-FOR-BYTE WHAT IT WAS** — the SEGMENT-COUNT
+        // property, re-asserted for the new class. A here-string word pushed
+        // into the token stream would split this command and leave the leading
+        // `git` with an EMPTY argv, which `classify_git` answers `Allow` for:
+        // round 6's headline refusal silently becoming a permit.
+        for (cmd, expected) in [
+            (
+                "git <<<x push --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+            ),
+            (
+                "git >&2 push --force origin main",
+                vec!["git", "push", "--force", "origin", "main"],
+            ),
+        ] {
+            let segments = split_segments_with_heads(cmd).expect("tokenizes");
+            assert_eq!(
+                segments.len(),
+                1,
+                "\n\n**`{cmd}` MUST BE EXACTLY ONE SEGMENT.** Got: {segments:?}"
+            );
+            let words: Vec<&str> = segments[0]
+                .tokens
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect();
+            assert_eq!(words, expected, "`{cmd}`: the SURVIVING argv, unchanged.");
+        }
+    }
+
+    #[test]
+    fn the_third_word_class_is_a_path_class_and_reads_the_word_at_every_offset() {
+        let dir = pin_envelope_dir();
+        let binary = pin_binary();
+
+        let matched = |cmd: &str| -> Option<ProtectedPath> {
+            split_segments_with_heads(cmd)
+                .unwrap_or_else(|| panic!("`{cmd}` tokenizes"))
+                .iter()
+                .find_map(|segment| {
+                    protected_carrier_named(segment, Some(&dir), Some(&binary))
+                        .map(|(kind, _)| kind)
+                })
+        };
+
+        // -- **THE ENVELOPE DIRECTORY through the third class**, under `<<<` and
+        //    under an operator that is NOT `<<<`, so the rule cannot be keyed to
+        //    one operator — which is D-08's defect one level over.
+        for cmd in [
+            "xargs rm -rf <<< /tmp/envroot/alpha",
+            "xargs rm -f <<< /tmp/envroot/alpha/pr-ledger.ndjson",
+            ": >&/tmp/envroot/alpha/pr-ledger.ndjson",
+            "echo evil >&/tmp/envroot/alpha/askpass",
+            // **THE COMPOSITION WITH ROUND 12's INTERIOR SCAN**: the path sits at
+            // a NON-ZERO index inside the here-string word. The class decides
+            // WHICH WORDS reach the reader; the scan decides WHAT THE READER SEES
+            // in one. A rule chained anywhere other than the site the
+            // `/`-anchored scan already runs at answers `None` here.
+            "xargs rm -rf <<< of=/tmp/envroot/alpha",
+            // **THE LEXICAL `..` COLLAPSE, over the third class.**
+            "xargs rm -f <<< /tmp/envroot/alpha/hooks/../pr-ledger.ndjson",
+        ] {
+            assert_eq!(
+                matched(cmd),
+                Some(ProtectedPath::EnvelopeDirectory),
+                "\n\n**`{cmd}` NAMES A PATH UNDER THE ENVELOPE DIRECTORY** in the THIRD word \
+                 class. Its CONTROL is the same word as an operand, already refused by round \
+                 10's clause."
+            );
+        }
+
+        // -- **THE BINARY through the third class, and the EQUALITY does not
+        //    widen.** `xargs cp /bin/true <<< <binary>` is `C-10` at layers 2
+        //    AND 3 in one permitted call.
+        assert_eq!(
+            matched("xargs cp /bin/true <<< /opt/tools/gsd-meta-manager"),
+            Some(ProtectedPath::GuardBinary),
+            "the binary half reads the third class too"
+        );
+
+        // -- **THE NEGATIVE CONTROLS, which are what make this a PATH class
+        //    rather than a HERE-STRING BAN.** Without them every row above would
+        //    pass against a rule that refused every non-pathname redirection —
+        //    the rejected third design, which would deny `cat <<< hello` and
+        //    `sort <<< "$x"`: an outage rather than a boundary (AR-19-11).
+        for permitted in [
+            // no path at all in the word
+            "cat <<<x",
+            "cat <<<hello",
+            "ls >&2",
+            "ls <&0",
+            // an ABSOLUTE path that is not protected
+            "cat <<< /tmp/x",
+            "xargs rm -rf <<< of=/tmp/g/x",
+            "echo x >&/tmp/plain-outside",
+            // a SIBLING of the binary, which the EQUALITY cannot reach
+            "xargs cp /bin/true <<< /opt/tools/some-other-file",
+            // the binary's own PARENT, deliberately not covered
+            "xargs ls <<< /opt/tools",
+        ] {
+            assert_eq!(
+                matched(permitted),
+                None,
+                "\n\n**`{permitted}` MUST STAY PERMITTED.** The third word class decides on the \
+                 WORD'S PATH exactly as the other two do. A refusal here is a rule that banned a \
+                 CHANNEL instead of reading a PATH, and it is a finding about the FIX rather \
+                 than an assertion to relax."
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_pathname_target_is_attributed_to_its_own_simple_command_and_no_other() {
+        // **THE RETROACTIVE ATTRIBUTION AND ITS RESET, for the new class** —
+        // asserted separately rather than folded into the pathname row, because
+        // a leak across `&&` would refuse a second command that names nothing at
+        // all, which is a rule wider than the boundary it declares.
+        let segments =
+            split_segments_with_heads("ls <<<first && cat /tmp/second").expect("tokenizes");
+        assert_eq!(segments.len(), 2, "two simple commands");
+        assert_eq!(
+            segments[0].non_pathname_redirection_targets,
+            vec!["first".to_string()],
+            "the target belongs to the command it redirects"
+        );
+        assert!(
+            segments[1].non_pathname_redirection_targets.is_empty(),
+            "**AND IT IS RESET AT THE REAL COMMAND OPERATOR.** Got: {:?}",
+            segments[1].non_pathname_redirection_targets
+        );
+
+        // A here-string standing at the END of the line is consumed after the
+        // last token was emitted, so nothing in the token walk reaches it.
+        let trailing = split_segments_with_heads("xargs rm -rf <<<trailing").expect("tokenizes");
+        assert_eq!(trailing.len(), 1);
+        assert_eq!(
+            trailing[0].non_pathname_redirection_targets,
+            vec!["trailing".to_string()],
+            "a trailing here-string is absorbed after the walk, not dropped"
+        );
+
+        // And a redirection that arrives AFTER a segment was already pushed
+        // still marks that segment, exactly as the pathname half does.
+        let displaced = split_segments_with_heads("git push <<<x --force").expect("tokenizes");
+        assert_eq!(displaced.len(), 1);
+        assert_eq!(
+            displaced[0].non_pathname_redirection_targets,
+            vec!["x".to_string()],
+            "the fact belongs to the whole simple command and stands anywhere in it"
+        );
     }
 
     #[test]
