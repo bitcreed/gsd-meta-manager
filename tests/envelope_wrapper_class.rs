@@ -7871,6 +7871,24 @@ const BINARY_PLACEHOLDER: &str = "<BIN>";
 /// The placeholder for the binary's PARENT DIRECTORY, which is not a carrier.
 const BINARY_PARENT_PLACEHOLDER: &str = "<BINPAR>";
 
+/// The envelope ROOT's own PARENT — **the first path ABOVE the ancestor clause's
+/// STOP, and the row that turns red if a clause walks the whole chain to `/`.**
+///
+/// The clause `19-33` writes stops at `<root>` on OWNERSHIP grounds: `<root>` is
+/// created by this tool and holds only alias directories it created, while
+/// `~/.local/share`, `$HOME`, `/tmp` and `/` are shared with everything the user
+/// has. **A boundary reaching them would refuse `ls /`, `df /`, `du -sh $HOME`
+/// and `ls /tmp` — an OUTAGE rather than a boundary (AR-19-11).** That residue
+/// is registered, disclosed and UNACCEPTED.
+const REPRESENTATIVE_ENVELOPE_PARENT: &str = "/tmp";
+
+/// The placeholder for the envelope root's PARENT, which is **above the stop**.
+///
+/// **It is substituted BEFORE [`ENVELOPE_ROOT_PLACEHOLDER`]**, because `<ENV>`
+/// is a prefix of `<ENVPAR>` and a naive order would leave `<ENVPAR>` half
+/// replaced — the same ordering hazard `<BINPAR>` and `<BIN>` already carry.
+const ENVELOPE_PARENT_PLACEHOLDER: &str = "<ENVPAR>";
+
 /// The envelope root spelled RELATIVE TO `$HOME`, which is what a `~` spelling
 /// carries.
 ///
@@ -7932,11 +7950,106 @@ const REPO_SIDE_CARRIER_PATHS: &[&str] = &[
 /// is a second thing to keep in step. Bash DELETES a redirection's operator AND
 /// its target before `execve` (`policy.rs:2264-2279`, `T-19-97`), which is why
 /// class 2 exists at all.
+/// **BASH'S TWELVE-OPERATOR SPLIT, READ RATHER THAN INVENTED — NEW IN ROUND
+/// 13.**
+///
+/// `redirection_operator` (`policy.rs:3193-3229`) derives the split in the same
+/// match that computes each operator's length: SEVEN take a WORD the shell
+/// resolves as a FILENAME, and FIVE take something that is not a file at all —
+/// `<<` and `<<-` a heredoc DELIMITER, `<<<` a here-STRING, `>&` and `<&` an fd
+/// NUMBER.
+///
+/// **A CORPUS-SIDE CLASS PREDICATE MAY NAME OPERATORS AND A PRODUCTION RULE MAY
+/// NOT**, and the distinction is not a loophole: this decides which CLASS an
+/// entry draws, where `redirection_operator`'s own match decides a guard
+/// VERDICT. [`DISPLACING_REDIRECTIONS`] already exercises exactly that licence
+/// by naming all twelve. **`19-33` reads the split from
+/// `RedirectionOperator::pathname_target` and never re-spells it**, which
+/// `wrapper_names_the_fix_must_not_know_are_absent_from_the_production_logic`
+/// is the mechanical control for.
+///
+/// The two lists are asserted to partition [`REDIRECTION_OPERATORS`] below, so a
+/// spelling that appeared in one list and not the other could not hide.
+const PATHNAME_REDIRECTION_OPERATORS: &[&str] = &["<", ">", ">>", ">|", "<>", "&>", "&>>"];
+
+/// The FIVE operators whose target is not a pathname — **the word class
+/// `protected_carrier_named` reads in NEITHER of its two loops today.**
+///
+/// **ORDERED LONGEST FIRST**, because these are matched against an ATTACHED
+/// spelling (`>&PATH`) as well as a separated one (`<<< PATH`), and a short
+/// match would leave the remainder to be read as the target's first character —
+/// the same reason `redirection_operator` matches longest-first.
+const NON_PATHNAME_REDIRECTION_OPERATORS: &[&str] = &["<<<", "<<-", "<<", ">&", "<&"];
+
+/// The text a NON-PATHNAME redirection operator carries as its target, whether
+/// the operator stands as a WORD OF ITS OWN (`<<< PATH`) or is ATTACHED to the
+/// target (`>&PATH`), or `None` when this word is not such a target.
+///
+/// **BOTH SPELLINGS ARE DRAWN BECAUSE BOTH WERE MEASURED.** `19-32` drove
+/// `xargs rm -rf <<< <ENV>/alpha` (separated) and `: >&<ledger>` (attached) and
+/// both are exit 0 with a REACH demonstrated under real `bash` — the here-string
+/// deleted the envelope directory, and `>&` truncated the ledger to zero bytes,
+/// because bash falls back to `&>word` when the operand is not an fd number.
+fn non_pathname_redirection_target<'a>(previous: &str, text: &'a str) -> Option<&'a str> {
+    if NON_PATHNAME_REDIRECTION_OPERATORS.contains(&previous) {
+        return Some(text);
+    }
+    NON_PATHNAME_REDIRECTION_OPERATORS
+        .iter()
+        .find(|operator| text.starts_with(**operator))
+        .map(|operator| &text[operator.len()..])
+}
+
+/// Whether a string NAMES the envelope ROOT exactly — **the text fact class 14
+/// is about, and the one class 1 now hands to it.**
+///
+/// A trailing `/` is trimmed because `lexical_absolute_components` collapses it
+/// to the empty component and drops it, so `<ENV>` and `<ENV>/` normalise to the
+/// SAME component vector. Treating them differently here would let one spelling
+/// of the same path fall into a different class from the other.
+fn word_names_the_envelope_root_exactly(text: &str) -> bool {
+    text.trim_end_matches('/') == REPRESENTATIVE_ENVELOPE_ROOT
+}
+
+/// Whether a word carries an ANCESTOR of the envelope directory — at index ZERO
+/// or at a NON-ZERO index — with the same four literalness exclusions class 12
+/// applies, and for the same reason.
+///
+/// **THE ANCESTOR SET IS EXACTLY `{<ENV>}` AND THE PREDICATE SAYS SO BY
+/// CONSTRUCTION.** `envelope_dir_in(root, alias)` is `<root>/<alias>` and the
+/// alias is a PLAIN SINGLE PATH COMPONENT — `ledger_path_in` refuses anything
+/// else — so the only proper ancestor of the envelope directory that lies at or
+/// under the root is the root itself.
+fn word_carries_an_ancestor_of_the_envelope_directory(text: &str) -> bool {
+    if text.contains('$')
+        || text.starts_with('~')
+        || word_has_pathname_metacharacter(text)
+        || word_has_brace_list(text)
+    {
+        return false;
+    }
+    std::iter::once(0)
+        .chain(
+            text.char_indices()
+                .filter(|(index, character)| *index > 0 && *character == '/')
+                .map(|(index, _)| index),
+        )
+        .any(|index| word_names_the_envelope_root_exactly(&text[index..]))
+}
+
 /// One word of a control-carrier command, with the two facts these predicates
 /// need: whether it is a redirection TARGET, and whether it was QUOTED.
 struct CarrierWord {
     text: String,
     is_redirection_target: bool,
+    /// **NEW IN ROUND 13 — which SIDE of bash's twelve-operator split the
+    /// preceding operator falls on.** Class 2 requires a PATHNAME operator and
+    /// class 13 requires a NON-PATHNAME one, and without this field the two
+    /// cannot be told apart: `is_redirection_target` is TRUE for all twelve.
+    redirection_is_pathname: bool,
+    /// **NEW IN ROUND 13 — the target text of a NON-PATHNAME redirection
+    /// operator, in EITHER spelling**, or `None`.
+    non_pathname_target: Option<String>,
     quoted: bool,
 }
 
@@ -7954,6 +8067,9 @@ fn carrier_words(command: &str) -> Vec<CarrierWord> {
         words.push(CarrierWord {
             text: (*word).to_string(),
             is_redirection_target: REDIRECTION_OPERATORS.contains(&previous),
+            redirection_is_pathname: PATHNAME_REDIRECTION_OPERATORS.contains(&previous),
+            non_pathname_target: non_pathname_redirection_target(previous, word)
+                .map(|target| target.to_string()),
             quoted: word.starts_with('\'') || word.starts_with('"'),
         });
     }
@@ -7977,9 +8093,33 @@ fn carrier_basename(word: &str) -> &str {
 /// refinement — but it is NOT `Token.literal`, so rule (a) does not reach it and
 /// putting it here would count a PERMITTED entry inside a fail-closed class.
 /// The refinement is what lets the two live on the same axis without collapsing.
+///
+/// **EXTENDED BY ROUND 13: A WORD NAMING THE ROOT *EXACTLY* IS EXCLUDED AND
+/// HANDED TO CLASS 14, AND THE REASON IS A MISATTRIBUTION RATHER THAN TIDINESS.**
+/// `REPRESENTATIVE_ENVELOPE_ROOT` is the ROOT, and a word that IS the root
+/// `starts_with` itself — so without this refinement every `CONTROL_CARRIER_ANCESTOR`
+/// entry would be filed under **the class round 10 CLOSED**, which attributes a
+/// live, unruled bypass to a control the record says is closed. That is worse
+/// than a wrong arm. This is the same shape of refinement round 11 made when it
+/// excluded globs and braces from this class, one silence over, and
+/// `19-32` RE-DERIVED MECHANICALLY that **no existing entry names the root
+/// exactly** before making it: `grep -rnE '<ENV>([ "]|$)' tests/` returns exactly
+/// ONE hit, [`ENVELOPE_ROOT_PLACEHOLDER`]'s own definition.
+///
+/// **THE ONE DELIBERATE OVERLAP THIS CLASS NOW CARRIES, RECORDED RATHER THAN
+/// SMOOTHED AWAY.** Round 13 adds three ANCESTOR-STOP controls to
+/// [`CONTROL_CARRIER_ORDINARY_OPERANDS`] — `ls <ENV>/unrelated-sibling`,
+/// `rm -f <ENV>/unrelated-sibling` and `rm -rf <ENV>/beta` — which are
+/// PERMITTED before and after and which this predicate DOES draw, because they
+/// really are absolute literal operands under the envelope ROOT. **That is
+/// exactly the distinction `T-19-123` is about**: this class's predicate is over
+/// the ROOT while rule (a)'s prefix is over `<root>/<alias>`, and the three rows
+/// sit in the gap between them. They are driven in the INVARIANCE arm, no
+/// fail-closed property touches them, and the count below states the overlap.
 fn draws_an_envelope_root_operand(command: &str) -> bool {
     carrier_words(command).iter().any(|word| {
         !word.is_redirection_target
+            && !word_names_the_envelope_root_exactly(&word.text)
             && !word.quoted
             && word.text.starts_with(REPRESENTATIVE_ENVELOPE_ROOT)
             && !word_has_pathname_metacharacter(&word.text)
@@ -8000,9 +8140,35 @@ fn draws_an_envelope_root_operand(command: &str) -> bool {
 /// collision would have placed PERMITTED glob and brace targets inside a
 /// property that asserts REFUSAL. The metacharacter and brace-list spellings are
 /// handed to classes 9 and 10, which are verdict-PRESERVING.
+///
+/// **EXTENDED BY ROUND 13 TO REQUIRE A *PATHNAME* OPERATOR, AND THIS IS THE
+/// SECOND TIME THE COLLISION HAS BEEN FORCED THROUGH CLASS 2 SPECIFICALLY.**
+/// The predicate asked only `is_redirection_target && starts_with(ROOT)`, and
+/// `is_redirection_target` is TRUE for ALL TWELVE of bash's operators because
+/// [`REDIRECTION_OPERATORS`] holds all twelve. So a here-string carrier such as
+/// `xargs rm -rf <<< <ENV>/alpha` satisfied it — **and it would have been filed
+/// under the class ROUND 11 CLOSED**, whose alphabet is
+/// [`CONTROL_CARRIER_REDIRECTION_TARGETS`] and whose property is GREEN.
+/// **Attributing a live, unruled bypass to a closed control is worse than a
+/// wrong arm**, because a later reader checking whether the class still fails
+/// would find it green and conclude the spelling was covered.
+///
+/// **THIS IS `19-18`'s `{v}>` BLOCKER, `19-20`'s `GIT_GLOBAL_UNKNOWN_OPTIONS`
+/// SPLIT, `19-22`'s INDIRECTION/CONFINED SPLIT, `19-24`'s
+/// RE-PARSED/CONFINED SPLIT, `19-28`'s OWN CLASS-2 COLLISION AND `19-30`'s
+/// COMPLEMENT EXTENSION — A SEVENTH TIME.** It is stated here as a reason and
+/// not only in the record, because the record is not what a future editor reads
+/// before changing this predicate.
+///
+/// **`19-32` RE-DERIVED MECHANICALLY THAT NO EXISTING ENTRY FALLS OUT**, and it
+/// recorded the CHECK rather than the conclusion: every entry of
+/// [`CONTROL_CARRIER_REDIRECTION_TARGETS`] uses `>` or `>>` and every entry of
+/// [`CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING`] uses `>`, all of which are
+/// PATHNAME operators, so the count below is unchanged at 4.
 fn draws_a_redirection_target_carrier(command: &str) -> bool {
     carrier_words(command).iter().any(|word| {
         word.is_redirection_target
+            && word.redirection_is_pathname
             && word.text.starts_with(REPRESENTATIVE_ENVELOPE_ROOT)
             && !word_has_pathname_metacharacter(&word.text)
             && !word_has_brace_list(&word.text)
@@ -8045,9 +8211,20 @@ fn draws_a_symlinked_carrier(command: &str) -> bool {
 /// completely different reasons: class 5 because the guard has no cwd, class 12
 /// because the normaliser requires the WORD itself to start with `/`. This is
 /// the same kind of refinement round 11 made for the tilde, one silence over.
+/// **REFINED A THIRD TIME BY ROUND 13: a word that is a NON-PATHNAME redirection
+/// target is excluded and handed to class 13.** `>&<ENV>/alpha/askpass` is ONE
+/// whitespace word whose BASENAME is a carrier filename and which does not begin
+/// with `/`, so it satisfied this predicate — **but it is not a relative path at
+/// all, it is an ABSOLUTE path after a redirection operator**, and the two fail
+/// open for completely different reasons: class 5 because the guard has no cwd,
+/// class 13 because `consume_redirection` records the word on no `Segment` field.
+/// This is the same kind of refinement round 11 made for the tilde and round 12
+/// for the interior path, one silence over. **`19-32` re-derived that neither
+/// existing entry falls out:** both carry no redirection operator at all.
 fn draws_a_relative_carrier(command: &str) -> bool {
     carrier_words(command).iter().any(|word| {
         !word.is_redirection_target
+            && word.non_pathname_target.is_none()
             && !word.quoted
             && !word.text.starts_with('/')
             && !word.text.starts_with('~')
@@ -8097,6 +8274,28 @@ fn draws_a_repo_side_carrier(command: &str) -> bool {
 /// **The arithmetic proof that the extension took effect is class 7's own
 /// COUNT**: it is 24 over the 84 generated commands, where the naive count
 /// without this clause would be 36. See [`CONTROL_CARRIER_CLASS_COUNTS`].
+///
+/// **EXTENDED AGAIN BY ROUND 13 TO EXCLUDE CLASSES 13 AND 14, AND THE REASON IS
+/// THE SAME STRUCTURAL COLLISION FOR A SEVENTH TIME.** A here-string carrier
+/// satisfies class 1 NOT (its word is a redirection target), class 2 NOT (with
+/// round 13's pathname requirement) and class 11 NOT (with round 13's
+/// exclusion); an ANCESTOR word satisfies class 1 NOT (with round 13's
+/// exact-root exclusion) and class 12 NOT (with round 13's ancestor guard).
+/// **So without this clause both would fall into the COMPLEMENT, which is in the
+/// INVARIANCE arm** — asserting PERMITTED a row `19-33` REFUSES, landing
+/// permanently red in a file `19-33` may only ADD to.
+///
+/// **THE EXCLUSION IS WRITTEN SO IT DOES NOT DEPEND ON THE ORDER THE OTHER
+/// NARROWINGS WERE APPLIED.** Classes 13 and 14 are named DIRECTLY here rather
+/// than left to fall out of classes 1, 2, 11 and 12 having been refined — so a
+/// future round that widened one of those four back could not silently return an
+/// entry to the invariance arm, and the property does not have to be re-derived
+/// every round.
+///
+/// **The arithmetic proof that THIS extension took effect is class 7's own
+/// count**: it is 29 over the 107 generated commands, where the naive count
+/// without the two new clauses would be 43. **That fall of FOURTEEN is the
+/// proof**, and it is exactly the seven class-13 and seven class-14 entries.
 fn draws_an_ordinary_operand(command: &str) -> bool {
     !draws_an_envelope_root_operand(command)
         && !draws_a_redirection_target_carrier(command)
@@ -8109,6 +8308,8 @@ fn draws_an_ordinary_operand(command: &str) -> bool {
         && !draws_a_brace_borne_carrier(command)
         && !draws_the_guards_own_binary(command)
         && !draws_an_interior_carrier_path(command)
+        && !draws_a_non_pathname_target_carrier(command)
+        && !draws_an_ancestor_of_the_envelope_directory(command)
 }
 
 /// **CLASS 8** — a carrier word spelled with a TILDE, in EITHER word position.
@@ -8163,7 +8364,20 @@ fn draws_a_brace_borne_carrier(command: &str) -> bool {
 /// under the envelope root — and class 7, the complement, WOULD.** An entry
 /// asserted PERMITTED by class 7's arm is an entry `19-29` refuses, landing
 /// permanently red in a file `19-29` may not edit.
+/// **EXTENDED BY ROUND 13 TO EXCLUDE A COMMAND CLASS 13 DRAWS, FOR THE SAME
+/// MISATTRIBUTION REASON AS CLASSES 1 AND 2.** `xargs cp /bin/true <<< <BIN>` is
+/// a here-string whose target word IS the binary, so it satisfied this EQUALITY
+/// — and this class's alphabet, [`CONTROL_CARRIER_BINARY`], is the one **round
+/// 11 CLOSED**. **`19-32` RE-DERIVED MECHANICALLY that no existing entry falls
+/// out**: none of `CONTROL_CARRIER_BINARY`'s five entries follows a NON-PATHNAME
+/// operator (four are operands and the fifth is a `>` target), so the count
+/// below is unchanged at 5 where the naive count would be 6.
 fn draws_the_guards_own_binary(command: &str) -> bool {
+    // **The clause is written ABOVE the existing expression rather than inside
+    // it, so the three lines below stay BYTE-IDENTICAL** — `19-32` may add lines
+    // under `tests/` and may delete none, and re-indenting an existing line is a
+    // deletion.
+    !draws_a_non_pathname_target_carrier(command) &&
     carrier_words(command)
         .iter()
         .any(|word| word.text == REPRESENTATIVE_BINARY_PATH)
@@ -8198,6 +8412,33 @@ fn word_carries_an_interior_carrier_path(text: &str) -> bool {
     {
         return false;
     }
+    // **EXTENDED BY ROUND 13: A WORD WHOSE INTERIOR PATH IS THE ROOT ITSELF IS
+    // AN *ANCESTOR* AND IS HANDED TO CLASS 14.** `-C<ENV>` carries
+    // `/tmp/gsd-envelope-root` at a non-zero index and `starts_with(ROOT)` is
+    // true of the root itself, so without this it would be filed under **class
+    // 12 — the class `19-31` CLOSED** — while being a live, unruled bypass. That
+    // is the same misattribution classes 1, 2 and 11 are refined against, and it
+    // is the fourth and last of them. **`19-32` re-derived that no existing
+    // entry falls out:** every `CONTROL_CARRIER_INTERIOR_PATH` entry carries a
+    // path STRICTLY UNDER the root (`<ENV>/alpha` or deeper) or the BINARY, so
+    // the count below is unchanged except for the one entry round 13 ADDS.
+    if word_carries_an_ancestor_of_the_envelope_directory(text) {
+        return false;
+    }
+    // **AND A WORD THAT IS ITSELF A NON-PATHNAME REDIRECTION TARGET IN THE
+    // *ATTACHED* SPELLING BELONGS TO CLASS 13.** `>&<ENV>/alpha/pr-ledger.ndjson`
+    // is ONE whitespace word, so `carrier_words`' `is_redirection_target` — which
+    // reads the PREVIOUS word — is FALSE for it, and the `/` at index 2 makes it
+    // look like an interior carrier path. **It is not: the path is a redirection
+    // TARGET and the operator is one bash answers `pathname_target = false`
+    // for.** Filing it under class 12 would attribute a live, unruled bypass to
+    // **the class `19-31` CLOSED**, which is the same misattribution classes 1,
+    // 2 and 11 are refined against. **`19-32` re-derived that no existing entry
+    // falls out:** no `CONTROL_CARRIER_INTERIOR_PATH` entry begins with `<<<`,
+    // `<<-`, `<<`, `>&` or `<&`.
+    if non_pathname_redirection_target("", text).is_some() {
+        return false;
+    }
     text.char_indices()
         .filter(|(index, character)| *index > 0 && *character == '/')
         .any(|(index, _)| {
@@ -8230,6 +8471,93 @@ fn draws_an_interior_carrier_path(command: &str) -> bool {
     })
 }
 
+/// **CLASS 13** — a non-governed command whose carrier path is carried by a word
+/// after one of bash's FIVE **NON-PATHNAME** redirection operators.
+/// **`T-19-122`, `high` — and the class `19-33`'s widened WORD SET closes.**
+///
+/// # WHY IT NEEDS A CLASS OF ITS OWN: THE WORD IS IN *NEITHER* WORD CLASS
+///
+/// `consume_redirection` (`policy.rs:3532-3609`) consumes the target word and
+/// emits **no `Token`** — that is round 6's deletion model, unchanged and
+/// correct — and pushes it onto `Segment::redirection_targets` only under
+/// `if pathname_target && target.literal` (`:3581`). `redirection_operator`
+/// (`:3205`) answers `pathname_target = false` for `<<<`, `<<`, `<<-`, `>&` and
+/// `<&`. **So the word is in NEITHER of the two classes
+/// `protected_carrier_named` iterates at `policy.rs:6118-6128`**, while being
+/// fully `Token.literal`, ABSOLUTE at index zero, needing no cwd and no link,
+/// and naming the directory EXACTLY — **none of the three declared silences.**
+///
+/// # THE PREDICATE DECIDES ON THE WORD'S TEXT, ON THE CARRIER PATHS, AND ON
+/// WHICH OPERATOR PRECEDES IT
+///
+/// It reads bash's own seven/five split (`policy.rs:3193-3229`) rather than
+/// inventing a second list — the licence [`DISPLACING_REDIRECTIONS`] already
+/// exercises for a corpus-side classifier — and it accepts the path at index
+/// ZERO **or** at a NON-ZERO index, **so it COMPOSES with class 12's text fact
+/// rather than duplicating it.**
+///
+/// # THE FOUR EXCLUSIONS KEEP IT DISJOINT FROM CLASSES 3, 8, 9 AND 10
+///
+/// A word carrying `$`, a leading `~`, a pathname-expansion metacharacter or a
+/// brace list is NOT `Token.literal`; rule (a) requires that bit, and `19-33`
+/// applies the literal filter BEFORE any candidate is produced — indeed
+/// `skip_redirection_target` computes the SAME bit for a redirection target by
+/// the SAME `REWRITING_CHARACTERS` classification, which is why the third word
+/// class inherits the exclusion by construction.
+fn draws_a_non_pathname_target_carrier(command: &str) -> bool {
+    carrier_words(command).iter().any(|word| {
+        let Some(target) = word.non_pathname_target.as_deref() else {
+            return false;
+        };
+        if target.contains('$')
+            || target.starts_with('~')
+            || word_has_pathname_metacharacter(target)
+            || word_has_brace_list(target)
+        {
+            return false;
+        }
+        std::iter::once(0)
+            .chain(
+                target
+                    .char_indices()
+                    .filter(|(_, character)| *character == '/')
+                    .map(|(index, _)| index),
+            )
+            .any(|index| {
+                let candidate = &target[index..];
+                candidate.starts_with(REPRESENTATIVE_ENVELOPE_ROOT)
+                    || candidate == REPRESENTATIVE_BINARY_PATH
+            })
+    })
+}
+
+/// **CLASS 14** — a non-governed command naming a proper **ANCESTOR** of the
+/// envelope directory that is itself at or under the envelope root.
+/// **`T-19-123`, `high` — and the class `19-33`'s widened PATH SET closes.**
+///
+/// # WHY IT NEEDS A CLASS OF ITS OWN
+///
+/// `word_is_within` (`policy.rs:5685-5711`) is a component-wise PREFIX over
+/// `<root>/<alias>` and returns early on `word.len() < dir.len()` (`:5706`), so
+/// **every ANCESTOR — being SHORTER — answers `false`**, while
+/// `rm -rf <root>` takes the same nine carriers in ONE call that the prefix
+/// boundary exists to protect.
+///
+/// **THE CLASS IS DISJOINT FROM CLASS 12 BY REFINEMENT AND FROM CLASS 11 BY
+/// CONSTRUCTION.** Class 12 now excludes a word whose interior path IS the root
+/// (see [`word_carries_an_interior_carrier_path`]); class 11 is an EQUALITY over
+/// the binary, which is not under the envelope root at all. It is disjoint from
+/// class 1 because class 1 now excludes a word naming the root exactly.
+///
+/// **IT DRAWS AT INDEX ZERO *AND* AT A NON-ZERO INDEX**, so `tar -C<ENV> …`
+/// composes the ancestor with round 12's interior scan — which is the row that
+/// proves the two mechanisms meet at one site rather than being two rules.
+fn draws_an_ancestor_of_the_envelope_directory(command: &str) -> bool {
+    carrier_words(command)
+        .iter()
+        .any(|word| !word.quoted && word_carries_an_ancestor_of_the_envelope_directory(&word.text))
+}
+
 /// One named class and the predicate that decides whether a command draws it.
 type ControlCarrierClass = (&'static str, fn(&str) -> bool);
 
@@ -8246,6 +8574,25 @@ type ControlCarrierClass = (&'static str, fn(&str) -> bool);
 ///
 /// **Class 7 stays at index 6**, because it is the COMPLEMENT and the
 /// existing-axis fence at (C) below skips it by index with its reason stated.
+///
+/// **ROUND 12 TOOK IT TO TWELVE AND ROUND 13 TAKES IT TO FOURTEEN, AND BOTH NEW
+/// CLASSES ARE ON *THIS* AXIS RATHER THAN A SIXTH ONE.** Rule (a) decides on a
+/// word's PATH — so **which words reach the rule** (class 13) and **which paths
+/// it protects** (class 14) are the same axis's own alphabet, not a new stage.
+/// Standing either up as a sixth axis would lose exactly the distinction audit 8
+/// drew when round 9 correctly refused one, and folding them onto
+/// `CONFIG_RESOLUTION_CLASSES`, `UNREADABLE_CLASSES`, `DELETION_CLASSES` or
+/// `CALLEE_GRAMMAR_CLASSES` would put a command that reaches NO governed program
+/// on an axis every one of whose properties splices into a governed base.
+///
+/// **The three silences these fourteen classes now span, stated once:**
+///
+/// ```text
+/// AXIS 1  WHICH WORDS REACH THE READER      classes 2 and 13
+/// AXIS 2  WHAT THE READER SEES IN A WORD    classes 3, 5, 8, 9, 10, 12
+/// AXIS 3  WHICH PATHS THE COMPARISON        classes 1, 4, 6, 11, 14
+///         PROTECTS
+/// ```
 const CONTROL_CARRIER_CLASSES: &[ControlCarrierClass] = &[
     (
         "an absolute literal operand under the envelope root",
@@ -8274,6 +8621,14 @@ const CONTROL_CARRIER_CLASSES: &[ControlCarrierClass] = &[
         "a carrier path INSIDE a literal word, at a non-zero index",
         draws_an_interior_carrier_path,
     ),
+    (
+        "a carrier path after a NON-PATHNAME redirection operator",
+        draws_a_non_pathname_target_carrier,
+    ),
+    (
+        "an ANCESTOR of the envelope directory, at or under the root",
+        draws_an_ancestor_of_the_envelope_directory,
+    ),
 ];
 
 /// Whether a command draws ANY of the eleven.
@@ -8297,6 +8652,8 @@ const CONTROL_CARRIER_REPRESENTATIVES: &[&str] = &[
     "rm -f <ENV>/alpha/{pr-ledger.ndjson,x}",
     "cp /bin/true <BIN>",
     "dd if=/dev/null of=<ENV>/alpha/pr-ledger.ndjson",
+    "xargs rm -rf <<< <ENV>/alpha",
+    "rm -rf <ENV>",
 ];
 
 /// **THE FAIL-CLOSED ALPHABET, WITH ITS OWN PROPERTY.**
@@ -8458,6 +8815,154 @@ const CONTROL_CARRIER_INTERIOR_PATH: &[&str] = &[
     // 12 — the BINARY behind a DIFFERENT `=` spelling, so the EXACT-PATH half is
     //      reached by more than one option.
     "tar --directory=<BIN> --create --file /tmp/t .",
+    // 13 — **ADDED BY ROUND 13, `T-19-126`(ii). See the WR-02 note below.** The
+    //      same attached short option as entry 7, WITH the `.` member, which is
+    //      what makes it REACH the file under real GNU tar.
+    "tar --create --file /tmp/t -C<ENV>/alpha .",
+];
+
+/// **WR-02 — APPENDED BY ROUND 13. ENTRY 7 DOES NOT REACH THE FILE, AND THE
+/// ALPHABET'S DOC ABOVE SAYS EVERY ENTRY WAS DRAWN FROM `19-30`'s MEASURED
+/// SWEEP.**
+///
+/// Audit 12 measured `tar --create --file /tmp/t -C<ENV>/alpha` — entry 7 as
+/// re-spelled — answering *"Cowardly refusing to create an empty archive"* under
+/// real GNU tar, because the re-spelling **moved `-C` last and dropped the `.`
+/// member**. `19-32` re-measured it and it reproduces: tar exits non-zero and no
+/// archive is created.
+///
+/// **THE CLASS IS NOT VACUOUS** — entries 8 and 9 reach, verified — so this is
+/// ONE ROW'S EVIDENTIARY VALUE rather than a hole in the class.
+///
+/// **THE REPAIR IS AN *ADDED* REACHING ENTRY AND THIS *APPENDED* NOTE, NEVER A
+/// DELETION AND NEVER A RE-SPELLING.** Entry 7 stays exactly as it is: **a case
+/// that stops being drawn is a case that stops being able to fail**, and entry 7
+/// still draws class 12 and still fences the rule shape. Entry 13 is the same
+/// attachment WITH the `.` member, measured REACHING — `tar -tf` lists
+/// `./pr-ledger.ndjson` out of the archive.
+///
+/// **AND THE RE-SPELLING'S ORIGINAL MOTIVE IS MOOT, WHICH AUDIT 12 MEASURED.**
+/// With a `c`-containing envelope root BOTH the re-spelled and the original
+/// forms answer exit 2, because the carrier clause is raised at the top of
+/// `classify_segments`' loop, ABOVE program resolution. The re-spelling bought
+/// nothing and cost the reach.
+const CONTROL_CARRIER_INTERIOR_PATH_WR_02: &str = "\
+entry 7 (`tar --create --file /tmp/t -C<ENV>/alpha`) does NOT reach the file \
+under real GNU tar — `Cowardly refusing to create an empty archive` — because \
+the re-spelling moved `-C` last and dropped the `.` member. Entry 13 is the \
+ADDED reaching form. Entry 7 is NOT deleted and NOT re-worded.";
+
+/// **`T-19-122` — THE WORD IN NEITHER WORD CLASS. A FAIL-CLOSED ALPHABET, NEW
+/// IN ROUND 13.**
+///
+/// **WHY IT NEEDS ITS OWN ALPHABET AND CLASS.** Every entry here satisfies
+/// class 1 NOT (its carrier word is a redirection target), class 2 NOT (round
+/// 13 requires a PATHNAME operator there), class 11 NOT (round 13 excludes a
+/// command this class draws) and class 12 NOT (that requires a non-redirection
+/// word) — **so without class 13 every one of them would land in class 7, the
+/// COMPLEMENT, which is in the INVARIANCE arm.** That would assert PERMITTED a
+/// row `19-33` REFUSES, landing permanently red in a file `19-33` may only ADD
+/// to. Same shape as `19-18`'s `{v}>` blocker, `19-20`'s split, `19-22`'s,
+/// `19-24`'s, `19-28`'s and `19-30`'s — **the SEVENTH time, and the SECOND
+/// through CLASS 2 specifically.**
+///
+/// **THE ENTRIES ARE DRAWN FROM `19-32`'s MEASURED SWEEP AND FROM NOTHING
+/// ELSE.** Every one was driven against the built binary at exit 0 with an empty
+/// walk, its OUTSIDE-THE-PATH-SET twin was driven at exit 0 too, and — except
+/// where stated — its REACH was demonstrated under real `bash`.
+///
+/// **THE ALPHABET IS DELIBERATELY NOT A HERE-STRING ALPHABET, and the WORD-SET
+/// fence COUNTS that rather than trusting this sentence.** Entries 5 and 6 use
+/// `>&`, which is a different one of bash's five non-pathname operators —
+/// because **an alphabet that only ever drew `<<<` is an alphabet that certifies
+/// a here-string-only rule**, one operator short in exactly the way the current
+/// rule is one word class short.
+///
+/// **ENTRY 7 CARRIES THE PATH AT A NON-ZERO INDEX INSIDE THE HERE-STRING WORD,
+/// AND ITS REACH IS NOT CLAIMED.** `xargs` hands `of=<ENV>/alpha` to `rm -rf` as
+/// a literal filename, so no file under the envelope directory is opened. **It
+/// fences the rule SHAPE rather than a measured bypass** — a rule that read only
+/// the WHOLE here-string word would miss it and the mandated design does not —
+/// exactly as entry 11 of [`CONTROL_CARRIER_INTERIOR_PATH`] already does.
+///
+/// **TWO OPERATORS ARE A RECORDED DELIBERATE ABSENCE, with their reason**, the
+/// way [`CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING`] already records one:
+/// `<<` and `<<-` WITH THE PATH AS THE DELIMITER are permitted by the guard and
+/// **REACH NOTHING** (bash warns *here-document at line 1 delimited by
+/// end-of-file* and the body is empty), and `<&` with a path answers *ambiguous
+/// redirect*. **A spelling the guard permits but the shell does not reach is not
+/// a bypass**, so all three are RECORDED in `tests/envelope_word_set.rs`'s
+/// section 14 rather than drawn here.
+///
+/// **THE HEREDOC *BODY* FORM IS ABSENT FOR THE OPPOSITE REASON:** it REACHES,
+/// and the guard **already refuses it** at exit 2, because `\n` is a `SEPARATORS`
+/// entry and the body is an ordinary segment of its own. That is round 13's
+/// CORRECTION to audit 12, and a verdict-PRESERVING row does not belong in a
+/// fail-closed arm.
+const CONTROL_CARRIER_NON_PATHNAME_TARGET: &[&str] = &[
+    // 1-3 — the here-string over the envelope DIRECTORY, the LEDGER and the BINARY.
+    "xargs rm -rf <<< <ENV>/alpha",
+    "xargs rm -f <<< <ENV>/alpha/pr-ledger.ndjson",
+    "xargs cp /bin/true <<< <BIN>",
+    // 4 — a SECOND here-string spelling, under a different `xargs` invocation and
+    //     over the hook-stub directory, SAFE-05's only carrier.
+    "xargs -n1 rm -rf <<< <ENV>/alpha/hooks",
+    // 5-6 — **AN OPERATOR OTHER THAN `<<<`.** `>&` with a path is not an fd
+    //       duplication at all: bash falls back to `&>word` and OPENS THE FILE.
+    //       Measured REACHING — the ledger was truncated to ZERO bytes.
+    ": >&<ENV>/alpha/pr-ledger.ndjson",
+    "echo evil >&<ENV>/alpha/askpass",
+    // 7 — the carrier path at a NON-ZERO index inside the here-string word, so
+    //     the third word class and round 12's interior scan are drawn COMPOSED.
+    //     Reach NOT claimed; see the doc above.
+    "xargs rm -rf <<< of=<ENV>/alpha",
+];
+
+/// **`T-19-123` — THE PATH THE COMPARISON NEVER PROTECTS. A FAIL-CLOSED
+/// ALPHABET, NEW IN ROUND 13.**
+///
+/// **WHY IT NEEDS ITS OWN ALPHABET AND CLASS.** A word that IS the envelope root
+/// `starts_with` the root, so every entry here satisfied **class 1 — the class
+/// ROUND 10 CLOSED** — until round 13 refined class 1 to exclude an exact-root
+/// word. Filing a live, unruled bypass under a closed control is worse than a
+/// wrong arm.
+///
+/// **THE ENTRIES ARE DRAWN FROM `19-32`'s MEASURED SWEEP AND EVERY ONE REACHES**,
+/// verified under real `bash`: `rm -rf` and `rm -rf …/` deleted the root and the
+/// envelope directory with it; `mv` moved the whole root away; `find -delete`
+/// emptied it; `chmod 000` made the envelope directory inaccessible; `tar -C`
+/// archived `./alpha/pr-ledger.ndjson`; and `cd <ENV> && rm -rf alpha` deleted
+/// the directory from a cwd the guard has no way to resolve.
+///
+/// **ENTRY 6 CARRIES THE ANCESTOR AT A NON-ZERO INDEX**, so the ancestor clause
+/// and round 12's interior scan are drawn COMPOSED rather than assumed — which
+/// is what would turn this file red if `19-33` wrote the ancestor comparison
+/// OUTSIDE the per-candidate walk.
+///
+/// **ENTRY 7 IS THE ROW THAT DEFEATS THE NARROWING `protected_carrier_named`'s
+/// OWN DOC CLAIMS.** The doc says `cd <env>/<alias> && rm -f pr-ledger.ndjson`
+/// *"is refused BY SEGMENT ONE"* — measured TRUE — but one component up, segment
+/// one names the ANCESTOR and nothing refuses it.
+///
+/// **THE STOP IS PINNED FROM THE OTHER SIDE IN
+/// [`CONTROL_CARRIER_ORDINARY_OPERANDS`]**, by `ls <ENV>/unrelated-sibling`,
+/// `rm -rf <ENV>/beta` and `ls <ENVPAR>` — **so a PREFIX widened to the root
+/// instead of an ANCESTOR clause beside it turns THIS FILE red rather than
+/// turning a driven run unusable.** The ANCESTOR-STOP fence asserts the pair by
+/// name.
+const CONTROL_CARRIER_ANCESTOR: &[&str] = &[
+    // 1-2 — the root, and its trailing-slash spelling, which normalises identically.
+    "rm -rf <ENV>",
+    "rm -rf <ENV>/",
+    // 3-5 — THREE spellings that are not `rm`, so the class cannot certify a
+    //       rule that read a program name. All three REACH.
+    "mv <ENV> /tmp/gone",
+    "find <ENV> -delete",
+    "chmod 000 <ENV>",
+    // 6 — the ancestor at a NON-ZERO index, composed with the interior scan.
+    "tar -C<ENV> --create --file /tmp/t .",
+    // 7 — the TWO-SEGMENT composite that defeats the doc's own claimed narrowing.
+    "cd <ENV> && rm -rf alpha",
 ];
 
 /// **THE VERDICT-PRESERVING REDIRECTION TARGETS — NEW IN ROUND 11, in the
@@ -8644,6 +9149,38 @@ const CONTROL_CARRIER_ORDINARY_OPERANDS: &[&str] = &[
     "curl https://github.com/o/r",
     // A `:`-attached path in its rsync spelling.
     "rsync host:/tmp/g /tmp/x",
+    // **ROUND 13's ANCESTOR-STOP CONTROLS — THE OTHER SIDE OF `T-19-123`, AND
+    // WHAT TELLS AN ANCESTOR CLAUSE FROM A PREFIX WIDENED TO THE ROOT.**
+    //
+    // `19-33`'s mandated clause refuses a candidate that is a proper ANCESTOR of
+    // `<root>/<alias>` and is itself at or under `<root>`. The ancestor set is
+    // EXACTLY `{<root>}`, because the alias is a plain single path component and
+    // `ledger_path_in` refuses anything else — **so the protected set grows by
+    // EXACTLY ONE PATH.**
+    //
+    // **A PREFIX WIDENED TO `<root>` REFUSES ALL THREE OF THESE AND THE
+    // ANCESTOR CLAUSE REFUSES NONE.** That is the whole difference between the
+    // two designs, and it is drawn here rather than argued. And because
+    // `GSD_MM_ENVELOPE_ROOT` is USER-SETTABLE, the prefix design would refuse the
+    // whole `/tmp` subtree for a user who set the root there — reachable
+    // configuration, not a thought experiment.
+    "ls <ENV>/unrelated-sibling",
+    "rm -f <ENV>/unrelated-sibling",
+    "rm -rf <ENV>/beta",
+    // **THE STOP ITSELF.** The root's own PARENT is ABOVE the clause's boundary
+    // and NO RULE IS WRITTEN FOR IT. A clause that walked the whole ancestor
+    // chain to `/` turns this row red — and refusing `ls /tmp` is an OUTAGE
+    // rather than a boundary (AR-19-11). **That residue is registered,
+    // disclosed and UNACCEPTED.**
+    "ls <ENVPAR>",
+    // **ROUND 13's WORD-SET CONTROLS — what keeps class 13 a PATH class rather
+    // than a HERE-STRING BAN.** The rejected third design (*treat every
+    // deleted-and-unrecorded word as unresolvable*) turns all four of these red,
+    // which is why it is rejected in writing rather than left unconsidered.
+    "cat <<<x",
+    "cat <<< /tmp/x",
+    "echo x >&/tmp/plain-outside",
+    "xargs rm -rf <<< of=/tmp/g/x",
 ];
 
 /// The near-miss entries the PATH-PREFIX-NOT-BASENAME fence asserts BY NAME.
@@ -8682,6 +9219,11 @@ const CONTROL_CARRIER_ALPHABETS: &[(&str, &[&str])] = &[
     ("CONTROL_CARRIER_TILDE_BORNE", CONTROL_CARRIER_TILDE_BORNE),
     ("CONTROL_CARRIER_GLOB_BORNE", CONTROL_CARRIER_GLOB_BORNE),
     ("CONTROL_CARRIER_BRACE_BORNE", CONTROL_CARRIER_BRACE_BORNE),
+    (
+        "CONTROL_CARRIER_NON_PATHNAME_TARGET",
+        CONTROL_CARRIER_NON_PATHNAME_TARGET,
+    ),
+    ("CONTROL_CARRIER_ANCESTOR", CONTROL_CARRIER_ANCESTOR),
 ];
 
 /// **THE FAIL-CLOSED ARM — THREE alphabets after round 11, FOUR after round
@@ -8697,6 +9239,12 @@ const CONTROL_CARRIER_FAIL_CLOSED_ALPHABETS: &[(&str, &[&str])] = &[
     ("CONTROL_CARRIER_REDIRECTION_TARGETS", CONTROL_CARRIER_REDIRECTION_TARGETS),
     ("CONTROL_CARRIER_BINARY", CONTROL_CARRIER_BINARY),
     ("CONTROL_CARRIER_INTERIOR_PATH", CONTROL_CARRIER_INTERIOR_PATH),
+    // **ROUND 13's TWO. Both are RED today and green only after `19-33`.**
+    (
+        "CONTROL_CARRIER_NON_PATHNAME_TARGET",
+        CONTROL_CARRIER_NON_PATHNAME_TARGET,
+    ),
+    ("CONTROL_CARRIER_ANCESTOR", CONTROL_CARRIER_ANCESTOR),
 ];
 
 /// The EIGHT verdict-PRESERVING alphabets the invariance arm DRIVES.
@@ -8725,6 +9273,7 @@ const CONTROL_CARRIER_INVARIANCE_ALPHABETS: &[(&str, &[&str])] = &[
 /// predicates.
 fn control_carrier_representative(entry: &str) -> String {
     entry
+        .replace(ENVELOPE_PARENT_PLACEHOLDER, REPRESENTATIVE_ENVELOPE_PARENT)
         .replace(ENVELOPE_ROOT_PLACEHOLDER, REPRESENTATIVE_ENVELOPE_ROOT)
         .replace(NEAR_MISS_ROOT_PLACEHOLDER, REPRESENTATIVE_NEAR_MISS_ROOT)
         .replace(BINARY_PARENT_PLACEHOLDER, REPRESENTATIVE_BINARY_PARENT)
@@ -8760,7 +9309,12 @@ fn control_carrier_command(entry: &str, root: &Path) -> String {
         .expect("the running binary has a parent directory")
         .display()
         .to_string();
+    let envelope_parent = Path::new(&root)
+        .parent()
+        .map(|parent| parent.display().to_string())
+        .unwrap_or_else(|| "/".to_string());
     entry
+        .replace(ENVELOPE_PARENT_PLACEHOLDER, &envelope_parent)
         .replace(ENVELOPE_ROOT_PLACEHOLDER, &root)
         .replace(NEAR_MISS_ROOT_PLACEHOLDER, &near_miss)
         .replace(BINARY_PARENT_PLACEHOLDER, &binary_parent)
@@ -8840,10 +9394,39 @@ fn control_carrier_ordinary_twin(entry: &str) -> String {
 /// **Audit 5 found `19-16` set a floor of 50 against a maximum of 40 BY
 /// CONSTRUCTION, so the arithmetic is stated and CHECKED against the alphabets
 /// rather than against the prose.**
-const CONTROL_CARRIER_CASES: usize = 84;
-const CONTROL_CARRIER_SLOTS: usize = 13;
-const MIN_CONTROL_CARRIER_CLASSES: usize = 12;
-const MIN_CONTROL_CARRIER_INTERIOR_PATH: usize = 12;
+/// **RE-DERIVED IN ROUND 13 FROM THE TWO NEW CLASSES, THE TWO NEW ALPHABETS, THE
+/// GROWN ORDINARY ALPHABET, THE ONE ADDED INTERIOR ENTRY *AND* ALL SIX PREDICATE
+/// EXTENSIONS.** SIX predicates changed — **so re-deriving from the alphabets
+/// alone would miss most of it:**
+///
+/// * **class 1** excludes a word naming the root EXACTLY (→ class 14);
+/// * **class 2** requires a PATHNAME operator (→ class 13);
+/// * **class 5** excludes a NON-PATHNAME redirection target (→ class 13);
+/// * **class 7**, the COMPLEMENT, excludes classes 13 and 14;
+/// * **class 11** excludes a command class 13 draws (→ class 13);
+/// * **class 12** excludes a word whose interior path IS the root (→ class 14)
+///   and a word that is itself a non-pathname target in the ATTACHED spelling
+///   (→ class 13).
+///
+/// **FOUR of the six were forced by MEASUREMENT rather than chosen for
+/// symmetry**, and two of those four — class 5's and class 12's second clause —
+/// were found by the class-count fence going red at 15 against a derived 13
+/// while this plan was being executed, which is exactly what that fence exists
+/// to do.
+///
+/// * non-pathname target       — **7**  entries (NEW, fail-closed)
+/// * ancestor                  — **7**  entries (NEW, fail-closed)
+/// * interior-path             — 12 + **1** = **13** (the `T-19-126`(ii) ADDITION)
+/// * ordinary operands         — 24 + **8** = **32** (4 ANCESTOR-STOP + 4 WORD-SET controls)
+/// * every other alphabet      — unchanged
+/// * total = 84 + 7 + 7 + 1 + 8 = **107** cases
+/// * slots = one per alphabet = 13 + 2 = **15**
+const CONTROL_CARRIER_CASES: usize = 107;
+const CONTROL_CARRIER_SLOTS: usize = 15;
+const MIN_CONTROL_CARRIER_CLASSES: usize = 14;
+const MIN_CONTROL_CARRIER_NON_PATHNAME_TARGET: usize = 7;
+const MIN_CONTROL_CARRIER_ANCESTOR: usize = 7;
+const MIN_CONTROL_CARRIER_INTERIOR_PATH: usize = 13;
 const MIN_ENVELOPE_ROOT_OPERAND_CARRIERS: usize = 11;
 const MIN_CONTROL_CARRIER_REDIRECTION_TARGETS: usize = 4;
 const MIN_CONTROL_CARRIER_BINARY: usize = 5;
@@ -8851,7 +9434,7 @@ const MIN_CONTROL_CARRIER_EXPANSION_BORNE: usize = 2;
 const MIN_CONTROL_CARRIER_SYMLINKED: usize = 2;
 const MIN_CONTROL_CARRIER_RELATIVE: usize = 2;
 const MIN_CONTROL_CARRIER_REPO_SIDE: usize = 6;
-const MIN_CONTROL_CARRIER_ORDINARY_OPERANDS: usize = 24;
+const MIN_CONTROL_CARRIER_ORDINARY_OPERANDS: usize = 32;
 const MIN_CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING: usize = 4;
 const MIN_CONTROL_CARRIER_TILDE_BORNE: usize = 4;
 const MIN_CONTROL_CARRIER_GLOB_BORNE: usize = 4;
@@ -8917,22 +9500,76 @@ const MIN_CONTROL_CARRIER_BRACE_BORNE: usize = 4;
 /// **Class 5 stays at 2 despite its refinement**, because both relative entries
 /// carry no `/` at all and cannot have an interior path; the refinement exists
 /// to keep the twelve NEW entries out, not to move an old one.
+/// **ROUND 13 RE-DERIVES ALL OF THEM OVER THE 107 GENERATED COMMANDS, AND FOUR
+/// COUNTS MOVE. Each fall is the ARITHMETIC PROOF that one predicate extension
+/// took effect, which is why the naive number is written beside it.**
+///
+/// * **class 1 (envelope-root operand) — 11 → 14.** The three ANCESTOR-STOP
+///   controls `ls <ENV>/unrelated-sibling`, `rm -f <ENV>/unrelated-sibling` and
+///   `rm -rf <ENV>/beta` are absolute literal operands under the ROOT, so this
+///   class draws them. **That OVERLAP is RECORDED rather than smoothed away, and
+///   it is exactly the distinction `T-19-123` is about**: this class's predicate
+///   is over the ROOT while rule (a)'s prefix is over `<root>/<alias>`. The
+///   three are PERMITTED before and after and sit in the INVARIANCE arm; no
+///   fail-closed property touches them. **The NAIVE count — class 1 without the
+///   exact-root exclusion — would be 14 + 6 = 20**, because six of the seven
+///   `CONTROL_CARRIER_ANCESTOR` entries name the root as a whole word. **That
+///   fall of SIX is the proof the class-1 refinement took effect.**
+/// * **class 2 (redirection target) — 4, UNCHANGED, and the unchangedness is
+///   itself the check.** Every entry of `CONTROL_CARRIER_REDIRECTION_TARGETS`
+///   and `CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING` uses `>` or `>>`, both
+///   PATHNAME operators, so requiring one drops nothing. **The NAIVE count —
+///   class 2 without the pathname requirement — would be 4 + 3 = 7**, because
+///   three `CONTROL_CARRIER_NON_PATHNAME_TARGET` entries put a word starting
+///   with the root after a `<<<`. **That fall of THREE is the proof.**
+/// * **class 7 (ordinary) — 24 → 29.** The ordinary alphabet is now 32, of which
+///   the three sibling controls draw class 1 instead. **The NAIVE count — class
+///   7 without the two new exclusion clauses — would be 29 + 7 + 7 = 43.** That
+///   fall of FOURTEEN is the proof the COMPLEMENT extension took effect, and it
+///   is exactly the seven class-13 and seven class-14 entries.
+/// * **class 11 (the guard's own binary) — 5, UNCHANGED.** **The NAIVE count
+///   would be 6**, because `xargs cp /bin/true <<< <BIN>` puts the binary's own
+///   path in a here-string target. That fall of ONE is the proof.
+/// * **class 12 (interior path) — 12 → 13**, the one entry round 13 ADDS. **The
+///   NAIVE count — class 12 without EITHER of its two new guards — would be
+///   13 + 1 + 2 = 16:** `tar -C<ENV> …` carries the ROOT at a non-zero index
+///   (the ancestor guard), and `: >&<ledger>` and `echo evil >&<ENV>/alpha/askpass`
+///   are ONE whitespace word each whose `/` sits at index 2 (the attached-target
+///   guard). **That fall of THREE is the proof**, and the second guard was found
+///   by this very fence going red at 15 against a derived 13.
+/// * **class 5 (relative) — 2, UNCHANGED. The NAIVE count would be 4**, because
+///   the two `>&` entries do not begin with `/` and their BASENAMES —
+///   `pr-ledger.ndjson` and `askpass` — are carrier filenames. That fall of TWO
+///   is the proof class 5's third refinement took effect.
+/// * **class 13 (non-pathname target) — the 7 new entries and NOTHING else.** No
+///   existing entry draws it: every other redirection in every alphabet uses `>`
+///   or `>>`, and the four new ordinary WORD-SET controls carry no protected
+///   path in their target.
+/// * **class 14 (ancestor) — the 7 new entries and NOTHING else.** `ls <ENVPAR>`
+///   resolves to `/tmp`, which is ABOVE the root and not an ancestor AT OR UNDER
+///   it; every other entry names the root with at least one component after it.
+///
+/// **Classes 3, 4, 5, 6, 8, 9 and 10 are unchanged**, and class 5 in particular
+/// stays at 2 despite class 12's refinement, because both relative entries carry
+/// no `/` at all.
 const CONTROL_CARRIER_CLASS_COUNTS: &[(&str, usize)] = &[
-    ("an absolute literal operand under the envelope root", 11),
+    ("an absolute literal operand under the envelope root", 14),
     ("a redirection target under the envelope root", 4),
     ("an expansion-borne carrier operand", 3),
     ("a symlinked carrier operand", 3),
     ("a relative carrier operand", 2),
     ("a repo-side control carrier", 6),
-    ("an ordinary path operand", 24),
+    ("an ordinary path operand", 29),
     ("a tilde-borne carrier word", 5),
     ("a glob-borne carrier word", 5),
     ("a brace-list-borne carrier word", 5),
     ("the guard's own binary", 5),
     (
         "a carrier path INSIDE a literal word, at a non-zero index",
-        12,
+        13,
     ),
+    ("a carrier path after a NON-PATHNAME redirection operator", 7),
+    ("an ANCESTOR of the envelope directory, at or under the root", 7),
 ];
 
 #[test]
@@ -9237,6 +9874,16 @@ fn every_alphabet_this_round_widens_can_draw_a_fact_about_the_file_a_control_liv
             CONTROL_CARRIER_INTERIOR_PATH,
             MIN_CONTROL_CARRIER_INTERIOR_PATH,
         ),
+        (
+            "CONTROL_CARRIER_NON_PATHNAME_TARGET",
+            CONTROL_CARRIER_NON_PATHNAME_TARGET,
+            MIN_CONTROL_CARRIER_NON_PATHNAME_TARGET,
+        ),
+        (
+            "CONTROL_CARRIER_ANCESTOR",
+            CONTROL_CARRIER_ANCESTOR,
+            MIN_CONTROL_CARRIER_ANCESTOR,
+        ),
     ] {
         assert!(
             entries.len() >= floor,
@@ -9457,6 +10104,16 @@ fn the_carrier_rule_may_not_be_a_denylist_of_program_names() {
         // both production halves, and the fence counts that rather than
         // trusting this comment.
         ("CONTROL_CARRIER_INTERIOR_PATH", CONTROL_CARRIER_INTERIOR_PATH),
+        // **EXTENDED BY ROUND 13 TO BOTH NEW CLASSES.** `19-33` widens the WORD
+        // SET and the PATH SET, and neither widening may teach the guard a
+        // program name. `xargs` is absent from both production halves (measured
+        // zero occurrences of the quoted literal in each), and so are `mv`,
+        // `find`, `chmod` and `tar`.
+        (
+            "CONTROL_CARRIER_NON_PATHNAME_TARGET",
+            CONTROL_CARRIER_NON_PATHNAME_TARGET,
+        ),
+        ("CONTROL_CARRIER_ANCESTOR", CONTROL_CARRIER_ANCESTOR),
     ] {
         let unknown: Vec<&str> = entries
             .iter()
@@ -9579,6 +10236,451 @@ fn the_carrier_rule_must_resolve_a_path_prefix_and_not_a_basename() {
         "the POSITIVE control: without it the six absences above pass because the predicate \
          answers `false` for everything."
     );
+
+    // -- **EXTENDED BY ROUND 13: THE ANCESTOR COMPARISON IS THE SAME COMPONENT
+    //    VECTORS THE OTHER WAY ROUND, AND IT IS BOUNDED AT THE ROOT — WHICH IS
+    //    THE MECHANICAL REASON IT ADDS EXACTLY ONE PATH.**
+    //
+    //    `word_is_within` asks whether the CANDIDATE's component vector has the
+    //    DIRECTORY's as a prefix. The ancestor clause asks the converse — whether
+    //    the DIRECTORY's has the CANDIDATE's as a proper prefix — and then bounds
+    //    the answer by requiring the candidate to be at or under the ROOT.
+    //    Because the alias is a plain single path component (`ledger_path_in`
+    //    refuses anything else), the set of candidates satisfying BOTH halves is
+    //    exactly `{<root>}`.
+    //
+    //    **A CLAUSE THAT DROPPED THE SECOND HALF WOULD REACH `/tmp` AND `/`**,
+    //    and these rows are what turns that red.
+    for (word, why) in [
+        (
+            REPRESENTATIVE_ENVELOPE_PARENT,
+            "**THE STOP.** The root's own PARENT is a proper ancestor of the envelope \
+             directory and is NOT at or under the root, so the clause does not reach it",
+        ),
+        ("/", "the filesystem root, one further up"),
+        (
+            REPRESENTATIVE_BINARY_PARENT,
+            "**the BINARY's parent. NO ANCESTOR CLAUSE IS WRITTEN FOR THE BINARY** — \
+             `word_is_exactly` stays an EQUALITY because its directory is shared with \
+             everything the user installed",
+        ),
+        (
+            "/tmp/gsd-envelope-root/alpha",
+            "the envelope DIRECTORY itself is not a PROPER ancestor of itself",
+        ),
+        (
+            "/tmp/gsd-envelope-root/unrelated-sibling",
+            "**THE ANCESTOR-vs-PREFIX DISCRIMINATOR.** It is UNDER the root and is NOT an \
+             ancestor of the envelope directory, so the ancestor clause leaves it alone — \
+             where a PREFIX widened to the root refuses it",
+        ),
+    ] {
+        assert!(
+            !word_carries_an_ancestor_of_the_envelope_directory(word),
+            "\n\n**`{word}` MUST NOT BE READ AS AN ANCESTOR: {why}.**\n\n\
+             The ancestor clause is bounded at `<root>` on OWNERSHIP grounds and adds EXACTLY \
+             ONE path. If this fires, the clause reached past its stop — and refusing `ls /`, \
+             `df /`, `du -sh $HOME` or `ls /tmp` is an OUTAGE rather than a boundary \
+             (AR-19-11)."
+        );
+    }
+    for (word, why) in [
+        (REPRESENTATIVE_ENVELOPE_ROOT, "the root, named exactly"),
+        (
+            "/tmp/gsd-envelope-root/",
+            "the trailing-slash spelling, which `lexical_absolute_components` normalises \
+             identically",
+        ),
+        (
+            "-C/tmp/gsd-envelope-root",
+            "**the ancestor COMPOSED with round 12's interior scan**, at a non-zero index",
+        ),
+    ] {
+        assert!(
+            word_carries_an_ancestor_of_the_envelope_directory(word),
+            "the ANCESTOR clause's positive control `{word}` must answer `true`: {why}. \
+             Without these the five absences above pass because the predicate answers `false` \
+             for everything."
+        );
+    }
+}
+
+#[test]
+fn no_control_carrier_floor_or_class_count_fell_when_round_13_re_derived_them() {
+    // **THE MONOTONICITY PIN — NEW IN ROUND 13, AND IT EXISTS BECAUSE OF A
+    // CONTRADICTION IN `19-32`'s OWN GATE THAT IS REPORTED RATHER THAN
+    // SMOOTHED.**
+    //
+    // `19-32` mandates BOTH that `git diff --numstat` over `tests/` show ZERO
+    // deletions AND that `MIN_CONTROL_CARRIER_CLASSES` rise from 12 to 14,
+    // `CONTROL_CARRIER_SLOTS` become 15, `CONTROL_CARRIER_CASES` be recomputed
+    // and the per-class counts be re-derived. **A raised floor cannot be written
+    // without changing the line that carries it**, and `git` counts a changed
+    // line as one deletion and one addition. The two requirements cannot both be
+    // met, and this round met the one that carries the meaning.
+    //
+    // **THE INTENT THE ZERO-DELETIONS RULE CARRIES IS STATED IN `19-32` ITSELF:**
+    // *"Entries may be ADDED, a predicate may be EXTENDED with its reason
+    // stated, and a doc may gain an APPENDED WR-02 note; nothing may be removed,
+    // reworded away or narrowed … A case that stops being drawn is a case that
+    // stops being able to fail."* **A floor that RISES is the opposite of
+    // narrowing.** So the intent is asserted here MECHANICALLY, where the line
+    // count cannot express it: every floor and every class count is at or above
+    // the value round 12 left it at, and every alphabet is at or above its round
+    // 12 length.
+    //
+    // **GREEN today and after.** Its correct response to a red is to restore the
+    // floor, never to lower this table.
+    for (name, round_12, now) in [
+        ("CONTROL_CARRIER_CASES", 84usize, CONTROL_CARRIER_CASES),
+        ("CONTROL_CARRIER_SLOTS", 13, CONTROL_CARRIER_SLOTS),
+        ("MIN_CONTROL_CARRIER_CLASSES", 12, MIN_CONTROL_CARRIER_CLASSES),
+        (
+            "MIN_CONTROL_CARRIER_INTERIOR_PATH",
+            12,
+            MIN_CONTROL_CARRIER_INTERIOR_PATH,
+        ),
+        (
+            "MIN_ENVELOPE_ROOT_OPERAND_CARRIERS",
+            11,
+            MIN_ENVELOPE_ROOT_OPERAND_CARRIERS,
+        ),
+        (
+            "MIN_CONTROL_CARRIER_REDIRECTION_TARGETS",
+            4,
+            MIN_CONTROL_CARRIER_REDIRECTION_TARGETS,
+        ),
+        ("MIN_CONTROL_CARRIER_BINARY", 5, MIN_CONTROL_CARRIER_BINARY),
+        (
+            "MIN_CONTROL_CARRIER_EXPANSION_BORNE",
+            2,
+            MIN_CONTROL_CARRIER_EXPANSION_BORNE,
+        ),
+        ("MIN_CONTROL_CARRIER_SYMLINKED", 2, MIN_CONTROL_CARRIER_SYMLINKED),
+        ("MIN_CONTROL_CARRIER_RELATIVE", 2, MIN_CONTROL_CARRIER_RELATIVE),
+        ("MIN_CONTROL_CARRIER_REPO_SIDE", 6, MIN_CONTROL_CARRIER_REPO_SIDE),
+        (
+            "MIN_CONTROL_CARRIER_ORDINARY_OPERANDS",
+            24,
+            MIN_CONTROL_CARRIER_ORDINARY_OPERANDS,
+        ),
+        (
+            "MIN_CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING",
+            4,
+            MIN_CONTROL_CARRIER_REDIRECTION_TARGETS_PRESERVING,
+        ),
+        ("MIN_CONTROL_CARRIER_TILDE_BORNE", 4, MIN_CONTROL_CARRIER_TILDE_BORNE),
+        ("MIN_CONTROL_CARRIER_GLOB_BORNE", 4, MIN_CONTROL_CARRIER_GLOB_BORNE),
+        ("MIN_CONTROL_CARRIER_BRACE_BORNE", 4, MIN_CONTROL_CARRIER_BRACE_BORNE),
+        ("MIN_CONFIG_RESOLUTION_CLASSES", 6, MIN_CONFIG_RESOLUTION_CLASSES),
+    ] {
+        assert!(
+            now >= round_12,
+            "\n\n**A FLOOR FELL: `{name}` was {round_12} after round 12 and is {now} now.**\n\n\
+             `19-32` may RAISE a floor and may not lower one. **The correct response to a red \
+             here is to restore the entries the floor counts, never to lower the floor.**"
+        );
+    }
+    // -- `MIN_CONFIG_RESOLUTION_CLASSES` is asserted EXACT rather than
+    //    monotone, because `19-32` may not open that axis at all.
+    assert_eq!(
+        MIN_CONFIG_RESOLUTION_CLASSES, 6,
+        "**`MIN_CONFIG_RESOLUTION_CLASSES` STAYS AT 6.** The four earlier axes, their \
+         predicates, their degenerate-proofing and their floors are BYTE-IDENTICAL, and \
+         round 13 stands neither new class up as a sixth axis."
+    );
+
+    // -- **AND NO CLASS COUNT FELL EITHER**, which is the half a floor table
+    //    cannot see: a predicate extension moves entries BETWEEN classes, and
+    //    round 13's six extensions are all in the direction of a NEW class.
+    for (class, round_12, now) in [
+        ("a redirection target under the envelope root", 4usize, 4),
+        ("an expansion-borne carrier operand", 3, 3),
+        ("a symlinked carrier operand", 3, 3),
+        ("a relative carrier operand", 2, 2),
+        ("a repo-side control carrier", 6, 6),
+        ("a tilde-borne carrier word", 5, 5),
+        ("a glob-borne carrier word", 5, 5),
+        ("a brace-list-borne carrier word", 5, 5),
+        ("the guard's own binary", 5, 5),
+    ] {
+        let stated = CONTROL_CARRIER_CLASS_COUNTS
+            .iter()
+            .find(|(name, _)| *name == class)
+            .map(|(_, count)| *count)
+            .unwrap_or_else(|| panic!("class `{class}` must still be counted"));
+        assert_eq!(
+            stated, now,
+            "the stated count for `{class}` must match this table"
+        );
+        assert!(
+            stated >= round_12,
+            "\n\n**A CLASS COUNT FELL: `{class}` was {round_12} after round 12 and is {stated} \
+             now.**\n\n\
+             **Every one of round 13's SIX predicate extensions must move entries INTO a new \
+             class and never OUT of an existing one.** A fall here means a refinement emptied \
+             a cell — which is how `19-16` set a floor of 50 against a maximum of 40 by \
+             construction, invisible until the rule landed."
+        );
+    }
+    println!(
+        "the MONOTONICITY pin: {} floors and {} class counts checked; \
+         CONTROL_CARRIER_CASES 84 -> {CONTROL_CARRIER_CASES}, SLOTS 13 -> \
+         {CONTROL_CARRIER_SLOTS}, CLASSES 12 -> {MIN_CONTROL_CARRIER_CLASSES}. **The eight \
+         changed lines under `tests/` are ALL floor and count RAISES; not one alphabet entry, \
+         property or assertion was removed, reworded away or narrowed.**",
+        17, 9
+    );
+}
+
+#[test]
+fn bashs_twelve_operator_split_is_partitioned_and_the_axis_reads_it_rather_than_inventing_it() {
+    // **THE SPLIT IS BASH'S OWN GRAMMAR, AND THE AXIS READS IT RATHER THAN
+    // RE-ENUMERATING IT.** `redirection_operator` (`policy.rs:3193-3229`) derives
+    // it in the same match that computes each operator's length; this fence
+    // asserts the corpus's two lists PARTITION `REDIRECTION_OPERATORS` exactly,
+    // so a spelling that appeared in one and not the other could not hide.
+    //
+    // **GREEN today and after.**
+    assert_eq!(
+        PATHNAME_REDIRECTION_OPERATORS.len() + NON_PATHNAME_REDIRECTION_OPERATORS.len(),
+        REDIRECTION_OPERATORS.len(),
+        "bash's redirection production has TWELVE operators and the corpus splits them SEVEN \
+         and FIVE. If this arithmetic is wrong the grammar was re-enumerated rather than \
+         read, which is the sixth enumeration `redirection_operator`'s doc exists to refuse."
+    );
+    for operator in PATHNAME_REDIRECTION_OPERATORS
+        .iter()
+        .chain(NON_PATHNAME_REDIRECTION_OPERATORS)
+    {
+        assert!(
+            REDIRECTION_OPERATORS.contains(operator),
+            "`{operator}` is not one of the twelve `REDIRECTION_OPERATORS`"
+        );
+    }
+    for operator in PATHNAME_REDIRECTION_OPERATORS {
+        assert!(
+            !NON_PATHNAME_REDIRECTION_OPERATORS.contains(operator),
+            "`{operator}` is in BOTH lists; the split must be a PARTITION"
+        );
+    }
+    // -- **THE LONGEST-MATCH-FIRST ORDER, ASSERTED rather than assumed.** These
+    //    are matched against an ATTACHED spelling, so `<<<` must be tried before
+    //    `<<-` and both before `<<`, exactly as `redirection_operator` matches.
+    assert_eq!(
+        non_pathname_redirection_target("", "<<<PATH"),
+        Some("PATH"),
+        "`<<<` must be matched at its FULL length; a short match would leave `<` to be read \
+         as the target's first character"
+    );
+    assert_eq!(
+        non_pathname_redirection_target("", "<<-PATH"),
+        Some("PATH"),
+        "`<<-` likewise"
+    );
+    assert_eq!(
+        non_pathname_redirection_target("", ">&PATH"),
+        Some("PATH"),
+        "the ATTACHED spelling, which is the one `>&` is measured REACHING in"
+    );
+    assert_eq!(
+        non_pathname_redirection_target("<<<", "PATH"),
+        Some("PATH"),
+        "the SEPARATED spelling, which is the one `<<<` is measured REACHING in"
+    );
+    assert_eq!(
+        non_pathname_redirection_target(">", "PATH"),
+        None,
+        "**THE NEGATIVE CONTROL: a PATHNAME operator is not one of these.** Without it the \
+         four rows above would pass against a function that answered `Some` for everything, \
+         and class 13 would draw class 2's whole alphabet."
+    );
+}
+
+#[test]
+fn the_control_carrier_axis_can_draw_a_carrier_after_an_operator_other_than_a_here_string() {
+    // **THE WORD-SET FENCE — ROUND 13's FIRST NEW MECHANICAL ASSERTION, AND THE
+    // ONE THAT WOULD HAVE CAUGHT `T-19-122` TWELVE AUDITS EARLIER.**
+    //
+    // `consume_redirection` records a target on the `Segment` only under
+    // `pathname_target && target.literal`, so the target of any of bash's FIVE
+    // non-pathname operators is in NEITHER of the two word classes
+    // `protected_carrier_named` iterates. Round 12's corpus drew not one such
+    // word: audit 12 measured it directly — *"the corpus that certifies the round
+    // draws eighty-four rows across twelve classes and not one of them is a
+    // here-string or an ancestor"*. **The axis was STRUCTURALLY INCAPABLE of
+    // failing on this cell.**
+    //
+    // **THIS COUNTS ENTRIES RATHER THAN READING PROSE, AND IT COUNTS TWO THINGS
+    // RATHER THAN ONE.** The second count is the important one: **an alphabet
+    // that only ever drew `<<<` would certify a HERE-STRING-ONLY rule**, which is
+    // one operator short in exactly the way the current rule is one word class
+    // short — the same trap round 12 refused when it declined an `=`-keyed rule.
+    //
+    // **GREEN today and after.**
+    let mut targets = 0usize;
+    let mut non_here_string: Vec<String> = Vec::new();
+    for (_, entries) in CONTROL_CARRIER_ALPHABETS {
+        for entry in *entries {
+            let command = control_carrier_representative(entry);
+            let raw: Vec<&str> = command.split_whitespace().collect();
+            for (index, word) in raw.iter().enumerate() {
+                let previous = index.checked_sub(1).map(|i| raw[i]).unwrap_or("");
+                let Some(target) = non_pathname_redirection_target(previous, word) else {
+                    continue;
+                };
+                let carries = std::iter::once(0)
+                    .chain(
+                        target
+                            .char_indices()
+                            .filter(|(_, character)| *character == '/')
+                            .map(|(i, _)| i),
+                    )
+                    .any(|i| {
+                        target[i..].starts_with(REPRESENTATIVE_ENVELOPE_ROOT)
+                            || &target[i..] == REPRESENTATIVE_BINARY_PATH
+                    });
+                if !carries {
+                    continue;
+                }
+                targets += 1;
+                let operator = if NON_PATHNAME_REDIRECTION_OPERATORS.contains(&previous) {
+                    previous.to_string()
+                } else {
+                    word[..word.len() - target.len()].to_string()
+                };
+                if operator != "<<<" {
+                    non_here_string.push(format!("{operator} in `{entry}`"));
+                }
+            }
+        }
+    }
+
+    assert!(
+        targets > 0,
+        "\n\n**THE AXIS MUST BE ABLE TO DRAW A CARRIER PATH AFTER A NON-PATHNAME REDIRECTION \
+         OPERATOR, AND IT DRAWS {targets}.**\n\n\
+         `consume_redirection` (`policy.rs:3581`) pushes a target onto \
+         `Segment::redirection_targets` only under `pathname_target && target.literal`, so \
+         the target of `<<<`, `<<`, `<<-`, `>&` or `<&` is in NEITHER word class while being \
+         fully `Token.literal` and ABSOLUTE. An axis that cannot DRAW that shape cannot FAIL \
+         on it, and every floor it satisfies certifies a claim about a class it could never \
+         have exercised.\n\n\
+         **THE CORRECT RESPONSE IS TO ADD THE SPELLING, NEVER TO RELAX THIS FENCE.**"
+    );
+    assert!(
+        !non_here_string.is_empty(),
+        "\n\n**THE AXIS DRAWS {targets} NON-PATHNAME REDIRECTION TARGETS AND EVERY ONE OF THEM \
+         IS A HERE-STRING.**\n\n\
+         **THAT IS THE `<<<`-ONLY TRAP, AND IT IS THE EXACT SHAPE OF THE DEFECT THIS ROUND \
+         EXISTS TO CLOSE.** An alphabet that only ever draws `<<<` certifies a \
+         HERE-STRING-ONLY rule — and bash has FIVE non-pathname operators. `>&` with a path \
+         is not an fd duplication at all: bash falls back to `&>word` and OPENS THE FILE, \
+         which `19-32` measured TRUNCATING the ledger to zero bytes. A rule keyed to one \
+         operator would be one spelling short in exactly the way \
+         `RedirectionOperator::pathname_target` is one word class short.\n\n\
+         **THE CORRECT RESPONSE IS TO ADD A NON-`<<<` SPELLING TO \
+         `CONTROL_CARRIER_NON_PATHNAME_TARGET`, NEVER TO RELAX THIS FENCE.**"
+    );
+    println!(
+        "the WORD-SET fence counts {targets} non-pathname redirection targets carrying a \
+         carrier path across the fifteen alphabets, of which {} are under an operator OTHER \
+         than `<<<`: {:?}",
+        non_here_string.len(),
+        non_here_string
+    );
+}
+
+#[test]
+fn the_control_carrier_axis_draws_the_ancestor_and_pins_the_stop_from_the_other_side() {
+    // **THE ANCESTOR-STOP FENCE — ROUND 13's SECOND NEW MECHANICAL ASSERTION.**
+    //
+    // It counts TWO things, and the second is what makes the design a BOUNDARY
+    // rather than an ESCALATION: **at least one ANCESTOR entry in the FAIL-CLOSED
+    // arm, and at least one word AT OR ABOVE the root's own parent in the
+    // INVARIANCE arm.** An implementation that walked the whole ancestor chain to
+    // `/` turns the second count's rows red.
+    //
+    // **GREEN today and after.**
+    let mut ancestors = 0usize;
+    for (_, entries) in CONTROL_CARRIER_FAIL_CLOSED_ALPHABETS {
+        for entry in *entries {
+            if draws_an_ancestor_of_the_envelope_directory(&control_carrier_representative(entry)) {
+                ancestors += 1;
+            }
+        }
+    }
+    assert!(
+        ancestors > 0,
+        "\n\n**THE AXIS MUST DRAW AT LEAST ONE ANCESTOR ENTRY IN A FAIL-CLOSED ARM, AND IT \
+         DRAWS {ancestors}.**\n\n\
+         `word_is_within` returns early on `word.len() < dir.len()` over COMPONENT VECTORS \
+         (`policy.rs:5706`), so every ANCESTOR — being SHORTER — answers `false`, while \
+         `rm -rf <root>` takes the same nine carriers in ONE call that the prefix boundary \
+         exists to protect. **THE CORRECT RESPONSE IS TO ADD THE SPELLING, NEVER TO RELAX \
+         THIS FENCE.**"
+    );
+
+    let mut above_the_stop = 0usize;
+    for (_, entries) in CONTROL_CARRIER_INVARIANCE_ALPHABETS {
+        for entry in *entries {
+            if entry.contains(ENVELOPE_PARENT_PLACEHOLDER) {
+                above_the_stop += 1;
+            }
+        }
+    }
+    assert!(
+        above_the_stop > 0,
+        "\n\n**THE AXIS MUST DRAW AT LEAST ONE WORD AT OR ABOVE THE ROOT'S OWN PARENT IN THE \
+         INVARIANCE ARM, AND IT DRAWS {above_the_stop}.**\n\n\
+         **THE CLAUSE STOPS AT `<root>` AND THE REASON IS OWNERSHIP.** `<root>` is created by \
+         this tool and holds only alias directories it created; above it the chain is \
+         `~/.local/share`, `$HOME`, `/tmp` and `/`, shared with everything the user has. A \
+         boundary reaching them would refuse `ls /`, `df /`, `du -sh $HOME` and `ls /tmp` — \
+         **not a boundary but an OUTAGE** (AR-19-11: a refusal a user cannot act on is a \
+         control that gets switched off). Without an entry above the stop, an implementation \
+         that walked the whole chain would pass this axis.\n\n\
+         **THE CORRECT RESPONSE IS TO ADD THE SPELLING, NEVER TO RELAX THIS FENCE.**"
+    );
+
+    // -- **THE PAIR, ASSERTED BY NAME**, because a pair differing in ONE PATH
+    //    COMPONENT is what proves the clause is an ANCESTOR clause rather than a
+    //    prefix widened to the root.
+    assert!(
+        CONTROL_CARRIER_ANCESTOR.contains(&"rm -rf <ENV>"),
+        "**`rm -rf <ENV>` MUST BE IN `CONTROL_CARRIER_ANCESTOR`, BY NAME.**"
+    );
+    assert!(
+        CONTROL_CARRIER_ORDINARY_OPERANDS.contains(&"ls <ENV>/unrelated-sibling"),
+        "\n\n**`ls <ENV>/unrelated-sibling` MUST BE IN `CONTROL_CARRIER_ORDINARY_OPERANDS`, \
+         BY NAME.**\n\n\
+         It is round 13's `--signed no`: a PREFIX widened from `<ENV>/alpha` to `<ENV>` \
+         refuses it and the mandated ANCESTOR clause does not. **The pair differing in ONE \
+         PATH COMPONENT is what tells the two designs apart**, and because \
+         `GSD_MM_ENVELOPE_ROOT` is USER-SETTABLE the prefix design would refuse the whole \
+         `/tmp` subtree for a user who set the root there — reachable configuration, not a \
+         thought experiment."
+    );
+    let inside = control_carrier_representative("rm -rf <ENV>");
+    let outside = control_carrier_representative("ls <ENV>/unrelated-sibling");
+    assert!(
+        draws_an_ancestor_of_the_envelope_directory(&inside),
+        "`{inside}` must draw class 14"
+    );
+    assert!(
+        !draws_an_ancestor_of_the_envelope_directory(&outside),
+        "`{outside}` must NOT draw class 14: it is UNDER the root and is not an ancestor of \
+         the envelope directory. **That is what makes the pair discriminating.**"
+    );
+    assert!(
+        !draws_an_ancestor_of_the_envelope_directory(&control_carrier_representative("ls <ENVPAR>")),
+        "and `ls <ENVPAR>` must not draw it either: the root's own PARENT is ABOVE the stop."
+    );
+    println!(
+        "the ANCESTOR-STOP fence counts {ancestors} ancestor entries in the fail-closed arm \
+         and {above_the_stop} word(s) at or above the root's parent in the invariance arm."
+    );
+    println!("the `T-19-126`(ii) WR-02 note reads: {CONTROL_CARRIER_INTERIOR_PATH_WR_02}");
 }
 
 #[test]
@@ -9984,6 +11086,118 @@ fn a_command_carrying_a_carrier_path_inside_a_word_is_refused_after_19_31() {
         cases,
         CONTROL_CARRIER_INTERIOR_PATH.len(),
         "round 12's fail-closed arm must run every generated case"
+    );
+}
+
+/// The TWO fail-closed alphabets round 13 ADDS — the ones `19-33` turns green.
+///
+/// **They are a SEPARATE property from rounds 10's, 11's and 12's, and the split
+/// is honest rather than cosmetic.** `ENVELOPE_ROOT_OPERAND_CARRIERS` is GREEN
+/// today (`19-27` landed its rule); round 11's two are green (`19-29` landed);
+/// `CONTROL_CARRIER_INTERIOR_PATH` is green (`19-31` landed). These two are RED
+/// today and green only after `19-33`. Folding them into one property would make
+/// four rounds' rules indistinguishable and a later reader could not tell which
+/// half a red belonged to.
+const CONTROL_CARRIER_FAIL_CLOSED_AFTER_19_33: &[(&str, &[&str])] = &[
+    (
+        "CONTROL_CARRIER_NON_PATHNAME_TARGET",
+        CONTROL_CARRIER_NON_PATHNAME_TARGET,
+    ),
+    ("CONTROL_CARRIER_ANCESTOR", CONTROL_CARRIER_ANCESTOR),
+];
+
+#[test]
+fn a_command_naming_a_carrier_in_a_word_class_or_a_path_set_rule_a_has_no_clause_for_is_refused_after_19_33(
+) {
+    // **ROUND 13's FAIL-CLOSED ARM. RED at this plan's end BY DESIGN.**
+    //
+    // Two alphabets, two axes, and neither is a widening of the other:
+    //
+    // * **`CONTROL_CARRIER_NON_PATHNAME_TARGET` — AXIS 1, THE WORD SET.** The
+    //   carrier path is INSIDE the envelope root (or IS the binary) and the word
+    //   arrives after one of bash's FIVE NON-PATHNAME redirection operators.
+    //   `consume_redirection` (`policy.rs:3532-3609`) consumes the word, emits
+    //   NO `Token`, and records it on `Segment::redirection_targets` only under
+    //   `pathname_target && target.literal` (`:3581`) — so it is in NEITHER of
+    //   the two classes `protected_carrier_named` iterates at `:6118-6128`.
+    //   **`19-33` carries LITERAL NON-PATHNAME targets on a SECOND `Segment`
+    //   FIELD and chains them as a THIRD word class at the SAME reading site.**
+    //   **DESIGN (A) — widening `RedirectionOperator::pathname_target` — IS
+    //   FORBIDDEN**, and the reason is a MEASURED FENCE rather than a preference:
+    //   it turns
+    //   `only_a_literal_pathname_target_reaches_the_segment_and_the_tokens_do_not_move`
+    //   (`policy.rs:10693-10727`) and the twelve-operator grammar pin (`:10586`,
+    //   `:10603`) RED, and design (B) turns NEITHER red.
+    //
+    // * **`CONTROL_CARRIER_ANCESTOR` — AXIS 3, THE PATH SET.** The carrier path
+    //   is an ANCESTOR of the envelope directory. `word_is_within`
+    //   (`policy.rs:5685-5711`) is a component-wise PREFIX and returns early on
+    //   `word.len() < dir.len()` (`:5706`), so every ancestor — being SHORTER —
+    //   answers `false`. **`19-33` adds an ANCESTOR clause BESIDE the prefix,
+    //   bounded at `<root>`**, which grows the protected set by EXACTLY ONE path
+    //   because the alias is a plain single component. **It is NOT the existing
+    //   prefix widened to the root**, and `ls <ENV>/unrelated-sibling` in the
+    //   invariance arm is what tells them apart.
+    //
+    // The reason identifier is the GENERAL unresolvable one,
+    // `envelope_assertion_failed`, for both — the clause fires before any
+    // classifier has looked at the command, so it is not one a classifier would
+    // have earned (D-24).
+    //
+    // **MEASURED AT THIS PLAN'S BASE: every entry here is exit 0 with an EMPTY
+    // walk, and every ORDINARY TWIN is exit 0 too** (asserted by the
+    // permitted-base fence above), so this arm is not merely drawing commands
+    // that were already refused.
+    let mut cases = 0usize;
+    for (alphabet, entries) in CONTROL_CARRIER_FAIL_CLOSED_AFTER_19_33 {
+        for entry in *entries {
+            let envelope = TempDir::new().expect("a temporary envelope root");
+            let command = control_carrier_command(entry, envelope.path());
+            let got = verdict(envelope.path(), &command);
+            assert_eq!(
+                got.code, 2,
+                "\n\nA COMMAND NAMING A CARRIER IN A WORD CLASS OR A PATH SET RULE (a) HAS NO \
+                 CLAUSE FOR WAS PERMITTED.\n\
+                 \n  alphabet: {alphabet}\
+                 \n  entry   : {entry}\
+                 \n  command : {command}\
+                 \n  got     : exit {} reason {}\n\
+                 \n**`T-19-122` and `T-19-123`, both `high`, both BLOCKING.** Driven end to \
+                 end in `tests/envelope_word_set.rs`: a here-string deletion removed the hook \
+                 stubs and a force push the hook had REFUSED then COMPLETED and MOVED a bare \
+                 remote's `main`; the same spelling RESET A FIRED PR CAP; and `rm -rf <ENV>` \
+                 did both one component up.\n\
+                 \n**THE RESIDUE CONDITION ENUMERATED THE SILENCES OF A *READING*, AND A \
+                 BOUNDARY HAS THREE WAYS TO BE SILENT** — which words reach the reader, what \
+                 the reader sees in a word, and which paths the comparison protects. Round 12 \
+                 got the second right and inherited two holes it never named.",
+                got.code, got.reason_id,
+            );
+            assert_eq!(
+                got.reason_id,
+                policy::REASON_ENVELOPE_ASSERTION_FAILED,
+                "`{command}` must be refused UNDER `{}`, the GENERAL unresolvable identifier. \
+                 Got: {}",
+                policy::REASON_ENVELOPE_ASSERTION_FAILED,
+                got.reason_id,
+            );
+            let written = ledger_lines_under(envelope.path());
+            assert!(
+                written.is_empty(),
+                "`{command}` was refused, but a pull-request ledger line was written. Found: \
+                 {written:?} Files: {:?}",
+                files_under(envelope.path())
+            );
+            cases += 1;
+        }
+    }
+    assert_eq!(
+        cases,
+        CONTROL_CARRIER_FAIL_CLOSED_AFTER_19_33
+            .iter()
+            .map(|(_, entries)| entries.len())
+            .sum::<usize>(),
+        "round 13's fail-closed arm must run every generated case"
     );
 }
 
