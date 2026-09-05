@@ -2880,3 +2880,197 @@ driven agent TODAY.
   not renumbered, and **`T-19-23` is NOT marked closed.**
 
 **Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.**
+
+---
+
+## Plan 19-32 — round 13's CORPUS (the rules are `19-33`'s)
+
+**This plan closes nothing and clears no gate.** It measures both silent axes and
+the scan's cost, widens the corpus so the axis can fail on both new classes,
+observes RED, and stops. Whether `19-33`'s rules close anything is audit 13's
+judgement rather than either plan's claim. **`/gsd-secure-phase 19` is NOT
+cleared by this plan, by `19-33`, or by the two together.**
+
+### THE RESIDUE, RESTATED AS A CONDITION OVER THREE AXES
+
+Audit 12's diagnosis is adopted whole: `protected_carrier_named`'s residue
+condition (`policy.rs:5900-5905`) **enumerates the silences of a READING**, and a
+boundary has THREE ways to be silent. The condition names the word set and the
+path set as PREMISES and then says nothing about either.
+
+```text
+AXIS 1  WHICH WORDS REACH THE READER      silence: a word the tokenizer produced
+                                          for no class at all — an incomplete
+                                          production, which FAILS CLOSED at
+                                          `Token::redirection_unresolvable`
+AXIS 2  WHAT THE READER SEES IN A WORD    silences: a word the SHELL MAY REWRITE;
+                                          a word whose TEXT CARRIES NO ABSOLUTE
+                                          PATH ANYWHERE; a word that reaches a
+                                          protected path ONLY THROUGH A LINK
+AXIS 3  WHICH PATHS THE COMPARISON        silences: an ancestor ABOVE the root —
+        PROTECTS                          `$HOME`, `/tmp`, `/` — and the BINARY's
+                                          PARENT and every ancestor of it
+```
+
+**No count is written on any axis, and none of it is handed to a pin, a schedule
+or a version witness.** `19-25`'s witness schedules a re-audit against a FUTURE
+GIT; every one of these is reachable by the driven agent TODAY.
+
+**The production docs still state the residue over ONE axis. `19-33` restates
+them**, and that repair is registered here whether or not any rule lands.
+
+### `T-19-122` — high, BLOCKING, OPEN. Corpus written and RED.
+
+A NON-PATHNAME redirection operator's target is deleted from the token stream and
+recorded on no `Segment` field, **so it is in NEITHER of the two word classes
+`protected_carrier_named` iterates** — while being fully `Token.literal`,
+ABSOLUTE at index zero, needing no cwd and no link, and naming the directory
+exactly. None of the three declared silences.
+
+* `xargs rm -rf <<< <ENV>/alpha` exit 0 against its twin `rm -rf <ENV>/alpha` at
+  exit 2. Driven END TO END: a bare remote's `main` MOVED after a force push the
+  hook had REFUSED, and a FIRED PR cap RESET in one persistent root.
+* `xargs cp /bin/true <<< <BINARY>` exit 0 — **a NEW `T-19-116` route.**
+* **`>&` with a path REACHES and was not predicted to.** Bash falls back to
+  `&>word` when the operand is not an fd number, so `: >&<ledger>` truncates the
+  ledger to zero bytes. A second operator, with a driven reach.
+* **A CORRECTION TO AUDIT 12:** the heredoc BODY form is **already exit 2**,
+  because `\n` is a `SEPARATORS` entry and the body is a segment of its own.
+* **RECORDED, reach NOT demonstrated:** `<<` and `<<-` with the path as the
+  DELIMITER, and `<&` with a path (`ambiguous redirect`).
+* **PRE-EXISTING**: the rebuilt `dd17bfb` control binary permits it too.
+
+**`19-33`'s design is MANDATED and DERIVED**: a SECOND `Segment` field carrying
+LITERAL NON-PATHNAME target words, chained as a THIRD word class at the SAME
+reading site. Widening `pathname_target` is FORBIDDEN — it turns
+`only_a_literal_pathname_target_reaches_the_segment_and_the_tokens_do_not_move`
+and the twelve-operator grammar pin RED, and the second field turns neither.
+
+### `T-19-123` — high, BLOCKING, OPEN. Corpus written and RED.
+
+`word_is_within` is a component-wise PREFIX over `<root>/<alias>` whose
+`word.len() < dir.len()` early return answers `false` for every ANCESTOR.
+`rm -rf <root>` takes the same nine carriers in ONE call, one component up.
+`rm -rf <ENV>/`, `mv`, `find -delete`, `chmod 000` and `tar -C<ENV>` all reach,
+and **`cd <ENV> && rm -rf alpha` defeats the narrowing
+`protected_carrier_named`'s own doc claims** — the doc's own row is driven beside
+it at exit 2. Driven END TO END twice, like `T-19-122`.
+
+**It is PINNED PERMITTED BY NAME at `policy.rs:10022-10026` and
+`tests/envelope_interior_path.rs:2341`, and the code does exactly what the pins
+say.** This is a DECISION whose harm was never modelled, not a bug found.
+**`19-33` moves both pins as a NAMED, BOUNDED, CROSS-FENCE exception with each
+pin's reasoning REWRITTEN rather than deleted.** `19-32` performs neither move.
+
+**The clause STOPS at `<root>`** on ownership and AR-19-11 grounds, and it is an
+ANCESTOR clause and **not** the existing prefix widened to the root —
+`ls <ENV>/unrelated-sibling` and the user-set-root case are pinned PERMITTED
+before and after, so the wrong design turns the corpus red.
+
+**RESIDUE, registered and UNACCEPTED: an ancestor ABOVE the root** —
+`rm -rf /tmp` with `GSD_MM_ENVELOPE_ROOT=/tmp/xyz` — reaches the same nine
+carriers and no rule is written for it.
+
+### `T-19-124` — medium, OPEN. The property is written; the bound is `19-33`'s.
+
+Round 12's own mechanism turned a linear scan QUADRATIC on the guard's critical
+path: `slash_anchored_candidates` is applied PER CANDIDATE, so
+`lexical_absolute_components` runs once per `/` over a suffix whose length is
+itself O(word).
+
+```text
+ 2 000 slashes    249 ms      dd17bfb:  5 ms
+ 8 000 slashes  3 904 ms      dd17bfb:  8 ms      ratio 15.7
+ 9 000 / 10 000 slashes: GUARD_TIMEOUT_SECS = 5 crossed between 18 KB and 20 KB
+50 000 slashes 151 249 ms     dd17bfb: 28 ms
+800 000 bytes: DID NOT ANSWER in 300 s
+100 000 chars, NO slashes: 29 ms  <- the cost is the SCAN, not the LENGTH
+```
+
+`MAX_GUARD_REQUEST_BYTES = 1 MiB` bounds the INPUT and bounds **no work** —
+`T-19-120`'s own shape in the round that fixed `T-19-120`.
+
+**THE WORK-BOUND PROPERTY `19-33` MUST SATISFY: LINEARITY, with a FAIL-CLOSED
+work ceiling beside it as the backstop.** Audit 12's parenthetical byte-floor
+remedy is derived INSUFFICIENT: it removes NINE candidates of EIGHT THOUSAND for
+the 16 KB word. A per-word cap is amplified by the word count and a per-segment
+cap by the segment count.
+
+**THE BEHAVIOURAL HALF — what the agent CLI does with a hook that overruns its
+timeout — is UNMEASURED and claimed in NEITHER direction.**
+
+### `T-19-125` — low, OPEN. The behaviour is asserted; the repairs are `19-33`'s.
+
+The disclosed cost says *contains … as a `/`-anchored substring*; the comparison
+NORMALISES, and `dd of=<ENV>/./alpha/x` and `dd of=<ENV>/zzz/../alpha/x` are both
+exit 2 while containing no such substring at all. **Registered as `19-33`'s to
+repair WHETHER OR NOT ANY RULE LANDS**, together with
+`envelope_carrier_refusal`'s *"To proceed: name a path outside that directory"*,
+which is STALE for exactly this case.
+
+### `T-19-126` — low, OPEN. Two standing pins written; the repairs are `19-33`'s.
+
+*(i)* `ledger.rs:354-361`'s forbidden-API gate is a **plan-time grep that nothing
+re-runs**, and its stated reason is **INVERTED**. Two REAL standing pins now
+exist — a BEHAVIOURAL one driving a symlinked-to-regular ledger PERMITTED and
+COUNTED, and a SOURCE-SLICE one over `ledger.rs`'s production half that CAN name
+the forbidden API because the name lives below the `#[cfg(test)]` sentinel.
+**Both are GREEN before and after; they are standing controls, not evidence of a
+fix.** The inverted comment is `19-33`'s to correct.
+
+*(ii)* `CONTROL_CARRIER_INTERIOR_PATH` entry 7 does not reach the file under real
+GNU tar. **Repaired by an ADDED reaching entry and an APPENDED WR-02 note; entry
+7 stays and nothing is deleted or reworded.** Registered as `19-33`'s to carry
+forward.
+
+### `T-19-116` GAINED TWO ROUTES THIS AUDIT, AND CLOSING `T-19-122` CLOSES ONLY ONE
+
+* `xargs cp /bin/true <<< <BINARY>` — **closed by the third word class.**
+* `rm -rf <binary-parent>` — **NOT closed.** No ancestor clause is written for
+  the binary and `word_is_exactly` stays an EQUALITY, because the binary's
+  directory is shared with everything the user installed. **`word_is_exactly`'s
+  reasoning argues only that a PREFIX would be wrong and never that the parent's
+  own DELETION removes the binary — an HONESTY gap `19-33` repairs in that doc.**
+
+The four original residues stay at exit 0 and `T-19-116` stays OPEN at `high`.
+
+### Still OPEN and unchanged
+
+- **`T-19-86`** — open at `high` by explicit user scoping decision. **The
+  `!`-bodied alias credential route (`git -c alias.q='!git -c
+  credential.helper=store credential fill' q`, exit 0 at the guard, secret
+  PRESENT against real git with its no-`-c` control at exit 128 ABSENT) is
+  `T-19-86`'s route and is RECORDED, never folded** into its declared harm and
+  never used to re-rate it. Audit 12 declined to fold it and so does this plan.
+  The missing `cred.rs` WHAT IT DOES NOT COVER list item is `19-33`'s to add.
+- **`T-19-91`** — no rule, no remedy, not re-scoped.
+- **`T-19-111`** — no rule; `19-27`'s five-site attribution correction stands and
+  attribution stays OUT of `T-19-86`. Rows RECORDED in neither direction.
+- **`T-19-112`** — narrowed further by BOTH of this round's classes and NOT
+  closed; the cap was reset by a here-string, by `>&` and by the ancestor.
+- **`T-19-113`**, **`T-19-115`** — no rule. `T-19-115` appears on axis 2 of the
+  restated condition.
+- **`T-19-121`** — narrowed HARD, not closed; a bounded residue of a control that
+  genuinely landed.
+- **`T-19-96`**, **`T-19-110`**, **`T-19-74`** (core rows frozen) — unchanged.
+- **`T-19-84`**, **`T-19-85`**, **`T-19-61` … `T-19-73`** — open and unaccepted by
+  explicit user decision; `scan.rs` and `config.rs` were not opened.
+- **`C-08`** — its behavioural half stays **UNMEASURED** and is claimed in neither
+  direction. `hooks.rs` was not opened.
+- **`C-11` … `C-15`** — control (e), no rule and **no `pr_cap_*` clamp**.
+- **The `glab --host` forge cell** — unfixed, `FORGE_VALUE_OPTS` keeps
+  `--hostname`, and **`glab` is confirmed NOT INSTALLED**.
+- **`T-19-104`'s `GIT_CONFIG_PARAMETERS` carrier** — a DIFFERENT mechanism,
+  recorded with its overlap stated (its control fails the same way at the same
+  identifier, so it discriminates nothing on these axes).
+- **The two `tests/driver_reattach.rs` flakes** — one fired in the full-suite run
+  and both on an isolated re-run. **RECORDED with verbatim output, not fixed, and
+  their relation to this round claimed in NEITHER direction.** `envelope_tracer`
+  answered 6/0 with no `ExecutableFileBusy` firing; **absence is not evidence
+  either flake is fixed.**
+- **`T-19-17r`** — OUTSTANDING for the **SEVENTEENTH** time. No `AR-19-13`, no
+  Accepted-Risks-Log row, and the word "accepted" is applied to it nowhere.
+  `AR-19-04` and `AR-19-05` are carried forward not un-accepted, not re-rated and
+  not renumbered, and **`T-19-23` is NOT marked closed.**
+
+**Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.**
