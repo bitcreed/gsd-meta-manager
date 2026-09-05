@@ -2538,7 +2538,11 @@ fn round_5s_literalness_bit_is_non_vacuous_and_this_round_must_not_remove_it() {
 
 #[test]
 fn a_redirection_operator_is_not_a_separator_and_this_round_must_not_make_it_one() {
-    // `SEPARATORS` (`policy.rs:2297`) has ONE commit in the whole phase
+    // `SEPARATORS` (`policy.rs:2422` — the constant is BYTE-IDENTICAL and the
+    // CITATION was stale, re-derived by `19-33`:
+    // `git log -L 2422,2422:src/envelope/policy.rs` returns exactly `84a9b05`,
+    // while the old line 2297 now returns `af72137`, plan 19-15, and says
+    // nothing about `SEPARATORS`) has ONE commit in the whole phase
     // (`84a9b05`, plan 19-05) and `is_separator` is a bare `SEPARATORS.contains`,
     // so this is true by construction.
     assert!(

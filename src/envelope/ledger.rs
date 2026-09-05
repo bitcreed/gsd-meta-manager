@@ -355,10 +355,47 @@ pub fn record_and_check_in(
     // beside it in `std::fs` must NOT be substituted for it here.** A ledger that
     // is a symlink to a regular file is a ledger this guard can count; the
     // non-following variant would answer about the LINK — never a regular file —
-    // and this check would stop counting it. **The API name is deliberately not
-    // spelled out**: a verify step greps this file for that literal and asserts it
-    // appears zero times, so writing it here to forbid it would make the gate pass
-    // vacuously on the very mistake it exists to catch.
+    // and this check would stop counting it.
+    //
+    // **A CORRECTED REASON (WR-02), BECAUSE THE ONE THIS COMMENT GAVE WAS
+    // BACKWARDS AND THE CONTROL IT NAMED WAS A ONE-SHOT.** It used to say *"the
+    // API name is deliberately not spelled out: a verify step greps this file for
+    // that literal and asserts it appears zero times, so writing it here to
+    // forbid it would make the gate pass vacuously on the very mistake it exists
+    // to catch."* **Both halves were wrong.**
+    //
+    //   * **The stated effect is INVERTED.** Against a zero-occurrence grep,
+    //     writing the literal here to forbid it turns the gate RED, not vacuously
+    //     green — the gate would fire on the DOCUMENTATION of the mistake rather
+    //     than on the mistake. A control whose own reason for existing is stated
+    //     backwards cannot be relied on for what it does.
+    //   * **And the control it named was a plan-time VERIFY STEP, run once, which
+    //     stopped existing when that plan ended.** A one-shot grep is not a
+    //     standing control, and describing it as though it were is how a claimed
+    //     evidentiary weight outruns what the evidence can fail on.
+    //
+    // **WHAT IS TRUE NOW: two STANDING pins carry this property, and one of them
+    // NAMES the forbidden API outright.**
+    //
+    //   * `a_symlinked_to_regular_ledger_is_permitted_and_counted_before_and_after`
+    //     drives a ledger that IS a symlink to a regular file through the guard
+    //     and asserts it is permitted AND that its line is counted THROUGH the
+    //     link — the BEHAVIOUR this check exists for, beside FIFO, directory,
+    //     symlink-to-character-device and fresh-root rows so it is not vacuous.
+    //   * `the_link_non_following_stat_variant_is_absent_from_ledger_rs_production_half`
+    //     slices this file from its top to its single test-module sentinel and
+    //     asserts the forbidden API appears ZERO times in that region, **with its
+    //     literal name written in the assertion** — which lives in the test file
+    //     and therefore OUTSIDE the slice. Four positive controls prove the slice
+    //     is the right region and the sentinel count is asserted to be exactly
+    //     one. **That is what dissolves the inversion a whole-file grep creates.**
+    //
+    // **The name is still not spelled in THIS comment, and the reason is now a
+    // fact about the slice rather than a claim about vacuity**: the assertion's
+    // subject is everything above that test-module sentinel, and this comment is
+    // above it. The pin can name what it forbids; the region it guards cannot.
+    // **Do not add a second test-module sentinel to this file** — the slice would
+    // silently shrink to the first one.
     //
     // **The `Err` arm keeps its behaviour exactly**, in the comment above's own
     // terms: a fresh envelope root has NO ledger file until the first append, so

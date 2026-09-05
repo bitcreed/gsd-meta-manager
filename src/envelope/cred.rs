@@ -455,6 +455,38 @@ fn config_env(pairs: &[(&str, &OsStr)]) -> Vec<(OsString, OsString)> {
 ///   to say that no rule refuses the spelling and that the residue is UNBOUNDED —
 ///   not to reach for another layer.
 ///
+/// * **a `credential.helper` set inside an ALIAS BODY, which the by-name deny
+///   does not reach because the key is not on a leading option at all.**
+///   Measured under this envelope's full posture, with the injected
+///   empty-`credential.helper` pair present and the no-`-c` control driven
+///   first: `git -c alias.q='!git -c credential.helper=store credential fill' q`
+///   is **exit 0** and the ambient secret is **PRESENT** in the answer. (The
+///   secret's presence is recorded and never transcribed — SAFE-04.) The word
+///   the guard reads is `alias.q=…`; its section is `alias` and its final
+///   component is `q`, so
+///   [`super::policy::config_key_names_the_credential_helper`] — a deny over
+///   SECTION `credential` and FINAL COMPONENT `helper` — does not fire, and the
+///   `credential.helper` inside the VALUE is a second command line this rule
+///   never sees.
+///
+///   **THIS IS `T-19-86`'s ROUTE AND IT IS RECORDED HERE RATHER THAN FOLDED INTO
+///   IT.** `T-19-86` is `classify_git`'s denylist default arm reached through a
+///   governed program's own operand — an `!`-bodied alias runs an arbitrary
+///   command line the classifier never classifies — and this is one thing such a
+///   command line can then do. **Widening `T-19-86`'s declared harm to carry a
+///   credential reach would be the attribution move `19-27` and audit 11
+///   established must not be made**: a threat row that grows to absorb every
+///   consequence of its mechanism stops naming a mechanism at all. Audit 12
+///   measured this route and declined to fold it; so does this note. It is
+///   neither used to re-rate `T-19-86` nor counted as a second instance of the
+///   bullet above.
+///
+///   **AND WHAT IS NAMED HERE IS THE RULE THAT DOES NOT REACH IT**, on the
+///   discipline the paragraph above states: no rule refuses this spelling, the
+///   residue is stated as unbounded within `T-19-86`'s own scope, and no layer
+///   is asserted to govern it. `T-19-86` remains OPEN at `high` by explicit user
+///   scoping decision.
+///
 /// **THE MEASURED COST.** `GIT_ASKPASS` is UNTOUCHED, so the envelope's own
 /// token channel still answers; `gh` is unaffected, because this is a git key
 /// and `GH_CONFIG_DIR` closes gh's helper from the other side.

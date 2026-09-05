@@ -8711,7 +8711,10 @@ const ENVELOPE_ROOT_OPERAND_CARRIERS: &[&str] = &[
 /// emits NO TOKEN for the operator OR ITS TARGET, so the carrier path is not a
 /// word at all — and `19-29` does NOT change that. It carries the target on the
 /// SEGMENT the way `Segment::redirection_unresolvable` already travels.
-/// `SEPARATORS` (`policy.rs:2297`) still has ONE commit in the whole phase
+/// `SEPARATORS` (`policy.rs:2422` — the constant is BYTE-IDENTICAL and the
+/// CITATION was stale, re-derived by `19-33`: `git log -L 2422,2422` returns
+/// exactly `84a9b05`, and the old line 2297 now returns `af72137` and says
+/// nothing about `SEPARATORS`) still has ONE commit in the whole phase
 /// (`84a9b05`), `is_separator(">") == false` by construction, and round 6's
 /// over-deletion control still pins `git x2>/tmp/o push --force origin main`
 /// PERMITTED. **The SEGMENT-COUNT pins in `tests/envelope_carrier_reach.rs` are

@@ -6200,6 +6200,25 @@ fn word_is_within(word: &str, envelope_dir: &Path, budget: &mut u64) -> Option<b
 /// followed and nothing is read**, so a symlink on `PATH` whose target this is
 /// remains a third string neither half covers.
 ///
+/// # WHAT THAT LEAVES OPEN, STATED AT THE SAME WEIGHT AS THE REASONING
+///
+/// **The reasoning above argues only that a PREFIX would be wrong. It never
+/// states that the PARENT'S OWN DELETION removes the binary — and it does.**
+/// `rm -rf <binary-parent>` is exit 0 and takes the file every hook stub and
+/// every `guard_command` execs; it is a registered `T-19-116` route. **No
+/// ancestor clause is written here either**, for the same reason no prefix is:
+/// the directory is shared with everything else the user installed, so refusing
+/// a word that names it is an outage rather than a boundary (AR-19-11) — which
+/// is exactly the argument the envelope half's own ancestor clause uses for
+/// stopping at the envelope root, one path over.
+///
+/// **This paragraph is an HONESTY repair and NOT a mitigation.** Nothing about
+/// the code changed when it was written; what changed is that the doc now says
+/// both halves — why the equality is right, and what the equality does not
+/// reach. A reason stated without its residue reads as a completeness claim, and
+/// this one is not. The residue is named on axis 3 of
+/// [`protected_carrier_named`]'s condition and is carried OPEN.
+///
 /// A `file` that normalises to the root itself answers `false` rather than
 /// matching `/`: a protected path of `/` would refuse every absolute word on the
 /// line, which is not a boundary, it is an outage.
@@ -6417,31 +6436,76 @@ pub enum ProtectedPath {
 /// fail-closed default. Its SILENCE IS A PERMIT**, exactly as
 /// [`INDIRECTION_SECTIONS`]'s is.
 ///
-/// **THE CONDITION, WHICH IS THE HONEST FORM OF IT — AND IT IS STATED OVER WHAT
-/// THIS PREDICATE READS, WITH NO COUNT.**
+/// **THE CONDITION, WHICH IS THE HONEST FORM OF IT — AND A BOUNDARY HAS THREE
+/// WAYS TO BE SILENT, SO IT IS STATED OVER ALL THREE, WITH NO COUNT ON ANY OF
+/// THEM.**
 ///
-/// > **This predicate reads every `/`-ANCHORED SUBSTRING of every LITERAL word, in
-/// > either word class, against both paths. It is silent about a word the SHELL
-/// > MAY REWRITE, because the guard cannot know its final text; about a word whose
-/// > TEXT CARRIES NO ABSOLUTE PATH ANYWHERE, because there is nothing in it to
-/// > normalise; and about a word that reaches a protected path ONLY THROUGH A
-/// > LINK, because no lexical reading of the text names it.**
+/// > **AXIS 1 — WHICH WORDS REACH THE READER.** This predicate reads every
+/// > LITERAL word of the segment that is not an operator
+/// > ([`Segment::tokens`]), every LITERAL PATHNAME redirection target
+/// > ([`Segment::redirection_targets`]), and every LITERAL NON-PATHNAME
+/// > redirection target ([`Segment::non_pathname_redirection_targets`]). **It is
+/// > silent about a word a redirection production that did not COMPLETE
+/// > produced**, which fails closed at [`Token::redirection_unresolvable`]
+/// > rather than being read.
+/// >
+/// > **AXIS 2 — WHAT THE READER SEES IN A WORD IT RECEIVED.** It reads every
+/// > `/`-ANCHORED SUBSTRING of that word's text, normalised. **It is silent
+/// > about a word the SHELL MAY REWRITE**, because the guard cannot know its
+/// > final text; **about a word whose TEXT CARRIES NO ABSOLUTE PATH ANYWHERE**,
+/// > because there is nothing in it to normalise; **and about a word that
+/// > reaches a protected path ONLY THROUGH A LINK**, because no lexical reading
+/// > of the text names it.
+/// >
+/// > **AXIS 3 — WHICH PATHS THE COMPARISON PROTECTS.** A candidate UNDER this
+/// > run's envelope directory, a candidate that is a proper ANCESTOR of it AT OR
+/// > UNDER this run's envelope ROOT, and a candidate EQUAL to this run's own
+/// > binary. **It is silent about an ancestor ABOVE the root — `~/.local/share`,
+/// > `$HOME`, `/tmp`, `/` — and about the binary's PARENT and every ancestor of
+/// > it**, because refusing a word that names one of those is an outage rather
+/// > than a boundary (AR-19-11), which is the same reason the binary half is an
+/// > EQUALITY.
 ///
-/// **NO COUNT IS WRITTEN, AND THAT IS DELIBERATE.** This paragraph used to say
-/// *"SEVEN spellings are MEASURED"* and, before that, *"four"*. Each number was
-/// correct only until the next round found a spelling it had not, and a count is a
-/// completeness claim the measurement cannot support — `T-19-107`'s registered
-/// shape in a shorter sentence. The condition above is checkable against the code;
-/// a count is a fact about how hard someone looked. **The spellings below are
-/// INSTANCES of the condition and are not a list of it.**
+/// **NO COUNT IS WRITTEN ON ANY AXIS, AND THAT IS DELIBERATE.** This paragraph
+/// used to say *"SEVEN spellings are MEASURED"* and, before that, *"four"*. Each
+/// number was correct only until the next round found a spelling it had not, and
+/// a count is a completeness claim the measurement cannot support —
+/// `T-19-107`'s registered shape in a shorter sentence. The condition above is
+/// checkable against the code; a count is a fact about how hard someone looked.
+/// **The spellings below are INSTANCES of the condition and are not a list of
+/// it.**
 ///
-/// **AND ONE CHARACTER OF THE CONDITION MOVED THIS ROUND, UNDER THE WR-02
-/// DISCIPLINE.** The second clause used to read *"a word that IS NOT ABSOLUTE"*.
-/// That was true of the code when it was written — [`lexical_absolute_components`]
-/// was applied to the WORD — and it is false of the code now: the scan reads the
-/// word's TEXT at every `/`, so a word that is not itself absolute can still carry
-/// an absolute path this predicate reaches. The clause is now
-/// *"a word whose TEXT carries no absolute path anywhere in it."*
+/// **A WR-02 NOTE ON WHAT THE CONDITION USED TO SAY, BECAUSE IT WAS TRUE AND
+/// INCOMPLETE RATHER THAN FALSE.** It read:
+///
+/// > *"This predicate reads every `/`-ANCHORED SUBSTRING of every LITERAL word,
+/// > in either word class, against both paths. It is silent about a word the
+/// > SHELL MAY REWRITE … about a word whose TEXT CARRIES NO ABSOLUTE PATH
+/// > ANYWHERE … and about a word that reaches a protected path ONLY THROUGH A
+/// > LINK."*
+///
+/// **Why it was right when it was written.** Round 12's defect was the READING —
+/// the rule read only words that BEGAN with `/` — and the sentence enumerates
+/// the silences of a reading exactly. Every clause of it is still true and every
+/// one of them is still here, on axis 2.
+///
+/// **What it omitted.** It names the word set (*"in either word class"*) and the
+/// path set (*"against both paths"*) as PREMISES and then says nothing about
+/// either — and a boundary can be silent in all three places. It was silent
+/// about a word in NEITHER word class, which was driven to a deleted envelope
+/// directory and a reset pull-request cap; and about a path the comparison does
+/// not protect, which was driven to the same nine carriers by naming their
+/// parent. **A residue stated over one axis of three reads as a complete
+/// statement of the silence and is not one.**
+///
+/// **And one character of axis 2 moved in the round before this, under the same
+/// discipline.** Its second clause used to read *"a word that IS NOT
+/// ABSOLUTE"*. That was true of the code when it was written —
+/// [`lexical_absolute_components`] was applied to the WORD — and it is false of
+/// the code now: the scan reads the word's TEXT at every `/`, so a word that is
+/// not itself absolute can still carry an absolute path this predicate reaches.
+/// The clause is now *"a word whose TEXT carries no absolute path anywhere in
+/// it."*
 ///
 /// **INSTANCES OF THE FIRST CLAUSE — a word the shell may rewrite.** Round 5's own
 /// literalness table names EXPANSION, PATHNAME, TILDE and BRACE as the classes
@@ -6493,19 +6557,43 @@ pub enum ProtectedPath {
 ///   mitigation**: a link on `PATH` whose target `current_exe()` reports is a
 ///   third string neither half of the path set covers.
 ///
-/// **AND THE REDIRECTION CHANNEL IS NOT A DIRECTION OF ITS OWN.** Round 11 made an
-/// ABSOLUTE LITERAL pathname target under either protected path refused — the path
-/// travels on [`Segment::redirection_targets`], produced by the walk that already
-/// skips it — so it stopped being a silence and became **a second WORD CLASS the
-/// whole condition applies over**. `SEPARATORS` did not move, `is_separator(">")`
-/// is still `false`, no token entered the stream, and round 6's over-deletion
-/// control still pins `git x2>/tmp/o push --force origin main` PERMITTED.
+/// **INSTANCES OF AXIS 1 — a word that did not reach the reader.**
 ///
-/// **The condition applies over TWO word classes and TWO paths. The path set grew,
-/// the word set grew, the words are now read at every offset, and the condition
-/// did NOT shrink.** Saying *"the interior spellings are closed"* would be false
-/// and saying *"they are unreachable"* would be the sentence measurement
-/// disproved. **NARROWED is the word.**
+/// * **A redirection production that did not COMPLETE.** `git >` names a target
+///   the parser never found, so no word is produced for any class at all. **It
+///   fails CLOSED** rather than being read: the segment carries
+///   [`Segment::redirection_unresolvable`] and a governed program on it is
+///   refused. `ls >` stays permitted, which is the cost containment
+///   [`Segment::brace_spliced`] already establishes one field over.
+/// * **NARROWED, and by two rounds rather than one.** Round 11 brought PATHNAME
+///   redirection targets into the word set and this round brought NON-PATHNAME
+///   ones — a here-string, a heredoc delimiter, an fd number. Three of the five
+///   non-pathname operators reach no file under real `bash` at all and are
+///   RECORDED rather than claimed; `<<<` and `>&` reach, and both are read now.
+///   **`SEPARATORS` did not move, `is_separator(">")` is still `false`, no token
+///   entered the stream, and round 6's over-deletion control still pins
+///   `git x2>/tmp/o push --force origin main` PERMITTED as exactly one
+///   segment.**
+///
+/// **INSTANCES OF AXIS 3 — a path the comparison does not protect.**
+///
+/// * **AN ANCESTOR ABOVE THE ENVELOPE ROOT.** `rm -rf /tmp` when the root is
+///   `/tmp/xyz` reaches the same nine carriers `rm -rf <root>/<alias>` does.
+///   **No rule is written for it and the reason is OWNERSHIP**: this tool
+///   creates the root and it holds only alias directories it created, while
+///   `~/.local/share`, `$HOME`, `/tmp` and `/` are shared with everything the
+///   user has, and a clause reaching them would refuse `ls /`, `df /`,
+///   `du -sh $HOME` and `ls /tmp`. **Registered, disclosed and UNACCEPTED.**
+/// * **THE BINARY'S PARENT AND EVERY ANCESTOR OF IT.** `rm -rf <binary-parent>`
+///   removes the binary and is permitted. **No rule is written for it either**,
+///   for the same shared-directory reason [`word_is_exactly`]'s own doc states
+///   at the same weight as its reasoning for the equality.
+///
+/// **The condition applies over THREE word classes and THREE path-set members.
+/// The path set grew, the word set grew, the words are read at every offset, and
+/// the condition did NOT shrink.** Saying *"the interior spellings are closed"*
+/// would be false and saying *"they are unreachable"* would be the sentence
+/// measurement disproved. **NARROWED is the word, on every axis.**
 ///
 /// # NO REVISIT CONDITION AND NO VERSION WITNESS IS CREATED FOR THE CONDITION OR
 /// FOR ANY INSTANCE OF IT
@@ -6564,11 +6652,48 @@ pub enum ProtectedPath {
 /// ITS EASIEST INSTANCE.** Reading a word at every `/` means the word need not be
 /// a path for its text to be read as one:
 ///
-/// > **Any word whose text contains THIS RUN'S OWN envelope directory or THIS
-/// > RUN'S OWN binary path as a `/`-anchored substring is now refused — EVEN WHERE
-/// > THE PROGRAM WOULD NOT HAVE USED THAT SUBSTRING AS A PATH.** As a value, a
-/// > pattern, a commit message, a URL fragment, or a relative path that merely
-/// > happens to contain it.
+/// > **Any word one of whose `/`-ANCHORED SUBSTRINGS NORMALISES to a path under
+/// > this run's envelope directory, to an ANCESTOR of that directory at or under
+/// > this run's envelope ROOT, or EQUAL to this run's own binary, is refused —
+/// > EVEN WHERE THE PROGRAM WOULD NOT HAVE USED THAT SUBSTRING AS A PATH.** As a
+/// > value, a pattern, a commit message, a URL fragment, or a relative path that
+/// > merely happens to carry it.
+///
+/// **A WR-02 NOTE ON THAT SENTENCE, BECAUSE IT WAS FALSE ABOUT THIS CODE WHEN IT
+/// WAS WRITTEN.** It read *"any word whose text CONTAINS this run's own envelope
+/// directory or this run's own binary path AS A `/`-ANCHORED SUBSTRING"*. It was
+/// right-SOUNDING, and it was one operation short: **the comparison
+/// NORMALISES.** `dd of=<env>/./<alias>/x` and `dd of=<env>/zzz/../<alias>/x` are
+/// both refused and **neither word contains `<env>/<alias>` as a substring at
+/// all** — measured, with the absence asserted mechanically rather than claimed.
+/// A `/`-anchored substring test would have permitted both. The surface is
+/// therefore stated over what the comparison DOES — normalise, then compare —
+/// rather than over what the word looks like. **This is the round that removed a
+/// COUNT from the condition above replacing it with a wording that was one
+/// operation short, which is why the repair is written here rather than left to
+/// be met.**
+///
+/// **AND THE ROUND'S OWN NEW MEMBERS, DISCLOSED BENEATH THE SURFACE RATHER THAN
+/// FOLDED INTO IT:**
+///
+/// * **A here-string, or any other NON-PATHNAME redirection target, naming a
+///   protected path is refused** — `cat <<< <ledger>` — **although the program
+///   would only ever have read it as data.** It is the same family as
+///   `cat <ledger>` above, it fails CLOSED, and it is bounded to words naming
+///   this run's own paths: `cat <<<x` and `cat <<< /tmp/x` stay permitted, which
+///   is what makes the class a PATH class rather than a here-string ban.
+/// * **A word naming the envelope ROOT is refused**, although this run's own
+///   directory is one component below it and the root may hold a concurrent
+///   run's alias directory. The cost is bounded to that ONE path: a sibling
+///   under the root, a second alias directory and every file directly in the
+///   root stay permitted, which is the whole difference between the ANCESTOR
+///   clause and a prefix widened to the root.
+/// * **A word whose candidate scan exceeds [`CANDIDATE_SCAN_WORK_CEILING`] is
+///   refused WHATEVER IT NAMES**, because the predicate cannot establish that it
+///   named nothing. The ceiling is the fail-closed backstop beside the scan's
+///   linearity, not the bound; it is three orders of magnitude above an ordinary
+///   command line, and a word with no `/` in it is never affected however long
+///   it is.
 ///
 /// **It fails CLOSED, and it is bounded** — not by the split, which produces many
 /// candidates, but by the PATH SET, which accepts almost none of them. A candidate
@@ -6710,16 +6835,22 @@ pub fn protected_carrier_named<'a>(
 pub fn envelope_carrier_refusal(matched: ProtectedPath, path: &Path) -> String {
     match matched {
         ProtectedPath::EnvelopeDirectory => format!(
-            "this command names a path under `{}`, the directory this run's own controls live \
-             in — the pull-request ledger, the hook stubs and the generated git configuration — \
-             so what those controls will be while the command runs cannot be established from \
-             this command line, and it is refused rather than guessed at. The path is read \
-             whether it stands alone as a word, is carried INSIDE a longer word — after an \
-             option's `=`, attached to a short option, or after any other character — or \
-             follows a redirection operator. To proceed: name \
-             a path outside that directory. The envelope's own files are not this run's to read \
-             or write, and `git config --get core.hooksPath` still reports the directory for a \
-             human debugging the run",
+            "this command names `{}` or a path under it — the directory this run's own controls \
+             live in, holding the pull-request ledger, the hook stubs and the generated git \
+             configuration — or names the directory ABOVE it that this run was given as its \
+             envelope root, whose removal takes the same files. What those controls will be \
+             while the command runs cannot be established from this command line, so it is \
+             refused rather than guessed at. The path is read whether it stands alone as a \
+             word, is carried INSIDE a longer word — after an option's `=`, attached to a \
+             short option, or after any other character — or follows a redirection operator, \
+             pathname or not; and it is read after NORMALISATION, so a `.` or a `..` in the \
+             middle of it does not change the answer. To proceed: if the command meant to \
+             reach that path, name one outside it — the envelope's own files are not this \
+             run's to read or write. If it did not, the path is somewhere in a word that only \
+             CARRIES it — in a value, a pattern, a message or a URL — and rewriting that word \
+             so it does not spell this run's own directory or its root lets the command \
+             through unchanged in every other respect. `git config --get core.hooksPath` \
+             still reports the directory for a human debugging the run",
             path.display()
         ),
         ProtectedPath::GuardBinary => format!(
@@ -6728,10 +6859,14 @@ pub fn envelope_carrier_refusal(matched: ProtectedPath, path: &Path) -> String {
              from this command line, and it is refused rather than guessed at. The path is read \
              whether it stands alone as a word, is carried INSIDE a longer word — after an \
              option's `=`, attached to a short option, or after any other character — or \
-             follows a redirection operator. To proceed: name \
-             a path other than that one file; the directory it sits in is not protected and \
-             every other file in it is untouched by this refusal. `command -v` still reports \
-             the path for a human debugging the run",
+             follows a redirection operator, pathname or not; and it is read after \
+             NORMALISATION, so a `.` or a `..` in the middle of it does not change the answer. \
+             To proceed: if the command meant to reach that file, name a different one — the \
+             directory it sits in is not protected and every other file in it is untouched by \
+             this refusal. If it did not, the path is somewhere in a word that only CARRIES \
+             it, and rewriting that word so it does not spell this one file lets the command \
+             through unchanged. `command -v` still reports the path for a human debugging the \
+             run",
             path.display()
         ),
     }
@@ -10606,6 +10741,238 @@ mod tests {
                  why the ANCESTOR clause sits beside the PREFIX one."
             );
         }
+    }
+
+    #[test]
+    fn the_four_repaired_claims_say_what_this_code_does_and_the_stale_forms_are_gone() {
+        // **THE HONESTY REPAIRS, ASSERTED OVER THE PRODUCTION SOURCE RATHER THAN
+        // CLAIMED IN A SUMMARY.** Each row pins the STALE form ABSENT and the
+        // corrected form PRESENT, so a future edit that reinstated either one
+        // fails here.
+        //
+        // **The positive control comes first**, for the reason every absence
+        // assertion in this phase carries one: an absence assertion cannot tell
+        // "the string is not in this file" from "this is not the file I think it
+        // is".
+        // **`policy.rs` is sliced at its own test sentinel and the other two are
+        // not, and that asymmetry is mechanical rather than tidy**: the STALE
+        // forms this test pins ABSENT are written out below, in THIS file, so an
+        // unsliced read of `policy.rs` would find them in the assertions
+        // themselves and could never go green. The `ledger.rs` and `cred.rs`
+        // literals live here too — in a DIFFERENT file from the one they are
+        // asserted over — which is why those two need no slice. It is the same
+        // structure
+        // `the_link_non_following_stat_variant_is_absent_from_ledger_rs_production_half`
+        // uses one file over, and the same one this file's own no-filesystem
+        // assertion uses. **The needle is assembled from two pieces so this test
+        // does not write a second sentinel literal into the file it slices.**
+        const POLICY_ALL: &str = include_str!("policy.rs");
+        const LEDGER: &str = include_str!("ledger.rs");
+        const CRED: &str = include_str!("cred.rs");
+        let sentinel = POLICY_ALL
+            .find(concat!("#[cfg", "(test)]"))
+            .expect("`policy.rs` must carry a test sentinel; without one there is no \
+                     production half to slice");
+        let policy: &str = &POLICY_ALL[..sentinel];
+        for (source, anchor, label) in [
+            (policy, "pub fn protected_carrier_named", "policy.rs"),
+            (LEDGER, "fn record_and_check_in", "ledger.rs"),
+            (CRED, "pub fn hooks_path_env", "cred.rs"),
+        ] {
+            assert!(
+                source.contains(anchor),
+                "the self-read must reach {label}; without it every absence below is vacuous"
+            );
+        }
+
+        // -- **`T-19-125`: the disclosed cost says NORMALISES rather than
+        //    *contains as a substring*.** The comparison normalises, so
+        //    `dd of=<env>/./<alias>/x` is refused while containing no such
+        //    substring at all — measured, and `tests/envelope_word_set.rs`
+        //    asserts the absence mechanically.
+        assert!(
+            !policy.contains("path as a `/`-anchored substring is now refused"),
+            "\n\n**THE STALE SUBSTRING WORDING HAS RETURNED.** It was FALSE about this code: \
+             the comparison NORMALISES, so two measured words containing no such substring are \
+             refused. A `/`-anchored substring test would have permitted both."
+        );
+        assert!(
+            policy.contains("NORMALISES to a path under"),
+            "the corrected surface must be stated over what the comparison DOES"
+        );
+
+        // -- **`T-19-125`: the recovery lines are actionable for all three
+        //    cases** — a word under the directory, a word naming an ancestor at
+        //    or under the root, and a word that merely CARRIES one of them.
+        //    `name a path outside that directory` is advice a user cannot act on
+        //    for the third case (AR-19-11).
+        assert!(
+            !policy.contains("a path outside that directory. The envelope's own files"),
+            "\n\n**THE STALE RECOVERY LINE HAS RETURNED.** For a word that merely CARRIES the \
+             directory — in a value, a pattern, a message or a URL — *name a path outside that \
+             directory* names no action at all, because the word was never a path."
+        );
+        for required in [
+            "or names the directory ABOVE it that this run was given as its \\",
+            "only \\\n             CARRIES it",
+        ] {
+            assert!(
+                policy.contains(required),
+                "the refusal must be actionable for the ancestor case and the carries-it case: \
+                 {required:?} is missing"
+            );
+        }
+
+        // -- **`word_is_exactly`'s parent-deletion residue, at the same weight as
+        //    its reasoning.** The doc argued only that a PREFIX would be wrong
+        //    and never that the parent's own DELETION removes the binary.
+        assert!(
+            policy.contains("The reasoning above argues only that a PREFIX would be wrong"),
+            "\n\n**`word_is_exactly`'s HONESTY GAP HAS RETURNED.** `rm -rf <binary-parent>` is \
+             exit 0 and removes the binary; it is a registered `T-19-116` route. The doc must \
+             state the residue beside the reason, and must NOT describe doing so as a \
+             mitigation."
+        );
+
+        // -- **`T-19-126`(i): the INVERTED reason in `ledger.rs`.** Writing the
+        //    forbidden literal to forbid it turns a zero-occurrence gate RED; it
+        //    does not make it pass vacuously.
+        // **THE INVERTED SENTENCE IS QUOTED RATHER THAN DELETED (WR-02), so the
+        // check is that the CORRECTION is present rather than that the old words
+        // are absent.** An absence assertion over a form the repair is required
+        // to QUOTE could never pass — which is a real constraint the WR-02
+        // discipline puts on mechanical checks, and it is stated here rather
+        // than worked around by deleting the quotation.
+        assert!(
+            LEDGER.contains("The stated effect is INVERTED"),
+            "\n\n**THE INVERTED GATE REASON IS NOT CORRECTED.** Against a zero-occurrence grep, \
+             writing the forbidden literal to forbid it turns the gate RED — it does not make \
+             it pass vacuously. A control whose own reason for existing is stated backwards \
+             cannot be relied on for what it does."
+        );
+        assert!(
+            LEDGER.contains("the control it named was a plan-time VERIFY STEP, run once"),
+            "and the second half must be corrected too: a one-shot grep is not a standing \
+             control, and describing one as though it were is how a claimed evidentiary weight \
+             outruns what the evidence can fail on"
+        );
+        for pin in [
+            "a_symlinked_to_regular_ledger_is_permitted_and_counted_before_and_after",
+            "the_link_non_following_stat_variant_is_absent_from_ledger_rs_production_half",
+        ] {
+            assert!(
+                LEDGER.contains(pin),
+                "the corrected comment must name the STANDING pin `{pin}` — a one-shot verify \
+                 grep is not a standing control, and describing one as though it were is how a \
+                 claimed evidentiary weight outruns what the evidence can fail on"
+            );
+        }
+
+        // -- **`cred.rs`'s third NOT-COVERED item.** The `!`-bodied alias-body
+        //    route is `T-19-86`'s, RECORDED here and explicitly NOT folded into
+        //    it.
+        assert!(
+            CRED.contains("a `credential.helper` set inside an ALIAS BODY"),
+            "\n\n**THE ALIAS-BODY ROUTE IS MISSING FROM THE NOT-COVERED LIST.** It was measured \
+             exit 0 with the ambient secret PRESENT under full envelope posture, and a \
+             not-covered list that omits a measured route is a completeness claim the \
+             measurement denies."
+        );
+        assert!(
+            CRED.contains("RECORDED HERE RATHER THAN FOLDED INTO"),
+            "and it must be recorded as `T-19-86`'s route rather than folded into it — a threat \
+             row that grows to absorb every consequence of its mechanism stops naming a \
+             mechanism at all"
+        );
+    }
+
+    #[test]
+    fn the_residue_is_a_condition_over_three_axes_and_carries_no_count_on_any_of_them() {
+        // **SLICED AT THE TEST SENTINEL, for the reason the fn above states**:
+        // the COUNTS this test pins ABSENT are written out below, in this file,
+        // so an unsliced read would find them in the assertion itself.
+        const POLICY_ALL: &str = include_str!("policy.rs");
+        let sentinel = POLICY_ALL
+            .find(concat!("#[cfg", "(test)]"))
+            .expect("`policy.rs` must carry a test sentinel");
+        let policy: &str = &POLICY_ALL[..sentinel];
+        assert!(
+            policy.contains("pub fn protected_carrier_named"),
+            "the self-read must reach the predicate; without it every check below is vacuous"
+        );
+
+        // -- **ALL THREE AXES ARE NAMED**, because a boundary has three ways to
+        //    be silent and round 12's condition enumerated the silences of ONE.
+        for axis in [
+            "AXIS 1 — WHICH WORDS REACH THE READER",
+            "AXIS 2 — WHAT THE READER SEES IN A WORD IT RECEIVED",
+            "AXIS 3 — WHICH PATHS THE COMPARISON PROTECTS",
+        ] {
+            assert!(
+                policy.contains(axis),
+                "\n\n**`{axis}` IS MISSING FROM THE CONDITION.** A residue stated over one axis \
+                 of three reads as a complete statement of the silence and is not one — which \
+                 is exactly how `T-19-122` and `T-19-123` survived eleven audits."
+            );
+        }
+
+        // -- **AND EACH AXIS NAMES ITS OWN SILENCE**, so none of them is a
+        //    premise the condition then says nothing about.
+        for silence in [
+            "silent about a word a redirection production that did not COMPLETE",
+            "silent\n/// > about a word the SHELL MAY REWRITE",
+            "silent about an ancestor ABOVE the root",
+        ] {
+            assert!(
+                policy.contains(silence),
+                "an axis names what it reads and then says nothing about what it misses: \
+                 {silence:?} is absent"
+            );
+        }
+
+        // -- **NO COUNT ON ANY AXIS**, asserted over the CONDITION BLOCK ITSELF
+        //    rather than over the whole file. The WR-02 note beneath the
+        //    condition QUOTES the counts this phase has already shipped and got
+        //    wrong — *"SEVEN spellings are MEASURED"* and, before it, *"four"* —
+        //    so a whole-file absence check could never pass without deleting the
+        //    history that explains why no count is written. **The subject is the
+        //    condition, so the slice is the condition.**
+        let block_start = policy
+            .find("AXIS 1 — WHICH WORDS REACH THE READER")
+            .expect("the condition block must be findable");
+        let block_end = block_start
+            + policy[block_start..]
+                .find("NO COUNT IS WRITTEN ON ANY AXIS")
+                .expect("the condition block ends at its own no-count paragraph");
+        let condition = &policy[block_start..block_end];
+        assert!(
+            condition.contains("AXIS 3 — WHICH PATHS THE COMPARISON PROTECTS"),
+            "the slice must cover all three axes, or the absence below certifies one of them"
+        );
+        for count in [
+            "SEVEN", "FIVE", "FOUR", "THREE", "TWO", "ONE ", "seven", "five", "four", "three",
+            "two ",
+        ] {
+            assert!(
+                !condition.contains(count),
+                "\n\n**A COUNT HAS BEEN WRITTEN INTO THE CONDITION: {count:?}.** This phase has \
+                 shipped a *FIVE forms* claim, a *four directions* claim and a *SEVEN \
+                 spellings* claim, each correct only until the next round found a spelling it \
+                 had not — `T-19-107`'s registered shape. **The correct response is to state \
+                 the condition, never to count the instances.**"
+            );
+        }
+
+        // -- **AND NOTHING IS HANDED TO A PIN, A SCHEDULE OR A VERSION WITNESS.**
+        //    `19-25`'s witness schedules a re-audit against a FUTURE GIT; every
+        //    clause of this condition is reachable by the driven agent TODAY, so
+        //    a schedule over them would observe a version string that never
+        //    moves while the residue is exercised.
+        assert!(
+            policy.contains("no pin, no schedule and no\n/// version witness"),
+            "the no-revisit-condition paragraph must stay, with its reason, and it must apply \
+             to all three axes"
+        );
     }
 
     #[test]
