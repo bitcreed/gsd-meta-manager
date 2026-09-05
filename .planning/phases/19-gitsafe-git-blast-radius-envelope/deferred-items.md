@@ -3074,3 +3074,155 @@ The four original residues stay at exit 0 and `T-19-116` stays OPEN at `high`.
   not renumbered, and **`T-19-23` is NOT marked closed.**
 
 **Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.**
+
+---
+
+## Plan 19-33 — the word set, the path set and the scan's work. NARROWED-or-CORRECTED, and NOT CLOSED.
+
+**`/gsd-secure-phase 19` is NOT cleared by this plan, nothing here is described
+as a closure, and this plan does NOT write audit 12's finish-line sentence** —
+whether the open set has become the human-decision items plus the
+deliberately-unruled residues is audit 13's judgement.
+
+### The five rows this plan acted on — every one NARROWED-or-CORRECTED, NONE closed
+
+- **`T-19-122`** (`high`) — **NARROWED, NOT CLOSED.** A word in NEITHER word class
+  is now read: a SECOND `Segment` field, `non_pathname_redirection_targets`,
+  carries every LITERAL word a NON-PATHNAME redirection operator names, chained as
+  a THIRD word class at the ONE existing reading site. `xargs rm -rf <<< <ENV>/alpha`,
+  `xargs rm -f <<< <ledger>`, `xargs cp /bin/true <<< <BINARY>`, `xargs -n1 …`,
+  `xargs -I{} …`, `xargs rm -rf <<< of=<ENV>/alpha`, `: >&<ledger>` and
+  `echo evil >&<askpass>` are all now exit 2 `envelope_assertion_failed`.
+  **WHAT REMAINS:** a word a redirection production that did NOT COMPLETE
+  produced is still not read — it fails closed at
+  `Token::redirection_unresolvable` rather than being read, which is a different
+  disposition, not a closure. **Three of the five non-pathname operators reach
+  nothing under real `bash`** (`<<` and `<<-` with the path as the DELIMITER, and
+  `<&`) and are RECORDED rather than asserted, on the discipline that a spelling
+  the guard permits but the shell does not reach is not a bypass. Whether this
+  row closes is audit 13's judgement.
+- **`T-19-123`** (`high`) — **NARROWED, NOT CLOSED.** An ANCESTOR clause sits
+  beside the PREFIX one, over the same component vectors the other way round,
+  bounded at the envelope ROOT. `rm -rf <ENV>`, `rm -rf <ENV>/`, `mv <ENV> …`,
+  `find <ENV> -delete`, `chmod 000 <ENV>`, `tar -C<ENV> --create …` and
+  `cd <ENV> && rm -rf alpha` are all now exit 2. It grew the protected set by
+  EXACTLY ONE path. **WHAT REMAINS: an ancestor ABOVE the root — see the NEW
+  registered residue below.**
+- **`T-19-124`** (`medium`) — **NARROWED, NOT CLOSED. The task was NOT severed.**
+  The candidate scan's work is now LINEAR in the word's length
+  (`CandidateScan`, one right-to-left pass with structure sharing), so
+  `MAX_GUARD_REQUEST_BYTES` became a genuine bound on WORK rather than only on
+  INPUT. A 800 KB word that did not answer in 300 s now answers in 184 ms; the
+  ratio `t(8 000)/t(2 000)` fell from 15.7 to 1.22 against a threshold of 8.
+  A FAIL-CLOSED `CANDIDATE_SCAN_WORK_CEILING` sits beside it as the backstop and
+  **a test DRIVES it** with a same-length no-slash control and an input-bound
+  control. **WHAT REMAINS: the BEHAVIOURAL half — what the agent CLI does with a
+  `PreToolUse` hook that overruns its registered timeout — is a property of a
+  CLOSED-SOURCE BINARY. It stays UNMEASURED and is claimed in NEITHER
+  direction.** Also open: the ceiling's refusal reuses the existing carrier
+  refusal message, which names the protected path rather than the ceiling; the
+  over-refusal is disclosed in the predicate's own cost section but the MESSAGE
+  does not distinguish the two causes.
+- **`T-19-125`** (`low`) — **CORRECTED, NOT CLOSED.** The disclosed cost now says
+  NORMALISES rather than *contains as a `/`-anchored substring*, and gains the
+  round's three new members. Both `envelope_carrier_refusal` recovery lines are
+  now actionable for a word under the directory, a word naming an ancestor at or
+  under the root, and a word that merely CARRIES one. **WHAT REMAINS:** the
+  wording is checked by one production-source pin and by no behavioural control;
+  a future widening that outran the sentence again would be caught only if the
+  pin's literals were updated with it.
+- **`T-19-126`** (`low`) — **CORRECTED, NOT CLOSED.** `ledger.rs`'s inverted
+  sentence is repaired under WR-02 and names `19-32`'s two STANDING pins. **WHAT
+  REMAINS, and it is a finding about the plan's own instruction:** the plan said
+  to spell the forbidden API name *if and only if* the replacement is a
+  production-SLICE pin. It is one — **and its slice covers the very comment the
+  name would be written in**, so writing it turns that pin RED. The name is
+  therefore still unspelled there, but for a checkable reason about where the
+  slice begins rather than the vacuity claim it used to give. `T-19-126`(ii) —
+  entry 7's tar re-spelling — is unchanged by this plan.
+
+### NEW, registered here for the first time
+
+- **The ANCESTOR RESIDUE ABOVE THE ENVELOPE ROOT.** An ancestor above `<root>` —
+  `rm -rf /tmp` when the root is `/tmp/xyz` — reaches the same nine carriers and
+  **NO RULE IS WRITTEN FOR IT.** The clause stops at `<root>` on OWNERSHIP
+  grounds: this tool creates the root and it holds only alias directories it
+  created, while `~/.local/share`, `$HOME`, `/tmp` and `/` are shared with
+  everything the user has, and refusing a word naming one of those is an outage
+  rather than a boundary (AR-19-11). **DISCLOSED, UNACCEPTED, and named on axis 3
+  of the restated condition.** No revisit condition, no pin, no schedule and no
+  version witness is attached to it.
+- **A FIFTH FLAKE.**
+  `the_t_19_119_replacement_takes_layer_2_as_well_and_that_is_measured_separately`
+  (`tests/envelope_interior_path.rs`) panics `BrokenPipe` under CPU load: its
+  `replaced` leg spawns `/bin/true`, which exits without reading stdin, and the
+  parent's `write_all` races that exit. **PRE-EXISTING — measured 4/4 at the base
+  commit `07c551a`, extracted with `git archive` outside the repository.** NOT
+  fixed; the file is fenced beyond this plan's two authorised changes. Green in
+  every unloaded run including the final gate; **absence is not evidence it is
+  fixed.**
+
+### The RESIDUE, as a CONDITION over THREE axes, with NO COUNT on any of them
+
+> **AXIS 1 — WHICH WORDS REACH THE READER.** Every LITERAL non-operator word,
+> every LITERAL PATHNAME redirection target and every LITERAL NON-PATHNAME
+> redirection target. **Silent about a word a redirection production that did not
+> COMPLETE produced**, which fails closed rather than being read.
+>
+> **AXIS 2 — WHAT THE READER SEES IN A WORD IT RECEIVED.** Every `/`-anchored
+> substring of the word's text, normalised. **Silent about a word the SHELL MAY
+> REWRITE, about a word whose TEXT CARRIES NO ABSOLUTE PATH ANYWHERE, and about a
+> word that reaches a protected path ONLY THROUGH A LINK.**
+>
+> **AXIS 3 — WHICH PATHS THE COMPARISON PROTECTS.** Under this run's envelope
+> directory, an ANCESTOR of it at or under this run's envelope ROOT, and EQUAL to
+> this run's own binary. **Silent about an ancestor ABOVE the root and about the
+> binary's PARENT and every ancestor of it**, because refusing a word that names
+> one of those is an outage rather than a boundary.
+
+**No count is written on any axis, the spellings are INSTANCES, and none of it is
+handed to a pin, a schedule or a version witness.**
+
+### Still OPEN and unchanged by this plan
+
+- **`T-19-86`** — OPEN at `high`, entirely unremediated, **by explicit user
+  scoping decision**. `T-19-111` is kept OUT of it as `19-27` moved it. **The
+  `!`-bodied ALIAS-BODY credential route is `T-19-86`'s and was ADDED to
+  `cred.rs`'s NOT-COVERED list as a route the named rule does not reach — it was
+  NOT folded into `T-19-86`'s declared harm and NOT used to re-rate it.**
+- **`T-19-91`** — OPEN at `high`. No rule, no remedy, no re-scope.
+- **`T-19-111`** — OPEN at `high` with NO rule.
+- **`T-19-112`** — narrowed further by both new classes and **NOT closed**.
+- **`T-19-113`** — unchanged.
+- **`T-19-115`** — OPEN with **NO rule and none can be written**: resolving a
+  tilde needs the ENVIRONMENT and a glob the FILESYSTEM. Its instances sit on
+  axis 2 of the restated condition.
+- **`T-19-116`** — **NARROWED and OPEN at `high`.** The third word class closes
+  `xargs cp /bin/true <<< <BINARY>` and its `-I{}` spelling. **`rm -rf
+  <binary-parent>` stays exit 0** — no ancestor clause is written for the binary
+  — beside the expansion-borne, tilde, relative and `PATH`-symlink residues.
+  Stated at the same weight as the narrowing.
+- **`T-19-121`** — OPEN at `high`, a bounded residue of a control that landed.
+- **`T-19-96`, `T-19-110`, `T-19-74`, `T-19-84`, `T-19-85`, `T-19-61` …
+  `T-19-73`** — unchanged; `park_refusal` was not moved, `scan.rs` and
+  `config.rs` were not opened, the wrapper core rows stay frozen.
+- **`C-08`** — its behavioural half stays **UNMEASURED** and is claimed in
+  neither direction. `hooks.rs` was not opened.
+- **`C-11` … `C-15`** — control (e), no rule and **no `pr_cap_*` clamp**. No rule,
+  pin or doc claim was written for `.git/config`, `.claude/settings.json`,
+  `.git/info/exclude`, the run journal or `~/.config/gsd-meta-manager/config.json`.
+- **The `glab --host` forge cell** — unfixed, `FORGE_VALUE_OPTS` keeps
+  `--hostname`, and **`glab` is confirmed NOT INSTALLED**.
+- **The four already-documented flakes** — two `driver_reattach`, the
+  `envelope_tracer` `ExecutableFileBusy` race and the ETXTBSY race over the
+  binary. **NONE fired on any full-suite run of this plan.** Not fixed, not
+  worked around, and **absence is not evidence any of them is fixed** — which
+  matters because the here-string BINARY rows exercise `C-10`'s own seam and this
+  round changed what the guard does about that seam. That relation is claimed in
+  NEITHER direction.
+- **`T-19-17r`** — OUTSTANDING for the **EIGHTEENTH** time. No `AR-19-13`, no
+  Accepted-Risks-Log row, and the word "accepted" is applied to it nowhere.
+  `AR-19-04` and `AR-19-05` are carried forward not un-accepted, not re-rated and
+  not renumbered, and **`T-19-23` is NOT marked closed.**
+
+**Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.**
