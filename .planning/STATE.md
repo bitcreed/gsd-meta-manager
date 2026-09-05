@@ -5,16 +5,16 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
-stopped_at: Completed 19-31-PLAN.md
-last_updated: "2026-09-04T23:07:35.812Z"
+stopped_at: Completed 19-33-PLAN.md
+last_updated: "2026-09-05T02:35:17.104Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: 604ad2e4e06d4094474fb75faba91cfe269d46f2
+state_head: 0f66086b06515d2f18b22df4e66f4399c69dbb98
 progress:
   total_phases: 10
   completed_phases: 6
-  total_plans: 110
-  completed_plans: 110
+  total_plans: 112
+  completed_plans: 112
   percent: 60
 ---
 
@@ -233,6 +233,7 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 | Phase 19 P29 | one session | 4 tasks | 11 files |
 | Phase 19 P30 | 1 session | 3 tasks | 4 files |
 | Phase 19 P31 | one session | 4 tasks | 6 files |
+| Phase 19 P33 | one session | 5 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -324,6 +325,11 @@ Recent decisions affecting current work:
 - [Phase 19]: credential.helper is denied by SECTION + FINAL COMPONENT, never a substring test
 - [Phase 19]: The ledger KIND check goes inside the existing Ok arm; the link-following stat is kept
 - [Phase 19]: cred.rs names the rule that acts rather than claiming a layer governs — prefer a claim that stays true to one that must be maintained
+- [Phase 19]: T-19-122 NARROWED by a THIRD word class: a SECOND Segment field carrying LITERAL NON-PATHNAME redirection targets, chained at the ONE existing reading site. Design decided by which fenced pins each option turns RED.
+- [Phase 19]: T-19-123 NARROWED by an ANCESTOR clause beside the PREFIX one, bounded at the envelope ROOT on ownership grounds. Grows the protected set by exactly one path; the residue above the root is registered, disclosed and UNACCEPTED.
+- [Phase 19]: T-19-124 NARROWED: the candidate scan's work is now LINEAR in the word's length via suffix folds with structure sharing, with a fail-closed CANDIDATE_SCAN_WORK_CEILING a test DRIVES. Task 3 was NOT severed.
+- [Phase 19]: Both authorised cross-fence pin moves performed with each reasoning REWRITTEN under WR-02 rather than deleted, and a STOP row added beside each.
+- [Phase 19]: Audit 12's finish-line sentence is deliberately NOT written by plan 19-33; that is audit 13's judgement. /gsd-secure-phase 19 is NOT cleared.
 
 ### Pending Todos
 
@@ -386,8 +392,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-04T23:07:25.178Z
-Stopped at: Completed 19-31-PLAN.md
+Last session: 2026-09-05T02:35:03.808Z
+Stopped at: Completed 19-33-PLAN.md
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
 Resume file: None
