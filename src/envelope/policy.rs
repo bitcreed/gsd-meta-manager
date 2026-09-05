@@ -5739,6 +5739,89 @@ fn lexical_absolute_components(word: &str) -> Option<Vec<&str>> {
     Some(components)
 }
 
+/// Whether `candidate` is a **PROPER ANCESTOR** of `dir` that is itself **AT OR
+/// UNDER `root`** — the new member of [`protected_carrier_named`]'s path set,
+/// beside the PREFIX one and not instead of it.
+///
+/// # WHAT IT IS FOR
+///
+/// **Deleting an ancestor of the envelope directory destroys the envelope
+/// directory.** `rm -rf <root>` takes the same NINE carriers
+/// [`word_is_within`]'s prefix exists to protect, one component up, and it was
+/// driven twice with a control beside every leg: a bare remote's `main` moved
+/// and a FIRED pull-request cap reset to PERMITTED. `word_is_within`'s
+/// `word.len() < dir.len()` early return answers `false` for every ancestor by
+/// construction, so no widening of that comparison can reach this — it is a
+/// different question about the same two vectors.
+///
+/// # IT IS THE SAME COMPARISON THE OTHER WAY ROUND
+///
+/// The prefix half asks *is `dir` a prefix of `candidate`*; this asks *is
+/// `candidate` a prefix of `dir`*. **That is why it costs one more `if` and
+/// cannot introduce a new normalisation or a new reading**: both operate on
+/// component vectors [`lexical_absolute_components`] already produced, and this
+/// function touches nothing but two slices. It asks the filesystem nothing and
+/// follows no link, exactly as its neighbours do.
+///
+/// # WHY IT IS BOUNDED AT THE ENVELOPE ROOT
+///
+/// `root` is `GSD_MM_ENVELOPE_ROOT`, or the default
+/// `~/.local/share/gsd-meta-manager/envelope`. **This tool creates it and it
+/// holds only the alias directories this tool created** — so refusing a word
+/// that names it costs the run one path it never had business naming. **Above
+/// it the chain is `~/.local/share`, `$HOME`, `/tmp` and `/`**, shared with
+/// everything the user has. A clause reaching them would refuse `ls /`, `df /`,
+/// `du -sh $HOME` and `ls /tmp`: **not a boundary but an outage**, and AR-19-11
+/// is this phase's own name for why that matters — a refusal a user cannot act
+/// on is a control that gets switched off. **It is the same argument
+/// [`word_is_exactly`] gives one path over** for keeping the binary half an
+/// EQUALITY rather than a prefix over a shared `bin`.
+///
+/// **The residue that leaves is real and is stated at the same weight as what
+/// this closes.** An ancestor ABOVE the root — `rm -rf /tmp` when the root is
+/// `/tmp/xyz` — reaches the same nine carriers and **no rule is written for
+/// it**; it is registered, disclosed, unaccepted, and named on axis 3 of
+/// [`protected_carrier_named`]'s restated condition.
+///
+/// # WHY IT IS AN ANCESTOR CLAUSE AND NOT THE PREFIX WIDENED TO THE ROOT
+///
+/// A prefix over `root` refuses every sibling under it and every file directly
+/// in it — and because `GSD_MM_ENVELOPE_ROOT` is USER-SETTABLE, a user who
+/// points it at a directory holding unrelated files would get that whole subtree
+/// refused. The ancestor clause refuses only the single word naming the root.
+/// `ls <root>/unrelated-sibling`, `ls <root>/beta` (a second alias, owned by a
+/// concurrent run) and the user-set-root case are all pinned PERMITTED, so the
+/// wrong design turns a file red rather than turning a driven run unusable.
+///
+/// # THE SET IT ADDS IS EXACTLY ONE PATH, AND IT IS STILL WRITTEN GENERALLY
+///
+/// [`super::envelope_dir_in`]'s alias is a plain single path component —
+/// [`super::ledger::ledger_path_in`] refuses anything else outright — so
+/// `candidate` must be both a proper prefix of `dir` (at most `root.len()`
+/// components) and at or under `root` (at least `root.len()` components), and
+/// the only vector satisfying both is `root` itself. **It is written in its
+/// general form anyway**, so it stays correct if the envelope directory ever
+/// becomes deeper, and so a reader can check it against the code rather than
+/// against that arithmetic.
+///
+/// A candidate that normalises to the filesystem root answers `false`, for the
+/// reason [`word_is_exactly`] gives for the same case: a protected path of `/`
+/// would refuse every absolute word on the line.
+fn is_ancestor_within_root(candidate: &[&str], dir: &[&str], root: &[&str]) -> bool {
+    // The root itself is never protected as an ancestor of nothing, and `/` is
+    // never protected at all.
+    if candidate.is_empty() || candidate.len() < root.len() {
+        return false;
+    }
+    // PROPER: a candidate EQUAL to `dir` is the prefix half's business, not
+    // this one's, and answering `true` here would make the two halves overlap
+    // rather than compose.
+    if candidate.len() >= dir.len() {
+        return false;
+    }
+    dir[..candidate.len()] == *candidate
+}
+
 /// Every `/`-ANCHORED SUBSTRING of one word's text — the candidate set both
 /// halves of [`protected_carrier_named`]'s path set are now applied over.
 ///
@@ -5795,9 +5878,10 @@ fn slash_anchored_candidates(word: &str) -> impl Iterator<Item = &str> {
         .map(|(index, _)| &word[index..])
 }
 
-/// Whether one WORD names a path that is, or sits under, `envelope_dir` — the
-/// **PREFIX** half of [`protected_carrier_named`]'s path set, split out so the
-/// unit pins can drive the path conditions without building a [`Token`] for each.
+/// Whether one WORD names a path that is, sits under, **or is an ANCESTOR of**
+/// `envelope_dir` at or under the envelope ROOT — the **PREFIX-AND-ANCESTOR**
+/// half of [`protected_carrier_named`]'s path set, split out so the unit pins
+/// can drive the path conditions without building a [`Token`] for each.
 ///
 /// The comparison is **COMPONENT-WISE against the directory the guard was
 /// GIVEN**, never a basename, an `ends_with`, a substring or a raw `starts_with`.
@@ -5808,6 +5892,27 @@ fn slash_anchored_candidates(word: &str) -> impl Iterator<Item = &str> {
 /// measured rather than aesthetic: this envelope owns every byte under this
 /// directory, and `rm -rf <root>/<alias>` takes nine carriers in one call. See
 /// [`word_is_exactly`] for the boundary that must NOT be written this way.
+///
+/// **AND A PREFIX ALONE WAS ONE COMPONENT SHORT (WR-02).** The paragraph above
+/// was right about what a prefix is for and it never said what a prefix cannot
+/// reach: the `word.len() < dir.len()` early return below answers `false` for
+/// every ANCESTOR of the directory, and `rm -rf <root>` takes the same nine
+/// carriers one component up. That was measured twice, with a control beside
+/// every leg. **So an ANCESTOR clause is applied BESIDE the prefix rather than
+/// the prefix being widened** — [`is_ancestor_within_root`], the same component
+/// vectors compared the other way round, bounded at the envelope ROOT because
+/// above the root the chain is shared with everything the user has. **The root
+/// is taken as an EXPLICIT input to that clause rather than left implicit**, so
+/// the code cannot silently drift into a prefix over the root: a prefix over
+/// `<root>` would refuse `ls <root>/unrelated-sibling`, a concurrent run's
+/// `<root>/beta` and — since `GSD_MM_ENVELOPE_ROOT` is user-settable — a whole
+/// subtree of unrelated files. All three are pinned PERMITTED.
+///
+/// **The set this adds is EXACTLY ONE PATH**, because the alias is a plain
+/// single path component and [`super::ledger::ledger_path_in`] refuses anything
+/// else; the clause is written in its general form anyway so it stays correct if
+/// the directory ever becomes deeper. **The residue above the root is real,
+/// unruled, and stated on axis 3 of [`protected_carrier_named`]'s condition.**
 ///
 /// **The comparison is applied over every [`slash_anchored_candidates`] candidate
 /// of the word rather than over the word alone**, because a word can carry a path
@@ -5828,10 +5933,28 @@ fn word_is_within(word: &str, envelope_dir: &Path) -> bool {
     if dir.is_empty() {
         return false;
     }
+    // The envelope ROOT, taken as an EXPLICIT input to the ancestor clause
+    // rather than left for that clause to re-derive. It is the directory the
+    // guard was given, one component up — `super::envelope_dir_in` joins a
+    // plain single path component onto the root and `super::ledger::ledger_path_in`
+    // refuses anything else, so this is the root exactly and not an
+    // approximation of it. **The clause below compares against THIS vector and
+    // never uses it as a prefix**, which is the whole difference between an
+    // ancestor clause and the forbidden widening.
+    let root = &dir[..dir.len() - 1];
     slash_anchored_candidates(word).any(|candidate| {
         let Some(word) = lexical_absolute_components(candidate) else {
             return false;
         };
+        // The ANCESTOR clause, applied PER CANDIDATE beside the prefix test and
+        // over the same two vectors. It runs FIRST only because it is the
+        // cheaper test; the two are disjoint by construction
+        // (`is_ancestor_within_root` requires `candidate.len() < dir.len()` and
+        // the prefix test requires the opposite), so the order carries no
+        // meaning and neither can mask the other.
+        if is_ancestor_within_root(&word, &dir, root) {
+            return true;
+        }
         // The early return over COMPONENT VECTORS, unchanged and applied PER
         // CANDIDATE: it is the mechanical reason the interior scan costs nothing.
         // A candidate shorter than a three-or-more-component envelope directory
@@ -5956,17 +6079,45 @@ pub enum ProtectedPath {
 /// `cat <<<x` and `cat <<< /tmp/x` stay permitted, which is what makes this a
 /// PATH class rather than a here-string ban.
 ///
-/// # TWO PATHS, AND THE TWO BOUNDARY KINDS DIFFER FOR A MEASURED REASON
+/// # THREE PATH-SET MEMBERS, AND THE BOUNDARY KINDS DIFFER FOR MEASURED REASONS
+///
+/// ```text
+/// a candidate is refused when it is
+///   (1) UNDER <root>/<alias>, component-wise      the PREFIX     word_is_within
+///   (2) a proper ANCESTOR of <root>/<alias> that
+///       is itself AT OR UNDER <root>              the ANCESTOR   is_ancestor_within_root
+///   (3) EQUAL to current_exe()                    the EQUALITY   word_is_exactly
+/// ```
 ///
 /// * **The envelope directory is a PREFIX boundary** ([`word_is_within`]),
 ///   because this envelope owns every byte under it and `rm -rf <root>/<alias>`
 ///   takes NINE carriers in one call.
+/// * **Its ANCESTORS up to the envelope root are an ANCESTOR boundary**
+///   ([`is_ancestor_within_root`]), because `rm -rf <root>` takes the same nine
+///   carriers one component up — driven twice, moving a bare remote's `main`
+///   and resetting a FIRED pull-request cap. **It grows the protected set by
+///   EXACTLY ONE path**, since the alias is a plain single component, and it is
+///   an ANCESTOR clause rather than the prefix widened to `<root>`: a widened
+///   prefix would refuse a sibling under the root, a concurrent run's second
+///   alias directory, and — `GSD_MM_ENVELOPE_ROOT` being user-settable — a
+///   whole subtree of unrelated files.
+/// * **THE ANCESTOR CHAIN STOPS AT `<root>`, ON OWNERSHIP GROUNDS, AND THE
+///   RESIDUE ABOVE IT IS STATED AT THE SAME WEIGHT AS WHAT IS CLOSED.** The root
+///   is created by this tool and holds only alias directories it created; above
+///   it are `~/.local/share`, `$HOME`, `/tmp` and `/`, shared with everything
+///   the user has. **`rm -rf /tmp` when the root is `/tmp/xyz` reaches the same
+///   nine carriers and no rule is written for it** — registered, disclosed,
+///   unaccepted, and named on axis 3 of the condition below. Refusing a word
+///   that names one of those is an outage rather than a boundary (AR-19-11),
+///   which is the same argument the binary half gives one path over.
 /// * **The binary is an EXACT PATH** ([`word_is_exactly`]), because its
 ///   directory is shared with everything else the user installed. A prefix over
 ///   that parent would refuse `ls ~/.cargo/bin` and every `cargo install`;
 ///   `cp /bin/true <parent>/some-other-file` and `ls <parent>` are pinned
 ///   PERMITTED so that a clause written the wrong way turns red rather than
-///   turning a driven run unusable.
+///   turning a driven run unusable. **NO ANCESTOR CLAUSE IS WRITTEN FOR THE
+///   BINARY EITHER**, for that same shared-directory reason; what that leaves
+///   open is stated in [`word_is_exactly`]'s own doc.
 ///
 /// **An ABSENT binary path makes that half SILENT.** `guard` resolves
 /// `std::env::current_exe()` once and hands the answer down; when the process
@@ -10135,15 +10286,186 @@ mod tests {
             "/tmp/envroot/alpha/",
             "/tmp/envroot//alpha//pr-ledger.ndjson",
             "/tmp/envroot/./alpha/pr-ledger.ndjson",
+            // ===============================================================
+            // **THE FIRST OF THIS ROUND'S TWO AUTHORISED PIN MOVES.** This row
+            // stood in the NEGATIVE list immediately below, reading:
+            //
+            //   ("/tmp/envroot", "the PARENT of the envelope directory is not
+            //    under it. The boundary is the directory this run owns, not
+            //    everything beside it")
+            //
+            // **Its reasoning is REWRITTEN here and NOT DELETED (WR-02), and
+            // the move is a DESIGN CHANGE rather than a test edit** — audit 12's
+            // own words: *"the code does exactly what the pin says. What is
+            // missing is the threat row and the residue clause, not the
+            // implementation … the unit pin must MOVE either way, and moving it
+            // is a design change, not a test edit."*
+            //
+            // **WHY IT WAS RIGHT WHEN IT WAS WRITTEN.** The boundary round 11
+            // declared was the directory this run OWNS, and a PREFIX widened to
+            // the parent really would have been wrong — it would refuse every
+            // sibling under the root, a concurrent run's second alias
+            // directory, and, since `GSD_MM_ENVELOPE_ROOT` is user-settable, a
+            // whole subtree of unrelated files. The sentence *"not everything
+            // beside it"* is still true and is still enforced: the sibling
+            // rows below have not moved.
+            //
+            // **WHAT CHANGED.** The harm the permit admitted was MEASURED.
+            // `rm -rf <root>` takes the same NINE carriers `word_is_within`
+            // exists to protect, one component up, and it was driven twice with
+            // a control beside every leg: a bare remote's `main` moved
+            // (`c13f9ea` -> `371a2f5`, `0658c51` -> `140421f`) and a FIRED
+            // pull-request cap reset to PERMITTED. That is not "everything
+            // beside it" — it is the directory itself, reached by naming its
+            // parent.
+            //
+            // **WHAT IS TRUE NOW.** The boundary is the directory this run owns
+            // PLUS ITS ANCESTORS UP TO THE ROOT THIS RUN WAS GIVEN, AND NO
+            // FURTHER. The chain stops at `<root>` on OWNERSHIP grounds: this
+            // tool creates the root and it holds only alias directories this
+            // tool created, while above it are `~/.local/share`, `$HOME`,
+            // `/tmp` and `/`, shared with everything the user has. **The STOP is
+            // pinned beside this row rather than left to prose** — see
+            // `/tmp` and `/` in the negative list below, and the
+            // `the_ancestor_clause_stops_at_the_root_and_the_stop_is_pinned`
+            // rows.
+            "/tmp/envroot",
         ] {
             assert!(
                 word_is_within(owned, &dir),
                 "`{owned}` is a path this run's envelope OWNS and must answer `true`. The \
                  comparison is COMPONENT-WISE against the directory the guard was GIVEN, and \
                  the directory itself answers `true` because `rm -rf <env>/<alias>` takes nine \
-                 carriers in one call."
+                 carriers in one call — as does `rm -rf <root>`, one component up, which is \
+                 why the ANCESTOR clause sits beside the PREFIX one."
             );
         }
+    }
+
+    #[test]
+    fn the_ancestor_clause_stops_at_the_root_and_the_stop_is_pinned() {
+        // **THE THIRD MEMBER OF THE PATH SET, AND ITS STOP, PINNED FROM BOTH
+        // SIDES IN ONE FN.** Every refusing row names its CONTROL and what makes
+        // the pair discriminating, because a clause that refused the root by
+        // refusing everything would be an outage rather than a boundary.
+        let dir = pin_envelope_dir();
+
+        // -- **THE ANCESTOR ITSELF, in the spellings the normalisation must
+        //    cover.** Each differs from the row above it in exactly one
+        //    lexical feature, so a normalisation that dropped one turns exactly
+        //    one row red.
+        for (ancestor, why) in [
+            ("/tmp/envroot", "the root itself, as written"),
+            (
+                "/tmp/envroot/",
+                "the TRAILING-SLASH spelling. `lexical_absolute_components` drops the empty \
+                 component, so this normalises to the SAME vector — a spelling rather than a \
+                 second case",
+            ),
+            (
+                "/tmp/envroot/alpha/..",
+                "the root reached by a `..` WALK. The collapse is TEXTUAL and asks the \
+                 filesystem nothing, which is what makes it safe to do on the guard's critical \
+                 path",
+            ),
+            (
+                "/tmp//envroot",
+                "a doubled separator, which collapses to the same vector",
+            ),
+            (
+                "/tmp/envroot/./",
+                "a `/./` and a trailing slash together",
+            ),
+        ] {
+            assert!(
+                word_is_within(ancestor, &dir),
+                "\n\n**`{ancestor}` MUST ANSWER `true`: {why}.**\n\n\
+                 Deleting an ancestor of the envelope directory destroys the envelope \
+                 directory. `rm -rf <root>` takes the same NINE carriers the prefix half \
+                 exists to protect, one component up — driven twice, moving a bare remote's \
+                 `main` and resetting a FIRED pull-request cap."
+            );
+        }
+
+        // -- **THE STOP, which is what makes this a BOUNDARY rather than an
+        //    ESCALATION.** A clause that walked the ancestor chain past the root
+        //    turns every one of these red, and refusing `ls /`, `df /` and
+        //    `ls /tmp` is not a boundary but an OUTAGE (AR-19-11).
+        for (above, why) in [
+            (
+                "/tmp",
+                "**THE ROOT'S OWN PARENT.** The clause stops at `<root>` on OWNERSHIP grounds: \
+                 this tool creates the root and it holds only alias directories it created, \
+                 while `/tmp` is shared with everything the user has. Its refusal is \
+                 `T-19-123`'s RESIDUE — registered, disclosed, UNACCEPTED, and named on axis 3 \
+                 of the condition",
+            ),
+            ("/", "the filesystem root, two components above the stop"),
+            (
+                "/tmp/other-root/alpha",
+                "a DIFFERENT envelope root's alias directory — neither under this run's \
+                 directory nor an ancestor of it",
+            ),
+        ] {
+            assert!(
+                !word_is_within(above, &dir),
+                "\n\n**`{above}` MUST ANSWER `false`: {why}.**\n\n\
+                 **A red here means the ancestor clause walked past `<root>`**, which is a \
+                 finding about the RULE and is reported with both verdicts rather than relaxed."
+            );
+        }
+
+        // -- **THE ANCESTOR-vs-PREFIX DISCRIMINATOR, at the unit level.** These
+        //    are exactly the rows a PREFIX WIDENED TO `<root>` — the forbidden
+        //    design — turns red, and the mandated ancestor clause does not.
+        for (sibling, why) in [
+            (
+                "/tmp/envroot/unrelated-sibling",
+                "a file directly under the root that is not an alias directory. **A prefix \
+                 widened to the root refuses this and the ancestor clause does not** — that is \
+                 the whole difference between the two designs, in one row",
+            ),
+            (
+                "/tmp/envroot/beta",
+                "a SECOND alias directory under the same root. This run owns `<root>/alpha`; a \
+                 concurrent run owns `<root>/beta`, and refusing it would make two envelopes on \
+                 one machine deny each other",
+            ),
+            (
+                "/tmp/envroot/beta/pr-ledger.ndjson",
+                "a carrier of that concurrent run, one component deeper",
+            ),
+        ] {
+            assert!(
+                !word_is_within(sibling, &dir),
+                "\n\n**`{sibling}` MUST STAY PERMITTED: {why}.**\n\n\
+                 **A red here means the existing PREFIX was widened to `<root>` instead of an \
+                 ANCESTOR clause being added beside it.** `GSD_MM_ENVELOPE_ROOT` is \
+                 user-settable, so a widened prefix refuses a whole subtree of a user's own \
+                 files. The correct response is to change the RULE, never to relax this row."
+            );
+        }
+
+        // -- **AND NO ANCESTOR CLAUSE IS WRITTEN FOR THE BINARY.**
+        //    `word_is_exactly` stays an EQUALITY, because the directory the
+        //    binary sits in is shared with everything else the user installed.
+        //    `rm -rf <binary-parent>` therefore stays permitted; that residue is
+        //    stated in `word_is_exactly`'s own doc and is NOT a mitigation.
+        let binary = pin_binary();
+        for permitted in ["/opt/tools", "/opt", "/opt/tools/some-other-file"] {
+            assert!(
+                !word_is_exactly(permitted, &binary),
+                "\n\n**`{permitted}` MUST STAY PERMITTED.** The binary half is an EQUALITY and \
+                 this round does not widen it: a prefix or an ancestor clause over a shared \
+                 `bin` would refuse `ls <parent>` and every `cargo install`, which is how a \
+                 safety control gets switched off (AR-19-11)."
+            );
+        }
+        assert!(
+            word_is_exactly("/opt/tools/gsd-meta-manager", &binary),
+            "the EQUALITY itself is unchanged — without this the rows above could pass against \
+             a half that had stopped answering at all"
+        );
     }
 
     #[test]
@@ -10176,9 +10498,12 @@ mod tests {
                 "the same from one component up, with no separator to hide behind",
             ),
             (
-                "/tmp/envroot",
-                "the PARENT of the envelope directory is not under it. The boundary is the \
-                 directory this run owns, not everything beside it",
+                "/tmp/envrooz",
+                "**AND THE STOP IS PINNED FROM THE OTHER SIDE TOO.** A one-character-different \
+                 root is not an ancestor of this envelope directory, so the ancestor clause \
+                 must not reach it either. Without this row the ancestor row's move could be \
+                 satisfied by a clause that answered `true` for anything that merely resembled \
+                 the root",
             ),
             (
                 "pr-ledger.ndjson",
@@ -10383,6 +10708,16 @@ mod tests {
              TOCTOU on the guard's critical path, and this slice would certify the region while \
              the new logic went unchecked. A future edit that moved it, or a future slice that \
              missed it, must fail HERE rather than pass quietly."
+        );
+        assert!(
+            code.contains("fn is_ancestor_within_root"),
+            "the sliced region must contain `fn is_ancestor_within_root`, round 13's ANCESTOR \
+             comparison — the third member of the path set. **It sits AT OR AFTER the slice \
+             anchor for the same reason `slash_anchored_candidates` does**: a path comparison \
+             placed ABOVE `fn lexical_absolute_components` would be new path logic sitting \
+             OUTSIDE the one assertion standing between this predicate and a TOCTOU on the \
+             guard's critical path. A future edit that moved it, or a future slice that missed \
+             it, must fail HERE rather than pass quietly."
         );
         assert!(
             code.contains("pub fn envelope_carrier_refusal"),

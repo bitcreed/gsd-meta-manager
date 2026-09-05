@@ -521,8 +521,17 @@ fn components(word: &str) -> Option<Vec<&str>> {
     Some(out)
 }
 
-/// Whether ANY candidate of `word` resolves under `dir` or equals `binary` —
-/// the widened predicate, over the two EXISTING comparisons.
+/// Whether ANY candidate of `word` resolves under `dir`, is an ANCESTOR of it at
+/// or under the envelope ROOT, or equals `binary` — the widened predicate, over
+/// the THREE comparisons the rule now carries.
+///
+/// **The ancestor arm is `19-33`'s addition and it is why exactly one row of
+/// `every_fenced_unit_pin_and_fenced_corpus_row_keeps_its_answer_under_the_widened_rule`
+/// moves** (`is_ancestor_within_root`, `policy.rs`). It is mirrored here the
+/// same way the prefix arm and `components` already mirror their originals: the
+/// root is `dir` minus its last component, taken as an explicit vector so this
+/// simulation cannot drift into a PREFIX over the root any more than the
+/// production clause can.
 fn simulated_protected(word: &str, dir: Option<&str>, binary: Option<&str>) -> bool {
     for candidate in slash_anchored_candidates(word) {
         let Some(parts) = components(candidate) else {
@@ -530,6 +539,20 @@ fn simulated_protected(word: &str, dir: Option<&str>, binary: Option<&str>) -> b
         };
         if let Some(dir) = dir {
             if let Some(dir_parts) = components(dir) {
+                // The ANCESTOR arm: a proper prefix OF the directory that is
+                // itself at or under the root. It adds exactly one path, and
+                // the root's own parent — `/tmp` here — stays out because it
+                // is shorter than the root.
+                if !dir_parts.is_empty() {
+                    let root_parts = &dir_parts[..dir_parts.len() - 1];
+                    if !parts.is_empty()
+                        && parts.len() >= root_parts.len()
+                        && parts.len() < dir_parts.len()
+                        && dir_parts[..parts.len()] == parts[..]
+                    {
+                        return true;
+                    }
+                }
                 if !dir_parts.is_empty()
                     && parts.len() >= dir_parts.len()
                     && parts[..dir_parts.len()] == dir_parts[..]
@@ -2338,13 +2361,35 @@ fn every_fenced_unit_pin_and_fenced_corpus_row_keeps_its_answer_under_the_widene
             "/tmp/envroot/alpha2/x",
             "the raw-string-prefix trap, one component deeper",
         ),
-        ("/tmp/envroot", "the PARENT of the envelope directory is not under it"),
+        (
+            "/tmp/envrooz",
+            "**AND THE STOP FROM THE OTHER SIDE.** A one-character-different root is not an \
+             ancestor of this envelope directory either, so the ancestor arm must not reach it",
+        ),
+        (
+            "/tmp",
+            "**THE ROOT'S OWN PARENT — the STOP, pinned rather than left to prose.** The \
+             ancestor clause stops at `<root>` on OWNERSHIP grounds: the root is created by \
+             this tool and holds only alias directories it created, while `/tmp`, `$HOME` and \
+             `/` are shared with everything the user has. Its permit is `T-19-123`'s RESIDUE — \
+             registered, disclosed and UNACCEPTED — and a red here means the clause walked the \
+             chain past the root, which is an OUTAGE rather than a boundary (AR-19-11)",
+        ),
         ("pr-ledger.ndjson", "a RELATIVE operand with no `/` at all"),
         ("/tmp/pr-ledger.ndjson", "the BASENAME near miss"),
         (
             "/tmp/gsd-binary-dir/some-other-file",
             "a SIBLING of the binary in the same shared directory — the EXACT-PATH control",
         ),
+        // **THIS ROW DOES NOT MOVE, AND THAT IS A DESIGN STATEMENT RATHER THAN
+        // AN OMISSION.** `19-33` writes an ancestor clause for the ENVELOPE
+        // DIRECTORY and writes NONE for the BINARY: the binary sits in a
+        // directory shared with everything else the user installed, so an
+        // ancestor clause there would refuse `ls <parent>` and every
+        // `cargo install` — an outage rather than a boundary (AR-19-11), the
+        // same reason `word_is_exactly` is an EQUALITY. **`rm -rf
+        // <binary-parent>` therefore stays exit 0. It is a `T-19-116` route,
+        // registered and unruled, and `word_is_exactly`'s doc states it.**
         ("/tmp/gsd-binary-dir", "the binary's PARENT directory"),
     ] {
         assert!(
@@ -2358,6 +2403,44 @@ fn every_fenced_unit_pin_and_fenced_corpus_row_keeps_its_answer_under_the_widene
 
     // -- The POSITIVE controls, so the absences above are not vacuous.
     for (word, why) in [
+        // ===============================================================
+        // **THE SECOND OF `19-33`'s TWO AUTHORISED PIN MOVES.** This row stood
+        // in the NEGATIVE list above, reading:
+        //
+        //   ("/tmp/envroot", "the PARENT of the envelope directory is not
+        //    under it")
+        //
+        // **Its reasoning is REWRITTEN here and NOT DELETED (WR-02), and the
+        // move is a DESIGN CHANGE rather than a test edit** — audit 12's own
+        // words: *"the code does exactly what the pin says. What is missing is
+        // the threat row and the residue clause, not the implementation … the
+        // unit pin must MOVE either way, and moving it is a design change, not
+        // a test edit."*
+        //
+        // **WHY IT WAS RIGHT WHEN IT WAS WRITTEN.** The boundary round 11
+        // declared was the directory this run OWNS, and a PREFIX widened to the
+        // parent would have been wrong: it would refuse every sibling under the
+        // root, a concurrent run's second alias directory, and — since
+        // `GSD_MM_ENVELOPE_ROOT` is user-settable — a whole subtree of a user's
+        // own files. That half of the sentence still holds and is still
+        // enforced by `/tmp/envroot/alphax` and `/tmp/envroot/alpha2/x` above.
+        //
+        // **WHAT CHANGED.** The harm the permit admitted was MEASURED.
+        // `rm -rf <root>` takes the same NINE carriers the prefix exists to
+        // protect, one component up; driven twice with a control beside every
+        // leg, it moved a bare remote's `main` and reset a FIRED pull-request
+        // cap to PERMITTED.
+        //
+        // **WHAT IS TRUE NOW.** The boundary is the directory this run owns
+        // PLUS ITS ANCESTORS UP TO THE ROOT THIS RUN WAS GIVEN, AND NO FURTHER
+        // — an ANCESTOR clause beside the PREFIX one, never the prefix widened.
+        // **The STOP is pinned beside it**: `/tmp`, the root's own parent, is
+        // in the negative list above and stays there.
+        (
+            "/tmp/envroot",
+            "the ANCESTOR of the envelope directory, at the envelope ROOT — the third member \
+             of the path set",
+        ),
         ("/tmp/envroot/alpha", "the directory itself"),
         ("/tmp/envroot/alpha/pr-ledger.ndjson", "a file under it"),
         (
