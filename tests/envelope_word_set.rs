@@ -1786,6 +1786,181 @@ fn the_scans_cost_curve_is_recorded_on_two_trees_and_the_extremes_are_not_assert
     );
 }
 
+// ---------------------------------------------------------------------------
+// SECTION 6b — `19-33`'s OWN ROWS: the ceiling DRIVEN, and the two rows `19-32`
+// could only RECORD, now asserted
+//
+// **A ceiling that cannot fire is a control that cannot fail** — the exact
+// defect `T-19-126`(i) records one file over, and this round is not going to
+// ship a second one. `CANDIDATE_SCAN_WORK_CEILING` is therefore driven END TO
+// END through the BUILT BINARY, with a control beside it that makes the row a
+// measurement of the SCAN's work rather than of the input's LENGTH.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn after_19_33_the_fail_closed_work_ceiling_can_fire_and_this_row_drives_it() {
+    // **THE BACKSTOP, DRIVEN.** The BOUND is the linearity the row above pins;
+    // this is the fail-closed ceiling beside it, which exists so that a later
+    // edit reinstating a super-linear scan REFUSES rather than overrunning
+    // `GUARD_TIMEOUT_SECS`.
+    //
+    // **THE DISCRIMINATOR, and it is what makes this a measurement rather than
+    // a coincidence.** Three rows of the SAME ORDER OF MAGNITUDE of bytes:
+    //
+    //   500 KB, slash-DENSE  -> REFUSED at `envelope_assertion_failed`   <- the ceiling
+    //   500 KB, NO slashes   -> PERMITTED                                <- same bytes, no work
+    //   1.5 MB, one slash    -> refused by `MAX_GUARD_REQUEST_BYTES`, a
+    //                           DIFFERENT message naming the byte bound
+    //
+    // Without the second row this test would pass against a rule that simply
+    // refused long words — bounding LENGTH rather than WORK, which is the
+    // defect `T-19-124` is about. Without the third it could not tell the
+    // ceiling from the input bound.
+    let envelope = TempDir::new().unwrap();
+
+    let dense = slash_dense_word(250_000);
+    assert_eq!(dense.len(), 500_000, "the mechanism, pinned before the verdict");
+    let (code, millis) =
+        ask_binary_under_timeout(envelope.path(), &format!("ls {dense}"), 60);
+    println!("  CEILING DRIVEN: 250 000 slashes ({} bytes), exit={code} after {millis} ms", dense.len());
+    assert_eq!(
+        code, 2,
+        "\n\n**THE FAIL-CLOSED WORK CEILING MUST FIRE.**\n\n\
+         `CANDIDATE_SCAN_WORK_CEILING` bounds the work ONE `protected_carrier_named` \
+         invocation may spend. When it is exhausted the predicate has NOT established that no \
+         protected path was named, so the segment is REFUSED at \
+         `ParkReason::EnvelopeAssertionFailed` — never permitted, never a new park reason. \
+         **A ceiling no test drives is a control that cannot fail.** Got exit {code} after \
+         {millis} ms."
+    );
+    assert!(
+        millis < 5_000,
+        "\n\n**AND IT MUST REFUSE INSIDE `GUARD_TIMEOUT_SECS = 5`.** Got {millis} ms. A \
+         ceiling that fires only AFTER the deadline has already been overrun is not a \
+         backstop."
+    );
+
+    // -- **THE CONTROL: the same order of bytes with NO slashes.** It yields no
+    //    candidates, so the scan does no work, and it is PERMITTED.
+    let flat = format!("/{}", "a".repeat(499_999));
+    assert_eq!(
+        flat.matches('/').count(),
+        1,
+        "the control word must carry exactly ONE slash, so the scan cannot be quadratic in it"
+    );
+    let (flat_code, flat_millis) =
+        ask_binary_under_timeout(envelope.path(), &format!("ls {flat}"), 60);
+    println!("  CEILING CONTROL: {} chars, ONE slash, exit={flat_code} after {flat_millis} ms", flat.len());
+    assert_eq!(
+        flat_code, 0,
+        "\n\n**THE SAME NUMBER OF BYTES WITH NO SLASHES MUST STAY PERMITTED.** This is what \
+         attributes the refusal above to the SCAN's WORK rather than to the input's LENGTH. A \
+         red here means the ceiling became a cap on word length, which is a bound over the \
+         wrong property — `T-19-120`'s own shape."
+    );
+
+    // -- **AND THE INPUT BOUND IS A DIFFERENT CONTROL WITH A DIFFERENT MESSAGE**,
+    //    so the ceiling cannot be credited with a refusal `MAX_GUARD_REQUEST_BYTES`
+    //    produced. `MAX_GUARD_REQUEST_BYTES` keeps its value: a bound over the
+    //    wrong property is not corrected by moving a number.
+    let over = format!("/{}", "a".repeat(1_500_000));
+    let answer = ask(envelope.path(), &format!("ls {over}"));
+    assert_eq!(answer.code, 2, "a request over 1 MiB is refused by the INPUT bound");
+    assert!(
+        answer.reason().contains("larger than"),
+        "\n\n**THE INPUT BOUND MUST STILL BE DISTINGUISHABLE FROM THE WORK CEILING.** \
+         `MAX_GUARD_REQUEST_BYTES` names the byte bound in its own message; the ceiling \
+         refuses through the carrier predicate. Attributing one refusal to the other \
+         mechanism is D-24. Got: {}",
+        answer.reason()
+    );
+}
+
+#[test]
+fn after_19_33_the_fifty_thousand_slash_row_is_promoted_from_recorded_to_asserted() {
+    // **`19-32` RECORDED this row at 151 249 ms and could not assert it — a test
+    // that is RED for hours is not a test.** It is asserted here because the
+    // scan is now linear.
+    //
+    // **ITS CONTROL is the 100 000-character no-slash word** in
+    // `the_no_slash_control_attributes_the_cost_to_the_scan_and_not_to_the_length`:
+    // the same order of bytes, no candidates, and it was ALREADY fast — so this
+    // row measures the SCAN and not the machine.
+    let envelope = TempDir::new().unwrap();
+    let word = slash_dense_word(50_000);
+    assert_eq!(word.len(), 100_000, "the mechanism, pinned before the verdict");
+    let (code, millis) = ask_binary_under_timeout(envelope.path(), &format!("ls {word}"), 60);
+    println!("  PROMOTED: 50 000 slashes (100 000 bytes), exit={code} after {millis} ms (19-32 RECORDED 151 249 ms)");
+    assert_eq!(
+        code, 0,
+        "\n\n**A 50 000-SLASH WORD NAMING NO PROTECTED PATH MUST BE PERMITTED**, and it must \
+         stay UNDER the work ceiling — the ceiling is a backstop against a super-linear scan, \
+         not a limit ordinary input meets. Got exit {code}."
+    );
+    assert!(
+        millis < 5_000,
+        "\n\n**AND IT MUST ANSWER INSIDE `GUARD_TIMEOUT_SECS = 5`.** Got {millis} ms against \
+         `19-32`'s recorded 151 249 ms on the quadratic scan. **A red here means the \
+         reformulation regressed**, and it is reported as a finding rather than relaxed."
+    );
+}
+
+#[test]
+fn after_19_33_the_slash_dense_word_just_under_the_input_bound_answers_inside_the_deadline() {
+    // **`19-32` RECORDED this row as DID NOT ANSWER IN 300 s (exit 124, a hard
+    // external timeout).** It is asserted here on the property that matters —
+    // that it ANSWERS, inside `GUARD_TIMEOUT_SECS` — with the VERDICT recorded
+    // rather than asserted, because which of the two bounds produces it is a
+    // fact about the ceiling's value and not about the reformulation.
+    //
+    // **This is the WORST CASE `19-32` derived**: `MAX_GUARD_REQUEST_BYTES`
+    // refuses a 1 MiB request in 20 ms, so the most work a request can buy is
+    // just UNDER that bound.
+    let envelope = TempDir::new().unwrap();
+    let word = slash_dense_word(400_000);
+    assert_eq!(word.len(), 800_000, "the mechanism, pinned before the verdict");
+    let (code, millis) = ask_binary_under_timeout(envelope.path(), &format!("ls {word}"), 60);
+    println!("  PROMOTED: 400 000 slashes (800 000 bytes), exit={code} after {millis} ms (19-32 RECORDED: no answer in 300 s)");
+    assert!(
+        millis < 5_000,
+        "\n\n**THE WORST CASE UNDER `MAX_GUARD_REQUEST_BYTES` MUST ANSWER INSIDE \
+         `GUARD_TIMEOUT_SECS = 5`.** Got {millis} ms against `19-32`'s recorded NO ANSWER in \
+         300 s. **That is the whole of `T-19-124`**: the input bound now bounds work, because \
+         the work is linear in the input."
+    );
+    println!(
+        "  RECORDED (not asserted) [which bound produced it] exit={code}. At \
+         `CANDIDATE_SCAN_WORK_CEILING`'s current value this word exhausts the WORK ceiling \
+         and is refused at `envelope_assertion_failed`; the disclosed over-refusal is stated \
+         in `protected_carrier_named`'s own cost section. **The verdict is recorded rather \
+         than asserted because it is a fact about the ceiling's VALUE, and the value is \
+         chosen to be reachable rather than to make a row green.**"
+    );
+}
+
+#[test]
+fn after_19_33_the_post_fix_curve_is_recorded_on_three_trees() {
+    // **RECORDED, not asserted** — the assertions are the ratio row and the two
+    // promoted rows above. This prints the curve so the record carries the
+    // measurement rather than a claim about it.
+    let envelope = TempDir::new().unwrap();
+    for slashes in [1_000usize, 2_000, 5_000, 8_000, 20_000, 50_000, 100_000] {
+        let word = slash_dense_word(slashes);
+        let (code, millis) = ask_binary_under_timeout(envelope.path(), &format!("ls {word}"), 60);
+        println!(
+            "  RECORDED (not asserted) [post-fix curve] {slashes:>7} slashes ({:>7} bytes): \
+             exit={code} after {millis:>6} ms",
+            word.len()
+        );
+    }
+    println!(
+        "  RECORDED (not asserted) [the three trees] `19-32` measured HEAD-before at 68 / 249 \
+         / 1 524 / 3 904 / 24 425 / 151 249 ms and the rebuilt `dd17bfb` control binary at 5 \
+         / 5 / 7 / 8 / 14 / 28 ms, at 1 000 / 2 000 / 5 000 / 8 000 / 20 000 / 50 000 \
+         slashes. **The post-fix tree is on the CONTROL's curve rather than on round 12's.**"
+    );
+}
+
 // ===========================================================================
 // SECTION 7 — `T-19-125`: A DISCLOSED COST THAT IS ONE OPERATION SHORT
 //

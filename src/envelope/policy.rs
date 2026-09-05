@@ -5739,9 +5739,206 @@ fn lexical_absolute_components(word: &str) -> Option<Vec<&str>> {
     Some(components)
 }
 
-/// Whether `candidate` is a **PROPER ANCESTOR** of `dir` that is itself **AT OR
-/// UNDER `root`** — the new member of [`protected_carrier_named`]'s path set,
-/// beside the PREFIX one and not instead of it.
+/// The number of elementary scan steps ONE [`protected_carrier_named`]
+/// invocation may spend before it **FAILS CLOSED**.
+///
+/// # IT IS THE BACKSTOP AND NOT THE BOUND
+///
+/// **The bound is LINEARITY** — [`CandidateScan`] normalises every
+/// `/`-anchored candidate of a word in ONE pass with structure sharing, so the
+/// scan's work is a linear function of the word's length. **That is what makes
+/// `MAX_GUARD_REQUEST_BYTES` a genuine bound on WORK rather than only on
+/// INPUT**, which it was not while the scan was quadratic: a 16 KB command line
+/// crossed `GUARD_TIMEOUT_SECS`, an 800 KB one did not answer in five minutes,
+/// and a 1 MiB input bound bounded neither.
+///
+/// **This ceiling exists so that a later edit reinstating a super-linear scan
+/// REFUSES rather than overrunning the deadline.** When it is exhausted the
+/// predicate cannot establish that no protected path was named, so the segment
+/// is refused at [`ParkReason::EnvelopeAssertionFailed`] — the general
+/// unresolvable identifier the sibling refusals already carry. It is never a
+/// permit, never a new park reason, and never `HookBypassBlocked` or
+/// `PrCapExceeded`, which name mechanisms that did not produce it (D-24).
+///
+/// # WHY IT IS NOT A CAP ON THE WORD COUNT OR THE SEGMENT COUNT
+///
+/// **Those are quantities the request MULTIPLIES.** A per-word cap is amplified
+/// by the word count and a per-segment cap by the segment count, so a request
+/// just under `MAX_GUARD_REQUEST_BYTES` made of many medium words each spending
+/// exactly the cap defeats either. **A bound over the wrong property is not
+/// corrected by moving a number** — that is `T-19-120`'s own shape, and this
+/// constant exists partly so the round that fixed `T-19-124` did not repeat it.
+/// So the meter is charged across the WHOLE invocation: every word of the
+/// segment, both path halves, one budget.
+///
+/// # THE VALUE, AND WHY IT IS REACHABLE
+///
+/// **A ceiling that cannot fire is a control that cannot fail** — the exact
+/// defect `T-19-126`(i) records one file over — so this value is chosen to be
+/// REACHABLE under `MAX_GUARD_REQUEST_BYTES` and a test DRIVES it. One unit is
+/// charged per `/`-separated part the scan visits and per component walked in a
+/// comparison, which is about five units per `/` for the densest possible word.
+/// A 100 KB word of `/a` therefore spends about 300 000 units and is permitted;
+/// a 400 KB one exhausts this ceiling and is refused. **Ordinary command lines
+/// are three orders of magnitude below it** — a 4 KB line spends about 12 000
+/// units — and the over-refusal it creates is disclosed in
+/// [`protected_carrier_named`]'s own cost section.
+///
+/// `MAX_GUARD_REQUEST_BYTES`, `GUARD_TIMEOUT_SECS` and `MAX_LEDGER_BYTES` keep
+/// their values; none of them is this bound and none of them is moved to stand
+/// in for it.
+const CANDIDATE_SCAN_WORK_CEILING: u64 = 1_000_000;
+
+/// Charge `units` of scan work against `budget`, answering whether the budget
+/// covered it.
+///
+/// Saturating rather than wrapping, so an exhausted budget stays exhausted for
+/// the rest of the invocation.
+fn spend(budget: &mut u64, units: u64) -> bool {
+    match budget.checked_sub(units) {
+        Some(left) => {
+            *budget = left;
+            true
+        }
+        None => {
+            *budget = 0;
+            false
+        }
+    }
+}
+
+/// Every `/`-anchored candidate of ONE word, normalised in ONE right-to-left
+/// pass with STRUCTURE SHARING — the linear reformulation of what
+/// [`lexical_absolute_components`] computes per candidate.
+///
+/// # THE DEFECT IT REPLACES
+///
+/// [`slash_anchored_candidates`] yields one candidate per `/`, and applying
+/// [`lexical_absolute_components`] to each walks a suffix whose length is itself
+/// O(word). The product is QUADRATIC on the guard's own critical path: measured
+/// 3 904 ms for a 16 KB word, 24 425 ms for 40 KB, and no answer in 300 s for
+/// 800 KB, against 8 ms / 14 ms / — for the pre-interior-scan control binary.
+///
+/// # WHAT IT COMPUTES, AND WHY IT IS THE SAME ANSWER
+///
+/// Splitting the word once on `/` gives parts `P0 … Pk`. The candidate
+/// beginning at the j-th `/` is `"/" + Pj + "/" + … + Pk`, whose normalisation
+/// is the fold of `[Pj … Pk]` — the leading empty part is dropped by the same
+/// `"" | "."` arm. **So the candidates are the SUFFIX FOLDS of one part list**,
+/// and a suffix fold obeys a recurrence:
+///
+/// ```text
+/// Pj is "" or "."  -> the suffix's answer is unchanged
+/// Pj is ".."       -> unchanged, but one more pop is owed to whatever precedes
+/// Pj is a name     -> if nothing is owed, Pj SURVIVES and is prepended;
+///                     otherwise the pop it owed consumes Pj and one less is owed
+/// ```
+///
+/// One reverse pass therefore records, for each part, **whether it survives and
+/// which surviving part follows it** — a shared chain, so every candidate's
+/// component list is a suffix of one linked structure built in a single walk.
+/// **The candidate SET does not change, the normalisation does not change and
+/// the comparisons do not change; only the number of times the same characters
+/// are walked does.**
+///
+/// This reproduces [`lexical_absolute_components`] exactly, including the `""`
+/// and `"."` drops, the repeated-separator collapse and the TEXTUAL `..`
+/// collapse with `..` at the root collapsing to the root — the pop that is owed
+/// past the head of the list is simply never paid, which is what makes `/..`
+/// answer `/`. The leading-`./` strip is a no-op for these candidates, because
+/// every one of them begins with `/`;
+/// `containment_holds_the_candidate_set_carries_todays_answer_byte_for_byte`
+/// and
+/// `every_fenced_unit_pin_and_fenced_corpus_row_keeps_its_answer_under_the_widened_rule`
+/// are the two standing mechanical proofs that no component vector moved.
+///
+/// **It asks the filesystem nothing and follows no link**, exactly as its
+/// neighbours do, which is why it is placed inside
+/// `the_carrier_predicate_asks_the_filesystem_nothing_and_its_own_source_says_so`'s
+/// region with a positive control naming it.
+struct CandidateScan<'a> {
+    /// The word split on `/`, once.
+    parts: Vec<&'a str>,
+    /// For part `j`: the index of the FIRST surviving part of the candidate that
+    /// begins there, or `parts.len()` when that candidate has no components at
+    /// all. **The successor of a surviving part `i` is `head[i + 1]`**, so the
+    /// chain needs no second table.
+    head: Vec<usize>,
+    /// For part `j`: how many components that candidate normalises to.
+    len: Vec<usize>,
+}
+
+impl<'a> CandidateScan<'a> {
+    /// The one pass. `None` when the work ceiling was exhausted.
+    fn of(word: &'a str, budget: &mut u64) -> Option<Self> {
+        let parts: Vec<&str> = word.split('/').collect();
+        let count = parts.len();
+        if !spend(budget, count as u64) {
+            return None;
+        }
+        // `head[count]` and `len[count]` describe the EMPTY suffix, which is
+        // what makes the recurrence total without a special case at the end.
+        let mut head = vec![count; count + 1];
+        let mut len = vec![0usize; count + 1];
+        // How many pops the suffix owes to whatever precedes it. A scalar
+        // rather than a table, because it is read only one step back.
+        let mut owed = 0usize;
+        for index in (0..count).rev() {
+            match parts[index] {
+                "" | "." => {
+                    head[index] = head[index + 1];
+                    len[index] = len[index + 1];
+                }
+                ".." => {
+                    head[index] = head[index + 1];
+                    len[index] = len[index + 1];
+                    owed += 1;
+                }
+                _ if owed == 0 => {
+                    head[index] = index;
+                    len[index] = len[index + 1] + 1;
+                }
+                _ => {
+                    head[index] = head[index + 1];
+                    len[index] = len[index + 1];
+                    owed -= 1;
+                }
+            }
+        }
+        Some(Self { parts, head, len })
+    }
+
+    /// Whether the candidate beginning at part `start` OPENS with exactly
+    /// `expected`, charging one unit per component walked. `None` when the work
+    /// ceiling was exhausted.
+    ///
+    /// `expected` is always a slice of a PROTECTED path's component vector, so
+    /// the walk is bounded by that path's depth and never by the word's.
+    fn opens_with(&self, start: usize, expected: &[&str], budget: &mut u64) -> Option<bool> {
+        if !spend(budget, expected.len() as u64) {
+            return None;
+        }
+        let mut cursor = self.head[start];
+        for want in expected {
+            if cursor >= self.parts.len() || self.parts[cursor] != *want {
+                return Some(false);
+            }
+            cursor = self.head[cursor + 1];
+        }
+        Some(true)
+    }
+}
+
+/// Whether a candidate of `candidate_len` components could be a **PROPER
+/// ANCESTOR** of a `dir_len`-component envelope directory while itself lying
+/// **AT OR UNDER** a `root_len`-component envelope root — the new member of
+/// [`protected_carrier_named`]'s path set, beside the PREFIX one and not instead
+/// of it.
+///
+/// **This is the ARITHMETIC half of the ancestor clause and the caller supplies
+/// the component-equality half**, which is what lets the bound be stated ONCE
+/// while being applied to the shared-chain view [`CandidateScan`] produces.
+/// Stating it twice is how two answers come to disagree.
 ///
 /// # WHAT IT IS FOR
 ///
@@ -5807,19 +6004,19 @@ fn lexical_absolute_components(word: &str) -> Option<Vec<&str>> {
 /// A candidate that normalises to the filesystem root answers `false`, for the
 /// reason [`word_is_exactly`] gives for the same case: a protected path of `/`
 /// would refuse every absolute word on the line.
-fn is_ancestor_within_root(candidate: &[&str], dir: &[&str], root: &[&str]) -> bool {
-    // The root itself is never protected as an ancestor of nothing, and `/` is
-    // never protected at all.
-    if candidate.is_empty() || candidate.len() < root.len() {
+fn is_ancestor_within_root(candidate_len: usize, dir_len: usize, root_len: usize) -> bool {
+    // `/` is never protected at all.
+    if candidate_len == 0 {
         return false;
     }
-    // PROPER: a candidate EQUAL to `dir` is the prefix half's business, not
+    // AT OR UNDER the root: the stop, in arithmetic.
+    if candidate_len < root_len {
+        return false;
+    }
+    // PROPER: a candidate as long as `dir` is the prefix half's business, not
     // this one's, and answering `true` here would make the two halves overlap
     // rather than compose.
-    if candidate.len() >= dir.len() {
-        return false;
-    }
-    dir[..candidate.len()] == *candidate
+    candidate_len < dir_len
 }
 
 /// Every `/`-ANCHORED SUBSTRING of one word's text — the candidate set both
@@ -5921,50 +6118,65 @@ fn slash_anchored_candidates(word: &str) -> impl Iterator<Item = &str> {
 /// COMPARISON are unchanged; only the set of strings they are applied to grew, and
 /// it grew by a set that CONTAINS the old one (see the containment paragraph on
 /// [`slash_anchored_candidates`]), so no answer of `true` can be lost.
-fn word_is_within(word: &str, envelope_dir: &Path) -> bool {
+/// **`None` MEANS THE WORK CEILING WAS EXHAUSTED, AND IT IS NOT AN ANSWER OF
+/// `false`.** The scan charges its work against `budget`
+/// ([`CANDIDATE_SCAN_WORK_CEILING`]), which [`protected_carrier_named`] carries
+/// across the WHOLE invocation rather than per word — a per-word budget is a
+/// bound over a quantity the request multiplies. When it is exhausted this half
+/// has not established that no protected path was named, so the caller FAILS
+/// CLOSED.
+fn word_is_within(word: &str, envelope_dir: &Path, budget: &mut u64) -> Option<bool> {
     let envelope_text = envelope_dir.to_string_lossy();
     let Some(dir) = lexical_absolute_components(&envelope_text) else {
         // A relative envelope directory names nothing this predicate can bound.
         // It cannot arise from [`super::envelope_dir_in`], whose root the caller
         // resolved, and answering `false` keeps the predicate total rather than
         // panicking on a shape the caller must already have refused.
-        return false;
+        return Some(false);
     };
     if dir.is_empty() {
-        return false;
+        return Some(false);
     }
     // The envelope ROOT, taken as an EXPLICIT input to the ancestor clause
     // rather than left for that clause to re-derive. It is the directory the
     // guard was given, one component up — `super::envelope_dir_in` joins a
     // plain single path component onto the root and `super::ledger::ledger_path_in`
     // refuses anything else, so this is the root exactly and not an
-    // approximation of it. **The clause below compares against THIS vector and
-    // never uses it as a prefix**, which is the whole difference between an
-    // ancestor clause and the forbidden widening.
-    let root = &dir[..dir.len() - 1];
-    slash_anchored_candidates(word).any(|candidate| {
-        let Some(word) = lexical_absolute_components(candidate) else {
-            return false;
-        };
+    // approximation of it. **The clause below compares against THIS depth and
+    // never uses the root as a prefix**, which is the whole difference between
+    // an ancestor clause and the forbidden widening.
+    let root_len = dir.len() - 1;
+    let scan = CandidateScan::of(word, budget)?;
+    // **The candidate SET is still exactly `slash_anchored_candidates`', and it
+    // is ITERATED from that function rather than re-derived**, so the two cannot
+    // disagree: the i-th candidate left to right begins at part `i + 1`. Only
+    // the NORMALISATION moved into one shared pass.
+    for (offset, _) in slash_anchored_candidates(word).enumerate() {
+        let start = offset + 1;
+        let candidate_len = scan.len[start];
         // The ANCESTOR clause, applied PER CANDIDATE beside the prefix test and
-        // over the same two vectors. It runs FIRST only because it is the
-        // cheaper test; the two are disjoint by construction
-        // (`is_ancestor_within_root` requires `candidate.len() < dir.len()` and
-        // the prefix test requires the opposite), so the order carries no
-        // meaning and neither can mask the other.
-        if is_ancestor_within_root(&word, &dir, root) {
-            return true;
+        // over the same component vectors. It runs FIRST only because its
+        // arithmetic gate is the cheaper one; the two are disjoint by
+        // construction (`is_ancestor_within_root` requires
+        // `candidate_len < dir.len()` and the prefix test requires the
+        // opposite), so the order carries no meaning and neither can mask the
+        // other.
+        if is_ancestor_within_root(candidate_len, dir.len(), root_len)
+            && scan.opens_with(start, &dir[..candidate_len], budget)?
+        {
+            return Some(true);
         }
-        // The early return over COMPONENT VECTORS, unchanged and applied PER
-        // CANDIDATE: it is the mechanical reason the interior scan costs nothing.
-        // A candidate shorter than a three-or-more-component envelope directory
-        // cannot match it at all, which is what keeps `sed s/x/y/`,
-        // `https://github.com/o/r` and `rm -f /tmp/pr-ledger.ndjson` permitted.
-        if word.len() < dir.len() {
-            return false;
+        // The early return over COMPONENT LENGTHS, unchanged in meaning and
+        // applied PER CANDIDATE: it is the mechanical reason the interior scan
+        // costs nothing. A candidate shorter than a three-or-more-component
+        // envelope directory cannot match it at all, which is what keeps
+        // `sed s/x/y/`, `https://github.com/o/r` and
+        // `rm -f /tmp/pr-ledger.ndjson` permitted.
+        if candidate_len >= dir.len() && scan.opens_with(start, &dir, budget)? {
+            return Some(true);
         }
-        word[..dir.len()] == dir[..]
-    })
+    }
+    Some(false)
 }
 
 /// Whether one WORD names **exactly** `file` — the **EXACT-PATH** half of
@@ -6001,7 +6213,9 @@ fn word_is_within(word: &str, envelope_dir: &Path) -> bool {
 /// `cp /bin/true <parent>/some-other-file`, `ls <parent>` and
 /// `PATH=/usr/bin:<parent> mytool` permitted in the attached spellings as well as
 /// in the separated ones.
-fn word_is_exactly(word: &str, file: &Path) -> bool {
+/// **`None` MEANS THE WORK CEILING WAS EXHAUSTED**, on the same footing and for
+/// the same reason [`word_is_within`] states.
+fn word_is_exactly(word: &str, file: &Path, budget: &mut u64) -> Option<bool> {
     let file_text = file.to_string_lossy();
     let Some(file) = lexical_absolute_components(&file_text) else {
         // A relative binary path names nothing this predicate can compare
@@ -6009,13 +6223,21 @@ fn word_is_exactly(word: &str, file: &Path) -> bool {
         // not second-guess it, so answering `false` keeps the predicate total
         // and leaves this half SILENT — which is fail-open and is stated on
         // `protected_carrier_named`'s own signature.
-        return false;
+        return Some(false);
     };
     if file.is_empty() {
-        return false;
+        return Some(false);
     }
-    slash_anchored_candidates(word)
-        .any(|candidate| lexical_absolute_components(candidate).is_some_and(|word| word == file))
+    let scan = CandidateScan::of(word, budget)?;
+    for (offset, _) in slash_anchored_candidates(word).enumerate() {
+        let start = offset + 1;
+        // FULL EQUALITY, unchanged: the length gate first, so a candidate of the
+        // wrong depth costs nothing at all.
+        if scan.len[start] == file.len() && scan.opens_with(start, &file, budget)? {
+            return Some(true);
+        }
+    }
+    Some(false)
 }
 
 /// Which protected path a command named, if it named one.
@@ -6432,12 +6654,34 @@ pub fn protected_carrier_named<'a>(
         .iter()
         .map(|target| target.as_str());
 
+    // **ONE work budget for the WHOLE invocation**, because a per-word or
+    // per-segment budget is a bound over a quantity the request MULTIPLIES.
+    // See `CANDIDATE_SCAN_WORK_CEILING`: the BOUND is the linearity of
+    // `CandidateScan`, and this is the fail-closed backstop beside it.
+    let mut budget = CANDIDATE_SCAN_WORK_CEILING;
+    // What the predicate answers when it cannot finish: it has NOT established
+    // that no protected path was named, so it names whichever protected path it
+    // was given and the caller refuses at `ParkReason::EnvelopeAssertionFailed`.
+    let exhausted = || match (envelope_dir, binary) {
+        (Some(dir), _) => Some((ProtectedPath::EnvelopeDirectory, dir)),
+        (None, Some(file)) => Some((ProtectedPath::GuardBinary, file)),
+        (None, None) => None,
+    };
+
     for word in operands.chain(targets).chain(data_targets) {
-        if let Some(dir) = envelope_dir.filter(|dir| word_is_within(word, dir)) {
-            return Some((ProtectedPath::EnvelopeDirectory, dir));
+        if let Some(dir) = envelope_dir {
+            match word_is_within(word, dir, &mut budget) {
+                None => return exhausted(),
+                Some(true) => return Some((ProtectedPath::EnvelopeDirectory, dir)),
+                Some(false) => {}
+            }
         }
-        if let Some(file) = binary.filter(|file| word_is_exactly(word, file)) {
-            return Some((ProtectedPath::GuardBinary, file));
+        if let Some(file) = binary {
+            match word_is_exactly(word, file, &mut budget) {
+                None => return exhausted(),
+                Some(true) => return Some((ProtectedPath::GuardBinary, file)),
+                Some(false) => {}
+            }
         }
     }
     None
@@ -10263,6 +10507,28 @@ mod tests {
         std::path::PathBuf::from("/tmp/envroot/alpha")
     }
 
+    /// [`super::word_is_within`] with a FRESH FULL work budget — the semantics
+    /// every path pin below drives: one word, one meter.
+    ///
+    /// **The pins are about the PATH SET and not about the ceiling**, so giving
+    /// them a full budget is what keeps them measuring what they claim to. The
+    /// ceiling itself is driven end to end through the built binary in
+    /// `tests/envelope_word_set.rs`, where a control that CANNOT fire would be
+    /// visible. **An exhausted budget maps to `true` here for the same reason it
+    /// does in production: the half has not established that no protected path
+    /// was named.**
+    fn word_is_within(word: &str, envelope_dir: &std::path::Path) -> bool {
+        let mut budget = CANDIDATE_SCAN_WORK_CEILING;
+        super::word_is_within(word, envelope_dir, &mut budget) != Some(false)
+    }
+
+    /// [`super::word_is_exactly`] with a FRESH FULL work budget, on the same
+    /// footing.
+    fn word_is_exactly(word: &str, file: &std::path::Path) -> bool {
+        let mut budget = CANDIDATE_SCAN_WORK_CEILING;
+        super::word_is_exactly(word, file, &mut budget) != Some(false)
+    }
+
     #[test]
     fn the_carrier_predicate_answers_true_for_every_file_this_envelope_owns() {
         // **The nine carriers of `C-01` … `C-09`, by path.** The boundary is the
@@ -10708,6 +10974,17 @@ mod tests {
              TOCTOU on the guard's critical path, and this slice would certify the region while \
              the new logic went unchecked. A future edit that moved it, or a future slice that \
              missed it, must fail HERE rather than pass quietly."
+        );
+        assert!(
+            code.contains("struct CandidateScan") && code.contains("fn of(word: &'a str"),
+            "the sliced region must contain `struct CandidateScan` and its one pass — round \
+             13's LINEAR candidate normaliser, which is where every `/`-anchored candidate of \
+             every word is now computed. **It sits AT OR AFTER the slice anchor for the same \
+             reason `slash_anchored_candidates` does**: a normaliser placed ABOVE \
+             `fn lexical_absolute_components` would be new path logic sitting OUTSIDE the one \
+             assertion standing between this predicate and a TOCTOU on the guard's critical \
+             path, and a slice that missed it would certify the region while the logic that \
+             does the actual reading went unchecked."
         );
         assert!(
             code.contains("fn is_ancestor_within_root"),
