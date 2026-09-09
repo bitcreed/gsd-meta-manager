@@ -653,6 +653,7 @@ impl ClaudeExecutor {
                 permission_mode: options.permission_mode,
                 wall_clock_cap: options.wall_clock_cap,
                 idle_cap: options.idle_cap,
+                prompt_release_grace: options.prompt_release_grace,
                 last_line_rx,
                 before,
                 project_root: root,
@@ -662,8 +663,29 @@ impl ClaudeExecutor {
         );
 
         // Block on the gate verdict: a refusal must be a start-time error, not
-        // a mid-run surprise. Because the prompt travels over stdin and has not
-        // been released yet, a refusal here costs zero tokens and zero quota.
+        // a mid-run surprise. That much is unconditional.
+        //
+        // **What a refusal COSTS is conditional, and the condition is the
+        // child's own announce timing (260908-uqq).** The prompt travels over
+        // stdin, and the supervisor releases it either when the gate passes or
+        // when `prompt_release_grace` expires with nothing announced —
+        // whichever comes first:
+        //
+        //   * **eager arm** — the CLI announced within the grace (2.1.220's
+        //     shape). The gate rules before a single byte reaches stdin, so a
+        //     refusal here still costs zero tokens and zero quota (D-06).
+        //   * **late arm** — the CLI announced only after reading a user
+        //     message (2.1.266's measured shape). The grace released the prompt
+        //     first, so the init being judged is the one the prompt provoked and
+        //     a refusal here aborts a turn that has already begun. It still
+        //     refuses, it still returns `SpawnError::Capability`, and the
+        //     Coordinator still tears the process group down — but the spend
+        //     has already started.
+        //
+        // Withholding the prompt unconditionally is not an available
+        // alternative: 2.1.266 emits nothing at all until a user message
+        // arrives, so waiting for its init is a deadlock, and eliciting one
+        // with a probe message would itself be a turn.
         let facts = match gate_rx.await {
             Ok(Ok(facts)) => facts,
             Ok(Err(err)) => return Err(err),
@@ -1037,6 +1059,15 @@ struct Coordinator {
     /// (D-13). Strictly greater than the background-subagent wait ceiling; see
     /// [`Coordinator::run`].
     idle_cap: Duration,
+    /// How long to wait for the child's `system/init` before releasing the
+    /// first user message anyway (260908-uqq). Carried from
+    /// [`ExecutionOptions::prompt_release_grace`], where the reasoning lives.
+    ///
+    /// It is what decides which of the two refusal arms a run takes, and
+    /// therefore what a capability refusal costs on this run: a CLI that
+    /// announces inside the grace is refused before anything reaches its stdin,
+    /// a CLI that announces later is refused after the prompt it was sent.
+    prompt_release_grace: Duration,
     /// The instant the reader last observed a line. The idle arm re-arms from
     /// this and from nothing else (D-13, Pitfall E).
     last_line_rx: watch::Receiver<Instant>,
@@ -1139,6 +1170,7 @@ impl Coordinator {
             permission_mode,
             wall_clock_cap,
             idle_cap,
+            prompt_release_grace,
             last_line_rx,
             before,
             project_root,
@@ -1147,6 +1179,11 @@ impl Coordinator {
 
         let mut gate_tx = Some(gate_tx);
         let mut gated = false;
+        // Whether the first user message has gone to the writer. Two paths set
+        // it — the gate passing in `handle_item`, and the grace expiring in the
+        // enforcement block below — and it is what keeps the prompt written
+        // exactly once whichever of them fires first (260908-uqq).
+        let mut prompt_released = false;
         let mut cancelled = false;
         let mut refused: Option<CapabilityError> = None;
         let mut breach: Option<Breach> = None;
@@ -1183,6 +1220,10 @@ impl Coordinator {
         let mut dropped_events: u64 = 0;
 
         let wall_deadline = Instant::now() + wall_clock_cap;
+        // Computed once, from spawn, alongside the wall-clock deadline: it
+        // bounds how long the child gets to introduce itself, and that clock
+        // starts at spawn and is never re-armed by anything.
+        let prompt_deadline = Instant::now() + prompt_release_grace;
 
         loop {
             let mut stop = false;
@@ -1205,6 +1246,46 @@ impl Coordinator {
             // stream-fidelity preference rather than a correctness dependency.
             // ================================================================
             let now = Instant::now();
+
+            // The startup handshake's tie-breaker (260908-uqq). CLI 2.1.266
+            // emits `system/init` only *after* a user message arrives on stdin
+            // — measured with stdout and stderr both at zero bytes against an
+            // open, empty stdin — so an executor that withholds the prompt
+            // until the gate has judged an init deadlocks against it and only
+            // the idle cap ever breaks the tie, fifteen minutes later, reported
+            // as a spawn failure. When the grace expires with nothing
+            // announced, the prompt goes out anyway and the gate becomes a
+            // POST-HOC check on this run: it still refuses, still stops the
+            // loop and still tears the group down, but the turn it aborts has
+            // already begun. On a CLI that announces inside the grace nothing
+            // changes and the refusal still costs zero tokens (D-06).
+            //
+            // **`try_send`, never an awaited send, and the flag is set BEFORE
+            // the result is inspected.** An awaited send here would park the
+            // enforcement block, which is the one place every cap and the
+            // cancel are evaluated — precisely the CR-01 class of defect this
+            // block's own doc warns about. And a flag set only on success would
+            // turn a `Full` channel into a busy spin against a deadline already
+            // in the past, because this block runs on every pass. `Full` is
+            // unreachable in practice: nothing writes to the child's stdin
+            // before the gate, so the writer channel is empty here. Either
+            // error is logged and the run is left to fail on its own terms —
+            // a prompt that never reached the writer ends as the same startup
+            // failure it would have been anyway.
+            if !prompt_released && now >= prompt_deadline {
+                prompt_released = true;
+                if let Err(err) = writer_tx.try_send(WriterCommand::Line(first_message.clone())) {
+                    tracing::warn!(
+                        "the first user message could not be released to the stdin writer \
+                         after the {}ms startup grace: {}",
+                        prompt_release_grace.as_millis(),
+                        match err {
+                            mpsc::error::TrySendError::Full(_) => "the writer channel was full",
+                            mpsc::error::TrySendError::Closed(_) => "the writer task is gone",
+                        }
+                    );
+                }
+            }
 
             if !cancelled && cancel_rx.try_recv().is_ok() {
                 cancelled = true;
@@ -1282,6 +1363,13 @@ impl Coordinator {
             if let Some(deadline) = drain_deadline {
                 forward_deadline = forward_deadline.min(deadline);
             }
+            // In the minimum for exactly the reason the caps are: while the
+            // prompt is still withheld, a hand-off to the caller must not be
+            // able to outlive the grace, or the release the enforcement block
+            // owes would be deferred behind it (260908-uqq, CR-01).
+            if !prompt_released {
+                forward_deadline = forward_deadline.min(prompt_deadline);
+            }
 
             tokio::select! {
                 biased;
@@ -1297,6 +1385,7 @@ impl Coordinator {
                                 &pending_control,
                                 &mut gate_tx,
                                 &mut gated,
+                                &mut prompt_released,
                                 &mut refused,
                                 &mut envelopes,
                                 &first_message,
@@ -1330,6 +1419,14 @@ impl Coordinator {
                     breach = Some(Breach::WallClock);
                     stop = true;
                 }
+
+                // The startup grace. Deliberately an EMPTY body: like the cap
+                // arms, this arm exists only to unpark the loop at the instant
+                // the bound expires so the enforcement block at the top of the
+                // next pass can act on it. Doing the release here instead would
+                // put it back inside the `select!`, where a hot reader arm can
+                // starve it — the exact shape CR-01 removed.
+                _ = tokio::time::sleep_until(prompt_deadline), if !prompt_released => {}
 
                 _ = tokio::time::sleep_until(idle_deadline), if !exited => {
                     breach = Some(Breach::Idle);
@@ -1385,7 +1482,10 @@ impl Coordinator {
             }
         }
 
-        // A refused run never had its prompt released, and a breached run is by
+        // A refused run is not going to be answered — either its prompt was
+        // never released, or `prompt_release_grace` released it into a child
+        // whose init then failed the gate and which must not be left running a
+        // turn nobody will read (260908-uqq) — and a breached run is by
         // definition not going to end on its own; both leave a live group.
         let tear_down = refused.is_some() || breach.is_some();
         if tear_down || cancelled {
@@ -1577,6 +1677,11 @@ async fn handle_item(
     pending_control: &PendingControl,
     gate_tx: &mut Option<oneshot::Sender<Result<GateOutcome, SpawnError>>>,
     gated: &mut bool,
+    // Whether the supervisor's startup grace already released the first user
+    // message. Read AND written here: the gate-passed branch releases the
+    // prompt only when this is still false, and sets it when it does, so the
+    // prompt is written exactly once whichever arm fired (260908-uqq).
+    prompt_released: &mut bool,
     refused: &mut Option<CapabilityError>,
     envelopes: &mut Vec<ResultMessage>,
     first_message: &str,
@@ -1640,11 +1745,27 @@ async fn handle_item(
                         {
                             return false;
                         }
-                        // Only now is the prompt released (D-02, D-06).
-                        writer_tx
-                            .send(WriterCommand::Line(first_message.to_string()))
-                            .await
-                            .is_ok()
+                        // The **eager arm**: the CLI announced itself inside
+                        // `prompt_release_grace`, so the gate ruled before a
+                        // single byte reached the child's stdin and only now is
+                        // the prompt released (D-02, D-06). On this arm — and
+                        // only on this arm — a refusal would have cost zero
+                        // tokens and zero quota.
+                        //
+                        // When the grace already fired, `prompt_released` is
+                        // set and this send is skipped: the init being handled
+                        // is then the one the prompt provoked, and re-releasing
+                        // it would queue the command a second time as its own
+                        // turn (260908-uqq, D-31).
+                        if *prompt_released {
+                            true
+                        } else {
+                            *prompt_released = true;
+                            writer_tx
+                                .send(WriterCommand::Line(first_message.to_string()))
+                                .await
+                                .is_ok()
+                        }
                     }
                     Err(err) => {
                         if let Some(tx) = gate_tx.take() {
@@ -2212,6 +2333,14 @@ mod tests {
     ///
     /// Returns whether the loop would keep going, the refusal (if any), the
     /// events emitted, and every line released to the stdin writer.
+    ///
+    /// **This drives the EAGER arm and only the eager arm.** There is no
+    /// supervisor loop here and therefore no startup grace timer, so
+    /// `prompt_released` starts false and can only be set by the gate passing —
+    /// which is exactly the ordering a CLI that announces inside
+    /// `prompt_release_grace` produces. The late arm, where the grace releases
+    /// the prompt first, needs a real child and lives in
+    /// `tests/executor_transport.rs` (260908-uqq).
     async fn feed(lines: &[&str]) -> (bool, Option<CapabilityError>, Vec<ExecutionEvent>, Vec<String>) {
         let (events_tx, mut events_rx) = mpsc::channel(64);
         let (writer_tx, mut writer_rx) = mpsc::channel(64);
@@ -2220,6 +2349,9 @@ mod tests {
 
         let mut gate_tx = Some(gate_tx);
         let mut gated = false;
+        // False and never set from outside: no grace timer runs here, so this
+        // helper reproduces the eager arm's ordering by construction.
+        let mut prompt_released = false;
         let mut refused: Option<CapabilityError> = None;
         let mut envelopes: Vec<ResultMessage> = Vec::new();
         let mut keep_going = true;
@@ -2237,6 +2369,7 @@ mod tests {
                 &pending_control,
                 &mut gate_tx,
                 &mut gated,
+                &mut prompt_released,
                 &mut refused,
                 &mut envelopes,
                 "FIRST-MESSAGE",
@@ -2280,7 +2413,11 @@ mod tests {
         assert_eq!(
             written.len(),
             1,
-            "the prompt is released exactly once, on the first init: {written:?}"
+            "the prompt is released exactly once. On this EAGER arm — no startup grace \
+             ran, so the gate is what released it — that means the first init and not the \
+             second. The other arm, where `prompt_release_grace` released it before any \
+             init arrived, must also produce exactly one line, and that is pinned in \
+             `tests/executor_lifecycle.rs`: {written:?}"
         );
         assert!(
             matches!(events.first(), Some(ExecutionEvent::SessionStarted { .. })),
@@ -2295,8 +2432,16 @@ mod tests {
         assert_eq!(events.len(), 2, "no other event is emitted: {events:?}");
     }
 
+    /// The EAGER arm's zero-cost property, and nothing wider.
+    ///
+    /// `feed` runs no startup grace, so this is the ordering a CLI that
+    /// announces inside `prompt_release_grace` produces: the gate rules first
+    /// and the refusal is genuinely free. A CLI that announces only after
+    /// reading a user message takes the other arm, where the prompt is already
+    /// out — see the sibling test in `tests/executor_transport.rs`
+    /// (260908-uqq).
     #[tokio::test]
-    async fn a_refused_first_init_never_releases_the_prompt() {
+    async fn a_refused_first_init_never_releases_the_prompt_on_the_eager_arm() {
         let no_capabilities = r#"{"type":"system","subtype":"init","session_id":"s","capabilities":[],"apiKeySource":"none","claude_code_version":"2.1.220"}"#;
         let (keep_going, refused, _events, written) = feed(&[no_capabilities]).await;
 
@@ -2310,7 +2455,11 @@ mod tests {
         );
         assert!(
             written.is_empty(),
-            "a refused run must never release the prompt to stdin (D-06, TRANS-04): {written:?}"
+            "on the EAGER arm — the CLI announced before the startup grace expired — a \
+             refused run must never release the prompt to stdin, which is what makes the \
+             refusal cost zero tokens and zero quota there (D-06, TRANS-04). This pins \
+             that arm and does not claim it of the late arm, where \
+             `prompt_release_grace` has already written the prompt: {written:?}"
         );
     }
 

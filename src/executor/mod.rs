@@ -14,10 +14,27 @@
 //!    ending the run only on stdin EOF → process exit is not defensive coding;
 //!    an executor that returns on the first `result` truncates every steered
 //!    run while reporting success.
-//! 2. **The first user message is withheld until the gate passes (D-02, D-06).**
-//!    Because the prompt travels over stdin rather than as a positional
-//!    argument, no turn ever begins before validation, which is what makes a
-//!    capability refusal cost zero tokens and zero quota.
+//! 2. **The first user message is withheld until the gate passes OR until
+//!    [`ExecutionOptions::prompt_release_grace`] expires, whichever comes first
+//!    (D-02, D-06, 260908-uqq).** The prompt travels over stdin rather than as
+//!    a positional argument, which is what makes withholding it possible at
+//!    all. Whether it is *actually* withheld until validation depends on the
+//!    driven CLI, and the difference is measured, not assumed: 2.1.220 emits
+//!    `system/init` at startup, 2.1.266 emits it **only after the first user
+//!    message arrives on stdin**. So:
+//!
+//!    * against a CLI that announces inside the grace, no turn begins before
+//!      validation and a capability refusal costs zero tokens and zero quota,
+//!      exactly as it always did;
+//!    * against a CLI that announces later, the grace releases the prompt
+//!      first — it has to, or the driver waits for an init the CLI will not
+//!      emit until the prompt arrives, and the run deadlocks until the idle
+//!      cap. The gate then judges the init the prompt itself provoked, so the
+//!      refusal aborts a turn that has already begun and its cost is not zero.
+//!
+//!    The refusal itself is unconditional on both arms; only its cost is
+//!    conditional. Nothing in this module may state the zero-cost half without
+//!    naming the arm it holds on.
 
 // `claude` is Unix-only by construction: `process-wrap`'s `ProcessGroup` and
 // its `signal()` method are both `#[cfg(unix)]`, and process-group teardown is
@@ -70,8 +87,15 @@ pub type PendingControl = Arc<Mutex<HashMap<String, oneshot::Sender<ControlRespo
 /// exactly what [`Executor::capabilities`] exists for (D-22).
 pub trait Executor {
     /// Spawn a run and withhold `command` until the first `system/init` passes
-    /// the capability gate. Returns only once the gate has been decided, so a
-    /// refusal is a start-time error rather than a mid-run surprise.
+    /// the capability gate — or until
+    /// [`ExecutionOptions::prompt_release_grace`] expires with nothing
+    /// announced, because some CLI versions emit that init only *in response
+    /// to* a first user message and waiting for one is a deadlock
+    /// (260908-uqq).
+    ///
+    /// Returns only once the gate has been decided either way, so a refusal is
+    /// always a start-time error rather than a mid-run surprise. On the late
+    /// arm it is a start-time error about a turn that has already begun.
     fn start<'a>(
         &'a self,
         project: &'a DrivableProject,
@@ -392,6 +416,41 @@ pub struct ExecutionOptions {
     /// 90-second hang that emitted nothing — indistinguishable by elapsed time,
     /// trivially distinguishable by stream liveness.
     pub idle_cap: Duration,
+    /// How long the supervisor waits for the child to announce itself with a
+    /// `system/init` before it writes the first user message **anyway**.
+    ///
+    /// This is a startup-specific bound and it exists because the announcement
+    /// is not universally spontaneous. CLI 2.1.220 emits `system/init` at
+    /// startup; CLI **2.1.266 emits it only after the first user message
+    /// arrives on stdin** — measured directly, with the assistant turn one
+    /// second behind it. Against that CLI, withholding the prompt until the
+    /// gate has judged an init is a deadlock: the driver waits for the init,
+    /// the CLI waits for the prompt, and only [`Self::idle_cap`] breaks the
+    /// tie, fifteen minutes later, reported as a spawn failure.
+    ///
+    /// The consequence is deliberate and is documented everywhere it bites:
+    /// on a CLI that announces within this grace the capability gate still
+    /// rules **before** a single byte reaches the child's stdin, and the D-06
+    /// "a refusal costs zero tokens and zero quota" property holds exactly as
+    /// it always did. On a CLI that announces later, the init the gate judges
+    /// is the one the prompt itself provoked, so the refusal aborts a turn
+    /// that has already begun rather than preventing one. Which arm runs is
+    /// decided by the CLI's own announce timing and by nothing this driver
+    /// controls.
+    ///
+    /// **Five seconds is a frank number with no tuning data behind it**, in
+    /// the same register as the neighbouring caps. It is bounded above by the
+    /// latency every iteration pays on a late-announcing CLI and below by the
+    /// time a healthy eager CLI needs to print its init; the measured 2.1.266
+    /// numbers say nothing useful about either bound because that CLI never
+    /// announces on its own at all.
+    ///
+    /// Added as its own knob rather than by shrinking [`Self::idle_cap`],
+    /// because the two answer different questions: this one asks "has the
+    /// child introduced itself yet", the idle cap asks "has this run gone
+    /// silent". A single number cannot mean both, and `iteration_options`
+    /// deliberately inherits the idle cap from [`Default`].
+    pub prompt_release_grace: Duration,
     /// `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`, set explicitly rather than
     /// inherited. It bounds how long the CLI waits for *background* subagents
     /// after the final result, not foreground agentic work — a 774-second run
@@ -469,6 +528,11 @@ impl Default for ExecutionOptions {
             // real tuning data does not exist yet and is a v2.1 concern (D-13).
             wall_clock_cap: Duration::from_secs(4 * 60 * 60),
             idle_cap: Duration::from_secs(15 * 60),
+            // Its own bound, not a shrunk `idle_cap`. Strictly between zero and
+            // the idle cap: zero would delete the eager arm's pre-prompt
+            // refusal outright, and anything near the idle cap would leave the
+            // 2.1.266 deadlock in place for as long as it took to notice.
+            prompt_release_grace: Duration::from_secs(5),
             bg_wait_ceiling_ms: 600_000,
             name: None,
             control_response_cap: Duration::from_secs(30),
@@ -779,8 +843,17 @@ pub enum RunOutcome {
         /// The cap that was breached.
         idle_for: Duration,
     },
-    /// The first `system/init` failed the capability gate. **No turn ever
-    /// started**, so this cost zero tokens and zero quota (D-06).
+    /// The first `system/init` failed the capability gate.
+    ///
+    /// **Whether a turn had started depends on which refusal arm ran, and that
+    /// is decided by the CLI's own announce timing (D-06, 260908-uqq).** If the
+    /// CLI announced within [`ExecutionOptions::prompt_release_grace`] the
+    /// prompt was still being withheld, no turn ever started, and this cost
+    /// zero tokens and zero quota. If it announced only after reading a user
+    /// message, the grace had already released the prompt and the init being
+    /// judged is the one that message provoked — so a turn had begun and this
+    /// aborted it. The refusal, the stopped run loop and the process-group
+    /// teardown are the same either way; only the cost differs.
     CapabilityRefused {
         /// The capabilities the CLI did not advertise.
         missing: Vec<String>,

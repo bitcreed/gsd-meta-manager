@@ -30,6 +30,14 @@ const FAKE_CLAUDE_ECHO: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/fake-claude-echo.sh"
 );
+/// The **late-announcing** stand-in: identical to the echo stand-in except that
+/// it emits `system/init` only after reading its first stdin line, which is the
+/// measured CLI 2.1.266 shape. Swapping the two changes *when* the init arrives
+/// and nothing else, which is what makes the two refusal arms comparable.
+const FAKE_LATE_INIT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/fake-claude-late-init.sh"
+);
 /// The paced stand-in, here for its `denied` ending only.
 const FAKE_SLOW: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -522,17 +530,36 @@ async fn an_accepted_interrupt_is_never_a_cancellation_at_acknowledgement_time()
 }
 
 // ============================================================================
-// A refused run writes zero bytes to the child's stdin (D-06, TRANS-04)
+// What a capability refusal COSTS, on both arms (D-06, TRANS-04, 260908-uqq)
 //
-// Moved here from `src/executor/claude.rs`'s in-source test module. It spawns a
-// real child process, which is this repository's stated criterion for an
-// integration test, and it needs a `DrivableProject` — which under `src/` it
-// could only build through the opt-in escape hatch that
-// `tests/spawn_seam_guard.rs` fences out of that tree entirely (D-17).
+// The refusal itself is unconditional: the gate rules at start time, returns
+// `SpawnError::Capability`, stops the run loop and tears the process group
+// down, on every CLI. **What it costs is conditional**, and the condition is
+// the child's own announce timing measured against
+// `ExecutionOptions::prompt_release_grace`:
+//
+//   * **eager arm** — the CLI announced inside the grace (CLI 2.1.220's shape).
+//     The gate rules before a single byte reaches the child's stdin, so the
+//     refusal costs zero tokens and zero quota.
+//   * **late arm** — the CLI announced only after reading a user message (CLI
+//     2.1.266's measured shape). The grace released the prompt first, so the
+//     init the gate judges is the one the prompt provoked and the refusal
+//     aborts a turn that has already begun.
+//
+// The two tests below pin one arm each, and they are deliberately siblings:
+// they differ only in which stand-in they point at. Deleting either one leaves
+// the codebase claiming a property of both arms that holds on only one.
+//
+// Both moved here from — or were written to sit beside code moved here from —
+// `src/executor/claude.rs`'s in-source test module. They spawn a real child
+// process, which is this repository's stated criterion for an integration test,
+// and they need a `DrivableProject` — which under `src/` they could only build
+// through the opt-in escape hatch that `tests/spawn_seam_guard.rs` fences out
+// of that tree entirely (D-17).
 // ============================================================================
 
 #[tokio::test]
-async fn a_refused_run_writes_zero_bytes_to_the_child_stdin() {
+async fn a_refused_run_writes_zero_bytes_to_the_child_stdin_on_the_eager_arm() {
     let scratch = TempDir::new().expect("temp dir");
     let stdin_log = scratch.path().join("stdin.log");
 
@@ -572,7 +599,72 @@ async fn a_refused_run_writes_zero_bytes_to_the_child_stdin() {
     assert_eq!(
         recorded.len(),
         0,
-        "a refused run must write zero bytes to the child's stdin — the refusal costs zero \
-         tokens and zero quota (D-06)"
+        "this stand-in announces itself immediately — well inside the default \
+         `prompt_release_grace` — so the gate rules before the grace can release \
+         anything. On THAT arm a refused run must write zero bytes to the child's stdin, \
+         and that is what makes the refusal cost zero tokens and zero quota (D-06). The \
+         claim is scoped to this arm: see the late-arm sibling below"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_run_on_a_late_announcing_cli_has_already_written_the_prompt() {
+    let scratch = TempDir::new().expect("temp dir");
+    let stdin_log = scratch.path().join("stdin.log");
+
+    // Exactly the eager test's capability set, one short of what is required.
+    // The ONLY difference from its sibling is the stand-in: this one announces
+    // itself only after reading a user message.
+    let executor = ClaudeExecutor::with_program(
+        FAKE_LATE_INIT,
+        vec![
+            OsString::from("interrupt_receipt_v1,msg_lifecycle_v1"),
+            OsString::from("2.1.266"),
+            OsString::from("none"),
+            stdin_log.clone().into_os_string(),
+        ],
+    );
+    let project = DrivableProject::for_testing_bypassing_opt_in("refused-late", scratch.path());
+
+    // A short grace so the test does not wait out the production five seconds.
+    let options = ExecutionOptions {
+        prompt_release_grace: Duration::from_millis(200),
+        ..Default::default()
+    };
+
+    let err = executor
+        .start(&project, "/gsd-progress".to_string(), options)
+        .await
+        .expect_err(
+            "the refusal is unconditional — a CLI missing a required capability is refused \
+             on both arms. Only its cost differs",
+        );
+
+    assert!(
+        matches!(
+            err,
+            SpawnError::Capability(CapabilityError::MissingCapabilities { .. })
+        ),
+        "the late arm must still produce a TYPED capability refusal, not a stall, a \
+         timeout or a silent success: {err:?}"
+    );
+
+    let written = std::fs::read_to_string(&stdin_log)
+        .expect("the stand-in truncates the stdin log at startup, so it must exist");
+    assert!(
+        !written.is_empty(),
+        "THIS IS THE HONEST WEAKER CLAIM, WRITTEN DOWN. On a CLI that announces only \
+         after reading a user message, the `system/init` the gate judges is the one the \
+         PROMPT PROVOKED — `prompt_release_grace` released it first, because otherwise \
+         the driver waits for an init the CLI will not emit until the prompt arrives and \
+         the run deadlocks until the idle cap (260908-uqq). So on this arm the refusal \
+         aborts a turn that has already begun; it does not prevent one, and it does not \
+         cost zero tokens. An empty log here would mean the grace never fired and the \
+         2.1.266 deadlock is back. Log: {written:?}"
+    );
+    assert!(
+        written.contains("/gsd-progress"),
+        "the bytes on stdin must be the prompt itself, so the cost being disclosed is the \
+         real one: {written:?}"
     );
 }

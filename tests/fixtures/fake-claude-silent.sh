@@ -35,8 +35,17 @@ set -u
 PIDFILE="$1"
 
 # Drain stdin in the background so the executor's writer task never takes a
-# broken pipe. The prompt is never released — the gate never opens — but the
-# writer task exists from the moment of spawn.
+# broken pipe. The writer task exists from the moment of spawn.
+#
+# **The prompt IS eventually released here, and this drain is what swallows it**
+# (260908-uqq). It used to be true that "the prompt is never released — the gate
+# never opens", because the executor withheld the first user message until the
+# capability gate had ruled. It no longer is: `prompt_release_grace` writes the
+# prompt anyway once the grace expires with nothing announced, which is the only
+# thing that gets a run past startup on a CLI that emits `system/init` only in
+# response to a user message. This fixture answers nothing regardless, so the
+# gate still never opens and `start` still parks — the release just happens to
+# land in `/dev/null` on its way.
 cat >/dev/null &
 
 # The grandchild: a child of THIS script, which is itself the executor's child.

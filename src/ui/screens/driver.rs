@@ -408,7 +408,15 @@ pub enum TerminalState {
     TimedOut,
     /// `RunOutcome::Stalled` — the idle cap; the stuck detector proper.
     Stalled,
-    /// `RunOutcome::CapabilityRefused` — no turn ever started.
+    /// `RunOutcome::CapabilityRefused` — the CLI failed the capability gate.
+    ///
+    /// **Not necessarily "no turn ever started" (260908-uqq).** That held
+    /// unconditionally until the executor gained
+    /// [`crate::executor::ExecutionOptions::prompt_release_grace`]. It still
+    /// holds when the CLI announced itself inside that grace; when the CLI
+    /// announces only after reading a user message, the prompt was released
+    /// first and the refusal aborted a turn that had begun. This label carries
+    /// the refusal, never which arm produced it.
     CapabilityRefused,
     /// `RunOutcome::SpawnFailed`.
     SpawnFailed,

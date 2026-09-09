@@ -31,7 +31,16 @@ use crate::error::CapabilityError;
 use crate::executor::stream_json::InitMessage;
 use crate::executor::PermissionMode;
 
-/// Capabilities a run requires before any turn may begin.
+/// Capabilities a run requires.
+///
+/// **Requires, not necessarily "requires before any turn may begin"
+/// (260908-uqq).** This gate is pure and stateless; *when* it runs relative to
+/// the first user message is the caller's business, and the caller cannot
+/// always put it first. Against a CLI that emits `system/init` only after a
+/// user message arrives, `ExecutionOptions::prompt_release_grace` releases the
+/// prompt before there is anything here to judge, so the refusal aborts the
+/// turn rather than preventing it. The requirement is unchanged either way;
+/// only its timing is.
 ///
 /// Observed on 2.1.220 as exactly these three, stable across every probe run of
 /// the phase spike: `interrupt_receipt_v1` backs `interrupt()`,

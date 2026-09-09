@@ -27,8 +27,17 @@ use std::path::PathBuf;
 
 /// Why a run could not be started.
 ///
-/// Every variant is reachable before any turn begins, which is the point: a
-/// refusal at this stage costs zero tokens and zero quota (D-06).
+/// Every variant is returned before [`crate::executor::Executor::start`] hands
+/// back a handle, so a failure here is always a start-time error rather than a
+/// mid-run surprise.
+///
+/// **That is not the same as "before any turn begins", and the difference is
+/// [`Self::Capability`]'s alone (D-06, 260908-uqq).** Every other variant below
+/// is reached before anything could have been written to the child at all, so
+/// it genuinely costs zero tokens and zero quota. `Capability` costs zero only
+/// on the arm where the CLI announced itself inside
+/// [`crate::executor::ExecutionOptions::prompt_release_grace`]; see that
+/// variant's own documentation.
 #[derive(Debug)]
 pub enum SpawnError {
     /// The drivable project's root is not an existing directory. Checked before
@@ -55,8 +64,26 @@ pub enum SpawnError {
     /// The child's pid was not readable after spawn, so the process group id
     /// could not be recorded. Without it there is no teardown handle (D-14).
     PidUnavailable,
-    /// The first `system/init` failed the capability gate. No user message was
-    /// ever written to stdin (D-06, TRANS-04).
+    /// The first `system/init` failed the capability gate.
+    ///
+    /// **Whether a user message had already been written to stdin depends on
+    /// the CLI's announce timing, and this variant does not distinguish the two
+    /// (D-06, TRANS-04, 260908-uqq).**
+    ///
+    /// * If the CLI announced within
+    ///   [`crate::executor::ExecutionOptions::prompt_release_grace`], nothing
+    ///   was ever written and the refusal cost zero tokens and zero quota. This
+    ///   is the arm CLI 2.1.220 takes.
+    /// * If the CLI announced only after reading a user message — CLI
+    ///   **2.1.266**, measured — the grace released the prompt first, because
+    ///   otherwise there is no init to gate on and the run deadlocks until the
+    ///   idle cap. The init that failed the gate is then the one the prompt
+    ///   provoked, so this refusal aborted a turn that had already begun.
+    ///
+    /// The refusal is unconditional either way: the run loop stops and the
+    /// agent's process group is torn down on both arms. Only the cost differs,
+    /// and a caller that needs to know which arm ran must look at what the
+    /// child was actually sent, not at this variant.
     Capability(CapabilityError),
     /// stdout closed before any `system/init` arrived. Either the CLI died
     /// during startup or it is not speaking the `stream-json` protocol at all.

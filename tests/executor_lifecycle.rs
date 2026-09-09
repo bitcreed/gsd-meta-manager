@@ -14,6 +14,7 @@
 #![cfg(unix)]
 
 use std::ffi::OsString;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use gsd_meta_manager::error::SendError;
@@ -39,10 +40,17 @@ const FAKE_ORPHAN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/fake-claude-orphan.sh"
 );
-/// The stand-in that never emits `system/init`, so `start` never returns.
+/// The stand-in that never emits `system/init` at all, so the gate can only be
+/// answered by a bound expiring.
 const FAKE_SILENT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/fake-claude-silent.sh"
+);
+/// The stand-in that emits `system/init` only after its first stdin line — the
+/// measured CLI 2.1.266 shape.
+const FAKE_LATE_INIT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/fake-claude-late-init.sh"
 );
 
 /// The real grace between the terminate signal and the uncatchable one. The
@@ -88,6 +96,24 @@ fn capped(wall_ms: u64, idle_ms: u64) -> ExecutionOptions {
         bg_wait_ceiling_ms: idle_ms / 2,
         ..Default::default()
     }
+}
+
+/// An executor pointed at the **late-announcing** stand-in, advertising the
+/// full required capability set.
+///
+/// The stand-in prints nothing until it has read a line, so an executor that
+/// withholds the prompt until the gate has ruled never gets a single byte out
+/// of it. That is the CLI 2.1.266 deadlock, in miniature.
+fn late_announcing(stdin_log: &Path) -> ClaudeExecutor {
+    ClaudeExecutor::with_program(
+        FAKE_LATE_INIT,
+        vec![
+            OsString::from("interrupt_receipt_v1,interrupt_cancel_queued_v1,msg_lifecycle_v1"),
+            OsString::from("2.1.266"),
+            OsString::from("none"),
+            stdin_log.to_path_buf().into_os_string(),
+        ],
+    )
 }
 
 /// Whether `pid` still exists, via the zero signal.
@@ -771,5 +797,128 @@ async fn the_spawn_observer_publishes_the_agent_pgid_even_when_the_gate_never_op
         gone,
         "the agent {pgid} outlived the dropped `start` future, so the Coordinator's \
          cancellation path did not run"
+    );
+}
+
+// ============================================================================
+// A CLI that announces only after the first user message (260908-uqq)
+//
+// The startup handshake is not symmetric across CLI versions. 2.1.220 prints
+// `system/init` at startup; **2.1.266 prints it only once a user message has
+// arrived on stdin** — measured directly, stdout and stderr both at zero bytes
+// with stdin held open and empty, and init/assistant/result all arriving within
+// a second of the first write. An executor that withholds the prompt until the
+// gate has judged an init therefore deadlocks against it: the driver waits for
+// the init, the CLI waits for the prompt. The reproduced failure ran 900.068
+// seconds — `ExecutionOptions::default().idle_cap` to the millisecond — and was
+// reported as `spawn_failed`, having delivered nothing.
+//
+// `ExecutionOptions::prompt_release_grace` breaks the tie: when the grace
+// expires with no init observed, the supervisor writes the prompt anyway.
+// ============================================================================
+
+#[tokio::test]
+async fn a_cli_that_announces_only_after_the_first_user_message_still_receives_its_command() {
+    let scratch = TempDir::new().expect("temp dir");
+    let stdin_log = scratch.path().join("stdin.log");
+    let project = DrivableProject::for_testing_bypassing_opt_in("late-init", scratch.path());
+    let executor = late_announcing(&stdin_log);
+
+    // A short grace so the test does not wait out the production five seconds,
+    // and an idle cap an order of magnitude above it so the run can only be
+    // ended by the handshake completing, never by a bound expiring.
+    let options = ExecutionOptions {
+        prompt_release_grace: Duration::from_millis(200),
+        ..capped(30_000, 5_000)
+    };
+
+    let started = Instant::now();
+    let mut handle = tokio::time::timeout(
+        Duration::from_secs(20),
+        executor.start(&project, "/gsd-progress".to_string(), options),
+    )
+    .await
+    .expect(
+        "`start` never returned against a CLI that announces only after the first user \
+         message. That is the 2.1.266 deadlock: the gate is waiting for an init the child \
+         will not emit until the prompt it is gating arrives",
+    )
+    .expect("the stand-in advertises every required capability, so the gate must pass");
+
+    // One command means one message; EOF is "no more input", not "stop".
+    handle.close_input().await.expect("close stdin");
+
+    let events = drain(&mut handle).await;
+    let outcome = handle.wait_outcome().await;
+    let elapsed = started.elapsed();
+
+    // The point of the whole change: the command reached the child.
+    let written = std::fs::read_to_string(&stdin_log)
+        .expect("the stand-in truncates its stdin log at startup, so it must exist");
+    assert!(
+        written.contains("/gsd-progress"),
+        "the command must reach the child's stdin — a run that gets past startup and \
+         delivers nothing is the bug this test exists for. Log: {written:?}"
+    );
+
+    // Exactly once, whichever arm released it. The grace fires first here, and
+    // the init it provokes must not release a second copy.
+    assert_eq!(
+        written.lines().filter(|line| line.contains("/gsd-progress")).count(),
+        1,
+        "the prompt is written exactly once whichever arm released it; two copies means \
+         the grace arm and the gate arm both fired. Log: {written:?}"
+    );
+
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ExecutionEvent::SessionStarted { .. })),
+        "the init the prompt provoked must still reach the caller as a session start: \
+         {events:?}"
+    );
+    assert!(
+        !matches!(
+            outcome,
+            RunOutcome::Stalled { .. } | RunOutcome::TimedOut { .. }
+        ),
+        "the run must complete on the handshake, not be ended by a bound expiring. \
+         Got: {outcome:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "the grace is 200ms; a run that took {elapsed:?} was released by something else"
+    );
+}
+
+#[tokio::test]
+async fn the_default_prompt_release_grace_sits_strictly_between_zero_and_the_idle_cap() {
+    let defaults = ExecutionOptions::default();
+
+    // Zero would delete the eager arm outright: no CLI could ever announce in
+    // time, so the pre-prompt capability refusal — and with it the unconditional
+    // D-06 zero-token property on every CLI that *does* announce eagerly —
+    // would stop existing rather than become conditional.
+    assert!(
+        defaults.prompt_release_grace > Duration::ZERO,
+        "a zero grace releases the prompt at spawn and destroys the eager arm's \
+         pre-prompt refusal on every CLI, including the ones that announce in time"
+    );
+    // At or above the idle cap the grace is unreachable and the 2.1.266 deadlock
+    // survives the fix, ended by the idle cap exactly as it was before.
+    assert!(
+        defaults.prompt_release_grace < defaults.idle_cap,
+        "the grace must fire long before the idle cap; a grace at or beyond it leaves the \
+         startup deadlock in place and merely renames its symptom. grace={:?} idle_cap={:?}",
+        defaults.prompt_release_grace,
+        defaults.idle_cap
+    );
+    // The run-wide idle cap is deliberately NOT shrunk to serve as a startup
+    // bound: the two answer different questions, and `iteration_options`
+    // inherits this value from `Default` on purpose.
+    assert_eq!(
+        defaults.idle_cap,
+        Duration::from_secs(15 * 60),
+        "the startup bound is its own knob; the run-wide idle cap stays where it was"
     );
 }
