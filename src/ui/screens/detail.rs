@@ -513,25 +513,62 @@ pub(crate) fn sub_view_from_index(index: usize) -> DetailSubView {
     }
 }
 
-/// Find a terminal emulator to use for launching Claude sessions.
-/// Tries $TERMINAL env var first, then common terminal emulators.
-fn find_terminal() -> Option<String> {
-    if let Ok(term) = std::env::var("TERMINAL") {
-        if !term.is_empty() {
-            return Some(term);
-        }
-    }
-    for candidate in &["kitty", "alacritty", "gnome-terminal", "xterm"] {
-        if std::process::Command::new("which")
-            .arg(candidate)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
-            return Some(candidate.to_string());
-        }
-    }
-    None
+/// Terminal emulators probed by NAME, as a **preference order of last resort**.
+///
+/// This list is the LOWEST rank of the launch decision (D-02), and that demotion
+/// is the fix for the bug it caused. Being order-dependent is precisely how the
+/// reported defect happened: on a machine whose real default terminal is
+/// `ptyxis`, `gnome-terminal` was picked purely because it sits earlier here.
+/// The answer to that is the discovery ranks ABOVE this list —
+/// `xdg-terminal-exec`, which knows what the desktop actually designates — not
+/// surgery on the order of these five names.
+///
+/// | entry | note |
+/// |---|---|
+/// | `kitty`, `alacritty`, `xterm` | one process per window; `current_dir` is honoured |
+/// | `ptyxis` | **Residual (D-04):** bare `ptyxis` may open a TAB in an existing instance rather than a new window, and a single-instance GUI application may not honour the `current_dir` of the client process. Documented rather than fixed: `gnome-terminal` below is already the same class (it is backed by `gnome-terminal-server`), so this is a pre-existing property of this list rather than something `ptyxis` introduces. It is also reachable only when `xdg-terminal-exec` is absent — which is rare, since `xdg-terminal-exec` is how `ptyxis` gets designated as the default in the first place. |
+/// | `gnome-terminal` | same single-instance class; needs the `--` separator, not `-e` |
+///
+/// Every name here must have a row in [`terminal_program_separator`]'s table;
+/// `tests::the_separator_table_covers_every_launcher_the_discovery_consts_name`
+/// parses this const out of the source text and fails if one does not.
+const FALLBACK_TERMINAL_CANDIDATES: &[&str] =
+    &["kitty", "alacritty", "ptyxis", "gnome-terminal", "xterm"];
+
+/// The launchers that RESOLVE a terminal rather than being one, in rank order
+/// (D-02). They outrank [`FALLBACK_TERMINAL_CANDIDATES`] because they answer
+/// "which terminal does this desktop designate?" instead of "which terminal is
+/// installed?".
+///
+/// They still receive the resumed program's argv, so each needs a separator
+/// decision exactly as an emulator does — which is why they are parsed by the
+/// same source-derived guard.
+///
+/// # Not read by the runtime, and pinned so that cannot rot
+///
+/// The names themselves live in [`crate::terminal_switch::plan_launch`], which
+/// returns them, and in `probe_terminals`, which probes for them. This const is
+/// the REGISTRY the separator guard adjudicates against — the same role
+/// `session_detector`'s `CLAUDE_ARGV_SITES` plays for the option-literal
+/// census. A registry the runtime does not read can drift from the runtime, so
+/// `tests::the_discovery_consts_name_every_launcher_the_plan_can_actually_return`
+/// drives the real `plan_launch` and fails if it ever answers with a name that
+/// is not listed here.
+#[allow(dead_code)]
+const DISCOVERY_LAUNCHERS: &[&str] = &["xdg-terminal-exec", "x-terminal-emulator"];
+
+/// The launch decision for this build: `plan_launch` over the probes, with this
+/// file's own fallback list.
+///
+/// **Replaces `find_terminal`**, which tried `$TERMINAL` and then the hardcoded
+/// candidate list and never looked at `$TMUX` at all. The ordering now lives in
+/// [`crate::terminal_switch::plan_launch`], where it is a pure function of
+/// injected probes and can be asserted for environments nobody is running in —
+/// including the exact one the bug was reported from.
+fn resolve_launch_plan() -> crate::terminal_switch::LaunchPlan {
+    crate::terminal_switch::plan_launch(&crate::terminal_switch::probe_terminals(
+        FALLBACK_TERMINAL_CANDIDATES,
+    ))
 }
 
 /// The token that separates a terminal emulator's OWN options from the program
@@ -542,14 +579,17 @@ fn find_terminal() -> Option<String> {
 /// handed to an interpreter, the emulator never saw the resumed program's own
 /// options — the interpreter did. Handing the emulator a real argv makes those
 /// options visible to it for the first time, and the separator is not the same
-/// token for every emulator [`find_terminal`] can return:
+/// token for every launcher [`resolve_launch_plan`] can return:
 ///
-/// | `find_terminal` returns | Separator | Why |
+/// | the plan's `gui` is | Separator | Why |
 /// |---|---|---|
 /// | `kitty` | `-e` | takes the program and its arguments after `-e` |
 /// | `alacritty` | `-e` | `-e`/`--command` consumes the remainder |
 /// | `gnome-terminal` | `--` | its `-e` is deprecated and takes a SINGLE string it re-parses; with a real argv it consumes `--resume` as one of its OWN options |
 /// | `xterm` | `-e` | `-e` consumes the remainder |
+/// | `ptyxis` | `--` | `ptyxis --help`: `Usage: ptyxis [OPTION…] [-- COMMAND ARGUMENTS]`. **NOT `-e`.** Ptyxis does not follow the `-e` convention at all: its `-x` takes a SINGLE re-parsed string — the same trap that made `gnome-terminal`'s deprecated `-e` wrong. Getting this row wrong deletes the resume SILENTLY rather than loudly. |
+/// | `xdg-terminal-exec` | `--` | usage line `xdg-terminal-exec [options] [--] [command [arguments ...]]`; confirmed by measuring `--print-cmd -- claude --resume=abc123`, which printed `ptyxis` / `--new-window` / `--` / `claude` / `--resume=abc123` — landing on the desktop's real default AND preserving the fused element intact |
+/// | `x-terminal-emulator` | `-e` | the interface spec in the POD of `/usr/bin/gnome-terminal.wrapper` (lines 139-143): `-e COMMAND [ARGUMENTS...]`, "Equivalent to `xterm -e` COMMAND ARGUMENTS", and it "stops parsing options after -e" |
 /// | anything else (`$TERMINAL`) | `-e` | the xterm-compatible convention, which is what an unknown emulator most likely follows |
 ///
 /// Getting `gnome-terminal` wrong does not fail loudly: the emulator swallows
@@ -570,6 +610,9 @@ fn terminal_program_separator(term: &str) -> &'static str {
     let stem = term.rsplit('/').next().unwrap_or(term);
     match stem {
         "gnome-terminal" => "--",
+        "ptyxis" => "--",
+        "xdg-terminal-exec" => "--",
+        "x-terminal-emulator" => "-e",
         _ => "-e",
     }
 }
@@ -701,8 +744,24 @@ const RESUME_OPTION_FUSED_PREFIX: &str = "--resume=";
 /// `tests::the_resume_argv_never_lets_a_session_id_become_an_option_of_the_resumed_program`,
 /// observed RED against the construction this replaces.
 fn resume_terminal_argv(term: &str, sid: &Untrusted) -> Vec<String> {
+    let mut argv = vec![terminal_program_separator(term).to_string()];
+    argv.extend(claude_resume_args(sid));
+    argv
+}
+
+/// The resumed program and its arguments — **the ONE construction site of the
+/// fused `--resume=` element** (T-W0D-02, T-21-31-01, CWE-88).
+///
+/// Both carriers build from here: the GUI path through
+/// [`resume_terminal_argv`], the tmux path through [`tmux_resume_argv`]. Two
+/// separate constructions would agree on the day they were written and diverge
+/// on the day one of them is edited — and the entire CWE-88 fix lives in the
+/// bytes of that one element, so a divergence is a silently reopened
+/// vulnerability on whichever path was not edited.
+/// `tests::both_resume_paths_carry_the_same_fused_element` is what makes
+/// "one site" checkable rather than a claim.
+fn claude_resume_args(sid: &Untrusted) -> Vec<String> {
     vec![
-        terminal_program_separator(term).to_string(),
         "claude".to_string(),
         // ONE element, with the untrusted id FUSED to the option name it
         // belongs to. `execve` hands this over unparsed and `claude`'s own
@@ -712,6 +771,62 @@ fn resume_terminal_argv(term: &str, sid: &Untrusted) -> Vec<String> {
         // arrives whole: an escaped or truncated one would resume nothing.
         format!("{RESUME_OPTION_FUSED_PREFIX}{}", sid.as_raw_for_logic_only()),
     ]
+}
+
+/// The program for a NEW session. The sibling of [`claude_resume_args`], and
+/// the same single-site reasoning: [`launch_terminal_argv`] and
+/// [`tmux_launch_argv`] both build from here.
+fn claude_launch_args() -> Vec<String> {
+    vec!["claude".to_string()]
+}
+
+/// The program vector handed to `tmux new-window` when resuming (D-03).
+///
+/// # Why it begins with the literal `env`
+///
+/// `man tmux`, verbatim: *"the new-window ... and respawn-pane commands allow
+/// shell-command to be given as multiple arguments and executed directly
+/// (without 'sh -c'). This can avoid issues with shell quoting."* A
+/// shell-command given as a **single** argument still goes through `sh -c`.
+/// The new-session vector would naturally be the single element `claude`,
+/// landing exactly on that edge and reintroducing an interpreter into a path
+/// CR-01 cleared. The leading `env` makes `len() >= 2` true **by
+/// construction** for every vector, present and future, instead of by a rule
+/// each caller has to remember, and it fixes the head to a literal that
+/// provably does not start with `-`, so tmux's own option parser stops there
+/// rather than consuming part of this vector.
+///
+/// **`env` is not a command interpreter.** It has no program-string mode: it
+/// consumes leading `NAME=VALUE` and option words, then `execvp`s the first
+/// non-option word with the remainder passed through **unparsed**. No byte of
+/// the fused `--resume=` element can be reinterpreted by it. This is the same
+/// structural reading of `env` that the envelope's `resolve_program` already
+/// uses. The rejected alternative was padding with a `claude` flag: no `claude`
+/// flag is provably inert, so that would trade a structural guarantee for a
+/// behaviour change.
+///
+/// **No separator appears in a tmux vector.** A separator exists to stop an
+/// EMULATOR consuming the resumed program's own options; tmux takes the program
+/// vector directly rather than after an emulator's own options, so there is
+/// nothing here for a separator to protect.
+///
+/// The working directory does not travel in this vector either: it goes as
+/// `tmux new-window -c <dir>`, an argv element, never as a `cd` written into a
+/// program string (T-W0D-03).
+fn tmux_resume_argv(sid: &Untrusted) -> Vec<String> {
+    let mut argv = vec!["env".to_string()];
+    argv.extend(claude_resume_args(sid));
+    argv
+}
+
+/// The program vector handed to `tmux new-window` for a NEW session. Same
+/// leading `env` and the same reason — see [`tmux_resume_argv`]. This is the
+/// vector D-03 was actually written about: without the `env` it would be the
+/// single element `claude`, which tmux hands to `sh -c`.
+fn tmux_launch_argv() -> Vec<String> {
+    let mut argv = vec!["env".to_string()];
+    argv.extend(claude_launch_args());
+    argv
 }
 
 /// The argv for launching a NEW Claude session. Same shape, same reason — see
@@ -738,10 +853,9 @@ fn resume_terminal_argv(term: &str, sid: &Untrusted) -> Vec<String> {
 /// — the only way this builder could acquire an untrusted value — fails loudly
 /// and forces this decision to be made explicitly again rather than inherited.
 fn launch_terminal_argv(term: &str) -> Vec<String> {
-    vec![
-        terminal_program_separator(term).to_string(),
-        "claude".to_string(),
-    ]
+    let mut argv = vec![terminal_program_separator(term).to_string()];
+    argv.extend(claude_launch_args());
+    argv
 }
 
 fn status_color(category: &StatusCategory) -> Color {
@@ -1890,15 +2004,38 @@ impl Screen for DetailScreen {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         if let Some(session) = filtered_sessions.get(cache.sessions_selected) {
                             if let Some(ref sid) = session.session_id {
-                                match find_terminal() {
+                                // READ BY A HUMAN (it lands in a status message
+                                // below), and shortened by CHARACTERS — see
+                                // `shorten_session_id`'s doc for why the byte
+                                // slice this replaced was a panic.
+                                let short_id = shorten_session_id(sid);
+                                let plan = resolve_launch_plan();
+                                let mut tmux_err: Option<String> = None;
+                                if plan.try_tmux {
+                                    // D-01: the session should appear WHERE THE
+                                    // USER IS. `$TERMINAL` says which GUI
+                                    // emulator they prefer, not where a session
+                                    // belongs, and it is usually exported once
+                                    // from a shell profile rather than meant
+                                    // per invocation.
+                                    match crate::terminal_switch::open_new_window(
+                                        &session.working_dir,
+                                        &tmux_resume_argv(sid),
+                                    ) {
+                                        Ok(()) => {
+                                            return ScreenAction::SetStatusMessage(format!(
+                                                "Resumed session {}",
+                                                short_id
+                                            ))
+                                        }
+                                        // Fall through to the GUI rather than
+                                        // failing: no reachable tmux server is
+                                        // exactly when `$TERMINAL` should win.
+                                        Err(e) => tmux_err = Some(e),
+                                    }
+                                }
+                                match plan.gui {
                                     Some(term) => {
-                                        // READ BY A HUMAN (it lands in a status
-                                        // message below), and shortened by
-                                        // CHARACTERS — see
-                                        // `shorten_session_id`'s doc for why
-                                        // the byte slice this replaced was a
-                                        // panic.
-                                        let short_id = shorten_session_id(sid);
                                         // ARGV ELEMENTS, every one of them —
                                         // the kernel hands them to `execve`
                                         // unparsed. NOT program fragments,
@@ -1931,10 +2068,23 @@ impl Screen for DetailScreen {
                                             .spawn()
                                         {
                                             Ok(_) => {
-                                                return ScreenAction::SetStatusMessage(format!(
-                                                    "Resumed session {}",
-                                                    short_id
-                                                ))
+                                                // A fall-through is REPORTED
+                                                // rather than silent: the user
+                                                // asked for a session where
+                                                // they are, and got one
+                                                // somewhere else.
+                                                return ScreenAction::SetStatusMessage(
+                                                    match tmux_err {
+                                                        Some(e) => format!(
+                                                            "tmux: {} — opened in {}",
+                                                            e, term
+                                                        ),
+                                                        None => format!(
+                                                            "Resumed session {}",
+                                                            short_id
+                                                        ),
+                                                    },
+                                                );
                                             }
                                             Err(e) => {
                                                 return ScreenAction::SetStatusMessage(format!(
@@ -1945,10 +2095,14 @@ impl Screen for DetailScreen {
                                         }
                                     }
                                     None => {
-                                        return ScreenAction::SetStatusMessage(
-                                            "No terminal emulator found (set $TERMINAL)"
+                                        return ScreenAction::SetStatusMessage(match tmux_err {
+                                            Some(e) => format!(
+                                                "tmux: {e}; no terminal emulator found (set \
+                                                 $TERMINAL)"
+                                            ),
+                                            None => "No terminal emulator found (set $TERMINAL)"
                                                 .to_string(),
-                                        )
+                                        })
                                     }
                                 }
                             } else {
@@ -2322,7 +2476,26 @@ impl Screen for DetailScreen {
             // 'n' key: launch new Claude session (Sessions tab only)
             KeyCode::Char('n') if current_view == DetailSubView::Sessions => {
                 if let Some(project) = ctx.config.projects.get(&self.alias) {
-                    match find_terminal() {
+                    let plan = resolve_launch_plan();
+                    let mut tmux_err: Option<String> = None;
+                    if plan.try_tmux {
+                        // D-01, same as the resume site: a new session belongs
+                        // where the user is. The working directory travels as
+                        // `tmux new-window -c <dir>`, an argv element, never as
+                        // a `cd` written into a program string.
+                        match crate::terminal_switch::open_new_window(
+                            &project.path,
+                            &tmux_launch_argv(),
+                        ) {
+                            Ok(()) => {
+                                return ScreenAction::SetStatusMessage(
+                                    "Launched new Claude session".to_string(),
+                                )
+                            }
+                            Err(e) => tmux_err = Some(e),
+                        }
+                    }
+                    match plan.gui {
                         Some(term) => {
                             // ARGV ELEMENTS, and the working directory travels
                             // through `current_dir`. Same construction and the
@@ -2336,18 +2509,22 @@ impl Screen for DetailScreen {
                                 .current_dir(&project.path)
                                 .spawn()
                             {
-                                Ok(_) => ScreenAction::SetStatusMessage(
-                                    "Launched new Claude session".to_string(),
-                                ),
+                                Ok(_) => ScreenAction::SetStatusMessage(match tmux_err {
+                                    Some(e) => format!("tmux: {} — opened in {}", e, term),
+                                    None => "Launched new Claude session".to_string(),
+                                }),
                                 Err(e) => ScreenAction::SetStatusMessage(format!(
                                     "Failed to launch: {}",
                                     e
                                 )),
                             }
                         }
-                        None => ScreenAction::SetStatusMessage(
-                            "No terminal emulator found (set $TERMINAL)".to_string(),
-                        ),
+                        None => ScreenAction::SetStatusMessage(match tmux_err {
+                            Some(e) => {
+                                format!("tmux: {e}; no terminal emulator found (set $TERMINAL)")
+                            }
+                            None => "No terminal emulator found (set $TERMINAL)".to_string(),
+                        }),
                     }
                 } else {
                     ScreenAction::None
@@ -8636,6 +8813,205 @@ mod tests {
             assert!(
                 matches!(separator, "-e" | "--"),
                 "{candidate:?} resolved to the unknown separator {separator:?}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The tmux path (D-03, T-W0D-01, T-W0D-02)
+    //
+    // Asserted at the argv VALUES, never at the source text. A text grep for
+    // interpreter names would be strictly weaker AND would be invalidated by
+    // the very doc comments that explain why `env` is not one.
+    // -----------------------------------------------------------------------
+
+    /// **The tmux direct-exec boundary, pinned at the BUILDERS** (D-03).
+    ///
+    /// `man tmux`: a shell-command given as MULTIPLE arguments is executed
+    /// directly, without `sh -c`; a SINGLE argument still goes through one. So
+    /// `len() >= 2` is what keeps a command interpreter out of this path — the
+    /// same property CR-01 / T-21-27-01 / T-21-27-02 bought at the GUI sites.
+    ///
+    /// [`crate::terminal_switch::open_new_window`] refuses a short vector too,
+    /// and that refusal is the fail-closed sink every future caller inherits.
+    /// This assertion lives here *as well* because the builders are the place a
+    /// future edit would shorten a vector, and a sink that is never reached with
+    /// a bad value is a sink nobody notices they broke.
+    #[test]
+    fn the_tmux_argvs_are_pinned_at_two_or_more_with_no_interpreter() {
+        let interpreters = interpreter_binaries();
+        let command_flag =
+            format!("{INTERPRETER_COMMAND_FLAG_HEAD}{INTERPRETER_COMMAND_FLAG_TAIL}");
+        let sid = Untrusted::from_untrusted_source("abc".to_string());
+
+        for argv in [tmux_launch_argv(), tmux_resume_argv(&sid)] {
+            assert!(
+                argv.len() >= 2,
+                "the tmux program vector {argv:?} has fewer than two elements. \
+                 tmux hands a SINGLE-argument shell-command to a command \
+                 interpreter, which puts a parser back in a path that \
+                 deliberately has none."
+            );
+            assert_eq!(
+                argv.first().map(String::as_str),
+                Some("env"),
+                "the tmux program vector {argv:?} must begin with the literal \
+                 `env`. That is what makes the >= 2 arity true BY CONSTRUCTION \
+                 for every vector, present and future, rather than by a rule \
+                 each caller has to remember — and it fixes the head to a \
+                 literal that provably does not start with `-`, so tmux's own \
+                 option parser stops there."
+            );
+            assert!(
+                !argv[0].starts_with('-'),
+                "the head of {argv:?} starts with `-`, so tmux's option parser \
+                 would consume it instead of treating it as the program"
+            );
+            for element in &argv {
+                let stem = element.rsplit('/').next().unwrap_or(element);
+                assert!(
+                    !interpreters.iter().any(|binary| binary == stem),
+                    "argv element {element:?} is a command interpreter. `env` is \
+                     NOT one — it has no program-string mode, it consumes \
+                     leading NAME=VALUE and option words and then `execvp`s the \
+                     first non-option word with the remainder passed through \
+                     UNPARSED. Full argv: {argv:?}"
+                );
+                assert_ne!(
+                    element, &command_flag,
+                    "argv {argv:?} carries the flag by which an interpreter is \
+                     handed a program to PARSE"
+                );
+            }
+        }
+    }
+
+    /// **CWE-88 / T-W0D-02 on the tmux path.** Modelled on
+    /// [`the_resume_argv_carries_a_hostile_session_id_as_one_opaque_element`],
+    /// over the same adversarial corpus, because the tmux path reaches the same
+    /// `claude` option parser through a different carrier.
+    #[test]
+    fn the_tmux_resume_argv_carries_a_hostile_session_id_as_one_opaque_element() {
+        // Non-vacuity: the corpus must actually be hostile.
+        assert!(
+            hostile_session_ids()
+                .iter()
+                .any(|id| id.chars().any(|c| "'\";&|`$\n".contains(c))),
+            "the fixture set carries no shell metacharacter at all, so this \
+             control would pass against the construction it exists to reject"
+        );
+
+        let mut arities = std::collections::BTreeSet::new();
+        for raw in hostile_session_ids() {
+            let sid = Untrusted::from_untrusted_source(raw.clone());
+            let argv = tmux_resume_argv(&sid);
+            arities.insert(argv.len());
+
+            let carried = argv
+                .iter()
+                .filter(|element| element.split_once('=').map(|(_, v)| v) == Some(raw.as_str()))
+                .count();
+            assert_eq!(
+                carried, 1,
+                "the session id {raw:?} must be carried by exactly ONE argv \
+                 element as the suffix after that element's first `=`; it was \
+                 carried {carried} times in {argv:?}"
+            );
+
+            // No OTHER element may carry any of the id's bytes: a value split
+            // across elements is a value something parsed.
+            let elsewhere = argv
+                .iter()
+                .filter(|element| {
+                    element.split_once('=').map(|(_, v)| v) != Some(raw.as_str())
+                        && element.contains(raw.as_str())
+                })
+                .count();
+            assert_eq!(
+                elsewhere, 0,
+                "bytes of {raw:?} appear in an element other than the fused \
+                 one, in {argv:?} — the id was split or duplicated by something \
+                 reading it"
+            );
+        }
+
+        assert_eq!(
+            arities.len(),
+            1,
+            "the tmux argv arity varied across inputs ({arities:?}), so some id \
+             changed the SHAPE of the vector rather than just one element of \
+             it. A value that can change the arity is a value being parsed."
+        );
+    }
+
+    /// **The registry cannot drift from the runtime** (D-05).
+    ///
+    /// [`DISCOVERY_LAUNCHERS`] is not read by the runtime — the names live in
+    /// `plan_launch` and `probe_terminals` — so on its own it is a list somebody
+    /// remembers, which is the artefact the source-derived guard exists to
+    /// replace. This drives the REAL `plan_launch` at each discovery rank and
+    /// asserts the answer is a name the registry carries.
+    #[test]
+    fn the_discovery_consts_name_every_launcher_the_plan_can_actually_return() {
+        use crate::terminal_switch::{plan_launch, TerminalProbes};
+
+        let at_rank = |xdg: bool, x_term: bool| -> String {
+            plan_launch(&TerminalProbes {
+                in_tmux: false,
+                terminal_env: None,
+                xdg_terminal_exec_ok: xdg,
+                x_terminal_emulator_present: x_term,
+                fallback_present: Vec::new(),
+            })
+            .gui
+            .expect("a discovery rank must resolve to a launcher")
+        };
+
+        for answer in [at_rank(true, false), at_rank(false, true)] {
+            assert!(
+                DISCOVERY_LAUNCHERS.contains(&answer.as_str()),
+                "`plan_launch` answered {answer:?} at a discovery rank, and \
+                 {DISCOVERY_LAUNCHERS:?} does not list it. The separator guard \
+                 adjudicates against that const, so a launcher the runtime can \
+                 actually return but the const does not name gets NO separator \
+                 decision and inherits `-e` by silence — which is how \
+                 `gnome-terminal` would have been wrong."
+            );
+        }
+    }
+
+    /// **The drift pin across the two paths** (T-W0D-02).
+    ///
+    /// `claude_resume_args` is the single construction site of the fused
+    /// element, and this is what makes that "single" checkable: the GUI builder
+    /// and the tmux builder must hand the resumed program a byte-identical
+    /// `--resume=<id>`. Two builders that construct it separately would agree on
+    /// the day they were written and diverge on the day one of them is edited —
+    /// and the CWE-88 fix lives entirely in the bytes of that element.
+    #[test]
+    fn both_resume_paths_carry_the_same_fused_element() {
+        for raw in hostile_session_ids() {
+            let sid = Untrusted::from_untrusted_source(raw.clone());
+            let gui = resume_terminal_argv("gnome-terminal", &sid);
+            let tmux = tmux_resume_argv(&sid);
+
+            let fused = |argv: &[String]| -> Option<String> {
+                argv.iter()
+                    .find(|e| e.starts_with(RESUME_OPTION_FUSED_PREFIX))
+                    .cloned()
+            };
+            let gui_fused = fused(&gui).unwrap_or_else(|| {
+                panic!("the GUI argv {gui:?} carries no fused resume element at all")
+            });
+            let tmux_fused = fused(&tmux).unwrap_or_else(|| {
+                panic!("the tmux argv {tmux:?} carries no fused resume element at all")
+            });
+            assert_eq!(
+                gui_fused, tmux_fused,
+                "the GUI path and the tmux path built DIFFERENT resume elements \
+                 for the same id {raw:?}. They must come from the one \
+                 construction site, or the CWE-88 fusion holds on whichever path \
+                 was edited last."
             );
         }
     }
