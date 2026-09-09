@@ -64,9 +64,11 @@ Status: Phase complete — ready for verification
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-09-08 — Completed quick task 260908-uqq: the driver's startup handshake now
-survives CLI 2.1.266 (prompt released on a 5s `prompt_release_grace`), and a pre-gate stall is
-labelled `stalled`/`timed_out` with its reason journalled instead of being called `spawn_failed`.
+Last activity: 2026-09-08 — Completed quick task 260908-w0d: opening a session from the TUI now
+tries the running tmux server first when `$TMUX` is set, and only falls through to a GUI terminal
+that is DISCOVERED from the desktop's default-terminal association rather than guessed from a
+hardcoded candidate list. The launch order is a pure function (`terminal_switch::plan_launch`) over
+injected probes, so the reported environment is pinned as a test row.
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -396,6 +398,7 @@ Recent decisions affecting current work:
 | 260729-vmp | Let the user opt a project in to driving from the Driver tab (`o` pushes the same confirmation the dashboard's `o` does; spawn seam unchanged) | 2026-07-30 | 70157bd | [260729-vmp](./quick/260729-vmp-let-the-user-opt-a-project-in-to-driving/) |
 | 260828-15f | Round-scope round-13 finding ids in `21-REVIEW.md` (`R13-` prefix) so no bare id collides with a historical phase-21 finding | 2026-08-28 | 2e44f57 | [260828-15f](./quick/260828-15f-disambiguate-round-13-finding-ids-in-pha/) |
 | 260908-uqq | Fix the CLI 2.1.266 startup deadlock — release the prompt on a `prompt_release_grace` instead of waiting forever for a `system/init` that arrives only after stdin; stop labelling a pre-gate stall `spawn_failed`; put the terminal reason in `journal.jsonl`. The D-06 zero-token refusal claim is now scoped to the eager arm only, corrected at 13 sites | 2026-09-08 | 114de68, 2fb6592 | [260908-uqq](./quick/260908-uqq-fix-driver-startup-deadlock-on-cli-2-1-2/) |
+| 260908-w0d | Open sessions where the user actually is: inside tmux both launch sites now open a new window on the running server, and the GUI fallback discovers the desktop's real default terminal (`xdg-terminal-exec` → `x-terminal-emulator` → candidate list) instead of taking the first hardcoded name that happens to be installed. `$TERMINAL` demoted below tmux (D-01). Separator table extended with the measured `ptyxis`/`xdg-terminal-exec` → `--` and `x-terminal-emulator` → `-e` rows; all three source-derived pins updated to keep guarding, and pin 3's previously vacuous assertion replaced | 2026-09-08 | 46318ea, 05b3592, aa457c2 | [260908-w0d](./quick/260908-w0d-prefer-tmux-for-opening-sessions-discove/) |
 
 ## Session Continuity
 
