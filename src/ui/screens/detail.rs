@@ -8700,6 +8700,15 @@ mod tests {
             ("alacritty", "-e"),
             ("gnome-terminal", "--"),
             ("xterm", "-e"),
+            // Newly reachable since 260908-w0d. `launch_terminal_argv` STAYS
+            // AT TWO for them (D-04): no `terminal_leading_options` helper and
+            // no prepended `--new-window`, because that would loosen this
+            // pin's exact property — no third element, therefore no untrusted
+            // element — to buy a window-vs-tab difference on a last-resort
+            // path.
+            ("ptyxis", "--"),
+            ("xdg-terminal-exec", "--"),
+            ("x-terminal-emulator", "-e"),
             ("wezterm", "-e"),
             ("/usr/bin/gnome-terminal", "--"),
         ] {
@@ -8719,19 +8728,26 @@ mod tests {
 
     /// **The capability half of the fix** (T-21-27-06, prohibition 2).
     ///
-    /// Every emulator [`find_terminal`] can return, plus the unbounded
+    /// Every launcher [`resolve_launch_plan`] can return, plus the unbounded
     /// `$TERMINAL` case, and in both directions: the separator is correct AND
     /// the resumed program's own long option lands AFTER it, where the emulator
     /// cannot consume it as one of its own.
     #[test]
-    fn every_terminal_find_terminal_can_return_gets_a_separator_that_keeps_the_program_options() {
-        // The candidate list `find_terminal` probes, plus `$TERMINAL`. If
-        // `find_terminal` grows a candidate, this arm must grow with it.
+    fn every_launcher_the_probe_can_return_gets_a_separator_that_keeps_the_program_options() {
+        // Both discovery consts, plus `$TERMINAL`. If either const grows a
+        // launcher, this arm must grow with it — and
+        // `the_separator_table_covers_every_launcher_the_discovery_consts_name`
+        // is what fails when it does not.
         for (term, expected) in [
             ("kitty", "-e"),
             ("alacritty", "-e"),
             ("gnome-terminal", "--"),
             ("xterm", "-e"),
+            // Newly reachable since 260908-w0d: the fallback list gained
+            // `ptyxis`, and discovery can now return either launcher by name.
+            ("ptyxis", "--"),
+            ("xdg-terminal-exec", "--"),
+            ("x-terminal-emulator", "-e"),
             // An arbitrary `$TERMINAL`, and the same value behind a path.
             ("wezterm", "-e"),
             ("/usr/bin/gnome-terminal", "--"),
@@ -8740,10 +8756,13 @@ mod tests {
                 terminal_program_separator(term),
                 expected,
                 "{term:?} must be handed {expected:?}. `gnome-terminal` is the \
-                 one that differs: its `-e` is deprecated and takes a single \
-                 re-parsed string, so with a real argv it consumes `--resume` \
-                 as one of its OWN options and the resume silently stops \
-                 working — a feature deletion wearing a security fix's clothes."
+                 one that first differed: its `-e` is deprecated and takes a \
+                 single re-parsed string, so with a real argv it consumes \
+                 `--resume` as one of its OWN options and the resume silently \
+                 stops working — a feature deletion wearing a security fix's \
+                 clothes. `ptyxis` is the same shape (its `-x` takes a single \
+                 re-parsed string and it has no `-e` at all), which is why it \
+                 gets `--` rather than inheriting the default."
             );
 
             let sid = Untrusted::from_untrusted_source("abc".to_string());
@@ -8777,42 +8796,118 @@ mod tests {
         }
     }
 
-    /// `find_terminal`'s candidate list and the separator table must not drift
-    /// apart. This is the pin that makes the table's coverage claim checkable
-    /// rather than a comment: a fifth candidate added to `find_terminal`
-    /// without a decision here fails this.
+    /// The discovery consts and the separator table must not drift apart
+    /// (D-05). This is the pin that makes the table's coverage claim checkable
+    /// rather than a comment: a launcher added to either const without a
+    /// decision here fails this.
+    ///
+    /// # Re-pointed 2026-09-08 (260908-w0d): the parse followed the code
+    ///
+    /// It used to grep the body of `fn find_terminal()` and split on the first
+    /// `[`. That function is gone — the ordering now lives in
+    /// [`crate::terminal_switch::plan_launch`] and the two candidate lists were
+    /// hoisted to [`FALLBACK_TERMINAL_CANDIDATES`] and [`DISCOVERY_LAUNCHERS`]
+    /// so this guard could keep its ESSENTIAL property: the table it
+    /// adjudicates is DERIVED FROM SOURCE TEXT, so it cannot drift from the
+    /// code the way a list somebody remembers can.
+    ///
+    /// # Two things this version does that the previous one did not
+    ///
+    /// **A positive control, first.** Both consts must be found and each must
+    /// parse to a NON-EMPTY list. Without it, a parse that silently matched
+    /// nothing would run zero adjudications and pass having certified nothing —
+    /// an absence assertion cannot distinguish "no launcher lacks a row" from
+    /// "no launcher was read".
+    ///
+    /// **A two-way expectations table, replacing a check that could never
+    /// fail.** The old loop asserted `matches!(separator, "-e" | "--")`, which
+    /// holds for ANY string whatsoever: [`terminal_program_separator`]'s `_` arm
+    /// returns `-e`. So the guard's own claim — "a candidate added without a
+    /// separator decision fails this" — was FALSE, and the only thing it
+    /// actually enforced was the arity. The table below is checked in both
+    /// directions (every parsed name has a row, every row's name was parsed)
+    /// and the resolved separator must EQUAL the row's, so a launcher that
+    /// inherits `-e` by silence is red.
     #[test]
-    fn the_separator_table_covers_every_candidate_find_terminal_probes() {
+    fn the_separator_table_covers_every_launcher_the_discovery_consts_name() {
         let source = include_str!("detail.rs");
-        let body = source
-            .split_once("fn find_terminal()")
-            .expect("find_terminal exists")
-            .1;
-        let list = body
-            .split_once('[')
-            .expect("the candidate list is a slice literal")
-            .1
-            .split_once(']')
-            .expect("the candidate list closes")
-            .0;
-        let candidates: Vec<String> = list
-            .split(',')
-            .map(|piece| piece.trim().trim_matches('"').to_string())
-            .filter(|piece| !piece.is_empty())
-            .collect();
-        assert_eq!(
-            candidates.len(),
-            4,
-            "`find_terminal` probes {candidates:?}; the separator table was \
-             written against exactly four candidates. A candidate added there \
-             without a separator decision here gets the `-e` default by \
-             silence, which is how `gnome-terminal` would have been wrong."
+
+        /// The slice literal declared under `name`, parsed back out of the
+        /// source text. `None` when the const is not there at all.
+        fn declared_names(source: &str, name: &str) -> Option<Vec<String>> {
+            let after = source.split_once(&format!("const {name}: &[&str]"))?.1;
+            let list = after.split_once("&[")?.1.split_once(']')?.0;
+            Some(
+                list.split(',')
+                    .map(|piece| piece.trim().trim_matches('"').to_string())
+                    .filter(|piece| !piece.is_empty())
+                    .collect(),
+            )
+        }
+
+        // --- POSITIVE CONTROL, before any adjudication ----------------------
+        let fallback = declared_names(source, "FALLBACK_TERMINAL_CANDIDATES")
+            .expect("`const FALLBACK_TERMINAL_CANDIDATES: &[&str]` must be findable in this file");
+        let discovery = declared_names(source, "DISCOVERY_LAUNCHERS")
+            .expect("`const DISCOVERY_LAUNCHERS: &[&str]` must be findable in this file");
+        assert!(
+            !fallback.is_empty(),
+            "FALLBACK_TERMINAL_CANDIDATES parsed to an EMPTY list, so every \
+             assertion below would pass having adjudicated nothing"
         );
-        for candidate in &candidates {
-            let separator = terminal_program_separator(candidate);
+        assert!(
+            !discovery.is_empty(),
+            "DISCOVERY_LAUNCHERS parsed to an EMPTY list, so every assertion \
+             below would pass having adjudicated nothing"
+        );
+
+        let parsed: Vec<String> = fallback.iter().chain(discovery.iter()).cloned().collect();
+        assert_eq!(
+            parsed.len(),
+            7,
+            "the discovery consts name {parsed:?}; the separator table was \
+             written against exactly seven launchers (5 fallback + 2 \
+             discovery). A launcher added there without a separator decision \
+             here inherits `-e` BY SILENCE — which is how `gnome-terminal` \
+             would have been wrong, and `ptyxis` after it."
+        );
+
+        // --- The authored expectations, checked in BOTH directions ----------
+        let expected: [(&str, &str); 7] = [
+            ("kitty", "-e"),
+            ("alacritty", "-e"),
+            ("ptyxis", "--"),
+            ("gnome-terminal", "--"),
+            ("xterm", "-e"),
+            ("xdg-terminal-exec", "--"),
+            ("x-terminal-emulator", "-e"),
+        ];
+
+        for name in &parsed {
+            let row = expected.iter().find(|(candidate, _)| candidate == name);
+            let (_, separator) = row.unwrap_or_else(|| {
+                panic!(
+                    "the launcher {name:?} is named by a discovery const and has \
+                     NO row in this test's expectations table, so no separator \
+                     decision was ever made for it. It would inherit `-e` from \
+                     `terminal_program_separator`'s `_` arm — silently, and \
+                     wrongly for any emulator that re-parses a single string."
+                )
+            });
+            assert_eq!(
+                terminal_program_separator(name),
+                *separator,
+                "{name:?} must be handed {separator:?}"
+            );
+        }
+
+        for (name, _) in &expected {
             assert!(
-                matches!(separator, "-e" | "--"),
-                "{candidate:?} resolved to the unknown separator {separator:?}"
+                parsed.iter().any(|parsed_name| parsed_name == name),
+                "this test expects a separator for {name:?}, but no discovery \
+                 const names it. Either the launcher was removed from the code \
+                 and this row is stale, or the source-text parse above has \
+                 stopped seeing the const it thinks it is reading."
             );
         }
     }
