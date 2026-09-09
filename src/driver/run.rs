@@ -29,7 +29,7 @@ use crate::envelope::advisory::{self, ProtectionState};
 use crate::envelope::cred::{self, EnvelopeEnv};
 use crate::envelope::hooks;
 use crate::envelope::policy::{self, ParkReason};
-use crate::error::{DriveError, LockError};
+use crate::error::{DriveError, LockError, SpawnError};
 use crate::executor::claude::ClaudeExecutor;
 use crate::executor::stream_json::{StreamMessage, UserMessage};
 use crate::executor::{
@@ -419,6 +419,110 @@ pub(crate) fn outcome_label(outcome: &RunOutcome) -> &'static str {
         RunOutcome::Stalled { .. } => "stalled",
         RunOutcome::CapabilityRefused { .. } => "capability_refused",
         RunOutcome::SpawnFailed { .. } => "spawn_failed",
+    }
+}
+
+/// Map a spawn failure onto the short terminal label the journal records.
+///
+/// The companion to [`outcome_label`] for the path that has no `RunOutcome` to
+/// label: `start` returned an `Err` and therefore no handle, so the outcome the
+/// supervisor computed is sitting on a channel nobody can read (260908-uqq).
+///
+/// **Every word here is one [`outcome_label`] already writes, and no new one is
+/// invented.** The four labels this can return — `capability_refused`,
+/// `stalled`, `timed_out`, `spawn_failed` — are all recognised by
+/// [`crate::ui::screens::driver::TerminalState::from_label`], so no render
+/// change is needed. A fresh word would reach disk, match nothing on the way
+/// back, and paint as `Unrecorded`: an absence of evidence rendered as a fact.
+///
+/// The mapping is deliberately narrow. Only the two supervisor breaches and the
+/// capability refusal are re-labelled, because only those three describe a child
+/// that actually launched. Everything else genuinely means the agent never ran,
+/// and widening the mapping past them would leave `spawn_failed` meaning
+/// nothing.
+fn spawn_failure_label(err: &SpawnError) -> &'static str {
+    match err {
+        // A refusal on either arm of the startup handshake: the child launched
+        // and announced itself, and the gate turned it away.
+        SpawnError::Capability(_) => "capability_refused",
+        // The child launched and went silent. The stuck detector doing its job
+        // is not a launch failure.
+        SpawnError::StalledBeforeInit { .. } => "stalled",
+        // The child launched and outlived the run's wall-clock budget while
+        // still in startup. "Too long" and "went silent" are never collapsed
+        // (D-13).
+        SpawnError::TimedOutBeforeInit { .. } => "timed_out",
+        // The honest remainder: a missing binary, an unusable root, a pipe or
+        // pid that was not there after spawn, an unencodable command, or a
+        // stream that ended without the child ever announcing itself.
+        SpawnError::ProjectRootUnusable { .. }
+        | SpawnError::Launch { .. }
+        | SpawnError::PipeUnavailable { .. }
+        | SpawnError::PidUnavailable
+        | SpawnError::InitNeverObserved
+        | SpawnError::EncodeCommand { .. } => "spawn_failed",
+    }
+}
+
+/// The closed, driver-authored vocabulary a spawn failure journals.
+///
+/// A fixed identifier and a fixed sentence per variant, so a later reader has
+/// something to grep for and the TUI has something safe to paint.
+///
+/// **Never the rendered error.** `CapabilityError` interpolates strings the CLI
+/// supplied — its reported version, its advertised capability names — and this
+/// journal is read back and painted in the TUI, so rendering the error here
+/// would carry CLI-authored bytes onto a surface this driver is responsible
+/// for. A closed vocabulary keeps that surface shut. Do not "simplify" this
+/// into a formatting call; the fidelity it appears to lose is fidelity that
+/// belongs in the typed error the caller already receives.
+fn spawn_failure_diagnostic(err: &SpawnError) -> (&'static str, &'static str) {
+    match err {
+        SpawnError::ProjectRootUnusable { .. } => (
+            "spawn_project_root_unusable",
+            "the drivable project's root was not an existing directory at spawn time",
+        ),
+        SpawnError::Launch { .. } => (
+            "spawn_launch_failed",
+            "the agent binary could not be launched: it is missing, not executable, \
+             or permission was denied",
+        ),
+        SpawnError::PipeUnavailable { .. } => (
+            "spawn_pipe_unavailable",
+            "a stdio pipe was not present after spawn, so the child was reaped between \
+             launch and take",
+        ),
+        SpawnError::PidUnavailable => (
+            "spawn_pid_unavailable",
+            "the child's pid was not readable after spawn, so no process group could be \
+             recorded and there would have been no teardown handle",
+        ),
+        SpawnError::Capability(_) => (
+            "spawn_capability_refused",
+            "the agent's first system/init failed the capability gate and the run was \
+             refused at start time",
+        ),
+        // The sentence the `Display` impl already carries, restated here as a
+        // driver-authored constant rather than borrowed from it. Until now this
+        // string existed nowhere on disk at all.
+        SpawnError::InitNeverObserved => (
+            "spawn_init_never_observed",
+            "the process stream ended before any system/init event was observed",
+        ),
+        SpawnError::StalledBeforeInit { .. } => (
+            "spawn_stalled_before_init",
+            "the agent emitted nothing until the idle cap expired while startup was \
+             still waiting for its system/init; this is a stall, not a launch failure",
+        ),
+        SpawnError::TimedOutBeforeInit { .. } => (
+            "spawn_timed_out_before_init",
+            "the run's wall-clock cap expired while startup was still waiting for the \
+             agent's system/init",
+        ),
+        SpawnError::EncodeCommand { .. } => (
+            "spawn_command_unencodable",
+            "the command could not be encoded as an outbound NDJSON user message",
+        ),
     }
 }
 
@@ -2994,13 +3098,46 @@ pub async fn execute_run(
         let mut handle = match started {
             Ok(handle) => handle,
             Err(err) => {
+                // The reason, journaled BEFORE the ending, exactly as the
+                // terminate-shutdown site does it (260908-uqq). Until now this
+                // arm wrote a terminal record and nothing else, so *why* the
+                // run ended existed nowhere a later reader could find it: the
+                // typed error goes back to `main`, whose `eprintln!` lands on
+                // the `/dev/null` the driver was detached onto, and the tracing
+                // log is ERROR-only with `RUST_LOG` unset. **The journal is the
+                // only sink that survives.**
+                //
+                // Code and detail come from the closed driver-authored
+                // vocabulary and never from the error's rendering — see
+                // `spawn_failure_diagnostic`.
+                let (code, detail) = spawn_failure_diagnostic(&err);
+                if let Err(journal_err) = run.journal.record(&JournalEvent::Diagnostic {
+                    code: code.to_string(),
+                    detail: detail.to_string(),
+                }) {
+                    // The error KIND only, never a message body (T-17-05). A
+                    // journal that cannot take the diagnostic must still be
+                    // given the chance to take the terminal record, which is
+                    // the more important of the two.
+                    tracing::warn!(
+                        kind = ?journal_err.kind(),
+                        "could not journal the spawn-failure diagnostic",
+                    );
+                }
+
                 // A run that started always has a terminal record, even when the
                 // thing it was started for never launched (T-17-06) — and that
                 // record names the consultations the run spent, because a
                 // goal-driven run was decomposed before the spawn was even
                 // attempted (WR-02).
+                //
+                // The label is DERIVED from the failure rather than hard-coded:
+                // a supervisor bound that expired while startup was still parked
+                // on the gate is a stall or a timeout, and calling it
+                // `spawn_failed` reports fifteen minutes of silence with the one
+                // word that means "the binary would not launch".
                 if let Err(journal_err) =
-                    finish_run(&mut run.journal, "spawn_failed", budget.used())
+                    finish_run(&mut run.journal, spawn_failure_label(&err), budget.used())
                 {
                     tracing::warn!(
                         detail = %format!("{journal_err:#}"),
@@ -4740,6 +4877,163 @@ mod tests {
         );
         assert_eq!(record.outcome.as_deref(), Some("spawn_failed"));
         drop(dir);
+    }
+
+    #[test]
+    fn a_spawn_failure_puts_its_reason_on_disk_before_the_ending() {
+        let (dir, mut journal) =
+            started_run_with_cap("2026-08-20T00-00-00Z-spawndiag", 4);
+        let journal_path = journal.paths().journal.clone();
+
+        // The two calls the spawn-failure arm makes, in the arm's own order.
+        // The arm itself is inline in `execute_run`'s iteration loop and
+        // reaching it needs a spawn that fails; that it calls these — rather
+        // than `finish` directly — is proved over the source by
+        // `tests/spawn_seam_guard.rs`. Exercised here is what lands on disk.
+        let err = SpawnError::InitNeverObserved;
+        let (code, detail) = spawn_failure_diagnostic(&err);
+        journal
+            .record(&JournalEvent::Diagnostic {
+                code: code.to_string(),
+                detail: detail.to_string(),
+            })
+            .expect("the diagnostic is recorded");
+        finish_run(&mut journal, spawn_failure_label(&err), 0).expect("the run finishes");
+
+        let body = std::fs::read_to_string(&journal_path).expect("the journal is on disk");
+        let diagnostic_at = body
+            .lines()
+            .position(|line| line.contains("spawn_init_never_observed"))
+            .expect(
+                "the reason must be ON DISK. The typed error goes back to `main`, whose \
+                 stderr is the /dev/null the driver was detached onto, and the tracing log \
+                 is ERROR-only with RUST_LOG unset — the journal is the only sink that \
+                 survives (260908-uqq)",
+            );
+        let ended_at = body
+            .lines()
+            .position(|line| line.contains("run_ended"))
+            .expect("the terminal record must be on disk too");
+        assert!(
+            diagnostic_at < ended_at,
+            "the reason is journaled BEFORE the ending, so a reader that reads the \
+             journal in order sees why before it sees that. diagnostic at line \
+             {diagnostic_at}, ending at line {ended_at}"
+        );
+        assert!(
+            body.contains("the process stream ended before any system/init event was observed"),
+            "this exact sentence existed nowhere on disk before; the whole point of the \
+             record is that it now does. Journal: {body}"
+        );
+        drop(dir);
+    }
+
+    #[test]
+    fn a_pre_gate_stall_is_labelled_stalled_and_never_spawn_failed() {
+        use crate::error::{CapabilityError, SpawnError};
+
+        // The defect this pins (260908-uqq): a run whose gate was answered by a
+        // supervisor bound expiring is a STALL — the child launched, it was
+        // alive, it just never said anything — and it was reported with the one
+        // word that means "the binary would not launch". Fifteen minutes of
+        // silence and a missing executable read identically on disk and in the
+        // TUI.
+        assert_eq!(
+            spawn_failure_label(&SpawnError::StalledBeforeInit {
+                idle_for: Duration::from_secs(900),
+            }),
+            "stalled",
+            "an idle breach that fired before the gate was answered is the stuck \
+             detector doing its job, not a launch failure"
+        );
+        assert_eq!(
+            spawn_failure_label(&SpawnError::TimedOutBeforeInit {
+                after: Duration::from_secs(14_400),
+            }),
+            "timed_out",
+            "a wall-clock breach and an idle breach mean different things to a user \
+             and are never collapsed (D-13)"
+        );
+        assert_eq!(
+            spawn_failure_label(&SpawnError::Capability(CapabilityError::VersionBelowFloor {
+                observed: "2.1.100".to_string(),
+                floor: "2.1.214".to_string(),
+            })),
+            "capability_refused",
+            "a refusal is a refusal on both arms of the startup handshake; it is never \
+             a spawn failure"
+        );
+
+        // The fallback, asserted rather than assumed. Every variant that really
+        // does mean "the agent never launched" keeps the original word.
+        for (name, err) in [
+            (
+                "InitNeverObserved",
+                SpawnError::InitNeverObserved,
+            ),
+            (
+                "PidUnavailable",
+                SpawnError::PidUnavailable,
+            ),
+            (
+                "PipeUnavailable",
+                SpawnError::PipeUnavailable { pipe: "stdin" },
+            ),
+            (
+                "ProjectRootUnusable",
+                SpawnError::ProjectRootUnusable {
+                    root: PathBuf::from("/nonexistent"),
+                },
+            ),
+            (
+                "Launch",
+                SpawnError::Launch {
+                    program: "claude".to_string(),
+                    source: std::io::Error::from(std::io::ErrorKind::NotFound),
+                },
+            ),
+        ] {
+            assert_eq!(
+                spawn_failure_label(&err),
+                "spawn_failed",
+                "{name} genuinely means the agent never launched, so it keeps the \
+                 original word — widening the mapping past the two supervisor \
+                 breaches and the refusal would make `spawn_failed` mean nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn every_label_the_spawn_failure_mapping_emits_is_one_the_render_layer_reads() {
+        use crate::error::{CapabilityError, SpawnError};
+        use crate::ui::screens::driver::TerminalState;
+
+        // The mapping invents no vocabulary. A new word would reach disk, be
+        // read back by the TUI's terminal-state table, match nothing, and paint
+        // as `Unrecorded` — an absence of evidence rendered as a fact, which is
+        // the CR-05 defect in a new place.
+        for err in [
+            SpawnError::StalledBeforeInit {
+                idle_for: Duration::from_secs(900),
+            },
+            SpawnError::TimedOutBeforeInit {
+                after: Duration::from_secs(14_400),
+            },
+            SpawnError::Capability(CapabilityError::VersionBelowFloor {
+                observed: "2.1.100".to_string(),
+                floor: "2.1.214".to_string(),
+            }),
+            SpawnError::InitNeverObserved,
+        ] {
+            let label = spawn_failure_label(&err);
+            assert_ne!(
+                TerminalState::from_label(Some(label)),
+                TerminalState::Unrecorded,
+                "the render layer does not recognise {label:?}, so this label would \
+                 paint as `Unrecorded` and the reason would be lost exactly where a \
+                 user looks for it"
+            );
+        }
     }
 
     #[test]

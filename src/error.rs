@@ -24,6 +24,7 @@
 
 use std::fmt;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Why a run could not be started.
 ///
@@ -87,7 +88,41 @@ pub enum SpawnError {
     Capability(CapabilityError),
     /// stdout closed before any `system/init` arrived. Either the CLI died
     /// during startup or it is not speaking the `stream-json` protocol at all.
+    ///
+    /// **This is the "the stream ENDED" case only.** A supervisor bound
+    /// expiring while the stream was still open is one of the two variants
+    /// below, and collapsing all three into this one is what let a
+    /// fifteen-minute stall be reported as a launch failure (260908-uqq).
     InitNeverObserved,
+    /// A supervisor **idle** bound expired while `start` was still parked on
+    /// the capability gate: the child was launched, it is (or was) alive, and
+    /// it simply never said anything.
+    ///
+    /// This is a *stall*, not a launch failure, and the distinction is the
+    /// whole reason the variant exists. The reproduced 2.1.266 deadlock spent
+    /// 900.068 seconds here — `ExecutionOptions::default().idle_cap` to the
+    /// millisecond — and was reported with the one word that means "the binary
+    /// would not launch".
+    ///
+    /// The supervisor computes the equivalent `RunOutcome::Stalled` and sends
+    /// it on its outcome channel, but that channel lives in an
+    /// `ExecutionHandle` this path never returns, so the gate channel is the
+    /// only surface a caller has and it has to carry the same fact.
+    StalledBeforeInit {
+        /// The idle cap that was breached.
+        idle_for: Duration,
+    },
+    /// A supervisor **wall-clock** bound expired while `start` was still parked
+    /// on the capability gate.
+    ///
+    /// Kept apart from [`Self::StalledBeforeInit`] on exactly the grounds the
+    /// supervisor already separates its two breaches: "went silent" and "took
+    /// too long" have different remedies, and a caller that cannot tell them
+    /// apart cannot suggest either one.
+    TimedOutBeforeInit {
+        /// The wall-clock cap that was breached.
+        after: Duration,
+    },
     /// The command could not be encoded as an outbound NDJSON user message.
     EncodeCommand {
         /// The underlying serialisation error.
@@ -114,6 +149,18 @@ impl fmt::Display for SpawnError {
             Self::InitNeverObserved => write!(
                 f,
                 "the process stream ended before any system/init event was observed"
+            ),
+            Self::StalledBeforeInit { idle_for } => write!(
+                f,
+                "the child emitted nothing for {} seconds while startup waited for its \
+                 system/init, so the run was stopped as stalled rather than launched",
+                idle_for.as_secs()
+            ),
+            Self::TimedOutBeforeInit { after } => write!(
+                f,
+                "the run's wall-clock cap of {} seconds expired while startup was still \
+                 waiting for the child's system/init",
+                after.as_secs()
             ),
             Self::EncodeCommand { source } => {
                 write!(f, "failed to encode the command as a user message: {source}")

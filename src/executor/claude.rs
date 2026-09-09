@@ -1493,9 +1493,33 @@ impl Coordinator {
         }
         drop(writer_tx);
 
-        // stdout closed without ever announcing itself.
+        // The loop ended with the gate still unanswered, so `start` is parked on
+        // it and this is the only thing that will ever release it.
+        //
+        // **Which error it gets is chosen from the breach this supervisor
+        // already classified, not flattened into one word (260908-uqq).** The
+        // supervisor does compute the right verdict — `RunOutcome::Stalled` or
+        // `RunOutcome::TimedOut` — and it sends it on `outcome_tx` a few lines
+        // below. But `outcome_tx`'s receiver lives in an `ExecutionHandle` that
+        // this path never returns: `start` failed, so the caller got an `Err`
+        // and no handle at all. The gate channel is therefore the caller's ONLY
+        // surface, and it has to carry the same fact the outcome channel does,
+        // or a fifteen-minute stall reaches the driver indistinguishable from a
+        // binary that would not launch — which is exactly how one was recorded
+        // as `spawn_failed` for 900.068 seconds.
+        //
+        // With no breach the original meaning is unchanged: stdout closed
+        // without the child ever announcing itself.
         if let Some(tx) = gate_tx.take() {
-            let _ = tx.send(Err(SpawnError::InitNeverObserved));
+            let _ = tx.send(Err(match breach {
+                Some(Breach::Idle) => SpawnError::StalledBeforeInit {
+                    idle_for: idle_cap,
+                },
+                Some(Breach::WallClock) => SpawnError::TimedOutBeforeInit {
+                    after: wall_clock_cap,
+                },
+                None => SpawnError::InitNeverObserved,
+            }));
         }
 
         // **An observed exit is not a reaped group.** `ProcessGroupChild::wait`
