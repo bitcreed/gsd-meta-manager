@@ -96,7 +96,8 @@ pub fn list_dir(dir: &Path) -> Vec<BrowserEntry> {
 ///
 /// - If the milestone is complete (`completed_phases >= total_phases > 0`),
 ///   return the `.planning/` root — there is no active phase to open into.
-/// - Otherwise, find the active phase (number = completed_phases + 1) and
+/// - Otherwise, find the active phase (`ProjectState::active_phase_number` —
+///   the disk-inferred frontier, falling back to `completed_phases + 1`) and
 ///   resolve its directory via `find_phase_dir`. If lookup fails, fall back
 ///   to the planning root.
 pub fn resolve_active_phase_dir(planning_dir: &Path, state: &ProjectState) -> PathBuf {
@@ -104,7 +105,7 @@ pub fn resolve_active_phase_dir(planning_dir: &Path, state: &ProjectState) -> Pa
         return planning_dir.to_path_buf();
     }
 
-    let active_num = state.completed_phases + 1;
+    let active_num = state.active_phase_number();
     let phase_number = state
         .phases
         .iter()

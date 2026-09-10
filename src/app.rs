@@ -389,11 +389,11 @@ pub fn format_phase_display(state: &ProjectState) -> String {
         }
         return "Complete".to_string();
     }
-    let phase_num = state.completed_phases + 1;
+    let phase_num = state.active_phase_number();
     let phase_name = state
         .phases
         .iter()
-        .find(|p| p.number == phase_num.to_string())
+        .find(|p| p.number.parse::<u32>() == Ok(phase_num))
         .map(|p| p.name.as_str())
         .unwrap_or("Unknown");
     format!("P{}: {}", phase_num, phase_name)

@@ -11,6 +11,10 @@ const CONNECTOR_HEIGHT: u16 = 2;
 
 pub struct RoadmapWidget<'a> {
     pub phases: &'a [RoadmapPhase],
+    /// Which phase to mark `*`. Callers pass
+    /// [`crate::state_reader::ProjectState::active_phase_number`] — the
+    /// disk-inferred frontier — rather than `completed_phases + 1`, which
+    /// tracks the roadmap's completion count and lags behind the disk.
     pub current_phase_num: u32,
     pub scroll_offset: u16,
 }

@@ -257,7 +257,11 @@ pub fn suggest_next_commands(state: &super::ProjectState) -> Vec<String> {
 /// fallback path when smart-entry is unavailable.
 fn keyword_suggestions(state: &super::ProjectState) -> Vec<String> {
     let status_lower = state.status.to_lowercase();
-    let next_phase = state.completed_phases + 1;
+    // The phase these commands should target is the one that is actually next
+    // on disk, not the one the roadmap's completion count implies — see
+    // `ProjectState::active_phase_number`. Suggesting `/gsd:plan-phase 3` for a
+    // project already executing phase 4 is worse than suggesting nothing.
+    let next_phase = state.active_phase_number();
 
     let mut suggestions = Vec::new();
 

@@ -839,3 +839,110 @@ fn the_quoted_state_version_no_longer_blanks_the_phase() {
     assert_eq!(state.current_phase, "Pixel over ADB");
     assert_eq!(state.current_phase_name, "Pixel over ADB");
 }
+
+// ============================================================================
+// The active phase is the disk frontier, not the roadmap's completion count
+// ============================================================================
+
+/// picsync's shape, reduced: the roadmap's `## Progress` table says 2 of 8
+/// complete while phase 4 is already planned on disk. `completed_phases + 1`
+/// answers 3; the frontier answers 4, and 4 is what STATE.md says too.
+#[test]
+fn the_active_phase_is_the_disk_frontier_not_the_completion_count() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path();
+
+    fs::write(
+        planning.join("ROADMAP.md"),
+        // The `## Progress` table shape GSD writes (copied from picsync's):
+        // phase 3 is "In Progress", so the table counts 2 complete — while
+        // phase 4 is already planned on disk.
+        "# Roadmap\n\n\
+         - [x] **Phase 1: Bootstrap** - one\n\
+         - [x] **Phase 2: Ingest** - two\n\
+         - [ ] **Phase 3: Vertical Slice** - three\n\
+         - [ ] **Phase 4: Pixel over ADB** - four\n\n\
+         ## Progress\n\n\
+         | Phase | Plans Complete | Status | Completed |\n\
+         |-------|----------------|--------|-----------|\n\
+         | 1. Bootstrap | 6/6 | Complete | 2026-09-09 |\n\
+         | 2. Ingest | 11/11 | Complete | 2026-09-09 |\n\
+         | 3. Vertical Slice | 7/7 | In Progress — awaiting live checks |  |\n\
+         | 4. Pixel over ADB | 0/TBD | Not started | - |\n",
+    )
+    .unwrap();
+
+    let phases = planning.join("phases");
+    // Phases 1-3 executed (plan + summary each), phase 4 planned only.
+    for n in ["01", "02", "03"] {
+        let dir = phases.join(format!("{}-done", n));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{}-01-PLAN.md", n)), "# Plan").unwrap();
+        fs::write(dir.join(format!("{}-01-SUMMARY.md", n)), "# Summary").unwrap();
+    }
+    let p4 = phases.join("04-pixel-over-adb");
+    fs::create_dir_all(&p4).unwrap();
+    fs::write(p4.join("04-01-PLAN.md"), "# Plan").unwrap();
+
+    let state = parse_project_state(planning);
+
+    // The stale count that used to drive every label.
+    assert_eq!(state.completed_phases, 2);
+    // What the disk actually says.
+    assert_eq!(
+        state.current_phase_number,
+        Some(4),
+        "phase 4 is planned but not executed — it is the frontier"
+    );
+    assert_eq!(state.active_phase_number(), 4);
+}
+
+/// Without a parsable roadmap there is no frontier to prefer, so the old
+/// arithmetic is still the answer.
+#[test]
+fn without_roadmap_phases_the_active_phase_falls_back_to_the_count() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(
+        tmp.path().join("STATE.md"),
+        "---\ngsd_state_version: \"1.0\"\nstatus: executing\nprogress:\n  total_phases: 5\n  completed_phases: 2\n---\n",
+    )
+    .unwrap();
+    let state = parse_project_state(tmp.path());
+    assert_eq!(state.current_phase_number, None);
+    assert_eq!(state.active_phase_number(), 3);
+}
+
+/// STATE.md's own `current_phase` outranks the disk frontier. GSD writes and
+/// advances that number deliberately; the frontier is an inference standing in
+/// for it when it is missing.
+#[test]
+fn state_md_phase_number_outranks_the_disk_frontier() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path();
+    fs::write(
+        planning.join("STATE.md"),
+        "---\ngsd_state_version: \"1.0\"\nstatus: verifying\ncurrent_phase: 2\n---\n",
+    )
+    .unwrap();
+    fs::write(
+        planning.join("ROADMAP.md"),
+        "# Roadmap\n\n\
+         - [x] **Phase 1: One** - a\n\
+         - [ ] **Phase 2: Two** - b\n\
+         - [ ] **Phase 3: Three** - c\n",
+    )
+    .unwrap();
+    // Phases 1 and 2 executed on disk, so the frontier is 3 — but phase 2 is
+    // still being verified, which is exactly what STATE.md says.
+    let phases = planning.join("phases");
+    for n in ["01", "02"] {
+        let dir = phases.join(format!("{}-x", n));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{}-01-PLAN.md", n)), "# Plan").unwrap();
+        fs::write(dir.join(format!("{}-01-SUMMARY.md", n)), "# Summary").unwrap();
+    }
+    let state = parse_project_state(planning);
+    assert_eq!(state.current_phase_number, Some(3), "the disk frontier");
+    assert_eq!(state.state_md_phase_number, Some(2));
+    assert_eq!(state.active_phase_number(), 2, "STATE.md wins");
+}

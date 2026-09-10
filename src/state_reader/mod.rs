@@ -38,6 +38,27 @@ pub struct ProjectState {
     /// The threshold is implementation and not verification, deliberately — see
     /// the comment at the assignment site in [`parse_project_state`] (WR-04).
     pub current_phase_status: Option<disk_status::DiskInference>,
+    /// The phase NUMBER that [`Self::current_phase_status`] describes.
+    ///
+    /// `DiskInference` carries what a phase's directory looks like but not
+    /// which phase it is, so the frontier the loop already finds was
+    /// unusable as an answer to "which phase is active?" — every caller
+    /// re-derived that from `completed_phases + 1` instead, off a count taken
+    /// from ROADMAP's `## Progress` table. That count lags: picsync's table
+    /// said 2 complete while its phase 4 was already planned on disk, so the
+    /// dashboard said P3 and the disk scanner, correctly, said 4.
+    ///
+    /// `None` only when the roadmap has no phases, or its phase numbers do not
+    /// parse as integers.
+    pub current_phase_number: Option<u32>,
+    /// The numeric `current_phase` STATE.md declares, when it declares one.
+    ///
+    /// Kept separately from [`Self::current_phase`], which resolves to a
+    /// human-readable *label* and so loses the number as soon as GSD also
+    /// writes a `current_phase_name`. This is the authoritative answer to
+    /// "which phase is active" — GSD advances it deliberately — and
+    /// [`Self::active_phase_number`] prefers it over any inference.
+    pub state_md_phase_number: Option<u32>,
     /// Whether the project has a non-empty HANDOFF.md or HANDOFF.json in .planning/
     pub paused: bool,
     /// Extracted context from HANDOFF file (next_action from JSON, or first content line from MD)
@@ -77,6 +98,33 @@ pub struct ProjectState {
     pub state_md_unreadable: bool,
     /// Why the frontmatter could not be read, when [`Self::state_md_unreadable`].
     pub state_md_error: Option<String>,
+}
+
+impl ProjectState {
+    /// The phase number to treat as active — the phase a label names, a
+    /// roadmap highlights, a suggested command targets, and a browser opens
+    /// into.
+    ///
+    /// Three sources, in descending order of authority:
+    ///
+    /// 1. **STATE.md's `current_phase`.** GSD writes it and advances it; it is
+    ///    a statement, not an inference. It is also the source that was being
+    ///    thrown away — the whole reason this method exists.
+    /// 2. **The disk frontier** ([`Self::current_phase_number`]) — the first
+    ///    phase in `.planning/phases/` whose implementation is unfinished.
+    /// 3. **`completed_phases + 1`**, only when neither of the above can
+    ///    answer (no STATE.md phase, no parsable roadmap phases).
+    ///
+    /// The arithmetic is last for a reason: the count comes from ROADMAP's
+    /// `## Progress` table, which records what has been *marked* complete.
+    /// picsync's said 2 complete of 8 while phase 4 was already planned, so
+    /// the arithmetic produced P3 for a project whose STATE.md and whose phase
+    /// directories both said 4.
+    pub fn active_phase_number(&self) -> u32 {
+        self.state_md_phase_number
+            .or(self.current_phase_number)
+            .unwrap_or(self.completed_phases + 1)
+    }
 }
 
 /// Detect HANDOFF.md or HANDOFF.json in a planning directory.
@@ -166,6 +214,12 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
             state.completed_plans = fm.progress.completed_plans;
 
             // ADR-2207 frontmatter keys (empty when absent).
+            // The NUMBER is kept before `current_phase` is resolved to a label,
+            // because that resolution discards it whenever a name is present.
+            state.state_md_phase_number = fm
+                .current_phase
+                .as_deref()
+                .and_then(|p| p.trim().parse::<u32>().ok());
             state.current_phase_name = fm.current_phase_name.clone().unwrap_or_default();
             state.current_plan = fm.current_plan.clone().unwrap_or_default();
 
@@ -234,6 +288,7 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
 
     // Run disk inference for each phase
     let mut current_phase_inference: Option<disk_status::DiskInference> = None;
+    let mut current_phase_number: Option<u32> = None;
     for phase in &state.phases {
         let inference = disk_status::infer_phase_status(planning_dir, &phase.number);
         // Track the first phase whose IMPLEMENTATION is not finished as the
@@ -265,6 +320,7 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
         if current_phase_inference.is_none() && inference.status < disk_status::DiskStatus::Executed
         {
             current_phase_inference = Some(inference.clone());
+            current_phase_number = phase.number.parse::<u32>().ok();
         }
         state
             .phase_disk_statuses
@@ -276,9 +332,11 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
     if current_phase_inference.is_none() && !state.phases.is_empty() {
         if let Some(last) = state.phases.last() {
             current_phase_inference = state.phase_disk_statuses.get(&last.number).cloned();
+            current_phase_number = last.number.parse::<u32>().ok();
         }
     }
     state.current_phase_status = current_phase_inference;
+    state.current_phase_number = current_phase_number;
 
     // Count backlog items
     state.backlog_count = count_backlog_items(planning_dir);

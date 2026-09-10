@@ -3221,12 +3221,15 @@ impl DetailScreen {
             if state.phases.is_empty() {
                 lines.push(Line::from("  No roadmap data available"));
             } else {
-                let current_phase_num = (state.completed_phases + 1).to_string();
+                // The disk-inferred frontier, not `completed_phases + 1` — see
+                // `ProjectState::active_phase_number`. Compared as a NUMBER so a
+                // zero-padded roadmap entry (`04`) still matches.
+                let current_phase_num = state.active_phase_number();
 
                 for phase in &state.phases {
                     let (icon, is_current) = if phase.completed {
                         ("+", false)
-                    } else if phase.number == current_phase_num {
+                    } else if phase.number.parse::<u32>() == Ok(current_phase_num) {
                         ("*", true)
                     } else {
                         ("o", false)
@@ -3405,7 +3408,7 @@ impl DetailScreen {
             let header_paragraph = Paragraph::new(header_lines).block(header_block);
             frame.render_widget(header_paragraph, header_area);
 
-            let current_phase_num = state.completed_phases + 1;
+            let current_phase_num = state.active_phase_number();
             // Clamp roadmap scroll — estimate content height from phase count
             let phase_block_h: u16 = 5; // BOX_HEIGHT(3) + connector(1) + spacing(1)
             let total_content = if state.phases.is_empty() {
