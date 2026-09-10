@@ -3,7 +3,7 @@ use gsd_meta_manager::state_reader::roadmap_md::parse_roadmap_phases;
 use gsd_meta_manager::state_reader::state_md::{
     extract_frontmatter, parse_state_md, FrontmatterFault, StateVersion,
 };
-use gsd_meta_manager::state_reader::{count_backlog_items, parse_project_state};
+use gsd_meta_manager::state_reader::{count_backlog_items, parse_project_state, PhaseMarker};
 use std::fs;
 use tempfile::TempDir;
 
@@ -948,4 +948,242 @@ fn state_md_phase_number_outranks_the_disk_frontier() {
     assert_eq!(state.current_phase_number, Some(3), "the disk frontier");
     assert_eq!(state.state_md_phase_number, Some(2));
     assert_eq!(state.active_phase_number(), 2, "STATE.md wins");
+}
+
+// ============================================================================
+// The per-phase marker is that phase's own disk evidence
+// ============================================================================
+
+/// Build picsync's exact shape: a phase that is COMPLETE on disk (plans,
+/// matching summaries, a passing `*-VERIFICATION.md`) while ROADMAP's `## Phases`
+/// checkbox is still `- [ ]` and its `## Progress` Status cell says something
+/// other than the literal `Complete`/`Done` the counter matches.
+fn picsync_shaped_planning_dir() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path();
+
+    fs::write(
+        planning.join("STATE.md"),
+        "---\ngsd_state_version: \"1.0\"\nstatus: executing\ncurrent_phase: 4\n---\n",
+    )
+    .unwrap();
+
+    fs::write(
+        planning.join("ROADMAP.md"),
+        "# Roadmap\n\n\
+         - [x] **Phase 1: Bootstrap** - one\n\
+         - [x] **Phase 2: Ingest** - two\n\
+         - [ ] **Phase 3: Vertical Slice** - three\n\
+         - [ ] **Phase 4: Pixel over ADB** - four\n\
+         - [ ] **Phase 5: iPhone over AFC** - five\n\n\
+         ## Progress\n\n\
+         | Phase | Plans Complete | Status | Completed |\n\
+         |-------|----------------|--------|-----------|\n\
+         | 1. Bootstrap | 6/6 | Complete | 2026-09-09 |\n\
+         | 2. Ingest | 11/11 | Complete | 2026-09-09 |\n\
+         | 3. Vertical Slice | 7/7 | In Progress — verified, awaiting 2 live checks |  |\n\
+         | 4. Pixel over ADB | 0/TBD | Not started | - |\n\
+         | 5. iPhone over AFC | 0/TBD | Not started | - |\n",
+    )
+    .unwrap();
+
+    let phases = planning.join("phases");
+    // Phases 1-3: implementation done AND verification passed => Complete.
+    for n in ["01", "02", "03"] {
+        let dir = phases.join(format!("{}-done", n));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{}-01-PLAN.md", n)), "# Plan").unwrap();
+        fs::write(dir.join(format!("{}-01-SUMMARY.md", n)), "# Summary").unwrap();
+        fs::write(
+            dir.join(format!("{}-VERIFICATION.md", n)),
+            "---\nstatus: passed\n---\n# Verification\n",
+        )
+        .unwrap();
+    }
+    // Phase 4: plans written, nothing executed.
+    let p4 = phases.join("04-pixel-over-adb");
+    fs::create_dir_all(&p4).unwrap();
+    fs::write(p4.join("04-01-PLAN.md"), "# Plan").unwrap();
+    // Phase 5: no directory at all.
+
+    tmp
+}
+
+/// The regression this test exists for: with `active_phase_number()` correctly
+/// reporting 4, phase 3 matched neither "done" (its checkbox is unchecked and
+/// the count that used to stand in for done says 2) nor "current", and rendered
+/// as `o` — *future* — for a phase with a passing verification on disk.
+#[test]
+fn a_phase_complete_on_disk_but_unchecked_in_the_roadmap_reads_done() {
+    let tmp = picsync_shaped_planning_dir();
+    let state = parse_project_state(tmp.path());
+
+    // The two unreliable inputs, unchanged: the count still says 2, and phase
+    // 3's checkbox is still unchecked. The marker must not depend on either.
+    assert_eq!(state.completed_phases, 2, "the ## Progress table still says 2");
+    let phase3 = state
+        .phases
+        .iter()
+        .find(|p| p.number == "3")
+        .expect("phase 3 parsed from the roadmap");
+    assert!(!phase3.completed, "phase 3's `- [ ]` checkbox is still stale");
+
+    assert_eq!(state.active_phase_number(), 4);
+    assert_eq!(
+        state.phase_marker(phase3),
+        PhaseMarker::Done,
+        "phase 3 is Complete on disk with verification passed"
+    );
+    assert_eq!(phase3_glyph(&state), "+");
+}
+
+fn phase3_glyph(state: &gsd_meta_manager::state_reader::ProjectState) -> &'static str {
+    state
+        .phases
+        .iter()
+        .find(|p| p.number == "3")
+        .map(|p| state.phase_marker(p).glyph())
+        .unwrap()
+}
+
+/// Every phase in picsync's shape, so a fix that only moves phase 3 and breaks
+/// its neighbours cannot pass.
+#[test]
+fn each_phase_marker_follows_that_phases_own_disk_status() {
+    let tmp = picsync_shaped_planning_dir();
+    let state = parse_project_state(tmp.path());
+
+    let marker_of = |n: &str| {
+        let p = state.phases.iter().find(|p| p.number == n).unwrap();
+        state.phase_marker(p)
+    };
+
+    assert_eq!(marker_of("1"), PhaseMarker::Done, "complete on disk");
+    assert_eq!(marker_of("2"), PhaseMarker::Done, "complete on disk");
+    assert_eq!(marker_of("3"), PhaseMarker::Done, "complete on disk");
+    assert_eq!(marker_of("4"), PhaseMarker::Current, "planned, and active");
+    assert_eq!(marker_of("5"), PhaseMarker::Future, "no directory yet");
+}
+
+/// A phase whose implementation is finished but whose verification has not
+/// passed is behind the frontier, so it reads `+` — the same threshold
+/// `parse_project_state` uses to place the frontier, not a second one. The
+/// verification nuance is carried by the Detail screen's `[Executed]` badge.
+#[test]
+fn an_executed_but_unverified_phase_is_behind_the_frontier_and_reads_done() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path();
+    fs::write(
+        planning.join("ROADMAP.md"),
+        "# Roadmap\n\n\
+         - [ ] **Phase 1: One** - a\n\
+         - [ ] **Phase 2: Two** - b\n",
+    )
+    .unwrap();
+    let phases = planning.join("phases");
+    let p1 = phases.join("01-one");
+    fs::create_dir_all(&p1).unwrap();
+    fs::write(p1.join("01-01-PLAN.md"), "# Plan").unwrap();
+    fs::write(p1.join("01-01-SUMMARY.md"), "# Summary").unwrap();
+    let p2 = phases.join("02-two");
+    fs::create_dir_all(&p2).unwrap();
+    fs::write(p2.join("02-01-PLAN.md"), "# Plan").unwrap();
+
+    let state = parse_project_state(planning);
+    let marker_of = |n: &str| {
+        let p = state.phases.iter().find(|p| p.number == n).unwrap();
+        state.phase_marker(p)
+    };
+    assert_eq!(state.active_phase_number(), 2);
+    assert_eq!(marker_of("1"), PhaseMarker::Done);
+    assert_eq!(marker_of("2"), PhaseMarker::Current);
+}
+
+/// The degrade path: no disk scan reached this phase at all, so the roadmap's
+/// own bookkeeping is what is left. It must still produce a marker — the
+/// pre-`PhaseMarker` answer — rather than declaring every phase unfinished.
+#[test]
+fn without_disk_inference_the_marker_falls_back_to_the_roadmap_checkbox() {
+    use std::collections::HashMap;
+    let empty = HashMap::new();
+
+    assert_eq!(
+        PhaseMarker::decide("1", true, &empty, 3),
+        PhaseMarker::Done,
+        "checked box, nothing on disk to contradict it"
+    );
+    assert_eq!(
+        PhaseMarker::decide("3", false, &empty, 3),
+        PhaseMarker::Current
+    );
+    assert_eq!(
+        PhaseMarker::decide("7", false, &empty, 3),
+        PhaseMarker::Future
+    );
+    // Zero-padded roadmap entries still match a bare active number.
+    assert_eq!(
+        PhaseMarker::decide("04", false, &empty, 4),
+        PhaseMarker::Current
+    );
+}
+
+/// Current outranks done. This repository's own phase 19 is `Executed` with
+/// verification `human_needed` and is what STATE.md names as current: under the
+/// opposite order the roadmap would draw `+` there and carry no `*` at all —
+/// the glyph a human scans for, missing from the screen that exists to show it.
+#[test]
+fn the_active_phase_keeps_the_current_glyph_even_when_it_is_finished() {
+    use gsd_meta_manager::state_reader::disk_status::{DiskInference, DiskStatus};
+    use std::collections::HashMap;
+
+    let mut disk = HashMap::new();
+    disk.insert(
+        "19".to_string(),
+        DiskInference {
+            status: DiskStatus::Executed,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        PhaseMarker::decide("19", false, &disk, 19),
+        PhaseMarker::Current,
+        "implementation done, verification awaiting a human, and named as current"
+    );
+
+    // Same order with the checkbox as the only witness.
+    let empty = HashMap::new();
+    assert_eq!(
+        PhaseMarker::decide("5", true, &empty, 5),
+        PhaseMarker::Current
+    );
+}
+
+/// This repository's own shape: STATE.md names phase 19 while phases 20 and 21
+/// are further along on disk. 20 and 21 used to draw `o` — *future* — because
+/// their roadmap checkboxes are unchecked and they are not the current phase.
+#[test]
+fn phases_past_the_named_current_one_read_done_not_future() {
+    use gsd_meta_manager::state_reader::disk_status::{DiskInference, DiskStatus};
+    use std::collections::HashMap;
+
+    let mut disk = HashMap::new();
+    for (n, s) in [
+        ("19", DiskStatus::Executed),
+        ("20", DiskStatus::Complete),
+        ("21", DiskStatus::Executed),
+        ("22", DiskStatus::NoDirectory),
+    ] {
+        disk.insert(
+            n.to_string(),
+            DiskInference {
+                status: s,
+                ..Default::default()
+            },
+        );
+    }
+
+    assert_eq!(PhaseMarker::decide("19", false, &disk, 19), PhaseMarker::Current);
+    assert_eq!(PhaseMarker::decide("20", false, &disk, 19), PhaseMarker::Done);
+    assert_eq!(PhaseMarker::decide("21", false, &disk, 19), PhaseMarker::Done);
+    assert_eq!(PhaseMarker::decide("22", false, &disk, 19), PhaseMarker::Future);
 }

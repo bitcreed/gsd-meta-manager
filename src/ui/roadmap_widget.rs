@@ -1,8 +1,11 @@
+use crate::state_reader::disk_status::DiskInference;
 use crate::state_reader::roadmap_md::RoadmapPhase;
+use crate::state_reader::PhaseMarker;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
+use std::collections::HashMap;
 
 /// Height of each phase box (top border + content + bottom border).
 const BOX_HEIGHT: u16 = 3;
@@ -16,6 +19,14 @@ pub struct RoadmapWidget<'a> {
     /// disk-inferred frontier — rather than `completed_phases + 1`, which
     /// tracks the roadmap's completion count and lags behind the disk.
     pub current_phase_num: u32,
+    /// Per-phase disk inference, keyed exactly as `RoadmapPhase::number` is
+    /// written — [`crate::state_reader::ProjectState::phase_disk_statuses`].
+    ///
+    /// This is what decides `+` (see [`PhaseMarker`]). Pass an empty map only
+    /// when there genuinely is no scan: every phase then falls back to its
+    /// ROADMAP checkbox, which is the pre-`PhaseMarker` behaviour and the
+    /// degraded-but-sensible answer, not a wrong one.
+    pub disk_statuses: &'a HashMap<String, DiskInference>,
     pub scroll_offset: u16,
 }
 
@@ -25,29 +36,23 @@ impl<'a> RoadmapWidget<'a> {
         BOX_HEIGHT + CONNECTOR_HEIGHT
     }
 
-    fn is_current(&self, phase: &RoadmapPhase) -> bool {
-        phase.number.parse::<u32>().unwrap_or(0) == self.current_phase_num
+    /// The one marker decision, shared with the Detail screen's Phases list.
+    fn marker(&self, phase: &RoadmapPhase) -> PhaseMarker {
+        PhaseMarker::decide(
+            &phase.number,
+            phase.completed,
+            self.disk_statuses,
+            self.current_phase_num,
+        )
     }
 
-    fn phase_icon(phase: &RoadmapPhase, is_current: bool) -> &'static str {
-        if phase.completed {
-            "+"
-        } else if is_current {
-            "*"
-        } else {
-            "o"
-        }
-    }
-
-    fn phase_style(phase: &RoadmapPhase, is_current: bool) -> Style {
-        if is_current {
-            Style::default()
+    fn phase_style(marker: PhaseMarker) -> Style {
+        match marker {
+            PhaseMarker::Current => Style::default()
                 .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else if phase.completed {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default()
+                .add_modifier(Modifier::BOLD),
+            PhaseMarker::Done => Style::default().fg(Color::DarkGray),
+            PhaseMarker::Future => Style::default(),
         }
     }
 }
@@ -78,8 +83,9 @@ impl<'a> Widget for RoadmapWidget<'a> {
         let mut y_logical: u16 = 0; // logical y (before scroll)
 
         for (i, phase) in self.phases.iter().enumerate() {
-            let is_current = self.is_current(phase);
-            let style = Self::phase_style(phase, is_current);
+            let marker = self.marker(phase);
+            let is_current = marker == PhaseMarker::Current;
+            let style = Self::phase_style(marker);
 
             // Top border chars
             let (tl, horiz, tr, bl, br, vert) = if is_current {
@@ -112,7 +118,7 @@ impl<'a> Widget for RoadmapWidget<'a> {
 
             // --- Content line ---
             if let Some(screen_y) = self.screen_y(y_logical, scroll_skip, area) {
-                let icon = Self::phase_icon(phase, is_current);
+                let icon = marker.glyph();
                 let plan_display = if phase.total_plans == 0 {
                     "0/?".to_string()
                 } else {
@@ -120,7 +126,7 @@ impl<'a> Widget for RoadmapWidget<'a> {
                 };
 
                 // The identity split at this site (CR-01): `phase.number` is
-                // COMPARED raw by `is_current_phase` above and only READ here,
+                // COMPARED raw by `Self::marker` above and only READ here,
                 // and `phase.name` is only ever read. Both come out of the
                 // project's `.planning/ROADMAP.md`, which is third-party text
                 // under SAFE-07, so both are escaped on their way to a cell.
@@ -243,5 +249,113 @@ impl<'a> RoadmapWidget<'a> {
             return None;
         }
         Some(screen_y)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state_reader::disk_status::DiskStatus;
+
+    fn phase(number: &str, name: &str, completed: bool) -> RoadmapPhase {
+        RoadmapPhase {
+            number: number.to_string(),
+            name: name.to_string(),
+            description: String::new(),
+            completed,
+            total_plans: 7,
+            completed_plans: 7,
+            depends_on: Vec::new(),
+        }
+    }
+
+    fn inference(status: DiskStatus) -> DiskInference {
+        DiskInference {
+            status,
+            ..Default::default()
+        }
+    }
+
+    /// The glyph column, read off the rendered cells rather than off the
+    /// decision that produced them. Returns one entry per content line, in
+    /// order.
+    fn glyph_column(buf: &Buffer, area: Rect) -> Vec<char> {
+        let mut out = Vec::new();
+        for y in area.y..area.y + area.height {
+            let row: String = (area.x..area.x + area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<Vec<_>>()
+                .concat();
+            // A content line is the one carrying `P<number>:`.
+            if let Some(i) = row.find(" P") {
+                if row[i + 2..].starts_with(|c: char| c.is_ascii_digit()) {
+                    // The glyph sits immediately before the leading space.
+                    if let Some(g) = row[..i].chars().next_back() {
+                        out.push(g);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// picsync's shape, rendered: phase 3 is `Complete` on disk while its
+    /// ROADMAP checkbox is a stale `- [ ]`, and the active phase is 4. Before
+    /// the marker moved onto disk inference this drew `o` for phase 3 — the
+    /// *future* glyph, for a phase with a passing verification behind it.
+    #[test]
+    fn a_phase_complete_on_disk_draws_the_done_glyph_not_the_future_one() {
+        let phases = [
+            phase("1", "Bootstrap", true),
+            phase("2", "Ingest", true),
+            phase("3", "Vertical Slice", false),
+            phase("4", "Pixel over ADB", false),
+            phase("5", "iPhone over AFC", false),
+        ];
+        let mut disk = HashMap::new();
+        disk.insert("1".to_string(), inference(DiskStatus::Complete));
+        disk.insert("2".to_string(), inference(DiskStatus::Complete));
+        disk.insert("3".to_string(), inference(DiskStatus::Complete));
+        disk.insert("4".to_string(), inference(DiskStatus::Planned));
+        disk.insert("5".to_string(), inference(DiskStatus::NoDirectory));
+
+        let area = Rect::new(0, 0, 60, 30);
+        let mut buf = Buffer::empty(area);
+        RoadmapWidget {
+            phases: &phases,
+            current_phase_num: 4,
+            disk_statuses: &disk,
+            scroll_offset: 0,
+        }
+        .render(area, &mut buf);
+
+        assert_eq!(
+            glyph_column(&buf, area),
+            vec!['+', '+', '+', '*', 'o'],
+            "phase 3 is done on disk; phase 4 is current; phase 5 has no directory"
+        );
+    }
+
+    /// With no scan at all, the ROADMAP checkboxes still drive the glyphs.
+    #[test]
+    fn without_disk_inference_the_checkboxes_still_draw_the_glyphs() {
+        let phases = [
+            phase("1", "Bootstrap", true),
+            phase("2", "Ingest", false),
+            phase("3", "Vertical Slice", false),
+        ];
+        let disk = HashMap::new();
+
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        RoadmapWidget {
+            phases: &phases,
+            current_phase_num: 2,
+            disk_statuses: &disk,
+            scroll_offset: 0,
+        }
+        .render(area, &mut buf);
+
+        assert_eq!(glyph_column(&buf, area), vec!['+', '*', 'o']);
     }
 }

@@ -131,6 +131,119 @@ impl ProjectState {
             .or(self.current_phase_number)
             .unwrap_or(self.completed_phases + 1)
     }
+
+    /// The marker one roadmap entry earns — see [`PhaseMarker`] for why the
+    /// two questions behind it must be answered from these two sources and no
+    /// others.
+    pub fn phase_marker(&self, phase: &roadmap_md::RoadmapPhase) -> PhaseMarker {
+        PhaseMarker::decide(
+            &phase.number,
+            phase.completed,
+            &self.phase_disk_statuses,
+            self.active_phase_number(),
+        )
+    }
+}
+
+/// What a phase's row says about itself: behind you, under way, or ahead.
+///
+/// **One decision, two call sites** ([`crate::ui::roadmap_widget`] and the
+/// Detail screen's Phases list). Both used to inline the same three arms over
+/// the same two inputs, and the inputs disagreed:
+///
+/// - "is this phase current?" moved onto [`ProjectState::active_phase_number`]
+///   (the STATE.md → disk-frontier → arithmetic ladder), while
+/// - "is this phase done?" stayed on `RoadmapPhase::completed`, the literal
+///   `- [x]` checkbox in ROADMAP's `## Phases` list.
+///
+/// picsync's phase 3 is `Complete` on disk with verification `Passed`, and its
+/// checkbox is a stale `- [ ]`. Once "current" advanced to phase 4, phase 3
+/// matched neither arm and rendered as `o` — *future* — for a phase with seven
+/// PLAN/SUMMARY pairs and a passing `03-VERIFICATION.md` behind it. The `*` it
+/// showed before was not correctness; it was the arithmetic being wrong in a
+/// direction that happened to look right.
+///
+/// So "done" now comes from the same place "current" does — the disk — and the
+/// roadmap's own bookkeeping is the fallback for a phase the disk cannot speak
+/// to at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhaseMarker {
+    /// Implementation is behind this phase. Rendered `+`.
+    Done,
+    /// The phase [`ProjectState::active_phase_number`] names. Rendered `*`.
+    Current,
+    /// Not started, or at least not finished and not current. Rendered `o`.
+    Future,
+}
+
+impl PhaseMarker {
+    /// The ASCII glyph, matching the Detail screen's legend
+    /// (`+ done  * current  o future`).
+    pub fn glyph(self) -> &'static str {
+        match self {
+            PhaseMarker::Done => "+",
+            PhaseMarker::Current => "*",
+            PhaseMarker::Future => "o",
+        }
+    }
+
+    /// Decide one phase's marker from that phase's own evidence.
+    ///
+    /// **Current outranks done**, which inverts what both call sites used to
+    /// do — and it has to, now that "done" reads the disk. This repository's
+    /// own phase 19 is `Executed`/`HumanNeeded`: implementation finished,
+    /// verification waiting on a human, and STATE.md names it as the current
+    /// phase. Under the old "done first" order it would draw `+` and the
+    /// roadmap would carry no `*` at all — the one glyph a human scans for,
+    /// missing from the one screen that exists to show where work is. A phase
+    /// that is both finished and named as current is where the work is; it
+    /// says so.
+    ///
+    /// The cost is the shipped-milestone case: when every phase is
+    /// implemented, [`ProjectState::active_phase_number`] resolves to the last
+    /// one, which then draws `*` rather than `+`. That is the convention the
+    /// rest of the app already follows — [`parse_project_state`] deliberately
+    /// reports the last phase's inference as the current-phase status in
+    /// exactly that situation — and the dashboard reads milestone completion
+    /// from `completed_phases >= total_phases`, not from this glyph.
+    ///
+    /// **`>= Executed` is the done threshold, not `== Complete`.** It is the
+    /// same threshold [`parse_project_state`] uses to place the frontier — the
+    /// frontier is the first phase *below* `Executed`, so every phase at or
+    /// above it is by construction behind the frontier. Two thresholds over one
+    /// ordering is how this bug happened; there is now one. The verification
+    /// nuance that separates `Executed` from `Complete` is not lost: the Detail
+    /// screen's `[Executed]` badge says it in words, right beside this glyph,
+    /// and `+` never meant "verified" — the `- [x]` it replaces is written on
+    /// execution.
+    ///
+    /// **A phase with no directory falls back to the checkbox**, rather than
+    /// being declared unfinished. `DiskStatus::NoDirectory` is the absence of
+    /// evidence, not evidence of absence; a roadmap that says a phase shipped
+    /// is the only witness left for a phase whose artifacts were archived
+    /// somewhere this scanner does not look.
+    pub fn decide(
+        phase_number: &str,
+        roadmap_completed: bool,
+        disk_statuses: &HashMap<String, disk_status::DiskInference>,
+        active_phase_number: u32,
+    ) -> PhaseMarker {
+        // Numeric comparison, so a zero-padded roadmap entry (`04`) matches
+        // phase 4 — the same parse `active_phase_number`'s own sources use.
+        if phase_number.parse::<u32>() == Ok(active_phase_number) {
+            return PhaseMarker::Current;
+        }
+        let done = match disk_statuses.get(phase_number) {
+            Some(inf) if inf.status != disk_status::DiskStatus::NoDirectory => {
+                inf.status >= disk_status::DiskStatus::Executed
+            }
+            _ => roadmap_completed,
+        };
+        if done {
+            return PhaseMarker::Done;
+        }
+        PhaseMarker::Future
+    }
 }
 
 /// Detect HANDOFF.md or HANDOFF.json in a planning directory.

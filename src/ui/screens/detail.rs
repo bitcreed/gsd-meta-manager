@@ -11,7 +11,7 @@ use crate::change_tracker::ChangeTracker;
 use crate::state_reader::disk_status::{DiskInference, DiskStatus};
 use crate::state_reader::git_ops;
 use crate::state_reader::queue_md;
-use crate::state_reader::{self, backlog};
+use crate::state_reader::{self, backlog, PhaseMarker};
 use crate::text::Untrusted;
 use crate::ui::roadmap_widget::RoadmapWidget;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -3222,19 +3222,14 @@ impl DetailScreen {
             if state.phases.is_empty() {
                 lines.push(Line::from("  No roadmap data available"));
             } else {
-                // The disk-inferred frontier, not `completed_phases + 1` — see
-                // `ProjectState::active_phase_number`. Compared as a NUMBER so a
-                // zero-padded roadmap entry (`04`) still matches.
-                let current_phase_num = state.active_phase_number();
-
                 for phase in &state.phases {
-                    let (icon, is_current) = if phase.completed {
-                        ("+", false)
-                    } else if phase.number.parse::<u32>() == Ok(current_phase_num) {
-                        ("*", true)
-                    } else {
-                        ("o", false)
-                    };
+                    // One decision, shared with the Roadmap tab's widget: `+`
+                    // from this phase's OWN disk inference, `*` from
+                    // `active_phase_number`, the ROADMAP checkbox only as the
+                    // fallback for a phase with no directory. See `PhaseMarker`.
+                    let marker = state.phase_marker(phase);
+                    let icon = marker.glyph();
+                    let is_current = marker == PhaseMarker::Current;
 
                     let plan_display = if phase.total_plans == 0 {
                         "0/? plans".to_string()
@@ -3246,9 +3241,9 @@ impl DetailScreen {
                     let badge_spans =
                         disk_suffix_spans(&phase.number, &state.phase_disk_statuses, show_badges);
 
-                    // `phase.number` above is COMPARED raw against
-                    // `current_phase_num` and looked up raw in
-                    // `phase_disk_statuses`; here it is read by a human.
+                    // `phase.number` above is COMPARED raw against the active
+                    // phase number and looked up raw in `phase_disk_statuses`;
+                    // here it is read by a human.
                     let line_text = format!(
                         "  {} P{}: {}  {}",
                         icon,
@@ -3266,7 +3261,7 @@ impl DetailScreen {
                         )];
                         spans.extend(badge_spans);
                         lines.push(Line::from(spans));
-                    } else if phase.completed {
+                    } else if marker == PhaseMarker::Done {
                         let mut spans = vec![Span::styled(
                             line_text,
                             Style::default().fg(Color::DarkGray),
@@ -3429,6 +3424,7 @@ impl DetailScreen {
             let roadmap_widget = RoadmapWidget {
                 phases: &state.phases,
                 current_phase_num,
+                disk_statuses: &state.phase_disk_statuses,
                 scroll_offset: clamped_offset,
             };
             frame.render_widget(roadmap_widget, roadmap_area);

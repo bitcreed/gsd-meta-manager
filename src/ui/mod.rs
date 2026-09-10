@@ -830,9 +830,11 @@ mod tests {
             let area = Rect::new(0, 0, 60, 8);
             let mut buffer = Buffer::empty(area);
             let phases = [phase(name, number)];
+            let disk_statuses = std::collections::HashMap::new();
             super::roadmap_widget::RoadmapWidget {
                 phases: &phases,
                 current_phase_num: 21,
+                disk_statuses: &disk_statuses,
                 scroll_offset: 0,
             }
             .render(area, &mut buffer);
