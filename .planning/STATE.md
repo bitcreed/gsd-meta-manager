@@ -1,15 +1,15 @@
 ---
-gsd_state_version: 1.0
+gsd_state_version: "1.0"
 milestone: v2.0
 milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
 stopped_at: Completed 19-33-PLAN.md
-last_updated: "2026-09-05T02:35:17.104Z"
-last_activity: 2026-08-29
+last_updated: "2026-09-10T02:35:05.863Z"
+last_activity: 2026-09-08
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: 0f66086b06515d2f18b22df4e66f4399c69dbb98
+state_head: ae76ce98b0b6ecd90cb48efa68cb624b8d4e3c57
 progress:
   total_phases: 10
   completed_phases: 6
@@ -64,11 +64,7 @@ Status: Phase complete — ready for verification
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-09-08 — Completed quick task 260908-w0d: opening a session from the TUI now
-tries the running tmux server first when `$TMUX` is set, and only falls through to a GUI terminal
-that is DISCOVERED from the desktop's default-terminal association rather than guessed from a
-hardcoded candidate list. The launch order is a pure function (`terminal_switch::plan_launch`) over
-injected probes, so the reported environment is pinned as a test row.
+Last activity: 2026-09-09 - Completed quick task 260909-s0n: for each config option provide some help text that explains the option and the choices.
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -399,6 +395,7 @@ Recent decisions affecting current work:
 | 260828-15f | Round-scope round-13 finding ids in `21-REVIEW.md` (`R13-` prefix) so no bare id collides with a historical phase-21 finding | 2026-08-28 | 2e44f57 | [260828-15f](./quick/260828-15f-disambiguate-round-13-finding-ids-in-pha/) |
 | 260908-uqq | Fix the CLI 2.1.266 startup deadlock — release the prompt on a `prompt_release_grace` instead of waiting forever for a `system/init` that arrives only after stdin; stop labelling a pre-gate stall `spawn_failed`; put the terminal reason in `journal.jsonl`. The D-06 zero-token refusal claim is now scoped to the eager arm only, corrected at 13 sites | 2026-09-08 | 114de68, 2fb6592 | [260908-uqq](./quick/260908-uqq-fix-driver-startup-deadlock-on-cli-2-1-2/) |
 | 260908-w0d | Open sessions where the user actually is: inside tmux both launch sites now open a new window on the running server, and the GUI fallback discovers the desktop's real default terminal (`xdg-terminal-exec` → `x-terminal-emulator` → candidate list) instead of taking the first hardcoded name that happens to be installed. `$TERMINAL` demoted below tmux (D-01). Separator table extended with the measured `ptyxis`/`xdg-terminal-exec` → `--` and `x-terminal-emulator` → `-e` rows; all three source-derived pins updated to keep guarding, and pin 3's previously vacuous assertion replaced | 2026-09-08 | 46318ea, 05b3592, aa457c2 | [260908-w0d](./quick/260908-w0d-prefer-tmux-for-opening-sessions-discove/) |
+| 260909-s0n | for each config option provide some help text that explains the option and the choices. | 2026-09-09 | ae76ce9 | [260909-s0n-for-each-config-option-provide-some-help](./quick/260909-s0n-for-each-config-option-provide-some-help/) |
 
 ## Session Continuity
 
