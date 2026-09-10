@@ -6725,6 +6725,159 @@ mod tests {
         );
     }
 
+    /// Draw ONLY the Defaults tab through a `TestBackend` and join the
+    /// resulting buffer's cell symbols, one line per terminal row — the same
+    /// shape as `render_escape_guard.rs`'s `render_into_probe_buffer`, mirrored
+    /// here rather than made public over there.
+    ///
+    /// The cache it builds is POPULATED (see [`populated_gsd_config`]). A probe
+    /// that leaves `defaults_config` as `None` paints "No config loaded" and
+    /// certifies the empty branch, which is why every caller below first
+    /// asserts that a known option KEY reached a cell.
+    fn render_defaults_to_text(width: u16, height: u16, selected: usize) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut ctx = test_ctx();
+        {
+            let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+            cache.defaults_config = Some(populated_gsd_config());
+            cache.defaults_selected = selected;
+        }
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
+        terminal
+            .draw(|frame| screen.render_defaults_tab(frame, frame.area(), &ctx))
+            .expect("draw the Defaults tab");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| {
+                        buffer
+                            .cell((x, y))
+                            .map(|cell| cell.symbol())
+                            .unwrap_or(" ")
+                            .to_string()
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Collapse every run of whitespace to one space.
+    ///
+    /// The pane wraps with `Wrap { trim: true }`, so a summary that runs past
+    /// the pane's width arrives in the buffer split across two rows with the
+    /// space at the break replaced by a row boundary. Comparing squeezed text
+    /// asserts the SENTENCE reached the terminal without also asserting where
+    /// it happened to break.
+    fn squeeze_ws(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn the_help_pane_renders_the_selected_entrys_summary() {
+        let entries = all_config_entries();
+        let first_summary = squeeze_ws(entries[0].help.summary);
+        let model_idx = entries
+            .iter()
+            .position(|e| e.key == "model_profile")
+            .expect("model_profile is one of the Defaults tab's options");
+        let model_summary = squeeze_ws(entries[model_idx].help.summary);
+
+        let at_first = squeeze_ws(&render_defaults_to_text(120, 40, 0));
+        assert!(
+            at_first.contains(entries[0].key),
+            "the fixture is not populated — the tab painted its empty state, so nothing below \
+             this line is about the help pane"
+        );
+        assert!(
+            at_first.contains(&first_summary),
+            "the pane did not draw entry 0's summary: {first_summary:?}"
+        );
+
+        let at_model = squeeze_ws(&render_defaults_to_text(120, 40, model_idx));
+        assert!(
+            at_model.contains("model_profile"),
+            "the fixture is not populated at the model_profile cursor"
+        );
+        assert!(
+            at_model.contains(&model_summary),
+            "the pane did not draw model_profile's summary: {model_summary:?}"
+        );
+        // The control. Without it this test passes on a pane that draws entry
+        // 0's summary forever and never follows the cursor.
+        assert!(
+            !at_model.contains(&first_summary),
+            "entry 0's summary is still on screen with the cursor on model_profile — the pane \
+             does not follow the selection"
+        );
+    }
+
+    #[test]
+    fn a_short_area_keeps_the_option_list() {
+        let entries = all_config_entries();
+        let first_summary = squeeze_ws(entries[0].help.summary);
+
+        let short = render_defaults_to_text(120, 10, 0);
+        let row = short
+            .lines()
+            .find(|line| line.contains(entries[0].key))
+            .expect("below the ID-04 floor the option list keeps the whole area");
+        assert!(
+            row.contains(&entries[0].value),
+            "the option row lost its value: {row:?}"
+        );
+        assert!(
+            !squeeze_ws(&short).contains(&first_summary),
+            "the help pane was drawn below the ID-04 floor, taking rows the list needs"
+        );
+
+        // Nothing panics at any height down to 3, on either side of the floor.
+        for height in 3..=HELP_PANE_FLOOR + 2 {
+            let _ = render_defaults_to_text(120, height, 0);
+        }
+    }
+
+    #[test]
+    fn every_summary_is_within_the_pane_budget_and_is_not_a_restatement_of_the_key() {
+        use std::collections::HashSet;
+
+        for entry in &all_config_entries() {
+            let summary = entry.help.summary;
+            assert!(
+                summary.chars().count() <= 160,
+                "`{}` has a {}-character summary; a paragraph in a TUI footer reads as noise",
+                entry.key,
+                summary.chars().count()
+            );
+
+            let key_tokens: HashSet<String> = entry
+                .key
+                .split(['.', '_'])
+                .map(|token| token.to_ascii_lowercase())
+                .collect();
+            let novel_words = summary
+                .split_whitespace()
+                .map(|word| {
+                    word.trim_matches(|c: char| !c.is_alphanumeric())
+                        .to_ascii_lowercase()
+                })
+                .filter(|word| !word.is_empty() && !key_tokens.contains(word))
+                .count();
+            assert!(
+                novel_words >= 4,
+                "`{}` says only {novel_words} words its own key does not already say ({summary:?}) \
+                 — a summary that re-spells the key teaches nothing",
+                entry.key
+            );
+        }
+    }
+
     #[test]
     fn test_parse_waves_manifest_two_waves() {
         let raw = r#"{
