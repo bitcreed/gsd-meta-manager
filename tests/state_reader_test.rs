@@ -784,3 +784,58 @@ fn the_current_phase_status_is_the_first_unexecuted_phase_not_the_first_unverifi
          pinned to its first executed phase forever"
     );
 }
+
+// ============================================================================
+// An unreadable STATE.md must not look like an absent one
+// ============================================================================
+
+/// The failure mode that let the quoted-`gsd_state_version` bug ship unnoticed:
+/// a STATE.md that exists but cannot be read produced byte-identical
+/// `ProjectState` to a project that has none, so nothing downstream could tell
+/// a guess from a fact.
+#[test]
+fn an_unparseable_state_md_is_distinguishable_from_an_absent_one() {
+    let absent = TempDir::new().unwrap();
+    fs::write(
+        absent.path().join("ROADMAP.md"),
+        "# Roadmap\n\n### Phase 1: Foundation\n",
+    )
+    .unwrap();
+    let absent_state = parse_project_state(absent.path());
+    assert!(!absent_state.state_md_unreadable);
+    assert!(absent_state.state_md_error.is_none());
+
+    let broken = TempDir::new().unwrap();
+    // A frontmatter block that is genuinely not a mapping.
+    fs::write(
+        broken.path().join("STATE.md"),
+        "---\n- one\n- two\n---\n# State\n",
+    )
+    .unwrap();
+    fs::write(
+        broken.path().join("ROADMAP.md"),
+        "# Roadmap\n\n### Phase 1: Foundation\n",
+    )
+    .unwrap();
+    let broken_state = parse_project_state(broken.path());
+    assert!(broken_state.state_md_unreadable);
+    assert!(broken_state.state_md_error.is_some());
+}
+
+/// A STATE.md carrying the quoted version GSD writes must yield its phase, not
+/// a flag. This is the whole bug, asserted end-to-end through the real reader.
+#[test]
+fn the_quoted_state_version_no_longer_blanks_the_phase() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(
+        tmp.path().join("STATE.md"),
+        "---\ngsd_state_version: \"1.0\"\ncurrent_phase: 4\ncurrent_phase_name: Pixel over ADB\n\
+         status: executing\nprogress:\n  total_phases: 8\n  completed_phases: 1\n---\n# State\n",
+    )
+    .unwrap();
+    let state = parse_project_state(tmp.path());
+    assert!(!state.state_md_unreadable);
+    assert_eq!(state.status, "executing");
+    assert_eq!(state.current_phase, "Pixel over ADB");
+    assert_eq!(state.current_phase_name, "Pixel over ADB");
+}

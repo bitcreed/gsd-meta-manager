@@ -78,6 +78,29 @@ fn shown(value: &str) -> String {
     crate::text::render_for_terminal(value).to_string()
 }
 
+/// The banner shown when `.planning/STATE.md` exists but its frontmatter could
+/// not be read.
+///
+/// Every value this screen takes from STATE.md — status, milestone, phase — is
+/// silently defaulted when the read fails, so without this line the screen
+/// renders defaults as if they were the project's real state. It follows the
+/// `Paused:` banner's shape deliberately: same position, same one-line form,
+/// only the colour says this one is a fault rather than a condition.
+fn unreadable_state_line(state: &state_reader::ProjectState) -> Option<Line<'static>> {
+    if !state.state_md_unreadable {
+        return None;
+    }
+    let detail = state
+        .state_md_error
+        .as_deref()
+        .map(|e| format!("  STATE.md unreadable: {}", shown(e)))
+        .unwrap_or_else(|| "  STATE.md unreadable".to_string());
+    Some(Line::from(Span::styled(
+        detail,
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+    )))
+}
+
 /// How many CHARACTERS of a session id the Sessions tab and the resume toast
 /// show.
 const SESSION_ID_DISPLAY_CHARS: usize = 8;
@@ -3148,6 +3171,10 @@ impl DetailScreen {
                 Span::raw(shown(&state.milestone)),
             ]));
 
+            if let Some(line) = unreadable_state_line(state) {
+                lines.push(line);
+            }
+
             if state.paused {
                 let pause_line = if let Some(ref ctx_text) = state.pause_context {
                     Line::from(vec![
@@ -3324,6 +3351,10 @@ impl DetailScreen {
                 Span::styled("Milestone: ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(shown(&state.milestone)),
             ]));
+
+            if let Some(line) = unreadable_state_line(state) {
+                header_lines.push(line);
+            }
 
             if state.paused {
                 let pause_line = if let Some(ref ctx_text) = state.pause_context {

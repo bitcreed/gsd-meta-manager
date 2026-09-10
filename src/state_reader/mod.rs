@@ -65,6 +65,18 @@ pub struct ProjectState {
     /// Empty for flat projects. Bounded to one level: a workstream's own
     /// sub-state carries an empty `workstreams` vec (recursion guard below).
     pub workstreams: Vec<workstreams::WorkstreamState>,
+    /// `STATE.md` exists on disk but its frontmatter could not be read.
+    ///
+    /// **Distinct from "no STATE.md" on purpose.** Every field this reader
+    /// takes from STATE.md is defaulted when the read fails, so an unreadable
+    /// file and an absent one produce byte-identical state — and the dashboard
+    /// then prints a confident, count-derived, wrong phase for a project whose
+    /// real phase it simply could not read. A `warn!` to a log file nobody
+    /// opens is what let that ship for every registered project at once; this
+    /// flag is what lets the render path say so instead.
+    pub state_md_unreadable: bool,
+    /// Why the frontmatter could not be read, when [`Self::state_md_unreadable`].
+    pub state_md_error: Option<String>,
 }
 
 /// Detect HANDOFF.md or HANDOFF.json in a planning directory.
@@ -135,7 +147,14 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
     // Parse STATE.md
     let state_md_path = planning_dir.join("STATE.md");
     if let Ok(content) = std::fs::read_to_string(&state_md_path) {
-        if let Some(fm) = state_md::parse_state_md(&content) {
+        let outcome = state_md::read_frontmatter(&content);
+        if let state_md::FrontmatterOutcome::Unreadable(ref reason) = outcome {
+            // Recorded rather than swallowed: the render path shows it.
+            state.state_md_unreadable = true;
+            state.state_md_error = Some(reason.clone());
+        }
+        if let state_md::FrontmatterOutcome::Parsed(fm) = outcome {
+            let fm = *fm;
             state.status = if fm.status.is_empty() {
                 "unknown".to_string()
             } else {

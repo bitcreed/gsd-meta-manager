@@ -365,7 +365,19 @@ pub fn classify_status(status: &str) -> StatusCategory {
     }
 }
 
+/// The cell shown when STATE.md is present but its frontmatter is unreadable.
+///
+/// Deliberately not a phase. A wrong number that looks right is worse than an
+/// admission — this is the whole point of tracking `state_md_unreadable`
+/// separately from an absent STATE.md.
+pub const UNREADABLE_STATE_LABEL: &str = "! STATE.md unreadable";
+
 pub fn format_phase_display(state: &ProjectState) -> String {
+    // A phase label derived from counts while the file that names the phase is
+    // unreadable is a guess wearing a fact's clothes. Say so instead.
+    if state.state_md_unreadable {
+        return UNREADABLE_STATE_LABEL.to_string();
+    }
     // ADR-2207: an explicit `current_phase_name` from STATE.md frontmatter is
     // the most accurate label; prefer it over the count-derived fallback.
     if !state.current_phase_name.is_empty() {
@@ -2070,6 +2082,52 @@ impl App {
 mod tests {
     use super::*;
     use crate::state_reader::roadmap_md::RoadmapPhase;
+
+    #[test]
+    fn an_unreadable_state_md_is_admitted_not_guessed_around() {
+        // The exact shape the bug produced: STATE.md on disk, frontmatter lost,
+        // counts arriving from ROADMAP's Progress table. The old code printed a
+        // confident "P3: ..." here.
+        let state = ProjectState {
+            state_md_unreadable: true,
+            state_md_error: Some("frontmatter is a YAML sequence, not a mapping".to_string()),
+            completed_phases: 2,
+            total_phases: 8,
+            phases: vec![RoadmapPhase {
+                number: "3".to_string(),
+                name: "Vertical Slice".to_string(),
+                description: String::new(),
+                completed: false,
+                total_plans: 0,
+                completed_plans: 0,
+                depends_on: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(format_phase_display(&state), UNREADABLE_STATE_LABEL);
+    }
+
+    #[test]
+    fn an_absent_state_md_still_renders_a_phase() {
+        // Same defaulted fields, but nothing failed to be read — so the
+        // count-derived label is a legitimate inference, not a cover-up.
+        let state = ProjectState {
+            state_md_unreadable: false,
+            completed_phases: 2,
+            total_phases: 8,
+            phases: vec![RoadmapPhase {
+                number: "3".to_string(),
+                name: "Vertical Slice".to_string(),
+                description: String::new(),
+                completed: false,
+                total_plans: 0,
+                completed_plans: 0,
+                depends_on: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        assert_ne!(format_phase_display(&state), UNREADABLE_STATE_LABEL);
+    }
 
     #[test]
     fn test_format_phase_display_completed_milestone() {
