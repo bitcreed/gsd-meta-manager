@@ -4623,9 +4623,8 @@ impl DetailScreen {
                         let dropdown_idx =
                             cache.defaults_dropdown_selected.min(options.len() - 1);
                         let title = format!(" {} ", entry.key);
-                        let max_opt_width = options.iter().map(|s| s.len()).max().unwrap_or(0);
-                        let inner_w = max_opt_width.max(title.len() + 2).max(20) as u16;
-                        let popup_w = (inner_w + 4).min(area.width.saturating_sub(2));
+                        let popup_w =
+                            dropdown_popup_width(&options, &entry.help, &title, area.width);
                         let popup_h = (options.len() as u16 + 2).min(area.height.saturating_sub(2));
                         let popup_x =
                             area.x + (area.width.saturating_sub(popup_w)) / 2;
@@ -4654,11 +4653,29 @@ impl DetailScreen {
                                     Style::default().fg(Color::White)
                                 };
                                 let marker = if opt == &entry.value { "● " } else { "  " };
-                                ListItem::new(Line::from(vec![
+                                // Value FIRST, explanation after: the popup is
+                                // clamped to the area, so when the clamp bites
+                                // it is the explanation that gets cut and the
+                                // selectable value that survives.
+                                let mut spans = vec![
                                     Span::raw(marker),
                                     Span::raw(opt.clone()),
-                                ]))
-                                .style(style)
+                                ];
+                                // `&'static str` from `ConfigHelp`, never a
+                                // value out of the project's config.json
+                                // (T-S0N-01). An option with no recorded
+                                // explanation renders exactly as before.
+                                if let Some(explanation) = entry.help.explanation_for(opt) {
+                                    spans.push(Span::styled(
+                                        CHOICE_SEPARATOR,
+                                        Style::default().fg(Color::DarkGray),
+                                    ));
+                                    spans.push(Span::styled(
+                                        explanation,
+                                        Style::default().fg(Color::DarkGray),
+                                    ));
+                                }
+                                ListItem::new(Line::from(spans)).style(style)
                             })
                             .collect();
                         let popup = List::new(opt_items).block(
@@ -5293,6 +5310,16 @@ impl ConfigHelp {
     ) -> Self {
         Self { summary, choices }
     }
+
+    /// The recorded explanation for one value, or `None` when the value has
+    /// none — in which case the dropdown renders that option exactly as it did
+    /// before this help existed.
+    fn explanation_for(&self, value: &str) -> Option<&'static str> {
+        self.choices
+            .iter()
+            .find(|(v, _)| *v == value)
+            .map(|(_, explanation)| *explanation)
+    }
 }
 
 /// Rows the Defaults help pane occupies, INCLUDING its top border — one
@@ -5320,6 +5347,47 @@ const CHOICE_SEPARATOR: &str = " — ";
 
 /// Between two choices on the help pane's choice row.
 const CHOICE_DELIMITER: &str = "  ·  ";
+
+/// Width of the dropdown's current-value marker column (`"● "` / `"  "`).
+const DROPDOWN_MARKER_WIDTH: usize = 2;
+
+/// The Defaults dropdown popup's outer width, clamped to the content area.
+///
+/// A pure function so the clamp is drivable from a test at several area widths
+/// (T-S0N-02) instead of only through a render.
+///
+/// **Characters, not bytes** — the same correction the text-input popup
+/// already documents as IN-02. A byte-length measure over multi-byte
+/// explanation text sizes the popup two to four times wider than the text
+/// needs, and the `.min(area_width - 2)` clamp then bites at every width. The
+/// clamp is what keeps the popup inside the area; when it bites, the
+/// EXPLANATION is what gets cut rather than the value, which is why the
+/// drawing below puts the value first.
+fn dropdown_popup_width(
+    options: &[String],
+    help: &ConfigHelp,
+    title: &str,
+    area_width: u16,
+) -> u16 {
+    let max_opt_width = options
+        .iter()
+        .map(|opt| {
+            let base = DROPDOWN_MARKER_WIDTH + opt.chars().count();
+            match help.explanation_for(opt) {
+                Some(explanation) => {
+                    base + CHOICE_SEPARATOR.chars().count() + explanation.chars().count()
+                }
+                None => base,
+            }
+        })
+        .max()
+        .unwrap_or(0);
+    let inner_w = max_opt_width.max(title.chars().count() + 2).max(20);
+    let inner_w = u16::try_from(inner_w).unwrap_or(u16::MAX);
+    inner_w
+        .saturating_add(4)
+        .min(area_width.saturating_sub(2))
+}
 
 /// The pane under the Defaults list: the selected option's summary, and its
 /// choice explanations when it has any.
@@ -6392,12 +6460,125 @@ mod tests {
 
     // ── Defaults tab help (quick task 260909-s0n) ─────────────────────────
 
-    /// Every option the Defaults tab lists, built the way the tab builds them.
+    /// A `.planning/config.json` with EVERY key the Defaults tab reads set.
+    ///
+    /// **Populated, not `GsdConfig::default()`** — and the difference is not
+    /// cosmetic. Under an all-`None` config every layered option resolves to
+    /// `ConfigValueKind::Null`, so `dropdown_options` returns an empty list for
+    /// all but the three plain-`String` enums and a coverage assertion over
+    /// choices certifies nothing. That is the same trap the `val_span` comment
+    /// in `render_defaults_tab` records for the render probe, one layer up:
+    /// a fixture that forgets to populate passes having exercised the empty
+    /// branch. MEASURED here — the first version of
+    /// `every_choice_bearing_entry_documents_exactly_its_dropdown_options`
+    /// built from `GsdConfig::default()` and failed with
+    /// "`workflow.specless_probe_fallback` documents the choice "true", which
+    /// its dropdown cannot select (it offers [])".
+    ///
+    /// Going through `parse_gsd_config` rather than a struct literal means the
+    /// fixture is also a check that this build's serde shape still reads a
+    /// config written in GSD's own spelling — `_auto_chain_active`, the
+    /// shape-varying `security_asvs_level`, and the rest.
+    fn populated_gsd_config() -> crate::state_reader::config_json::GsdConfig {
+        let raw = r#"{
+            "mode": "yolo",
+            "granularity": "coarse",
+            "model_profile": "quality",
+            "commit_docs": true,
+            "parallelization": true,
+            "search_gitignored": false,
+            "brave_search": false,
+            "firecrawl": false,
+            "exa_search": true,
+            "project_code": "GMM",
+            "phase_naming": "sequential",
+            "phase_id_convention": "milestone-prefixed",
+            "claude_md_path": "./.claude/CLAUDE.md",
+            "response_language": "English",
+            "sub_repos": [],
+            "git": {
+                "branching_strategy": "phase",
+                "base_branch": "master",
+                "phase_branch_template": "gsd/phase-{phase}-{slug}",
+                "milestone_branch_template": "gsd/{milestone}-{slug}",
+                "quick_branch_template": "gsd/quick-{slug}"
+            },
+            "workflow": {
+                "research": true,
+                "plan_check": true,
+                "verifier": true,
+                "nyquist_validation": false,
+                "auto_advance": false,
+                "_auto_chain_active": false,
+                "node_repair": true,
+                "node_repair_budget": 2,
+                "ui_phase": true,
+                "ui_safety_gate": true,
+                "text_mode": false,
+                "research_before_questions": false,
+                "discuss_mode": "discuss",
+                "skip_discuss": false,
+                "use_worktrees": true,
+                "subagent_timeout": 300000,
+                "pattern_mapper": true,
+                "ai_integration_phase": true,
+                "tdd_mode": false,
+                "code_review": true,
+                "code_review_depth": "standard",
+                "code_review_command": "my-review-tool --review",
+                "ui_review": true,
+                "api_coverage_gate": true,
+                "windows_enforce": true,
+                "specless_probe_fallback": true,
+                "assumption_delta": true,
+                "test_gate_timeout": 600,
+                "context_guard_mode": "warn",
+                "plan_drift_precheck": true,
+                "plan_chunked": false,
+                "mvp_mode": false,
+                "security_asvs_level": 1,
+                "security_block_on": "high"
+            },
+            "hooks": { "context_warnings": true },
+            "intel": { "enabled": true },
+            "graphify": {
+                "enabled": true,
+                "build_timeout": 300,
+                "graph_path": ".planning/graphs"
+            },
+            "claude_orchestration": {
+                "enabled": false,
+                "execution_backend": "auto",
+                "min_agent_sdk_version": "0.3.149"
+            },
+            "statusline": {
+                "show_context_tokens": true,
+                "state_format": "compact",
+                "show_git": true
+            },
+            "dynamic_routing": {
+                "provider_escalation": false,
+                "max_escalations": 1
+            },
+            "review": { "reviewer_instances": {} },
+            "external_job": {
+                "submit_timeout_ms": 30000,
+                "poll_timeout_ms": 15000,
+                "artifact_dir": "Artifacts/jobs"
+            },
+            "capabilities": {
+                "strict_known_registries": false,
+                "auto_update": false
+            }
+        }"#;
+        crate::state_reader::config_json::parse_gsd_config(raw)
+            .expect("the populated Defaults fixture parses")
+    }
+
+    /// Every option the Defaults tab lists, built the way the tab builds them
+    /// from a config with nothing unset.
     fn all_config_entries() -> Vec<ConfigEntry> {
-        build_defaults_entries(
-            &crate::state_reader::config_json::GsdConfig::default(),
-            None,
-        )
+        build_defaults_entries(&populated_gsd_config(), None)
     }
 
     /// The number of `push` call sites in `build_defaults_entries`, MEASURED at
@@ -6424,6 +6605,124 @@ mod tests {
                 entry.help.summary
             );
         }
+    }
+
+    /// The link that keeps the list a human READS identical to the list the
+    /// editor OFFERS.
+    ///
+    /// A `choices` entry naming a value `dropdown_options` does not have would
+    /// document a choice nobody can pick — help that is worse than none,
+    /// because it reads as authoritative. For an `Enum` the two lists must be
+    /// equal AND in the same order, since the pane and the popup both present
+    /// them in that order.
+    ///
+    /// Proved fail-first by renaming `model_profile`'s `"budget"` choice to
+    /// `"cheap"`:
+    ///
+    /// ```text
+    /// assertion `left == right` failed: `model_profile` documents
+    /// ["quality", "balanced", "cheap", "adaptive", "inherit"] but its dropdown offers
+    /// ["quality", "balanced", "budget", "adaptive", "inherit"]
+    /// ```
+    #[test]
+    fn every_choice_bearing_entry_documents_exactly_its_dropdown_options() {
+        let entries = all_config_entries();
+        let mut enum_entries = 0usize;
+        let mut choice_bearing = 0usize;
+
+        for entry in &entries {
+            let offered = dropdown_options(&entry.kind);
+            let offered: Vec<&str> = offered.iter().map(String::as_str).collect();
+            let documented: Vec<&str> = entry.help.choices.iter().map(|(v, _)| *v).collect();
+
+            for (value, explanation) in entry.help.choices {
+                assert!(
+                    !explanation.trim().is_empty(),
+                    "`{}` documents the choice {value:?} with an empty explanation",
+                    entry.key
+                );
+            }
+
+            if matches!(entry.kind, ConfigValueKind::Enum(_)) {
+                enum_entries += 1;
+                assert_eq!(
+                    documented, offered,
+                    "`{}` documents {documented:?} but its dropdown offers {offered:?} — the list \
+                     a human READS must be the list the editor OFFERS",
+                    entry.key
+                );
+            } else {
+                for value in &documented {
+                    assert!(
+                        offered.contains(value),
+                        "`{}` documents the choice {value:?}, which its dropdown cannot select \
+                         (it offers {offered:?})",
+                        entry.key
+                    );
+                }
+            }
+
+            if !documented.is_empty() {
+                choice_bearing += 1;
+            }
+        }
+
+        assert_eq!(
+            enum_entries, 6,
+            "the Defaults tab's Enum-kinded option count changed; each one needs a per-value \
+             explanation"
+        );
+        // Without this the `else` branch above could be reached by nothing and
+        // the membership rule would be asserted of no entry at all.
+        assert!(
+            choice_bearing > enum_entries,
+            "no non-Enum option documents its choices, so the membership branch is vacuous"
+        );
+    }
+
+    /// T-S0N-02: widening the popup for explanation text must not let it
+    /// escape the content area, and must measure CHARACTERS rather than bytes.
+    ///
+    /// The lower bound is what makes this a control rather than a check a
+    /// `return 0` would satisfy: at a wide area the popup has to be wide enough
+    /// to actually hold the explanation the widening exists for.
+    #[test]
+    fn the_dropdown_popup_never_exceeds_the_area_width() {
+        let entries = all_config_entries();
+        let entry = entries
+            .iter()
+            .find(|e| e.key == "model_profile")
+            .expect("model_profile is one of the Defaults tab's options");
+        let options = dropdown_options(&entry.kind);
+        assert_eq!(options.len(), 5, "model_profile offers five values");
+        let title = format!(" {} ", entry.key);
+
+        for area_width in [40u16, 80, 200] {
+            let popup_w = dropdown_popup_width(&options, &entry.help, &title, area_width);
+            assert!(
+                popup_w <= area_width,
+                "at area width {area_width} the popup computed {popup_w}, which is wider than the \
+                 area it must sit inside"
+            );
+        }
+
+        let widest_row = entry
+            .help
+            .choices
+            .iter()
+            .map(|(value, explanation)| {
+                DROPDOWN_MARKER_WIDTH
+                    + value.chars().count()
+                    + CHOICE_SEPARATOR.chars().count()
+                    + explanation.chars().count()
+            })
+            .max()
+            .expect("model_profile documents its five choices");
+        assert!(
+            dropdown_popup_width(&options, &entry.help, &title, 200) as usize >= widest_row,
+            "at a 200-column area the popup must be wide enough for its widest explained option \
+             ({widest_row} characters)"
+        );
     }
 
     #[test]
