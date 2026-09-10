@@ -2090,7 +2090,7 @@ mod tests {
         // confident "P3: ..." here.
         let state = ProjectState {
             state_md_unreadable: true,
-            state_md_error: Some("frontmatter is a YAML sequence, not a mapping".to_string()),
+            state_md_fault: Some(crate::state_reader::state_md::FrontmatterFault::NotAMapping),
             completed_phases: 2,
             total_phases: 8,
             phases: vec![RoadmapPhase {

@@ -97,7 +97,13 @@ pub struct ProjectState {
     /// flag is what lets the render path say so instead.
     pub state_md_unreadable: bool,
     /// Why the frontmatter could not be read, when [`Self::state_md_unreadable`].
-    pub state_md_error: Option<String>,
+    ///
+    /// A classification this crate authored, never the parser's message — see
+    /// [`state_md::FrontmatterFault`]. Every `String` on this struct is
+    /// third-party text by construction (`src/driver/untrusted.rs` is the
+    /// census); a parser error quoting a foreign STATE.md would have been one
+    /// more, held for the sake of a line number.
+    pub state_md_fault: Option<state_md::FrontmatterFault>,
 }
 
 impl ProjectState {
@@ -196,10 +202,10 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
     let state_md_path = planning_dir.join("STATE.md");
     if let Ok(content) = std::fs::read_to_string(&state_md_path) {
         let outcome = state_md::read_frontmatter(&content);
-        if let state_md::FrontmatterOutcome::Unreadable(ref reason) = outcome {
+        if let state_md::FrontmatterOutcome::Unreadable(fault) = outcome {
             // Recorded rather than swallowed: the render path shows it.
             state.state_md_unreadable = true;
-            state.state_md_error = Some(reason.clone());
+            state.state_md_fault = Some(fault);
         }
         if let state_md::FrontmatterOutcome::Parsed(fm) = outcome {
             let fm = *fm;

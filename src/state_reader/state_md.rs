@@ -354,8 +354,43 @@ pub enum FrontmatterOutcome {
     /// No frontmatter block at all — the file does not open with `---`.
     Absent,
     /// A frontmatter block is present but could not be read as a YAML mapping.
-    /// Carries the reason, for the UI and the log to say the same thing.
-    Unreadable(String),
+    Unreadable(FrontmatterFault),
+}
+
+/// Why a present frontmatter block could not be read.
+///
+/// **A classification rather than the parser's message, deliberately.** A
+/// serde error quotes the document that produced it, and that document is
+/// third-party text (`src/driver/untrusted.rs` is the census of every such
+/// string this tool holds). Carrying it as a `String` on `ProjectState` would
+/// put unclassified third-party prose one field-access away from a model seam
+/// to buy a line number. The full parser message still goes to the log; what
+/// the UI carries is a fixed phrase this crate wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrontmatterFault {
+    /// Opened with `---` and never closed.
+    Unterminated,
+    /// Valid YAML, but a sequence or a bare scalar rather than a mapping.
+    NotAMapping,
+    /// Not valid YAML at all.
+    InvalidYaml,
+}
+
+impl FrontmatterFault {
+    /// A fixed, this-crate-authored description. Never third-party text.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::Unterminated => "frontmatter block is never closed by a `---` line",
+            Self::NotAMapping => "frontmatter is not a YAML mapping",
+            Self::InvalidYaml => "frontmatter is not valid YAML",
+        }
+    }
+}
+
+impl std::fmt::Display for FrontmatterFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(self.describe())
+    }
 }
 
 /// Read STATE.md content, distinguishing "no frontmatter" from "broken
@@ -378,17 +413,18 @@ pub fn read_frontmatter(content: &str) -> FrontmatterOutcome {
         return FrontmatterOutcome::Parsed(Box::default());
     }
     let Some(yaml) = extract_frontmatter(content) else {
-        let reason = "frontmatter block is not closed by a `---` line".to_string();
-        tracing::warn!("Unreadable STATE.md frontmatter: {}", reason);
-        return FrontmatterOutcome::Unreadable(reason);
+        let fault = FrontmatterFault::Unterminated;
+        tracing::warn!("Unreadable STATE.md frontmatter: {}", fault);
+        return FrontmatterOutcome::Unreadable(fault);
     };
 
     let value: Value = match serde_yml::from_str(yaml) {
         Ok(v) => v,
         Err(e) => {
-            let reason = e.to_string();
-            tracing::warn!("Unreadable STATE.md frontmatter: {}", reason);
-            return FrontmatterOutcome::Unreadable(reason);
+            // The parser's message quotes the document, so it goes to the log
+            // and stops there; the caller gets the classification.
+            tracing::warn!("Unreadable STATE.md frontmatter: {}", e);
+            return FrontmatterOutcome::Unreadable(FrontmatterFault::InvalidYaml);
         }
     };
 
@@ -396,19 +432,10 @@ pub fn read_frontmatter(content: &str) -> FrontmatterOutcome {
         // `---\n---` is an empty block, not a broken one.
         Value::Null => Mapping::new(),
         Value::Mapping(m) => m,
-        other => {
-            let reason = format!(
-                "frontmatter is a YAML {}, not a mapping",
-                match other {
-                    Value::Sequence(_) => "sequence",
-                    Value::String(_) => "string",
-                    Value::Number(_) => "number",
-                    Value::Bool(_) => "boolean",
-                    _ => "value",
-                }
-            );
-            tracing::warn!("Unreadable STATE.md frontmatter: {}", reason);
-            return FrontmatterOutcome::Unreadable(reason);
+        _ => {
+            let fault = FrontmatterFault::NotAMapping;
+            tracing::warn!("Unreadable STATE.md frontmatter: {}", fault);
+            return FrontmatterOutcome::Unreadable(fault);
         }
     };
 

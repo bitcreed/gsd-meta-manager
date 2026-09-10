@@ -90,11 +90,12 @@ fn unreadable_state_line(state: &state_reader::ProjectState) -> Option<Line<'sta
     if !state.state_md_unreadable {
         return None;
     }
-    let detail = state
-        .state_md_error
-        .as_deref()
-        .map(|e| format!("  STATE.md unreadable: {}", shown(e)))
-        .unwrap_or_else(|| "  STATE.md unreadable".to_string());
+    // `describe()` is a fixed phrase this crate wrote — it needs no escaping,
+    // and is not run through `shown` so that fact stays visible here.
+    let detail = match state.state_md_fault {
+        Some(fault) => format!("  STATE.md unreadable: {}", fault.describe()),
+        None => "  STATE.md unreadable".to_string(),
+    };
     Some(Line::from(Span::styled(
         detail,
         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),

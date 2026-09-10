@@ -1,7 +1,7 @@
 use gsd_meta_manager::state_reader::config_json::parse_gsd_config;
 use gsd_meta_manager::state_reader::roadmap_md::parse_roadmap_phases;
 use gsd_meta_manager::state_reader::state_md::{
-    extract_frontmatter, parse_state_md, StateVersion,
+    extract_frontmatter, parse_state_md, FrontmatterFault, StateVersion,
 };
 use gsd_meta_manager::state_reader::{count_backlog_items, parse_project_state};
 use std::fs;
@@ -803,7 +803,7 @@ fn an_unparseable_state_md_is_distinguishable_from_an_absent_one() {
     .unwrap();
     let absent_state = parse_project_state(absent.path());
     assert!(!absent_state.state_md_unreadable);
-    assert!(absent_state.state_md_error.is_none());
+    assert!(absent_state.state_md_fault.is_none());
 
     let broken = TempDir::new().unwrap();
     // A frontmatter block that is genuinely not a mapping.
@@ -819,7 +819,10 @@ fn an_unparseable_state_md_is_distinguishable_from_an_absent_one() {
     .unwrap();
     let broken_state = parse_project_state(broken.path());
     assert!(broken_state.state_md_unreadable);
-    assert!(broken_state.state_md_error.is_some());
+    assert_eq!(
+        broken_state.state_md_fault,
+        Some(FrontmatterFault::NotAMapping)
+    );
 }
 
 /// A STATE.md carrying the quoted version GSD writes must yield its phase, not
