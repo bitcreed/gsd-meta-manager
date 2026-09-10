@@ -1,5 +1,5 @@
 ---
-status: fixing
+status: resolved
 trigger: "Every registered project displays the wrong phase. gsd-meta-manager reads .planning/STATE.md but the frontmatter deserialization fails and the whole struct is silently discarded."
 created: 2026-09-10
 updated: 2026-09-10
@@ -43,14 +43,24 @@ from ROADMAP's `## Progress` table, which unconditionally overrides STATE.md —
 2. **`gsd_state_version` is an opaque, comparable `StateVersion`.** Quoted, unquoted,
    missing, newer-than-supported and garbage all read; none is refused.
 3. **Absent vs unreadable are distinct.** `FrontmatterOutcome` separates them;
-   `ProjectState::state_md_unreadable` carries it to the render path, which shows
-   `! STATE.md unreadable` instead of a plausible-looking wrong number.
-4. **Disk frontier as the fallback.** `ProjectState::active_phase_number()` prefers the
-   disk-inferred frontier over `completed_phases + 1`, used consistently at every call site.
+   `ProjectState::state_md_unreadable` + `state_md_fault` carry it to the render path,
+   which shows `! STATE.md unreadable` instead of a plausible-looking wrong number.
+   The fault is a classification this crate authored, not the parser's message — a
+   serde error quotes the third-party document, and `src/driver/untrusted.rs` is the
+   census that exists to keep such text off a model seam.
+4. **Active phase, in order of authority.** `ProjectState::active_phase_number()`:
+   STATE.md's own `current_phase`, then the disk-inferred frontier, then
+   `completed_phases + 1` as the last resort. Applied at all five call sites.
 
-## Verification
+## Resolution
 
-- `cargo build`, `cargo test --no-fail-fast`, `cargo clippy -- -D warnings`.
-- picsync parses as phase 4 / "Pixel over ADB"; this repo as phase 19 / "GITSAFE".
+- files_changed: `src/state_reader/state_md.rs`, `src/state_reader/mod.rs`,
+  `src/state_reader/queue_md.rs`, `src/app.rs`, `src/browser.rs`,
+  `src/ui/screens/detail.rs`, `src/ui/roadmap_widget.rs`, `tests/state_reader_test.rs`
+- verification: `cargo build`, `cargo test --no-fail-fast` (1959 pass, up from 1940;
+  the 2 remaining failures are pre-existing environment ones — an installed-git-version
+  constant and a pgid test that passes in isolation), `cargo clippy -- -D warnings` clean.
+- picsync reads phase 4 / "Pixel over ADB" (was P3); this repo reads phase 19 /
+  "GITSAFE — Git & Blast-Radius Envelope" (was "P6: Unknown").
 - Fixtures now use the real GSD shape (quoted version) plus coverage for unquoted,
   unknown/newer, missing, and a garbage value in one field with the others surviving.
