@@ -1,89 +1,212 @@
-use serde::Deserialize;
+use serde_yml::{Mapping, Value};
 
-#[derive(Debug, Deserialize, Default, Clone)]
+/// GSD's STATE.md frontmatter, read field-by-field rather than all-or-nothing.
+///
+/// **Why this is not `#[derive(Deserialize)]`.** A derived struct is a single
+/// unit of failure: one value of an unexpected shape anywhere aborts the whole
+/// deserialize, `parse_state_md` returns `None`, and *every* field is lost —
+/// indistinguishably from an absent STATE.md. That is exactly how a
+/// `gsd_state_version: "1.0"` (quoted, which is what GSD actually writes)
+/// against a `f64` field blanked the phase label for every registered project.
+///
+/// `#[serde(default)]` does not prevent it: a default covers an **absent**
+/// field, never a **present** field of the wrong shape.
+///
+/// So the frontmatter is read into a [`Mapping`] first and each field is pulled
+/// out through the lenient accessors below ([`scalar_string`], [`scalar_u32`]).
+/// A value that cannot be read degrades **that field** to its default and
+/// nothing else. The tolerance is structural, not opt-in: reading a mapping is
+/// the only way to populate a field, so a field added later is tolerant by
+/// construction rather than by remembering an attribute.
+#[derive(Debug, Default, Clone)]
 pub struct StateFrontmatter {
-    #[serde(default)]
-    pub gsd_state_version: f64,
-    #[serde(default)]
+    /// GSD's schema-version marker. Opaque and comparable — see [`StateVersion`].
+    /// `None` when absent or unreadable; never a reason to reject the document.
+    pub gsd_state_version: Option<StateVersion>,
     pub milestone: String,
-    #[serde(default)]
     pub milestone_name: String,
-    #[serde(default)]
     pub status: String,
-    #[serde(default)]
     pub stopped_at: String,
-    #[serde(default)]
     pub last_updated: String,
-    #[serde(default)]
     pub last_activity: Option<String>,
     /// ADR-2207: current phase number (GSD 1.8.0 frontmatter). Stored as a
-    /// string but accepts a YAML string OR number so a numeric value never
-    /// aborts frontmatter parsing.
-    #[serde(default, deserialize_with = "de_opt_scalar_string")]
+    /// string but accepts a YAML string OR number.
     pub current_phase: Option<String>,
     /// ADR-2207: human-readable current phase name (GSD 1.8.0 frontmatter).
-    #[serde(default)]
     pub current_phase_name: Option<String>,
     /// ADR-2207: current plan identifier (GSD 1.8.0 frontmatter). Accepts a
     /// YAML string OR number (e.g. `"0.3"` or `14`).
-    #[serde(default, deserialize_with = "de_opt_scalar_string")]
     pub current_plan: Option<String>,
-    #[serde(default)]
     pub progress: ProgressInfo,
 }
 
-/// Deserialize a YAML scalar (string, integer, float, or null) into
-/// `Option<String>`.
+/// The `gsd_state_version` this reader was written against.
 ///
-/// GSD 1.8.0 may write `current_phase` / `current_plan` either quoted
-/// (`"14"`, `"0.3"`) or bare (`14`). serde_yml would otherwise reject a bare
-/// number for a `String`/`Option<String>` field and abort the *entire*
-/// frontmatter parse (`parse_state_md` returning `None` zeroes every field).
-/// This visitor normalizes any scalar shape to its string form; null/absent
-/// yields `None`.
-fn de_opt_scalar_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    struct ScalarStringVisitor;
+/// Not a floor and not a ceiling — only the point of reference for
+/// [`StateVersion::is_newer_than_supported`]. A STATE.md above it still reads.
+pub const SUPPORTED_STATE_VERSION: (u64, u64) = (1, 0);
 
-    impl<'de> serde::de::Visitor<'de> for ScalarStringVisitor {
-        type Value = Option<String>;
+/// GSD's `gsd_state_version`, kept as an **opaque, comparable** value.
+///
+/// GSD writes it quoted (`"1.0"`) in every STATE.md this tool has ever seen,
+/// but has also written it bare (`1.0`); both are the same version and neither
+/// is a reason to refuse the file. The raw text is preserved verbatim so an
+/// unrecognised form round-trips into diagnostics unchanged, while the numeric
+/// components — as many as the string carries — drive ordering.
+///
+/// A version this reader does not recognise is **not** an error. Refusing to
+/// read a newer GSD's state file would reintroduce the very class of bug this
+/// type exists to close; the reader degrades to whatever fields it understands.
+///
+/// Equality is **semantic, not textual**: `"1.0"`, `1.0` (which YAML normalises
+/// to `1`) and `1.0.0` are one version, and comparing them by their spelling
+/// would recreate the quoting sensitivity in a new place.
+#[derive(Debug, Clone)]
+pub struct StateVersion {
+    raw: String,
+    parts: Vec<u64>,
+}
 
-        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            f.write_str("a string, integer, float, or null")
-        }
-
-        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
-            Ok(Some(v.to_string()))
-        }
-        fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
-            Ok(Some(v))
-        }
-        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
-            Ok(Some(v.to_string()))
-        }
-        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
-            Ok(Some(v.to_string()))
-        }
-        fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
-            Ok(Some(v.to_string()))
-        }
-        fn visit_none<E>(self) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-        fn visit_unit<E>(self) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            deserializer.deserialize_any(self)
+impl StateVersion {
+    /// Read a version from its textual form. Infallible by design: a value that
+    /// carries no numbers at all still yields a `StateVersion` that compares
+    /// below every numbered one and prints its original text.
+    pub fn parse(raw: &str) -> Self {
+        let trimmed = raw.trim();
+        let parts = trimmed
+            .split('.')
+            .map(|seg| {
+                let digits: String = seg.chars().take_while(char::is_ascii_digit).collect();
+                digits.parse::<u64>().unwrap_or(0)
+            })
+            .collect();
+        Self {
+            raw: trimmed.to_string(),
+            parts,
         }
     }
 
-    deserializer.deserialize_option(ScalarStringVisitor)
+    /// The version as the YAML scalar delivered it — verbatim for a quoted
+    /// value, YAML-normalised for a bare one (`1.0` arrives as `1`). Use it for
+    /// diagnostics; use the comparison operators for decisions.
+    pub fn raw(&self) -> &str {
+        &self.raw
+    }
+
+    /// The leading numeric component, or 0 when the value carries none.
+    pub fn major(&self) -> u64 {
+        self.parts.first().copied().unwrap_or(0)
+    }
+
+    /// True when this version sorts above [`SUPPORTED_STATE_VERSION`].
+    ///
+    /// Advisory only. It exists so a caller can *say* the file came from a
+    /// newer GSD, never so a caller can decline to read it.
+    pub fn is_newer_than_supported(&self) -> bool {
+        let (major, minor) = SUPPORTED_STATE_VERSION;
+        *self > Self::from_parts(major, minor)
+    }
+
+    fn from_parts(major: u64, minor: u64) -> Self {
+        Self {
+            raw: format!("{}.{}", major, minor),
+            parts: vec![major, minor],
+        }
+    }
+}
+
+impl PartialEq for StateVersion {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for StateVersion {}
+
+impl PartialOrd for StateVersion {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for StateVersion {
+    /// Component-wise, shorter forms zero-extended, so `1.0` == `1.0.0` and
+    /// `1.10` > `1.9`.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let len = self.parts.len().max(other.parts.len());
+        for i in 0..len {
+            let a = self.parts.get(i).copied().unwrap_or(0);
+            let b = other.parts.get(i).copied().unwrap_or(0);
+            match a.cmp(&b) {
+                std::cmp::Ordering::Equal => continue,
+                ord => return ord,
+            }
+        }
+        std::cmp::Ordering::Equal
+    }
+}
+
+impl std::fmt::Display for StateVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.raw)
+    }
+}
+
+/// Read any YAML **scalar** as its string form.
+///
+/// String, integer, float and bool all have an unambiguous textual reading, and
+/// GSD quotes fields inconsistently between versions, so accepting all of them
+/// costs nothing. A sequence, mapping or null has no scalar reading and yields
+/// `None` — the field degrades, the document does not.
+fn scalar_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// Read any YAML scalar as a `u32` count.
+///
+/// Accepts integers, integral-valued floats (`4.0`), and numeric strings
+/// (`"4"`) — the three shapes a count has been written in. A negative or
+/// fractional number, or anything non-numeric, yields `None` rather than a
+/// wrong count.
+fn scalar_u32(value: &Value) -> Option<u32> {
+    // Via the textual form deliberately: it is the one reading that is the same
+    // for every scalar shape the value could arrive in, so this helper does not
+    // have to track the YAML library's integer/float representation choices.
+    let text = scalar_string(value)?;
+    let text = text.trim();
+    if let Ok(n) = text.parse::<u32>() {
+        return Some(n);
+    }
+    let f = text.parse::<f64>().ok()?;
+    if f.is_finite() && f >= 0.0 && f.fract() == 0.0 && f <= f64::from(u32::MAX) {
+        Some(f as u32)
+    } else {
+        None
+    }
+}
+
+/// Look up a key in a frontmatter mapping, ignoring a null value the way an
+/// absent key is ignored (GSD writes `field:` with no value for "not set").
+fn field<'a>(map: &'a Mapping, key: &str) -> Option<&'a Value> {
+    match map.get(key) {
+        Some(Value::Null) | None => None,
+        Some(v) => Some(v),
+    }
+}
+
+/// A field read as a plain `String`, defaulting to empty.
+fn string_field(map: &Mapping, key: &str) -> String {
+    field(map, key).and_then(scalar_string).unwrap_or_default()
+}
+
+/// A field read as `Option<String>`; `None` when absent, null or unreadable.
+fn opt_string_field(map: &Mapping, key: &str) -> Option<String> {
+    field(map, key).and_then(scalar_string)
 }
 
 /// ADR-2207: true when `status` denotes milestone termination — the milestone
@@ -173,18 +296,28 @@ pub fn deferred_verification_phases(content: &str) -> Vec<String> {
     phases
 }
 
-#[derive(Debug, Deserialize, Default, Clone)]
+/// The `progress:` sub-mapping, read with the same per-field tolerance as its
+/// parent: an unreadable count is 0, and it does not take the others with it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ProgressInfo {
-    #[serde(default)]
     pub total_phases: u32,
-    #[serde(default)]
     pub completed_phases: u32,
-    #[serde(default)]
     pub total_plans: u32,
-    #[serde(default)]
     pub completed_plans: u32,
-    #[serde(default)]
     pub percent: u32,
+}
+
+impl ProgressInfo {
+    fn from_mapping(map: &Mapping) -> Self {
+        let count = |key: &str| field(map, key).and_then(scalar_u32).unwrap_or(0);
+        Self {
+            total_phases: count("total_phases"),
+            completed_phases: count("completed_phases"),
+            total_plans: count("total_plans"),
+            completed_plans: count("completed_plans"),
+            percent: count("percent"),
+        }
+    }
 }
 
 /// Extract YAML frontmatter from a GSD STATE.md file.
@@ -206,16 +339,110 @@ pub fn extract_frontmatter(content: &str) -> Option<&str> {
     }
 }
 
-/// Parse STATE.md content into a StateFrontmatter struct.
-/// Returns None on any failure (missing frontmatter, invalid YAML).
-pub fn parse_state_md(content: &str) -> Option<StateFrontmatter> {
-    let yaml = extract_frontmatter(content)?;
-    match serde_yml::from_str(yaml) {
-        Ok(fm) => Some(fm),
+/// What reading a STATE.md's frontmatter produced.
+///
+/// **`Absent` and `Unreadable` are separate on purpose.** Collapsing them into
+/// one `None` is what let the original bug ship: a STATE.md that existed but
+/// failed to parse was indistinguishable from a project that has none, so the
+/// dashboard printed a plausible-looking wrong number instead of admitting it
+/// could not read the file.
+#[derive(Debug, Clone)]
+pub enum FrontmatterOutcome {
+    /// Frontmatter read. Individual fields may have degraded to their defaults;
+    /// the document as a whole was understood.
+    Parsed(Box<StateFrontmatter>),
+    /// No frontmatter block at all — the file does not open with `---`.
+    Absent,
+    /// A frontmatter block is present but could not be read as a YAML mapping.
+    /// Carries the reason, for the UI and the log to say the same thing.
+    Unreadable(String),
+}
+
+/// Read STATE.md content, distinguishing "no frontmatter" from "broken
+/// frontmatter".
+///
+/// Only two things can make frontmatter unreadable now: an unterminated block,
+/// or YAML that is not a mapping. Everything else — an unknown key, a value of
+/// an unexpected shape, a version from a newer GSD — degrades the individual
+/// field and leaves the rest intact.
+pub fn read_frontmatter(content: &str) -> FrontmatterOutcome {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return FrontmatterOutcome::Absent;
+    }
+    // `---\n---` is a *closed but empty* block. `extract_frontmatter` cannot see
+    // it (it searches for a `\n---` that an empty body never contains), and
+    // "empty" must not be reported as "broken" — nothing failed to be read.
+    let body = trimmed[3..].trim_start_matches(['\r', '\n']);
+    if body == "---" || body.starts_with("---\n") || body.starts_with("---\r\n") {
+        return FrontmatterOutcome::Parsed(Box::default());
+    }
+    let Some(yaml) = extract_frontmatter(content) else {
+        let reason = "frontmatter block is not closed by a `---` line".to_string();
+        tracing::warn!("Unreadable STATE.md frontmatter: {}", reason);
+        return FrontmatterOutcome::Unreadable(reason);
+    };
+
+    let value: Value = match serde_yml::from_str(yaml) {
+        Ok(v) => v,
         Err(e) => {
-            tracing::warn!("Failed to parse STATE.md frontmatter: {}", e);
-            None
+            let reason = e.to_string();
+            tracing::warn!("Unreadable STATE.md frontmatter: {}", reason);
+            return FrontmatterOutcome::Unreadable(reason);
         }
+    };
+
+    let map = match value {
+        // `---\n---` is an empty block, not a broken one.
+        Value::Null => Mapping::new(),
+        Value::Mapping(m) => m,
+        other => {
+            let reason = format!(
+                "frontmatter is a YAML {}, not a mapping",
+                match other {
+                    Value::Sequence(_) => "sequence",
+                    Value::String(_) => "string",
+                    Value::Number(_) => "number",
+                    Value::Bool(_) => "boolean",
+                    _ => "value",
+                }
+            );
+            tracing::warn!("Unreadable STATE.md frontmatter: {}", reason);
+            return FrontmatterOutcome::Unreadable(reason);
+        }
+    };
+
+    let progress = match field(&map, "progress") {
+        Some(Value::Mapping(m)) => ProgressInfo::from_mapping(m),
+        _ => ProgressInfo::default(),
+    };
+
+    FrontmatterOutcome::Parsed(Box::new(StateFrontmatter {
+        gsd_state_version: opt_string_field(&map, "gsd_state_version")
+            .as_deref()
+            .map(StateVersion::parse),
+        milestone: string_field(&map, "milestone"),
+        milestone_name: string_field(&map, "milestone_name"),
+        status: string_field(&map, "status"),
+        stopped_at: string_field(&map, "stopped_at"),
+        last_updated: string_field(&map, "last_updated"),
+        last_activity: opt_string_field(&map, "last_activity"),
+        current_phase: opt_string_field(&map, "current_phase"),
+        current_phase_name: opt_string_field(&map, "current_phase_name"),
+        current_plan: opt_string_field(&map, "current_plan"),
+        progress,
+    }))
+}
+
+/// Parse STATE.md content into a [`StateFrontmatter`].
+///
+/// Returns `None` only when there is no readable frontmatter block at all.
+/// Callers that must tell an absent block from a broken one want
+/// [`read_frontmatter`].
+pub fn parse_state_md(content: &str) -> Option<StateFrontmatter> {
+    match read_frontmatter(content) {
+        FrontmatterOutcome::Parsed(fm) => Some(*fm),
+        FrontmatterOutcome::Absent | FrontmatterOutcome::Unreadable(_) => None,
     }
 }
 
@@ -248,14 +475,184 @@ mod tests {
         assert!(extract_frontmatter("# Just markdown").is_none());
     }
 
+    /// The shape GSD actually writes, copied from a real `.planning/STATE.md`:
+    /// `gsd_state_version` is QUOTED, `current_phase` is bare. The fixture below
+    /// this one keeps the unquoted-version form, so both are covered.
+    ///
+    /// This is the fixture the original bug needed and did not have — every
+    /// pre-existing test wrote a version form GSD never emits, so they all
+    /// passed while every real project's phase label was blank.
+    const REAL_GSD_STATE_MD: &str = "---\ngsd_state_version: \"1.0\"\nmilestone: v2.0\nmilestone_name: Autonomous Orchestration\ncurrent_phase: 19\ncurrent_phase_name: GITSAFE — Git & Blast-Radius Envelope\nstatus: verifying\nstopped_at: Completed 19-33-PLAN.md\nlast_updated: \"2026-09-10T02:35:05.863Z\"\nlast_activity: 2026-09-08\nstate_head: ae76ce98b0b6ecd90cb48efa68cb624b8d4e3c57\nprogress:\n  total_phases: 10\n  completed_phases: 6\n  total_plans: 112\n  completed_plans: 112\n  percent: 60\n---\n\n# Project State\n";
+
+    #[test]
+    fn the_quoted_version_gsd_actually_writes_does_not_discard_the_frontmatter() {
+        let fm = parse_state_md(REAL_GSD_STATE_MD).expect("real GSD frontmatter must parse");
+        // The field that used to abort the whole parse.
+        assert_eq!(fm.gsd_state_version.as_ref().unwrap().raw(), "1.0");
+        // And everything that used to be lost along with it.
+        assert_eq!(fm.status, "verifying");
+        assert_eq!(fm.current_phase.as_deref(), Some("19"));
+        assert_eq!(
+            fm.current_phase_name.as_deref(),
+            Some("GITSAFE — Git & Blast-Radius Envelope")
+        );
+        assert_eq!(fm.milestone, "v2.0");
+        assert_eq!(fm.milestone_name, "Autonomous Orchestration");
+        assert_eq!(fm.progress.total_phases, 10);
+        assert_eq!(fm.progress.completed_phases, 6);
+    }
+
     #[test]
     fn test_parse_state_md_real_content() {
+        // Unquoted version — the older form. Still accepted.
         let content = "---\ngsd_state_version: 1.0\nmilestone: v1.0\nmilestone_name: milestone\nstatus: planning\nstopped_at: Phase 1 context gathered\nlast_updated: \"2026-03-25T04:22:49.224Z\"\nprogress:\n  total_phases: 4\n  completed_phases: 0\n  total_plans: 0\n  completed_plans: 0\n  percent: 0\n---\n# Project State\n\n---\n\nSome body content";
         let fm = parse_state_md(content).unwrap();
         assert_eq!(fm.status, "planning");
         assert_eq!(fm.progress.total_phases, 4);
         assert_eq!(fm.progress.completed_phases, 0);
         assert_eq!(fm.milestone, "v1.0");
+        assert_eq!(
+            fm.gsd_state_version,
+            Some(StateVersion::parse("1.0")),
+            "the bare form is the same version as the quoted one"
+        );
+    }
+
+    #[test]
+    fn quoted_and_unquoted_versions_are_the_same_version() {
+        let quoted = parse_state_md("---\ngsd_state_version: \"1.0\"\nstatus: a\n---\n").unwrap();
+        let bare = parse_state_md("---\ngsd_state_version: 1.0\nstatus: a\n---\n").unwrap();
+        assert_eq!(quoted.gsd_state_version, bare.gsd_state_version);
+    }
+
+    #[test]
+    fn a_version_from_a_newer_gsd_is_read_not_refused() {
+        let fm = parse_state_md("---\ngsd_state_version: \"2.4\"\nstatus: executing\ncurrent_phase: 7\n---\n")
+            .expect("an unrecognised version must not abort the parse");
+        let v = fm.gsd_state_version.as_ref().unwrap();
+        assert_eq!(v.raw(), "2.4");
+        assert!(v.is_newer_than_supported());
+        // Degrading sensibly means the fields it DOES understand still arrive.
+        assert_eq!(fm.status, "executing");
+        assert_eq!(fm.current_phase.as_deref(), Some("7"));
+    }
+
+    #[test]
+    fn a_missing_version_is_not_a_failure() {
+        let fm = parse_state_md("---\nstatus: executing\ncurrent_phase: 3\n---\n").unwrap();
+        assert!(fm.gsd_state_version.is_none());
+        assert_eq!(fm.current_phase.as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn a_garbage_version_leaves_every_other_field_intact() {
+        let fm = parse_state_md(
+            "---\ngsd_state_version: [1, 0]\nstatus: executing\ncurrent_phase: 5\nmilestone: v3.0\n---\n",
+        )
+        .expect("a garbage version must degrade itself, not the document");
+        assert!(fm.gsd_state_version.is_none());
+        assert_eq!(fm.status, "executing");
+        assert_eq!(fm.current_phase.as_deref(), Some("5"));
+        assert_eq!(fm.milestone, "v3.0");
+    }
+
+    #[test]
+    fn a_garbage_value_in_one_field_does_not_take_the_others_with_it() {
+        // Every field the tool reads, each given a shape it cannot possibly
+        // want. Each must degrade alone.
+        let content = "---\ngsd_state_version: \"1.0\"\nstatus: executing\nmilestone:\n  nested: mapping\ncurrent_phase_name: [a, list]\ncurrent_phase: 12\nstopped_at: 42\nprogress:\n  total_phases: 8\n  completed_phases: not-a-number\n  percent: 12.5\n---\n";
+        let fm = parse_state_md(content).expect("one bad field must not discard the rest");
+        assert_eq!(fm.status, "executing");
+        assert_eq!(fm.current_phase.as_deref(), Some("12"));
+        assert_eq!(fm.progress.total_phases, 8);
+        // Degraded, individually.
+        assert_eq!(fm.milestone, "");
+        assert_eq!(fm.current_phase_name, None);
+        assert_eq!(fm.progress.completed_phases, 0);
+        // A scalar of the wrong primitive type is still readable as text.
+        assert_eq!(fm.stopped_at, "42");
+        // ...and an integral float count reads as the count it plainly is.
+        assert_eq!(fm.progress.percent, 0); // 12.5 is not a whole percent
+    }
+
+    #[test]
+    fn counts_written_as_quoted_strings_or_whole_floats_still_count() {
+        let fm = parse_state_md(
+            "---\nprogress:\n  total_phases: \"8\"\n  completed_phases: 3.0\n  total_plans: 31\n---\n",
+        )
+        .unwrap();
+        assert_eq!(fm.progress.total_phases, 8);
+        assert_eq!(fm.progress.completed_phases, 3);
+        assert_eq!(fm.progress.total_plans, 31);
+    }
+
+    #[test]
+    fn an_absent_frontmatter_and_a_broken_one_are_distinguishable() {
+        assert!(matches!(
+            read_frontmatter("# Just a heading\n"),
+            FrontmatterOutcome::Absent
+        ));
+        assert!(matches!(read_frontmatter(""), FrontmatterOutcome::Absent));
+        // Opened but never closed.
+        assert!(matches!(
+            read_frontmatter("---\nstatus: executing\n"),
+            FrontmatterOutcome::Unreadable(_)
+        ));
+        // Closed, but not a mapping.
+        assert!(matches!(
+            read_frontmatter("---\n- one\n- two\n---\n"),
+            FrontmatterOutcome::Unreadable(_)
+        ));
+        // Genuinely malformed YAML.
+        assert!(matches!(
+            read_frontmatter("---\nstatus: [unclosed\n---\n"),
+            FrontmatterOutcome::Unreadable(_)
+        ));
+        // And the real thing still parses.
+        assert!(matches!(
+            read_frontmatter(REAL_GSD_STATE_MD),
+            FrontmatterOutcome::Parsed(_)
+        ));
+    }
+
+    #[test]
+    fn an_empty_frontmatter_block_is_empty_not_broken() {
+        assert!(matches!(
+            read_frontmatter("---\n---\n# Body"),
+            FrontmatterOutcome::Parsed(_)
+        ));
+    }
+
+    #[test]
+    fn state_versions_order_component_wise() {
+        assert!(StateVersion::parse("1.10") > StateVersion::parse("1.9"));
+        assert_eq!(StateVersion::parse("1.0"), StateVersion::parse("1.0"));
+        assert!(StateVersion::parse("1.0.0") == StateVersion::parse("1.0"));
+        assert!(StateVersion::parse("2.0").is_newer_than_supported());
+        assert!(!StateVersion::parse("1.0").is_newer_than_supported());
+        assert!(!StateVersion::parse("0.9").is_newer_than_supported());
+        // A value carrying no numbers sorts below everything and keeps its text.
+        let junk = StateVersion::parse("beta");
+        assert_eq!(junk.raw(), "beta");
+        assert_eq!(junk.major(), 0);
+        assert!(!junk.is_newer_than_supported());
+    }
+
+    #[test]
+    fn the_real_planning_state_md_of_this_repository_parses() {
+        // Reads the repo's OWN STATE.md — the fixture that cannot drift from
+        // what GSD writes, because GSD writes it.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".planning/STATE.md");
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            return; // not a checkout with planning artifacts; nothing to assert
+        };
+        let fm = parse_state_md(&content).expect("this repo's own STATE.md must parse");
+        assert!(
+            fm.current_phase.is_some() || fm.current_phase_name.is_some(),
+            "a real STATE.md carries a current phase; got status={:?}",
+            fm.status
+        );
+        assert!(!fm.status.is_empty(), "a real STATE.md carries a status");
     }
 
     #[test]

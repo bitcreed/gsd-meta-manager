@@ -1,6 +1,8 @@
 use gsd_meta_manager::state_reader::config_json::parse_gsd_config;
 use gsd_meta_manager::state_reader::roadmap_md::parse_roadmap_phases;
-use gsd_meta_manager::state_reader::state_md::{extract_frontmatter, parse_state_md};
+use gsd_meta_manager::state_reader::state_md::{
+    extract_frontmatter, parse_state_md, StateVersion,
+};
 use gsd_meta_manager::state_reader::{count_backlog_items, parse_project_state};
 use std::fs;
 use tempfile::TempDir;
@@ -13,7 +15,7 @@ use tempfile::TempDir;
 fn test_parse_real_state_md() {
     let content = "\
 ---
-gsd_state_version: 1.0
+gsd_state_version: \"1.0\"
 milestone: v1.0
 milestone_name: milestone
 status: planning
@@ -38,7 +40,10 @@ Some body content with a horizontal rule above.
     assert_eq!(fm.progress.completed_phases, 0);
     assert_eq!(fm.milestone, "v1.0");
     assert_eq!(fm.milestone_name, "milestone");
-    assert_eq!(fm.gsd_state_version, 1.0);
+    // GSD writes this QUOTED. It is compared as a version, never as text — a
+    // `f64` field here is what discarded the whole frontmatter for every real
+    // project while this very test passed against an unquoted fixture.
+    assert_eq!(fm.gsd_state_version, Some(StateVersion::parse("1.0")));
     assert_eq!(fm.stopped_at, "Phase 1 context gathered");
     assert_eq!(fm.progress.percent, 0);
 }
@@ -197,7 +202,7 @@ fn test_parse_project_state_full() {
     // Write STATE.md
     let state_content = "\
 ---
-gsd_state_version: 1.0
+gsd_state_version: \"1.0\"
 milestone: v1.0
 milestone_name: milestone
 status: planning
