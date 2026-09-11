@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// GSD's eight-state phase vocabulary, in workflow order.
@@ -301,6 +301,36 @@ fn leading_frontmatter_value(content: &str, key: &str) -> Option<String> {
     None
 }
 
+/// The leading `NN-MM` plan index of a plan/summary filename stem, as numbers.
+///
+/// **The stem is the plan's identity; the index is the identity a plan shares
+/// with its summary.** GSD names a plan with a descriptive slug and its summary
+/// without one:
+///
+/// ```text
+/// 13-01-verse-pipeline-fourteen-translations-PLAN.md   stem "13-01-verse-…"
+/// 13-01-SUMMARY.md                                     stem "13-01"
+/// ```
+///
+/// Pairing on the stem therefore discards every summary a real GSD project
+/// emits, which collapses a finished phase to `Planned`. Pairing on this index
+/// derives the same key from both sides.
+///
+/// Parsed as two `u32`s rather than compared as text, because `13-1` and `13-01`
+/// are one index and a lexical compare says otherwise — a bug class this
+/// codebase has already paid for once in phase-number handling.
+///
+/// Returns `None` for anything that is not `digits-digits[-…]`: a phase-level
+/// `13-SUMMARY.md` (stem `13`) has no plan index and so pairs with no plan, a
+/// standalone `SUMMARY.md` (stem ``) likewise, and `14-REMEDIATION-SUMMARY.md`
+/// likewise. Those fall back to the exact-stem rule, which is what they want.
+fn plan_index(stem: &str) -> Option<(u32, u32)> {
+    let mut parts = stem.splitn(3, '-');
+    let phase = parts.next()?.parse::<u32>().ok()?;
+    let plan = parts.next()?.parse::<u32>().ok()?;
+    Some((phase, plan))
+}
+
 /// Detect whether a plan file's YAML frontmatter declares `status: superseded`.
 ///
 /// GSD 1.8.0 (#2349): a plan marked `status: superseded` was deliberately
@@ -480,7 +510,13 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     // Both passes run inside the single directory iteration below: plan IDs are
     // gathered into `plan_ids` and candidate summary names into `summary_names`,
     // then paired after the loop.
+    //
+    // A plan's ID is its full filename stem, which is the plan's own identity —
+    // but it is NOT the identity it shares with its summary, because GSD gives
+    // plans a descriptive slug and summaries none. `plan_indices` therefore
+    // carries the second, shared key (see [`plan_index`]) alongside it.
     let mut plan_ids: HashSet<String> = HashSet::new();
+    let mut plan_indices: HashMap<(u32, u32), Vec<String>> = HashMap::new();
     let mut summary_names: Vec<String> = Vec::new();
     // Verification artifacts are COLLECTED, not flagged: the status lives inside
     // the file, and which file to read is decided after the scan by sorting.
@@ -591,8 +627,10 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
 
         // Pass 1 — Match PLAN.md or *-PLAN.md (after PLAN-CHECK/PLAN-REVIEW are
         // filtered above). Derive the plan ID (filename minus the PLAN suffix;
-        // standalone PLAN.md → empty-string ID) and record it, unless the plan's
-        // frontmatter marks it `status: superseded`.
+        // standalone PLAN.md → empty-string ID) and record it, plus its
+        // `NN-MM` index if it has one, unless the plan's frontmatter marks it
+        // `status: superseded`. Both keys are recorded only for SURVIVING plans,
+        // so a superseded plan's summary still pairs with nothing.
         if name == "PLAN.md" || name.ends_with("-PLAN.md") {
             if let Ok(content) = std::fs::read_to_string(entry.path()) {
                 if plan_frontmatter_superseded(&content) {
@@ -603,6 +641,9 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
                 .strip_suffix("-PLAN.md")
                 .map(str::to_string)
                 .unwrap_or_default();
+            if let Some(index) = plan_index(&id) {
+                plan_indices.entry(index).or_default().push(id.clone());
+            }
             plan_ids.insert(id);
             continue;
         }
@@ -642,20 +683,38 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     let uat_status = read_uat_status(phase_dir, uat_names);
     let continue_here_blocking = phase_continue_here_blocking(phase_dir);
 
-    // Pass 2 (pairing) — a summary counts only if its ID matches a surviving
-    // (non-superseded) plan ID (matched-summary rule, #1988). Standalone
-    // SUMMARY.md derives the empty-string ID and pairs with standalone PLAN.md.
+    // Pass 2 (pairing) — a summary counts only if it names a surviving
+    // (non-superseded) plan (matched-summary rule, #1988). Two tiers, tried in
+    // order:
+    //
+    //   1. Identical stems. Standalone `SUMMARY.md` derives the empty-string ID
+    //      and pairs with standalone `PLAN.md`; a project whose summaries repeat
+    //      the plan's slug pairs here too. This is the original rule, verbatim.
+    //   2. Same leading plan index. GSD writes
+    //      `13-01-verse-pipeline-PLAN.md` beside a bare `13-01-SUMMARY.md`, so
+    //      the stems differ by construction and tier 1 can never fire for a real
+    //      GSD phase. The index is the identity the pair actually shares.
+    //      Ambiguity abstains: an index naming more than one surviving plan
+    //      pairs with nothing, so one summary can never satisfy two plans.
+    //
+    // The count is of PLANS matched, not of summary files, so two summaries
+    // resolving to the same plan cannot push `summary_count` past `plan_count`
+    // and fake a completion.
     let plan_count: u32 = plan_ids.len() as u32;
-    let summary_count: u32 = summary_names
-        .iter()
-        .filter(|name| {
-            let id = name
-                .strip_suffix("-SUMMARY.md")
-                .map(str::to_string)
-                .unwrap_or_default();
-            plan_ids.contains(&id)
-        })
-        .count() as u32;
+    let mut matched_plans: HashSet<&str> = HashSet::new();
+    for name in &summary_names {
+        let id = name.strip_suffix("-SUMMARY.md").unwrap_or("");
+        if let Some(exact) = plan_ids.get(id) {
+            matched_plans.insert(exact.as_str());
+            continue;
+        }
+        if let Some(index) = plan_index(id) {
+            if let Some([only]) = plan_indices.get(&index).map(Vec::as_slice) {
+                matched_plans.insert(only.as_str());
+            }
+        }
+    }
+    let summary_count: u32 = matched_plans.len() as u32;
 
     // Determine status following GSD's priority order (`init.cjs:1875-1888`).
     //
@@ -1595,6 +1654,236 @@ mod tests {
             "summary without a matching plan must not be counted"
         );
         assert_eq!(result.status, DiskStatus::Planned);
+    }
+
+    // ── Real GSD filename shapes ─────────────────────────────────────────
+    //
+    // Every fixture above writes a SLUGLESS plan (`05-01-PLAN.md`), and so does
+    // this repository's own `.planning/phases/`. GSD does not: it gives plans a
+    // descriptive slug and summaries none, so the pair's stems never match and
+    // no test or dogfood above can reproduce what a real project does. The
+    // fixtures below are copied from `wordoclock/.planning/phases/13-…` and
+    // `…/16-…` verbatim, filenames included.
+
+    /// wordoclock phase 13 on disk, byte for byte: four slugged plans, four
+    /// bare `NN-MM-SUMMARY.md` partners, and a passing verification.
+    ///
+    /// Before the index pairing this read `plan_count 4, summary_count 0,
+    /// Planned` — the phase renders `o` with `[Planned (4 plans)]` while its
+    /// four summaries sit right there in the directory.
+    #[test]
+    fn slugged_plans_pair_with_the_slugless_summaries_gsd_writes() {
+        let dir = tempdir().unwrap();
+        for (plan, summary) in [
+            (
+                "13-01-verse-pipeline-fourteen-translations-PLAN.md",
+                "13-01-SUMMARY.md",
+            ),
+            (
+                "13-02-translation-registry-native-twins-PLAN.md",
+                "13-02-SUMMARY.md",
+            ),
+            (
+                "13-03-book-name-registry-vendoring-PLAN.md",
+                "13-03-SUMMARY.md",
+            ),
+            (
+                "13-04-registry-derived-call-sites-PLAN.md",
+                "13-04-SUMMARY.md",
+            ),
+        ] {
+            fs::write(dir.path().join(plan), "plan").unwrap();
+            fs::write(dir.path().join(summary), "summary").unwrap();
+        }
+        fs::write(dir.path().join("13-CONTEXT.md"), "ctx").unwrap();
+        fs::write(dir.path().join("13-RESEARCH.md"), "res").unwrap();
+        fs::write(
+            dir.path().join("13-VERIFICATION.md"),
+            "---\nstatus: passed\n---\nbody",
+        )
+        .unwrap();
+
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 4);
+        assert_eq!(
+            result.summary_count, 4,
+            "a slugless summary must pair with the slugged plan sharing its index"
+        );
+        assert_eq!(result.status, DiskStatus::Complete);
+    }
+
+    /// wordoclock phase 16: same shape, verification found gaps. The phase is
+    /// executed, not complete — and it must not read `Planned` either.
+    #[test]
+    fn a_slugged_phase_with_gaps_found_reads_executed_not_planned() {
+        let dir = tempdir().unwrap();
+        for (plan, summary) in [
+            (
+                "16-01-widget-strings-reader-tracer-PLAN.md",
+                "16-01-SUMMARY.md",
+            ),
+            (
+                "16-02-fallback-ladder-and-language-gates-PLAN.md",
+                "16-02-SUMMARY.md",
+            ),
+        ] {
+            fs::write(dir.path().join(plan), "plan").unwrap();
+            fs::write(dir.path().join(summary), "summary").unwrap();
+        }
+        fs::write(
+            dir.path().join("16-VERIFICATION.md"),
+            "---\nstatus: gaps_found\n---\nbody",
+        )
+        .unwrap();
+
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.summary_count, 2);
+        assert_eq!(result.status, DiskStatus::Executed);
+        assert_eq!(result.verification_status, VerificationStatus::GapsFound);
+    }
+
+    /// A phase-level `NN-SUMMARY.md` is not any plan's partner: its stem is
+    /// `13`, which carries no `NN-MM` index at all. It must pair with nothing
+    /// even though four plans in the directory start with `13-`.
+    #[test]
+    fn a_phase_level_summary_pairs_with_no_plan() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("13-01-verse-pipeline-PLAN.md"), "plan").unwrap();
+        fs::write(dir.path().join("13-SUMMARY.md"), "phase-level").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 1);
+        assert_eq!(
+            result.summary_count, 0,
+            "a phase-level NN-SUMMARY.md has no plan index and must pair with nothing"
+        );
+        assert_eq!(result.status, DiskStatus::Planned);
+    }
+
+    /// Two plans can share an index when one is a re-cut of the other. A single
+    /// slugless summary cannot say which it belongs to, so it satisfies
+    /// NEITHER — an ambiguous index abstains rather than counting twice or
+    /// guessing.
+    #[test]
+    fn one_summary_cannot_satisfy_two_plans_sharing_an_index() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-alpha-PLAN.md"), "plan a").unwrap();
+        fs::write(dir.path().join("05-01-beta-PLAN.md"), "plan b").unwrap();
+        fs::write(dir.path().join("05-01-SUMMARY.md"), "summary").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 2);
+        assert_eq!(
+            result.summary_count, 0,
+            "an index naming two surviving plans must pair with neither"
+        );
+        assert_ne!(
+            result.status,
+            DiskStatus::Executed,
+            "an ambiguous pairing must never read as executed"
+        );
+    }
+
+    /// When the stems DO match, that still wins outright — so two plans sharing
+    /// an index are each satisfied by their own slugged summary, and the
+    /// abstention above never costs a real pairing.
+    #[test]
+    fn an_exact_stem_match_pairs_even_when_the_index_is_ambiguous() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-alpha-PLAN.md"), "plan a").unwrap();
+        fs::write(dir.path().join("05-01-beta-PLAN.md"), "plan b").unwrap();
+        fs::write(dir.path().join("05-01-alpha-SUMMARY.md"), "sum a").unwrap();
+        fs::write(dir.path().join("05-01-beta-SUMMARY.md"), "sum b").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 2);
+        assert_eq!(result.summary_count, 2);
+        assert_eq!(result.status, DiskStatus::Executed);
+    }
+
+    /// Two summaries resolving to the same plan count once. The count is of
+    /// plans matched, not of summary files, so `summary_count` can never run
+    /// past `plan_count` and fake a completion.
+    #[test]
+    fn two_summaries_for_one_plan_count_once() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("13-01-verse-pipeline-PLAN.md"), "plan").unwrap();
+        fs::write(dir.path().join("13-01-SUMMARY.md"), "bare").unwrap();
+        fs::write(
+            dir.path().join("13-01-verse-pipeline-SUMMARY.md"),
+            "slugged",
+        )
+        .unwrap();
+        fs::write(dir.path().join("13-02-second-PLAN.md"), "plan2").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 2);
+        assert_eq!(
+            result.summary_count, 1,
+            "both summaries name plan 13-01; that is one plan executed, not two"
+        );
+        assert_eq!(result.status, DiskStatus::Partial);
+    }
+
+    /// The index is two numbers, not two strings: `5-1` and `05-01` are one
+    /// index. A lexical key would split them and drop the pairing.
+    #[test]
+    fn the_pairing_index_is_numeric_not_lexical() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("5-1-unpadded-slug-PLAN.md"), "plan").unwrap();
+        fs::write(dir.path().join("05-01-SUMMARY.md"), "summary").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 1);
+        assert_eq!(result.summary_count, 1);
+        assert_eq!(result.status, DiskStatus::Executed);
+    }
+
+    /// A superseded plan is excluded from BOTH keys, so its slugless summary
+    /// still pairs with nothing — the #2349 rule survives the slugged shape.
+    #[test]
+    fn a_superseded_slugged_plan_still_drops_its_slugless_summary() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-alpha-PLAN.md"), "plan1").unwrap();
+        fs::write(dir.path().join("05-01-SUMMARY.md"), "summary1").unwrap();
+        fs::write(
+            dir.path().join("05-02-beta-PLAN.md"),
+            "---\nstatus: superseded\n---\nbody",
+        )
+        .unwrap();
+        fs::write(dir.path().join("05-02-SUMMARY.md"), "summary2").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 1);
+        assert_eq!(
+            result.summary_count, 1,
+            "the superseded plan's index must not be a pairing target"
+        );
+        assert_eq!(result.status, DiskStatus::Executed);
+    }
+
+    /// `14-REMEDIATION-SUMMARY.md` is a real wordoclock artifact. Its stem
+    /// parses to no index and matches no plan stem, so it stays uncounted.
+    #[test]
+    fn a_non_numeric_suffixed_summary_pairs_with_nothing() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("14-01-l10n-infrastructure-PLAN.md"), "plan").unwrap();
+        fs::write(dir.path().join("14-01-SUMMARY.md"), "summary").unwrap();
+        fs::write(dir.path().join("14-REMEDIATION-SUMMARY.md"), "remediation").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 1);
+        assert_eq!(result.summary_count, 1);
+    }
+
+    /// The empty-ID path: a bare `PLAN.md` has no index, a bare `SUMMARY.md`
+    /// has no index, and they pair on identical (empty) stems exactly as before
+    /// — the index tier must not disturb it, in either direction.
+    #[test]
+    fn the_bare_plan_summary_pair_is_untouched_by_the_index_tier() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("PLAN.md"), "plan").unwrap();
+        fs::write(dir.path().join("SUMMARY.md"), "summary").unwrap();
+        // An indexed summary alongside must still find no partner: the bare
+        // plan carries no index for it to claim.
+        fs::write(dir.path().join("07-03-SUMMARY.md"), "orphan").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_count, 1);
+        assert_eq!(result.summary_count, 1);
+        assert_eq!(result.status, DiskStatus::Executed);
     }
 
     #[test]
