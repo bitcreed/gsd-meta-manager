@@ -1,7 +1,8 @@
 use gsd_meta_manager::state_reader::config_json::parse_gsd_config;
 use gsd_meta_manager::state_reader::roadmap_md::parse_roadmap_phases;
 use gsd_meta_manager::state_reader::state_md::{
-    extract_frontmatter, parse_state_md, FrontmatterFault, StateVersion,
+    extract_frontmatter, parse_state_md, read_frontmatter, FrontmatterFault, FrontmatterOutcome,
+    StateVersion,
 };
 use gsd_meta_manager::state_reader::{count_backlog_items, parse_project_state, PhaseMarker};
 use std::fs;
@@ -823,6 +824,130 @@ fn an_unparseable_state_md_is_distinguishable_from_an_absent_one() {
         broken_state.state_md_fault,
         Some(FrontmatterFault::NotAMapping)
     );
+}
+
+/// A frontmatter block whose only fault is a top-level plain scalar carrying a
+/// colon-space. The shape measured on a real foreign `.planning/STATE.md`: the
+/// faulty `stopped_at` on file line 7, an already-quoted sibling whose value
+/// also carries a colon-space, and a bare `progress:` opening nested keys.
+const SENTRIQ_SHAPED_STATE_MD: &str = "---\ngsd_state_version: 1.0\nmilestone: v0.12\ncurrent_phase: 9\ncurrent_phase_name: Routine Event Logging\nstatus: planning\nstopped_at: Completed 260910-p8v (DTC history is vehicle-scoped — the trace recorder covers the connect path). Earlier: 260910-x8d — the discovery keystone.\nlast_activity_desc: \"260910-x8d, the discovery keystone: Phase 5 builds its worklist PER MODULE\"\nprogress:\n  total_phases: 4\n  completed_phases: 0\n---\n# State\n";
+
+/// End-to-end through the reader every screen actually calls: the repairable
+/// file yields its real phase AND says it was repaired.
+#[test]
+fn a_repairable_state_md_reads_and_reports_that_it_was_repaired() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("STATE.md"), SENTRIQ_SHAPED_STATE_MD).unwrap();
+    fs::write(
+        tmp.path().join("ROADMAP.md"),
+        "# Roadmap\n\n### Phase 9: Routine Event Logging\n",
+    )
+    .unwrap();
+    let state = parse_project_state(tmp.path());
+
+    assert!(
+        state.state_md_recovered,
+        "a document this tool rewrote before believing must say so"
+    );
+    assert!(!state.state_md_unreadable);
+    assert!(state.state_md_fault.is_none());
+    assert!(state.state_md_fault_position.is_none());
+    // And the values the unreadable path would have lost:
+    assert_eq!(state.status, "planning");
+    assert_eq!(state.current_phase, "Routine Event Logging");
+    assert_eq!(state.state_md_phase_number, Some(9));
+}
+
+/// The three outcomes are mutually exclusive by construction — a file is clean,
+/// or repaired, or unreadable, never two of them. Collapsing any pair is the
+/// failure mode this whole register exists to prevent.
+#[test]
+fn recovered_and_unreadable_are_never_both_set() {
+    let clean = "---\nstatus: executing\ncurrent_phase: 4\n---\n# State\n";
+    let unreadable = "---\n- one\n- two\n---\n# State\n";
+    for (name, content, expect_recovered, expect_unreadable) in [
+        ("clean", clean, false, false),
+        ("recovered", SENTRIQ_SHAPED_STATE_MD, true, false),
+        ("unreadable", unreadable, false, true),
+    ] {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("STATE.md"), content).unwrap();
+        let state = parse_project_state(tmp.path());
+        assert!(
+            !(state.state_md_recovered && state.state_md_unreadable),
+            "{name}: a file cannot be both repaired and unreadable"
+        );
+        assert_eq!(state.state_md_recovered, expect_recovered, "{name}");
+        assert_eq!(state.state_md_unreadable, expect_unreadable, "{name}");
+    }
+}
+
+/// An unreadable STATE.md carries WHERE it broke, as FILE-relative numbers, all
+/// the way to the struct the render path reads.
+#[test]
+fn an_unreadable_state_md_carries_its_fault_position_to_the_render_path() {
+    let tmp = TempDir::new().unwrap();
+    // The repair cannot help here: the fault is an unclosed flow collection on
+    // an indented line, which the candidate rule declines to touch.
+    fs::write(
+        tmp.path().join("STATE.md"),
+        "---\nstatus: planning\nprogress:\n  total_phases: [4\n---\n# State\n",
+    )
+    .unwrap();
+    let state = parse_project_state(tmp.path());
+    assert!(state.state_md_unreadable);
+    assert!(!state.state_md_recovered);
+    let position = state
+        .state_md_fault_position
+        .expect("the parser located this fault");
+    assert!(
+        position.line >= 4,
+        "the fault is at or after the file's line 4; got {}",
+        position.line
+    );
+    assert!(position.column > 0);
+}
+
+/// The real foreign file, READ-ONLY, addressed by an environment variable.
+///
+/// `#[ignore]`d and self-skipping, on the precedent this module already sets
+/// for real-file reads: the repository commits the SHAPE, and reading an actual
+/// file on a particular machine is opt-in. No absolute path is committed, and
+/// nothing here writes, creates or truncates anything.
+///
+/// Run it with:
+/// `GSD_META_MANAGER_REAL_STATE_MD=/path/to/.planning/STATE.md \
+///  cargo test --test state_reader_test -- --ignored --nocapture`
+#[test]
+#[ignore = "reads a real file outside the repository; opt in with GSD_META_MANAGER_REAL_STATE_MD"]
+fn a_real_foreign_state_md_reads_read_only() {
+    let Ok(path) = std::env::var("GSD_META_MANAGER_REAL_STATE_MD") else {
+        println!("GSD_META_MANAGER_REAL_STATE_MD unset — nothing to read");
+        return;
+    };
+    let Ok(content) = fs::read_to_string(&path) else {
+        println!("{path}: unreadable");
+        return;
+    };
+    match read_frontmatter(&content) {
+        FrontmatterOutcome::Parsed(fm) => {
+            println!("Parsed (clean). stopped_at = {:?}", fm.stopped_at);
+        }
+        FrontmatterOutcome::Recovered {
+            frontmatter,
+            repaired_lines,
+        } => {
+            println!("Recovered ({repaired_lines} line(s) repaired in memory).");
+            println!("  status        = {:?}", frontmatter.status);
+            println!("  current_phase = {:?}", frontmatter.current_phase);
+            println!("  stopped_at    = {} bytes", frontmatter.stopped_at.len());
+            println!("  stopped_at    = {:?}", frontmatter.stopped_at);
+        }
+        FrontmatterOutcome::Absent => println!("Absent: no frontmatter block"),
+        FrontmatterOutcome::Unreadable { fault, position } => {
+            println!("Unreadable: {} at {position:?}", fault.describe());
+        }
+    }
 }
 
 /// A STATE.md carrying the quoted version GSD writes must yield its phase, not

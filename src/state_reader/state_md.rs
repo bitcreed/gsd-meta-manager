@@ -575,11 +575,11 @@ fn repair_line(line: &str) -> Option<String> {
         .position(|&c| c == ':')
         .filter(|&i| chars.get(i + 1).is_none_or(|&c| c == ' '))?;
     let key: String = chars[..split_at].iter().collect();
-    if key.is_empty()
-        || !key
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
-    {
+    // DELEGATED to the one spelling of the identity alphabet rather than
+    // respelled here — `text::exactly_one_executable_spelling_of_the_identity_alphabet_exists_under_src`
+    // holds the claim that there is exactly one, and a second spelling is a
+    // boundary that can stop agreeing with the boundary.
+    if key.is_empty() || !key.chars().all(crate::text::is_identity_char) {
         return None;
     }
     let value: String = chars[split_at + 1..].iter().collect();
@@ -1231,6 +1231,87 @@ mod tests {
         assert_eq!(fault_position("---\n- one\n- two\n---\n"), None);
         // Unterminated — the block never reaches the parser at all.
         assert_eq!(fault_position("---\nstatus: executing\n"), None);
+    }
+
+    // ========================================================================
+    // The proofs: the repair is a no-op on valid files, and char-safe on the
+    // multi-byte content that actually arrives
+    // ========================================================================
+
+    /// **The property that protects every valid STATE.md**, asserted by the
+    /// repair's own contract and not merely by observing that the error branch
+    /// did not fire.
+    ///
+    /// `read_frontmatter` returning `Parsed` would be satisfied by a repair
+    /// that mangles documents it is never handed. `repair_frontmatter_block`
+    /// returning `None` is the stronger statement: the block comes back
+    /// byte-identical because the function declined every line in it.
+    #[test]
+    fn the_repair_is_a_no_op_on_every_valid_frontmatter_this_module_knows() {
+        let own_state_md =
+            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".planning/STATE.md"))
+                .ok();
+        let mut fixtures: Vec<(&str, &str)> = vec![
+            ("REAL_GSD_STATE_MD", REAL_GSD_STATE_MD),
+            (
+                "the unquoted-version form",
+                "---\ngsd_state_version: 1.0\nmilestone: v1.0\nstatus: planning\nstopped_at: Phase 1 context gathered\nlast_updated: \"2026-03-25T04:22:49.224Z\"\nprogress:\n  total_phases: 4\n---\n# Project State\n",
+            ),
+        ];
+        // The repo's OWN STATE.md — the fixture that cannot drift from what
+        // GSD writes, because GSD writes it. Self-skipping, as its sibling
+        // `the_real_planning_state_md_of_this_repository_parses` is.
+        if let Some(ref content) = own_state_md {
+            fixtures.push(("this repository's .planning/STATE.md", content));
+        }
+
+        for (name, content) in fixtures {
+            assert!(
+                matches!(read_frontmatter(content), FrontmatterOutcome::Parsed(_)),
+                "{name} must read as Parsed — never Recovered"
+            );
+            let block = extract_frontmatter(content).expect("{name} has a frontmatter block");
+            assert!(
+                repair_frontmatter_block(block).is_none(),
+                "the repair must return None for {name}: a valid document has to come \
+                 back BYTE-IDENTICAL by the function's own contract, not merely because \
+                 the error branch was never entered"
+            );
+        }
+    }
+
+    /// A repaired value is rebuilt from its characters, never from its bytes.
+    ///
+    /// The fixture puts a 4-byte character and two em-dashes in the value and
+    /// then asserts the PRECONDITION that the classic byte-index-equals-
+    /// character-count confusion lands INSIDE a character — following
+    /// `untrusted::truncation_inside_a_multibyte_character_lands_on_a_character_boundary`,
+    /// because without it the test would pass against a byte-indexing
+    /// implementation and prove nothing.
+    #[test]
+    fn a_multibyte_value_survives_the_repair_without_a_byte_index_panic() {
+        let value = "Completed 260910-p8v. Earlier: ———🚗 vehicle";
+        assert_ne!(
+            value.chars().count(),
+            value.len(),
+            "the fixture must be multi-byte or it proves nothing"
+        );
+        assert!(
+            !value.is_char_boundary(value.chars().count()),
+            "the fixture must put the naive byte index (a character COUNT used as \
+             a byte offset) inside a character, or a byte-indexing implementation \
+             would pass this test"
+        );
+
+        let block = format!("stopped_at: {value}\n");
+        let (repaired, count) = repair_frontmatter_block(&block).expect("a repairable line");
+        assert_eq!(count, 1);
+        let parsed: Value = serde_yml::from_str(&repaired).expect("the repair must reparse");
+        assert_eq!(
+            parsed.as_mapping().unwrap().get("stopped_at").and_then(Value::as_str),
+            Some(value),
+            "every character must come back exactly as it went in"
+        );
     }
 
     /// A line number that cannot name a line in the block it came from is not
