@@ -105,6 +105,21 @@ pub struct ProjectState {
     /// census); a parser error quoting a foreign STATE.md would have been one
     /// more, held for the sake of a line number.
     pub state_md_fault: Option<state_md::FrontmatterFault>,
+    /// `STATE.md`'s frontmatter was read only after an **in-memory** repair
+    /// pass ([`state_md::FrontmatterOutcome::Recovered`]).
+    ///
+    /// **Distinct from a clean read on purpose, and the file on disk is
+    /// unchanged.** A value shown from a repaired document is a value this tool
+    /// rewrote before believing; a strict reader would still refuse the file. A
+    /// reader who cannot tell the two apart has been told something slightly
+    /// false about the repository — the same argument
+    /// [`crate::driver::untrusted`]'s truncation marker makes about a string,
+    /// applied to a document.
+    ///
+    /// A `bool`, not a message: nothing the parser wrote may cross this
+    /// boundary, and `tests/spawn_seam_guard.rs`'s census of every free
+    /// `String` on this struct stays satisfied without widening it.
+    pub state_md_recovered: bool,
 }
 
 impl ProjectState {
@@ -355,14 +370,30 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
     // Parse STATE.md
     let state_md_path = planning_dir.join("STATE.md");
     if let Ok(content) = std::fs::read_to_string(&state_md_path) {
-        let outcome = state_md::read_frontmatter(&content);
-        if let state_md::FrontmatterOutcome::Unreadable(fault) = outcome {
-            // Recorded rather than swallowed: the render path shows it.
-            state.state_md_unreadable = true;
-            state.state_md_fault = Some(fault);
-        }
-        if let state_md::FrontmatterOutcome::Parsed(fm) = outcome {
-            let fm = *fm;
+        // ONE exhaustive match with no wildcard arm, deliberately. The two
+        // sequential `if let`s this replaced classified `Parsed` and
+        // `Unreadable` and would have skipped a third outcome in silence —
+        // which is the whole failure mode `FrontmatterOutcome` exists to
+        // prevent. A fourth variant is now a compile error here.
+        let frontmatter = match state_md::read_frontmatter(&content) {
+            state_md::FrontmatterOutcome::Parsed(fm) => Some(*fm),
+            // The values arrived, but only after an in-memory repair. Both
+            // facts are recorded: the fields populate exactly as a clean read
+            // populates them (one site below, so the two cannot drift), and the
+            // render path says the document was repaired.
+            state_md::FrontmatterOutcome::Recovered { frontmatter, .. } => {
+                state.state_md_recovered = true;
+                Some(*frontmatter)
+            }
+            state_md::FrontmatterOutcome::Absent => None,
+            state_md::FrontmatterOutcome::Unreadable(fault) => {
+                // Recorded rather than swallowed: the render path shows it.
+                state.state_md_unreadable = true;
+                state.state_md_fault = Some(fault);
+                None
+            }
+        };
+        if let Some(fm) = frontmatter {
             state.status = if fm.status.is_empty() {
                 "unknown".to_string()
             } else {

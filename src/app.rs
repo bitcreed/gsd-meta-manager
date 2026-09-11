@@ -372,12 +372,33 @@ pub fn classify_status(status: &str) -> StatusCategory {
 /// separately from an absent STATE.md.
 pub const UNREADABLE_STATE_LABEL: &str = "! STATE.md unreadable";
 
+/// Prefixed onto the phase cell when STATE.md parsed only after this tool
+/// repaired it in memory (`ProjectState::state_md_recovered`).
+///
+/// **Why a marker rather than a silent success.** The label behind it is
+/// derived from a document this tool rewrote before believing; a strict reader
+/// would still refuse the file, and the value shown may not be the value a
+/// fixed file would show. A reader who cannot tell has been told something
+/// slightly false about the repository — exactly the argument
+/// [`crate::driver::untrusted`]'s truncation marker makes about a string, here
+/// applied to a document.
+pub const RECOVERED_STATE_MARKER: &str = "~ ";
+
 pub fn format_phase_display(state: &ProjectState) -> String {
     // A phase label derived from counts while the file that names the phase is
     // unreadable is a guess wearing a fact's clothes. Say so instead.
     if state.state_md_unreadable {
         return UNREADABLE_STATE_LABEL.to_string();
     }
+    let label = phase_display_label(state);
+    if state.state_md_recovered {
+        return format!("{RECOVERED_STATE_MARKER}{label}");
+    }
+    label
+}
+
+/// The phase label itself, before the recovered-state marker is considered.
+fn phase_display_label(state: &ProjectState) -> String {
     // ADR-2207: an explicit `current_phase_name` from STATE.md frontmatter is
     // the most accurate label; prefer it over the count-derived fallback.
     if !state.current_phase_name.is_empty() {
@@ -2105,6 +2126,31 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(format_phase_display(&state), UNREADABLE_STATE_LABEL);
+    }
+
+    /// A repaired STATE.md is a third state: the phase IS known, so the cell
+    /// must not read as unreadable — but the document was rewritten to get it,
+    /// so the cell must not read as a clean one either.
+    #[test]
+    fn a_recovered_state_md_renders_neither_the_plain_label_nor_the_unreadable_one() {
+        let state = ProjectState {
+            state_md_recovered: true,
+            current_phase_name: "Routine Event Logging".to_string(),
+            ..Default::default()
+        };
+        let cell = format_phase_display(&state);
+        assert_ne!(cell, UNREADABLE_STATE_LABEL);
+        assert_ne!(
+            cell, "Routine Event Logging",
+            "a repaired document must not present as a clean one"
+        );
+        assert_eq!(cell, "~ Routine Event Logging");
+        // And the clean read of the same label is the bare form.
+        let clean = ProjectState {
+            current_phase_name: "Routine Event Logging".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(format_phase_display(&clean), "Routine Event Logging");
     }
 
     #[test]

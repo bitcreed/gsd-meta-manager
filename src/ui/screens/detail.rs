@@ -102,6 +102,29 @@ fn unreadable_state_line(state: &state_reader::ProjectState) -> Option<Line<'sta
     )))
 }
 
+/// The line shown when `.planning/STATE.md` parsed only after this tool
+/// repaired it in memory.
+///
+/// Without it a repaired document renders exactly like a clean one, and the
+/// screen presents values taken from a file a strict reader still refuses. It
+/// follows the `Paused:` banner's shape rather than the unreadable banner's:
+/// same position, same one-line form, and **yellow rather than red**, because
+/// this is a condition the screen is reporting, not a fault that lost data.
+fn recovered_state_line(state: &state_reader::ProjectState) -> Option<Line<'static>> {
+    if !state.state_md_recovered {
+        return None;
+    }
+    // A fixed phrase this crate wrote — nothing from the document and nothing
+    // from the parser is interpolated, so it needs no escaping, and not running
+    // it through `shown` is what keeps that visible here.
+    Some(Line::from(Span::styled(
+        "  STATE.md repaired in memory to be read: the file on disk is unchanged",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )))
+}
+
 /// How many CHARACTERS of a session id the Sessions tab and the resume toast
 /// show.
 const SESSION_ID_DISPLAY_CHARS: usize = 8;
@@ -3179,6 +3202,9 @@ impl DetailScreen {
             if let Some(line) = unreadable_state_line(state) {
                 lines.push(line);
             }
+            if let Some(line) = recovered_state_line(state) {
+                lines.push(line);
+            }
 
             if state.paused {
                 let pause_line = if let Some(ref ctx_text) = state.pause_context {
@@ -3356,6 +3382,9 @@ impl DetailScreen {
             ]));
 
             if let Some(line) = unreadable_state_line(state) {
+                header_lines.push(line);
+            }
+            if let Some(line) = recovered_state_line(state) {
                 header_lines.push(line);
             }
 

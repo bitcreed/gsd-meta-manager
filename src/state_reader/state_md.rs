@@ -353,6 +353,23 @@ pub enum FrontmatterOutcome {
     Parsed(Box<StateFrontmatter>),
     /// No frontmatter block at all — the file does not open with `---`.
     Absent,
+    /// Frontmatter read, but only after [`repair_frontmatter_block`] rewrote
+    /// `repaired_lines` of it **in memory**. The file on disk is unchanged.
+    ///
+    /// **The third state this enum's own argument demands.** `Absent` and
+    /// `Unreadable` are separate because collapsing outcomes is what let the
+    /// original bug ship; a repaired document is a third thing again — not
+    /// clean, because this tool rewrote it before believing it, and not
+    /// unreadable, because the values did arrive. A `bool` on `Parsed` would
+    /// let a caller that never reads the flag present a repaired file as a
+    /// clean one; a variant makes every exhaustive match site a compile error
+    /// until it has classified the new state.
+    Recovered {
+        frontmatter: Box<StateFrontmatter>,
+        /// How many lines the repair rewrote. Always ≥ 1 — a repair that
+        /// changed nothing yields `Parsed`.
+        repaired_lines: u32,
+    },
     /// A frontmatter block is present but could not be read as a YAML mapping.
     Unreadable(FrontmatterFault),
 }
@@ -393,6 +410,158 @@ impl std::fmt::Display for FrontmatterFault {
     }
 }
 
+/// One conservative quote-in-place pass over a frontmatter block that failed to
+/// parse.
+///
+/// Returns the rewritten block and the number of lines it changed, or `None`
+/// when it changed nothing. **`None` is the contract that protects every valid
+/// file**: a block this function declines is byte-identical to the one it was
+/// given, so no valid document's meaning can be altered by the repair path
+/// existing. The tests assert `None` directly rather than merely observing that
+/// the error branch never fired.
+///
+/// The fault it exists for is the one measured on a real foreign STATE.md: a
+/// top-level PLAIN scalar containing a colon followed by a space, which YAML
+/// reads as a nested mapping key and then refuses ("mapping values are not
+/// allowed in this context"). Quoting that one value makes the whole document
+/// parse.
+///
+/// A line is a candidate only when EVERY one of these holds. Anything uncertain
+/// is left exactly as it is — the repair may only ever fix the one shape it
+/// understands:
+///
+/// - no leading whitespace (a top-level mapping entry; an indented key is out
+///   of scope, and an indented line may be the continuation of a quoted scalar);
+/// - it does not open with `#` (a comment) or `-` (a list item);
+/// - it splits on the FIRST `:` that is followed by a space or ends the line;
+/// - the key is a plain identifier-shaped token — this is what keeps a
+///   continuation line of a multi-line quoted scalar from being rewritten;
+/// - the value, trimmed, is non-empty (so `progress:` opening a nested mapping
+///   is never touched);
+/// - the value does not open with a quote (`"` `'`), a block-scalar indicator
+///   (`|` `>`), a flow opener (`[` `{`), a comment (`#`) or an anchor/alias/tag
+///   sigil (`&` `*` `!`);
+/// - and the value is genuinely not a legal plain scalar: it carries a
+///   colon-space, or it ends on a bare colon.
+///
+/// All of it is done over `char`s. The value is third-party text and a
+/// multi-byte character is exactly what arrives without warning — the defect
+/// class `crate::driver::untrusted::bounded` documents.
+fn repair_frontmatter_block(yaml: &str) -> Option<(String, u32)> {
+    let mut repaired_lines = 0u32;
+    let mut out = String::with_capacity(yaml.len() + 16);
+    for (index, raw_line) in yaml.split('\n').enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        // A `\r` belongs to the line terminator, not to the value; it is
+        // stripped for the decision and restored verbatim on re-emission.
+        let (line, carriage_return) = match raw_line.strip_suffix('\r') {
+            Some(stripped) => (stripped, true),
+            None => (raw_line, false),
+        };
+        match repair_line(line) {
+            Some(fixed) => {
+                repaired_lines += 1;
+                out.push_str(&fixed);
+            }
+            None => out.push_str(line),
+        }
+        if carriage_return {
+            out.push('\r');
+        }
+    }
+    (repaired_lines > 0).then_some((out, repaired_lines))
+}
+
+/// The candidate rule for a single line. `None` means "leave it alone".
+fn repair_line(line: &str) -> Option<String> {
+    let chars: Vec<char> = line.chars().collect();
+    let first = *chars.first()?;
+    if first.is_whitespace() || first == '#' || first == '-' {
+        return None;
+    }
+    // The FIRST `:` that is followed by a space or ends the line.
+    let split_at = chars
+        .iter()
+        .position(|&c| c == ':')
+        .filter(|&i| chars.get(i + 1).is_none_or(|&c| c == ' '))?;
+    let key: String = chars[..split_at].iter().collect();
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    {
+        return None;
+    }
+    let value: String = chars[split_at + 1..].iter().collect();
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let opener = value.chars().next()?;
+    if matches!(opener, '"' | '\'' | '|' | '>' | '[' | '{' | '&' | '*' | '!' | '#') {
+        return None;
+    }
+    // A value with none of these is a legal plain scalar; rewriting it would
+    // change a document that was never at fault on this line.
+    if !value.contains(": ") && !value.ends_with(':') {
+        return None;
+    }
+    Some(format!("{key}: {}", yaml_double_quoted(value)))
+}
+
+/// A value wrapped as a YAML double-quoted scalar.
+///
+/// Char-wise, never byte-wise: a naive byte scan for `"` or `\` over a value
+/// carrying em-dashes and 4-byte characters is the panic class this crate has
+/// already paid for twice (`untrusted::bounded`, `ui::roadmap_widget`).
+fn yaml_double_quoted(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\x{:02x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Build a [`StateFrontmatter`] from a frontmatter mapping.
+///
+/// One construction site for both the clean and the repaired path, so a field
+/// added to one cannot go missing from the other.
+fn frontmatter_from_mapping(map: &Mapping) -> StateFrontmatter {
+    let progress = match field(map, "progress") {
+        Some(Value::Mapping(m)) => ProgressInfo::from_mapping(m),
+        _ => ProgressInfo::default(),
+    };
+    StateFrontmatter {
+        gsd_state_version: opt_string_field(map, "gsd_state_version")
+            .as_deref()
+            .map(StateVersion::parse),
+        milestone: string_field(map, "milestone"),
+        milestone_name: string_field(map, "milestone_name"),
+        status: string_field(map, "status"),
+        stopped_at: string_field(map, "stopped_at"),
+        last_updated: string_field(map, "last_updated"),
+        last_activity: opt_string_field(map, "last_activity"),
+        current_phase: opt_string_field(map, "current_phase"),
+        current_phase_name: opt_string_field(map, "current_phase_name"),
+        current_plan: opt_string_field(map, "current_plan"),
+        progress,
+    }
+}
+
 /// Read STATE.md content, distinguishing "no frontmatter" from "broken
 /// frontmatter".
 ///
@@ -418,13 +587,23 @@ pub fn read_frontmatter(content: &str) -> FrontmatterOutcome {
         return FrontmatterOutcome::Unreadable(fault);
     };
 
-    let value: Value = match serde_yml::from_str(yaml) {
-        Ok(v) => v,
+    let (value, repaired_lines): (Value, u32) = match serde_yml::from_str(yaml) {
+        Ok(v) => (v, 0),
         Err(e) => {
             // The parser's message quotes the document, so it goes to the log
             // and stops there; the caller gets the classification.
             tracing::warn!("Unreadable STATE.md frontmatter: {}", e);
-            return FrontmatterOutcome::Unreadable(FrontmatterFault::InvalidYaml);
+            // ONE repair attempt and ONE reparse. Not a loop: a second pass
+            // would be this tool arguing with a document it already failed to
+            // understand, and every additional rewrite widens what it can
+            // silently change.
+            match repair_frontmatter_block(yaml) {
+                Some((repaired, count)) => match serde_yml::from_str::<Value>(&repaired) {
+                    Ok(v @ Value::Mapping(_)) => (v, count),
+                    _ => return FrontmatterOutcome::Unreadable(FrontmatterFault::InvalidYaml),
+                },
+                None => return FrontmatterOutcome::Unreadable(FrontmatterFault::InvalidYaml),
+            }
         }
     };
 
@@ -439,26 +618,15 @@ pub fn read_frontmatter(content: &str) -> FrontmatterOutcome {
         }
     };
 
-    let progress = match field(&map, "progress") {
-        Some(Value::Mapping(m)) => ProgressInfo::from_mapping(m),
-        _ => ProgressInfo::default(),
-    };
-
-    FrontmatterOutcome::Parsed(Box::new(StateFrontmatter {
-        gsd_state_version: opt_string_field(&map, "gsd_state_version")
-            .as_deref()
-            .map(StateVersion::parse),
-        milestone: string_field(&map, "milestone"),
-        milestone_name: string_field(&map, "milestone_name"),
-        status: string_field(&map, "status"),
-        stopped_at: string_field(&map, "stopped_at"),
-        last_updated: string_field(&map, "last_updated"),
-        last_activity: opt_string_field(&map, "last_activity"),
-        current_phase: opt_string_field(&map, "current_phase"),
-        current_phase_name: opt_string_field(&map, "current_phase_name"),
-        current_plan: opt_string_field(&map, "current_plan"),
-        progress,
-    }))
+    let frontmatter = Box::new(frontmatter_from_mapping(&map));
+    if repaired_lines > 0 {
+        FrontmatterOutcome::Recovered {
+            frontmatter,
+            repaired_lines,
+        }
+    } else {
+        FrontmatterOutcome::Parsed(frontmatter)
+    }
 }
 
 /// Parse STATE.md content into a [`StateFrontmatter`].
@@ -469,6 +637,9 @@ pub fn read_frontmatter(content: &str) -> FrontmatterOutcome {
 pub fn parse_state_md(content: &str) -> Option<StateFrontmatter> {
     match read_frontmatter(content) {
         FrontmatterOutcome::Parsed(fm) => Some(*fm),
+        // A repaired file IS readable through this entry point — the caller
+        // that needs to know it was repaired uses `read_frontmatter`.
+        FrontmatterOutcome::Recovered { frontmatter, .. } => Some(*frontmatter),
         FrontmatterOutcome::Absent | FrontmatterOutcome::Unreadable(_) => None,
     }
 }
@@ -746,5 +917,143 @@ mod tests {
         assert!(!is_all_phases_complete("v1.5.0 milestone complete"));
         assert!(!is_all_phases_complete("Awaiting next milestone"));
         assert!(!is_all_phases_complete("executing"));
+    }
+
+    // ========================================================================
+    // The quote-in-place repair pass
+    // ========================================================================
+
+    /// The one fault the repair exists for: a top-level PLAIN scalar carrying a
+    /// colon-space, which YAML reads as a nested mapping key and then refuses.
+    #[test]
+    fn a_plain_value_carrying_a_colon_space_is_quoted_in_place() {
+        let (repaired, count) =
+            repair_frontmatter_block("stopped_at: a. Earlier: b\n").expect("a repairable line");
+        assert_eq!(count, 1);
+        let value: Value = serde_yml::from_str(&repaired).expect("the repair must reparse");
+        let map = value.as_mapping().expect("a mapping");
+        assert_eq!(
+            map.get("stopped_at")
+                .and_then(Value::as_str),
+            Some("a. Earlier: b"),
+            "the value must round-trip with its colon intact"
+        );
+    }
+
+    /// Everything the candidate rule must decline to touch. Each of these is a
+    /// line shape the real sentriq STATE.md contains, and quoting any of them
+    /// would change a valid document's meaning.
+    #[test]
+    fn every_uncertain_line_shape_is_left_exactly_as_it_was() {
+        for untouched in [
+            "k: \"x: y\"\n",         // already double-quoted
+            "k: 'x: y'\n",           // already single-quoted
+            "k: |\n  a: b\n",        // block scalar (literal)
+            "k: >\n  a: b\n",        // block scalar (folded)
+            "k: [a, b]\n",           // flow sequence
+            "k: {a: 1}\n",           // flow mapping
+            "- x: y\n",              // list item
+            "# a: comment\n",        // comment
+            "k:\n  nested: 1\n",     // empty value opening a nested mapping
+            "  k: a: b\n",           // indented (not a top-level entry)
+            "k: &anchor\n",          // anchor
+            "k: *alias\n",           // alias
+            "k: !tag a: b\n",        // tag
+            "k: plain value\n",      // a legal plain scalar
+            "k: 2026-09-11T02:30\n", // a timestamp: colon, but no colon-SPACE
+        ] {
+            assert!(
+                repair_frontmatter_block(untouched).is_none(),
+                "the repair must decline {untouched:?} — quoting it would change a \
+                 valid document's meaning"
+            );
+        }
+    }
+
+    /// A repaired value carrying the two characters a double-quoted YAML scalar
+    /// gives meaning to must come back byte-identical. Without this an escape
+    /// bug degrades to `Unreadable` and reads as "not recoverable".
+    #[test]
+    fn a_value_containing_a_quote_and_a_backslash_round_trips_through_the_repair() {
+        let original = r#"he said "no": C:\path\to"#;
+        let block = format!("stopped_at: {original}\n");
+        let (repaired, _) = repair_frontmatter_block(&block).expect("a repairable line");
+        let value: Value = serde_yml::from_str(&repaired).expect("the repair must reparse");
+        assert_eq!(
+            value
+                .as_mapping()
+                .unwrap()
+                .get("stopped_at")
+                .and_then(Value::as_str),
+            Some(original)
+        );
+    }
+
+    /// The sentriq shape, reduced to the four structural features measured on
+    /// the real file: ONE plain `stopped_at` carrying `. Earlier: ` and
+    /// em-dashes, an ALREADY-QUOTED sibling whose quoted value also carries a
+    /// colon-space, a bare `progress:` opening an indented mapping, and a plain
+    /// numeric `current_phase`.
+    const SENTRIQ_SHAPED_STATE_MD: &str = "---\ngsd_state_version: 1.0\ncurrent_phase: 9\nstatus: planning\nstopped_at: Completed 260910-p8v (DTC history is vehicle-scoped — the trace recorder covers the connect path) and a follow-up. Earlier: 260910-x8d — the discovery keystone.\nlast_activity_desc: \"260910-x8d, the discovery keystone: Phase 5 builds its worklist PER MODULE\"\nprogress:\n  total_phases: 4\n  completed_phases: 0\n  total_plans: 2\n  completed_plans: 0\n---\n\n# Project State\n";
+
+    /// The exact `stopped_at` the fixture above carries. Asserted by equality
+    /// rather than by `contains`, so a repair that mangled or truncated the
+    /// value fails here instead of passing on a surviving substring.
+    const SENTRIQ_STOPPED_AT: &str = "Completed 260910-p8v (DTC history is vehicle-scoped — the trace recorder covers the connect path) and a follow-up. Earlier: 260910-x8d — the discovery keystone.";
+
+    #[test]
+    fn the_sentriq_shape_recovers_with_every_value_intact() {
+        let FrontmatterOutcome::Recovered {
+            frontmatter,
+            repaired_lines,
+        } = read_frontmatter(SENTRIQ_SHAPED_STATE_MD)
+        else {
+            panic!("the sentriq shape must recover, not fail and not read as clean");
+        };
+        assert_eq!(repaired_lines, 1, "exactly one line was at fault");
+        assert_eq!(frontmatter.stopped_at, SENTRIQ_STOPPED_AT);
+        assert_eq!(
+            frontmatter.stopped_at.matches('—').count(),
+            2,
+            "the em-dashes must survive a char-wise repair"
+        );
+        assert_eq!(
+            frontmatter.last_activity.as_deref(),
+            None,
+            "the already-quoted sibling is a different key and is not invented"
+        );
+        assert_eq!(frontmatter.status, "planning");
+        assert_eq!(frontmatter.current_phase.as_deref(), Some("9"));
+        assert_eq!(frontmatter.progress.total_phases, 4);
+        assert_eq!(frontmatter.progress.total_plans, 2);
+    }
+
+    /// The already-quoted sibling must arrive byte-identical — it is the line
+    /// the candidate rule exists to decline.
+    #[test]
+    fn the_already_quoted_sibling_of_a_repaired_line_is_untouched() {
+        let yaml = extract_frontmatter(SENTRIQ_SHAPED_STATE_MD).unwrap();
+        let (repaired, count) = repair_frontmatter_block(yaml).expect("one repairable line");
+        assert_eq!(count, 1);
+        let value: Value = serde_yml::from_str(&repaired).unwrap();
+        assert_eq!(
+            value
+                .as_mapping()
+                .unwrap()
+                .get("last_activity_desc")
+                .and_then(Value::as_str),
+            Some("260910-x8d, the discovery keystone: Phase 5 builds its worklist PER MODULE")
+        );
+    }
+
+    /// A file with no fault must never take the repair path — `Recovered` is a
+    /// claim about the document, and claiming it falsely is the spoofing risk
+    /// the distinct variant exists to close.
+    #[test]
+    fn a_clean_block_is_parsed_and_never_recovered() {
+        assert!(matches!(
+            read_frontmatter(REAL_GSD_STATE_MD),
+            FrontmatterOutcome::Parsed(_)
+        ));
     }
 }
