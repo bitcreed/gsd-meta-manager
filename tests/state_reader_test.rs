@@ -915,16 +915,26 @@ fn without_roadmap_phases_the_active_phase_falls_back_to_the_count() {
     assert_eq!(state.active_phase_number(), 3);
 }
 
-/// STATE.md's own `current_phase` outranks the disk frontier. GSD writes and
-/// advances that number deliberately; the frontier is an inference standing in
-/// for it when it is missing.
+/// The direction the clamp PRESERVES: STATE.md ahead of the disk frontier still
+/// wins. GSD advances `current_phase` on discussion, before any artifact of the
+/// new phase exists, so it is the only witness that work has moved on — and a
+/// frontier held back by an earlier phase left unfinished must not drag the
+/// dashboard back to it.
+///
+/// Phase 2 was deferred (planned, never executed) so the frontier sits at 2,
+/// while phase 3 is executed and phase 4 is where STATE.md says the work is.
+///
+/// This replaces an assertion of the opposite: STATE.md at 2 outranking a
+/// frontier at 3. That was the `Option::or` ladder's behaviour in the losing
+/// direction, and it is what let picsync's phase 3 draw `*` while the same scan
+/// called it `[Complete]`.
 #[test]
-fn state_md_phase_number_outranks_the_disk_frontier() {
+fn state_md_phase_number_wins_when_it_leads_the_disk_frontier() {
     let tmp = TempDir::new().unwrap();
     let planning = tmp.path();
     fs::write(
         planning.join("STATE.md"),
-        "---\ngsd_state_version: \"1.0\"\nstatus: verifying\ncurrent_phase: 2\n---\n",
+        "---\ngsd_state_version: \"1.0\"\nstatus: planning\ncurrent_phase: 4\n---\n",
     )
     .unwrap();
     fs::write(
@@ -932,22 +942,36 @@ fn state_md_phase_number_outranks_the_disk_frontier() {
         "# Roadmap\n\n\
          - [x] **Phase 1: One** - a\n\
          - [ ] **Phase 2: Two** - b\n\
-         - [ ] **Phase 3: Three** - c\n",
+         - [ ] **Phase 3: Three** - c\n\
+         - [ ] **Phase 4: Four** - d\n",
     )
     .unwrap();
-    // Phases 1 and 2 executed on disk, so the frontier is 3 — but phase 2 is
-    // still being verified, which is exactly what STATE.md says.
     let phases = planning.join("phases");
-    for n in ["01", "02"] {
+    // Phases 1 and 3 executed; phase 2 deferred with plans only, so it — not
+    // phase 4 — is the first phase below `Executed` and therefore the frontier.
+    for n in ["01", "03"] {
         let dir = phases.join(format!("{}-x", n));
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(format!("{}-01-PLAN.md", n)), "# Plan").unwrap();
         fs::write(dir.join(format!("{}-01-SUMMARY.md", n)), "# Summary").unwrap();
     }
+    let p2 = phases.join("02-deferred");
+    fs::create_dir_all(&p2).unwrap();
+    fs::write(p2.join("02-01-PLAN.md"), "# Plan").unwrap();
+    // Phase 4: discussed only — no directory on disk yet.
+
     let state = parse_project_state(planning);
-    assert_eq!(state.current_phase_number, Some(3), "the disk frontier");
-    assert_eq!(state.state_md_phase_number, Some(2));
-    assert_eq!(state.active_phase_number(), 2, "STATE.md wins");
+    assert_eq!(
+        state.current_phase_number,
+        Some(2),
+        "the frontier is the first phase below Executed"
+    );
+    assert_eq!(state.state_md_phase_number, Some(4));
+    assert_eq!(
+        state.active_phase_number(),
+        4,
+        "STATE.md leads the frontier, and leading is allowed"
+    );
 }
 
 // ============================================================================

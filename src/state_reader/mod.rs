@@ -55,9 +55,10 @@ pub struct ProjectState {
     ///
     /// Kept separately from [`Self::current_phase`], which resolves to a
     /// human-readable *label* and so loses the number as soon as GSD also
-    /// writes a `current_phase_name`. This is the authoritative answer to
-    /// "which phase is active" — GSD advances it deliberately — and
-    /// [`Self::active_phase_number`] prefers it over any inference.
+    /// writes a `current_phase_name`. GSD advances it deliberately, so it is
+    /// the one source that can say a phase is active before any artifact of it
+    /// exists — [`Self::active_phase_number`] lets it lead the disk frontier,
+    /// but clamps it up to that frontier rather than below it.
     pub state_md_phase_number: Option<u32>,
     /// Whether the project has a non-empty HANDOFF.md or HANDOFF.json in .planning/
     pub paused: bool,
@@ -111,25 +112,62 @@ impl ProjectState {
     /// roadmap highlights, a suggested command targets, and a browser opens
     /// into.
     ///
-    /// Three sources, in descending order of authority:
+    /// **A clamp, not a precedence ladder.** Two sources answer the question,
+    /// and the active phase is the *larger* of them:
     ///
-    /// 1. **STATE.md's `current_phase`.** GSD writes it and advances it; it is
-    ///    a statement, not an inference. It is also the source that was being
-    ///    thrown away — the whole reason this method exists.
-    /// 2. **The disk frontier** ([`Self::current_phase_number`]) — the first
-    ///    phase in `.planning/phases/` whose implementation is unfinished.
-    /// 3. **`completed_phases + 1`**, only when neither of the above can
-    ///    answer (no STATE.md phase, no parsable roadmap phases).
+    /// ```text
+    /// active = max(STATE.md's `current_phase`, the disk frontier)
+    /// ```
     ///
-    /// The arithmetic is last for a reason: the count comes from ROADMAP's
-    /// `## Progress` table, which records what has been *marked* complete.
-    /// picsync's said 2 complete of 8 while phase 4 was already planned, so
-    /// the arithmetic produced P3 for a project whose STATE.md and whose phase
-    /// directories both said 4.
+    /// - **STATE.md's `current_phase`** ([`Self::state_md_phase_number`]) is a
+    ///   statement rather than an inference: GSD writes it and advances it.
+    /// - **The disk frontier** ([`Self::current_phase_number`]) is the first
+    ///   phase in `.planning/phases/` whose implementation is unfinished.
+    ///
+    /// Each is the *only* witness for one direction, which is why neither can
+    /// simply outrank the other:
+    ///
+    /// **STATE.md may legitimately LEAD the disk.** A phase that has been
+    /// discussed or planned but not yet executed leaves the frontier behind it
+    /// — GSD has moved on and the directories have not caught up. This
+    /// repository has been exactly that case, and an inversion that let the
+    /// frontier win unconditionally would have reported a phase the project had
+    /// already left.
+    ///
+    /// **STATE.md must never drag the active phase BACKWARDS.** The frontier is
+    /// the harder evidence — PLAN/SUMMARY pairs and verification files that
+    /// exist — and it is a floor. picsync's STATE.md said `current_phase: 3`
+    /// while its phase 3 was `Complete` on disk with verification `Passed` and
+    /// its phase 4 was already planned; that number was written by an agent with
+    /// a partial view and, under the `Option::or` ladder this replaces, it
+    /// outranked the disk. Phase 3 then drew `*` (current) on the same screen
+    /// whose badge called it `[Complete]` — a self-contradicting render. A
+    /// number cannot un-write work that is on disk, so it does not get to.
+    ///
+    /// A `max` also restores an invariant the ladder broke: the frontier is the
+    /// phase [`Self::current_phase_status`] describes, so under `.or()` the
+    /// active phase could name phase 3 while the inference beside it described
+    /// phase 4. The clamp can only ever agree with the frontier or lead it.
+    ///
+    /// **`completed_phases + 1` only when BOTH sources are absent** (no STATE.md
+    /// phase and no parsable roadmap phases). The arithmetic is last for a
+    /// reason: the count comes from ROADMAP's `## Progress` table, which records
+    /// what has been *marked* complete. picsync's said 2 complete of 8 while
+    /// phase 4 was already planned, so the arithmetic produced P3 for a project
+    /// whose STATE.md and whose phase directories both said more.
+    ///
+    /// The comparison is numeric because both sources are already `u32` — each
+    /// is parsed with `parse::<u32>().ok()` at its own site, so a zero-padded
+    /// `04` and a bare `4` are the same number here, and a non-numeric or
+    /// prefixed id (`M-2`, `0.3`) arrives as `None` and simply does not
+    /// participate rather than collapsing to 0.
     pub fn active_phase_number(&self) -> u32 {
-        self.state_md_phase_number
-            .or(self.current_phase_number)
-            .unwrap_or(self.completed_phases + 1)
+        match (self.state_md_phase_number, self.current_phase_number) {
+            (Some(declared), Some(frontier)) => declared.max(frontier),
+            (Some(declared), None) => declared,
+            (None, Some(frontier)) => frontier,
+            (None, None) => self.completed_phases + 1,
+        }
     }
 
     /// The marker one roadmap entry earns — see [`PhaseMarker`] for why the
@@ -152,7 +190,7 @@ impl ProjectState {
 /// the same two inputs, and the inputs disagreed:
 ///
 /// - "is this phase current?" moved onto [`ProjectState::active_phase_number`]
-///   (the STATE.md → disk-frontier → arithmetic ladder), while
+///   (`max(STATE.md, disk frontier)`, arithmetic only when neither exists), while
 /// - "is this phase done?" stayed on `RoadmapPhase::completed`, the literal
 ///   `- [x]` checkbox in ROADMAP's `## Phases` list.
 ///
@@ -190,10 +228,13 @@ impl PhaseMarker {
     /// Decide one phase's marker from that phase's own evidence.
     ///
     /// **Current outranks done**, which inverts what both call sites used to
-    /// do — and it has to, now that "done" reads the disk. This repository's
-    /// own phase 19 is `Executed`/`HumanNeeded`: implementation finished,
-    /// verification waiting on a human, and STATE.md names it as the current
-    /// phase. Under the old "done first" order it would draw `+` and the
+    /// do — and it has to, now that "done" reads the disk. A phase can be both
+    /// at once: `Executed`/`HumanNeeded` is implementation finished with
+    /// verification waiting on a human, and
+    /// [`ProjectState::active_phase_number`] can still name such a phase —
+    /// STATE.md may name one the disk has already executed, and when every
+    /// phase is implemented the frontier itself falls back to the last one.
+    /// Under the old "done first" order those phases would draw `+` and the
     /// roadmap would carry no `*` at all — the one glyph a human scans for,
     /// missing from the one screen that exists to show where work is. A phase
     /// that is both finished and named as current is where the work is; it
