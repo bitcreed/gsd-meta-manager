@@ -371,7 +371,32 @@ pub enum FrontmatterOutcome {
         repaired_lines: u32,
     },
     /// A frontmatter block is present but could not be read as a YAML mapping.
-    Unreadable(FrontmatterFault),
+    Unreadable {
+        fault: FrontmatterFault,
+        /// Where the fault is, when the parser could say — FILE-relative.
+        /// `None` for every fault this crate classified itself, and for the
+        /// parser errors that carry no location.
+        position: Option<FrontmatterFaultPosition>,
+    },
+}
+
+/// Where a YAML fault is, as **numbers**: 1-based line and column, counted in
+/// the FILE rather than in the frontmatter body the parser was handed.
+///
+/// **The only thing the parser knows that may cross into a rendered string.**
+/// The message it came from quotes the third-party document — that is the
+/// reasoning [`FrontmatterFault`]'s own doc makes one field over, and the
+/// reason this is a pair of `u32`s rather than the message that carried them.
+/// A number cannot carry an instruction, and it cannot be prose an untrusted
+/// repository wrote.
+///
+/// A position that cannot name a line in the block it came from is dropped
+/// rather than clamped ([`file_relative_position`]), which also bounds the
+/// width of any label built from it by the file's own line count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrontmatterFaultPosition {
+    pub line: u32,
+    pub column: u32,
 }
 
 /// Why a present frontmatter block could not be read.
@@ -408,6 +433,69 @@ impl std::fmt::Display for FrontmatterFault {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(self.describe())
     }
+}
+
+/// Translate a parser-reported, BODY-relative position into a FILE-relative
+/// one, or drop it.
+///
+/// - `first_body_file_line` is the FILE line that body line 1 occupies — 2 for
+///   an ordinary `---\n…` file, more when the file opens with blank lines.
+/// - `body_lines` is how many lines the frontmatter block itself has, which is
+///   what makes the validity test a check against measured reality rather than
+///   an invented ceiling.
+///
+/// Yields `None` for a 0 line, for a line past the block's own end, and on any
+/// narrowing overflow — a position that wrapped would be a confident wrong
+/// number, which is the class of answer this whole module refuses to give.
+fn file_relative_position(
+    first_body_file_line: u64,
+    body_lines: u64,
+    body_line: u64,
+    column: u64,
+) -> Option<FrontmatterFaultPosition> {
+    if body_line == 0 {
+        return None;
+    }
+    let file_line = body_line.checked_add(first_body_file_line)?.checked_sub(1)?;
+    // The last nameable line of the block, in file coordinates.
+    let last_file_line = body_lines.checked_add(first_body_file_line)?.checked_sub(1)?;
+    if file_line > last_file_line {
+        return None;
+    }
+    Some(FrontmatterFaultPosition {
+        line: u32::try_from(file_line).ok()?,
+        column: u32::try_from(column).ok()?,
+    })
+}
+
+/// The FILE-relative position of a `serde_yml` error raised against `body`, a
+/// subslice of `content`.
+///
+/// The derivation, written down because it is the part that is easy to get
+/// subtly wrong: `body` is a slice **into** `content`, so the distance between
+/// their start pointers is the byte length of everything before it — the
+/// leading whitespace, the opening `---` and its newline. Counting the `\n` in
+/// that prefix and adding 1 gives the FILE line that body line 1 occupies.
+/// (`content.len() - body.len()` would NOT do: it also counts the document
+/// body after the closing `---`, which is most of the file.)
+fn yaml_fault_position(
+    content: &str,
+    body: &str,
+    error: &serde_yml::Error,
+) -> Option<FrontmatterFaultPosition> {
+    let location = error.location()?;
+    let prefix_len = (body.as_ptr() as usize).checked_sub(content.as_ptr() as usize)?;
+    let prefix = content.get(..prefix_len)?;
+    let first_body_file_line = u64::try_from(prefix.chars().filter(|&c| c == '\n').count())
+        .ok()?
+        .checked_add(1)?;
+    let body_lines = u64::try_from(body.lines().count()).ok()?;
+    file_relative_position(
+        first_body_file_line,
+        body_lines,
+        u64::try_from(location.line()).ok()?,
+        u64::try_from(location.column()).ok()?,
+    )
 }
 
 /// One conservative quote-in-place pass over a frontmatter block that failed to
@@ -584,7 +672,11 @@ pub fn read_frontmatter(content: &str) -> FrontmatterOutcome {
     let Some(yaml) = extract_frontmatter(content) else {
         let fault = FrontmatterFault::Unterminated;
         tracing::warn!("Unreadable STATE.md frontmatter: {}", fault);
-        return FrontmatterOutcome::Unreadable(fault);
+        // No parser ran, so there is nothing to locate.
+        return FrontmatterOutcome::Unreadable {
+            fault,
+            position: None,
+        };
     };
 
     let (value, repaired_lines): (Value, u32) = match serde_yml::from_str(yaml) {
@@ -593,6 +685,12 @@ pub fn read_frontmatter(content: &str) -> FrontmatterOutcome {
             // The parser's message quotes the document, so it goes to the log
             // and stops there; the caller gets the classification.
             tracing::warn!("Unreadable STATE.md frontmatter: {}", e);
+            // Taken from the FIRST error, so the position names where the
+            // document as written broke — not where the rewritten one did.
+            let unreadable = FrontmatterOutcome::Unreadable {
+                fault: FrontmatterFault::InvalidYaml,
+                position: yaml_fault_position(content, yaml, &e),
+            };
             // ONE repair attempt and ONE reparse. Not a loop: a second pass
             // would be this tool arguing with a document it already failed to
             // understand, and every additional rewrite widens what it can
@@ -600,9 +698,9 @@ pub fn read_frontmatter(content: &str) -> FrontmatterOutcome {
             match repair_frontmatter_block(yaml) {
                 Some((repaired, count)) => match serde_yml::from_str::<Value>(&repaired) {
                     Ok(v @ Value::Mapping(_)) => (v, count),
-                    _ => return FrontmatterOutcome::Unreadable(FrontmatterFault::InvalidYaml),
+                    _ => return unreadable,
                 },
-                None => return FrontmatterOutcome::Unreadable(FrontmatterFault::InvalidYaml),
+                None => return unreadable,
             }
         }
     };
@@ -614,7 +712,12 @@ pub fn read_frontmatter(content: &str) -> FrontmatterOutcome {
         _ => {
             let fault = FrontmatterFault::NotAMapping;
             tracing::warn!("Unreadable STATE.md frontmatter: {}", fault);
-            return FrontmatterOutcome::Unreadable(fault);
+            // This crate's own classification of a document the parser
+            // accepted; there is no fault position to report.
+            return FrontmatterOutcome::Unreadable {
+                fault,
+                position: None,
+            };
         }
     };
 
@@ -640,7 +743,7 @@ pub fn parse_state_md(content: &str) -> Option<StateFrontmatter> {
         // A repaired file IS readable through this entry point — the caller
         // that needs to know it was repaired uses `read_frontmatter`.
         FrontmatterOutcome::Recovered { frontmatter, .. } => Some(*frontmatter),
-        FrontmatterOutcome::Absent | FrontmatterOutcome::Unreadable(_) => None,
+        FrontmatterOutcome::Absent | FrontmatterOutcome::Unreadable { .. } => None,
     }
 }
 
@@ -794,17 +897,17 @@ mod tests {
         // Opened but never closed.
         assert!(matches!(
             read_frontmatter("---\nstatus: executing\n"),
-            FrontmatterOutcome::Unreadable(_)
+            FrontmatterOutcome::Unreadable { .. }
         ));
         // Closed, but not a mapping.
         assert!(matches!(
             read_frontmatter("---\n- one\n- two\n---\n"),
-            FrontmatterOutcome::Unreadable(_)
+            FrontmatterOutcome::Unreadable { .. }
         ));
         // Genuinely malformed YAML.
         assert!(matches!(
             read_frontmatter("---\nstatus: [unclosed\n---\n"),
-            FrontmatterOutcome::Unreadable(_)
+            FrontmatterOutcome::Unreadable { .. }
         ));
         // And the real thing still parses.
         assert!(matches!(
@@ -989,12 +1092,31 @@ mod tests {
         );
     }
 
-    /// The sentriq shape, reduced to the four structural features measured on
-    /// the real file: ONE plain `stopped_at` carrying `. Earlier: ` and
-    /// em-dashes, an ALREADY-QUOTED sibling whose quoted value also carries a
-    /// colon-space, a bare `progress:` opening an indented mapping, and a plain
-    /// numeric `current_phase`.
-    const SENTRIQ_SHAPED_STATE_MD: &str = "---\ngsd_state_version: 1.0\ncurrent_phase: 9\nstatus: planning\nstopped_at: Completed 260910-p8v (DTC history is vehicle-scoped — the trace recorder covers the connect path) and a follow-up. Earlier: 260910-x8d — the discovery keystone.\nlast_activity_desc: \"260910-x8d, the discovery keystone: Phase 5 builds its worklist PER MODULE\"\nprogress:\n  total_phases: 4\n  completed_phases: 0\n  total_plans: 2\n  completed_plans: 0\n---\n\n# Project State\n";
+    /// The sentriq shape, carrying the structural features measured on the real
+    /// file: ONE plain `stopped_at` carrying `. Earlier: ` and em-dashes, an
+    /// ALREADY-QUOTED sibling whose quoted value also carries a colon-space, a
+    /// bare `progress:` opening an indented mapping, and a plain numeric
+    /// `current_phase`.
+    ///
+    /// **The key order is the real file's**, so `stopped_at` — the one faulty
+    /// line — sits on FILE LINE 7 exactly as it does in the file this was
+    /// measured from. That is what lets the position tests pin the
+    /// body-relative-to-file-relative arithmetic against real geometry instead
+    /// of restating it.
+    const SENTRIQ_SHAPED_STATE_MD: &str = "---\ngsd_state_version: 1.0\nmilestone: v0.12\ncurrent_phase: 9\ncurrent_phase_name: Routine Event Logging\nstatus: planning\nstopped_at: Completed 260910-p8v (DTC history is vehicle-scoped — the trace recorder covers the connect path) and a follow-up. Earlier: 260910-x8d — the discovery keystone.\nlast_updated: \"2026-09-11T02:30:00.000Z\"\nlast_activity: 2026-09-10\nlast_activity_desc: \"260910-x8d, the discovery keystone: Phase 5 builds its worklist PER MODULE\"\nstate_head: a3a060725c82eb2a8fa1b5324ba4c13085e4c86f\nprogress:\n  total_phases: 4\n  completed_phases: 0\n  total_plans: 2\n  completed_plans: 0\nmilestone_name: Actuation Routines\n---\n\n# Project State\n";
+
+    /// The FILE line `SENTRIQ_SHAPED_STATE_MD` puts its one fault on — counted
+    /// in the fixture itself rather than restated, so the offset arithmetic is
+    /// pinned by the fixture's own geometry.
+    fn sentriq_fault_file_line() -> u32 {
+        let line = SENTRIQ_SHAPED_STATE_MD
+            .lines()
+            .position(|l| l.starts_with("stopped_at:"))
+            .expect("the fixture carries the faulty line")
+            + 1;
+        assert_eq!(line, 7, "the real file puts this line at file line 7");
+        u32::try_from(line).unwrap()
+    }
 
     /// The exact `stopped_at` the fixture above carries. Asserted by equality
     /// rather than by `contains`, so a repair that mangled or truncated the
@@ -1019,8 +1141,15 @@ mod tests {
         );
         assert_eq!(
             frontmatter.last_activity.as_deref(),
-            None,
-            "the already-quoted sibling is a different key and is not invented"
+            Some("2026-09-10"),
+            "every sibling of the repaired line arrives as it was written"
+        );
+        assert_eq!(frontmatter.last_updated, "2026-09-11T02:30:00.000Z");
+        assert_eq!(frontmatter.milestone, "v0.12");
+        assert_eq!(frontmatter.milestone_name, "Actuation Routines");
+        assert_eq!(
+            frontmatter.current_phase_name.as_deref(),
+            Some("Routine Event Logging")
         );
         assert_eq!(frontmatter.status, "planning");
         assert_eq!(frontmatter.current_phase.as_deref(), Some("9"));
@@ -1055,5 +1184,71 @@ mod tests {
             read_frontmatter(REAL_GSD_STATE_MD),
             FrontmatterOutcome::Parsed(_)
         ));
+    }
+
+    // ========================================================================
+    // The YAML fault position — FILE-relative numbers, and nothing else
+    // ========================================================================
+
+    fn fault_position(content: &str) -> Option<FrontmatterFaultPosition> {
+        match read_frontmatter(content) {
+            FrontmatterOutcome::Unreadable { position, .. } => position,
+            other => panic!("expected Unreadable, got {other:?}"),
+        }
+    }
+
+    /// The body handed to the YAML parser starts AFTER the opening `---`, so
+    /// every line the parser names is one line short of the file's own count.
+    /// Here the fault is on the file's line 2, and the parser calls it line 1.
+    #[test]
+    fn a_reported_line_is_translated_from_the_body_to_the_file() {
+        assert_eq!(
+            fault_position("---\nstatus: [unclosed\n---\n").map(|p| p.line),
+            Some(2)
+        );
+    }
+
+    /// The same translation against the real file's geometry: the one fault
+    /// sits on file line 7, which the parser reports as body line 6.
+    #[test]
+    fn the_sentriq_shape_made_unrecoverable_names_file_line_seven() {
+        // The repair rewrites the `stopped_at` line, but the document carries a
+        // second fault the repair is not allowed to touch (an unclosed flow
+        // collection on an indented line), so it stays unreadable — and the
+        // position still names the FIRST fault, where the parser stopped.
+        let unrecoverable =
+            SENTRIQ_SHAPED_STATE_MD.replace("  total_phases: 4", "  total_phases: [4");
+        let position = fault_position(&unrecoverable).expect("a located fault");
+        assert_eq!(position.line, sentriq_fault_file_line());
+        assert!(position.column > 0, "columns are 1-based");
+    }
+
+    /// Not every fault has a location, and an invented one would be worse than
+    /// none: the label falls back to its bare form.
+    #[test]
+    fn a_fault_the_parser_cannot_locate_carries_no_position() {
+        // Not a mapping — this crate's own classification, never the parser's.
+        assert_eq!(fault_position("---\n- one\n- two\n---\n"), None);
+        // Unterminated — the block never reaches the parser at all.
+        assert_eq!(fault_position("---\nstatus: executing\n"), None);
+    }
+
+    /// A line number that cannot name a line in the block it came from is not
+    /// information. It is DROPPED rather than clamped to an invented ceiling.
+    #[test]
+    fn a_position_beyond_the_blocks_own_line_count_is_dropped_not_clamped() {
+        // body line 1 is file line 2; the block has 3 lines, so file lines 2-4
+        // are the only nameable ones.
+        assert_eq!(
+            file_relative_position(2, 3, 3, 5),
+            Some(FrontmatterFaultPosition { line: 4, column: 5 })
+        );
+        assert_eq!(file_relative_position(2, 3, 4, 5), None, "one past the end");
+        assert_eq!(file_relative_position(2, 3, 0, 5), None, "a 0 line");
+        assert_eq!(
+            file_relative_position(2, 3, u64::from(u32::MAX) + 9, 5),
+            None,
+            "no wrap on overflow"
+        );
     }
 }

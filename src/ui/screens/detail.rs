@@ -92,10 +92,20 @@ fn unreadable_state_line(state: &state_reader::ProjectState) -> Option<Line<'sta
     }
     // `describe()` is a fixed phrase this crate wrote — it needs no escaping,
     // and is not run through `shown` so that fact stays visible here.
-    let detail = match state.state_md_fault {
+    let mut detail = match state.state_md_fault {
         Some(fault) => format!("  STATE.md unreadable: {}", fault.describe()),
         None => "  STATE.md unreadable".to_string(),
     };
+    // Same argument, arithmetic instead of prose: these are two integers this
+    // crate computed from a parser location, not text the repository wrote, so
+    // they are interpolated directly and deliberately NOT routed through
+    // `shown`/`render_for_terminal`. A number cannot carry an escape sequence.
+    if let Some(position) = state.state_md_fault_position {
+        detail.push_str(&format!(
+            " (line {}, column {})",
+            position.line, position.column
+        ));
+    }
     Some(Line::from(Span::styled(
         detail,
         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),

@@ -384,11 +384,29 @@ pub const UNREADABLE_STATE_LABEL: &str = "! STATE.md unreadable";
 /// applied to a document.
 pub const RECOVERED_STATE_MARKER: &str = "~ ";
 
+/// The unreadable-state cell, naming the fault's FILE line when one is known.
+///
+/// The bare constant is unchanged and is still what a location-less fault
+/// renders: an invented line number would be worse than none.
+///
+/// **The column is deliberately absent here.** The cell is width-constrained
+/// and a line is what a user acts on — they open the file and go to it. The
+/// column rides on the state and is rendered in the detail pane, which has the
+/// room.
+pub fn unreadable_state_label(
+    position: Option<crate::state_reader::state_md::FrontmatterFaultPosition>,
+) -> String {
+    match position {
+        Some(p) => format!("{UNREADABLE_STATE_LABEL} (line {})", p.line),
+        None => UNREADABLE_STATE_LABEL.to_string(),
+    }
+}
+
 pub fn format_phase_display(state: &ProjectState) -> String {
     // A phase label derived from counts while the file that names the phase is
     // unreadable is a guess wearing a fact's clothes. Say so instead.
     if state.state_md_unreadable {
-        return UNREADABLE_STATE_LABEL.to_string();
+        return unreadable_state_label(state.state_md_fault_position);
     }
     let label = phase_display_label(state);
     if state.state_md_recovered {
@@ -2126,6 +2144,42 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(format_phase_display(&state), UNREADABLE_STATE_LABEL);
+    }
+
+    /// "Unreadable" tells a user the file is broken; the line tells them where
+    /// to look. The number is the only thing the parser knew that crosses into
+    /// the cell — no parser vocabulary comes with it.
+    #[test]
+    fn an_unreadable_state_md_with_a_located_fault_names_its_file_line() {
+        let state = ProjectState {
+            state_md_unreadable: true,
+            state_md_fault: Some(crate::state_reader::state_md::FrontmatterFault::InvalidYaml),
+            state_md_fault_position: Some(
+                crate::state_reader::state_md::FrontmatterFaultPosition {
+                    line: 7,
+                    column: 218,
+                },
+            ),
+            ..Default::default()
+        };
+        let cell = format_phase_display(&state);
+        assert_eq!(cell, "! STATE.md unreadable (line 7)");
+        for parser_word in ["mapping values", "serde", "yaml", "YAML", "context"] {
+            assert!(
+                !cell.contains(parser_word),
+                "the parser's vocabulary must not reach the cell: {cell:?}"
+            );
+        }
+        // The column is carried on the state for the detail pane, not spent on
+        // a width-constrained cell.
+        assert!(!cell.contains("218"));
+    }
+
+    /// A fault the parser could not locate renders the bare constant. An
+    /// invented line number would be worse than none.
+    #[test]
+    fn an_unlocated_fault_renders_the_bare_unreadable_label() {
+        assert_eq!(unreadable_state_label(None), UNREADABLE_STATE_LABEL);
     }
 
     /// A repaired STATE.md is a third state: the phase IS known, so the cell

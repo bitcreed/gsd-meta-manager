@@ -105,6 +105,24 @@ pub struct ProjectState {
     /// census); a parser error quoting a foreign STATE.md would have been one
     /// more, held for the sake of a line number.
     pub state_md_fault: Option<state_md::FrontmatterFault>,
+    /// WHERE the frontmatter broke, when the parser could say — as FILE-relative
+    /// 1-based numbers.
+    ///
+    /// This is the other half of the argument the comment above makes. That one
+    /// says a parser message would have been third-party prose held "for the
+    /// sake of a line number"; the line number is now held **without** the
+    /// message, which is precisely the distinction being drawn. A `u32` pair
+    /// cannot carry an instruction and cannot be text a foreign repository
+    /// wrote.
+    ///
+    /// Deliberately **not** a `String`, for two independent reasons that
+    /// converge: `src/driver/untrusted.rs` forbids unclassified third-party
+    /// text crossing into the UI, and `tests/spawn_seam_guard.rs` censuses every
+    /// `String`/`Option<String>`/`Vec<String>` field on this struct against
+    /// `THIRD_PARTY_STRINGS` in both directions — so a stringly position would
+    /// force the census wider, which is the property this field exists to keep
+    /// intact.
+    pub state_md_fault_position: Option<state_md::FrontmatterFaultPosition>,
     /// `STATE.md`'s frontmatter was read only after an **in-memory** repair
     /// pass ([`state_md::FrontmatterOutcome::Recovered`]).
     ///
@@ -386,10 +404,11 @@ pub fn parse_project_state(planning_dir: &Path) -> ProjectState {
                 Some(*frontmatter)
             }
             state_md::FrontmatterOutcome::Absent => None,
-            state_md::FrontmatterOutcome::Unreadable(fault) => {
+            state_md::FrontmatterOutcome::Unreadable { fault, position } => {
                 // Recorded rather than swallowed: the render path shows it.
                 state.state_md_unreadable = true;
                 state.state_md_fault = Some(fault);
+                state.state_md_fault_position = position;
                 None
             }
         };
