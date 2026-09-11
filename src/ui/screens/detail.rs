@@ -8,7 +8,7 @@ use super::{AppContext, Screen, ScreenAction};
 use crate::action::Action;
 use crate::app::{classify_status, DetailSubView, StatusCategory};
 use crate::change_tracker::ChangeTracker;
-use crate::state_reader::disk_status::{DiskInference, DiskStatus};
+use crate::state_reader::disk_status::{DiskInference, DiskStatus, VerificationStatus};
 use crate::state_reader::git_ops;
 use crate::state_reader::queue_md;
 use crate::state_reader::{self, backlog, PhaseMarker};
@@ -945,7 +945,11 @@ fn disk_suffix_spans(
     // Append verified/inferred badge when gsd_integration is enabled
     if show_badges {
         if let Some(inf) = phase_disk_statuses.get(phase_number) {
-            if inf.has_summaries || inf.has_verification {
+            // Same evidence rule as the D-R-P-E-V row: `has_summaries` is
+            // count-derived, so the verification half is read from what the
+            // artifact concluded rather than from the filename existing. A
+            // `*-VERIFICATION.md` that states nothing is not a verified phase.
+            if inf.has_summaries || inf.verification_status != VerificationStatus::Missing {
                 spans.push(Span::styled(
                     " [verified]",
                     Style::default()
@@ -4750,13 +4754,23 @@ const STAGE_NAMES: [&str; 5] = ["Discuss", "Research", "Plan", "Execute", "Verif
 /// rather than growing a second progress display, which D-17 makes mandatory and
 /// FEATURES.md names as an anti-feature.
 pub(super) fn derive_all_stage_statuses(inf: &DiskInference) -> [StageStatus; 5] {
-    // Whether each stage's artifact is present
+    // Whether each stage's artifact is present.
+    //
+    // **E and V read the same KIND of evidence.** E has always been derived from
+    // the paired-summary count — what the artifacts amount to — while V read
+    // `has_verification`, a bare filename-presence flag. That asymmetry is what
+    // let a phase render `Execute [--]` (skipped, dimmed) beside a green
+    // `Verify [V]`: an undercount on the left could not move the right, so the
+    // row contradicted itself. V now reads what the verification artifact
+    // concluded, so a content-free `*-VERIFICATION.md` stub no longer outranks
+    // a counted Execute stage.
+    let verification_concluded = inf.verification_status != VerificationStatus::Missing;
     let present = [
-        inf.has_context,       // D: Discuss
-        inf.has_research,      // R: Research
-        inf.has_plans,         // P: Plan
-        inf.summary_count > 0, // E: Execute (at least one)
-        inf.has_verification,  // V: Verify
+        inf.has_context,        // D: Discuss
+        inf.has_research,       // R: Research
+        inf.has_plans,          // P: Plan
+        inf.summary_count > 0,  // E: Execute (at least one)
+        verification_concluded, // V: Verify
     ];
 
     // Execute is "complete" only if summary_count >= plan_count and plan_count > 0
@@ -4776,7 +4790,17 @@ pub(super) fn derive_all_stage_statuses(inf: &DiskInference) -> [StageStatus; 5]
             // Check if any later stage is present (skip detection per D-10)
             let any_later = present[i + 1..].iter().any(|&p| p);
             if any_later {
-                statuses[i] = StageStatus::Skipped;
+                // Execute is the one stage that cannot be skipped: nothing
+                // downstream of it can exist without it, so an absent E beside a
+                // present V is an inconsistency in the evidence, not a phase
+                // that deliberately bypassed execution. Render it unfinished
+                // rather than dimmed-out, so the row can never claim a phase was
+                // verified without being executed.
+                statuses[i] = if i == 3 {
+                    StageStatus::Current
+                } else {
+                    StageStatus::Skipped
+                };
             } else {
                 // Check if this is the next expected stage after the last complete one
                 let last_complete = (0..i).rev().find(|&j| present[j]);
@@ -9964,5 +9988,118 @@ mod tests {
                  was edited last."
             );
         }
+    }
+
+    // ── D-R-P-E-V: Execute and Verify read the same kind of evidence ──────
+
+    fn pipeline_text(inf: &DiskInference) -> String {
+        let statuses = derive_all_stage_statuses(inf);
+        build_pipeline_line(inf, &statuses)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    /// The reported symptom, as a unit: a phase whose summaries did not get
+    /// counted, beside a verification that passed. The row used to read
+    /// `[E]` as a dimmed magenta `[--]` — "Execute skipped" — next to a green
+    /// `[V]`, which is not a state a GSD phase can be in.
+    #[test]
+    fn execute_is_never_drawn_skipped_beside_a_verified_stage() {
+        let inf = DiskInference {
+            status: DiskStatus::Planned,
+            plan_count: 4,
+            summary_count: 0,
+            has_plans: true,
+            has_context: true,
+            has_research: true,
+            has_verification: true,
+            verification_status: VerificationStatus::Passed,
+            ..DiskInference::default()
+        };
+
+        let statuses = derive_all_stage_statuses(&inf);
+        assert_ne!(
+            statuses[3],
+            StageStatus::Skipped,
+            "Execute cannot be skipped: nothing downstream of it exists without it"
+        );
+        assert_eq!(statuses[3], StageStatus::Current);
+        assert!(
+            !pipeline_text(&inf).contains("[--]"),
+            "no stage may render as bypassed while a later stage reports a result"
+        );
+    }
+
+    /// Verify reads what the artifact CONCLUDED, not that a file exists. A
+    /// `*-VERIFICATION.md` with no readable status is `Missing`, and a phase
+    /// with only that is not verified — the same evidence rule Execute has
+    /// always used.
+    #[test]
+    fn verify_reads_the_verification_status_not_the_filename() {
+        let stub = DiskInference {
+            status: DiskStatus::Executed,
+            plan_count: 2,
+            summary_count: 2,
+            has_plans: true,
+            has_summaries: true,
+            has_verification: true,
+            verification_status: VerificationStatus::Missing,
+            ..DiskInference::default()
+        };
+        assert_ne!(
+            derive_all_stage_statuses(&stub)[4],
+            StageStatus::Complete,
+            "a content-free verification artifact must not read as a verified phase"
+        );
+
+        let concluded = DiskInference {
+            verification_status: VerificationStatus::GapsFound,
+            ..stub.clone()
+        };
+        assert_eq!(
+            derive_all_stage_statuses(&concluded)[4],
+            StageStatus::Complete,
+            "a verification that reached a conclusion is a completed Verify stage"
+        );
+    }
+
+    /// End to end through the real reader, on GSD's real filename shapes: a
+    /// slugged plan beside a slugless summary. This is the dogfood the existing
+    /// fixtures could not provide, because this repository's own phases are
+    /// slugless and so is every fixture in `disk_status.rs`.
+    #[test]
+    fn a_real_shaped_gsd_phase_renders_execute_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        for (plan, summary) in [
+            (
+                "15-01-translation-resolver-tracer-PLAN.md",
+                "15-01-SUMMARY.md",
+            ),
+            (
+                "15-02-dart-read-sites-and-the-lapse-path-PLAN.md",
+                "15-02-SUMMARY.md",
+            ),
+        ] {
+            std::fs::write(dir.path().join(plan), "plan").unwrap();
+            std::fs::write(dir.path().join(summary), "summary").unwrap();
+        }
+        std::fs::write(dir.path().join("15-CONTEXT.md"), "ctx").unwrap();
+        std::fs::write(dir.path().join("15-RESEARCH.md"), "res").unwrap();
+        std::fs::write(
+            dir.path().join("15-VERIFICATION.md"),
+            "---\nstatus: passed\n---\nbody",
+        )
+        .unwrap();
+
+        let inf = crate::state_reader::disk_status::infer_disk_status(dir.path());
+        assert_eq!(inf.status, DiskStatus::Complete);
+        assert_eq!(
+            derive_all_stage_statuses(&inf),
+            [StageStatus::Complete; 5],
+            "every stage of a finished, real-shaped phase is complete"
+        );
+        assert_eq!(pipeline_text(&inf), "  [D]---[R]---[P]---[E 2/2]---[V]");
     }
 }
