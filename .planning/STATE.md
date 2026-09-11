@@ -5,11 +5,11 @@ milestone_name: Autonomous Orchestration
 current_phase: 19
 current_phase_name: GITSAFE — Git & Blast-Radius Envelope
 status: verifying
-stopped_at: Completed 19-33-PLAN.md
-last_updated: "2026-09-10T02:35:05.863Z"
-last_activity: 2026-09-08
+stopped_at: Completed quick task 260910-uej (STATE.md frontmatter recovery pass)
+last_updated: "2026-09-11T04:34:49.676Z"
+last_activity: 2026-09-09
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: ae76ce98b0b6ecd90cb48efa68cb624b8d4e3c57
+state_head: 6e1911e214f44f91c26f427feaf0461d0c22b30f
 progress:
   total_phases: 10
   completed_phases: 6
@@ -64,7 +64,7 @@ Status: Phase complete — ready for verification
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-09-09 - Completed quick task 260909-s0n: for each config option provide some help text that explains the option and the choices.
+Last activity: 2026-09-10 - Completed quick task 260910-uej: STATE.md frontmatter recovery pass and actionable fault position
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -396,11 +396,12 @@ Recent decisions affecting current work:
 | 260908-uqq | Fix the CLI 2.1.266 startup deadlock — release the prompt on a `prompt_release_grace` instead of waiting forever for a `system/init` that arrives only after stdin; stop labelling a pre-gate stall `spawn_failed`; put the terminal reason in `journal.jsonl`. The D-06 zero-token refusal claim is now scoped to the eager arm only, corrected at 13 sites | 2026-09-08 | 114de68, 2fb6592 | [260908-uqq](./quick/260908-uqq-fix-driver-startup-deadlock-on-cli-2-1-2/) |
 | 260908-w0d | Open sessions where the user actually is: inside tmux both launch sites now open a new window on the running server, and the GUI fallback discovers the desktop's real default terminal (`xdg-terminal-exec` → `x-terminal-emulator` → candidate list) instead of taking the first hardcoded name that happens to be installed. `$TERMINAL` demoted below tmux (D-01). Separator table extended with the measured `ptyxis`/`xdg-terminal-exec` → `--` and `x-terminal-emulator` → `-e` rows; all three source-derived pins updated to keep guarding, and pin 3's previously vacuous assertion replaced | 2026-09-08 | 46318ea, 05b3592, aa457c2 | [260908-w0d](./quick/260908-w0d-prefer-tmux-for-opening-sessions-discove/) |
 | 260909-s0n | for each config option provide some help text that explains the option and the choices. | 2026-09-09 | ae76ce9 | [260909-s0n-for-each-config-option-provide-some-help](./quick/260909-s0n-for-each-config-option-provide-some-help/) |
+| 260910-uej | A frontmatter block that libyaml rejects for a colon-space inside an unquoted plain scalar now gets ONE conservative in-memory quote-in-place repair and a single reparse, so sentriq's 1270-byte `stopped_at` reads instead of blanking the project. Recovery is a distinct fourth outcome (`FrontmatterOutcome::Recovered`), never a silent success: the dashboard cell is prefixed `~ ` and the detail pane says the file on disk is unchanged. A still-unreadable file now carries the fault position as FILE-relative numbers — `! STATE.md unreadable (line 7)`, detail `(line 7, column 218)` — numbers only, no parser message text, per `src/driver/untrusted.rs`. Verified: `passed` 6/6, +18 tests | 2026-09-10 | 109192f, 4930e8a, 6e1911e | [260910-uej](./quick/260910-uej-state-md-frontmatter-recovery-pass-and-a/) |
 
 ## Session Continuity
 
-Last session: 2026-09-05T02:35:03.808Z
-Stopped at: Completed 19-33-PLAN.md
+Last session: 2026-09-11T04:34:49.236Z
+Stopped at: Completed quick task 260910-uej (STATE.md frontmatter recovery pass)
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
 Resume file: None
