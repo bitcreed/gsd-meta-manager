@@ -923,11 +923,6 @@ fn without_roadmap_phases_the_active_phase_falls_back_to_the_count() {
 ///
 /// Phase 2 was deferred (planned, never executed) so the frontier sits at 2,
 /// while phase 3 is executed and phase 4 is where STATE.md says the work is.
-///
-/// This replaces an assertion of the opposite: STATE.md at 2 outranking a
-/// frontier at 3. That was the `Option::or` ladder's behaviour in the losing
-/// direction, and it is what let picsync's phase 3 draw `*` while the same scan
-/// called it `[Complete]`.
 #[test]
 fn state_md_phase_number_wins_when_it_leads_the_disk_frontier() {
     let tmp = TempDir::new().unwrap();
@@ -982,13 +977,19 @@ fn state_md_phase_number_wins_when_it_leads_the_disk_frontier() {
 /// matching summaries, a passing `*-VERIFICATION.md`) while ROADMAP's `## Phases`
 /// checkbox is still `- [ ]` and its `## Progress` Status cell says something
 /// other than the literal `Complete`/`Done` the counter matches.
+///
+/// **STATE.md's `current_phase` is picsync's real value — 3, one BEHIND the
+/// disk frontier**, not the 4 this fixture used to claim. That single digit is
+/// the whole of the `active_phase_number` clamp bug: a GSD agent with a partial
+/// view wrote 3 while phase 3 was already `Complete`/`Passed` on disk and phase
+/// 4 was already planned, and the `Option::or` ladder let it outrank both.
 fn picsync_shaped_planning_dir() -> TempDir {
     let tmp = TempDir::new().unwrap();
     let planning = tmp.path();
 
     fs::write(
         planning.join("STATE.md"),
-        "---\ngsd_state_version: \"1.0\"\nstatus: executing\ncurrent_phase: 4\n---\n",
+        "---\ngsd_state_version: \"1.0\"\nstatus: executing\ncurrent_phase: 3\n---\n",
     )
     .unwrap();
 
@@ -1151,10 +1152,16 @@ fn without_disk_inference_the_marker_falls_back_to_the_roadmap_checkbox() {
     );
 }
 
-/// Current outranks done. This repository's own phase 19 is `Executed` with
-/// verification `human_needed` and is what STATE.md names as current: under the
-/// opposite order the roadmap would draw `+` there and carry no `*` at all —
-/// the glyph a human scans for, missing from the screen that exists to show it.
+/// Current outranks done, pinned on `decide` directly: a phase that is
+/// `Executed` with verification `human_needed` — implementation finished, a
+/// human's judgement outstanding — still draws `*` when it is the active one.
+/// Under the opposite order the roadmap would draw `+` there and, for a project
+/// whose active phase is a finished one, carry no `*` at all — the glyph a human
+/// scans for, missing from the screen that exists to show it.
+///
+/// The active phase is supplied here rather than derived; which phase
+/// `active_phase_number` picks is the clamp's business and is pinned
+/// end-to-end above.
 #[test]
 fn the_active_phase_keeps_the_current_glyph_even_when_it_is_finished() {
     use gsd_meta_manager::state_reader::disk_status::{DiskInference, DiskStatus};
@@ -1182,9 +1189,13 @@ fn the_active_phase_keeps_the_current_glyph_even_when_it_is_finished() {
     );
 }
 
-/// This repository's own shape: STATE.md names phase 19 while phases 20 and 21
-/// are further along on disk. 20 and 21 used to draw `o` — *future* — because
+/// This repository's own disk shape: STATE.md names phase 19 while phases 20 and
+/// 21 are further along on disk. 20 and 21 used to draw `o` — *future* — because
 /// their roadmap checkboxes are unchecked and they are not the current phase.
+///
+/// The active phase is passed as 19 to isolate `decide`'s ordering. Note that
+/// `active_phase_number` no longer returns 19 for this shape: 19/20/21 are all
+/// at or above `Executed`, so the frontier — and therefore the clamp — is 22.
 #[test]
 fn phases_past_the_named_current_one_read_done_not_future() {
     use gsd_meta_manager::state_reader::disk_status::{DiskInference, DiskStatus};
@@ -1210,4 +1221,288 @@ fn phases_past_the_named_current_one_read_done_not_future() {
     assert_eq!(PhaseMarker::decide("20", false, &disk, 19), PhaseMarker::Done);
     assert_eq!(PhaseMarker::decide("21", false, &disk, 19), PhaseMarker::Done);
     assert_eq!(PhaseMarker::decide("22", false, &disk, 19), PhaseMarker::Future);
+}
+
+// ============================================================================
+// The active phase is a CLAMP: max(STATE.md, disk frontier)
+//
+// STATE.md may lead the disk (a phase discussed or planned before any artifact
+// of it exists) but must never drag the active phase below work that is
+// demonstrably on disk. The `Option::or` ladder this replaces let picsync's
+// `current_phase: 3` outrank a phase 3 that was `Complete`/`Passed` and a phase
+// 4 that was already planned, so phase 3 drew `*` (current) on the same screen
+// whose badge called it `[Complete]`.
+// ============================================================================
+
+/// picsync's exact reported shape, end to end: STATE.md says 3, the disk
+/// frontier is 4, phase 3 is `Complete` with a passing verification. The active
+/// phase must be 4 and phase 3 must read done.
+#[test]
+fn state_md_behind_the_disk_frontier_is_clamped_up_to_it() {
+    let tmp = picsync_shaped_planning_dir();
+    let state = parse_project_state(tmp.path());
+
+    assert_eq!(
+        state.state_md_phase_number,
+        Some(3),
+        "STATE.md's own number, one behind the frontier"
+    );
+    assert_eq!(
+        state.current_phase_number,
+        Some(4),
+        "phase 4 is planned but not executed — it is the frontier"
+    );
+    assert_eq!(
+        state.active_phase_number(),
+        4,
+        "the frontier is a floor: a STATE.md number cannot un-write work on disk"
+    );
+
+    // The self-contradiction the bug produced: `*` on a phase the same scan
+    // calls Complete.
+    let phase3 = state
+        .phases
+        .iter()
+        .find(|p| p.number == "3")
+        .expect("phase 3 parsed from the roadmap");
+    assert_eq!(
+        state.phase_marker(phase3),
+        PhaseMarker::Done,
+        "Complete on disk with verification passed — never `*`"
+    );
+    assert_eq!(
+        state.phase_disk_statuses.get("3").map(|d| d.status),
+        Some(gsd_meta_manager::state_reader::disk_status::DiskStatus::Complete),
+        "the badge beside the glyph still says Complete — they must agree"
+    );
+}
+
+/// The glyph column read off rendered cells, not off the decision that produced
+/// them — the only form of this assertion that catches a marker which is decided
+/// correctly and drawn wrong.
+///
+/// picsync's reported row, verbatim: `1:+ 2:+ 3:+ 4:* 5:o`. (Its real roadmap has
+/// eight phases; this fixture carries the five the report turns on.)
+#[test]
+fn the_rendered_roadmap_draws_the_current_glyph_on_the_frontier_not_behind_it() {
+    use gsd_meta_manager::ui::roadmap_widget::RoadmapWidget;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Widget;
+
+    let tmp = picsync_shaped_planning_dir();
+    let state = parse_project_state(tmp.path());
+
+    let area = Rect::new(0, 0, 60, 40);
+    let mut buf = Buffer::empty(area);
+    RoadmapWidget {
+        phases: &state.phases,
+        // The one notion of "current phase". Every call site goes through it.
+        current_phase_num: state.active_phase_number(),
+        disk_statuses: &state.phase_disk_statuses,
+        scroll_offset: 0,
+    }
+    .render(area, &mut buf);
+
+    assert_eq!(
+        rendered_glyph_column(&buf, area),
+        vec!['+', '+', '+', '*', 'o'],
+        "phase 3 is done on disk; the frontier, phase 4, is where the `*` belongs"
+    );
+}
+
+/// The glyph column, read off the rendered cells. Mirrors the helper in
+/// `ui::roadmap_widget`'s own tests: a content line is the one carrying
+/// `P<number>:`, and the glyph sits immediately before its leading space.
+fn rendered_glyph_column(buf: &ratatui::buffer::Buffer, area: ratatui::layout::Rect) -> Vec<char> {
+    let mut out = Vec::new();
+    for y in area.y..area.y + area.height {
+        let row: String = (area.x..area.x + area.width)
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<Vec<_>>()
+            .concat();
+        if let Some(i) = row.find(" P") {
+            if row[i + 2..].starts_with(|c: char| c.is_ascii_digit()) {
+                if let Some(g) = row[..i].chars().next_back() {
+                    out.push(g);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Zero-padded roadmap ids and a zero-padded STATE.md number resolve to the same
+/// integers as bare ones — end to end, through the real parse. This codebase has
+/// shipped the `04` vs `4` bug class before.
+#[test]
+fn zero_padded_phase_ids_clamp_and_mark_like_bare_ones() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path();
+    fs::write(
+        planning.join("STATE.md"),
+        "---\ngsd_state_version: \"1.0\"\nstatus: executing\ncurrent_phase: \"03\"\n---\n",
+    )
+    .unwrap();
+    fs::write(
+        planning.join("ROADMAP.md"),
+        "# Roadmap\n\n\
+         - [ ] **Phase 03: Three** - c\n\
+         - [ ] **Phase 04: Four** - d\n\
+         - [ ] **Phase 05: Five** - e\n",
+    )
+    .unwrap();
+    let phases = planning.join("phases");
+    let p3 = phases.join("03-three");
+    fs::create_dir_all(&p3).unwrap();
+    fs::write(p3.join("03-01-PLAN.md"), "# Plan").unwrap();
+    fs::write(p3.join("03-01-SUMMARY.md"), "# Summary").unwrap();
+    let p4 = phases.join("04-four");
+    fs::create_dir_all(&p4).unwrap();
+    fs::write(p4.join("04-01-PLAN.md"), "# Plan").unwrap();
+
+    let state = parse_project_state(planning);
+    assert_eq!(
+        state.state_md_phase_number,
+        Some(3),
+        "`03` is the integer 3, not a string"
+    );
+    assert_eq!(
+        state.current_phase_number,
+        Some(4),
+        "the frontier, from `04`"
+    );
+    assert_eq!(state.active_phase_number(), 4);
+
+    let marker_of = |n: &str| {
+        let p = state.phases.iter().find(|p| p.number == n).unwrap();
+        state.phase_marker(p)
+    };
+    assert_eq!(marker_of("03"), PhaseMarker::Done);
+    assert_eq!(
+        marker_of("04"),
+        PhaseMarker::Current,
+        "the zero-padded roadmap id matches the bare active number"
+    );
+    assert_eq!(marker_of("05"), PhaseMarker::Future);
+}
+
+/// The comparison is numeric, not lexical. `"9" > "10"` as strings; 9 < 10 as
+/// numbers, and the frontier at 10 must win.
+#[test]
+fn the_clamp_compares_numerically_not_lexically() {
+    use gsd_meta_manager::state_reader::ProjectState;
+
+    let state = ProjectState {
+        state_md_phase_number: Some(9),
+        current_phase_number: Some(10),
+        ..Default::default()
+    };
+    assert_eq!(
+        state.active_phase_number(),
+        10,
+        "lexical max would answer 9 — `\"9\"` sorts after `\"10\"`"
+    );
+
+    // And the same the other way: a leading STATE.md still leads.
+    let state = ProjectState {
+        state_md_phase_number: Some(10),
+        current_phase_number: Some(9),
+        ..Default::default()
+    };
+    assert_eq!(state.active_phase_number(), 10);
+
+    // Equal sources are a no-op, not a bump.
+    let state = ProjectState {
+        state_md_phase_number: Some(7),
+        current_phase_number: Some(7),
+        ..Default::default()
+    };
+    assert_eq!(state.active_phase_number(), 7);
+}
+
+/// Every degrade path in one place: either source may be absent, and the
+/// arithmetic fallback fires only when BOTH are.
+#[test]
+fn the_clamp_degrades_when_a_source_is_missing() {
+    use gsd_meta_manager::state_reader::ProjectState;
+
+    // Only STATE.md (no parsable roadmap phases, so no frontier).
+    let state = ProjectState {
+        state_md_phase_number: Some(6),
+        current_phase_number: None,
+        completed_phases: 1,
+        ..Default::default()
+    };
+    assert_eq!(
+        state.active_phase_number(),
+        6,
+        "one source present — it answers; the count does not get a vote"
+    );
+
+    // Only the frontier (no STATE.md, or an unreadable one).
+    let state = ProjectState {
+        state_md_phase_number: None,
+        current_phase_number: Some(4),
+        completed_phases: 1,
+        ..Default::default()
+    };
+    assert_eq!(state.active_phase_number(), 4);
+
+    // Neither: the ROADMAP `## Progress` count, the weakest source, and the only
+    // case in which it is consulted at all.
+    let state = ProjectState {
+        state_md_phase_number: None,
+        current_phase_number: None,
+        completed_phases: 2,
+        ..Default::default()
+    };
+    assert_eq!(state.active_phase_number(), 3);
+
+    // Nothing at all: phase 1 is where a project with no evidence starts.
+    assert_eq!(ProjectState::default().active_phase_number(), 1);
+}
+
+/// A roadmap of non-numeric / prefixed ids (`M-2`, `0.3`, `4a`) must not panic
+/// and must not collapse to phase 0. Both clamp sources parse with
+/// `parse::<u32>().ok()`, so such an id arrives as `None` and simply does not
+/// participate — the tolerance that already existed upstream, preserved.
+#[test]
+fn non_numeric_phase_ids_do_not_panic_or_become_zero() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path();
+    fs::write(
+        planning.join("STATE.md"),
+        "---\ngsd_state_version: \"1.0\"\nstatus: executing\ncurrent_phase: M-2\nprogress:\n  total_phases: 3\n  completed_phases: 1\n---\n",
+    )
+    .unwrap();
+    fs::write(
+        planning.join("ROADMAP.md"),
+        "# Roadmap\n\n\
+         - [x] **Phase M-1: Migration One** - a\n\
+         - [ ] **Phase M-2: Migration Two** - b\n\
+         - [ ] **Phase 0.3: Fractional** - c\n",
+    )
+    .unwrap();
+
+    let state = parse_project_state(planning);
+    assert_eq!(
+        state.state_md_phase_number, None,
+        "`M-2` is not a u32 — it abstains rather than parsing as 0"
+    );
+    assert_eq!(
+        state.current_phase_number, None,
+        "no roadmap id parses, so there is no numeric frontier either"
+    );
+    // Both absent: the arithmetic fallback, and never 0.
+    assert_eq!(state.active_phase_number(), 2, "completed_phases + 1");
+
+    // Markers still resolve for every phase — no panic, none spuriously current.
+    for p in &state.phases {
+        assert_ne!(
+            state.phase_marker(p),
+            PhaseMarker::Current,
+            "no non-numeric id can match a numeric active phase"
+        );
+    }
 }
