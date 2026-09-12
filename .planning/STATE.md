@@ -352,6 +352,14 @@ Recent decisions affecting current work:
 
 - MSRV rises 1.85 -> 1.87 in Phase 15 (process-wrap floor)
 
+- Visualize execution waves per phase in roadmap — group/render plan
+  dependency-wave metadata (if derivable) per phase in the roadmap view
+  (`.planning/todos/pending/2026-09-11-visualize-execution-waves-per-phase-in-roadmap.md`)
+- Show plan token estimate and actual counts — parse `estimate.tokens` from
+  `*-PLAN.md` frontmatter and `actuals.tokens` from `*-SUMMARY.md` frontmatter,
+  surfaced per plan
+  (`.planning/todos/pending/2026-09-11-show-plan-token-estimate-and-actual-counts.md`)
+
 ### Blockers/Concerns
 
 - Tab bar overflow at 80 columns when adding 8th tab (Archive) -- resolve at Phase 12 design time
