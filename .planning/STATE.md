@@ -347,6 +347,8 @@ Recent decisions affecting current work:
 - [2026-08-22] [ui] Phases panel marker/grey disagrees with the disk-inferred stage — [todo file](.planning/todos/pending/2026-08-22-phase-list-grey-marker-disagrees-with-disk-inferred-stage.md)
 - [2026-09-12] [ui] Show plan token estimate and actual counts — [todo file](.planning/todos/pending/2026-09-11-show-plan-token-estimate-and-actual-counts.md) — Needs TBD. Likely needs:.
 - [2026-09-12] [ui] Visualize execution waves per phase in roadmap — [todo file](.planning/todos/pending/2026-09-11-visualize-execution-waves-per-phase-in-roadmap.md) — Needs TBD. Likely needs:.
+- [2026-09-15] [ui] Add b keybinding to open backlog from main screen — [todo file](.planning/todos/pending/2026-09-15-add-b-keybinding-to-open-backlog-from-main-screen.md)
+- [2026-09-15] [ui] Backlog tab shows empty despite non-zero count on overview — [todo file](.planning/todos/pending/2026-09-15-backlog-tab-shows-empty-despite-non-zero-count-on-overview.md)
 - [2026-09-15] [ui] Make queue input truly multi-line — [todo file](.planning/todos/pending/2026-09-15-make-queue-input-truly-multi-line.md) — Needs TBD — this todo's deliverable is a **UX proposal**, not a fix. Whoever picks.
 - [2026-09-15] [config] Sync gsd-core config and expose new options — [todo file](.planning/todos/pending/2026-09-15-sync-gsd-core-config-and-expose-new-options.md) — Needs TBD — sub-requirements to cover:.
 
