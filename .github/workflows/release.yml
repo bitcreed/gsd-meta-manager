@@ -9,9 +9,40 @@ permissions:
   contents: read
 
 jobs:
+  msrv:
+    name: Verify the declared MSRV floor compiles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the declared MSRV toolchain
+        uses: dtolnay/rust-toolchain@1.88.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check manifest rust-version matches this job's toolchain
+        run: |
+          MANIFEST_MSRV=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].rust_version')
+          if [ -z "$MANIFEST_MSRV" ] || [ "$MANIFEST_MSRV" = "null" ]; then
+            echo "::error::Cargo.toml declares no [package] rust-version; this job cannot certify a floor that does not exist" >&2
+            exit 1
+          fi
+          TOOLCHAIN_MSRV=$(rustc --version | awk '{print $2}')
+          MANIFEST_MM=$(printf '%s' "$MANIFEST_MSRV" | cut -d. -f1,2)
+          TOOLCHAIN_MM=$(printf '%s' "$TOOLCHAIN_MSRV" | cut -d. -f1,2)
+          if [ "$MANIFEST_MM" != "$TOOLCHAIN_MM" ]; then
+            echo "::error::Cargo.toml rust-version is $MANIFEST_MSRV but this job installed rustc $TOOLCHAIN_MSRV; update the dtolnay/rust-toolchain ref in the msrv job so CI tests the declared floor" >&2
+            exit 1
+          fi
+          echo "Manifest floor $MANIFEST_MSRV agrees with toolchain $TOOLCHAIN_MSRV"
+
+      - name: Compile every target on the declared floor
+        run: cargo check --all-targets --locked
+
   publish:
     name: Verify and publish to crates.io
     runs-on: ubuntu-latest
+    needs: msrv
     steps:
       - uses: actions/checkout@v4
 

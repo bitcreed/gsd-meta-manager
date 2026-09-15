@@ -2,7 +2,17 @@
 name = "gsd-meta-manager"
 version = "1.6.0"
 edition = "2021"
-rust-version = "1.87"
+# FLOOR PROVENANCE. This value is not hand-chosen: it is the highest
+# `rust-version` declared anywhere in the resolved dependency graph. It is
+# currently 1.88.0, set by the `ratatui` 0.30.x family together with `time`,
+# `darling` and the `icu_*` 2.3.x crates reached through `icu_properties` — no
+# single dependency owns it. It moves under an ordinary `cargo update` with no
+# edit to this manifest, which is exactly how it drifted past the previously
+# declared value unnoticed; the `msrv` job in .github/workflows/release.yml is
+# what now catches that before a publish. Re-measure with:
+#   cargo metadata --format-version 1 --locked \
+#     | jq -r '.packages[].rust_version | select(. != null)' | sort -V | tail -1
+rust-version = "1.88"
 authors = ["Andreas Brauchli <andy@bitcreed.us>"]
 description = "TUI command center for managing multiple GSD-run projects from a single interface."
 license = "MIT"
@@ -33,9 +43,7 @@ futures = "0.3"
 notify = "8"
 notify-debouncer-full = "0.7"
 tui-textarea = { version = "0.7", features = ["ratatui"] }
-# `tokio1` is NOT a default feature and the crate is inert without it. This
-# dependency's own manifest declares rust-version = "1.87.0", which is where
-# the [package] rust-version floor above comes from.
+# `tokio1` is NOT a default feature and the crate is inert without it.
 # No line-framing crate is added: NDJSON framing uses tokio::io::BufReader::lines()
 # plus an explicit byte-length bound, so tokio-util is deliberately not a dependency.
 process-wrap = { version = "9.1.0", features = ["tokio1"] }
