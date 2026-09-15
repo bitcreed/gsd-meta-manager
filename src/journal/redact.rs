@@ -215,7 +215,7 @@ const PARTS: &[(&str, &str, &str, SecretClass)] = &[
 
 /// The generic shape rules, compiled once as a single alternation.
 ///
-/// `LazyLock` is stable since 1.80 and this crate's MSRV is 1.87, so the
+/// `LazyLock` is stable since 1.80 and this crate's MSRV is 1.88, so the
 /// compiled-once regex costs **no** new dependency.
 static RE: LazyLock<Regex> = LazyLock::new(|| build_alternation(|_| true));
 

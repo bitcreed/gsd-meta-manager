@@ -7,9 +7,13 @@ renderer), code organization, commit conventions, and the milestone release flow
 
 ## Prerequisites
 
-- **Rust 1.87+** (stable) -- the floor comes from the `process-wrap` 9.1.0 dependency,
-  whose own published manifest declares `rust-version = "1.87.0"`. Install via
-  [rustup](https://rustup.rs) and confirm with `rustc --version`.
+- **Rust 1.88+** (stable) -- the floor is the highest `rust-version` declared across the
+  resolved dependency graph, currently 1.88.0. It is set by the `ratatui` 0.30.x family
+  together with `time`, `darling` and the `icu_*` 2.3.x crates reached through
+  `icu_properties` -- not by any one hand-picked dependency -- and it can move under an
+  ordinary `cargo update` with no manifest edit, which is why CI's `msrv` job re-verifies
+  it before any publish. Install via [rustup](https://rustup.rs) and confirm with
+  `rustc --version`.
 - **Git** -- for branch and tag operations.
 - A POSIX-ish terminal that supports the crossterm event stream (Linux, macOS, or
   Windows Terminal). The TUI uses `crossterm`'s alternate screen + raw mode, so

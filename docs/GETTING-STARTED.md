@@ -10,7 +10,7 @@ see [CONFIGURATION.md](CONFIGURATION.md); for system internals see
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| Rust toolchain | `>=1.87` (stable) | Required to build the binary. Includes `cargo`. Install via [rustup](https://rustup.rs). The crate declares `rust-version = "1.87"`; the floor comes from the `process-wrap` 9.1.0 dependency, whose own manifest declares `rust-version = "1.87.0"`. |
+| Rust toolchain | `>=1.88` (stable) | Required to build the binary. Includes `cargo`. Install via [rustup](https://rustup.rs). The crate declares `rust-version = "1.88"`, which is the highest `rust-version` across the resolved dependency graph (1.88.0 — the `ratatui` 0.30.x family, `time`, `darling`, the `icu_*` 2.3.x crates); an ordinary `cargo update` can raise it with no manifest edit, so CI's `msrv` job re-checks it before publishing. |
 | Git | any recent | Needed to clone the repository. |
 | A terminal | any | crossterm targets Linux, macOS, and Windows. A truecolor terminal is recommended for the dashboard colors. |
 | (Optional) `tmux` | any | Required only for the "switch to existing Claude session" feature in the TUI. |
@@ -147,11 +147,20 @@ is not on your `$PATH`, either add it (e.g., `export PATH="$HOME/.cargo/bin:$PAT
 in your shell profile) or invoke the binary by its full path
 (`target/release/gsd-meta-manager` after `cargo build --release`).
 
-### "error: package requires rustc 1.87 or newer"
+### "error: package requires rustc 1.88 or newer"
 
 Your Rust toolchain is too old. Update with `rustup update stable` and confirm
-with `rustc --version`. The MSRV is driven by the `process-wrap` 9.1.0
-dependency, whose own manifest declares `rust-version = "1.87.0"`.
+with `rustc --version`. Nothing in this project picks that number by hand: the
+MSRV is simply the highest `rust-version` declared across the resolved
+dependency graph, currently 1.88.0 from the `ratatui` 0.30.x family, `time`,
+`darling` and the `icu_*` 2.3.x crates. Because an ordinary `cargo update` can
+raise it without any manifest edit, CI's `msrv` job compiles every target on the
+declared floor before a release is published. To see the current value yourself:
+
+```bash
+cargo metadata --format-version 1 --locked \
+  | jq -r '.packages[].rust_version | select(. != null)' | sort -V | tail -1
+```
 
 ### Empty dashboard after `add`
 
