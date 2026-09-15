@@ -337,28 +337,17 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- ~~Phase 15 must spike three MUST-SPIKE questions before it closes~~ — **OQ2 and OQ3 are
-  CLOSED** (resolved empirically during Phase 15 research, 2026-07-29; evidence and verbatim
-  transcripts in `15-RESEARCH.md` §"Spike Outcomes"). **OQ1 is CONFIRMED at single-tool-call
-  scale only**; the multi-step generalisation — a real GSD skill spawning subagent waves, run
-  headlessly to completion — is plan **15-01 Task 1** and gates the whole phase. Two things
-  the bounded probe could not answer and Task 1 must: whether `--setting-sources project`
-  propagates to the nested `claude` processes subagent waves spawn, and what happens when a
-  long run crosses the silent 10-minute `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` ceiling.
-
-- Phase 17 must spike OQ4 (`--worktree` flag existence) before locking worktree isolation
-- Phase 22 must spike OQ5 (podman rootless uid mapping / volume permissions) with podman
-  actually installed
-
-- MSRV rises 1.85 -> 1.87 in Phase 15 (process-wrap floor)
-
-- Visualize execution waves per phase in roadmap — group/render plan
-  dependency-wave metadata (if derivable) per phase in the roadmap view
-  (`.planning/todos/pending/2026-09-11-visualize-execution-waves-per-phase-in-roadmap.md`)
-- Show plan token estimate and actual counts — parse `estimate.tokens` from
-  `*-PLAN.md` frontmatter and `actuals.tokens` from `*-SUMMARY.md` frontmatter,
-  surfaced per plan
-  (`.planning/todos/pending/2026-09-11-show-plan-token-estimate-and-actual-counts.md`)
+- [2026-07-29] [ui] Badge glyphs may misalign by one cell across terminals — [todo file](.planning/todos/pending/2026-07-29-badge-glyph-display-width-alignment.md)
+- [2026-07-29] [ui] Driver tab renders blank pipeline row at terminal heights 8-13 — [todo file](.planning/todos/pending/2026-07-29-driver-tab-layout-at-medium-terminal-heights.md)
+- [2026-07-29] [ui] Invalidate browser file cache after $EDITOR exits — [todo file](.planning/todos/pending/2026-07-29-invalidate-browser-cache-after-editor-exit.md)
+- [2026-08-18] [testing] driver_reattach liveness probe races the run.json write — [todo file](.planning/todos/pending/2026-08-18-driver-reattach-spawn-artifact-race.md)
+- [2026-08-18] [ui] Git view — show co-author model and full commit message on Enter — [todo file](.planning/todos/pending/2026-08-18-git-view-show-co-author-model-and-full-commit-message-on-ent.md)
+- [2026-08-18] [ui] Surface destructive confirmations in a modal popup with Yes/No buttons — [todo file](.planning/todos/pending/2026-08-18-surface-destructive-confirmations-in-a-modal-popup-with-yes.md)
+- [2026-08-19] [driver] The verify-work gate policy must be configurable — skip | defer | auto-validate — [todo file](.planning/todos/pending/2026-08-19-verify-work-gate-policy-configurable.md)
+- [2026-08-22] [ui] Phases panel marker/grey disagrees with the disk-inferred stage — [todo file](.planning/todos/pending/2026-08-22-phase-list-grey-marker-disagrees-with-disk-inferred-stage.md)
+- [2026-09-12] [ui] Show plan token estimate and actual counts — [todo file](.planning/todos/pending/2026-09-11-show-plan-token-estimate-and-actual-counts.md) — Needs TBD. Likely needs:.
+- [2026-09-12] [ui] Visualize execution waves per phase in roadmap — [todo file](.planning/todos/pending/2026-09-11-visualize-execution-waves-per-phase-in-roadmap.md) — Needs TBD. Likely needs:.
+- [2026-09-15] [config] Sync gsd-core config and expose new options — [todo file](.planning/todos/pending/2026-09-15-sync-gsd-core-config-and-expose-new-options.md) — Needs TBD — sub-requirements to cover:.
 
 ### Blockers/Concerns
 
