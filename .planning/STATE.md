@@ -114,20 +114,6 @@ Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked p
 
 ### Phase 15 planning notes (autonomous run — review these)
 
-- **All three MUST-SPIKE questions resolved empirically** against the local `claude` 2.1.220
-  binary during the research step, in a throwaway scratch dir, never against this repo.
-  **OQ1 CONFIRMED (bounded)** — `--setting-sources project` suppresses the `PreToolUse` hook
-  hang: without it, exit 124 with `duration_ms` 89134 vs `duration_api_ms` 3447; with it, exit 0
-  in 8s. The hung arm emits `hook_started`/`hook_response` *before* `system/init`; the mitigated
-  arm emits no hook events. The multi-step generalisation (a GSD skill spawning subagent waves)
-  remains plan 15-01 Task 1, the phase gate. **OQ2 CONFIRMED** — mid-turn stdin injection is
-  QUEUED and runs as its own turn, refuting ARCHITECTURE's AP3; `control_request{subtype:"interrupt"}`
-  works, bare `{"type":"interrupt"}` does nothing. **OQ3 CONFIRMED** — `--max-budget-usd` does
-  apply under subscription auth (`apiKeySource: "none"`), yielding
-  `error_max_budget_usd`/`budget_exhausted`, but only as a *post-turn* circuit breaker: it bounds
-  the next turn, never the current one. D-16 stands; Phase 20's quota floor is still the real cost
-  control.
-
 - **Structural finding no research document anticipated:** `type:"result"` is a **turn** boundary,
   not a **run** terminator. A run receiving a second stdin message emits two `system/init` and two
   `result` envelopes in one process. An executor returning on the first `result` would truncate
