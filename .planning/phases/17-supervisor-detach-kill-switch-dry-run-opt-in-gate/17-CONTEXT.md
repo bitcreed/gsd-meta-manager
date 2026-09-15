@@ -580,6 +580,17 @@ its CLI-chosen branch name make it wrong for this codebase. See D-21. Phase 19 i
 decision with the fallback (`git worktree add` outside the repo) already identified as
 strictly better.
 
+**Promoted and re-verified:** this result is now a standalone artifact,
+[`17-SPIKE-OQ4.md`](17-SPIKE-OQ4.md), following the Phase 15 spike convention
+(`15-SPIKE-OQ1.md`). The probe was re-run on **CLI 2.1.272** on 2026-09-15: the flag, the
+envelope sequence, the in-repo `.claude/worktrees/<name>` placement, the CLI-chosen
+`worktree-<name>` branch, the untracked-and-unignored `.claude/`, the `locked` state that
+defeats `git worktree prune`, and the **absence of a `worktree` key on `system/init`** all
+reproduce unchanged across 52 patch versions. D-21 stands as written. The artifact also
+records why the in-session `EnterWorktree`/`ExitWorktree` agent-SDK tools corroborate the
+*semantics* but are **not** evidence about the *CLI flag* — they are a different surface,
+unreachable by a supervisor that can only pass process arguments. **OQ4 is closed.**
+
 ### Success criteria, and how each is reachable without breaking the scope fence
 
 Two Phase 15 criteria were written so they could only be satisfied by doing out-of-scope work
