@@ -15,6 +15,25 @@ concurrency flakes**, not regressions:
 | `tests/envelope_tracer.rs` | `a_relocated_copy_of_the_stub_refuses_instead_of_acting` | `the generated stub is executable: Os { code: 26, kind: ExecutableFileBusy, message: "Text file busy" }` — the classic write-then-exec race |
 | `tests/driver_reattach.rs` | `a_run_killed_without_an_ending_is_reported_crashed_and_nothing_on_disk_is_repaired`, `a_fresh_scan_finds_the_orphaned_run_live_with_its_last_journal_step` | `the run record is on disk: Os { code: 2, kind: NotFound }` and `exactly one project has a run to observe — left: 0, right: 1` |
 
+> **RESOLVED IN ONE ROW ONLY (2026-09-17, quick `260917-k6y`)**
+>
+> **Exactly one of the two binaries in the table above is closed. The other is
+> not.** The `tests/driver_reattach.rs` row is RESOLVED — mechanism M2 confirmed
+> (`/proc/<pid>/cmdline` is populated by the kernel at `execve`, so the liveness
+> probe answered before any write) and fixed by three bounded artifact waits.
+> The `tests/envelope_tracer.rs` row —
+> `a_relocated_copy_of_the_stub_refuses_instead_of_acting`, the `Text file busy`
+> write-then-exec race — **remains OPEN, unchanged, and untouched**; nothing in
+> `260917-k6y` went near that file, and the heading above stays as written
+> because this file corrects at the sentence rather than rewriting headings.
+>
+> **The superseded sentence, quoted verbatim from the table row above:** *"`the
+> run record is on disk: Os { code: 2, kind: NotFound }` and `exactly one project
+> has a run to observe — left: 0, right: 1`"* — both symptoms are now
+> unreproducible in 10 consecutive isolated runs. See the canonical entry at the
+> END of this file: `## 2026-09-17 (quick 260917-k6y) — RESOLVED: the
+> driver_reattach flake, M2 confirmed and closed`.
+
 **Evidence that these are flakes rather than a regression.** Against **one
 unchanged binary**, `cargo test --test driver_reattach` returned FAILED, FAILED,
 then ok on three consecutive runs; the same binary with `-- --test-threads=1`
@@ -1063,6 +1082,25 @@ false-red under parallelism, LOUD** — it fails the build rather than passing
 something broken, which is the safe direction, and it is why this is a deferral
 rather than a blocker.
 
+> **RESOLVED (2026-09-17, quick `260917-k6y`) — but NOT by the promote condition above**
+>
+> **The superseded sentence, quoted verbatim from the paragraph immediately
+> above:**
+>
+> > "**What would promote it:** scoping the scan to the test's own process group
+> > or worktree, so a concurrent sibling binary's driver is invisible to it."
+>
+> That promote condition was aimed at **M1**, and M1 is not what closed this.
+> The flake was closed by synchronising each assertion on the ARTIFACT it reads
+> (M2) — three bounded waits layered after `live_within` — with the `/proc` scan
+> left exactly as it was. **M1 is therefore neither closed nor claimed live**; the
+> promote condition above is not satisfied and is not withdrawn, it is simply not
+> the route that was taken. The same applies to the sentence two paragraphs up
+> naming *"other driver-spawning test binaries running concurrently"* as the
+> variable: round 11 already refuted it as the whole story, and `260917-k6y`
+> reproduced the red on an idle machine with nothing else running. See the
+> canonical entry at the END of this file.
+
 ---
 
 # ROUND 11 (`21-31` … `21-34`) — appended 2026-08-28, append-only
@@ -1071,6 +1109,30 @@ rather than a blocker.
 
 This entry supersedes nothing above it; it is where the corrections placed at the
 stale sentences point, and it is the one place to edit next round.
+
+> **RESOLVED (2026-09-17, quick `260917-k6y`) — this entry's own experiment predicted the outcome, and it was honored**
+>
+> **The superseded sentence, quoted verbatim from this entry's "discriminating
+> experiment, as the promote condition" paragraph below:**
+>
+> > "If the isolated rate is non-zero, M2 is live independently of M1 and the fix
+> > is to synchronise on the written artifact — **not** to scope the `/proc`
+> > scan, and **never** to serialise with `--test-threads=1`, which hides it
+> > either way."
+>
+> **The isolated rate WAS non-zero.** `260917-k6y`'s fail-first baseline, six
+> back-to-back isolated `cargo test --test driver_reattach` runs on this machine
+> before one byte was edited, went **1 red at 0.53s (BOTH arms firing) / 5 green
+> at 6.23-6.24s** — on top of round 11's own 2-green/4-red-of-6 and round 13's 4
+> red of 6, all isolated. The prescribed fix was then performed rather than
+> deferred again: three bounded artifact waits, the `/proc` scan untouched, no
+> `--test-threads` flag. Ten isolated runs after: **10 green, every one
+> 6.23-6.25s, none at the ~0.5s failure signature.**
+>
+> This entry stops being "the one place to edit next round" for the
+> `driver_reattach` flake. **M1 and M3 are NOT closed by it** and were never
+> measured to be causes; the discriminating experiment below still stands if a
+> red ever returns. Canonical entry at the END of this file.
 
 ### The three facts that stand
 
@@ -1872,6 +1934,26 @@ falsehood. The two tests remain
 `a_fresh_scan_finds_the_orphaned_run_live_with_its_last_journal_step` and
 `a_run_killed_without_an_ending_is_reported_crashed_and_nothing_on_disk_is_repaired`.
 
+> **RESOLVED (2026-09-17, quick `260917-k6y`)**
+>
+> **The superseded sentences, quoted verbatim from the paragraph immediately
+> above:**
+>
+> > "Round 12 neither reinstates it nor attempts the underlying fix — the flake
+> > is a **documented pre-existing** condition at roughly 3/5 red, **not a
+> > regression and not this round's to fix**."
+>
+> > "**This green is NOT evidence the flake is fixed**"
+>
+> Both were right when written, and round 12's caution is exactly what kept the
+> record honest. The underlying fix has now been attempted and made: mechanism
+> M2, closed by three bounded artifact waits in `tests/driver_reattach.rs`. The
+> claim that a green run is not evidence of repair also still stands **as a
+> general rule** — which is why `260917-k6y` did not rest on one, and measured a
+> fail-first red baseline plus **ten** consecutive green isolated runs, each at
+> the paced stand-in's full ~6.24s rather than the ~0.5s failure signature.
+> Canonical entry at the END of this file.
+
 ## 2026-08-28 (`21-37`) — round 13's closure, with residuals and directions
 
 Round 13 closed pass 13's three gaps across two plans, `21-36` (wave 1) and
@@ -2206,3 +2288,142 @@ both assert on run-journal records on disk, and neither is reachable from
 `session_id_in_cmdline`, `build_argv`, `nul_join_cmdline` or any generated byte
 string. The flake is **documented pre-existing**, **not this round's to fix**, and
 a green run is **not** evidence of repair.
+
+> **RESOLVED (2026-09-17, quick `260917-k6y`)**
+>
+> **The superseded sentence, quoted verbatim from the paragraph immediately
+> above:**
+>
+> > "The flake is **documented pre-existing**, **not this round's to fix**, and
+> > a green run is **not** evidence of repair."
+>
+> It stopped being nobody's to fix on 2026-09-17. Round 13's own observation —
+> *"the failure COUNT varying run to run (2 / 2 / 1 / 2 / 0 / 2)"* — is now
+> explained rather than merely re-recorded: the count is how many of the two
+> assertions lost their race against the driver's first write on that particular
+> run, which is why it varies with nothing changed. Both tests assert on
+> run-journal records on disk, exactly as this entry says; the fix is to WAIT for
+> those records instead of for the driver's process. `driver_reattach` is closed;
+> the `tests/envelope_tracer.rs` half of the original two-binary item is not.
+> Canonical entry immediately below.
+
+---
+
+# QUICK 260917-k6y — appended 2026-09-17, append-only
+
+## 2026-09-17 (quick `260917-k6y`) — RESOLVED: the driver_reattach flake, M2 confirmed and closed
+
+_The canonical entry. The five dated `RESOLVED` pointers placed above — at the
+two-binary table, at the `21-30` promote condition, at round 11's STANDING
+record, at round 12's re-affirmation and at round 13's — all point here. No line
+above was edited or deleted; where a pointer corrects an earlier one it quotes
+the earlier text verbatim and says what changed._
+
+### The mechanism
+
+Both flaking tests spawned the driver and then waited on `live_within`, which
+polls `liveness::is_run_alive` → `probe` → `cmdline_names_run(pid, run_id)`, and
+that is a read of `/proc/<pid>/cmdline` checking it carries both
+`gsd-meta-manager` and the matching `--run-id` — and nothing else.
+**The kernel populates `/proc/<pid>/cmdline` at `execve`,** within microseconds
+of `spawn()`. The wait therefore returned `true` long before the driver had
+established its envelope, taken its lock, persisted `run.json` or emitted one
+journal record, and the assertions then went and read those artifacts. Process
+liveness is a NECESSARY precondition for "the run record is on disk" and a wildly
+INSUFFICIENT one. That is mechanism **M2**, named by phase 19's wave-4 gate,
+carried by round 11's candidate table, and now confirmed.
+
+### What changed
+
+`tests/driver_reattach.rs` only. Three bounded-wait helpers beside the existing
+`live_within` / `gone_within`, each reusing that loop's exact shape (an
+`Instant::now() + limit` deadline, a 25ms sleep between polls) and each failing
+with a message naming the artifact that never arrived:
+
+| Helper | Waits for | Why it is shaped this way |
+|---|---|---|
+| `observed_within` | a `reconcile_all` scan observing a run whose id MATCHES | matching the id rather than `len() == 1` means the wait cannot be satisfied by a different run; the existing exactly-one assertion still does its own work afterwards |
+| `journal_record_within` | at least one journal line that PARSES as `ParsedLine::Record` | `reader::tail_lines` returns **`Ok` with zero lines for a MISSING file** (its own documented edge case (a)), so an `is_ok()` wait would be satisfied instantly by the very state it exists to wait out, and would have fixed nothing while looking like it had |
+| `run_json_within` | the run record to EXIST — **existence only, no content predicate** | the assertion two lines later is that `ended_at` is still null; any predicate over the record's fields could be satisfied by a COMPLETED run and would hollow that assertion out. Presence is sufficient because `run.json` is persisted atomically (`NamedTempFile` + `.persist()`), so no reader can observe a torn file |
+
+All three are layered **after** the existing `live_within` checks, not in place of
+them. Every assertion that existed in the two tests before this change exists
+after it, unweakened. No `#[ignore]`, no `--test-threads` flag, no fixed `sleep`,
+no `NotFound` swallowed as success. The third test,
+`a_run_outlives_the_process_that_spawned_it`, is UNCHANGED: it asserts on process
+liveness and process group and nothing else, so liveness IS its correct
+synchronisation point.
+
+Every call site passes `Duration::from_secs(30)` inline, matching the three
+existing `live_within` call sites — deliberately generous for a contended
+two-core GitHub `ubuntu-latest` runner, and costing wall time only on a genuine
+failure.
+
+### The measurements
+
+**Before — six back-to-back isolated `rtk proxy cargo test --test driver_reattach`
+runs, on this machine, before one byte was edited:**
+
+| Run | Result | Wall time |
+|---|---|---|
+| 1 | **FAILED. 1 passed / 2 failed** — `the run record is on disk: Os { code: 2, kind: NotFound }` **and** `exactly one project has a run to observe — left: 0, right: 1`, both arms firing together | **0.53s** |
+| 2 | ok. 3 passed | 6.24s |
+| 3 | ok. 3 passed | 6.23s |
+| 4 | ok. 3 passed | 6.24s |
+| 5 | ok. 3 passed | 6.24s |
+| 6 | ok. 3 passed | 6.23s |
+| **total** | **1 red / 5 green of 6** | reds at ~0.53s, greens at ~6.24s — the recorded signature exactly |
+
+**After — ten back-to-back isolated runs:**
+
+| Run | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Result | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok |
+| Wall time | 6.24s | 6.24s | 6.24s | 6.24s | 6.25s | 6.24s | 6.25s | 6.23s | 6.24s | 6.24s |
+
+**10 green of 10, every one at the paced stand-in's full ~6.24s, none at the
+~0.5s failure signature.** The wall time is reported because it is the control: a
+~0.5s run that reports `ok` would mean a wait had been removed or defeated, and
+would be reportable as a failure regardless of its exit code.
+
+**Five full-suite `rtk proxy cargo test --no-fail-fast` runs** are recorded in
+`.planning/quick/260917-k6y-fix-the-two-spawn-write-races-in-tests-d/260917-k6y-SUMMARY.md`
+with per-run passed/failed/ignored counts. Both target tests are green in all
+five, and the only failure in any of them is
+`envelope::policy::tests::the_config_section_constants_record_the_git_version_they_were_derived_against`
+— the version witness, which fails on this machine (local git 2.53.0 against
+constants re-derived at 2.55.0) and is expected green on the CI runner. The
+failed count is **1 per run, down from the 2-3 this tree carried before.**
+
+### What this does NOT close
+
+**M1 and M3 are NOT closed by this change, were never MEASURED to be causes, and
+are not claimed live.** (M1) the tests discover runs through a scan that does not
+stop at a process-group or worktree boundary; (M3) `isolate_envelope_root()` sets
+a process-wide environment variable from whichever of the three test threads
+reaches it first. Neither was touched. **If a red ever returns to
+`tests/driver_reattach.rs`, they are the remaining candidates and the
+discriminating experiment recorded in round 11's STANDING entry above still
+applies** — run the binary N times, isolated and against a concurrent
+driver-spawning binary, and record the rates.
+
+**The `tests/envelope_tracer.rs` half of the original two-binary item stays
+OPEN.** `a_relocated_copy_of_the_stub_refuses_instead_of_acting` and its
+`Text file busy` write-then-exec race are a different mechanism in a different
+file; `260917-k6y` did not open that file and makes no claim about it.
+
+### A stale path reference, disclosed rather than edited
+
+The round-11 STANDING entry above cites
+`.planning/todos/pending/2026-08-18-driver-reattach-spawn-artifact-race.md` twice
+as M2's recording site. That todo has been retired to
+`.planning/todos/completed/2026-08-18-driver-reattach-spawn-artifact-race.md`
+with its content untouched — the project's convention for a satisfied todo is a
+pure move with the resolution in the commit message. **Those two references are
+therefore now stale by one directory**, and are left as written rather than
+edited, per this file's append-only discipline. The todo retires SATISFIED rather
+than abandoned: its "Fix direction" section prescribed *"Synchronise on the
+artifact rather than the process: poll for `run.json` (and, for the journal
+assertion, for a non-empty journal) with the same bounded-wait helper style
+`live_within` already uses. Do not add a fixed `sleep`, and do not serialise the
+tests with `--test-threads=1`"* — which is precisely and only what shipped.
