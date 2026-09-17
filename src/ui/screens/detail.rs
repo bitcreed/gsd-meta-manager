@@ -4025,10 +4025,9 @@ impl DetailScreen {
             .phases
             .iter()
             .map(|phase| {
-                ListItem::new(format!(
-                    "P{}: {}",
-                    shown(&phase.number),
-                    shown(&phase.name)
+                ListItem::new(phase_list_label(
+                    phase,
+                    state.phase_disk_statuses.get(&phase.number),
                 ))
             })
             .collect();
@@ -5282,6 +5281,43 @@ impl WavePlan {
 /// callers can silently omit the section rather than surface parse noise.
 fn parse_waves_manifest(raw: &str) -> Option<WavesManifest> {
     serde_json::from_str::<WavesManifest>(raw).ok()
+}
+
+/// One row of the Pipeline tab's left-hand phase list.
+///
+/// Today's text verbatim — `P{number}: {name}`, both halves escaped — plus, for
+/// a phase whose plans ran in two or more waves, a compact `Nw` marker two
+/// spaces behind it. The marker is what answers the question the selected-phase
+/// wave section cannot: *which* phases ran anything in parallel, without
+/// selecting each in turn.
+///
+/// **Only NUMBERED waves are counted.** [`PlanWave`](crate::state_reader::plan_waves::PlanWave)'s
+/// trailing `None` bucket records plans whose wave was never written down, so
+/// counting it would report a phase with one real wave plus a couple of unwaved
+/// plans as parallel — a claim its own frontmatter does not make.
+///
+/// A free function rather than inline construction so the four cases are
+/// testable without a `Frame` or a `Buffer`.
+fn phase_list_label(
+    phase: &crate::state_reader::roadmap_md::RoadmapPhase,
+    inf: Option<&DiskInference>,
+) -> String {
+    let mut label = format!("P{}: {}", shown(&phase.number), shown(&phase.name));
+    let numbered = inf
+        .map(|inf| {
+            inf.plan_waves
+                .iter()
+                .filter(|w| w.wave.is_some())
+                .count()
+        })
+        .unwrap_or(0);
+    if numbered >= 2 {
+        // The left pane is 40% of the tab width, so ratatui truncates this
+        // marker before the phase name is lost on a narrow terminal. No width
+        // computation is warranted here.
+        label.push_str(&format!("  {numbered}w"));
+    }
+    label
 }
 
 /// Present waves derived from `*-PLAN.md` frontmatter in the shape
@@ -12742,5 +12778,90 @@ mod tests {
                 "a raw ESC reached a cell: {text:?}"
             );
         }
+    }
+
+    // ── Pipeline phase-list wave marker (quick task 260916-vqy) ──────────
+
+    use crate::state_reader::plan_waves::PlanWave;
+    use crate::state_reader::roadmap_md::RoadmapPhase;
+
+    fn phase_fixture(number: &str, name: &str) -> RoadmapPhase {
+        RoadmapPhase {
+            number: number.to_string(),
+            name: name.to_string(),
+            description: String::new(),
+            completed: false,
+            total_plans: 0,
+            completed_plans: 0,
+            depends_on: Vec::new(),
+        }
+    }
+
+    fn inference_with_waves(waves: Vec<PlanWave>) -> DiskInference {
+        DiskInference {
+            plan_waves: waves,
+            ..DiskInference::default()
+        }
+    }
+
+    fn wave(number: Option<u32>, plans: &[&str]) -> PlanWave {
+        PlanWave {
+            wave: number,
+            plans: plans.iter().map(|p| p.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_phase_spanning_two_waves_is_marked_in_the_list() {
+        let phase = phase_fixture("19", "gitsafe");
+        let inf = inference_with_waves(vec![
+            wave(Some(1), &["19-01"]),
+            wave(Some(2), &["19-02", "19-03"]),
+        ]);
+        assert_eq!(phase_list_label(&phase, Some(&inf)), "P19: gitsafe  2w");
+    }
+
+    #[test]
+    fn a_phase_with_one_waves_entry_keeps_todays_label_and_stays_quiet() {
+        let phase = phase_fixture("19", "gitsafe");
+        let inf = inference_with_waves(vec![wave(Some(1), &["19-01", "19-02"])]);
+        assert_eq!(phase_list_label(&phase, Some(&inf)), "P19: gitsafe");
+    }
+
+    #[test]
+    fn a_phase_with_no_waves_and_a_phase_with_no_inference_render_unchanged() {
+        let phase = phase_fixture("19", "gitsafe");
+        // The exact string this list drew before the marker existed.
+        let today = format!("P{}: {}", shown(&phase.number), shown(&phase.name));
+        assert_eq!(
+            phase_list_label(&phase, Some(&inference_with_waves(vec![]))),
+            today
+        );
+        assert_eq!(phase_list_label(&phase, None), today);
+    }
+
+    #[test]
+    fn the_unknown_waves_bucket_is_not_counted_as_a_wave() {
+        // One real wave plus some plans whose wave was never recorded is a
+        // SERIAL phase. Counting the `w?` bucket would report it as parallel.
+        let phase = phase_fixture("19", "gitsafe");
+        let inf = inference_with_waves(vec![
+            wave(Some(1), &["19-01"]),
+            wave(None, &["19-02"]),
+        ]);
+        assert_eq!(phase_list_label(&phase, Some(&inf)), "P19: gitsafe");
+    }
+
+    #[test]
+    fn a_hostile_phase_name_reaches_no_cell_unescaped_beside_a_waves_marker() {
+        let phase = phase_fixture("19", "git\u{202E}safe\u{1b}[31m");
+        let inf = inference_with_waves(vec![
+            wave(Some(1), &["19-01"]),
+            wave(Some(2), &["19-02"]),
+        ]);
+        let label = phase_list_label(&phase, Some(&inf));
+        assert!(!label.contains('\u{202E}'), "bidi override: {label:?}");
+        assert!(!label.contains('\u{1b}'), "raw ESC: {label:?}");
+        assert!(label.ends_with("  2w"), "marker still appended: {label:?}");
     }
 }
