@@ -1,6 +1,6 @@
 [package]
 name = "gsd-meta-manager"
-version = "1.6.0"
+version = "1.7.0"
 edition = "2021"
 # FLOOR PROVENANCE. This value is not hand-chosen: it is the highest
 # `rust-version` declared anywhere in the resolved dependency graph. It is

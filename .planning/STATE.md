@@ -1,12 +1,12 @@
 ---
 gsd_state_version: "1.0"
-milestone: v2.0
-milestone_name: Autonomous Orchestration
+milestone: v1.7.0
+milestone_name: Autonomous Orchestration Preview
 current_phase: 22
 current_phase_name: container-execution-target
-status: executing
-stopped_at: Phase 22 context gathered
-last_updated: "2026-09-17T03:09:57.051Z"
+status: shipped
+stopped_at: Tagged v1.7.0 — Autonomous Orchestration Preview
+last_updated: "2026-09-17T19:20:00.000Z"
 last_activity: 2026-09-17
 last_activity_desc: "Completed quick task 260917-hc3: `drive` hidden from --help, parser untouched"
 state_head: 5ce3dc33c33a663f82e2b69379615841c46a11e5
@@ -25,10 +25,25 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-31)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 19 — GITSAFE — Git & Blast-Radius Envelope
+**Current focus:** v1.7.0 shipped (Autonomous Orchestration Preview). The v2.0 **Autonomous
+Orchestration** milestone is NOT finished — v1.7.0 is an interim release cut mid-milestone, at
+Phase 22. Work resumes at Phase 22 (container-execution-target).
 
 ## Current Position
 
+Status: **v1.7.0 shipped (Autonomous Orchestration Preview)** — interim release, cut mid-milestone.
+  The entire v2.0 driver stack (Phases 15-21: duplex stream-json transport, run journal, supervisor
+  with detach/kill-switch/dry-run/opt-in gate, Driver tab with live watch and durable injection, the
+  GITSAFE git/blast-radius envelope, the deterministic decision router with run bounds, and the LLM
+  goal layer with prompt-injection hardening) is IN this release but is **hidden by default** behind
+  the `GSDMM_EXPERIMENTAL_FEATURES` startup flag (quick 260917-fko) and the `drive` subcommand is
+  hidden from `--help` (quick 260917-hc3). Nothing in that stack is reachable by a default install,
+  which is why the release ships despite Phases 19/20/21 still reading "In Progress" on the ROADMAP
+  (all plans executed; `/gsd-secure-phase 19` has not cleared, T-19-86/T-19-91 open at high).
+  MSRV is 1.88 in this release — consumer-visible.
+
+Active milestone (unchanged by the release, resume here):
+Milestone: v2.0 Autonomous Orchestration (Phases 14-23) — 6 of 10 phases complete
 Phase: 22 (container-execution-target) — READY TO EXECUTE
 Plan: 12 of 12 (12 summaries on disk)
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
@@ -405,8 +420,18 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-17T01:34:22.224Z
-Stopped at: Phase 22 context gathered
+Last session: 2026-09-17T19:20:00.000Z
+Stopped at: Tagged v1.7.0 — Autonomous Orchestration Preview
+Release: `Cargo.toml` at 1.7.0, `Cargo.lock` refreshed (9 packages relocked; `generic-array`
+0.14.7 and `unicode-width` 0.2.0 remain behind latest under upstream `=` pins). Gates on the
+tagged tree: `cargo build` 0, `cargo clippy -- -D warnings` 0, `cargo test --no-fail-fast`
+48 suites / 2120 passed / 1 failed / 15 ignored — the one failure being the known-environmental
+`envelope::policy` git-version-constants test (installed git 2.53 vs constants derived against
+2.43). `master` fast-forwarded from `dev` (a95dce8 -> 12247ca, 261 commits) before the release
+commit; nothing pushed, the tag is local only.
+Next action (v2.0 resumes here, the release did NOT close the milestone): execute Phase 22, and
+re-run `/gsd-secure-phase 19` so 19/20/21 can move off "In Progress".
+Prior-session note, still live:
 `21-20-PLAN.md` and both PASSED after revision (3b0ef4d, addc3cc); the ROADMAP now carries its
 "Gap closure, round 7" block. Next action: execute round 7 (wave 1 = 21-19, wave 2 = 21-20).
 Resume file: .planning/phases/22-container-execution-target/22-CONTEXT.md
