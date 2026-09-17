@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "batch_id": "260916-vqv",
+  "created_at": "2026-09-17T04:51:27.487Z",
+  "options": {},
+  "base_revision": "be80701e35bca5376a3278d23c6af398f0c48cd7",
+  "items": [
+    {
+      "quick_id": "260916-vqw",
+      "client_id": null,
+      "description": "Sync gsd-core config and expose new options (area: config, severity: major) — todo: .planning/todos/pending/2026-09-15-sync-gsd-core-config-and-expose-new-options.md",
+      "status": "pending",
+      "depends_on": [],
+      "planned_files": [
+        "src/state_reader/config_json.rs",
+        "src/ui/screens/detail.rs",
+        "src/ui/screens/render_escape_guard.rs",
+        "docs/GSD-CORE-SYNC.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": null,
+      "failure_reason": null
+    },
+    {
+      "quick_id": "260916-vqx",
+      "client_id": null,
+      "description": "Show plan token estimate and actual counts (area: ui, severity: major) — todo: .planning/todos/pending/2026-09-11-show-plan-token-estimate-and-actual-counts.md",
+      "status": "pending",
+      "depends_on": [],
+      "planned_files": [
+        "src/state_reader/disk_status.rs",
+        "src/ui/screens/detail.rs",
+        "src/ui/screens/render_escape_guard.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 1,
+      "commit": null,
+      "failure_reason": null
+    },
+    {
+      "quick_id": "260916-vqy",
+      "client_id": null,
+      "description": "Visualize execution waves per phase in roadmap (area: ui, severity: major) — todo: .planning/todos/pending/2026-09-11-visualize-execution-waves-per-phase-in-roadmap.md",
+      "status": "pending",
+      "depends_on": [
+        "260916-vqx"
+      ],
+      "planned_files": [
+        "src/state_reader/plan_waves.rs",
+        "src/state_reader/mod.rs",
+        "src/state_reader/disk_status.rs",
+        "src/ui/screens/detail.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 3,
+      "commit": null,
+      "failure_reason": null
+    },
+    {
+      "quick_id": "260916-vqz",
+      "client_id": null,
+      "description": "Add b keybinding to open backlog from main screen (area: ui, severity: minor) — todo: .planning/todos/pending/2026-09-15-add-b-keybinding-to-open-backlog-from-main-screen.md",
+      "status": "pending",
+      "depends_on": [
+        "260916-vr0"
+      ],
+      "planned_files": [
+        "src/ui/screens/normal.rs",
+        "src/ui/screens/detail.rs",
+        "src/ui/screens/help.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 4,
+      "commit": null,
+      "failure_reason": null
+    },
+    {
+      "quick_id": "260916-vr0",
+      "client_id": null,
+      "description": "Backlog tab shows empty despite non-zero count on overview (area: ui, severity: major) — todo: .planning/todos/pending/2026-09-15-backlog-tab-shows-empty-despite-non-zero-count-on-overview.md",
+      "status": "pending",
+      "depends_on": [],
+      "planned_files": [
+        "src/state_reader/backlog.rs",
+        "src/state_reader/mod.rs",
+        "tests/state_reader_test.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": null,
+      "failure_reason": null
+    },
+    {
+      "quick_id": "260916-vr1",
+      "client_id": null,
+      "description": "Git view - show co-author model and full commit message on Enter (area: ui, severity: minor) — todo: .planning/todos/pending/2026-08-18-git-view-show-co-author-model-and-full-commit-message-on-ent.md",
+      "status": "pending",
+      "depends_on": [],
+      "planned_files": [
+        "src/state_reader/git_ops.rs",
+        "src/action.rs",
+        "src/app.rs",
+        "src/ui/screens/mod.rs",
+        "src/ui/screens/detail.rs",
+        "src/ui/screens/render_escape_guard.rs",
+        ".planning/todos/completed/2026-08-18-git-view-show-co-author-model-and-full-commit-message-on-ent.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 2,
+      "commit": null,
+      "failure_reason": null
+    }
+  ]
+}
