@@ -106,6 +106,7 @@
 
 #![cfg(unix)]
 
+use std::collections::HashMap;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -290,6 +291,118 @@ fn gone_within(pid: u32, run_id: &str, limit: Duration) -> bool {
     false
 }
 
+// ----------------------------------------------------------------------------
+// The three ARTIFACT waits (quick 260917-k6y).
+//
+// `live_within` and `gone_within` above wait on the driver's PROCESS. The three
+// helpers below wait on the FILE each assertion actually reads. They do not
+// replace the liveness checks — they are layered after them, because "the driver
+// came up at all" is still worth proving on its own and its failure message is
+// the one that should fire when the binary is broken rather than merely slow.
+//
+// Why the process was never a sufficient synchronisation point is the whole of
+// the bug this file carried for eleven rounds: the kernel fills
+// `/proc/<pid>/cmdline` at `execve`, so `liveness::probe` — which is nothing but
+// a read of that file looking for `gsd-meta-manager` and the matching
+// `--run-id` — answers `true` microseconds after `spawn()`, long before the
+// driver has established its envelope, taken its lock, written `run.json` or
+// emitted one journal record. Process liveness is NECESSARY and wildly
+// INSUFFICIENT for "the record is on disk".
+//
+// Every one of them reuses `live_within`'s loop shape exactly — an
+// `Instant::now() + limit` deadline and a 25ms sleep between polls — because a
+// second polling idiom in one file is a second thing to get wrong. A 25ms sleep
+// INSIDE a poll loop is the house style; a fixed pre-assertion `sleep` is the
+// thing this file's header forbids, and the difference is that a poll returns
+// the moment the condition holds and FAILS LOUDLY when it never does.
+//
+// Every call site passes `Duration::from_secs(30)`, inline, matching the three
+// existing `live_within` call sites rather than introducing a fourth constant.
+// That is deliberately generous: a contended two-core GitHub `ubuntu-latest`
+// runner is a great deal slower than a developer machine, and since the paced
+// stand-in runs 60 heartbeats at 0.1s the timeout only ever costs wall time on a
+// genuine failure — on every passing run these waits return in milliseconds.
+// ----------------------------------------------------------------------------
+
+/// Poll until a fresh reconcile scan has OBSERVED the run, giving up after `limit`.
+///
+/// Matches on the run id rather than on `observed.len() == 1`, so the wait cannot
+/// be satisfied by some other project's run and then let a wrong-run assertion
+/// through. The existing `len() == 1` assertion still runs afterwards and still
+/// proves exactly-one; this only establishes the precondition that assertion was
+/// always entitled to assume, which is that the driver has finished writing the
+/// `run.json` the scan reads.
+fn observed_within(
+    projects: &HashMap<String, RegisteredProject>,
+    run_id: &str,
+    limit: Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    while std::time::Instant::now() < deadline {
+        if reconcile::reconcile_all(projects)
+            .iter()
+            .any(|run| run.run_id == run_id)
+        {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    false
+}
+
+/// Poll until at least one journal line PARSES as a record, giving up after `limit`.
+///
+/// **Testing `tail_lines(..).is_ok()` here would fix nothing and would look like
+/// it had.** `reader::tail_lines` handles a missing journal by returning `Ok`
+/// with zero lines — branch (a) of its own documented edge cases, because the run
+/// directory is created before the first append and a watcher may fire on the
+/// directory first. An `Ok`-ness test would therefore be satisfied instantly by
+/// the very state this wait exists to wait out. An `Err`, a missing file, and
+/// `Ok` with zero lines all mean "not yet" here; only a `ParsedLine::Record`
+/// means "done".
+fn journal_record_within(journal: &Path, limit: Duration) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    while std::time::Instant::now() < deadline {
+        if let Ok(tail) = reader::tail_lines(journal, TailCursor::default()) {
+            if tail
+                .lines
+                .iter()
+                .any(|line| matches!(reader::parse_line(line), ParsedLine::Record(_)))
+            {
+                return true;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    false
+}
+
+/// Poll until the run record EXISTS on disk, giving up after `limit`.
+///
+/// **Existence only, and the absence of a content predicate here is the point,
+/// not an oversight.** The assertion two lines after this wait's call site is
+/// that `ended_at` is still null — that the run has not finished — and any
+/// predicate over the record's fields could be satisfied by a run that has
+/// already COMPLETED, which would quietly hollow that assertion out into
+/// something a finished run also passes. The wait must therefore be strictly
+/// weaker than the assertion it precedes.
+///
+/// Presence is sufficient because `run.json` is written ATOMICALLY: the writer
+/// builds a `NamedTempFile` and `.persist()`s it onto the final path, so there is
+/// no window in which a reader can observe a torn or half-written record. Polling
+/// for a path that either is not there or is the whole file is safe in a way that
+/// polling a plain `File::create` + `write_all` target would not be.
+fn run_json_within(run_json: &Path, limit: Duration) -> bool {
+    let deadline = std::time::Instant::now() + limit;
+    while std::time::Instant::now() < deadline {
+        if std::fs::read_to_string(run_json).is_ok() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    false
+}
+
 /// Every file under `dir`, as `(relative path, byte length, content digest)`.
 ///
 /// Content is digested and not merely measured, because the most plausible
@@ -445,6 +558,16 @@ async fn a_fresh_scan_finds_the_orphaned_run_live_with_its_last_journal_step() {
     // whole of "reopening the TUI": the scan has to rediscover the run from
     // disk (CTRL-04).
     let fresh = registry(fixture.root());
+
+    // The driver's process exists; its `run.json` may not yet. Wait for the
+    // artifact the scan below reads, not for the process that will eventually
+    // write it (quick 260917-k6y).
+    assert!(
+        observed_within(&fresh.projects, RUN_ID, Duration::from_secs(30)),
+        "no reconcile scan ever observed run {RUN_ID}: the driver came up but its \
+         run.json never appeared under the fixture's .planning/runs/"
+    );
+
     let observed = reconcile::reconcile_all(&fresh.projects);
 
     assert_eq!(observed.len(), 1, "exactly one project has a run to observe");
@@ -469,6 +592,18 @@ async fn a_fresh_scan_finds_the_orphaned_run_live_with_its_last_journal_step() {
     let journal = gsd_meta_manager::journal::run_paths(&fixture.planning(), RUN_ID)
         .expect("the fixture run id is a plain path component")
         .journal;
+
+    // Same again for the journal, and note this wait must test for a PARSED
+    // record: `tail_lines` answers `Ok` with zero lines for a file that does not
+    // exist yet, so an `is_ok()` wait would return instantly and change nothing
+    // (quick 260917-k6y).
+    assert!(
+        journal_record_within(&journal, Duration::from_secs(30)),
+        "no journal record ever parsed out of {}: the driver came up but never \
+         emitted its run_started line",
+        journal.display()
+    );
+
     let tail = reader::tail_lines(&journal, TailCursor::default()).expect("the journal is readable");
     assert!(
         !tail.lines.is_empty(),
@@ -539,6 +674,17 @@ async fn a_run_killed_without_an_ending_is_reported_crashed_and_nothing_on_disk_
     let run_json = gsd_meta_manager::journal::run_paths(&fixture.planning(), RUN_ID)
         .expect("the fixture run id is a plain path component")
         .run_json;
+
+    // Wait for the record to EXIST — never for anything about its contents, or
+    // the un-ended assertion below would be satisfiable by a completed run
+    // (quick 260917-k6y).
+    assert!(
+        run_json_within(&run_json, Duration::from_secs(30)),
+        "the run record never appeared at {}: the driver came up but never \
+         persisted its run.json",
+        run_json.display()
+    );
+
     let raw = std::fs::read_to_string(&run_json).expect("the run record is on disk");
     let record: serde_json::Value = serde_json::from_str(&raw).expect("the run record parses");
     assert!(
