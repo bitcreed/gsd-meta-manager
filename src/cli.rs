@@ -44,7 +44,28 @@ pub enum Commands {
     // but the subcommand parses on every platform and the *handler* returns a
     // typed unsupported-platform error. An accepted limitation that surfaces as
     // "unknown subcommand" is indistinguishable from a bug.
+    //
+    // `hide = true` removes this entry from the rendered help and from nothing
+    // else. The parser is untouched, so anyone who types it still gets a run;
+    // the `Commands::Envelope` block below states that general rule at length.
+    //
+    // **Hidden, deliberately NOT gated.** Quick task 260917-fko put 28 driver
+    // surfaces behind `GSDMM_EXPERIMENTAL_FEATURES` and exempted this
+    // subcommand, because the TUI respawns itself as `current_exe() drive …`
+    // and propagation of that variable into the child is not guaranteed through
+    // the envelope's env scrub. A refusal here — or a `#[cfg]`, or a condition
+    // on the experimental flag — breaks the spawn path for precisely the users
+    // who DID set the flag, and breaks it invisibly, because the child's stdio
+    // is `/dev/null`. Hiding keeps `--help` honest about what a user is meant to
+    // type without touching the one caller that has to keep working.
+    //
+    // This is not the `--claude-program` case further down. That field needs its
+    // `#[cfg(debug_assertions)]` because the capability it confers is shaped
+    // like arbitrary code execution. The capability here is the driver, whose
+    // authorisation boundary is the per-project `driver_opt_in` record — never
+    // help visibility.
     /// Run one GSD command against a project that has opted in to being driven
+    #[command(hide = true)]
     Drive {
         /// Alias of the project to drive; it must carry a driver opt-in record
         alias: String,
@@ -372,4 +393,104 @@ pub enum EnvelopeAction {
         /// Repository root to walk
         root: PathBuf,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    // Is this rendered help line the SUBCOMMAND ENTRY for `name`?
+    //
+    // The entry shape is matched rather than a bare `contains`, which would also
+    // fire on the word appearing inside an unrelated description. Both the
+    // positive control and the absence assertion call this one predicate, so the
+    // control certifies the same code path the assertion runs — two matchers
+    // could disagree and the control would then prove nothing about the
+    // assertion.
+    fn is_subcommand_entry(line: &str, name: &str) -> bool {
+        let trimmed = line.trim();
+        match trimmed.strip_prefix(name) {
+            Some(rest) => rest.is_empty() || rest.starts_with(|c: char| c.is_ascii_whitespace()),
+            None => false,
+        }
+    }
+
+    #[test]
+    fn the_drive_subcommand_is_absent_from_rendered_help() {
+        let mut cmd = Cli::command();
+        // `hide` covers the short and the long form; asserting only one would
+        // leave a regression in the other undetected.
+        let renderings = [
+            ("render_help", cmd.render_help().to_string()),
+            ("render_long_help", cmd.render_long_help().to_string()),
+        ];
+
+        for (form, rendered) in renderings.iter() {
+            // POSITIVE CONTROL first: without it, the absence assertion below
+            // cannot tell "the entry is gone" from "nothing was rendered".
+            assert!(
+                rendered
+                    .lines()
+                    .any(|line| is_subcommand_entry(line, "list")),
+                "{form} rendered no subcommand entry for the visible `list` command, so the \
+                 absence assertion below would certify nothing. Rendered help was:\n{rendered}"
+            );
+
+            let offending: Vec<&str> = rendered
+                .lines()
+                .filter(|line| is_subcommand_entry(line, "drive"))
+                .collect();
+            assert!(
+                offending.is_empty(),
+                "{form} carries a subcommand entry for `drive`: {offending:?}. An entry back in \
+                 `--help` re-advertises a surface that spawns a real agent against a real \
+                 repository as a thing a user is meant to type."
+            );
+        }
+    }
+
+    #[test]
+    fn the_drive_subcommand_still_parses_and_resolves() {
+        let parsed = Cli::try_parse_from([
+            "gsd-meta-manager",
+            "drive",
+            "demo",
+            "--command",
+            "/gsd-progress",
+            "--run-id",
+            "2026-09-17T12-00-00Z-aaaa",
+        ])
+        .unwrap_or_else(|e| {
+            panic!(
+                "`drive` no longer parses from argv: {e}\nHiding it from help must not remove it \
+                 from the parser — the TUI respawns itself as `current_exe() drive …` and that \
+                 child's stdio is /dev/null, so a subcommand that stopped parsing breaks the \
+                 respawn where nothing is visible."
+            )
+        });
+
+        // Struct shorthand, never a typed field line: `tests/spawn_seam_guard.rs`
+        // censuses `src/` WITHOUT stripping test modules and asserts this file
+        // declares exactly 8 `alias:` argv-to-identity declarations.
+        match parsed.command {
+            Some(Commands::Drive {
+                alias, command, ..
+            }) => {
+                assert_eq!(
+                    alias, "demo",
+                    "the hidden subcommand parsed but did not carry its positional alias"
+                );
+                assert_eq!(
+                    command.as_deref(),
+                    Some("/gsd-progress"),
+                    "the hidden subcommand parsed but did not carry its --command operand"
+                );
+            }
+            other => panic!(
+                "argv `drive demo --command …` resolved to {:?} instead of Commands::Drive",
+                other.is_some()
+            ),
+        }
+    }
 }
