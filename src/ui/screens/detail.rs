@@ -12864,4 +12864,35 @@ mod tests {
         assert!(!label.contains('\u{1b}'), "raw ESC: {label:?}");
         assert!(label.ends_with("  2w"), "marker still appended: {label:?}");
     }
+
+    /// The pin [`DetailScreen::opened_on`] rests on (260916-vqz).
+    ///
+    /// That constructor calls `switch_to_tab` for its arrival work and DROPS
+    /// the `ScreenAction` it returns, because a screen being built has no stack
+    /// to act on yet. This test is what makes the discard safe rather than
+    /// assumed: it goes red the day `switch_to_tab` learns to return anything
+    /// but `None`, which is the day the constructor has to stop dropping it.
+    #[test]
+    fn switching_to_the_backlog_tab_returns_no_screen_action() {
+        let mut ctx = test_ctx();
+        let mut scroll_offset = 7;
+
+        let action = switch_to_tab(
+            TEST_ALIAS,
+            tab_index(&DetailSubView::Backlog),
+            &mut scroll_offset,
+            &mut ctx,
+        );
+
+        assert!(
+            matches!(action, ScreenAction::None),
+            "a tab switch performs arrival work; it does not move the screen stack"
+        );
+        assert_eq!(scroll_offset, 0, "the tab switch resets the scroll offset");
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS),
+            Some(&DetailSubView::Backlog),
+            "the index must round-trip back to the tab that was asked for"
+        );
+    }
 }

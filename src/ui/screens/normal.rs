@@ -1064,6 +1064,7 @@ fn move_selection_up(ctx: &mut AppContext) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::DetailSubView;
     use crate::driver::liveness::Liveness;
     use crate::driver::reconcile::ObservedRun;
     use crate::state_reader::{parse_project_state, ProjectState};
@@ -2161,6 +2162,138 @@ mod tests {
             ctx.table_state.selected(),
             Some(2),
             "index 0 would now be `alpha` — a project the user never chose"
+        );
+    }
+
+    // --- 260916-vqz: `b` opens the Backlog tab ---------------------------
+
+    /// A context with one registered project whose `.planning/phases/` really
+    /// holds one backlog item, plus the `TempDir` that owns those files.
+    ///
+    /// [`ctx_with_aliases`] hardcodes `/nonexistent/<alias>` as every project's
+    /// path, so any test that needs the backlog parser to find something has to
+    /// overwrite that entry — and hold the returned `TempDir` for the whole
+    /// test, or the directory is removed before the reader looks at it (the
+    /// lesson [`make_planning`]'s doc comment already records).
+    fn ctx_with_backlog(alias: &str) -> (AppContext, TempDir) {
+        let td = TempDir::new().unwrap();
+        let item_dir = td.path().join(".planning/phases/999.1-queue-editor");
+        fs::create_dir_all(&item_dir).unwrap();
+        fs::write(
+            item_dir.join("999.1-BACKLOG.md"),
+            "# Queue editor and reorder\n\nMake the queue reorderable.\n",
+        )
+        .unwrap();
+
+        let mut ctx = ctx_with_aliases(&[alias]);
+        ctx.config
+            .projects
+            .get_mut(alias)
+            .expect("the fixture registered this alias")
+            .path = td.path().to_path_buf();
+        (ctx, td)
+    }
+
+    /// The tracer: one key, the whole way to loaded rows.
+    ///
+    /// Driven through the real `handle_key` rather than through the constructor
+    /// it calls, because a test that calls the constructor directly cannot
+    /// catch a key that was never bound.
+    #[test]
+    fn b_on_the_dashboard_opens_the_detail_screen_on_a_populated_backlog_tab() {
+        let (mut ctx, _td) = ctx_with_backlog("proj");
+        let mut screen = NormalScreen::new();
+
+        let action = screen.handle_key(KeyCode::Char('b'), KeyModifiers::NONE, &mut ctx);
+
+        match action {
+            ScreenAction::Push(pushed) => assert_eq!(
+                pushed.name(),
+                DetailScreen::NAME,
+                "`b` must open the detail screen, not some other screen"
+            ),
+            _ => panic!("`b` with a project selected must push the detail screen"),
+        }
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get("proj"),
+            Some(&DetailSubView::Backlog),
+            "the pushed screen must already be parked on Backlog, not on \
+             whatever tab was last active for this project"
+        );
+        assert!(
+            !ctx.view_cache
+                .get("proj")
+                .expect("the tab switch must have created this project's cache")
+                .backlog_items
+                .is_empty(),
+            "landing on the tab is not the feature — the tab has to be \
+             POPULATED on first paint"
+        );
+    }
+
+    /// The property that survives the Backlog arm being rewritten: `b` and `3`
+    /// must load through the same code, so whatever one reads, the other reads.
+    ///
+    /// A count-only comparison would be satisfied by two empty vectors, which is
+    /// precisely the broken state 260916-vr0 fixed — so the non-emptiness is
+    /// asserted here too.
+    #[test]
+    fn b_and_the_3_key_reach_the_backlog_through_one_load_path() {
+        let (mut via_b, _td_b) = ctx_with_backlog("proj");
+        let mut dashboard = NormalScreen::new();
+        dashboard.handle_key(KeyCode::Char('b'), KeyModifiers::NONE, &mut via_b);
+
+        let (mut via_3, _td_3) = ctx_with_backlog("proj");
+        let mut detail = DetailScreen::new("proj".to_string());
+        detail.handle_key(KeyCode::Char('3'), KeyModifiers::NONE, &mut via_3);
+
+        assert_eq!(
+            via_b.detail_sub_view_per_project.get("proj"),
+            via_3.detail_sub_view_per_project.get("proj"),
+            "both entry paths must record the same sub-view"
+        );
+
+        let names = |ctx: &AppContext| -> Vec<String> {
+            ctx.view_cache
+                .get("proj")
+                .map(|cache| {
+                    cache
+                        .backlog_items
+                        .iter()
+                        .map(|item| item.dir_name.as_raw_for_logic_only().to_string())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let from_b = names(&via_b);
+        assert!(
+            !from_b.is_empty(),
+            "two empty vectors compare equal — this test must not be \
+             satisfiable by both paths being broken"
+        );
+        assert_eq!(
+            from_b,
+            names(&via_3),
+            "`b` and `3` must read the same items, in the same order"
+        );
+    }
+
+    /// `b` is alias-scoped like every other dashboard key that acts on a row.
+    #[test]
+    fn b_with_no_project_selected_does_nothing() {
+        let mut ctx = ctx_with_aliases(&[]);
+        let mut screen = NormalScreen::new();
+
+        let action = screen.handle_key(KeyCode::Char('b'), KeyModifiers::NONE, &mut ctx);
+
+        assert!(
+            matches!(action, ScreenAction::None),
+            "with nothing selected there is no project to open"
+        );
+        assert!(
+            ctx.detail_sub_view_per_project.is_empty(),
+            "no per-project sub-view may be recorded for a project that was \
+             never selected"
         );
     }
 }
