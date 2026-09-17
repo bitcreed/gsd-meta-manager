@@ -196,6 +196,11 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("j / Down", "Move down"),
         row("k / Up", "Move up"),
         row("Enter", "Open project detail"),
+        // Directly under `Enter`, because the two are the same action differing
+        // only in which tab it lands on. The wording must not be byte-identical
+        // to any other row in this body: the whole-row assertions below cannot
+        // tell two identical rows apart, which the `o` rows' comment records.
+        row("b", "Open project detail on the backlog tab"),
         row("/", "Filter projects"),
         row("s", "Toggle sort: alphabetical / attention first"),
         row("a", "Add project"),
@@ -455,6 +460,20 @@ mod tests {
         assert!(
             text.contains("Toggle sort"),
             "the dashboard sort toggle must be documented:\n{text}"
+        );
+        // The dashboard's backlog shortcut (260916-vqz). Asserted beside the
+        // sort toggle rather than appended to the list above, which is the
+        // Driver TAB's section — `b` is a dashboard key and widening that list
+        // would misfile it. Still a WHOLE ROW: `text.contains("b")` is
+        // satisfied by the word "backlog" itself, by "Toggle", and by most of
+        // this file.
+        let backlog_row = row("b", "Open project detail on the backlog tab").spans[0]
+            .content
+            .to_string();
+        assert!(
+            text.lines().any(|line| line == backlog_row),
+            "the dashboard's backlog shortcut must be documented, and the row \
+             {backlog_row:?} is missing:\n{text}"
         );
         assert!(
             text.contains("/term/h") && text.contains("//h"),
