@@ -23,85 +23,133 @@
 // a Unix capability (D-05).
 //
 // ----------------------------------------------------------------------------
-// THIS FILE IS FLAKY, AND `--test-threads=1` WILL NOT HELP YOU (21-34, round 11)
+// THE FLAKE IN THIS FILE IS CLOSED (2026-09-17, quick `260917-k6y`). M2 was the
+// mechanism, it is confirmed, and it is fixed.
 // ----------------------------------------------------------------------------
 //
-// If you got here because a test below went red, read these three facts before
-// you change anything. They are the corrected record; the standing item with the
-// promote condition lives in
-// `.planning/phases/21-llm-goal-layer-prompt-injection-hardening/deferred-items.md`.
+// For eleven rounds of phase 21 and three quick tasks, the note that stood here
+// told you a red below was expected. It no longer is. If a test below goes red
+// now, that is a finding — read the rest of this block, then treat it as one.
+// The standing record still lives in
+// `.planning/phases/21-llm-goal-layer-prompt-injection-hardening/deferred-items.md`,
+// where the `driver_reattach` half is closed against this quick id.
 //
-// 1. IT IS PRE-EXISTING, NOT A REGRESSION. Round 10 measured the untouched base
-//    and the round's HEAD at the same rate: 3/5 red at the base, 3/5 red at HEAD.
-//    A red here is not a signal that your change broke something. It is equally
-//    not permission to ignore a red elsewhere, which is what `--no-fail-fast` on
-//    the workspace gate is for.
+// WHY THE PROCESS WAS THE WRONG SYNCHRONISATION POINT. This is the mechanism,
+// not a summary of one. Both flaking tests spawned the driver and then waited on
+// `live_within`, which polls `liveness::is_run_alive` -> `probe` ->
+// `cmdline_names_run(pid, run_id)` — and that is a read of `/proc/<pid>/cmdline`
+// checking it carries both `gsd-meta-manager` and the matching `--run-id`, and
+// it is nothing else. **The kernel populates `/proc/<pid>/cmdline` at `execve`.**
+// The wait therefore answered `true` within microseconds of `spawn()`: before
+// the driver had established its envelope, before it had taken its lock, before
+// it had persisted `run.json`, before it had emitted one journal record. The
+// assertions then went and read those artifacts. Process liveness is a NECESSARY
+// precondition for "the run record is on disk" and a wildly INSUFFICIENT one,
+// and a wait that is merely necessary is a wait that passes whenever the machine
+// happens to be fast enough — which is the definition of the race.
 //
-// 2. `-- --test-threads=1` DOES NOT FIX IT. `deferred-items.md` opens with a
-//    round-2 note recording that it passed three times out of three under that
-//    setting; that is a true record of one session and nothing more. Round 4
-//    measured it failing intermittently UNDER that setting and round 10
-//    confirmed. Serialising hides the race rather than closing it. Do not add a
-//    fixed `sleep` either.
+// WHAT THE SYNCHRONISATION POINT IS NOW. Three named waits on the ARTIFACT each
+// assertion actually reads, defined beside `live_within`/`gone_within` below:
+// `observed_within` (a reconcile scan has observed the run by id),
+// `journal_record_within` (a journal line has PARSED as a record — not merely
+// returned `Ok`, because `tail_lines` answers `Ok` with zero lines for a file
+// that is not there yet), and `run_json_within` (the run record EXISTS — and
+// deliberately nothing about its contents, because a content predicate could be
+// satisfied by a COMPLETED run and would hollow out the `ended_at`-is-null
+// assertion that follows it). They are layered AFTER the `live_within` checks
+// rather than replacing them: "the driver came up at all" is still worth proving
+// on its own, and its message is the one that should fire when the binary is
+// broken rather than merely slow.
 //
-// 3. THE MECHANISM IS NOT SETTLED — two measured candidates, neither ruled out:
-//    (M1) these tests discover runs through a system-wide `/proc` scan that does
-//    NOT stop at the process-group or worktree boundary, so a concurrently
-//    running sibling test binary that spawns a driver is visible to them; and
-//    (M2) a spawn/write race inside the tests themselves — `live_within` waits
-//    for the driver's PROCESS (it matches the cmdline) and the assertions then
-//    read `run.json` and journal records the driver may not have written yet.
-//    The ~0.5s-versus-~6.1s runtime difference on a failing run is M2's tell.
-//    The fix direction for M2 is to poll for the ARTIFACT with the same bounded
-//    wait style `live_within` already uses; for M1 it is to scope the scan to
-//    this test's own process group. Neither is attempted here.
+// WHY NOT A `sleep`, AND WHY NOT `--test-threads=1`. A fixed sleep is a guess
+// that is too long on every passing run and too short on the one that matters;
+// the waits are bounded polls that return the moment the condition holds and
+// fail loudly, naming the artifact, when it never does. `--test-threads=1` was
+// measured NOT to work, twice — see HISTORY below rather than re-arguing it.
 //
-//    (M3) ADDED BY 21-34, and it makes M1 insufficient on its own: the failures
-//    reproduce on a completely idle machine with no other test binary running
-//    at all (4 of 6 isolated runs red), so "a concurrent SIBLING binary" cannot
-//    explain them. The remaining parallelism is INSIDE this process — the three
-//    tests here run on separate threads by default, and `isolate_envelope_root`
-//    sets a PROCESS-WIDE environment variable from whichever thread reaches it
-//    first while the others are already running. That is a candidate the record
-//    did not previously have. It is NOT measured to be the cause; it is named
-//    so the discriminating experiment covers it.
+// THE ~0.53s-VERSUS-~6.1s TELL, KEPT AND RE-AIMED. A failing run used to finish
+// in about half a second and a passing one in about six, because the paced
+// stand-in runs 60 heartbeats at 0.1s and only a run that actually waited for it
+// could take that long. That number is now a DIAGNOSTIC rather than a symptom:
+// **a ~0.5s run of this binary means a wait has been removed or defeated, even
+// if it reports `ok`.** Report it; do not absorb it.
 //
-// WHICH TEST FIRES VARIES. `a_fresh_scan_finds_the_orphaned_run_live_with_its_
-// last_journal_step` and `a_run_killed_without_an_ending_is_reported_crashed_
-// and_nothing_on_disk_is_repaired` are the two that flake, and round 11 observed
-// each of them firing while the other passed, plus a run where two of three
-// failed. Do not assume the arm named in an older note is the arm you will see.
+// ----------------------------------------------------------------------------
+// HISTORY — how the wrong answer was reached twice. Preserved deliberately.
+// Everything from here to the end of this block is the RECORD of the
+// investigation, not standing advice. It is kept because two of the wrong turns
+// below are the kind a reader will otherwise take again.
+// ----------------------------------------------------------------------------
 //
-// DATA POINTS, so the rate is not guessed at:
-//   * pre-round-11 HEAD `343c408`, one `cargo test --workspace --no-fail-fast`
-//     run, no `--test-threads` setting, before any file was edited:
-//     1416 passed / 1 failed / 13 ignored, the single failure being one of the
-//     two tests above.
-//   * round 11 wave 1, three executors in concurrent worktrees: the flake fired
-//     in all three runs; every isolated `cargo test --test driver_reattach`
-//     re-run was green 3/3.
-//   * round 11 post-merge on a quiet tree, orchestrator's run: fully green. A
-//     green quiet-tree run is consistent with the mechanism and is NOT evidence
-//     the flake is fixed.
-//   * 21-34's OWN merged-tree gate, on an idle machine with no sibling suite
-//     running: the workspace run went 1422 passed / 2 failed / 13 ignored, with
-//     BOTH flaking arms firing together — a third distinct pattern. Six
-//     back-to-back isolated runs of this binary at the default thread count
-//     then gave 2 green (6.12s) / 4 red (0.53s). NOTHING ELSE WAS RUNNING, so
-//     a concurrent sibling binary cannot be the whole story.
+// * IT WAS PRE-EXISTING, NOT A REGRESSION. Round 10 measured the untouched base
+//   and the round's HEAD at the same rate: 3/5 red at the base, 3/5 red at HEAD.
+//   A red here was never a signal that your change broke something. It was
+//   equally never permission to ignore a red elsewhere, which is what
+//   `--no-fail-fast` on the workspace gate is for — and that instruction stands
+//   on its own merits, independently of this flake.
 //
-// A WARNING ABOUT THE SERIALISED SAMPLE, because this file's history is a
-// lesson in it. 21-34 also ran `-- --test-threads=1` five times back to back and
-// got 5 green, at ~6.67s each. That is NOT a fix and must not be recorded as
-// one: round 4 measured this binary FAILING under that same flag, and the stale
-// claim this note corrects was itself born of a three-out-of-three green sample.
-// A small green sample under a flag is exactly the evidence that manufactured
-// the wrong answer the first time. What the pairing does establish is that
-// PARALLELISM MATTERS EVEN WITH NO OTHER BINARY RUNNING — which is a fact about
-// the three tests in THIS process, not about the rest of the suite.
+// * `-- --test-threads=1` DID NOT FIX IT, and the claim that it did is this
+//   file's cautionary tale. `deferred-items.md` opens with a round-2 note
+//   recording that the binary passed three times out of three under that
+//   setting; that was a true record of one session and nothing more. Round 4
+//   measured it failing intermittently UNDER that same flag, and round 10
+//   confirmed. Serialising hid the race; it did not close it.
 //
-// This note is comment-only by construction: 21-34 changed no executable line in
-// this file, so the binary behaves exactly as it did before the note existed.
+// * A WARNING ABOUT THE SERIALISED SAMPLE. 21-34 also ran `-- --test-threads=1`
+//   five times back to back and got 5 green, at ~6.67s each. That was NOT a fix
+//   and was explicitly not recorded as one: a small green sample under a flag is
+//   exactly the evidence that manufactured the wrong answer the first time. What
+//   the pairing did establish is that PARALLELISM MATTERED EVEN WITH NO OTHER
+//   BINARY RUNNING — a fact about the three tests in THIS process. In hindsight
+//   that is consistent with M2: serialising lengthens the interval between a
+//   spawn and the read that races it, which makes the race rarer without
+//   touching it.
+//
+// * WHICH TEST FIRED VARIED. `a_fresh_scan_finds_the_orphaned_run_live_with_its_
+//   last_journal_step` and `a_run_killed_without_an_ending_is_reported_crashed_
+//   and_nothing_on_disk_is_repaired` were the two that flaked, and round 11
+//   observed each firing while the other passed, plus a run where two of three
+//   failed. An older note naming one arm was never a reason to expect that arm.
+//
+// * DATA POINTS, so the rate was never guessed at:
+//     - pre-round-11 HEAD `343c408`, one `cargo test --workspace --no-fail-fast`
+//       run, no `--test-threads` setting, before any file was edited:
+//       1416 passed / 1 failed / 13 ignored, the single failure being one of the
+//       two tests above.
+//     - round 11 wave 1, three executors in concurrent worktrees: the flake
+//       fired in all three runs; every isolated `cargo test --test
+//       driver_reattach` re-run was green 3/3.
+//     - round 11 post-merge on a quiet tree, orchestrator's run: fully green. A
+//       green quiet-tree run was consistent with the mechanism and was NOT
+//       evidence the flake was fixed.
+//     - 21-34's OWN merged-tree gate, on an idle machine with no sibling suite
+//       running: the workspace run went 1422 passed / 2 failed / 13 ignored,
+//       with BOTH flaking arms firing together — a third distinct pattern. Six
+//       back-to-back isolated runs of this binary at the default thread count
+//       then gave 2 green (6.12s) / 4 red (0.53s). NOTHING ELSE WAS RUNNING, so
+//       a concurrent sibling binary could not be the whole story.
+//     - `260917-k6y`'s own fail-first baseline, six isolated runs before one
+//       byte was edited: 1 red at 0.53s (both arms firing, `run.json` NotFound
+//       and `observed.len()` 0) / 5 green at 6.23-6.24s. Ten isolated runs after
+//       the fix: 10 green, every one 6.23-6.25s, none at ~0.5s.
+//
+// AN HONESTY LINE ON M1 AND M3. The record carried two other candidates and this
+// change closes NEITHER. (M1) these tests discover runs through a scan that does
+// not stop at a process-group or worktree boundary, so a concurrently running
+// sibling binary could in principle be visible to them. (M3) `isolate_envelope_
+// root` sets a PROCESS-WIDE environment variable from whichever of the three
+// test threads reaches it first while the others are already running. Neither
+// was ever MEASURED to be a cause; neither is claimed live; neither is claimed
+// closed. If a red ever returns to this file, they are the remaining candidates
+// and the discriminating experiment recorded in `deferred-items.md` still
+// applies.
+//
+// A CORRECTION, in this project's idiom of quoting what it supersedes. The note
+// that stood here ended: *"This note is comment-only by construction: 21-34
+// changed no executable line in this file, so the binary behaves exactly as it
+// did before the note existed."* That was true OF `21-34` and it remains true of
+// `21-34`. It is false of this file today: `260917-k6y` DID change executable
+// lines — three bounded-wait helpers and three assertions that call them.
 // ============================================================================
 
 #![cfg(unix)]
