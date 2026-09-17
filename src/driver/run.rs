@@ -8,6 +8,72 @@
 //! It is the **first production caller** of Phase 15's `ClaudeExecutor` and
 //! Phase 16's `JournalRun`. Both were shipped complete and both were dead code
 //! until this file existed; `src/journal/mod.rs` says so in as many words.
+//!
+//! ---------------------------------------------------------------------------
+//! The cross-test `setpgid` hazard is ACTUAL, not hypothetical (quick
+//! `260917-nhc`).
+//!
+//! `current_group`'s doc below, and the comment in
+//! `tests::the_current_group_agrees_with_the_proc_parse`, both frame the hazard
+//! in the conditional: `setpgid` in a shared test binary *would* move the
+//! harness's own process group. **It does** — not from that test, which still
+//! deliberately does not call `establish_own_group`, but from a DIFFERENT test
+//! in this same binary.
+//!
+//! The mechanism: on Linux `setpgid(0, 0)` resolves against the
+//! **thread-group leader**, not the calling thread. A libtest worker thread that
+//! reaches it therefore moves the process group of the entire shared test
+//! binary, and every other test in that process with it.
+//!
+//! The mover, named: `src/driver/mod.rs:1834`, the "visible twin, driven end to
+//! end" arm of
+//! `driver::tests::a_target_phase_that_renders_as_another_is_refused_at_the_seam`,
+//! calls `drive` once per `crate::test_support::LOOK_ALIKE_PAIRS` entry, and
+//! each call reaches `execute_run`'s `establish_own_group()` — seven times per
+//! run. No test calls it DIRECTLY, which is why a direct-call search returns a
+//! false negative, and why the previously recorded diagnosis ruled this
+//! mechanism out.
+//!
+//! How it was established: `strace -f -e trace=setpgid,execve` on the lib-test
+//! binary caught exactly 7 `setpgid(0, 0) = 0` calls from a single TID that never
+//! `execve`s — a thread, not a forked child — with no `setpgid` at all in the
+//! main pid's own stream, and correlating that against libtest's fd-1 writes
+//! under a single-threaded run put all 7 inside the look-alike test. Separately,
+//! a parent that is not its own job leader polled `/proc/<child>/stat` on a live
+//! run and watched the pgrp transition from the inherited group to the child's
+//! own pid, mid-run.
+//!
+//! Why the launch context decides whether it reproduces: launched from an
+//! interactive shell, job control has already made the binary its own group
+//! leader, so `setpgid(0, 0)` is a no-op and no window exists. Launched by cargo
+//! — or by any non-job-leader parent — the binary inherits its parent's group and
+//! the window is real. MEASURED: 0 failures in 39 direct runs against 1 failure
+//! in 20 under a non-leader parent (3 in 80 over the extended sample). Recorded
+//! explicitly, because "it passes when I run it by hand" is the exact observation
+//! that sent both previous investigations wrong.
+//!
+//! EXONERATED: `liveness::process_group`'s `/proc/<pid>/stat` field parse and the
+//! `getpgrp()` wrapper both read correctly. They disagreed only because the group
+//! genuinely moved between the two reads. Said in as many words, because the
+//! previously recorded suspicion fell on the parse.
+//!
+//! The failure signature, so a future reader recognises it instantly: the `/proc`
+//! value is always the LARGER of the two, because a freshly created group id is
+//! the process's own pid.
+//!
+//! Deliberately NOT done. Not stopping the mover: that would mean either a
+//! test-only seam in production `execute_run` or deleting a real end-to-end
+//! control arm, and production `drive` is a dedicated process where the group
+//! move is correct and intended — re-ordering production code to accommodate a
+//! shared test binary is the wrong trade. Not calling `establish_own_group()`
+//! from the cross-check test: that decision stands, and only its premise
+//! strengthened, from hypothetical to observed.
+//!
+//! The measurement tables — fail-first baseline, post-fix contended sample and
+//! full-suite sweep — are in
+//! `.planning/phases/21-llm-goal-layer-prompt-injection-hardening/deferred-items.md`
+//! under `# QUICK 260917-nhc`, and are deliberately not duplicated here.
+//! ---------------------------------------------------------------------------
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
