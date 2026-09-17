@@ -34,6 +34,26 @@ concurrency flakes**, not regressions:
 > END of this file: `## 2026-09-17 (quick 260917-k6y) — RESOLVED: the
 > driver_reattach flake, M2 confirmed and closed`.
 
+> **NOW RESOLVED IN BOTH ROWS — THE TWO-BINARY ITEM IS FULLY CLOSED
+> (2026-09-17, quick `260917-lkg`)**
+>
+> **The superseded sentence, quoted verbatim from the `260917-k6y` pointer
+> immediately above:** *"The `tests/envelope_tracer.rs` row —
+> `a_relocated_copy_of_the_stub_refuses_instead_of_acting`, the `Text file busy`
+> write-then-exec race — **remains OPEN, unchanged, and untouched**"*. That was
+> true when it was written and it is no longer true. `260917-lkg` opened that
+> file and closed that row. **Both rows of the table above are now RESOLVED, and
+> this two-binary item is closed in full** — `driver_reattach` by `260917-k6y`,
+> `envelope_tracer` by `260917-lkg`.
+>
+> The mechanism is NOT the write-then-exec race the table row names. strace
+> measured it: the failing `execve` is always the SANCTIONED stub, never the
+> relocated copy, so `std::fs::copy` is a bystander and the row's phrase
+> *"the classic write-then-exec race"* is a plausible misattribution left as
+> written. See the canonical entry at the END of this file:
+> `## 2026-09-17 (quick 260917-lkg) — RESOLVED: the envelope_tracer ETXTBSY exec
+> race, measured and closed`.
+
 **Evidence that these are flakes rather than a regression.** Against **one
 unchanged binary**, `cargo test --test driver_reattach` returned FAILED, FAILED,
 then ok on three consecutive runs; the same binary with `-- --test-threads=1`
@@ -2412,6 +2432,15 @@ OPEN.** `a_relocated_copy_of_the_stub_refuses_instead_of_acting` and its
 `Text file busy` write-then-exec race are a different mechanism in a different
 file; `260917-k6y` did not open that file and makes no claim about it.
 
+> **SUPERSEDED (2026-09-17, quick `260917-lkg`).** Against the verbatim sentence
+> above — *"The `tests/envelope_tracer.rs` half of the original two-binary item
+> stays OPEN."* — that half is now CLOSED. It was true as written: `260917-k6y`
+> genuinely did not open that file and correctly claimed nothing about it. It is
+> left exactly as written. `260917-lkg` opened the file and closed the row; see
+> `# QUICK 260917-lkg` below. The k6y sentence is also right that it is a
+> different mechanism, and more so than it knew — it is not a write-then-exec
+> race at all.
+
 ### A stale path reference, disclosed rather than edited
 
 The round-11 STANDING entry above cites
@@ -2427,3 +2456,227 @@ artifact rather than the process: poll for `run.json` (and, for the journal
 assertion, for a non-empty journal) with the same bounded-wait helper style
 `live_within` already uses. Do not add a fixed `sleep`, and do not serialise the
 tests with `--test-threads=1`"* — which is precisely and only what shipped.
+
+---
+
+# QUICK 260917-lkg — appended 2026-09-17, append-only
+
+## 2026-09-17 (quick `260917-lkg`) — RESOLVED: the envelope_tracer ETXTBSY exec race, measured and closed
+
+_The canonical entry. The two dated pointers placed above — at the two-binary
+table and at `260917-k6y`'s `### What this does NOT close` — both point here. No
+line above was edited or deleted; where a pointer corrects an earlier one it
+quotes the earlier text verbatim and says what changed._
+
+**With this entry the original two-binary item is FULLY CLOSED.** The
+`driver_reattach` half was closed by `260917-k6y`, whose canonical section is
+immediately above this one and which this task did not open, re-run in isolation
+or make any new claim about. This entry closes the `envelope_tracer` half only.
+
+### The mechanism
+
+The table row at the top of this file calls it *"the classic write-then-exec
+race"*. **That attribution is wrong, and the way it is wrong is the finding.**
+
+`a_relocated_copy_of_the_stub_refuses_instead_of_acting` copies the sanctioned
+stub to a directory outside the envelope and execs the copy, so a `Text file
+busy` at a `spawn()` in that test reads instantly as "we wrote a file and
+immediately executed it". `strace -f -e trace=execve` was pointed at the failing
+runs and caught the failing syscall three times. **Every one of them was the
+SANCTIONED stub** —
+`execve("/tmp/.tmpXXXXXX/envelope/provenance/hooks/pre-push", ...) = -1 ETXTBSY`
+— in the envelope's own hooks directory. The relocated copy's path never appeared
+in a failing `execve` at all. `std::fs::copy` is a bystander, and what actually
+flaked is the CONTROL leg that runs before the copy exists.
+
+The writer is not at the call site and is not the test's to close.
+`src/envelope/hooks.rs::write_stub` builds each stub through a `NamedTempFile` —
+`write_all`, `set_permissions`, `persist` — and while that descriptor is open,
+any `fork` anywhere in the process hands the child a copy of it. This binary runs
+six `#[test]` fns on six libtest threads that spawn subprocesses constantly, so a
+SIBLING thread's forked child routinely inherits it. `O_CLOEXEC` closes it at
+that child's own `execve`, but not one instruction before — and for that window
+the child is a writer of the stub's inode.
+
+ETXTBSY is a per-INODE condition (`i_writecount`), not a per-path one. That is
+the fact that decides which fixes are possible at all.
+
+### What changed
+
+`tests/envelope_tracer.rs` only. `src/envelope/hooks.rs` was not opened.
+
+The single spawn site — `fn run_stub`, which both legs of the failing test and
+every other stub-running test go through — now spawns inside a bounded,
+**ETXTBSY-only** retry: an `Instant::now() + Duration::from_secs(30)` deadline
+with a 25ms sleep between attempts, which is the `*_within` idiom
+`tests/driver_reattach.rs` already uses, at the same inline duration and with no
+new named constant. The function's signature is unchanged and neither call site
+was edited.
+
+The wait is layered **before** the assertions, not over them. Nothing was
+weakened:
+
+| Property | How it is held |
+|---|---|
+| a non-ETXTBSY spawn error is not masked | only `ErrorKind::ExecutableFileBusy` retries; every other `Err` panics on the spot under the **verbatim** pre-existing message `the generated stub is executable`. A bad mode yields `PermissionDenied` and a bad shebang `ENOEXEC`; neither is ETXTBSY, so a genuinely broken stub still fails immediately and for its own reason |
+| ETXTBSY is never accepted as the refusal | deadline expiry `panic!`s, naming the stub path, the limit and the attempt count, and saying plainly that the exec never happened so nothing about refusal was proven. It never returns a synthesised `Output` and never skips |
+| no assertion was removed or loosened | `git diff` on the task commit shows zero removed `assert` lines; `#[ignore]`, `--test-threads` and a fixed pre-assertion `sleep` are all absent (the only `thread::sleep` in the file is the one INSIDE the poll loop, which is this project's house style) |
+| the branch is countable, not merely absent | each retry emits one `eprintln!`. "The flake did not recur" and "the branch fired N times and every run still passed" are different claims, and only the second is evidence |
+
+The `ErrorKind::ExecutableFileBusy` variant is stable since Rust 1.83 and
+`Cargo.toml` declares `rust-version = "1.88"`, so matching the variant rather
+than `raw_os_error() == Some(26)` is available at this crate's MSRV floor. It
+compiles; gate 2 of `scripts/pre-tag-check.sh` (`cargo +1.88 check --all-targets
+--locked`) passes.
+
+### The measurements
+
+**The contended reproducer** is 8 concurrent instances of the compiled
+`envelope_tracer` binary × 25 rounds = 200 runs, each instance run with
+`--nocapture`. It is not committed; it lived in the execution scratchpad and is
+reproduced verbatim in this task's PLAN.
+
+**Before:**
+
+| Condition | Runs | ETXTBSY failures |
+|---|---|---|
+| isolated back-to-back `envelope_tracer` binary | 70 | 0 |
+| full-suite `rtk proxy cargo test --no-fail-fast` | 6 | 0 |
+| **8 concurrent × 25 rounds** | **200** | **10 (5%)** — every one this test, this line, this error |
+
+**A pre-change re-confirmation sample taken on the execution machine came back 0
+of 200 red, and is recorded rather than suppressed.** At a 5% per-run rate one
+clean 200-run sample is an ordinary outcome and does not refute the 10/200
+baseline; it is also not evidence there was nothing to fix. It is recorded so a
+later reader does not mistake the post-change greens for a before/after
+contrast that this particular pair of samples does not supply.
+
+**After — four consecutive contended passes, 800 runs total:**
+
+| Pass | Runs | ETXTBSY failures | ETXTBSY retries absorbed | Runs reporting 6 passed | Wall band / round |
+|---|---|---|---|---|---|
+| 1 | 200 | 0 | 1 | 199 (one failed for an unrelated reason, below) | 181–276ms |
+| 2 | 200 | 0 | 2 | 200 | same band |
+| 3 | 200 | 0 | 0 | 200 | same band |
+| 4 | 200 | 0 | 2 | 200 | same band |
+| **total** | **800** | **0** | **5** | **799** | pre-change band was 210–305ms |
+
+**The retry branch fired five times and all five of those runs reported 6
+passed.** That is what makes this a fix proven IN EFFECT rather than a green run
+claimed as proof — the race was reached, absorbed and survived, five times, with
+the absorbing branch named in the log each time. Had the count been 0, the
+correct report would have been "the sample did not reproduce the race", and it is
+written here so that distinction stays visible.
+
+**Anti-vacuity.** `fixture()` returns `None` on any git failure and the affected
+tests then return early, so a run can report `6 passed` having proved nothing.
+Two controls, plus a third taken on the day: the per-run `6 passed` count, the
+wall-time band (a suspiciously fast green round is reportable as a failure
+regardless of exit code), and a direct `strace -f -e trace=execve` of a single
+`--exact` run of the failing test, which counted **2** `pre-push` `execve` calls —
+the control leg and the relocated leg — proving both legs actually exec rather
+than skipping.
+
+**Nine full-suite `rtk proxy cargo test --no-fail-fast` runs**, after the change:
+
+| Run | passed / failed / ignored | Failing tests |
+|---|---|---|
+| 1–6, 8, 9 | 2120 / 1 / 15 | `envelope::policy::tests::the_config_section_constants_record_the_git_version_they_were_derived_against` |
+| 7 | 2119 / 2 / 15 | the same version witness, **plus** `driver::run::tests::the_current_group_agrees_with_the_proc_parse` |
+
+`a_relocated_copy_of_the_stub_refuses_instead_of_acting` is green in all nine,
+and `Text file busy` appears in none of them. The version witness is
+environmental — local git 2.53.0 against constants re-derived at 2.55.0 — and is
+expected green on the CI runner. **Run 7's extra failure is reported, not
+absorbed:** it is a separate, previously-recorded per-run-flaky process test
+(quick `260917-ii4` measured it as "a per-run-flaky process test … across three
+re-runs each way"), it is in `src/driver/run.rs` rather than in any file this
+task opened, and nothing here claims anything about it.
+
+`./scripts/pre-tag-check.sh` exits 1 with gate 1 SKIPPED (no tag argument), gates
+2, 3 and 5 PASS, and **gate 4 failing on exactly one test** — the version witness
+— with the git-version mismatch reported as the script's designed loud ADVISORY
+rather than as a gate failure. `rtk proxy cargo clippy -- -D warnings` is clean,
+as is `cargo clippy --test envelope_tracer -- -D warnings`.
+
+### The three rejected eliminations, and why each fails
+
+Recorded because a future investigator will reach for all three, and because the
+first is the one that looks most obviously right.
+
+| Elimination | Why it fails |
+|---|---|
+| Close or `sync` the `File` before the rename in `write_stub` | `rename(2)` does not change the inode, and the inherited descriptor pins the INODE — which was already exposed to a `fork` during the pre-rename `write_all` and `set_permissions`. The hazard is never "the final path had a writer"; it is "this inode had a writer while a sibling thread forked" |
+| `hard_link` instead of `fs::copy` | the copy is not the failing exec — strace proves the failing `execve` is always the sanctioned stub — so this targets the wrong syscall, and a hard link SHARES the sanctioned inode, which makes the contention worse rather than better |
+| A process-wide `RwLock` making stub writes exclusive against spawns | would require wrapping every `Command::spawn` in the binary and in `tests/common/mod.rs`. Any site missed silently reinstates the flake while LOOKING deterministic, which is a worse failure mode than the flake: a fix that overclaims |
+
+### What this does NOT close
+
+**`src/envelope/hooks.rs` is untouched and no claim is made about the
+descriptor's lifetime there.** The inherited-descriptor account above is
+confirmed for the failing `execve` by strace; it is not a claim that `write_stub`
+should or should not hold its descriptor differently.
+
+**The three eliminations above are REASONED, not MEASURED.** None of them was
+implemented and re-run against the reproducer. They are recorded as reasoning,
+with their premises stated, so that a later reader can attack the premise rather
+than re-derive the whole chain — and so that nobody mistakes them for
+experimental results.
+
+**A SECOND, DISTINCT race in the same helper was discovered by this task's own
+reproducer and is left OPEN.** See the new item below. It is not the ETXTBSY
+race, it is not closed by this change, and the row above is closed on the
+ETXTBSY race only.
+
+**The git-version-constants failure is environmental and out of scope**, as is
+run 7's `the_current_group_agrees_with_the_proc_parse`.
+
+**`Cargo.toml`, the crate version, `.github/` and all tags are untouched.**
+v1.7.1 is a separate step.
+
+---
+
+## OPEN (found 2026-09-17 by quick `260917-lkg`) — a second race in `run_stub`: EPIPE on the stdin write
+
+**New, distinct, and NOT closed.** Found by this task's own contended reproducer,
+in a code block this task did not modify.
+
+| Binary | Test | Symptom |
+|---|---|---|
+| `tests/envelope_tracer.rs` | `a_relocated_copy_of_the_stub_refuses_instead_of_acting` | `the stub reads its stdin: Os { code: 32, kind: BrokenPipe, message: "Broken pipe" }` at the `write_all` in `run_stub` |
+
+**Rate: 1 in 800 contended runs** (0.125%), and 0 in the nine full-suite runs. It
+did not appear in the 200-run pre-change sample, so no before/after rate is
+claimed.
+
+**Not introduced by this change, and the reason is structural rather than
+argued:** the `write_all` and its `.expect("the stub reads its stdin")` are
+byte-identical before and after — the task commit's diff touches the `spawn` and
+nothing between it and `wait_with_output`.
+
+**The likely mechanism, stated as a hypothesis and NOT as a measurement.** The
+stub is `exec <binary> envelope pre-push <alias> --hook-path "$0"`, so the real
+reader of stdin is the binary's `envelope pre-push` handler. On the RELOCATED
+leg, `assert_provenance` refuses — which is exactly what the test exists to prove
+— and the process can exit before it ever reads stdin. The parent's `write_all`
+then races the child's exit: normally the ~130-byte ref line disappears into the
+64KB pipe buffer whether or not anyone reads it, but if the read end is already
+closed the write gets EPIPE. **This has not been confirmed by strace and must not
+be recorded as though it had been.**
+
+**Why it was not fixed here.** The plausible repair is to stop treating a
+`BrokenPipe` on that write as fatal, and that touches an assertion — which this
+task was explicitly forbidden from loosening, and which is a decision about what
+the test is entitled to require of a refusing stub rather than a synchronisation
+detail. It is registered OPEN and measured instead, following this project's
+round discipline (cf. T-19-91: measured, pinned and registered OPEN rather than
+closed).
+
+**What a fixer should settle first:** whether `.expect("the stub reads its
+stdin")` is asserting anything real. A successful `write_all` into a 64KB pipe
+buffer proves the buffer accepted the bytes, not that the stub read them — so the
+assertion may be vacuous in the passing case and misattributing in the failing
+one, in which case the right repair is to let the exit status and stderr that
+`wait_with_output` already collects carry the verdict, and that is a
+strengthening rather than a loosening. Confirm the mechanism by strace before
+changing anything.
