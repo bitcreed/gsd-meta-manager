@@ -581,6 +581,40 @@ impl DetailScreen {
         }
     }
 
+    /// A detail screen that is ALREADY on `sub_view`, with that tab's arrival
+    /// work done — so the first paint shows loaded content, not an empty pane.
+    ///
+    /// # Why this goes through `switch_to_tab`
+    ///
+    /// Landing on a tab is not the same as rendering it. Every tab that needs
+    /// anything on arrival has that work in exactly one place —
+    /// [`switch_to_tab`]: the Backlog parse, the git-log spawn, the defaults
+    /// load, the browser's lazy init, the Driver run scan. A caller that wanted
+    /// to open the screen pre-parked on a tab and set
+    /// `detail_sub_view_per_project` itself would render a blank tab on first
+    /// paint AND would be a second copy of the arrival rule, free to drift from
+    /// the one the digit keys use. 260916-vr0 is the standing example of what
+    /// two rules kept in agreement by care actually do: the overview counted
+    /// backlog items by one rule and the tab drew them by another, and they
+    /// disagreed totally.
+    ///
+    /// The index comes from [`tab_index`] rather than from a literal at the
+    /// call site. That is the whole reason `tab_index`/[`sub_view_from_index`]
+    /// are `pub(crate)` and round-trip-asserted: a hand-written index is a
+    /// second mapping, and a wrong one lands the user on a tab they did not ask
+    /// for.
+    ///
+    /// `switch_to_tab`'s `ScreenAction` is discarded because a screen under
+    /// construction has no stack to act on. That discard is pinned by
+    /// `switching_to_the_backlog_tab_returns_no_screen_action`, which goes red
+    /// if the function ever returns anything but `None`.
+    pub(crate) fn opened_on(alias: String, sub_view: DetailSubView, ctx: &mut AppContext) -> Self {
+        let mut screen = Self::new(alias);
+        let index = tab_index(&sub_view);
+        let _ = switch_to_tab(&screen.alias, index, &mut screen.scroll_offset, ctx);
+        screen
+    }
+
     /// Move the Driver tab's run selection by `delta`, clamped to the list.
     ///
     /// **Selecting a different run resets the output pane** — the offset goes

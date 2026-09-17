@@ -5,7 +5,7 @@ use super::detail::DetailScreen;
 use super::driver_confirm::{DriverAction, DriverConfirmScreen};
 use super::help::HelpScreen;
 use super::{AppContext, Screen, ScreenAction, SortMode};
-use crate::app::{classify_status, format_phase_display, StatusCategory};
+use crate::app::{classify_status, format_phase_display, DetailSubView, StatusCategory};
 use crate::state_reader::disk_status::DiskStatus;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -447,9 +447,13 @@ impl Screen for NormalScreen {
             // the module doc on `super::driver_confirm` for the full fence.
             //
             // Collision check, performed before these were written: this match
-            // already claims `q`, `j`, `k`, `a`, `c`, `d`, `/`, `?`, `Tab`,
-            // `Enter`, `Up` and `Down`, and the search sub-mode is entered by
-            // `/` and handled separately. None of `r`, `x`, `o` is among them.
+            // already claims `q`, `j`, `k`, `a`, `c`, `d`, `b`, `/`, `?`,
+            // `Tab`, `Enter`, `Up` and `Down`, and the search sub-mode is
+            // entered by `/` and handled separately. None of `r`, `x`, `o` is
+            // among them. (`b` is later in the file than these three but is
+            // listed here anyway: this list's only job is to let the next
+            // person check that a key is free, and a list that silently goes
+            // stale is worse than no list at all.)
             // (`r` is bound in `detail.rs` for the roadmap toggle. That is a
             // different screen with its own `handle_key` match, so it is not a
             // collision — the help screen annotates both with their scope.)
@@ -490,8 +494,10 @@ impl Screen for NormalScreen {
             //
             // One key, one indicator, no new screen. `s` is free on this
             // screen: the match above claims `q`, `j`, `k`, `a`, `c`, `d`,
-            // `r`, `x`, `o`, `/`, `?`, `Tab`, `Enter`, `Up` and `Down`, and
-            // the search sub-mode is entered by `/` and handled separately.
+            // `r`, `x`, `o`, `b`, `/`, `?`, `Tab`, `Enter`, `Up` and `Down`,
+            // and the search sub-mode is entered by `/` and handled
+            // separately. (`b` is bound below, beside `Enter`; see the note in
+            // the driver-keys block above about keeping these lists current.)
             //
             // **Alphabetical stays the default and that is load-bearing.** A
             // dashboard whose row order changes under the cursor while a run
@@ -522,6 +528,41 @@ impl Screen for NormalScreen {
                     ctx.detail_scroll_offset = 0;
                     ctx.needs_redraw = true;
                     ScreenAction::Push(Box::new(DetailScreen::new(alias)))
+                } else {
+                    ScreenAction::None
+                }
+            }
+            // ── Straight to the backlog (260916-vqz) ──────────────────────
+            //
+            // Placed beside `Enter` because it is a SECOND WAY TO OPEN THE SAME
+            // SCREEN, not a fourth driver key: the only difference is which tab
+            // the screen arrives on. The dashboard already shows a per-project
+            // backlog count in its Backlog column, so one-key access to the
+            // items behind that number belongs where the number is.
+            //
+            // Collision check, performed before this was written: this match
+            // claims `q`, `j`, `k`, `a`, `c`, `d`, `r`, `x`, `o`, `s`, `/`,
+            // `?`, `Tab`, `Enter`, `Up` and `Down`, and the search sub-mode is
+            // entered by `/` and short-circuits at the top of this handler, so
+            // a `b` typed into the filter never reaches here. `b` was free.
+            //
+            // The binding is DASHBOARD-SCOPED: `b` on the detail screen is that
+            // screen's own business and this arm cannot claim it.
+            //
+            // Landing here makes Backlog that project's sub-view from now on, so
+            // a later `Enter` returns to Backlog. That stickiness is not special
+            // to this key — `switch_to_tab` records the tab for every switch in
+            // the app — and it is what the todo asked for: land on Backlog
+            // "instead of whatever tab was last active".
+            KeyCode::Char('b') => {
+                if let Some(alias) = ctx.selected_alias() {
+                    ctx.detail_scroll_offset = 0;
+                    ctx.needs_redraw = true;
+                    ScreenAction::Push(Box::new(DetailScreen::opened_on(
+                        alias,
+                        DetailSubView::Backlog,
+                        ctx,
+                    )))
                 } else {
                     ScreenAction::None
                 }
