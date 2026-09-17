@@ -71,9 +71,16 @@ coverage:
 duration: 5min
 completed: 2026-09-15
 status: complete
-outcome: halted-at-task-1-by-decision-rule-b
+outcome: halted-at-task-1-by-decision-rule-b; the escalated fork was decided (raise the floor to 1.88) and shipped by quick-260915-hae
 deliverable_shipped: false
+superseded_by: quick-260915-hae
 ---
+
+> **No longer blocking.** The human fork this task escalated was decided — the declared floor was
+> raised to 1.88 — and the `msrv` CI gate it specified was shipped by quick task **260915-hae**.
+> See `.planning/quick/260915-hae-bump-declared-msrv-to-1-88-ship-msrv-ci-/260915-hae-SUMMARY.md`.
+> The measurements below are unchanged; they are the evidence that task acted on, and they were
+> correct.
 
 # Quick Task 260915-f4n: MSRV Enforcement Summary
 
@@ -333,6 +340,9 @@ lives here and in the return to the orchestrator instead.
 None.
 
 ## Next Phase Readiness
+
+**DISCHARGED by quick task 260915-hae (2026-09-15)** — all three steps below were executed there.
+Kept verbatim as the handoff record. As written at the time:
 
 **Blocked on a human decision, not on further agent work.** The follow-up task must:
 
