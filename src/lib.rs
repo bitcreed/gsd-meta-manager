@@ -9,6 +9,8 @@ pub mod driver;
 pub mod envelope;
 pub mod error;
 pub mod executor;
+/// The `GSDMM_EXPERIMENTAL_FEATURES` startup flag (quick task 260917-fko, D1).
+pub mod experimental;
 pub mod journal;
 pub mod main_loop;
 pub mod project_creator;
