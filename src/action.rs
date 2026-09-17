@@ -1,4 +1,4 @@
-use crate::state_reader::git_ops::{GitDiffStat, GitLogEntry};
+use crate::state_reader::git_ops::{GitCommitDetail, GitLogEntry};
 use crate::state_reader::ProjectState;
 use crossterm::event::KeyEvent;
 
@@ -80,9 +80,20 @@ pub enum Action {
         entries: Vec<GitLogEntry>,
         planning_only: bool,
     },
-    GitDiffStatLoaded {
+    /// One commit's message AND file stat, loaded together (260916-vr1).
+    ///
+    /// **`hash` is the hash the load was ASKED for**, carried back so the
+    /// handler can drop a payload that arrived for a commit the user has since
+    /// scrolled off (QD-07). Without it, a slow `git show` re-opens the pane
+    /// for whatever row happens to be selected when it lands.
+    ///
+    /// One action rather than the two this replaced: the pane wants both halves
+    /// of the same commit, and two independent loads can arrive in either order
+    /// under two different selections.
+    GitCommitDetailLoaded {
         alias: String,
-        stat: GitDiffStat,
+        hash: String,
+        detail: GitCommitDetail,
     },
     SessionsDetected {
         sessions: Vec<crate::session_detector::ClaudeSession>,

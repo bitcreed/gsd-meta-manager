@@ -1186,10 +1186,17 @@ impl App {
                 cache.loading_git = false;
                 self.needs_redraw = true;
             }
-            Action::GitDiffStatLoaded { alias, stat } => {
+            Action::GitCommitDetailLoaded {
+                alias,
+                hash,
+                detail,
+            } => {
                 let cache = self.ctx.view_cache.entry(alias).or_default();
-                cache.git_diff_stat = Some(stat);
-                cache.loading_diff = false;
+                // The hash guard lives on the cache, beside the three fields it
+                // touches, so the pane's state has exactly one writer (QD-07,
+                // QD-09). A detail for an unselected commit is dropped; the
+                // loading flag clears either way.
+                cache.apply_loaded_commit_detail(&hash, detail);
                 self.needs_redraw = true;
             }
             Action::SessionsDetected { sessions } => {

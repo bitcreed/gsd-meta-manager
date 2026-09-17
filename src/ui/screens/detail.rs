@@ -199,6 +199,98 @@ pub(super) fn clamp_scroll(offset: u16, total_lines: u16, visible_height: u16) -
     offset.min(total_lines.saturating_sub(visible_height))
 }
 
+/// The narrowest subject worth keeping a co-author column beside.
+///
+/// Below this, the row is all attribution and no content, which inverts what a
+/// log row is for. Twelve characters is roughly two short words plus an
+/// ellipsis — enough to recognise a commit you already know.
+pub(super) const GIT_ROW_MIN_SUBJECT_COLS: usize = 12;
+
+/// How a Git tab log row divides its width (QD-04).
+pub(super) struct GitRowBudget {
+    /// Characters the subject may take. May be zero at absurd widths.
+    pub(super) subject_cols: usize,
+    /// Whether the co-author column is drawn at all.
+    pub(super) show_co_authors: bool,
+}
+
+/// Divide a log row's width between the subject and the attribution columns.
+///
+/// **The subject gives way first, and the co-author before the author**
+/// (QD-04). The subject is the field with a second home — Enter opens the full
+/// message in the pane below — so it is the one that can afford an ellipsis.
+/// The author is never dropped: "who wrote this" is the question the row exists
+/// to answer, and the co-author is the newer, more expendable half of it.
+///
+/// # These are CHARACTERS, not display columns — disclosed
+///
+/// Every count here is `chars().count()` of the ESCAPED string, which equals
+/// display width only for single-width glyphs. A CJK author name or an emoji in
+/// a subject is two cells wide and counted as one, so the row can still overrun
+/// by the number of wide glyphs it holds. That is the pre-existing
+/// display-width question this codebase tracks separately in the open todo
+/// `2026-07-29-badge-glyph-display-width-alignment.md`, and this function
+/// deliberately does not claim to answer it — a half-answer here would make the
+/// todo look closed.
+pub(super) fn git_row_budget(
+    total_cols: usize,
+    hash_cols: usize,
+    date_cols: usize,
+    author_cols: usize,
+    co_author_cols: Option<usize>,
+) -> GitRowBudget {
+    // "> " highlight symbol + hash + " -- " + date + " -- " + <subject> + "  "
+    // + author, then optionally "  (" + co-authors + ")".
+    const HIGHLIGHT: usize = 2;
+    const SEPARATOR: usize = 4;
+    const AUTHOR_GAP: usize = 2;
+    const CO_AUTHOR_FRAME: usize = 4; // "  (" plus ")"
+
+    let fixed = HIGHLIGHT + hash_cols + SEPARATOR + date_cols + SEPARATOR + AUTHOR_GAP + author_cols;
+    let available = total_cols.saturating_sub(fixed);
+
+    match co_author_cols {
+        Some(cols) => {
+            let with_co_authors = available.saturating_sub(cols + CO_AUTHOR_FRAME);
+            if with_co_authors >= GIT_ROW_MIN_SUBJECT_COLS {
+                GitRowBudget {
+                    subject_cols: with_co_authors,
+                    show_co_authors: true,
+                }
+            } else {
+                // Dropping the column returns its room to the subject rather
+                // than leaving a gap where it would have been.
+                GitRowBudget {
+                    subject_cols: available,
+                    show_co_authors: false,
+                }
+            }
+        }
+        None => GitRowBudget {
+            subject_cols: available,
+            show_co_authors: false,
+        },
+    }
+}
+
+/// Truncate `subject` to `cols` characters, marking the cut with an ellipsis.
+///
+/// Character-wise, never byte-wise: a byte slice of a multi-byte subject
+/// panics, which is the defect
+/// `a_multibyte_session_id_does_not_panic_the_render` pins elsewhere in this
+/// file.
+fn truncate_subject(subject: &str, cols: usize) -> String {
+    if cols == 0 {
+        return String::new();
+    }
+    if subject.chars().count() <= cols {
+        return subject.to_string();
+    }
+    let mut out: String = subject.chars().take(cols.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
 /// The largest offset the last render pass could display: the tail.
 ///
 /// `u16::MAX` means *"as far down as this pane goes"*, and [`clamp_scroll`]
@@ -457,6 +549,13 @@ pub struct DetailScreen {
     /// formula the Browse and Archive viewers already use, which is what keeps
     /// the UIFIX-04 fix from having to be made a second time in a new place.
     driver_viewport: Cell<ViewportMetrics>,
+    /// Last-rendered viewport metrics for the Git tab's commit-message pane.
+    ///
+    /// A fifth `Cell` alongside the four above rather than a fifth *mechanism*,
+    /// for the reason the Driver one records: the pane's PageUp/PageDown arms
+    /// clamp through the same [`clamp_scroll`] formula, so UIFIX-04 cannot come
+    /// back here in a new spelling.
+    git_commit_viewport: Cell<ViewportMetrics>,
 }
 
 impl DetailScreen {
@@ -478,6 +577,7 @@ impl DetailScreen {
             archive_viewport: Cell::default(),
             generic_viewport: Cell::default(),
             driver_viewport: Cell::default(),
+            git_commit_viewport: Cell::default(),
         }
     }
 
@@ -1287,12 +1387,11 @@ impl Screen for DetailScreen {
                         }
                     }
                 }
-                // If diff stat pane is showing on Git tab, dismiss it first
+                // If the commit pane is showing on Git tab, dismiss it first
                 if current_view == DetailSubView::GitHistory {
                     let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                    if cache.git_diff_stat.is_some() {
-                        cache.git_diff_stat = None;
-                        cache.loading_diff = false;
+                    if cache.git_commit_detail.is_some() {
+                        cache.close_git_commit_detail();
                         ctx.needs_redraw = true;
                         return ScreenAction::None;
                     }
@@ -1352,7 +1451,7 @@ impl Screen for DetailScreen {
                         if !cache.git_entries.is_empty() {
                             let max = cache.git_entries.len().saturating_sub(1);
                             cache.git_selected = (cache.git_selected + 1).min(max);
-                            cache.git_diff_stat = None;
+                            cache.close_git_commit_detail();
                         }
                         ctx.needs_redraw = true;
                     }
@@ -1513,7 +1612,7 @@ impl Screen for DetailScreen {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         if !cache.git_entries.is_empty() {
                             cache.git_selected = cache.git_selected.saturating_sub(1);
-                            cache.git_diff_stat = None;
+                            cache.close_git_commit_detail();
                         }
                         ctx.needs_redraw = true;
                     }
@@ -1621,10 +1720,22 @@ impl Screen for DetailScreen {
                 match current_view {
                     DetailSubView::GitHistory => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        if !cache.git_entries.is_empty() {
+                        // QD-06: the Driver tab's posture, reused. While the
+                        // commit pane is open PageDown scrolls THAT — paging
+                        // the selection instead would close the very pane the
+                        // key was aimed at. With it closed, the key keeps its
+                        // old job of paging the log.
+                        if cache.git_commit_detail.is_some() {
+                            let vp = self.git_commit_viewport.get();
+                            cache.git_commit_scroll = clamp_scroll(
+                                cache.git_commit_scroll.saturating_add(PAGE_SCROLL_LINES),
+                                vp.total_lines,
+                                vp.visible_height,
+                            );
+                        } else if !cache.git_entries.is_empty() {
                             let max = cache.git_entries.len().saturating_sub(1);
                             cache.git_selected = (cache.git_selected + PAGE_SCROLL_LINES as usize).min(max);
-                            cache.git_diff_stat = None;
+                            cache.close_git_commit_detail();
                         }
                         ctx.needs_redraw = true;
                     }
@@ -1781,9 +1892,21 @@ impl Screen for DetailScreen {
                 match current_view {
                     DetailSubView::GitHistory => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        if !cache.git_entries.is_empty() {
+                        // The QD-06 branch again, and the up direction clamps
+                        // FIRST so a stale offset cannot survive a viewport
+                        // that shrank — the UIFIX-04 lesson, through the one
+                        // shared `clamp_scroll` rather than a second copy.
+                        if cache.git_commit_detail.is_some() {
+                            let vp = self.git_commit_viewport.get();
+                            let current = clamp_scroll(
+                                cache.git_commit_scroll,
+                                vp.total_lines,
+                                vp.visible_height,
+                            );
+                            cache.git_commit_scroll = current.saturating_sub(PAGE_SCROLL_LINES);
+                        } else if !cache.git_entries.is_empty() {
                             cache.git_selected = cache.git_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
-                            cache.git_diff_stat = None;
+                            cache.close_git_commit_detail();
                         }
                         ctx.needs_redraw = true;
                     }
@@ -2018,11 +2141,11 @@ impl Screen for DetailScreen {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         if let Some(entry) = cache.git_entries.get(cache.git_selected) {
                             // RAW: this hash becomes an argv element of
-                            // `git diff-tree ... <hash>`. A subprocess argument
+                            // `git show ... <hash>`. A subprocess argument
                             // is a lookup, not something a human reads, and an
                             // escaped hash would name no commit.
                             let hash = entry.hash.as_raw_for_logic_only().to_string();
-                            cache.loading_diff = true;
+                            cache.loading_commit_detail = true;
                             if let (Some(project), Some(tx)) =
                                 (ctx.config.projects.get(&self.alias), &ctx.event_tx)
                             {
@@ -2030,18 +2153,27 @@ impl Screen for DetailScreen {
                                 let project_path = project.path.clone();
                                 let alias = self.alias.clone();
                                 tokio::spawn(async move {
-                                    match git_ops::load_diff_stat(&project_path, &hash).await {
-                                        Ok(stat) => {
-                                            let _ =
-                                                tx.send(Action::GitDiffStatLoaded { alias, stat });
-                                        }
-                                        Err(_) => {
-                                            let _ = tx.send(Action::GitDiffStatLoaded {
-                                                alias,
-                                                stat: Default::default(),
-                                            });
-                                        }
-                                    }
+                                    // BOTH paths send back the hash they were
+                                    // ASKED for, so the handler can tell a
+                                    // stale answer from a current one (QD-07).
+                                    let detail = git_ops::load_commit_detail(&project_path, &hash)
+                                        .await
+                                        .unwrap_or_else(|_| git_ops::GitCommitDetail {
+                                            // An empty body opens the pane
+                                            // saying the commit has no readable
+                                            // message, which is a better answer
+                                            // than hanging on `Loading...`.
+                                            hash: crate::text::Untrusted::from_untrusted_source(
+                                                hash.clone(),
+                                            ),
+                                            body: Vec::new(),
+                                            stat: Default::default(),
+                                        });
+                                    let _ = tx.send(Action::GitCommitDetailLoaded {
+                                        alias,
+                                        hash,
+                                        detail,
+                                    });
                                 });
                             }
                             ctx.needs_redraw = true;
@@ -2604,7 +2736,7 @@ impl Screen for DetailScreen {
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                 cache.git_planning_only = !cache.git_planning_only;
                 cache.git_entries.clear();
-                cache.git_diff_stat = None;
+                cache.close_git_commit_detail();
                 cache.git_selected = 0;
                 cache.loading_git = true;
                 if let (Some(project), Some(tx)) =
@@ -3643,13 +3775,16 @@ impl DetailScreen {
             ))
         };
 
-        // Layout: mode indicator (1 line), then log (and optionally diff stat)
-        let has_diff = cache.git_diff_stat.is_some() || cache.loading_diff;
-        let content_chunks = if has_diff {
+        // Layout: mode indicator (1 line), then log (and optionally the commit
+        // pane). The split is 40/60 in the pane's favour — today's 60/40
+        // INVERTED (QD-05), because a commit message is the half a reader came
+        // for and the log rows above it stay recognisable at 40%.
+        let has_detail = cache.git_commit_detail.is_some() || cache.loading_commit_detail;
+        let content_chunks = if has_detail {
             Layout::vertical([
                 Constraint::Length(1),
-                Constraint::Percentage(60),
                 Constraint::Percentage(40),
+                Constraint::Percentage(60),
             ])
             .split(inner)
         } else {
@@ -3672,17 +3807,53 @@ impl DetailScreen {
                 // PRESERVES `U+202E` and `U+00AD` into a cell (measured per
                 // widget family), so a hostile commit subject reordered what the
                 // operator read. `Untrusted` has no `Into<Cow<str>>`, so the raw
-                // spelling of these four lines is a compile error rather than a
+                // spelling of these lines is a compile error rather than a
                 // site a reader has to notice.
-                ListItem::new(Line::from(vec![
-                    Span::styled(entry.hash.shown(), Style::default().fg(Color::Yellow)),
+                //
+                // The escape happens BEFORE the width budget, not after: the
+                // budget counts what will actually occupy cells, and
+                // `render_for_terminal` can change a string's length.
+                let hash = entry.hash.shown().to_string();
+                let date = entry.date.shown().to_string();
+                let author = entry.author.shown().to_string();
+                let co_authors = entry.co_authors.as_ref().map(|c| c.shown().to_string());
+                let subject = entry.message.shown().to_string();
+
+                let budget = git_row_budget(
+                    log_area.width as usize,
+                    hash.chars().count(),
+                    date.chars().count(),
+                    author.chars().count(),
+                    co_authors.as_ref().map(|c| c.chars().count()),
+                );
+
+                let mut spans = vec![
+                    Span::styled(hash, Style::default().fg(Color::Yellow)),
                     Span::raw(" -- "),
-                    Span::raw(entry.date.shown()),
+                    Span::raw(date),
                     Span::raw(" -- "),
-                    Span::raw(entry.message.shown()),
-                    Span::raw("  "),
-                    Span::styled(entry.author.shown(), Style::default().fg(Color::DarkGray)),
-                ]))
+                ];
+                let truncated = truncate_subject(&subject, budget.subject_cols);
+                if !truncated.is_empty() {
+                    spans.push(Span::raw(truncated));
+                }
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(author, Style::default().fg(Color::DarkGray)));
+
+                // The column AND its separator are emitted together, so a
+                // commit with no trailer renders no dangling "  ()" (QD-01).
+                if budget.show_co_authors {
+                    if let Some(co_authors) = co_authors {
+                        spans.push(Span::raw("  ("));
+                        spans.push(Span::styled(
+                            co_authors,
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                        spans.push(Span::raw(")"));
+                    }
+                }
+
+                ListItem::new(Line::from(spans))
             })
             .collect();
 
@@ -3698,55 +3869,118 @@ impl DetailScreen {
         list_state.select(Some(cache.git_selected));
         frame.render_stateful_widget(list, log_area, &mut list_state);
 
-        // Render diff stat pane if present
-        if has_diff {
-            let diff_area = content_chunks[2];
-            if cache.loading_diff {
-                let diff_block = Block::default()
+        // Render the commit pane if present
+        if has_detail {
+            let detail_area = content_chunks[2];
+            if cache.loading_commit_detail {
+                let block = Block::default()
                     .borders(Borders::ALL)
-                    .title(" Diff: loading... ");
-                let loading = Paragraph::new("  Loading diff...")
+                    .title(" Commit: loading... ");
+                let loading = Paragraph::new("  Loading commit...")
                     .style(Style::default().fg(Color::DarkGray))
-                    .block(diff_block);
-                frame.render_widget(loading, diff_area);
-            } else if let Some(stat) = &cache.git_diff_stat {
+                    .block(block);
+                frame.render_widget(loading, detail_area);
+            } else if let Some(detail) = cache.git_commit_detail.as_ref() {
                 // SHOWN: the title is what a human reads, and `Block::title` is
                 // the widget family that PRESERVES the invisible class most
                 // completely (measured — even `U+202E` reaches a cell through
-                // it). The same hash goes to `load_diff_stat` RAW, above, which
-                // is the split this carrier exists to make the compiler ask
-                // about separately.
+                // it). The same hash goes to `load_commit_detail` RAW, above,
+                // which is the split this carrier exists to make the compiler
+                // ask about separately.
                 let selected_hash = cache
                     .git_entries
                     .get(cache.git_selected)
                     .map(|e| e.hash.shown().to_string())
                     .unwrap_or_else(|| "???".to_string());
-                let diff_block = Block::default()
+
+                // Under EIGHT rows — two borders, a title and five body lines —
+                // there is no room for two bordered panes, and the message is
+                // the half a reader came for, so it takes all of it (QD-05).
+                const MIN_ROWS_FOR_BOTH_PANES: u16 = 8;
+                let (message_area, files_area) =
+                    if detail_area.height < MIN_ROWS_FOR_BOTH_PANES {
+                        (detail_area, None)
+                    } else {
+                        let split = Layout::vertical([
+                            Constraint::Percentage(60),
+                            Constraint::Percentage(40),
+                        ])
+                        .split(detail_area);
+                        (split[0], Some(split[1]))
+                    };
+
+                let message_block = Block::default()
                     .borders(Borders::ALL)
-                    .title(format!(" Diff: {} ", selected_hash));
+                    .title(format!(" Commit: {} ", selected_hash));
+                let message_inner = message_block.inner(message_area);
 
-                let mut diff_lines: Vec<Line> = stat
-                    .file_stats
-                    .iter()
-                    .map(|s| Line::from(format!("  {}", s)))
-                    .collect();
+                // Recorded at render, read by the PageUp/PageDown arms —
+                // the same `Cell<ViewportMetrics>` protocol the Browse, Archive
+                // and Driver panes use, so all four clamp through one formula.
+                let total_lines = detail.body.len().min(u16::MAX as usize) as u16;
+                self.git_commit_viewport.set(ViewportMetrics {
+                    total_lines,
+                    visible_height: message_inner.height,
+                });
+                let scroll = clamp_scroll(
+                    cache.git_commit_scroll,
+                    total_lines,
+                    message_inner.height,
+                );
 
-                // Summary line with colored insertions/deletions
-                diff_lines.push(Line::from(vec![
-                    Span::raw(format!("  {} files changed, ", stat.files_changed)),
-                    Span::styled(
-                        format!("+{}", stat.insertions),
-                        Style::default().fg(Color::Green),
-                    ),
-                    Span::raw(" "),
-                    Span::styled(
-                        format!("-{}", stat.deletions),
-                        Style::default().fg(Color::Red),
-                    ),
-                ]));
+                let message_lines: Vec<Line> = if detail.body.is_empty() {
+                    vec![Line::from(Span::styled(
+                        "  (this commit carries no message body)",
+                        Style::default().fg(Color::DarkGray),
+                    ))]
+                } else {
+                    // SHOWN, one carrier per line — see `GitCommitDetail::body`.
+                    detail
+                        .body
+                        .iter()
+                        .map(|line| Line::from(Span::raw(line.shown())))
+                        .collect()
+                };
 
-                let diff_paragraph = Paragraph::new(diff_lines).block(diff_block);
-                frame.render_widget(diff_paragraph, diff_area);
+                // NO `Wrap` (QD-10). `total_lines` must equal the pane's real
+                // scroll range or `clamp_scroll` lies to the key handler about
+                // where the bottom is; git bodies are hard-wrapped by
+                // convention, so long lines clip horizontally instead.
+                let message = Paragraph::new(message_lines)
+                    .block(message_block)
+                    .scroll((scroll, 0));
+                frame.render_widget(message, message_area);
+
+                if let Some(files_area) = files_area {
+                    let stat = &detail.stat;
+                    // Retitled to name the files: the hash now titles the pane
+                    // above, and two panes headed by the same hash would read
+                    // as one pane drawn twice.
+                    let files_block = Block::default().borders(Borders::ALL).title(" Files ");
+
+                    let mut diff_lines: Vec<Line> = stat
+                        .file_stats
+                        .iter()
+                        .map(|s| Line::from(format!("  {}", s)))
+                        .collect();
+
+                    // Summary line with colored insertions/deletions
+                    diff_lines.push(Line::from(vec![
+                        Span::raw(format!("  {} files changed, ", stat.files_changed)),
+                        Span::styled(
+                            format!("+{}", stat.insertions),
+                            Style::default().fg(Color::Green),
+                        ),
+                        Span::raw(" "),
+                        Span::styled(
+                            format!("-{}", stat.deletions),
+                            Style::default().fg(Color::Red),
+                        ),
+                    ]));
+
+                    let files_paragraph = Paragraph::new(diff_lines).block(files_block);
+                    frame.render_widget(files_paragraph, files_area);
+                }
             }
         }
     }
@@ -5458,7 +5692,11 @@ fn footer_spans(sub_view: &DetailSubView, width: u16) -> Vec<Span<'static>> {
             spans.push(Span::styled("[p]", b));
             spans.push(Span::raw("lanning-only  "));
             spans.push(Span::styled("[Enter]", b));
-            spans.push(Span::raw("diff  "));
+            spans.push(Span::raw("commit  "));
+            // QD-06 added no keybinding, so the only place its behaviour can be
+            // discovered is here — there is deliberately no new help-screen row.
+            spans.push(Span::styled("[PgUp/PgDn]", b));
+            spans.push(Span::raw("scroll  "));
         }
         DetailSubView::Queue => {
             spans.push(Span::styled("[a]", b));
@@ -9467,6 +9705,339 @@ mod tests {
 
     fn driver_following(ctx: &AppContext) -> bool {
         ctx.view_cache[TEST_ALIAS].driver_follow
+    }
+
+    // ── The Git tab's commit pane: the Driver tab's posture, reused ────────
+    //
+    // Selection on `j`/`k`, pane scroll on PageUp/PageDown, no second mode to
+    // track (QD-06). The pane's presence is the ONLY thing that switches which
+    // of the two PageDown means, so both branches are driven through the real
+    // `handle_key` here rather than asserted about the arithmetic.
+
+    /// A DetailScreen and AppContext parked on the Git tab, with `entries` log
+    /// rows and — when `body_lines` is `Some` — an open commit pane whose
+    /// viewport was recorded with that many lines in a 10-row body.
+    fn git_fixture(
+        entries: usize,
+        selected: usize,
+        body_lines: Option<u16>,
+        stored_offset: u16,
+    ) -> (DetailScreen, AppContext) {
+        use crate::state_reader::git_ops::{GitCommitDetail, GitLogEntry};
+        use crate::text::Untrusted;
+
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        if let Some(total_lines) = body_lines {
+            screen.git_commit_viewport.set(ViewportMetrics {
+                total_lines,
+                visible_height: 10,
+            });
+        }
+
+        let mut ctx = test_ctx();
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::GitHistory);
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        let field = |s: &str| Untrusted::from_untrusted_source(s.to_string());
+        cache.git_entries = (0..entries)
+            .map(|i| GitLogEntry {
+                hash: field(&format!("hash{i:03}")),
+                date: field("2026-09-17"),
+                author: field("Human"),
+                co_authors: None,
+                message: field("a subject"),
+            })
+            .collect();
+        cache.git_selected = selected;
+        if let Some(total_lines) = body_lines {
+            cache.git_commit_detail = Some(GitCommitDetail {
+                hash: field("hash000"),
+                body: (0..total_lines).map(|i| field(&format!("line {i}"))).collect(),
+                stat: Default::default(),
+            });
+            cache.git_commit_scroll = stored_offset;
+        }
+
+        (screen, ctx)
+    }
+
+    #[test]
+    fn page_down_scrolls_the_commit_pane_while_open_and_pages_the_selection_otherwise() {
+        // Pane OPEN: PageDown moves the pane, not the selection.
+        let (mut screen, mut ctx) = git_fixture(100, 0, Some(60), 0);
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        let cache = &ctx.view_cache[TEST_ALIAS];
+        assert_eq!(
+            cache.git_commit_scroll, PAGE_SCROLL_LINES,
+            "with the pane open PageDown scrolls the message"
+        );
+        assert_eq!(
+            cache.git_selected, 0,
+            "and leaves the selection where it is — moving it would close the \
+             very pane the key was aimed at"
+        );
+        assert!(cache.git_commit_detail.is_some());
+
+        // The clamp is the SHARED formula: 60 lines in a 10-row body caps the
+        // offset at 50, so a third PageDown does not overshoot.
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].git_commit_scroll, 50);
+
+        // And back up, clamped at zero.
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].git_commit_scroll, 30);
+
+        // Pane CLOSED: PageDown pages the selection, as it always did.
+        let (mut screen, mut ctx) = git_fixture(100, 0, None, 0);
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].git_selected,
+            PAGE_SCROLL_LINES as usize,
+            "with no pane open PageDown keeps paging the log"
+        );
+    }
+
+    // ── The co-author column and the message pane (260916-vr1, Task 3) ─────
+
+    /// Render the detail screen at an arbitrary size and join the cells.
+    ///
+    /// Sized, unlike `render_detail_to_text`'s fixed 120x30, because two of the
+    /// claims below are ABOUT the size: what a narrow row drops, and what a
+    /// short detail area does with the file pane.
+    fn render_detail_sized(
+        screen: &DetailScreen,
+        ctx: &AppContext,
+        width: u16,
+        height: u16,
+    ) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("TestBackend terminal");
+        terminal
+            .draw(|frame| screen.render(frame, frame.area(), ctx))
+            .expect("draw the detail screen");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| {
+                        buffer
+                            .cell((x, y))
+                            .map(|cell| cell.symbol())
+                            .unwrap_or(" ")
+                            .to_string()
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The Git tab holding exactly the rows described by `rows`, each a
+    /// `(subject, co_authors)` pair.
+    fn git_rows_fixture(rows: &[(&str, Option<&str>)]) -> (DetailScreen, AppContext) {
+        use crate::state_reader::git_ops::GitLogEntry;
+        use crate::text::Untrusted;
+
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let mut ctx = test_ctx();
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::GitHistory);
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        let field = |s: &str| Untrusted::from_untrusted_source(s.to_string());
+        cache.git_entries = rows
+            .iter()
+            .enumerate()
+            .map(|(i, (subject, co))| GitLogEntry {
+                hash: field(&format!("hash{i:03}")),
+                date: field("2026-09-17"),
+                author: field("Human"),
+                co_authors: co.map(field),
+                message: field(subject),
+            })
+            .collect();
+        cache.git_selected = 0;
+
+        (screen, ctx)
+    }
+
+    /// The Git tab with an OPEN commit pane: `body_lines` message lines and one
+    /// file-stat line below them.
+    fn git_pane_fixture(body_lines: usize, scroll: u16) -> (DetailScreen, AppContext) {
+        use crate::state_reader::git_ops::{GitCommitDetail, GitDiffStat};
+        use crate::text::Untrusted;
+
+        let (screen, mut ctx) = git_rows_fixture(&[("a subject", None)]);
+        let field = |s: &str| Untrusted::from_untrusted_source(s.to_string());
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        cache.git_commit_detail = Some(GitCommitDetail {
+            hash: field("hash000"),
+            body: (0..body_lines).map(|i| field(&format!("line {i:02}"))).collect(),
+            stat: GitDiffStat {
+                files_changed: 1,
+                insertions: 2,
+                deletions: 1,
+                file_stats: vec![" src/probe_file.rs | 3 ++-".to_string()],
+            },
+        });
+        cache.git_commit_scroll = scroll;
+
+        (screen, ctx)
+    }
+
+    #[test]
+    fn a_git_row_without_co_authors_has_no_trailing_parentheses() {
+        let (screen, ctx) = git_rows_fixture(&[
+            ("with a helper", Some("Claude Opus 5")),
+            ("alone", None),
+        ]);
+        let drawn = render_detail_sized(&screen, &ctx, 120, 30);
+
+        let with_row = drawn
+            .lines()
+            .find(|l| l.contains("with a helper"))
+            .expect("the co-authored row renders");
+        assert!(
+            with_row.contains("Human") && with_row.contains("(Claude Opus 5)"),
+            "the co-author follows the human author, parenthesised: {with_row:?}"
+        );
+
+        let alone_row = drawn
+            .lines()
+            .find(|l| l.contains("alone"))
+            .expect("the solo row renders");
+        assert!(
+            !alone_row.contains('(') && !alone_row.contains(')'),
+            "a commit with no trailer must render no empty column and no \
+             dangling separator: {alone_row:?}"
+        );
+        // The scraped line still carries the enclosing block's right border, so
+        // the content is what is left once that and the padding come off.
+        assert!(
+            alone_row
+                .trim_end_matches(|c: char| c == '│' || c.is_whitespace())
+                .ends_with("Human"),
+            "the solo row ends at the author: {alone_row:?}"
+        );
+    }
+
+    #[test]
+    fn a_git_row_truncates_the_subject_before_the_attribution_columns() {
+        // The budget, stated as arithmetic first so a render-layout change
+        // cannot quietly turn this claim into a different one.
+        let budget = git_row_budget(78, 7, 10, 5, Some(13));
+        assert!(
+            budget.show_co_authors,
+            "at this width both attribution columns still fit"
+        );
+        assert!(
+            budget.subject_cols < 60,
+            "and the subject is what gives up the room"
+        );
+
+        let long = "a subject long enough that it cannot possibly fit beside both columns";
+        let (screen, ctx) = git_rows_fixture(&[(long, Some("Claude Opus 5"))]);
+        let drawn = render_detail_sized(&screen, &ctx, 80, 30);
+        let row = drawn
+            .lines()
+            .find(|l| l.contains("a subject long"))
+            .expect("the row renders");
+
+        assert!(
+            row.contains('…'),
+            "the subject is truncated with an ellipsis rather than silently \
+             clipped at the edge: {row:?}"
+        );
+        assert!(
+            row.contains("Human") && row.contains("(Claude Opus 5)"),
+            "both attribution columns survive the truncation: {row:?}"
+        );
+    }
+
+    #[test]
+    fn a_narrow_git_row_drops_the_co_author_column_and_keeps_the_author() {
+        // Below the point where a 12-char subject still fits beside both, the
+        // CO-AUTHOR goes and the author stays (QD-04). The author is never
+        // dropped: "who wrote this" is the question the row exists to answer.
+        let budget = git_row_budget(58, 7, 10, 5, Some(13));
+        assert!(!budget.show_co_authors);
+        assert!(
+            budget.subject_cols >= GIT_ROW_MIN_SUBJECT_COLS,
+            "and the room the co-author gave up goes back to the subject"
+        );
+
+        // A width so small that even the subject is squeezed to nothing still
+        // yields a budget rather than an underflow.
+        let starved = git_row_budget(4, 7, 10, 5, Some(13));
+        assert!(!starved.show_co_authors);
+        assert_eq!(starved.subject_cols, 0);
+
+        let (screen, ctx) = git_rows_fixture(&[("a subject", Some("Claude Opus 5"))]);
+        let drawn = render_detail_sized(&screen, &ctx, 60, 30);
+        let row = drawn
+            .lines()
+            .find(|l| l.contains("2026-09-17"))
+            .expect("the row renders");
+        assert!(row.contains("Human"), "the author survives: {row:?}");
+        assert!(
+            !row.contains("Claude Opus 5"),
+            "the co-author column is dropped rather than clipped mid-name: {row:?}"
+        );
+    }
+
+    #[test]
+    fn the_commit_message_renders_above_the_file_list() {
+        let (screen, ctx) = git_pane_fixture(3, 0);
+        let drawn = render_detail_sized(&screen, &ctx, 120, 30);
+        let lines: Vec<&str> = drawn.lines().collect();
+
+        let body_at = lines
+            .iter()
+            .position(|l| l.contains("line 00"))
+            .expect("the commit message renders");
+        let files_at = lines
+            .iter()
+            .position(|l| l.contains("probe_file.rs"))
+            .expect("the file list renders");
+
+        assert!(
+            body_at < files_at,
+            "the message is the more valuable half and takes the upper pane \
+             (QD-05); message at row {body_at}, files at row {files_at}"
+        );
+    }
+
+    #[test]
+    fn the_commit_message_takes_the_whole_detail_area_below_eight_rows() {
+        let (screen, ctx) = git_pane_fixture(3, 0);
+        let drawn = render_detail_sized(&screen, &ctx, 120, 14);
+
+        assert!(
+            drawn.contains("line 00"),
+            "under height pressure the message is what survives: {drawn}"
+        );
+        assert!(
+            !drawn.contains("probe_file.rs"),
+            "and the file pane is skipped rather than drawn two rows tall: {drawn}"
+        );
+    }
+
+    #[test]
+    fn the_commit_message_pane_renders_from_its_stored_offset() {
+        // 40 lines, offset 10: the pane starts at the ELEVENTH line. No `Wrap`
+        // is applied (QD-10), so the recorded `total_lines` is the real scroll
+        // range and `clamp_scroll` is not lying to the key handler.
+        let (screen, ctx) = git_pane_fixture(40, 10);
+        let drawn = render_detail_sized(&screen, &ctx, 120, 30);
+
+        assert!(drawn.contains("line 10"), "the offset's line is at the top");
+        assert!(
+            !drawn.contains("line 09"),
+            "and the line above it has scrolled off: {drawn}"
+        );
     }
 
     fn test_run(run_id: &str) -> crate::journal::RunSummary {

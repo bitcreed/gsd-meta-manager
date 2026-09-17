@@ -27,7 +27,7 @@ use crate::config::Config;
 use crate::executor::RunState;
 use crate::main_loop::ExecEvent;
 use crate::state_reader::backlog::BacklogItem;
-use crate::state_reader::git_ops::{GitDiffStat, GitLogEntry};
+use crate::state_reader::git_ops::{GitCommitDetail, GitLogEntry};
 use crate::state_reader::ProjectState;
 use crate::ui::screens::driver::TerminalState;
 use crate::watcher::FileWatcher;
@@ -911,10 +911,27 @@ pub struct ProjectViewCache {
     pub git_entries: Vec<GitLogEntry>,
     pub git_selected: usize,
     pub git_planning_only: bool,
-    pub git_diff_stat: Option<GitDiffStat>,
+    /// The selected commit's message AND file stat — **and its presence IS
+    /// "the pane is open"** (QD-09).
+    ///
+    /// There is deliberately no separate `git_detail_open` flag beside it. A
+    /// value plus an active flag is two fields that can disagree, and this pane
+    /// is closed from SIX different key arms; six sites setting two fields is
+    /// six chances for one of them to set only one. Every transition goes
+    /// through [`ProjectViewCache::open_git_commit_detail`],
+    /// [`ProjectViewCache::close_git_commit_detail`] or
+    /// [`ProjectViewCache::apply_loaded_commit_detail`], so the three fields
+    /// below cannot drift apart.
+    pub git_commit_detail: Option<GitCommitDetail>,
+    /// Scroll offset into [`Self::git_commit_detail`]'s body.
+    ///
+    /// **Meaningless while the Option is `None`** and zeroed on both
+    /// transitions, so a newly opened commit starts at its first line rather
+    /// than inheriting the previous commit's offset.
+    pub git_commit_scroll: u16,
     pub loading_backlog: bool,
     pub loading_git: bool,
-    pub loading_diff: bool,
+    pub loading_commit_detail: bool,
     pub pipeline_selected: usize,
     pub queue_selected: usize,
     pub sessions_selected: usize,
@@ -1075,6 +1092,61 @@ pub struct ProjectViewCache {
     /// field is additive with zero constructor churn, and `view_cache` is
     /// already pruned by `App::prune_driver_maps`, so it inherits that.
     pub driver_dry_run: Option<DryRunPreview>,
+}
+
+impl ProjectViewCache {
+    /// Open the Git tab's commit pane on `detail`.
+    ///
+    /// The ONE place the pane opens (QD-09): it sets the Option, zeroes the
+    /// scroll offset so the new commit starts at its first line, and clears the
+    /// loading flag, because the thing that was loading has just arrived.
+    pub fn open_git_commit_detail(&mut self, detail: GitCommitDetail) {
+        self.git_commit_detail = Some(detail);
+        self.git_commit_scroll = 0;
+        self.loading_commit_detail = false;
+    }
+
+    /// Close the Git tab's commit pane.
+    ///
+    /// The ONE place the pane closes, called from all six key arms that dismiss
+    /// it — Esc, `j`, `k`, PageUp, PageDown and the `p` filter toggle. Six arms
+    /// each clearing three fields by hand is six chances for one of them to
+    /// clear two.
+    pub fn close_git_commit_detail(&mut self) {
+        self.git_commit_detail = None;
+        self.git_commit_scroll = 0;
+        self.loading_commit_detail = false;
+    }
+
+    /// Apply a commit detail that has just finished loading — **if it is still
+    /// the one being looked at** (QD-07, T-vr1-04).
+    ///
+    /// `hash` is the raw hash the load was ASKED for. A detail whose hash no
+    /// longer matches the selected row is dropped: the selection moved while
+    /// the subprocess ran, and rendering this body under that row's title would
+    /// attribute one commit's message and files to another.
+    ///
+    /// The loading flag clears either way. The load did finish; it simply
+    /// answered a question nobody is asking any more, and leaving the flag set
+    /// would strand the pane in `Loading...` forever.
+    ///
+    /// The guard lives here rather than inline in `app.rs`'s action arm so it
+    /// is exercisable without constructing an `App` — and so the three fields
+    /// it touches are still only ever written by this impl.
+    pub fn apply_loaded_commit_detail(&mut self, hash: &str, detail: GitCommitDetail) {
+        self.loading_commit_detail = false;
+
+        let selected_hash = self
+            .git_entries
+            .get(self.git_selected)
+            // RAW: a hash is a lookup, not something a human reads here. An
+            // escaped hash would compare equal to nothing.
+            .map(|entry| entry.hash.as_raw_for_logic_only());
+
+        if selected_hash == Some(hash) {
+            self.open_git_commit_detail(detail);
+        }
+    }
 }
 
 /// One dry-run preview, in the two states the pane can render it in (D-26).
@@ -2863,5 +2935,89 @@ mod tests {
             Some(0),
             "an index past the end of the new list must be clamped into range"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The git commit-detail pane: one Option, two methods (260916-vr1, QD-09)
+    // -----------------------------------------------------------------------
+
+    fn log_entry(hash: &str) -> GitLogEntry {
+        let field = |s: &str| crate::text::Untrusted::from_untrusted_source(s.to_string());
+        GitLogEntry {
+            hash: field(hash),
+            date: field("2026-09-17"),
+            author: field("Human"),
+            co_authors: None,
+            message: field("a subject"),
+        }
+    }
+
+    fn commit_detail(hash: &str) -> crate::state_reader::git_ops::GitCommitDetail {
+        crate::state_reader::git_ops::GitCommitDetail {
+            hash: crate::text::Untrusted::from_untrusted_source(hash.to_string()),
+            body: vec![crate::text::Untrusted::from_untrusted_source(
+                "a body line".to_string(),
+            )],
+            stat: crate::state_reader::git_ops::GitDiffStat::default(),
+        }
+    }
+
+    #[test]
+    fn a_commit_detail_for_an_unselected_hash_is_discarded() {
+        // The latent bug this closes (QD-07): a slow load used to re-open the
+        // pane for WHATEVER row was selected when it landed, so one commit's
+        // files rendered under another commit's title (T-vr1-04).
+        let mut cache = ProjectViewCache {
+            git_entries: vec![log_entry("aaaaaaa"), log_entry("bbbbbbb")],
+            git_selected: 0,
+            loading_commit_detail: true,
+            ..Default::default()
+        };
+
+        cache.apply_loaded_commit_detail("bbbbbbb", commit_detail("bbbbbbb"));
+
+        assert!(
+            cache.git_commit_detail.is_none(),
+            "a detail for the UNSELECTED commit must not open the pane"
+        );
+        assert!(
+            !cache.loading_commit_detail,
+            "the loading flag still clears — the load DID finish, it just \
+             answered a question nobody is asking any more"
+        );
+
+        // The selected commit's own detail opens it.
+        cache.loading_commit_detail = true;
+        cache.apply_loaded_commit_detail("aaaaaaa", commit_detail("aaaaaaa"));
+        assert!(cache.git_commit_detail.is_some());
+        assert!(!cache.loading_commit_detail);
+    }
+
+    #[test]
+    fn opening_and_closing_the_commit_pane_reset_the_scroll_offset() {
+        let mut cache = ProjectViewCache {
+            git_commit_scroll: 42,
+            loading_commit_detail: true,
+            ..Default::default()
+        };
+
+        cache.open_git_commit_detail(commit_detail("aaaaaaa"));
+        assert!(cache.git_commit_detail.is_some());
+        assert_eq!(
+            cache.git_commit_scroll, 0,
+            "a new commit's pane starts at its first line, never at the \
+             previous commit's offset"
+        );
+        assert!(!cache.loading_commit_detail);
+
+        cache.git_commit_scroll = 17;
+        cache.close_git_commit_detail();
+        assert!(cache.git_commit_detail.is_none());
+        assert_eq!(
+            cache.git_commit_scroll, 0,
+            "the offset has no meaning while the Option is None, so it is not \
+             left holding a stale number for the next open to inherit"
+        );
+        assert!(!cache.loading_commit_detail);
     }
 }
