@@ -2584,6 +2584,12 @@ than skipping.
 | 1–6, 8, 9 | 2120 / 1 / 15 | `envelope::policy::tests::the_config_section_constants_record_the_git_version_they_were_derived_against` |
 | 7 | 2119 / 2 / 15 | the same version witness, **plus** `driver::run::tests::the_current_group_agrees_with_the_proc_parse` |
 
+_Pointer added 2026-09-17 by quick `260917-nhc`, append-only; the table row above
+is unedited._ That row — *"the same version witness, **plus**
+`driver::run::tests::the_current_group_agrees_with_the_proc_parse`"* — is now
+CLOSED. The mechanism is a cross-test `setpgid` race, not a `/proc` parse defect,
+and it is measured and fixed under `# QUICK 260917-nhc` at the end of this file.
+
 `a_relocated_copy_of_the_stub_refuses_instead_of_acting` is green in all nine,
 and `Text file busy` appears in none of them. The version witness is
 environmental — local git 2.53.0 against constants re-derived at 2.55.0 — and is
@@ -2630,6 +2636,13 @@ ETXTBSY race only.
 
 **The git-version-constants failure is environmental and out of scope**, as is
 run 7's `the_current_group_agrees_with_the_proc_parse`.
+
+_Pointer added 2026-09-17 by quick `260917-nhc`, append-only; the sentence above
+is unedited._ The half of it that reads *"as is run 7's
+`the_current_group_agrees_with_the_proc_parse`"* was correct as a scope
+statement for `260917-lkg` and is no longer current as a status: that test is
+CLOSED under `# QUICK 260917-nhc` at the end of this file. The git-version
+half stands — it remains environmental and out of scope there too.
 
 **`Cargo.toml`, the crate version, `.github/` and all tags are untouched.**
 v1.7.1 is a separate step.
@@ -2680,3 +2693,267 @@ one, in which case the right repair is to let the exit status and stderr that
 `wait_with_output` already collects carry the verdict, and that is a
 strengthening rather than a loosening. Confirm the mechanism by strace before
 changing anything.
+
+---
+
+# QUICK 260917-nhc — appended 2026-09-17, append-only
+
+## 2026-09-17 (quick `260917-nhc`) — RESOLVED: `the_current_group_agrees_with_the_proc_parse`, and the recorded diagnosis was wrong
+
+_The canonical entry. The two dated pointers placed above — at `260917-lkg`'s
+nine-run table row 7 and at its `### What this does NOT close` — both point here.
+No line above was edited or deleted; where a pointer corrects an earlier one it
+quotes the earlier text verbatim and says what changed._
+
+**This closes the last flake standing between HEAD and the v1.7.1 publish gate.**
+The `driver_reattach` pair was closed by quick `260917-k6y`, the `envelope_tracer`
+ETXTBSY race by quick `260917-lkg`, and this is the one `260917-lkg`'s nine-run
+sweep reported in run 7 rather than absorbed.
+
+### The mechanism
+
+**The hazard the test's own comment calls hypothetical is ACTUAL, and that
+correction is the finding.**
+
+`current_group`'s doc (`src/driver/run.rs:1053-1059`) and the test's comment both
+frame it in the conditional — `setpgid` in a shared test binary *would* move the
+harness's own process group. It does. Not from this test, which still
+deliberately does not call `establish_own_group()`, but from a DIFFERENT test in
+this same binary.
+
+On Linux **`setpgid(0, 0)` resolves against the thread-group leader**, not the
+calling thread. A libtest worker thread that reaches it therefore moves the
+process group of the entire shared test binary, and every other test in that
+process with it.
+
+**The mover, named:** `src/driver/mod.rs:1834`, the "visible twin, driven end to
+end" arm of
+`driver::tests::a_target_phase_that_renders_as_another_is_refused_at_the_seam`,
+calls `drive` once per `crate::test_support::LOOK_ALIKE_PAIRS` entry, and each
+call reaches `src/driver/run.rs`'s `execute_run` at
+`let pgid = establish_own_group();` — **seven times per run**. No test calls it
+DIRECTLY, which is exactly why a direct-call search returns a false negative.
+
+**Both readers are EXONERATED.** `liveness::process_group`'s `/proc/<pid>/stat`
+field parse (`src/driver/liveness.rs:234-241`) is correct, and `current_group()`
+is a bare `getpgrp()` that cannot be stale. They disagreed only because the group
+genuinely MOVED between the two reads. Neither file was opened by this task.
+
+**How it was established.** `strace -f -e trace=setpgid,execve` on the lib-test
+binary caught exactly 7 `setpgid(0, 0) = 0` calls from a single TID that never
+`execve`s — a thread, not a forked child — with no `setpgid` at all in the main
+pid's own stream; correlating that trace against libtest's fd-1 writes under a
+single-threaded run put all 7 inside the look-alike test. Separately, a Python
+parent that is not its own job leader polled `/proc/<child>/stat` on a live run
+and watched the child's pgrp transition `[2751890, 2751905]` — from the inherited
+group to the child's own pid — mid-run.
+
+**Why it never reproduces from an interactive shell.** Launched directly, shell
+job control has already made the binary its own group leader, so `setpgid(0, 0)`
+is a no-op and no window exists. Launched by cargo — or by any non-job-leader
+parent — the binary inherits its parent's group and the window is real. This is
+recorded explicitly because *"it passes when I run it by hand"* is the exact
+observation that sent both previous investigations wrong.
+
+**The failure signature, so a future reader recognises it instantly:** the
+`/proc` value is always the LARGER of the two, because a freshly created group id
+is the process's own pid. The historical records match — `left: 2712294 / right:
+2716792`, and `getpgrp() 300296` against `the /proc pgrp field 300318` — as do
+the reproductions below.
+
+### The supersession
+
+Two sentences in
+`.planning/quick/260908-uqq-fix-driver-startup-deadlock-on-cli-2-1-2/deferred-items.md`
+section 2 are FALSE, and correcting them is part of this finding. That file is
+**not edited**; it is superseded from here.
+
+Quoted verbatim from that file, section 2:
+
+> No test in the tree calls `establish_own_group()`, so the cross-test
+> `setpgid` hazard the test's own doc names is not the mechanism.
+
+**Correction.** No test calls it DIRECTLY. At least one reaches it TRANSITIVELY,
+through `drive` -> `execute_run`, seven times per run — see "the mover, named"
+above. The search that produced that sentence returned a **false negative**, and
+the cross-test `setpgid` hazard is precisely the mechanism.
+
+Quoted verbatim from the same file and section:
+
+> `getpgrp()` cannot return a stale value, so the suspect is the
+> `/proc/<pid>/stat` field parse under the load of many test binaries running
+> concurrently.
+
+**Correction.** The first clause is TRUE and the conclusion drawn from it is
+WRONG. `getpgrp()` cannot be stale — and neither can the parse, which is also
+correct. Both read accurately; the group moved between the two reads. The parse
+is exonerated, and the suspicion recorded against it must not be carried forward.
+
+A third statement, not false but understated. Quoted verbatim from
+`src/driver/run.rs`'s test comment as it stood before this change:
+
+> Deliberately NOT `establish_own_group()`: `setpgid` in a shared test
+> binary would move the harness's own process group, and with it every
+> other test in this process.
+
+**Correction.** The DECISION stands, unchanged and still deliberate. Its PREMISE
+moved from hypothetical to observed: the move is not a thing that *would* happen
+if this test misbehaved, it is a thing that *does* happen because a sibling test
+does. `current_group`'s doc, which says the same in the conditional, is
+superseded the same way. The test's comment now says so and points at the module
+header; `current_group`'s doc body was left byte-identical, because no production
+line was opened by this task.
+
+### What changed
+
+`src/driver/run.rs`'s `mod tests` region only, plus a `//!` module-header case
+record, which is prose. No production line changed: `src/driver/liveness.rs`,
+`src/driver/mod.rs`, `current_group`, `establish_own_group` and `execute_run`'s
+call ordering are byte-identical.
+
+The two observation statements are now one call to a doc-commented helper,
+`group_observations_without_a_move_within(limit)`, in the `*_within` idiom
+`tests/driver_reattach.rs` established: an `Instant::now() + limit` deadline with
+a 25ms sleep between attempts, at the same inline `Duration::from_secs(30)` and
+with no new named constant. Its body is a **seqlock read** — `current_group()`,
+the `/proc` parse, `current_group()` again. A window whose leading and trailing
+reads agree cannot have contained a move, because the parse happened strictly
+between them.
+
+`setpgid(0, 0)` always sets the group to the caller's own pid, so it is one-way
+and idempotent: the group cannot move away and back inside one window. That is
+what makes `leading == trailing` sufficient rather than merely suggestive. **A
+second, DIFFERENT `setpgid` target in this binary would invalidate that reasoning
+and it would have to be re-derived**; the helper's doc says so.
+
+Nothing was weakened:
+
+| Property | How it is held |
+|---|---|
+| the equality is still exact | the `assert_eq!(from_syscall, from_proc, …)` and its message are untouched — the task commit's diff removes not one character of them, and the binding names were kept so the assertion did not even have to be retyped |
+| an unreadable `/proc` is never retried | the `.expect("this process's own /proc/<pid>/stat is readable")` fires on the spot, under verbatim wording. A failing parse is the parse failing, not the group moving; retrying it would turn the helper into a swallow-all that hides the D-04 defect the assertion exists to catch. The ONLY retry condition is "the group moved inside the observation window" |
+| expiry is loud | falling out of the loop `panic!`s naming the moving-group condition, the limit and the attempt count. It never returns a fabricated pair, because a fabricated pair would make the equality assert an agreement the process never observed |
+| no tolerance was introduced | no `#[ignore]`, no `--test-threads`, no fixed pre-assertion `sleep`, no approximate comparison, and no call to `establish_own_group()` anywhere in the test region. The only `thread::sleep` is the one INSIDE the poll loop, which is this project's house style |
+| the branch is countable, not merely absent | each discarded observation emits one `eprintln!`. "The flake did not recur" and "the branch fired N times and every run still passed" are different claims, and only the second is evidence (`tests/envelope_tracer.rs`'s convention, reused) |
+
+### The measurements
+
+**The contended reproducer** is a Python parent that is NOT its own job leader
+spawning the compiled lib-test binary N times, with `--nocapture` so the retry
+branch's `eprintln!` is visible on a PASSING run. Without the non-leader parent
+the window does not exist and the test cannot fail. It is not committed; it lived
+in the execution scratchpad and its shape is reproduced in this task's PLAN.
+
+**Before (untouched HEAD binary):**
+
+| Condition | Runs | Failures |
+|---|---|---|
+| launched directly from an interactive shell | 39 | 0 |
+| non-job-leader parent, pre-planning batch 1 | 20 | 1 |
+| non-job-leader parent, pre-planning batch 2 | 60 | 2 |
+| non-job-leader parent, re-confirmed at execution time against a snapshot of the HEAD binary | 60 | **2 (3.3%)** |
+
+The three contended samples agree: **5 failures in 140 runs, 3.6%**, against
+**0 in 39** launched directly. In every reproduced failure the `assert_eq!` LEFT
+value was CONSTANT across runs (the Python parent's inherited process group)
+while the RIGHT value differed per run and equalled that run's own test-binary
+pid — the predicted straddle signature, measured rather than argued.
+
+**After — 200 contended runs against the rebuilt binary:**
+
+| Metric | Value |
+|---|---|
+| runs | **200** |
+| failures of this test | **0** |
+| straddles detected and absorbed (retry branch fired) | **7**, in 7 distinct runs (3.5%) |
+| attempts needed when it fired | 1 every time — the next window was always clean |
+| runs reporting the test green | 200 |
+
+200 rather than the planned 60, because at a ~3.5% base rate 60 runs cannot
+distinguish a fix from luck; 0/200 carries information and 0/60 barely does.
+
+**The retry branch fired seven times and all seven of those runs passed.** That
+is what makes this a fix proven IN EFFECT rather than a green run claimed as
+proof. Had the count been 0, the correct report would have been "the sample did
+not reach the race", and that distinction is written here so it stays visible.
+The seven lines, from the run log:
+
+```
+run  20: attempt 1 straddled a setpgid (3290125 -> 3336491)
+run  24: attempt 1 straddled a setpgid (3290125 -> 3346180)
+run  26: attempt 1 straddled a setpgid (3290125 -> 3351057)
+run  95: attempt 1 straddled a setpgid (3290125 -> 3518925)
+run 130: attempt 1 straddled a setpgid (3290125 -> 3608008)
+run 131: attempt 1 straddled a setpgid (3290125 -> 3610492)
+run 150: attempt 1 straddled a setpgid (3290125 -> 3656884)
+```
+
+The leading value is **constant at 3290125** across all seven — confirmed with
+`ps -o pid,pgid` to be the pgid of the reproducer's own non-leader ancestor, i.e.
+the inherited group — and the trailing value differs every time and is that run's
+own binary pid. That is the diagnosis, observed directly at the observation site,
+seven times.
+
+**Anti-vacuity.** A stale binary produces a meaningless clean sweep, so three
+controls: the binary was re-resolved through
+`cargo test --lib --no-run --message-format=json` after the rebuild; its mtime
+(17:06:59) is later than the source edit (17:06:35); and the retry-branch string
+is present in the rebuilt binary and ABSENT from the HEAD snapshot the "before"
+column was measured against (`grep -ac` → 1 versus 0). The two binaries are also
+byte-different.
+
+**Ten full-suite `rtk proxy cargo test --no-fail-fast` runs**, captured
+unfiltered to files and parsed from the files — never through a pipe, because rtk
+strips `test result:` lines downstream of `proxy` and a filtered read reports
+counts that are not real:
+
+| Run | passed / failed / ignored | Failing tests |
+|---|---|---|
+| 1–10 | 2120 / 1 / 15 | `envelope::policy::tests::the_config_section_constants_record_the_git_version_they_were_derived_against` |
+
+`the_current_group_agrees_with_the_proc_parse` reports `... ok` in **all ten** and
+appears in **no** run's `failures:` block. The version witness is environmental —
+local git 2.53.0 against constants re-derived at 2.55.0 — and is expected green on
+the CI runner. **`BrokenPipe` appears in none of the ten**, so `260917-lkg`'s open
+EPIPE race did not surface in this sweep; it remains OPEN and untouched.
+
+`./scripts/pre-tag-check.sh` exits 1:
+
+| Gate | Result |
+|---|---|
+| 1 — tag vs `Cargo.toml` version | SKIPPED (no tag argument; not a failure) |
+| 2 — MSRV, declared floor compiles | PASS |
+| 3 — `cargo build --release` | PASS |
+| 4 — `cargo test --no-fail-fast` | FAILED on **exactly one test** — the version witness; `1345 passed; 1 failed; 1 ignored` in the lib and every other suite `ok` |
+| 5 — `cargo clippy -- -D warnings` | PASS |
+
+with the git-version mismatch reported as the script's designed loud ADVISORY
+rather than as a gate failure. `rtk proxy cargo clippy -- -D warnings` is clean on
+its own, and `cargo clippy --all-targets` produces **zero** diagnostics naming
+`src/driver/run.rs` (the pre-existing warnings in `src/project_creator.rs` and the
+`envelope_*` test binaries are untouched and out of scope).
+
+### What this does NOT close
+
+**The BrokenPipe race in `tests/envelope_tracer.rs`'s `run_stub` remains OPEN and
+untouched.** It is recorded immediately above this section as a `260917-lkg`
+finding at ~1 in 800 contended runs. It did not appear in any of this task's ten
+full-suite runs, nothing here claims anything about it, and no line of
+`tests/envelope_tracer.rs` was opened.
+
+**The git-version-constants failure remains environmental and out of scope.** It
+is gate 4's only failure and is expected green on the GitHub runner, whose
+ambient git is the authority for that witness.
+
+**The `establish_own_group()` ordering inside `execute_run` was considered and
+deliberately NOT changed. FLAGGED FOR LATER AUDIT** (threat register T-nhc-05,
+disposition `accept`). Stopping the mover would mean either a test-only seam in
+the production code path that owns the kill switch's group identity, or deleting a
+real end-to-end control arm. Production `drive` is a dedicated process where the
+group move is correct and intended, and re-ordering production code to
+accommodate a shared test binary is the wrong trade. Recorded as a deliberate
+non-goal rather than an oversight, so a later auditor can attack the premise
+instead of re-deriving the chain.
+
+**`Cargo.toml`, the crate version, `.github/` and all tags are untouched.**
+v1.7.1 is a separate step.
