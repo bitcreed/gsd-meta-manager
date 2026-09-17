@@ -187,6 +187,44 @@ impl UatStatus {
     }
 }
 
+/// The planned and realised token cost of ONE plan, as GSD records them.
+///
+/// GSD writes `estimate.tokens` into a `*-PLAN.md`'s frontmatter and
+/// `actuals.tokens` into the paired `*-SUMMARY.md`'s. Both are optional and both
+/// are absent from projects predating those keys, so each side is an `Option`
+/// and a row exists only when at least ONE of them was found — a row carrying
+/// neither number says nothing and is never constructed (D-INF-02).
+///
+/// `id` is the plan's filename stem minus the `-PLAN.md` suffix, i.e. the same
+/// identity `plan_ids` carries. It is third-party filename text from another
+/// project's directory: every renderer must put [`PlanTokens::label`] through
+/// the UI's `shown()` escape before it reaches a terminal cell.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PlanTokens {
+    pub id: String,
+    pub estimate: Option<u64>,
+    pub actual: Option<u64>,
+}
+
+impl PlanTokens {
+    /// A short, fixed-width-friendly display name for this plan.
+    ///
+    /// Zero-padded `NN-MM` when the id carries a plan index, so a column of
+    /// labels aligns and `7-1` and `07-01` read as the one plan they are; the
+    /// raw id when it does not; and the authored string `PLAN` for the
+    /// standalone `PLAN.md` case, whose id is the empty string and whose label
+    /// would otherwise be blank.
+    pub fn label(&self) -> String {
+        if let Some((phase, plan)) = plan_index(&self.id) {
+            return format!("{phase:02}-{plan:02}");
+        }
+        if self.id.is_empty() {
+            return "PLAN".to_string();
+        }
+        self.id.clone()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DiskInference {
     pub status: DiskStatus,
@@ -242,6 +280,20 @@ pub struct DiskInference {
     pub has_windows: bool,
     pub has_deferred_items: bool,
     pub has_skeleton: bool,
+    /// Per-plan token cost: what the plan estimated, what its summary measured.
+    ///
+    /// One row per SURVIVING plan for which at least one of the two numbers was
+    /// found; a plan carrying neither contributes no row, so a project whose
+    /// plans predate GSD's `estimate`/`actuals` keys leaves this empty and the
+    /// UI renders exactly what it rendered before the field existed.
+    ///
+    /// **Ordered by numeric plan index, and the order is load-bearing.**
+    /// `plan_ids` is a `HashSet`, whose iteration order is not stable across
+    /// runs, while `DiskInference` derives `PartialEq` and is compared to
+    /// suppress a spurious "Updated" status (quick task 260512-eyv). An
+    /// unsorted vector would make every project compare unequal on every
+    /// refresh.
+    pub plan_tokens: Vec<PlanTokens>,
 }
 
 /// Read a scalar key out of a file's **leading** YAML frontmatter block.
@@ -339,6 +391,114 @@ fn plan_index(stem: &str) -> Option<(u32, u32)> {
 /// plan and summary counts. A plan without the marker is counted exactly as
 /// before. Fail-safe: a file with no frontmatter, or a closed block with no
 /// `status: superseded`, is treated as a normal plan.
+/// Read a scalar key nested ONE LEVEL inside a block of the **leading** YAML
+/// frontmatter — `parent:` at column zero, `key:` as its direct child.
+///
+/// Same byte-zero anchor as [`leading_frontmatter_value`], for the same reason:
+/// the block must open on the very first line with a bare `---`, and the scan
+/// stops at the closing `---`. See that function's WR-05 paragraph — this is its
+/// doctrine INVERTED rather than an exception beside it. There, a nested key had
+/// to be refused because a column-zero key was wanted; here a column-zero key is
+/// refused because the nested one is wanted. Both readings say the same thing: a
+/// key one level in is a DIFFERENT key, and whichever one is asked for, the
+/// other must not answer.
+///
+/// The rules, stated so the implementation can be checked against them:
+///
+/// * A blank line, and a line whose trimmed form starts with `#`, is SKIPPED and
+///   ends nothing. GSD writes a column-zero `# Actuals (#2632)` heading above
+///   the parent and indented `# …` comments inside the block before the key; a
+///   reader that ends the block on either reads every plan and no summary.
+/// * An unindented line is a column-zero key line. It OPENS the block when its
+///   key equals `parent` and its value is empty, and CLOSES an already-open
+///   block otherwise.
+/// * Inside the block, the indentation width of the first non-blank,
+///   non-comment line is the block's own level, and only lines at exactly that
+///   width are candidate children. A deeper nesting is a different key one level
+///   further in, and is skipped rather than read.
+///
+/// Returns the trimmed value of the first matching child. Every failure mode —
+/// no leading block, no such parent, no such child — yields `None`, fail-safe,
+/// never an error.
+fn leading_frontmatter_nested_value(content: &str, parent: &str, key: &str) -> Option<String> {
+    let mut lines = content.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return None;
+    }
+    let mut in_block = false;
+    let mut block_indent: Option<usize> = None;
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            // End of the leading block. Nothing below it is frontmatter.
+            return None;
+        }
+        // Blank lines and comments end nothing, at any indentation.
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if !line.starts_with(char::is_whitespace) {
+            if in_block {
+                // A column-zero key line closes the open block.
+                return None;
+            }
+            if let Some((found, value)) = line.split_once(':') {
+                if found == parent && value.trim().is_empty() {
+                    in_block = true;
+                }
+            }
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        let level = *block_indent.get_or_insert(indent);
+        if indent != level {
+            // One level further in (or further out) is a different key.
+            continue;
+        }
+        if let Some((found, value)) = trimmed.split_once(':') {
+            if found.trim() == key {
+                return Some(value.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// The `tokens` count of a nested frontmatter block, as a number.
+///
+/// `parent` is `"estimate"` for a `*-PLAN.md` and `"actuals"` for its
+/// `*-SUMMARY.md`. The value is truncated at the first whitespace-preceded `#`
+/// (GSD's plan template writes `tokens: 60000   # calibrated projection`),
+/// stripped of surrounding quotes, and parsed as a `u64`. Anything that does not
+/// parse is `None` — fail-safe, exactly as the rest of this file behaves on a
+/// malformed input, because a guessed number is worse than an absent one.
+///
+/// Note `raw_tokens` is a SIBLING of `tokens`, not a spelling of it: the key
+/// comparison in [`leading_frontmatter_nested_value`] is an equality after the
+/// first `:`, never a substring test, so the uncalibrated figure can never be
+/// reported as the calibrated one.
+fn frontmatter_token_count(content: &str, parent: &str) -> Option<u64> {
+    let raw = leading_frontmatter_nested_value(content, parent, "tokens")?;
+    let mut value = raw.as_str();
+    let mut prev_was_space = false;
+    for (index, ch) in raw.char_indices() {
+        if ch == '#' && prev_was_space {
+            value = &raw[..index];
+            break;
+        }
+        prev_was_space = ch.is_whitespace();
+    }
+    value
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'')
+        .trim()
+        .parse::<u64>()
+        .ok()
+}
+
 fn plan_frontmatter_superseded(content: &str) -> bool {
     leading_frontmatter_value(content, "status")
         .is_some_and(|value| value.eq_ignore_ascii_case("superseded"))
@@ -518,6 +678,10 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     let mut plan_ids: HashSet<String> = HashSet::new();
     let mut plan_indices: HashMap<(u32, u32), Vec<String>> = HashMap::new();
     let mut summary_names: Vec<String> = Vec::new();
+    // `estimate.tokens` per surviving plan, read out of the SAME plan-file read
+    // the superseded check already performs, so it costs no extra I/O. Only a
+    // number that was actually found is recorded.
+    let mut plan_estimates: HashMap<String, u64> = HashMap::new();
     // Verification artifacts are COLLECTED, not flagged: the status lives inside
     // the file, and which file to read is decided after the scan by sorting.
     let mut verification_names: Vec<String> = Vec::new();
@@ -632,8 +796,11 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         // `status: superseded`. Both keys are recorded only for SURVIVING plans,
         // so a superseded plan's summary still pairs with nothing.
         if name == "PLAN.md" || name.ends_with("-PLAN.md") {
-            if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                if plan_frontmatter_superseded(&content) {
+            // Read ONCE. The superseded check and `estimate.tokens` are two
+            // readings of the same bytes, not two reads of the same file.
+            let content = std::fs::read_to_string(entry.path()).ok();
+            if let Some(content) = content.as_deref() {
+                if plan_frontmatter_superseded(content) {
                     continue;
                 }
             }
@@ -643,6 +810,12 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
                 .unwrap_or_default();
             if let Some(index) = plan_index(&id) {
                 plan_indices.entry(index).or_default().push(id.clone());
+            }
+            if let Some(estimate) = content
+                .as_deref()
+                .and_then(|c| frontmatter_token_count(c, "estimate"))
+            {
+                plan_estimates.insert(id.clone(), estimate);
             }
             plan_ids.insert(id);
             continue;
@@ -701,20 +874,60 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     // resolving to the same plan cannot push `summary_count` past `plan_count`
     // and fake a completion.
     let plan_count: u32 = plan_ids.len() as u32;
-    let mut matched_plans: HashSet<&str> = HashSet::new();
+    let mut matched_plans: HashSet<String> = HashSet::new();
+    // `actuals.tokens` per plan, attributed through the SAME pairing that drives
+    // `summary_count` and through no second, looser rule: a summary that does
+    // not count toward completion does not contribute a number either, so an
+    // ambiguous index shows no actual rather than a neighbour's.
+    let mut plan_actuals: HashMap<String, u64> = HashMap::new();
     for name in &summary_names {
         let id = name.strip_suffix("-SUMMARY.md").unwrap_or("");
-        if let Some(exact) = plan_ids.get(id) {
-            matched_plans.insert(exact.as_str());
-            continue;
-        }
-        if let Some(index) = plan_index(id) {
-            if let Some([only]) = plan_indices.get(&index).map(Vec::as_slice) {
-                matched_plans.insert(only.as_str());
+        let matched = if let Some(exact) = plan_ids.get(id) {
+            Some(exact.clone())
+        } else if let Some(index) = plan_index(id) {
+            match plan_indices.get(&index).map(Vec::as_slice) {
+                Some([only]) => Some(only.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let Some(plan_id) = matched else { continue };
+        // A genuine new read, bounded by the phase's plan count, inside the
+        // once-per-refresh scan that already reads every `*-PLAN.md`. An
+        // unreadable summary records nothing and disturbs no count.
+        if let Ok(content) = std::fs::read_to_string(phase_dir.join(name)) {
+            if let Some(actual) = frontmatter_token_count(&content, "actuals") {
+                plan_actuals.insert(plan_id.clone(), actual);
             }
         }
+        matched_plans.insert(plan_id);
     }
     let summary_count: u32 = matched_plans.len() as u32;
+
+    // One row per surviving plan for which at least one number was found, in
+    // numeric plan-index order. The sort is what keeps `DiskInference`
+    // comparable across refreshes — see the field's doc comment.
+    let mut plan_tokens: Vec<PlanTokens> = plan_ids
+        .iter()
+        .filter_map(|id| {
+            let estimate = plan_estimates.get(id).copied();
+            let actual = plan_actuals.get(id).copied();
+            if estimate.is_none() && actual.is_none() {
+                return None;
+            }
+            Some(PlanTokens {
+                id: id.clone(),
+                estimate,
+                actual,
+            })
+        })
+        .collect();
+    plan_tokens.sort_by(|a, b| {
+        let key_a = plan_index(&a.id).unwrap_or((u32::MAX, u32::MAX));
+        let key_b = plan_index(&b.id).unwrap_or((u32::MAX, u32::MAX));
+        (key_a, &a.id).cmp(&(key_b, &b.id))
+    });
 
     // Determine status following GSD's priority order (`init.cjs:1875-1888`).
     //
@@ -770,6 +983,7 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         has_windows,
         has_deferred_items,
         has_skeleton,
+        plan_tokens,
     }
 }
 
@@ -2085,5 +2299,397 @@ mod tests {
         assert!(!result.has_windows);
         assert!(!result.has_deferred_items);
         assert!(!result.has_skeleton);
+    }
+
+    // ── Plan token counts (quick task 260916-vqx) ────────────────────────
+    //
+    // The two fixtures below are the two shapes GSD actually writes, copied
+    // verbatim out of this repository's own `.planning/` tree. They are NOT the
+    // same shape: the plan's block is clean, and the summary's carries a
+    // column-zero `#` heading above the parent plus indented `#` comments
+    // inside the block before the key. A reader that ends the block on any
+    // non-key line reads the plan correctly and the summary as absent — half
+    // the feature, silently.
+
+    /// `.planning/phases/22-container-execution-target/22-01-PLAN.md`, verbatim
+    /// block, inside a realistic surrounding frontmatter.
+    const PLAN_22_01_SHAPE: &str = "\
+---
+phase: 22
+plan: 01
+type: execute
+wave: 1
+depends_on: []
+
+estimate:
+  tokens: 95000
+  raw_tokens: 95000
+  tasks: 3
+  confidence: low
+
+must_haves:
+  truths:
+    - \"something true\"
+---
+
+# Plan body
+";
+
+    /// `.planning/phases/19-gitsafe-git-blast-radius-envelope/19-12-SUMMARY.md`,
+    /// verbatim block including its comments.
+    const SUMMARY_19_12_SHAPE: &str = "\
+---
+phase: 19
+plan: 12
+status: complete
+
+# Actuals (#2632)
+actuals:
+  # chars/4 over the realized diff, which is the whole of the one created file
+  # (51 383 chars / 4). The plan estimated 80 000 on the same scale.
+  tokens: 12846
+  tasks: 3
+  commits: 3
+---
+
+# Summary body
+";
+
+    #[test]
+    fn test_clean_nested_estimate_block_is_read() {
+        assert_eq!(
+            frontmatter_token_count(PLAN_22_01_SHAPE, "estimate"),
+            Some(95_000),
+            "the clean nested block GSD writes into a *-PLAN.md must read"
+        );
+    }
+
+    #[test]
+    fn test_commented_nested_actuals_block_is_read() {
+        assert_eq!(
+            frontmatter_token_count(SUMMARY_19_12_SHAPE, "actuals"),
+            Some(12_846),
+            "a column-zero `#` heading above the parent and indented `#` comments \
+             inside the block end nothing; a reader that stops at them reads every \
+             plan and no summary"
+        );
+    }
+
+    #[test]
+    fn test_raw_tokens_sibling_is_not_the_tokens_key() {
+        // The clean fixture's siblings agree, so a `contains(\"tokens\")` reader
+        // passes on it by luck. This fixture makes them disagree.
+        let content = "---\nestimate:\n  raw_tokens: 2\n  tokens: 1\n---\n";
+        assert_eq!(
+            frontmatter_token_count(content, "estimate"),
+            Some(1),
+            "`raw_tokens` is a sibling of `tokens`, not a spelling of it: the key \
+             is compared for EQUALITY after the first `:`, never by substring"
+        );
+    }
+
+    #[test]
+    fn test_column_zero_twin_is_a_different_key() {
+        let content = "---\nphase: 22\ntokens: 999\n---\n";
+        assert_eq!(
+            frontmatter_token_count(content, "estimate"),
+            None,
+            "a `tokens:` at column zero is a DIFFERENT key from `estimate.tokens` \
+             — WR-05's doctrine inverted"
+        );
+    }
+
+    #[test]
+    fn test_key_under_the_wrong_parent_is_a_different_key() {
+        let actuals_only = "---\nactuals:\n  tokens: 5\n---\n";
+        let estimate_only = "---\nestimate:\n  tokens: 5\n---\n";
+        assert_eq!(frontmatter_token_count(actuals_only, "estimate"), None);
+        assert_eq!(frontmatter_token_count(estimate_only, "actuals"), None);
+        // ...and each still reads under its own parent, so the test is not
+        // vacuously passing on a reader that always returns None.
+        assert_eq!(frontmatter_token_count(actuals_only, "actuals"), Some(5));
+        assert_eq!(frontmatter_token_count(estimate_only, "estimate"), Some(5));
+    }
+
+    #[test]
+    fn test_two_levels_in_is_a_different_key() {
+        let content = "---\nestimate:\n  breakdown:\n    tokens: 7\n---\n";
+        assert_eq!(
+            frontmatter_token_count(content, "estimate"),
+            None,
+            "only a DIRECT child at the block's own indent level counts; a deeper \
+             nesting is a different key one level further in"
+        );
+    }
+
+    #[test]
+    fn test_nested_block_ends_at_the_next_column_zero_key() {
+        let content = "---\nestimate:\n  tasks: 3\nmust_haves:\n  tokens: 9\n---\n";
+        assert_eq!(
+            frontmatter_token_count(content, "estimate"),
+            None,
+            "an unindented key line closes the open block; the next block's \
+             children are not this block's"
+        );
+    }
+
+    #[test]
+    fn test_nested_block_ends_at_the_closing_fence() {
+        let content = "---\nphase: 22\n---\n\nestimate:\n  tokens: 500\n";
+        assert_eq!(
+            frontmatter_token_count(content, "estimate"),
+            None,
+            "nothing below the closing `---` is frontmatter, matching \
+             test_status_key_below_the_leading_block_is_never_matched"
+        );
+    }
+
+    #[test]
+    fn test_non_frontmatter_file_yields_no_token_count() {
+        let content = "# A document\n\nestimate:\n  tokens: 500\n";
+        assert_eq!(
+            frontmatter_token_count(content, "estimate"),
+            None,
+            "the byte-zero anchor is load-bearing: a document DESCRIBING an \
+             estimate does not HAVE one"
+        );
+    }
+
+    #[test]
+    fn test_inline_comment_is_not_part_of_the_value() {
+        // The GSD plan template writes exactly this, even though this repo's own
+        // plans do not.
+        let content = "---\nestimate:\n  tokens: 60000             # calibrated projection\n---\n";
+        assert_eq!(
+            frontmatter_token_count(content, "estimate"),
+            Some(60_000),
+            "the value is truncated at the first whitespace-preceded `#`"
+        );
+    }
+
+    #[test]
+    fn test_junk_token_values_are_none_never_a_panic() {
+        // Deliberately NOT a blank-shape character here: `test_support::DEGENERATE`
+        // owns that payload set and `spawn_seam_guard`'s
+        // `the_degenerate_payload_set_is_spelled_in_exactly_one_place` census
+        // reports any hand copy of a witness. The non-ASCII case this list wants
+        // is a DIGIT that `u64::from_str` refuses — Arabic-Indic `١٢` — which is
+        // the parse property under test and not that guard's business. The
+        // escaping property belongs to the renderer and is pinned there, in
+        // `ui::screens::detail::tests::a_hostile_plan_label_reaches_no_cell_unescaped`.
+        for value in [
+            "soon",
+            "",
+            "-5",
+            "1e5",
+            "9_000",
+            "\u{0661}\u{0662}",
+            "99999999999999999999999999",
+        ] {
+            let content = format!("---\nestimate:\n  tokens: {value}\n---\n");
+            assert_eq!(
+                frontmatter_token_count(&content, "estimate"),
+                None,
+                "a malformed `tokens` value is absent, never an error and never a \
+                 guess: value was {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_quoted_token_value_is_read() {
+        let content = "---\nestimate:\n  tokens: \"4200\"\n---\n";
+        assert_eq!(frontmatter_token_count(content, "estimate"), Some(4_200));
+    }
+
+    #[test]
+    fn test_nested_value_reads_a_non_numeric_sibling_too() {
+        // The block reader is general; `frontmatter_token_count` is the one
+        // numeric consumer of it today.
+        assert_eq!(
+            leading_frontmatter_nested_value(PLAN_22_01_SHAPE, "estimate", "confidence"),
+            Some("low".to_string())
+        );
+    }
+
+    #[test]
+    fn test_plan_tokens_collected_end_to_end_over_a_phase_directory() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("07-01-slug-PLAN.md"),
+            "---\nestimate:\n  tokens: 95000\n---\nbody",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("07-01-SUMMARY.md"),
+            "---\nactuals:\n  tokens: 12846\n---\nbody",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("07-02-slug-PLAN.md"),
+            "---\nestimate:\n  tokens: 40000\n---\nbody",
+        )
+        .unwrap();
+        // No `estimate` block at all, and no summary: contributes NO row.
+        fs::write(
+            dir.path().join("07-03-slug-PLAN.md"),
+            "---\nphase: 7\n---\n",
+        )
+        .unwrap();
+
+        let result = infer_disk_status(dir.path());
+
+        assert_eq!(
+            result.plan_tokens.len(),
+            2,
+            "a plan carrying neither number contributes no row (D-INF-02)"
+        );
+        assert_eq!(result.plan_tokens[0].id, "07-01-slug");
+        assert_eq!(result.plan_tokens[0].label(), "07-01");
+        assert_eq!(result.plan_tokens[0].estimate, Some(95_000));
+        assert_eq!(result.plan_tokens[0].actual, Some(12_846));
+        assert_eq!(result.plan_tokens[1].id, "07-02-slug");
+        assert_eq!(result.plan_tokens[1].estimate, Some(40_000));
+        assert_eq!(result.plan_tokens[1].actual, None);
+
+        // This task changes no count.
+        assert_eq!(result.plan_count, 3);
+        assert_eq!(result.summary_count, 1);
+    }
+
+    #[test]
+    fn test_plan_tokens_order_is_numeric_and_the_inference_is_reproducible() {
+        let dir = tempdir().unwrap();
+        // `07-10` sorts BEFORE `07-2` lexically and AFTER it numerically.
+        fs::write(
+            dir.path().join("07-10-slug-PLAN.md"),
+            "---\nestimate:\n  tokens: 10\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("07-2-slug-PLAN.md"),
+            "---\nestimate:\n  tokens: 2\n---\n",
+        )
+        .unwrap();
+
+        let first = infer_disk_status(dir.path());
+        let labels: Vec<String> = first.plan_tokens.iter().map(PlanTokens::label).collect();
+        assert_eq!(
+            labels,
+            vec!["07-02".to_string(), "07-10".to_string()],
+            "the order is by numeric plan INDEX; a lexical order would put 07-10 first"
+        );
+
+        let second = infer_disk_status(dir.path());
+        assert_eq!(
+            first, second,
+            "two scans of an unchanged directory must produce EQUAL inferences — \
+             `plan_ids` is a HashSet, and an unsorted plan_tokens would make every \
+             refresh compare unequal and defeat the 260512-eyv change suppression"
+        );
+    }
+
+    #[test]
+    fn test_superseded_plan_contributes_no_token_row() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("05-01-PLAN.md"),
+            "---\nestimate:\n  tokens: 111\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("05-02-PLAN.md"),
+            "---\nstatus: superseded\nestimate:\n  tokens: 222\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("05-02-SUMMARY.md"),
+            "---\nactuals:\n  tokens: 333\n---\n",
+        )
+        .unwrap();
+
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_tokens.len(), 1);
+        assert_eq!(result.plan_tokens[0].id, "05-01");
+        assert_eq!(result.plan_tokens[0].estimate, Some(111));
+        assert_eq!(
+            result.plan_tokens[0].actual, None,
+            "the superseded plan's summary pairs with nothing, so it contributes \
+             no actual to anyone"
+        );
+    }
+
+    #[test]
+    fn test_ambiguous_plan_index_abstains_on_the_actual_too() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("07-01-alpha-PLAN.md"),
+            "---\nestimate:\n  tokens: 1\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("07-01-beta-PLAN.md"),
+            "---\nestimate:\n  tokens: 2\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("07-01-SUMMARY.md"),
+            "---\nactuals:\n  tokens: 999\n---\n",
+        )
+        .unwrap();
+
+        let result = infer_disk_status(dir.path());
+        assert_eq!(
+            result.summary_count, 0,
+            "the existing two-tier pairing abstains on an ambiguous index"
+        );
+        assert_eq!(result.plan_tokens.len(), 2);
+        for row in &result.plan_tokens {
+            assert_eq!(
+                row.actual, None,
+                "the actual is attributed ONLY through that same pairing — a plan \
+                 with an unpaired summary shows no actual rather than a neighbour's"
+            );
+        }
+    }
+
+    #[test]
+    fn test_standalone_plan_and_summary_pair_and_label_as_plan() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("PLAN.md"),
+            "---\nestimate:\n  tokens: 70000\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("SUMMARY.md"),
+            "---\nactuals:\n  tokens: 65000\n---\n",
+        )
+        .unwrap();
+
+        let result = infer_disk_status(dir.path());
+        assert_eq!(result.plan_tokens.len(), 1);
+        assert_eq!(result.plan_tokens[0].id, "");
+        assert_eq!(
+            result.plan_tokens[0].label(),
+            "PLAN",
+            "the standalone case has an empty id and would otherwise render a blank label"
+        );
+        assert_eq!(result.plan_tokens[0].estimate, Some(70_000));
+        assert_eq!(result.plan_tokens[0].actual, Some(65_000));
+    }
+
+    #[test]
+    fn test_plans_without_the_keys_leave_plan_tokens_empty() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-PLAN.md"), "plan1").unwrap();
+        fs::write(dir.path().join("05-01-SUMMARY.md"), "summary1").unwrap();
+        let result = infer_disk_status(dir.path());
+        assert!(
+            result.plan_tokens.is_empty(),
+            "a project predating GSD's estimate/actuals keys renders exactly what \
+             it rendered before this field existed: absence degrades to silence, \
+             never to a column of dashes"
+        );
     }
 }
