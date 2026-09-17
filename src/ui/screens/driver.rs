@@ -4049,6 +4049,72 @@ mod tests {
         }
     }
 
+    // ── 260917-fko group 4: the EXPERIMENTAL marker on the pane ───────────
+
+    /// D3's tab half, read out of a **real render buffer** rather than out of
+    /// the constant.
+    ///
+    /// Asserting `DRIVER_PANE_TITLE.contains("EXPERIMENTAL")` would pass on a
+    /// constant nothing draws; what D3 requires is that the word reaches the
+    /// terminal. Both title sites are exercised — a project with runs and a
+    /// project with none — because the marker matters most on the empty pane,
+    /// which is the one a user reaches first.
+    #[test]
+    fn the_driver_pane_title_carries_the_experimental_marker_with_and_without_runs() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let alias = super::super::driver_confirm::tests::ALIAS;
+
+        for (label, runs) in [
+            ("no runs yet", Vec::new()),
+            (
+                "one finished run",
+                vec![summary("2026-07-29T21-40-00Z-3f2a", None)],
+            ),
+        ] {
+            let (mut ctx, _rx) = super::super::driver_confirm::tests::ctx_with_project(dir.path());
+            let cache = ctx.view_cache.entry(alias.to_string()).or_default();
+            cache.driver_runs = runs;
+
+            let viewport = Cell::default();
+            let mut terminal =
+                Terminal::new(TestBackend::new(100, 20)).expect("TestBackend terminal");
+            terminal
+                .draw(|frame| {
+                    let area = frame.area();
+                    render_driver_tab(frame, area, &ctx, alias, ctx.view_cache.get(alias), &viewport);
+                })
+                .expect("draw the driver tab");
+
+            let buffer = terminal.backend().buffer().clone();
+            let scraped: Vec<String> = (0..20)
+                .map(|y| {
+                    (0..100)
+                        .map(|x| {
+                            buffer
+                                .cell((x, y))
+                                .map(|cell| cell.symbol())
+                                .unwrap_or(" ")
+                                .to_string()
+                        })
+                        .collect::<String>()
+                })
+                .collect();
+
+            assert!(
+                scraped.iter().any(|row| row.contains("EXPERIMENTAL")),
+                "the Driver pane ({label}) must carry the EXPERIMENTAL marker \
+                 where the user can read it (D3): {scraped:#?}"
+            );
+            assert!(
+                scraped.iter().any(|row| row.contains("Driver")),
+                "and it must still say which pane it is: {scraped:#?}"
+            );
+        }
+    }
+
     // ── The dry-run preview (D-26, the designated cut) ─────────────────────
 
     /// Paint `preview` into a `width` x `height` frame and scrape it back.

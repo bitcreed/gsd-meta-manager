@@ -103,8 +103,39 @@ The binary itself does not require any environment variables to start. It does, 
 | `TERMINAL` | Optional | `src/ui/screens/detail.rs` (`find_terminal`) | Preferred terminal emulator for launching new Claude sessions. Probed before falling back to `kitty`, `alacritty`, `gnome-terminal`, then `xterm`. |
 | `TMUX` | Optional | `src/terminal_switch.rs` | Presence of `$TMUX` indicates the binary is running inside tmux; required for the "switch to existing Claude session" feature. Absent → tab-switching returns a clear error. |
 | `HOME` | Optional | `src/state_reader/config_json.rs` (`user_defaults_path`) | Used to resolve `~/.gsd/defaults.json` for GSD user defaults overlay. If unset, the defaults file is simply not loaded. |
+| `GSDMM_EXPERIMENTAL_FEATURES` | Optional | `src/experimental.rs` (read once at startup by `App::from_config`) | Turns on the experimental surfaces, which today means the **Driver** tab and everything that leads to it. **Default is OFF.** Accepted truthy values are `1`, `true`, `yes` and `on`, ASCII-case-insensitive with surrounding whitespace trimmed; unset, empty, `0`, `false`, `no`, `off` and any unrecognised value are OFF. |
 
 Editor fallback chain: `$VISUAL` → `$EDITOR` → `vi`.
+
+### `GSDMM_EXPERIMENTAL_FEATURES` in detail
+
+The driver runs a real agent against a real repository, so its surface is hidden
+rather than merely disabled: with the variable unset the TUI has **ten** tabs,
+no `Shift+D`, no `D` in the detail-view tab hint, no driver rows or Driver
+section in the help screen, no driven badge on the dashboard, and no `r`/`x`/`o`
+driver keys. A user who never asked for a driver cannot discover one by pressing
+a key.
+
+With the variable set, the full surface returns and is labelled: the Driver
+pane's title and the help screen's Driver section heading both read
+`— EXPERIMENTAL`.
+
+Three things are deliberately **not** affected by it:
+
+- **`driver_opt_in` is still required.** The flag is a *discovery* gate, not an
+  authorisation boundary — anyone able to set an environment variable for this
+  process can also invoke the binary directly. Per-project opt-in remains the
+  consent gate, and `preferences.driver_max_concurrent` still caps concurrent
+  runs, in both flag states.
+- **The `drive` subcommand is not gated.** The TUI launches a run by
+  re-executing *this same binary* as `<current_exe> drive …`, and environment
+  propagation into that child is not guaranteed; gating the subcommand would
+  break the spawn path for the users who did set the flag.
+- **Startup reconciliation still runs**, so a session that toggles the flag on
+  sees coherent state immediately. Only the surfaces that *display* its result
+  are gated.
+
+It is read exactly once, at startup. Changing it requires restarting the TUI.
 
 The binary additionally reads `dirs::data_local_dir()` (typically `~/.local/share` on Linux) to choose the log directory `gsd-meta-manager/`. If `dirs::data_local_dir()` returns `None`, logs are written to `/tmp` (see `src/main.rs`). Logs themselves are configured by `tracing-subscriber`, but no environment variable currently feeds the subscriber (the `env-filter` feature is compiled in, so `RUST_LOG`-style filtering may be added later but is not currently wired into `tracing_subscriber::fmt().init()`).
 

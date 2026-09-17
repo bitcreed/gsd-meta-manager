@@ -9572,6 +9572,260 @@ mod tests {
         assert_eq!(sub_view_from_index(TAB_COUNT, true), DetailSubView::PhaseList);
     }
 
+    // ── 260917-fko: the experimental flag, both states ────────────────────
+    //
+    // Group 2 (flag OFF) and group 3 (flag ON) of the seven the CONTEXT
+    // requires. Every existing assertion above threads `true`, which is the
+    // flag-on half; these are the half that did not exist before.
+
+    /// The label text of one rendered tab title, marker cell included.
+    fn title_text(line: &Line<'static>) -> String {
+        line.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+    }
+
+    /// Every rendered tab label at `width`, joined — the form a "no Driver
+    /// label anywhere" assertion can search without caring which tier answered.
+    fn bar_text(width: u16, active: usize, experimental: bool) -> String {
+        let (titles, _) = tab_titles(width, active, true, experimental);
+        titles.iter().map(title_text).collect::<Vec<_>>().join("|")
+    }
+
+    /// The Driver tab's two labels, as the tab bar spells them. Read from the
+    /// arrays rather than retyped, so a rename cannot make this vacuous.
+    fn driver_labels() -> [&'static str; 2] {
+        [
+            TAB_LABELS_FULL[DRIVER_TAB_INDEX],
+            TAB_LABELS_COMPACT[DRIVER_TAB_INDEX],
+        ]
+    }
+
+    #[test]
+    fn the_visible_tab_count_drops_the_eleventh_tab_when_experimental_is_off() {
+        assert_eq!(visible_tab_count(true), TAB_COUNT);
+        assert_eq!(visible_tab_count(false), TAB_COUNT - 1);
+        assert_eq!(visible_tab_count(false), 10);
+    }
+
+    /// The whole of D2's tab-bar half: at **every** tier, not just the one a
+    /// developer happens to run at.
+    ///
+    /// `driver_live` is passed `true` throughout, which is the hostile case —
+    /// a run really is live and the bar still must not say so.
+    #[test]
+    fn no_width_tier_emits_a_driver_label_when_experimental_is_off() {
+        for width in [
+            TAB_BAR_FULL_CELLS,
+            TAB_BAR_FULL_CELLS_NO_DRIVER,
+            TAB_BAR_COMPACT_CELLS,
+            TAB_BAR_COMPACT_CELLS_NO_DRIVER,
+            60,
+            40,
+            20,
+        ] {
+            for active in [0usize, 5, 9] {
+                let text = bar_text(width, active, false);
+                for label in driver_labels() {
+                    assert!(
+                        !text.contains(label),
+                        "at {width} columns with tab {active} active the bar \
+                         still offers {label:?}: {text}"
+                    );
+                }
+                assert!(
+                    !text.contains(DRIVER_LIVE_MARKER),
+                    "at {width} columns the live marker survived the tab it \
+                     belongs to: {text}"
+                );
+            }
+        }
+    }
+
+    /// The flag-on half of the same property, so the test above cannot pass by
+    /// the labels having been deleted outright.
+    #[test]
+    fn the_whole_bar_tiers_still_offer_the_driver_label_when_experimental_is_on() {
+        assert!(bar_text(TAB_BAR_FULL_CELLS, 0, true).contains(TAB_LABELS_FULL[DRIVER_TAB_INDEX]));
+        assert!(
+            bar_text(TAB_BAR_COMPACT_CELLS, 0, true)
+                .contains(TAB_LABELS_COMPACT[DRIVER_TAB_INDEX])
+        );
+        // The windowed tier reaches it by making it active.
+        assert!(
+            bar_text(40, DRIVER_TAB_INDEX, true).contains(TAB_LABELS_COMPACT[DRIVER_TAB_INDEX])
+        );
+    }
+
+    /// Ten labels fit the compact bar in **69** cells, not the eleven-tab 77 —
+    /// so a flag-off session at 70 columns gets whole labels where an
+    /// eleven-tab one is pushed into the windowed tier. Reusing the eleven-tab
+    /// thresholds would have silently cost exactly that.
+    #[test]
+    fn the_ten_tab_bar_renders_whole_at_its_own_re_derived_widths() {
+        let (titles, select) = tab_titles(TAB_BAR_FULL_CELLS_NO_DRIVER, 9, false, false);
+        assert_eq!(titles.len(), 10);
+        assert_eq!(select, 9);
+        assert_eq!(bar_cells(&titles), usize::from(TAB_BAR_FULL_CELLS_NO_DRIVER));
+
+        let (titles, select) = tab_titles(TAB_BAR_COMPACT_CELLS_NO_DRIVER, 4, false, false);
+        assert_eq!(titles.len(), 10);
+        assert_eq!(select, 4);
+        assert_eq!(bar_cells(&titles), usize::from(TAB_BAR_COMPACT_CELLS_NO_DRIVER));
+
+        // One cell below the ten-tab full width is already the compact tier.
+        let (titles, _) = tab_titles(TAB_BAR_FULL_CELLS_NO_DRIVER - 1, 4, false, false);
+        assert_eq!(bar_cells(&titles), usize::from(TAB_BAR_COMPACT_CELLS_NO_DRIVER));
+    }
+
+    /// **The anti-drift test.** All four cell constants re-derived from the
+    /// label arrays themselves with the documented `Σ(len + 2) + (n − 1)`
+    /// formula, plus the Driver tab's reserved marker cell in the eleven-tab
+    /// cases. This is what keeps 107 / 96 / 77 / 69 honest when a label is
+    /// renamed — the numbers stop being four literals a reader has to trust.
+    #[test]
+    fn the_tab_bar_widths_are_the_label_arrays_own_arithmetic() {
+        fn derive(labels: &[&'static str], count: usize, marker: bool) -> u16 {
+            let cells: usize = labels[..count]
+                .iter()
+                .map(|label| label.chars().count() + 2)
+                .sum::<usize>()
+                + usize::from(marker)
+                + count.saturating_sub(1);
+            u16::try_from(cells).expect("a tab bar fits in u16 cells")
+        }
+
+        assert_eq!(
+            derive(&TAB_LABELS_FULL, TAB_COUNT, true),
+            TAB_BAR_FULL_CELLS
+        );
+        assert_eq!(
+            derive(&TAB_LABELS_FULL, TAB_COUNT - 1, false),
+            TAB_BAR_FULL_CELLS_NO_DRIVER
+        );
+        assert_eq!(
+            derive(&TAB_LABELS_COMPACT, TAB_COUNT, true),
+            TAB_BAR_COMPACT_CELLS
+        );
+        assert_eq!(
+            derive(&TAB_LABELS_COMPACT, TAB_COUNT - 1, false),
+            TAB_BAR_COMPACT_CELLS_NO_DRIVER
+        );
+
+        // And the accessors hand back exactly those four, so no call site can
+        // be reading a fifth number.
+        assert_eq!(tab_bar_full_cells(true), TAB_BAR_FULL_CELLS);
+        assert_eq!(tab_bar_full_cells(false), TAB_BAR_FULL_CELLS_NO_DRIVER);
+        assert_eq!(tab_bar_compact_cells(true), TAB_BAR_COMPACT_CELLS);
+        assert_eq!(
+            tab_bar_compact_cells(false),
+            TAB_BAR_COMPACT_CELLS_NO_DRIVER
+        );
+    }
+
+    #[test]
+    fn index_ten_is_not_a_tab_when_experimental_is_off() {
+        assert_eq!(
+            sub_view_from_index(DRIVER_TAB_INDEX, false),
+            DetailSubView::PhaseList,
+            "index 10 must take the same first-tab fallback an out-of-range \
+             index already takes"
+        );
+        // The other ten still round-trip, so the fallback did not swallow them.
+        for index in 0..(TAB_COUNT - 1) {
+            let view = sub_view_from_index(index, false);
+            assert_eq!(tab_index(&view), index);
+        }
+    }
+
+    #[test]
+    fn a_stored_driver_sub_view_reads_as_the_default_tab_when_experimental_is_off() {
+        assert_eq!(
+            effective_sub_view(DetailSubView::Driver, false),
+            DetailSubView::PhaseList
+        );
+        assert_eq!(
+            effective_sub_view(DetailSubView::Driver, true),
+            DetailSubView::Driver
+        );
+        // Identity on every other sub-view, in both states: the coercion is
+        // the Driver tab's alone.
+        for index in 0..(TAB_COUNT - 1) {
+            let view = sub_view_from_index(index, true);
+            assert_eq!(effective_sub_view(view.clone(), false), view);
+            assert_eq!(effective_sub_view(view.clone(), true), view);
+        }
+    }
+
+    /// Driven through the real `handle_key`, because a test that calls
+    /// `switch_to_tab` directly cannot catch a key that is still bound.
+    #[test]
+    fn shift_d_does_not_reach_the_driver_tab_when_experimental_is_off() {
+        let mut ctx = test_ctx().with_experimental(false);
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+
+        press(&mut screen, &mut ctx, KeyCode::Char('D'));
+
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS),
+            Some(&DetailSubView::Queue),
+            "`D` must fall through UNHANDLED with the flag off, leaving the \
+             user on the tab they were already on"
+        );
+    }
+
+    #[test]
+    fn shift_d_still_reaches_the_driver_tab_when_experimental_is_on() {
+        let mut ctx = test_ctx().with_experimental(true);
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Queue);
+
+        press(&mut screen, &mut ctx, KeyCode::Char('D'));
+
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS),
+            Some(&DetailSubView::Driver)
+        );
+    }
+
+    /// The Right arrow is the other way onto tab 10, and it has its own bound.
+    #[test]
+    fn right_from_the_last_visible_tab_stays_put_when_experimental_is_off() {
+        let mut ctx = test_ctx().with_experimental(false);
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        // Tab 9 is `Browse`, the last tab a flag-off session has.
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), sub_view_from_index(9, false));
+
+        press(&mut screen, &mut ctx, KeyCode::Right);
+
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS),
+            Some(&DetailSubView::Browse),
+            "walking right off the end must not park the user on a tab the \
+             bar does not draw"
+        );
+    }
+
+    #[test]
+    fn right_from_tab_nine_reaches_the_driver_tab_when_experimental_is_on() {
+        let mut ctx = test_ctx().with_experimental(true);
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), sub_view_from_index(9, true));
+
+        press(&mut screen, &mut ctx, KeyCode::Right);
+
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS),
+            Some(&DetailSubView::Driver)
+        );
+    }
+
     /// The rendered width of one `Line`, in cells.
     fn line_cells(line: &Line<'static>) -> usize {
         line.spans.iter().map(|s| s.content.chars().count()).sum()

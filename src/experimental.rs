@@ -126,4 +126,60 @@ mod tests {
     fn the_env_var_is_named_once_and_carries_the_gsdmm_prefix() {
         assert_eq!(EXPERIMENTAL_FEATURES_ENV, "GSDMM_EXPERIMENTAL_FEATURES");
     }
+
+    /// **This flag is an outer layer, never a bypass** (D4, threat T-fko-01).
+    ///
+    /// It is a DISCOVERY gate: it decides whether the TUI offers a driver at
+    /// all. It is emphatically *not* an authorisation boundary — anyone who can
+    /// set an environment variable for this process can also invoke the `drive`
+    /// subcommand directly. The two controls that ARE authorisation — the
+    /// per-project `driver_opt_in` record and the `driver_max_concurrent` cap —
+    /// must therefore behave identically in both flag states.
+    ///
+    /// Pinned here, in the flag's own module, because the risk being guarded
+    /// against is a future edit that "simplifies" one of those two into this
+    /// flag and turns a consent gate into a convenience one.
+    #[test]
+    fn the_flag_neither_weakens_opt_in_nor_the_concurrency_cap() {
+        use crate::driver::spawn::admit;
+
+        // `admit` is a pure function of (live, max) and takes no flag — which
+        // is precisely the property. Exercised across both parses of the
+        // variable so the claim is about the flag's two states rather than
+        // about an argument nothing passes.
+        for raw in [None, Some("1"), Some("0"), Some("true"), Some("nonsense")] {
+            let flag = experimental_features_enabled_from(raw);
+            assert!(
+                admit(0, 1).is_ok(),
+                "the first run under a cap of one is admitted with the flag \
+                 {flag} (raw {raw:?})"
+            );
+            assert!(
+                admit(1, 1).is_err(),
+                "the cap still refuses a second run with the flag {flag} (raw \
+                 {raw:?}) — this variable must not raise it"
+            );
+            assert!(admit(2, 2).is_err());
+            assert!(admit(1, 2).is_ok());
+        }
+
+        // Opt-in still defaults to ABSENT, which is what makes the child's gate
+        // at `driver::drive` refuse by default (D-16, CTRL-03).
+        let project = crate::config::RegisteredProject {
+            path: std::path::PathBuf::from("/nonexistent/alpha"),
+            added: "2026-09-17".to_string(),
+            driver_opt_in: None,
+            extra: Default::default(),
+        };
+        assert!(
+            project.driver_opt_in.is_none(),
+            "a freshly registered project is NOT opted in, whatever this \
+             variable says"
+        );
+        assert_eq!(
+            crate::config::Preferences::default().driver_max_concurrent,
+            1,
+            "and the cap's default is unchanged by this quick task"
+        );
+    }
 }

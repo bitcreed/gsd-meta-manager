@@ -699,6 +699,164 @@ mod tests {
         );
     }
 
+    // ── 260917-fko group 5: the help screen in both flag states ───────────
+    //
+    // The help screen is the ONLY place keys are documented, which is why it
+    // is gated rather than trimmed: with the driver hidden, a driver row would
+    // document a tab the user cannot open.
+
+    /// Every driver row this screen carries, built through the same `row()`
+    /// helper the body uses — so the flag-off assertion is the absence of
+    /// WHOLE ROWS, never the absence of a one-letter key. `text.contains("x")`
+    /// is satisfied by the word "next"; a letter-level check here would be
+    /// vacuous in exactly the way this repo already refuses.
+    fn driver_rows() -> Vec<String> {
+        [
+            ("r", "Start a driver run (dashboard)"),
+            ("x", "Stop the live driver run (dashboard)"),
+            ("o", "Toggle driver opt-in (dashboard)"),
+            ("Shift+D", "Jump to the Driver tab from any detail tab"),
+            ("j / k", "Move the run selection"),
+            ("PgUp / PgDn", "Scroll the output pane"),
+            ("f", "Toggle following the live tail"),
+            ("G", "Jump to the output tail and follow again"),
+            ("i", "Inject a message into the live run"),
+            ("s", "Start a run: command, then optional goal"),
+            ("x", "Stop the live run (asks first)"),
+            ("o", "Toggle driver opt-in for this project"),
+        ]
+        .into_iter()
+        .map(|(key, description)| row(key, description).spans[0].content.to_string())
+        .collect()
+    }
+
+    #[test]
+    fn the_help_screen_documents_no_driver_row_when_experimental_is_off() {
+        let text = body_with(false);
+        for expected in driver_rows() {
+            assert!(
+                !text.lines().any(|line| line == expected),
+                "the row {expected:?} documents a surface the user cannot \
+                 reach with the flag off:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_help_screen_has_no_driver_heading_and_no_injection_legend_when_off() {
+        let text = body_with(false);
+        assert!(
+            !text.contains("Driver Tab"),
+            "the Driver section heading must go with its rows:\n{text}"
+        );
+        assert!(
+            !text.contains("Injected Message States"),
+            "injection is reachable only from the Driver tab's `i` key, so its \
+             legend goes too:\n{text}"
+        );
+        for (glyph, label) in [
+            (GLYPH_QUEUED, LABEL_QUEUED),
+            (GLYPH_DELIVERED, LABEL_DELIVERED),
+            (GLYPH_ACTED_ON, LABEL_ACTED_ON),
+            (GLYPH_MISSED, LABEL_MISSED),
+        ] {
+            assert!(!text.contains(glyph), "the glyph {glyph:?} survived:\n{text}");
+            assert!(!text.contains(label), "the label {label:?} survived:\n{text}");
+        }
+        assert!(
+            !text.contains(BADGE_DRIVEN.trim()),
+            "the driven badge cannot be painted with the flag off, so naming \
+             it in the legend would document a glyph nothing renders:\n{text}"
+        );
+        // The four badges that survive, so the skip above removed exactly one.
+        for glyph in [
+            BADGE_NEEDS_HUMAN,
+            BADGE_PAUSED,
+            BADGE_EXTERNAL_JOB,
+            BADGE_SESSION,
+        ] {
+            assert!(
+                text.contains(glyph.trim()),
+                "{glyph:?} is not a driver badge and must stay:\n{text}"
+            );
+        }
+    }
+
+    /// D3's help-screen half: with the flag ON the Driver heading carries the
+    /// literal word EXPERIMENTAL.
+    #[test]
+    fn the_driver_heading_is_marked_experimental_when_the_flag_is_on() {
+        let text = body_with(true);
+        let heading_line = text
+            .lines()
+            .find(|line| line.contains("Driver Tab"))
+            .unwrap_or_else(|| panic!("the Driver section must be present:\n{text}"));
+        assert!(
+            heading_line.contains("EXPERIMENTAL"),
+            "the Driver section heading must say EXPERIMENTAL in so many \
+             letters (D3), and reads {heading_line:?}"
+        );
+    }
+
+    /// The gating must not leave the seam it cut visible: no run of two blank
+    /// lines, and no trailing blank run before the closing hint.
+    #[test]
+    fn neither_flag_state_leaves_a_double_blank_line_where_a_section_was_cut() {
+        for experimental in [false, true] {
+            let lines = help_lines(experimental);
+            let text: Vec<String> = lines
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect();
+            for pair in text.windows(2) {
+                assert!(
+                    !(pair[0].is_empty() && pair[1].is_empty()),
+                    "experimental={experimental}: a removed section left two \
+                     blank rows behind:\n{text:#?}"
+                );
+            }
+            assert!(
+                !text.last().expect("a non-empty body").is_empty(),
+                "experimental={experimental}: the body must not end on a blank \
+                 row:\n{text:#?}"
+            );
+        }
+    }
+
+    /// The flag-off body is genuinely shorter — the negative assertions above
+    /// cannot all be passing because `body_with` returned nothing.
+    #[test]
+    fn the_flag_off_help_body_is_shorter_but_still_documents_the_other_keys() {
+        let off = help_lines(false).len();
+        let on = help_lines(true).len();
+        assert!(
+            off < on,
+            "the flag-off body ({off} rows) must be shorter than the flag-on \
+             one ({on} rows)"
+        );
+        let text = body_with(false);
+        for (key, description) in [
+            ("j / Down", "Move down"),
+            ("b", "Open project detail on the backlog tab"),
+            ("e", "Enqueue next action (detail view)"),
+            ("r", "Toggle roadmap visualization (detail view)"),
+            ("q / Esc", "Quit / Back"),
+        ] {
+            let expected = row(key, description).spans[0].content.to_string();
+            assert!(
+                text.lines().any(|line| line == expected),
+                "{expected:?} is not a driver row and must survive the \
+                 gate:\n{text}"
+            );
+        }
+        assert!(text.contains("Filter Syntax") && text.contains("Dashboard Badges"));
+    }
+
     #[test]
     fn the_body_is_long_enough_that_the_scroll_work_was_required() {
         // The premise of the whole change, pinned: at an 80x24 terminal the

@@ -1625,6 +1625,102 @@ mod tests {
         }
     }
 
+    // ── 260917-fko group 6: the dashboard's driver surface, flag off ──────
+
+    /// The driven badge is gated at its ONE computation site, so a genuinely
+    /// live run still yields no badge with the experimental surfaces off.
+    ///
+    /// This is the hostile case on purpose: the reconciliation scan really did
+    /// observe a live run (D6 keeps it running), and the dashboard still must
+    /// not disclose that a driver exists.
+    #[test]
+    fn a_live_run_lights_no_driven_badge_when_experimental_is_off() {
+        let mut ctx = ctx_with_aliases(&["alpha"]).with_experimental(false);
+        drive(&mut ctx, "alpha");
+        assert!(
+            ctx.observed_runs
+                .get("alpha")
+                .is_some_and(|run| run.is_live()),
+            "the fixture must really be driving, or this test passes by \
+             accident"
+        );
+        assert_eq!(
+            row_badge(&ctx, "alpha"),
+            None,
+            "a driven badge is the dashboard telling the user a driver exists"
+        );
+    }
+
+    /// The same live run, flag on — so the test above cannot be passing
+    /// because `drive` stopped working.
+    #[test]
+    fn the_same_live_run_lights_the_driven_badge_when_experimental_is_on() {
+        let mut ctx = ctx_with_aliases(&["alpha"]).with_experimental(true);
+        drive(&mut ctx, "alpha");
+        assert_eq!(row_badge(&ctx, "alpha"), Some(DRIVEN_BADGE));
+    }
+
+    /// Gating `driven_and_live` at its source also removes rank 1, so the
+    /// attention-first ordering is driver-free rather than merely un-badged.
+    #[test]
+    fn attention_first_does_not_float_a_driven_project_when_experimental_is_off() {
+        let mut ctx = ctx_with_aliases(&["alpha", "zulu"]).with_experimental(false);
+        drive(&mut ctx, "zulu");
+        ctx.sort_mode = SortMode::AttentionFirst;
+        assert_eq!(
+            ctx.sorted_aliases(),
+            vec!["alpha".to_string(), "zulu".to_string()],
+            "with the flag off the driven project must not jump the queue — \
+             that ordering is itself a disclosure"
+        );
+
+        // The control: with the flag on, the same live run does float.
+        ctx.experimental = true;
+        assert_eq!(
+            ctx.sorted_aliases(),
+            vec!["zulu".to_string(), "alpha".to_string()]
+        );
+    }
+
+    /// The three dashboard driver keys, driven through the real `handle_key`.
+    ///
+    /// A test that called `DriverConfirmScreen::new` directly could not catch
+    /// a key that is still bound, which is the only thing worth checking here.
+    #[test]
+    fn the_dashboard_driver_keys_push_nothing_when_experimental_is_off() {
+        for key in ['r', 'x', 'o'] {
+            let mut ctx = ctx_with_aliases(&["alpha"]).with_experimental(false);
+            ctx.table_state.select(Some(0));
+            let mut screen = NormalScreen::new();
+
+            let action = screen.handle_key(KeyCode::Char(key), KeyModifiers::NONE, &mut ctx);
+
+            assert!(
+                matches!(action, ScreenAction::None),
+                "`{key}` must fall through unhandled with the flag off, and a \
+                 project IS selected so a bound key would have pushed"
+            );
+        }
+    }
+
+    #[test]
+    fn the_dashboard_driver_keys_still_push_the_confirmation_when_experimental_is_on() {
+        for key in ['r', 'x', 'o'] {
+            let mut ctx = ctx_with_aliases(&["alpha"]).with_experimental(true);
+            ctx.table_state.select(Some(0));
+            let mut screen = NormalScreen::new();
+
+            let action = screen.handle_key(KeyCode::Char(key), KeyModifiers::NONE, &mut ctx);
+
+            match action {
+                ScreenAction::Push(pushed) => {
+                    assert_eq!(pushed.name(), "driver_confirm", "`{key}` pushed the wrong screen")
+                }
+                _ => panic!("`{key}` must push the driver confirmation with the flag on"),
+            }
+        }
+    }
+
     #[test]
     fn computing_badges_never_reorders_rows() {
         // Two projects with identical driven/parked state keep their relative

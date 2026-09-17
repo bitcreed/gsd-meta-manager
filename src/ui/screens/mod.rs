@@ -1755,11 +1755,25 @@ impl AppContext {
     }
 
     /// This alias's [`attention_rank`], from the state this context holds.
+    ///
+    /// **`driven_and_live` is gated here as well as in `row_badge`, and the
+    /// duplication is deliberate** (260917-fko, deviation from the plan's
+    /// single-clause claim). Rank 1 is derived from `observed_runs` on this
+    /// path, not from the badge, so gating only the badge would have left the
+    /// attention-first sort floating driven projects to the top of the
+    /// dashboard — an ordering that discloses "something is driving this repo"
+    /// just as plainly as the badge it was supposed to replace, and does so
+    /// without painting a single glyph the flag-off tests could look for.
+    ///
+    /// The reconciliation scan keeps running with the flag off (D6); it is
+    /// only the surfaces that display its result that are gated, and a sort
+    /// order is such a surface.
     fn attention_rank_for(&self, alias: &str) -> u8 {
-        let driven_and_live = self
-            .observed_runs
-            .get(alias)
-            .is_some_and(|run| run.is_live());
+        let driven_and_live = self.experimental
+            && self
+                .observed_runs
+                .get(alias)
+                .is_some_and(|run| run.is_live());
         attention_rank(self.needs_human_for(alias), driven_and_live)
     }
 
