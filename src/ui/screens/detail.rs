@@ -457,6 +457,13 @@ pub struct DetailScreen {
     /// formula the Browse and Archive viewers already use, which is what keeps
     /// the UIFIX-04 fix from having to be made a second time in a new place.
     driver_viewport: Cell<ViewportMetrics>,
+    /// Last-rendered viewport metrics for the Git tab's commit-message pane.
+    ///
+    /// A fifth `Cell` alongside the four above rather than a fifth *mechanism*,
+    /// for the reason the Driver one records: the pane's PageUp/PageDown arms
+    /// clamp through the same [`clamp_scroll`] formula, so UIFIX-04 cannot come
+    /// back here in a new spelling.
+    git_commit_viewport: Cell<ViewportMetrics>,
 }
 
 impl DetailScreen {
@@ -478,6 +485,7 @@ impl DetailScreen {
             archive_viewport: Cell::default(),
             generic_viewport: Cell::default(),
             driver_viewport: Cell::default(),
+            git_commit_viewport: Cell::default(),
         }
     }
 
@@ -1287,12 +1295,11 @@ impl Screen for DetailScreen {
                         }
                     }
                 }
-                // If diff stat pane is showing on Git tab, dismiss it first
+                // If the commit pane is showing on Git tab, dismiss it first
                 if current_view == DetailSubView::GitHistory {
                     let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                    if cache.git_diff_stat.is_some() {
-                        cache.git_diff_stat = None;
-                        cache.loading_diff = false;
+                    if cache.git_commit_detail.is_some() {
+                        cache.close_git_commit_detail();
                         ctx.needs_redraw = true;
                         return ScreenAction::None;
                     }
@@ -1352,7 +1359,7 @@ impl Screen for DetailScreen {
                         if !cache.git_entries.is_empty() {
                             let max = cache.git_entries.len().saturating_sub(1);
                             cache.git_selected = (cache.git_selected + 1).min(max);
-                            cache.git_diff_stat = None;
+                            cache.close_git_commit_detail();
                         }
                         ctx.needs_redraw = true;
                     }
@@ -1513,7 +1520,7 @@ impl Screen for DetailScreen {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         if !cache.git_entries.is_empty() {
                             cache.git_selected = cache.git_selected.saturating_sub(1);
-                            cache.git_diff_stat = None;
+                            cache.close_git_commit_detail();
                         }
                         ctx.needs_redraw = true;
                     }
@@ -1621,10 +1628,22 @@ impl Screen for DetailScreen {
                 match current_view {
                     DetailSubView::GitHistory => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        if !cache.git_entries.is_empty() {
+                        // QD-06: the Driver tab's posture, reused. While the
+                        // commit pane is open PageDown scrolls THAT — paging
+                        // the selection instead would close the very pane the
+                        // key was aimed at. With it closed, the key keeps its
+                        // old job of paging the log.
+                        if cache.git_commit_detail.is_some() {
+                            let vp = self.git_commit_viewport.get();
+                            cache.git_commit_scroll = clamp_scroll(
+                                cache.git_commit_scroll.saturating_add(PAGE_SCROLL_LINES),
+                                vp.total_lines,
+                                vp.visible_height,
+                            );
+                        } else if !cache.git_entries.is_empty() {
                             let max = cache.git_entries.len().saturating_sub(1);
                             cache.git_selected = (cache.git_selected + PAGE_SCROLL_LINES as usize).min(max);
-                            cache.git_diff_stat = None;
+                            cache.close_git_commit_detail();
                         }
                         ctx.needs_redraw = true;
                     }
@@ -1781,9 +1800,21 @@ impl Screen for DetailScreen {
                 match current_view {
                     DetailSubView::GitHistory => {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                        if !cache.git_entries.is_empty() {
+                        // The QD-06 branch again, and the up direction clamps
+                        // FIRST so a stale offset cannot survive a viewport
+                        // that shrank — the UIFIX-04 lesson, through the one
+                        // shared `clamp_scroll` rather than a second copy.
+                        if cache.git_commit_detail.is_some() {
+                            let vp = self.git_commit_viewport.get();
+                            let current = clamp_scroll(
+                                cache.git_commit_scroll,
+                                vp.total_lines,
+                                vp.visible_height,
+                            );
+                            cache.git_commit_scroll = current.saturating_sub(PAGE_SCROLL_LINES);
+                        } else if !cache.git_entries.is_empty() {
                             cache.git_selected = cache.git_selected.saturating_sub(PAGE_SCROLL_LINES as usize);
-                            cache.git_diff_stat = None;
+                            cache.close_git_commit_detail();
                         }
                         ctx.needs_redraw = true;
                     }
@@ -2018,11 +2049,11 @@ impl Screen for DetailScreen {
                         let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                         if let Some(entry) = cache.git_entries.get(cache.git_selected) {
                             // RAW: this hash becomes an argv element of
-                            // `git diff-tree ... <hash>`. A subprocess argument
+                            // `git show ... <hash>`. A subprocess argument
                             // is a lookup, not something a human reads, and an
                             // escaped hash would name no commit.
                             let hash = entry.hash.as_raw_for_logic_only().to_string();
-                            cache.loading_diff = true;
+                            cache.loading_commit_detail = true;
                             if let (Some(project), Some(tx)) =
                                 (ctx.config.projects.get(&self.alias), &ctx.event_tx)
                             {
@@ -2030,18 +2061,27 @@ impl Screen for DetailScreen {
                                 let project_path = project.path.clone();
                                 let alias = self.alias.clone();
                                 tokio::spawn(async move {
-                                    match git_ops::load_diff_stat(&project_path, &hash).await {
-                                        Ok(stat) => {
-                                            let _ =
-                                                tx.send(Action::GitDiffStatLoaded { alias, stat });
-                                        }
-                                        Err(_) => {
-                                            let _ = tx.send(Action::GitDiffStatLoaded {
-                                                alias,
-                                                stat: Default::default(),
-                                            });
-                                        }
-                                    }
+                                    // BOTH paths send back the hash they were
+                                    // ASKED for, so the handler can tell a
+                                    // stale answer from a current one (QD-07).
+                                    let detail = git_ops::load_commit_detail(&project_path, &hash)
+                                        .await
+                                        .unwrap_or_else(|_| git_ops::GitCommitDetail {
+                                            // An empty body opens the pane
+                                            // saying the commit has no readable
+                                            // message, which is a better answer
+                                            // than hanging on `Loading...`.
+                                            hash: crate::text::Untrusted::from_untrusted_source(
+                                                hash.clone(),
+                                            ),
+                                            body: Vec::new(),
+                                            stat: Default::default(),
+                                        });
+                                    let _ = tx.send(Action::GitCommitDetailLoaded {
+                                        alias,
+                                        hash,
+                                        detail,
+                                    });
                                 });
                             }
                             ctx.needs_redraw = true;
@@ -2604,7 +2644,7 @@ impl Screen for DetailScreen {
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
                 cache.git_planning_only = !cache.git_planning_only;
                 cache.git_entries.clear();
-                cache.git_diff_stat = None;
+                cache.close_git_commit_detail();
                 cache.git_selected = 0;
                 cache.loading_git = true;
                 if let (Some(project), Some(tx)) =
@@ -3644,7 +3684,7 @@ impl DetailScreen {
         };
 
         // Layout: mode indicator (1 line), then log (and optionally diff stat)
-        let has_diff = cache.git_diff_stat.is_some() || cache.loading_diff;
+        let has_diff = cache.git_commit_detail.is_some() || cache.loading_commit_detail;
         let content_chunks = if has_diff {
             Layout::vertical([
                 Constraint::Length(1),
@@ -3701,7 +3741,7 @@ impl DetailScreen {
         // Render diff stat pane if present
         if has_diff {
             let diff_area = content_chunks[2];
-            if cache.loading_diff {
+            if cache.loading_commit_detail {
                 let diff_block = Block::default()
                     .borders(Borders::ALL)
                     .title(" Diff: loading... ");
@@ -3709,7 +3749,7 @@ impl DetailScreen {
                     .style(Style::default().fg(Color::DarkGray))
                     .block(diff_block);
                 frame.render_widget(loading, diff_area);
-            } else if let Some(stat) = &cache.git_diff_stat {
+            } else if let Some(stat) = cache.git_commit_detail.as_ref().map(|d| &d.stat) {
                 // SHOWN: the title is what a human reads, and `Block::title` is
                 // the widget family that PRESERVES the invisible class most
                 // completely (measured — even `U+202E` reaches a cell through
@@ -9467,6 +9507,97 @@ mod tests {
 
     fn driver_following(ctx: &AppContext) -> bool {
         ctx.view_cache[TEST_ALIAS].driver_follow
+    }
+
+    // ── The Git tab's commit pane: the Driver tab's posture, reused ────────
+    //
+    // Selection on `j`/`k`, pane scroll on PageUp/PageDown, no second mode to
+    // track (QD-06). The pane's presence is the ONLY thing that switches which
+    // of the two PageDown means, so both branches are driven through the real
+    // `handle_key` here rather than asserted about the arithmetic.
+
+    /// A DetailScreen and AppContext parked on the Git tab, with `entries` log
+    /// rows and — when `body_lines` is `Some` — an open commit pane whose
+    /// viewport was recorded with that many lines in a 10-row body.
+    fn git_fixture(
+        entries: usize,
+        selected: usize,
+        body_lines: Option<u16>,
+        stored_offset: u16,
+    ) -> (DetailScreen, AppContext) {
+        use crate::state_reader::git_ops::{GitCommitDetail, GitLogEntry};
+        use crate::text::Untrusted;
+
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        if let Some(total_lines) = body_lines {
+            screen.git_commit_viewport.set(ViewportMetrics {
+                total_lines,
+                visible_height: 10,
+            });
+        }
+
+        let mut ctx = test_ctx();
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::GitHistory);
+        let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
+        let field = |s: &str| Untrusted::from_untrusted_source(s.to_string());
+        cache.git_entries = (0..entries)
+            .map(|i| GitLogEntry {
+                hash: field(&format!("hash{i:03}")),
+                date: field("2026-09-17"),
+                author: field("Human"),
+                co_authors: None,
+                message: field("a subject"),
+            })
+            .collect();
+        cache.git_selected = selected;
+        if let Some(total_lines) = body_lines {
+            cache.git_commit_detail = Some(GitCommitDetail {
+                hash: field("hash000"),
+                body: (0..total_lines).map(|i| field(&format!("line {i}"))).collect(),
+                stat: Default::default(),
+            });
+            cache.git_commit_scroll = stored_offset;
+        }
+
+        (screen, ctx)
+    }
+
+    #[test]
+    fn page_down_scrolls_the_commit_pane_while_open_and_pages_the_selection_otherwise() {
+        // Pane OPEN: PageDown moves the pane, not the selection.
+        let (mut screen, mut ctx) = git_fixture(100, 0, Some(60), 0);
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        let cache = &ctx.view_cache[TEST_ALIAS];
+        assert_eq!(
+            cache.git_commit_scroll, PAGE_SCROLL_LINES,
+            "with the pane open PageDown scrolls the message"
+        );
+        assert_eq!(
+            cache.git_selected, 0,
+            "and leaves the selection where it is — moving it would close the \
+             very pane the key was aimed at"
+        );
+        assert!(cache.git_commit_detail.is_some());
+
+        // The clamp is the SHARED formula: 60 lines in a 10-row body caps the
+        // offset at 50, so a third PageDown does not overshoot.
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].git_commit_scroll, 50);
+
+        // And back up, clamped at zero.
+        press(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].git_commit_scroll, 30);
+
+        // Pane CLOSED: PageDown pages the selection, as it always did.
+        let (mut screen, mut ctx) = git_fixture(100, 0, None, 0);
+        press(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(
+            ctx.view_cache[TEST_ALIAS].git_selected,
+            PAGE_SCROLL_LINES as usize,
+            "with no pane open PageDown keeps paging the log"
+        );
     }
 
     fn test_run(run_id: &str) -> crate::journal::RunSummary {
