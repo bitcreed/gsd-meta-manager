@@ -313,6 +313,138 @@ fn a_backlog_item_with_no_md_file_is_described_by_its_humanized_slug() {
     }
 }
 
+/// Drive BOTH functions from the SAME fixture path in the SAME assertion, so
+/// the pair cannot be read apart and a future reader cannot check one without
+/// checking the other.
+fn assert_the_count_is_the_number_of_rows(tmp: &TempDir, shape: &str, expected: usize) {
+    let counted = count_backlog_items(tmp.path()) as usize;
+    let drawn = parse_backlog_items(tmp.path()).len();
+    assert_eq!(
+        counted, drawn,
+        "[{shape}] overview counted {counted}, the tab could draw {drawn}. \
+         These two numbers must come from ONE rule, not from two rules that \
+         happen to agree."
+    );
+    assert_eq!(
+        counted, expected,
+        "[{shape}] expected {expected} backlog item(s), got {counted}"
+    );
+}
+
+/// `tmp/phases/` with each named subdirectory created (no files inside).
+fn phases_with_dirs(names: &[&str]) -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let phases_dir = tmp.path().join("phases");
+    fs::create_dir_all(&phases_dir).unwrap();
+    for name in names {
+        fs::create_dir_all(phases_dir.join(name)).unwrap();
+    }
+    tmp
+}
+
+/// **The agreement is ENFORCED here, not observed.**
+///
+/// After the 260916-vr0 fix the two numbers come from one function, so nothing
+/// in the production code can make them disagree today. That is exactly why
+/// this sweep exists: it is what makes a future re-split of the matching rule
+/// fail loudly instead of silently reintroducing the reported bug — a non-zero
+/// count above an empty list.
+#[test]
+fn the_backlog_count_and_the_backlog_list_come_from_one_rule_across_every_fixture_shape() {
+    // Shape 1: no `phases/` directory at all.
+    let no_phases = TempDir::new().unwrap();
+    assert_the_count_is_the_number_of_rows(&no_phases, "no phases/ directory at all", 0);
+
+    // Shape 2: a `phases/` holding only ordinary phase directories.
+    let ordinary_only = phases_with_dirs(&["01-core-infra", "02-dashboard", "21-hardening"]);
+    let ordinary_only_shape = "phases/ with only ordinary phase directories";
+    assert_the_count_is_the_number_of_rows(&ordinary_only, ordinary_only_shape, 0);
+
+    // Shape 3: md-less `999.N-slug` directories — the shape EVERY real backlog
+    // directory has on disk (12 of 12 measured).
+    let md_less = make_md_less_backlog_fixture();
+    assert_the_count_is_the_number_of_rows(&md_less, "md-less 999.N-slug directories", 2);
+
+    // Shape 4: a backlog directory that DOES hold a `.md` with a `# heading` —
+    // the enrichment direction, which must keep working.
+    let enriched = phases_with_dirs(&["01-core-infra", "999.3-queue-editor-and-reorder"]);
+    fs::write(
+        enriched
+            .path()
+            .join("phases/999.3-queue-editor-and-reorder/notes.md"),
+        "# Queue editor with drag reorder\n\nbody\n",
+    )
+    .unwrap();
+    assert_the_count_is_the_number_of_rows(&enriched, "999.N-slug directory holding a .md", 1);
+
+    // Shape 5: a plain FILE whose name starts with 999 — not a directory, so
+    // not an item under either rule.
+    let file_not_dir = phases_with_dirs(&[]);
+    fs::write(
+        file_not_dir.path().join("phases/999-notes.txt"),
+        "not a dir",
+    )
+    .unwrap();
+    assert_the_count_is_the_number_of_rows(&file_not_dir, "a plain FILE named 999-notes.txt", 0);
+
+    // Shape 6: a directory name the LOOSE prefix rule accepts and the STRICT
+    // parser rejects. This is the shape whose divergence WAS the bug, taken
+    // from the other side.
+    let strict_rejects = phases_with_dirs(&["999-nodot", "999.4-real-one"]);
+    assert_the_count_is_the_number_of_rows(
+        &strict_rejects,
+        "a name the loose prefix rule accepts but the strict parser rejects",
+        1,
+    );
+}
+
+/// **The guard on the reconciliation direction (D-INF-02).**
+///
+/// `999-nodot` has no dot after `999` and so yields neither a number nor a
+/// slug: `parse_backlog_dir_name` rejects it, and the tab could never have
+/// drawn a row for it. The count must therefore not advertise it either. If a
+/// future change re-teaches the counter the loose `starts_with("999")` rule,
+/// this is the assertion that goes red.
+#[test]
+fn a_backlog_name_the_strict_parser_rejects_is_counted_as_zero_and_parsed_as_zero() {
+    let tmp = phases_with_dirs(&["999-nodot"]);
+    let counted = count_backlog_items(tmp.path()) as usize;
+    let drawn = parse_backlog_items(tmp.path()).len();
+
+    assert_eq!(
+        (counted, drawn),
+        (0, 0),
+        "overview counted {counted}, the tab could draw {drawn}. A name from \
+         which no number and no slug can be extracted could never have been \
+         DISPLAYED, so it must not be COUNTED — the count follows the parser."
+    );
+}
+
+/// The enrichment direction still works: a heading beats the slug, and the
+/// path to the file it was read from is carried.
+#[test]
+fn a_backlog_directory_holding_a_md_heading_is_described_by_that_heading() {
+    let tmp = phases_with_dirs(&["999.3-queue-editor-and-reorder"]);
+    let md = tmp
+        .path()
+        .join("phases/999.3-queue-editor-and-reorder/notes.md");
+    fs::write(&md, "# Queue editor with drag reorder\n\nbody\n").unwrap();
+
+    let items = parse_backlog_items(tmp.path());
+    assert_eq!(items.len(), 1, "the enriched directory must still be parsed");
+    assert_eq!(
+        items[0].description.as_raw_for_logic_only(),
+        "Queue editor with drag reorder",
+        "a `# heading` in the first `.md` beats the humanized slug; making the \
+         `.md` OPTIONAL must not make it IGNORED"
+    );
+    assert_eq!(
+        items[0].path.as_deref(),
+        Some(md.as_path()),
+        "the path to the `.md` the description came from is still carried"
+    );
+}
+
 // ============================================================================
 // Integration: parse_project_state
 // ============================================================================
