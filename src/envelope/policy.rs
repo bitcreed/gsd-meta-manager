@@ -1266,6 +1266,15 @@ fn unbounded_config_assignment_refusal(key: &str, section: &str) -> GitVerdict {
 ///   printing `CHILD_ENV COUNT=1 KEY_0=core.hooksPath VALUE_0=/ENV_WINS`.
 ///   **`core.pager` and `core.editor` were NOT exercised in that harness and are
 ///   NOT claimed.** A K2 member that does NOT inherit would be a FINDING.
+///
+///   **Git 2.54 added a NEW and sizeable K2 family that did not exist at
+///   2.43.0**: centrally-configured hook commands, `hook.<friendly-name>.command`
+///   and its siblings, whose value `Documentation/config/hook.adoc` says may be
+///   an executable path or a shell oneliner. It is K2 and NOT K1, so it needs no
+///   entry in this constant — see the re-derivation record below for the full
+///   finding. **It was NOT exercised in the child-environment-dump harness
+///   either, so inheritance is NOT claimed for it, on exactly the terms
+///   `core.pager` and `core.editor` are not claimed.**
 /// * **K3 — re-parsed as a FILE PATH spliced at the directive's precedence.**
 ///   [`INDIRECTION_SECTIONS`]. Closed by plan `19-23`.
 ///
@@ -1340,6 +1349,111 @@ fn unbounded_config_assignment_refusal(key: &str, section: &str) -> GitVerdict {
 /// same breath in a way that read as the witness being the control —
 /// `T-19-107`'s own shape arriving in the round that inherited it — and a
 /// plan-check caught it, the same catch round 7's residue needed.
+///
+/// # THE RE-DERIVATION AGAINST `git version 2.55.0`
+///
+/// **The range actually read**: `Documentation/RelNotes/2.44.0.adoc` through
+/// `2.55.0.adoc` on git/git master — twelve files — cross-checked against
+/// master's `Documentation/config/alias.adoc`, `Documentation/config/hook.adoc`
+/// and `alias.c`. (The `.txt` variants 404 across this range; the notes were
+/// renamed to `.adoc`.)
+///
+/// **The verdict: no new section. `alias` remains the only K1 member**, and this
+/// constant is byte-identical after the re-derivation. `alias.c` on master has a
+/// single `parse_config_key` call site for the `alias` section and no second
+/// section.
+///
+/// ## THE LOAD-BEARING FINDING: 2.54 ADDED A THREE-LEVEL ALIAS SPELLING, AND IT NEEDS NO ENTRY HERE
+///
+/// Git **2.54** extended the alias grammar. Its release notes record that the
+/// alias configuration syntax was extended to allow aliases using characters
+/// outside ASCII alphanumeric plus `-`, and `Documentation/config/alias.adoc` on
+/// master documents the second spelling that created: an alias defined WITH a
+/// subsection, `alias.<name>.command`, whose `<name>` may be any bytes except
+/// newline and NUL — UTF-8 included — and which is equivalent to the two-level
+/// `alias.<name>` form. 2.55's further update to the i18n alias support is a
+/// fixup to that 2.54 work, not a new section.
+///
+/// **So there IS a genuinely NEW spelling whose value git re-parses as a git
+/// command line, and it adds NO member to this constant, because its SECTION is
+/// still `alias`.** [`config_key_section`] reads only the text before the FIRST
+/// `.`, so a carrier spelled `-c alias.co.command='<body>'` is ALREADY refused by
+/// the existing rule, with no code change in this round.
+///
+/// **That is a VINDICATION of the decision not to read the subsection, not a
+/// gap** — and the counterfactual is the part that carries the lesson: **a guard
+/// that had enumerated the two-level `alias.<name>` shape would have FAILED OPEN
+/// on 2.54's `alias.<name>.command`.**
+/// [`config_key_names_a_reparsed_command_section`]'s own doc carries the
+/// justification this finding repaired.
+///
+/// **The near-misses, each NAMED and EXCLUDED with the reason it fails the class
+/// test.** The class test is *is this a NEW SECTION whose VALUE git re-parses as
+/// a git command line, including its own leading options*:
+///
+/// * 2.48's `remote.<name>.serverOption`: injects one fixed option value into one
+///   subsystem. Not a value re-parsed as a git command line, and `remote` is not
+///   a new section.
+/// * 2.44's `fetch.all`, which pretends `--all` was given on the command line:
+///   the same shape, excluded for the same reason — one fixed flag, not a
+///   re-parsed command line.
+/// * 2.51's tightening, so that alias expansion is reported only when `-h` is the
+///   sole option: a reporting and behaviour change INSIDE the existing section.
+/// * 2.46's logging of alias-expanded command lines to the trace output: logging
+///   only.
+/// * 2.49's `help.autocorrect = 1` running the plausible typofix immediately: not
+///   a config VALUE re-parsed as a command line.
+///
+/// ## THE NEW K2 FAMILY, RECORDED WITH THE LIMIT OF ITS CLAIM
+///
+/// 2.54 also added centrally-configurable hook commands —
+/// `hook.<friendly-name>.command`, `.event` and `.enabled`, extended in 2.55 by
+/// `hook.<friendly-name>.parallel`, `hook.<event>.jobs` and `hook.jobs`.
+/// `Documentation/config/hook.adoc` says the value can be an executable path or a
+/// shell oneliner. **That is squarely this doc's own K2 class** — re-parsed as a
+/// SHELL command line and run as a CHILD that inherits the envelope's
+/// `GIT_CONFIG_COUNT`/`KEY_0`/`VALUE_0` triplet — **and NOT K1, so it needs no
+/// entry here.** It is a NEW and sizeable K2 family that did not exist at 2.43.0
+/// and is recorded here as examined and excluded.
+///
+/// **The limit of that claim, in the same terms this doc already uses for
+/// `core.pager` and `core.editor`: this family was NOT exercised in the
+/// child-environment-dump harness, so inheritance is NOT claimed for it.** The K2
+/// inheritance reasoning above is a MEASUREMENT over four named representatives;
+/// the hook family is not one of them, and nothing written here says or implies
+/// it was measured. **A K2 member that does NOT inherit would be a FINDING.**
+///
+/// # WHAT THIS RE-DERIVATION WAS NOT: DOCUMENTARY, NOT MEASURED
+///
+/// **It was release notes plus git's own source, and NOTHING was re-run.** The
+/// `/ENV_WINS` vs `/INCLUDE_WINS` harness that produced the 2.43.0 probe table
+/// above was NOT re-executed against 2.55.0, because **no `git version 2.55.0`
+/// binary exists on the machine that performed this work**. The 2.43.0 probe
+/// table above remains a record of a measurement taken on a real 2.43.0 binary,
+/// and it was deliberately left byte-identical rather than restamped, since
+/// restamping it would fabricate a measurement nobody took. **Nothing in this
+/// section may be read as a claim that the K1/K2 probe table was re-measured.**
+///
+/// # WHAT *IS* LIVE MEASUREMENT, AND EXACTLY HOW FAR IT REACHES
+///
+/// The reverse-direction drift pin below iterates THESE entries and probes a REAL
+/// git binary, so it re-measures against whatever git is installed wherever the
+/// suite runs: it passes on the locally installed `git version 2.53.0`, and
+/// release CI runs it on the runner's `git version 2.55.0`. **That is genuine
+/// two-sided live confirmation of the REVERSE direction** — `alias` is still
+/// re-parsed as a git command line by the git this constant now records. Its
+/// floor (`!REPARSED_COMMAND_SECTIONS.is_empty()`) is unaffected by this
+/// re-derivation because the array does not shrink.
+///
+/// **And in the same breath, unsoftened: it is STILL NOT a control over ANY of
+/// the THREE fail-open directions named above, all three of which remain
+/// UNCONTROLLED.** A pre-existing `alias.*` the guard never saw written, a
+/// `!`-bodied alias carrying its own carrier, and a future git that re-parses a
+/// SECOND config value as a git command line are exactly as open after this
+/// re-derivation as before it. **This section is evidence that a human looked
+/// ONCE, at ONE point in the version history. It does not close any of the three
+/// and must not be read as closing them.** The residue and revisit-condition
+/// sections above stand exactly as written.
 const REPARSED_COMMAND_SECTIONS: &[&str] = &["alias"];
 
 /// Whether a config key's SECTION names a value git RE-PARSES as a command line.
