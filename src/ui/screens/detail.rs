@@ -4114,27 +4114,37 @@ impl DetailScreen {
                     }
                 }
 
-                // Waves manifest (GSD 1.8.0 parallelism), when present on disk
-                // for the selected phase. Absent/unparsable → render nothing.
-                if let Some(proj) = ctx.config.projects.get(alias) {
-                    let planning_dir = proj.path.join(".planning");
-                    if let Some(phase_dir) =
+                // Waves — ONE resolution, then ONE render. The on-disk
+                // `waves.json` manifest (GSD 1.8.0 claude-orchestration) is
+                // preferred where it exists; when it is absent, unparsable or
+                // carries no waves, the grouping derived from each plan's own
+                // `wave:` frontmatter stands in. That fallback reads no files:
+                // the data was derived during the refresh scan and is already
+                // on the inference, so nothing here touches the render tick.
+                // Neither source available → render nothing at all.
+                let manifest = ctx
+                    .config
+                    .projects
+                    .get(alias)
+                    .and_then(|proj| {
                         crate::state_reader::disk_status::find_phase_dir(
-                            &planning_dir,
+                            &proj.path.join(".planning"),
                             &phase.number,
                         )
-                    {
-                        let waves_path = phase_dir.join("waves.json");
-                        if let Ok(raw) = std::fs::read_to_string(&waves_path) {
-                            if let Some(manifest) = parse_waves_manifest(&raw) {
-                                if !manifest.waves.is_empty() {
-                                    lines.push(Line::from(""));
-                                    for wl in build_waves_lines(&manifest) {
-                                        lines.push(wl);
-                                    }
-                                }
-                            }
-                        }
+                    })
+                    .and_then(|phase_dir| {
+                        std::fs::read_to_string(phase_dir.join("waves.json")).ok()
+                    })
+                    .and_then(|raw| parse_waves_manifest(&raw))
+                    .filter(|manifest| !manifest.waves.is_empty())
+                    .or_else(|| {
+                        (!inf.plan_waves.is_empty())
+                            .then(|| waves_manifest_from_derived(&inf.plan_waves))
+                    });
+                if let Some(manifest) = manifest {
+                    lines.push(Line::from(""));
+                    for wl in build_waves_lines(&manifest) {
+                        lines.push(wl);
                     }
                 }
 
@@ -5272,6 +5282,43 @@ impl WavePlan {
 /// callers can silently omit the section rather than surface parse noise.
 fn parse_waves_manifest(raw: &str) -> Option<WavesManifest> {
     serde_json::from_str::<WavesManifest>(raw).ok()
+}
+
+/// Present waves derived from `*-PLAN.md` frontmatter in the shape
+/// [`build_waves_lines`] already renders.
+///
+/// A second *source* for the existing renderer, not a second renderer: the
+/// on-disk `waves.json` manifest exists only under GSD 1.8.0's
+/// claude-orchestration backend, so without this the section renders for
+/// nobody. `files_modified` is left empty — the hint it feeds is appended only
+/// when the count is above zero, so the derived path degrades to just the plan
+/// count rather than showing a false `0f`.
+///
+/// Every plan id passes through [`shown`] first. These strings are filenames
+/// from another project's `.planning/` directory — untrusted text, escaped on
+/// the same path as the other ~50 call sites in this file.
+fn waves_manifest_from_derived(waves: &[crate::state_reader::plan_waves::PlanWave]) -> WavesManifest {
+    WavesManifest {
+        waves: waves
+            .iter()
+            .map(|w| WaveEntry {
+                // The label carries the real frontmatter wave number, so it is
+                // supplied here rather than left to `WaveEntry::label`'s
+                // index-plus-one fallback.
+                id: Some(serde_json::Value::String(w.label())),
+                wave: None,
+                plans: w
+                    .plans
+                    .iter()
+                    .map(|id| WavePlan {
+                        id: Some(shown(id)),
+                        plan: None,
+                        files_modified: Vec::new(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
 }
 
 /// Render a compact "Waves" section: one line per wave listing its plans and a

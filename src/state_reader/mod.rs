@@ -2,6 +2,7 @@ pub mod backlog;
 pub mod config_json;
 pub mod disk_status;
 pub mod git_ops;
+pub mod plan_waves;
 pub mod queue_md;
 pub mod roadmap_md;
 pub mod state_md;
