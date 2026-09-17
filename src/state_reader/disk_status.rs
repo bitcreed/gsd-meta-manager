@@ -1,3 +1,4 @@
+use super::plan_waves;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -294,6 +295,21 @@ pub struct DiskInference {
     /// unsorted vector would make every project compare unequal on every
     /// refresh.
     pub plan_tokens: Vec<PlanTokens>,
+    /// The phase's surviving plans grouped by the `wave:` number their own
+    /// frontmatter declares — which plans ran concurrently, and which were
+    /// serialized behind them.
+    ///
+    /// Empty for a phase whose plans record no wave, which is the graceful
+    /// degradation the UI depends on: no wave section is drawn at all, rather
+    /// than a heading over a flat plan list. Read out of the SAME plan-file read
+    /// the superseded check already performs, so it costs no extra I/O, and the
+    /// derivation happens here rather than at render time.
+    ///
+    /// **Ordered, and the order is load-bearing** for the same reason
+    /// [`DiskInference::plan_tokens`] is: directory iteration order is
+    /// unspecified while this struct's `PartialEq` drives the dashboard's
+    /// unchanged-state suppression. [`plan_waves::group_into_waves`] sorts.
+    pub plan_waves: Vec<plan_waves::PlanWave>,
 }
 
 /// Read a scalar key out of a file's **leading** YAML frontmatter block.
@@ -327,7 +343,7 @@ pub struct DiskInference {
 /// goal-met predicate and the whole DRIVE-05 gate set, so a nested
 /// `status: passed` is a false `Decision::GoalMet` and a nested
 /// `status: human_needed` a spurious park. A *nested* key is a different key.
-fn leading_frontmatter_value(content: &str, key: &str) -> Option<String> {
+pub(crate) fn leading_frontmatter_value(content: &str, key: &str) -> Option<String> {
     let mut lines = content.lines();
     // Frontmatter must open on the very first line with a bare `---`.
     if lines.next().map(str::trim) != Some("---") {
@@ -682,6 +698,10 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     // the superseded check already performs, so it costs no extra I/O. Only a
     // number that was actually found is recorded.
     let mut plan_estimates: HashMap<String, u64> = HashMap::new();
+    // `(plan id, wave number)` for every SURVIVING plan, read out of that same
+    // in-hand content. A plan that could not be read contributes a `None` wave
+    // rather than disappearing, so it still shows up in the unknown bucket.
+    let mut plan_wave_entries: Vec<(String, Option<u32>)> = Vec::new();
     // Verification artifacts are COLLECTED, not flagged: the status lives inside
     // the file, and which file to read is decided after the scan by sorting.
     let mut verification_names: Vec<String> = Vec::new();
@@ -817,6 +837,10 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
             {
                 plan_estimates.insert(id.clone(), estimate);
             }
+            plan_wave_entries.push((
+                id.clone(),
+                content.as_deref().and_then(plan_waves::plan_wave_number),
+            ));
             plan_ids.insert(id);
             continue;
         }
@@ -929,6 +953,10 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         (key_a, &a.id).cmp(&(key_b, &b.id))
     });
 
+    // Waves, from the `wave:` key each surviving plan's own frontmatter carries.
+    // Sorted inside `group_into_waves` — see the field's doc comment.
+    let plan_waves = plan_waves::group_into_waves(plan_wave_entries);
+
     // Determine status following GSD's priority order (`init.cjs:1875-1888`).
     //
     // `implementation_complete` is GSD's predicate verbatim (`init.cjs:181`).
@@ -984,6 +1012,7 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         has_deferred_items,
         has_skeleton,
         plan_tokens,
+        plan_waves,
     }
 }
 
