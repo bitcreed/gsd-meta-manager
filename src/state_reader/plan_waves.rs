@@ -80,15 +80,17 @@ pub fn plan_wave_number(content: &str) -> Option<u32> {
 pub fn group_into_waves(entries: Vec<(String, Option<u32>)>) -> Vec<PlanWave> {
     let mut numbered: std::collections::BTreeMap<u32, Vec<String>> =
         std::collections::BTreeMap::new();
+    let mut unnumbered: Vec<String> = Vec::new();
     for (id, wave) in entries {
-        if let Some(n) = wave {
-            numbered.entry(n).or_default().push(id);
+        match wave {
+            Some(n) => numbered.entry(n).or_default().push(id),
+            None => unnumbered.push(id),
         }
     }
     if numbered.is_empty() {
         return Vec::new();
     }
-    numbered
+    let mut waves: Vec<PlanWave> = numbered
         .into_iter()
         .map(|(wave, mut plans)| {
             plans.sort();
@@ -97,7 +99,15 @@ pub fn group_into_waves(entries: Vec<(String, Option<u32>)>) -> Vec<PlanWave> {
                 plans,
             }
         })
-        .collect()
+        .collect();
+    if !unnumbered.is_empty() {
+        unnumbered.sort();
+        waves.push(PlanWave {
+            wave: None,
+            plans: unnumbered,
+        });
+    }
+    waves
 }
 
 #[cfg(test)]
@@ -144,5 +154,130 @@ mod tests {
             .label(),
             "w3"
         );
+    }
+
+    #[test]
+    fn test_plan_waves_absent_everywhere_group_into_nothing() {
+        // The degradation the whole feature rests on: a project (or a GSD
+        // version) that records no waves draws no wave section, rather than one
+        // anonymous bucket holding every plan in the phase.
+        let grouped = group_into_waves(vec![
+            ("05-01".to_string(), None),
+            ("05-02".to_string(), None),
+        ]);
+        assert_eq!(grouped, Vec::new());
+    }
+
+    #[test]
+    fn test_plan_waves_unnumbered_plans_collect_into_one_trailing_bucket() {
+        let grouped = group_into_waves(vec![
+            ("05-03".to_string(), None),
+            ("05-01".to_string(), Some(1)),
+            ("05-04".to_string(), None),
+            ("05-02".to_string(), Some(2)),
+        ]);
+        assert_eq!(
+            grouped,
+            vec![
+                PlanWave {
+                    wave: Some(1),
+                    plans: vec!["05-01".to_string()],
+                },
+                PlanWave {
+                    wave: Some(2),
+                    plans: vec!["05-02".to_string()],
+                },
+                PlanWave {
+                    wave: None,
+                    plans: vec!["05-03".to_string(), "05-04".to_string()],
+                },
+            ]
+        );
+        assert_eq!(grouped[2].label(), "w?");
+    }
+
+    #[test]
+    fn test_plan_waves_non_contiguous_numbers_keep_their_own_labels() {
+        // Waves 1 and 3 must never render as 1 and 2: the label is the stored
+        // number, not the entry's position.
+        let grouped = group_into_waves(vec![
+            ("05-02".to_string(), Some(3)),
+            ("05-01".to_string(), Some(1)),
+        ]);
+        let labels: Vec<String> = grouped.iter().map(PlanWave::label).collect();
+        assert_eq!(labels, vec!["w1".to_string(), "w3".to_string()]);
+    }
+
+    #[test]
+    fn test_plan_waves_within_a_wave_are_sorted_whatever_order_the_scan_gave() {
+        let forward = group_into_waves(vec![
+            ("05-01".to_string(), Some(1)),
+            ("05-02".to_string(), Some(1)),
+        ]);
+        let reversed = group_into_waves(vec![
+            ("05-02".to_string(), Some(1)),
+            ("05-01".to_string(), Some(1)),
+        ]);
+        assert_eq!(forward, reversed);
+        assert_eq!(
+            forward[0].plans,
+            vec!["05-01".to_string(), "05-02".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_plan_waves_reject_values_that_are_not_a_wave_number() {
+        assert_eq!(plan_wave_number(&plan_file("2")), Some(2));
+        assert_eq!(plan_wave_number(&plan_file("not-a-number")), None);
+        assert_eq!(plan_wave_number(&plan_file("-1")), None);
+        assert_eq!(plan_wave_number(&plan_file("")), None);
+        assert_eq!(plan_wave_number(&plan_file("99999999999999999999")), None);
+        assert_eq!(plan_wave_number("---\nphase: 5\n---\n"), None);
+        assert_eq!(plan_wave_number(""), None);
+    }
+
+    #[test]
+    fn test_plan_waves_inherit_the_frontmatter_anchoring_rules() {
+        // A nested key is a different key (WR-05) ...
+        assert_eq!(
+            plan_wave_number("---\nexecution:\n  wave: 2\n---\n"),
+            None
+        );
+        // ... and nothing below the closing marker is frontmatter at all.
+        assert_eq!(plan_wave_number("---\nphase: 5\n---\nwave: 2\n"), None);
+        // ... and a file that does not open with the block marker has none.
+        assert_eq!(plan_wave_number("# Title\n---\nwave: 2\n---\n"), None);
+    }
+
+    #[test]
+    fn test_plan_waves_skip_a_superseded_plan_exactly_as_plan_count_does() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-alpha-PLAN.md"), plan_file("1")).unwrap();
+        fs::write(
+            dir.path().join("05-02-beta-PLAN.md"),
+            "---\nstatus: superseded\nwave: 2\n---\n",
+        )
+        .unwrap();
+
+        let inf = infer_disk_status(dir.path());
+        assert_eq!(inf.plan_count, 1);
+        assert_eq!(
+            inf.plan_waves,
+            vec![PlanWave {
+                wave: Some(1),
+                plans: vec!["05-01-alpha".to_string()],
+            }]
+        );
+    }
+
+    #[test]
+    fn test_plan_waves_are_empty_for_a_phase_whose_plans_record_none() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("05-01-alpha-PLAN.md"), "---\nphase: 5\n---\n").unwrap();
+        fs::write(dir.path().join("05-02-beta-PLAN.md"), "no frontmatter here").unwrap();
+
+        let inf = infer_disk_status(dir.path());
+        assert_eq!(inf.plan_count, 2);
+        assert!(inf.plan_waves.is_empty());
     }
 }
