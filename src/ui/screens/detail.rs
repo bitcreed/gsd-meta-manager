@@ -3870,6 +3870,16 @@ impl DetailScreen {
                     ]));
                 }
 
+                // Per-plan token cost (estimate vs actual), read during the disk
+                // scan and cached on the inference — no file is read here.
+                let token_lines = build_plan_token_lines(inf);
+                if !token_lines.is_empty() {
+                    lines.push(Line::from(""));
+                    for tl in token_lines {
+                        lines.push(tl);
+                    }
+                }
+
                 // Waves manifest (GSD 1.8.0 parallelism), when present on disk
                 // for the selected phase. Absent/unparsable → render nothing.
                 if let Some(proj) = ctx.config.projects.get(alias) {
@@ -5070,6 +5080,155 @@ fn build_waves_lines(manifest: &WavesManifest) -> Vec<Line<'static>> {
             Span::styled(plans_str, Style::default().fg(Color::White)),
         ]));
     }
+    lines
+}
+
+/// How many per-plan token rows the Pipeline pane draws before it stops and says
+/// so (D-INF-03).
+///
+/// This pane is a plain `Paragraph` with no scroll state, so lines past the pane
+/// height are simply not drawn. Phase 19 of this very repository has 33 plans:
+/// an uncapped list would push the overflow off the bottom INVISIBLY. A cap plus
+/// a stated remainder is honest about what is not shown, and the header's totals
+/// cover every plan regardless of the cap. If this proves annoying the follow-up
+/// is pane scrolling, not a bigger constant.
+const MAX_PLAN_TOKEN_ROWS: usize = 10;
+
+/// A token count in at most six ASCII characters, so the column is predictable.
+///
+/// Below 1 000 the bare integer; below 100 000 one decimal place and a `k`;
+/// below 1 000 000 no decimal place and a `k`; otherwise one decimal place and
+/// an `M`. `fmt_tokens_boundaries_are_pinned_not_described` asserts every
+/// boundary as an exact string rather than trusting this paragraph.
+///
+/// **The rounding is integer arithmetic, deliberately, not `{:.1}` on a float.**
+/// Rust's float formatting rounds a tie to even, so `format!("{:.1}", 1.25)`
+/// yields `1.2`; a token count is reported to a human comparing a plan against
+/// its outcome, and half-up is the rule such a reader expects. The widening to
+/// `u128` keeps `u64::MAX * 10` from wrapping.
+///
+/// ASCII only: this project carries an open todo about badge glyph display width
+/// misaligning by one cell across terminals, and a numeric column is the last
+/// place to introduce a non-ASCII glyph.
+fn fmt_tokens(n: u64) -> String {
+    /// `n / divisor` to one decimal place, rounded half up.
+    fn tenths(n: u64, divisor: u128) -> (u128, u128) {
+        let scaled = (n as u128 * 10 + divisor / 2) / divisor;
+        (scaled / 10, scaled % 10)
+    }
+    /// `n / divisor` to zero decimal places, rounded half up.
+    fn whole(n: u64, divisor: u128) -> u128 {
+        (n as u128 + divisor / 2) / divisor
+    }
+
+    if n < 1_000 {
+        return n.to_string();
+    }
+    if n < 100_000 {
+        let (units, tenth) = tenths(n, 1_000);
+        return format!("{units}.{tenth}k");
+    }
+    if n < 1_000_000 {
+        return format!("{}k", whole(n, 1_000));
+    }
+    let (units, tenth) = tenths(n, 1_000_000);
+    format!("{units}.{tenth}M")
+}
+
+/// Render the compact `Plan tokens (est/act)` section for the Pipeline pane.
+///
+/// Empty in, empty out: an inference whose `plan_tokens` is empty produces no
+/// lines at all, so a project whose plans predate GSD's `estimate`/`actuals`
+/// keys renders exactly what it rendered before this section existed.
+///
+/// Otherwise a header carrying the phase's summed estimate, its summed actual
+/// and how many of its plans have been MEASURED over its plan count, then up to
+/// [`MAX_PLAN_TOKEN_ROWS`] rows, then — if the cap dropped any — one line saying
+/// how many. The totals are over ALL rows, capped or not.
+///
+/// Every number here comes off `inf`; this function reads no file. The numbers
+/// were parsed during the `.planning/` disk scan and cached on the inference,
+/// and are invalidated with it.
+fn build_plan_token_lines(inf: &DiskInference) -> Vec<Line<'static>> {
+    if inf.plan_tokens.is_empty() {
+        return Vec::new();
+    }
+
+    let label_style = Style::default().fg(Color::DarkGray);
+    let mut lines: Vec<Line> = Vec::new();
+
+    let total_estimate: u64 = inf.plan_tokens.iter().filter_map(|r| r.estimate).sum();
+    let total_actual: u64 = inf.plan_tokens.iter().filter_map(|r| r.actual).sum();
+    let measured = inf
+        .plan_tokens
+        .iter()
+        .filter(|r| r.actual.is_some())
+        .count();
+
+    // The header, and every word and number below it, is this crate's own text
+    // and arithmetic — authored strings and integers, neither of which can carry
+    // an escape sequence — so none of it goes through `shown()`. Only the plan
+    // LABEL does, because only the label came out of another project's
+    // filesystem. `unreadable_state_line` keeps that same asymmetry visible for
+    // the same reason.
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  Plan tokens (est/act):",
+            label_style.add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(
+                "  est {}  act {}  {}/{} measured",
+                fmt_tokens(total_estimate),
+                fmt_tokens(total_actual),
+                measured,
+                inf.plan_count
+            ),
+            label_style,
+        ),
+    ]));
+
+    for row in inf.plan_tokens.iter().take(MAX_PLAN_TOKEN_ROWS) {
+        let estimate = row.estimate.map_or_else(|| "-".to_string(), fmt_tokens);
+        let actual = row.actual.map_or_else(|| "-".to_string(), fmt_tokens);
+        let mut spans = vec![
+            Span::raw("    "),
+            // The ONE value on this line that is third-party text.
+            Span::styled(
+                format!("{:<10}", shown(&row.label())),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(
+                format!("est {estimate:>7}  act {actual:>7}  "),
+                Style::default().fg(Color::White),
+            ),
+        ];
+        if let (Some(estimate), Some(actual)) = (row.estimate, row.actual) {
+            // An estimate of zero renders no delta and does not divide.
+            if estimate > 0 {
+                let percent = (actual as i128 - estimate as i128) * 100 / estimate as i128;
+                let color = if actual <= estimate {
+                    Color::Green
+                } else {
+                    Color::Yellow
+                };
+                spans.push(Span::styled(
+                    format!("{percent:+}%"),
+                    Style::default().fg(color),
+                ));
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+
+    let dropped = inf.plan_tokens.len().saturating_sub(MAX_PLAN_TOKEN_ROWS);
+    if dropped > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("    ... +{dropped} more (totals above cover all)"),
+            label_style,
+        )));
+    }
+
     lines
 }
 
@@ -11569,5 +11728,241 @@ mod tests {
             "every stage of a finished, real-shaped phase is complete"
         );
         assert_eq!(pipeline_text(&inf), "  [D]---[R]---[P]---[E 2/2]---[V]");
+    }
+
+    // ── Plan token section (quick task 260916-vqx) ───────────────────────
+
+    // Named only by the fixtures: the production code reaches its rows through
+    // `inf.plan_tokens` and never spells the type.
+    use crate::state_reader::disk_status::PlanTokens;
+
+    /// The rendered text of a `Line`, spans concatenated — the characters that
+    /// actually reach a terminal cell.
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn token_row(id: &str, estimate: Option<u64>, actual: Option<u64>) -> PlanTokens {
+        PlanTokens {
+            id: id.to_string(),
+            estimate,
+            actual,
+        }
+    }
+
+    fn inference_with_tokens(plan_count: u32, rows: Vec<PlanTokens>) -> DiskInference {
+        DiskInference {
+            plan_count,
+            plan_tokens: rows,
+            ..DiskInference::default()
+        }
+    }
+
+    #[test]
+    fn fmt_tokens_boundaries_are_pinned_not_described() {
+        // The point of the table is that the column width is PREDICTABLE, so
+        // every boundary is asserted as an exact string rather than described.
+        let table: [(u64, &str); 9] = [
+            (0, "0"),
+            (999, "999"),
+            (1_000, "1.0k"),
+            (12_846, "12.8k"),
+            (95_000, "95.0k"),
+            (100_000, "100k"),
+            (999_999, "1000k"),
+            (1_000_000, "1.0M"),
+            (1_250_000, "1.3M"),
+        ];
+        for (input, expected) in table {
+            assert_eq!(fmt_tokens(input), expected, "fmt_tokens({input})");
+        }
+    }
+
+    #[test]
+    fn the_token_section_is_ascii_only() {
+        // This project carries an open todo about badge glyph display width
+        // misaligning by one cell across terminals. A numeric column is the last
+        // place to introduce a non-ASCII glyph.
+        for n in [
+            0,
+            1,
+            999,
+            1_000,
+            12_846,
+            100_000,
+            999_999,
+            1_000_000,
+            u64::MAX,
+        ] {
+            assert!(
+                fmt_tokens(n).is_ascii(),
+                "fmt_tokens({n}) emitted a non-ASCII character"
+            );
+        }
+        let inf = inference_with_tokens(
+            3,
+            vec![
+                token_row("07-01", Some(95_000), Some(12_846)),
+                token_row("07-02", Some(10_000), Some(15_000)),
+                token_row("07-03", Some(40_000), None),
+            ],
+        );
+        for line in build_plan_token_lines(&inf) {
+            assert!(
+                line_text(&line).is_ascii(),
+                "the section's authored strings must be ASCII too"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_plan_tokens_renders_no_section_at_all() {
+        let inf = inference_with_tokens(5, Vec::new());
+        assert!(
+            build_plan_token_lines(&inf).is_empty(),
+            "a project whose plans carry neither key renders byte-identically to \
+             before this section existed: absence degrades to silence, never to a \
+             column of dashes"
+        );
+    }
+
+    #[test]
+    fn the_header_states_both_totals_and_the_denominator() {
+        let inf = inference_with_tokens(
+            5,
+            vec![
+                token_row("07-01", Some(95_000), Some(12_846)),
+                token_row("07-02", Some(40_000), Some(30_000)),
+                token_row("07-03", Some(15_000), None),
+            ],
+        );
+        let lines = build_plan_token_lines(&inf);
+        let header = line_text(&lines[0]);
+        // 95 000 + 40 000 + 15 000 = 150 000 -> "150k"
+        assert!(
+            header.contains("150k"),
+            "header must sum ALL estimates: {header}"
+        );
+        // 12 846 + 30 000 = 42 846 -> "42.8k"
+        assert!(
+            header.contains("42.8k"),
+            "header must sum ALL actuals: {header}"
+        );
+        assert!(
+            header.contains("2/5"),
+            "the denominator is the PHASE's plan count, not the row count: {header}"
+        );
+    }
+
+    #[test]
+    fn a_row_renders_both_numbers_and_a_dash_for_an_absent_one() {
+        let inf = inference_with_tokens(
+            2,
+            vec![
+                token_row("07-01", Some(95_000), None),
+                token_row("07-02", None, Some(12_846)),
+            ],
+        );
+        let lines = build_plan_token_lines(&inf);
+        let estimate_only = line_text(&lines[1]);
+        assert!(estimate_only.contains("95.0k"), "{estimate_only}");
+        assert!(
+            estimate_only.contains('-'),
+            "an absent actual renders a dash: {estimate_only}"
+        );
+        let actual_only = line_text(&lines[2]);
+        assert!(actual_only.contains("12.8k"), "{actual_only}");
+        assert!(
+            actual_only.contains('-'),
+            "an absent estimate renders a dash: {actual_only}"
+        );
+    }
+
+    #[test]
+    fn the_delta_is_signed_and_relative_to_the_estimate() {
+        let inf = inference_with_tokens(
+            4,
+            vec![
+                token_row("07-01", Some(95_000), Some(12_846)),
+                token_row("07-02", Some(10_000), Some(15_000)),
+                token_row("07-03", Some(40_000), None),
+                token_row("07-04", Some(0), Some(5_000)),
+            ],
+        );
+        let lines = build_plan_token_lines(&inf);
+        // (12846 - 95000) * 100 / 95000 == -86 under one truncating rule.
+        assert!(
+            line_text(&lines[1]).contains("-86%"),
+            "under by 86%: {}",
+            line_text(&lines[1])
+        );
+        assert!(
+            line_text(&lines[2]).contains("+50%"),
+            "over by 50%: {}",
+            line_text(&lines[2])
+        );
+        assert!(
+            !line_text(&lines[3]).contains('%'),
+            "a row missing either number renders no delta: {}",
+            line_text(&lines[3])
+        );
+        assert!(
+            !line_text(&lines[4]).contains('%'),
+            "an estimate of 0 renders no delta and does not divide: {}",
+            line_text(&lines[4])
+        );
+    }
+
+    #[test]
+    fn the_row_cap_is_honest_about_what_it_does_not_show() {
+        let rows: Vec<PlanTokens> = (1..=14)
+            .map(|i| token_row(&format!("07-{i:02}"), Some(1_000), None))
+            .collect();
+        let inf = inference_with_tokens(14, rows);
+        let lines = build_plan_token_lines(&inf);
+        assert_eq!(
+            lines.len(),
+            1 + MAX_PLAN_TOKEN_ROWS + 1,
+            "header + {MAX_PLAN_TOKEN_ROWS} rows + exactly one overflow line"
+        );
+        let overflow = line_text(lines.last().unwrap());
+        assert!(
+            overflow.contains("+4 more"),
+            "the pane is a Paragraph with no scroll (D-INF-03), so the remainder \
+             is STATED rather than dropped off the bottom invisibly: {overflow}"
+        );
+        // 14 x 1 000 = 14 000 -> the totals still cover every plan, capped or not.
+        assert!(
+            line_text(&lines[0]).contains("14.0k"),
+            "the header's totals sum ALL rows, including the capped ones: {}",
+            line_text(&lines[0])
+        );
+    }
+
+    #[test]
+    fn a_hostile_plan_label_reaches_no_cell_unescaped() {
+        // A plan identifier is a filename stem out of ANOTHER project's
+        // `.planning/` directory. A terminal interprets control bytes it is
+        // handed, so this is code-execution surface, not text.
+        let inf = inference_with_tokens(
+            1,
+            vec![token_row(
+                "07-\u{202E}01\u{1b}[31m",
+                Some(1_000),
+                Some(2_000),
+            )],
+        );
+        let lines = build_plan_token_lines(&inf);
+        for line in &lines {
+            let text = line_text(line);
+            assert!(
+                !text.contains('\u{202E}'),
+                "a bidi override reached a cell: {text:?}"
+            );
+            assert!(
+                !text.contains('\u{1b}'),
+                "a raw ESC reached a cell: {text:?}"
+            );
+        }
     }
 }
