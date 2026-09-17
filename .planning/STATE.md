@@ -2,18 +2,18 @@
 gsd_state_version: "1.0"
 milestone: v2.0
 milestone_name: Autonomous Orchestration
-current_phase: 19
-current_phase_name: GITSAFE — Git & Blast-Radius Envelope
-status: verifying
+current_phase: 22
+current_phase_name: container-execution-target
+status: executing
 stopped_at: Phase 22 context gathered
-last_updated: "2026-09-17T01:34:22.589Z"
+last_updated: "2026-09-17T03:09:57.051Z"
 last_activity: 2026-09-15
 last_activity_desc: Phase 19 plan 12 executed — all 12 plans summarised
-state_head: 5a19f62c583fcc79ef8c0c6102f94a02fb7182c8
+state_head: 5ce3dc33c33a663f82e2b69379615841c46a11e5
 progress:
   total_phases: 10
   completed_phases: 6
-  total_plans: 112
+  total_plans: 116
   completed_plans: 112
   percent: 60
 ---
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-03-31)
 
 ## Current Position
 
-Phase: 19 (GITSAFE — Git & Blast-Radius Envelope) — ALL 12 PLANS SUMMARISED
+Phase: 22 (container-execution-target) — READY TO EXECUTE
 Plan: 12 of 12 (12 summaries on disk)
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
@@ -50,7 +50,7 @@ Plan: 12 of 12 (12 summaries on disk)
   --all-targets lint count unchanged. USE --no-fail-fast: a plain `cargo test` stops at
   driver_reattach and never reaches any envelope_* binary, reporting 1245/2/13 regardless of
   what was added. The 2 failures are the pre-existing driver_reattach pair (deferred-items.md).
-Status: Phase complete — ready for verification
+Status: Ready to execute
   21-35 closes a producer/consumer wire-format mismatch: the producer emits the fused
   `--resume=<id>` (one argv element) while the consumer still parses only the split
   `["--resume", "<id>"]`, so TUI-resumed sessions became silently undetectable in /proc.
@@ -81,6 +81,19 @@ verified, and the four outstanding items are all reading judgements (does the pi
 statement read as candour; are 19-08's composed proofs faithful decompositions; do the
 residual-exposure disclosures read as admissions) plus the `driver_lock` one-off risk call.
 Deferred by user request on 2026-08-19 so Phase 20 could start; **not** marked passed.
+
+### Phase 22 planning — decision-coverage gate override (autonomous run — audit this)
+
+`/gsd-plan-phase 22`'s step-13a decision-coverage gate returned
+`{passed: false, reason: "could-not-parse", total: 16, covered: 0, uncovered: []}` and was
+**overridden** by the orchestrator, with the human unavailable. It is a parser mismatch, not a
+coverage gap: the gate's ID grammar reads `D-NN` / `D4-NN`, and `22-CONTEXT.md` uses the
+three-segment `D-22-NN` form, so three bullets (D-22-08, D-22-13, D-22-15) were reported
+unparseable and coverage counting was abandoned before it ran. Verified by direct grep instead:
+all **19** decisions D-22-01…D-22-19 are cited in `22-0*-PLAN.md`, each at least twice
+(D-22-19 sixteen times, D-22-18 twelve). No decision was dropped. Nothing in `22-CONTEXT.md` was
+edited to satisfy the parser — it is a committed, locked discuss artifact. Re-surface at
+verify-phase if the gate is fixed.
 
 ### Phase 17 gap-closure notes (autonomous run — review these)
 
