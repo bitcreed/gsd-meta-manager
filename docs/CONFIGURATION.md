@@ -130,7 +130,13 @@ Three things are deliberately **not** affected by it:
 - **The `drive` subcommand is not gated.** The TUI launches a run by
   re-executing *this same binary* as `<current_exe> drive …`, and environment
   propagation into that child is not guaranteed; gating the subcommand would
-  break the spawn path for the users who did set the flag.
+  break the spawn path for the users who did set the flag. It *is* marked
+  `hide = true`, so it no longer appears in `--help` — hidden rather than gated
+  for exactly that reason: the TUI's own `<current_exe> drive` respawn is the
+  caller that has to keep working. That is help visibility only. The subcommand
+  parses, dispatches and runs identically in both flag states, `hide` removes
+  nothing from the parser, and both flag states render the same help — this
+  variable is not what hides it.
 - **Startup reconciliation still runs**, so a session that toggles the flag on
   sees coherent state immediately. Only the surfaces that *display* its result
   are gated.
